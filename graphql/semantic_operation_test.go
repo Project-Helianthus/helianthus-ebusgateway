@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -417,9 +418,6 @@ func TestM56GraphQLStructuralRefusalsNeverDispatch(t *testing.T) {
 		pad := bytes.Repeat([]byte(" "), 4*semanticoperations.MaxRequestBytes)
 		padded := append(body[:len(body)-1:len(body)-1], append(pad, '}')...)
 		m56RequireCode(t, m56Post(t, h.handler, "application/json", padded), exhausted)
-		hugePad := bytes.Repeat([]byte(" "), 2<<20)
-		hugeSemantic := append(body[:len(body)-1:len(body)-1], append(hugePad, '}')...)
-		m56RequireCode(t, m56Post(t, h.handler, "application/json", hugeSemantic), exhausted)
 		malformed := append([]byte(`{"query":"mutation { semanticOperation(`), pad...)
 		if got := m56Post(t, h.handler, "application/json", malformed); len(got.Errors) == 0 || got.Data != nil {
 			t.Fatalf("malformed oversized body = %+v", got)
@@ -637,31 +635,43 @@ func m56RequireTypes(t *testing.T, owner string, fields []m56TypeRef, want map[s
 	}
 }
 
-func TestM56GuardOversizedSemanticBodyNeverReachesDownstream(t *testing.T) {
-	called := 0
-	guarded := guardSemanticOperationRequests(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called++ }))
+func TestM56GuardOversizedBodyReachesStockHandlerIntact(t *testing.T) {
+	var got []byte
+	guarded := guardSemanticOperationRequests(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, _ = io.ReadAll(r.Body)
+	}))
+	for _, size := range []int{2 * semanticoperations.MaxRequestBytes, 6 << 20} {
+		body := append([]byte(`{"query":"{ __typename } # semanticOperation"`), append(bytes.Repeat([]byte(" "), size), '}')...)
+		got = nil
+		request := httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		guarded.ServeHTTP(httptest.NewRecorder(), request)
+		if !bytes.Equal(got, body) {
+			t.Fatalf("size %d: downstream body differs (%d bytes, want %d)", size, len(got), len(body))
+		}
+	}
+}
+
+func TestM56GraphQLOversizedNonSemanticMentioningFieldIsServed(t *testing.T) {
 	h := newM56Harness(t, semoptest.Outcome{})
-	body := m56Body(t, m56Mutation, m56Input(t, h.f.Request()))
-	padded := append(body[:len(body)-1:len(body)-1], append(bytes.Repeat([]byte(" "), 2<<20), '}')...)
-	m56RequireCode(t, m56Post(t, guarded, "application/json", padded), semanticoperations.CodeResourceExhausted)
-	if called != 0 {
-		t.Fatalf("downstream handler called %d times", called)
+	for _, size := range []int{2 * semanticoperations.MaxRequestBytes, 5 << 20} {
+		body := append([]byte(`{"query":"{ __typename } # semanticOperation","variables":{"v":"semanticOperation"}`), append(bytes.Repeat([]byte(" "), size), '}')...)
+		got := m56Post(t, h.handler, "application/json", body)
+		if len(got.Errors) != 0 || got.Data["__typename"] != "Query" {
+			t.Fatalf("size %d: response = %+v", size, got)
+		}
 	}
 	h.untouched(t)
 }
 
-func TestM56GuardPrefixPaddedSemanticBodyNeverReachesDownstream(t *testing.T) {
-	called := 0
-	guarded := guardSemanticOperationRequests(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called++ }))
+func TestM56GraphQLOversizedSemanticInputRefusedAfterParse(t *testing.T) {
 	h := newM56Harness(t, semoptest.Outcome{})
 	body := m56Body(t, m56Mutation, m56Input(t, h.f.Request()))
-	for _, size := range []int{2 * semanticoperations.MaxRequestBytes, 2 * semanticOversizeHardCap} {
-		pad := bytes.Repeat([]byte(" "), size)
-		prefixed := append([]byte("{"), append(pad, body[1:]...)...)
-		m56RequireCode(t, m56Post(t, guarded, "application/json", prefixed), semanticoperations.CodeResourceExhausted)
-	}
-	if called != 0 {
-		t.Fatalf("downstream handler called %d times", called)
+	for _, pad := range []int{2 << 20, 6 << 20} {
+		padded := append(body[:len(body)-1:len(body)-1], append(bytes.Repeat([]byte(" "), pad), '}')...)
+		m56RequireCode(t, m56Post(t, h.handler, "application/json", padded), semanticoperations.CodeResourceExhausted)
+		prefixed := append([]byte("{"), append(bytes.Repeat([]byte(" "), pad), body[1:]...)...)
+		m56RequireCode(t, m56Post(t, h.handler, "application/json", prefixed), semanticoperations.CodeResourceExhausted)
 	}
 	h.untouched(t)
 }

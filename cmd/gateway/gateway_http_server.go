@@ -10,7 +10,6 @@ import (
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
-	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/portalconfig"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semanticview"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
@@ -207,9 +206,15 @@ func startHTTPServer(
 		mux, routePlan, cfg.DumpOutputDir, busObservability, queryHandler, snapshotHandler, subscriptionHandler, mcpServer, eebusAdminHandler,
 	)
 	var portalOptions portal.Options
-	var configStore *portalconfig.Store
+	var portalConfig *gatewayPortalConfigRuntime
 	if routePlan.portalPath != "" {
-		configStore = openGatewayPortalConfig(cfg, runtimeControl.Registry())
+		// Startup loaded the record before driver registration and applied
+		// its driver selections. A composition without that step mounts the
+		// same store and reports nothing as applied.
+		portalConfig = runtimeControl.PortalConfig()
+		if portalConfig == nil {
+			portalConfig = openGatewayPortalConfigRuntime(cfg)
+		}
 		portalModbusProvider := portalTCPModbusProvider(modbusProvider)
 		var getPortalBusObservability func() any
 		if busObservability != nil {
@@ -218,7 +223,7 @@ func startHTTPServer(
 			}
 		}
 		portalOptions = portal.Options{
-			Config:                 gatewayPortalConfigCallbacks(configStore, cfg),
+			Config:                 portalConfig.callbacks(cfg, runtimeControl),
 			GraphQLPath:            cfg.GraphQLPath,
 			SnapshotPath:           cfg.SnapshotPath,
 			SubscriptionPath:       cfg.SubscriptionPath,
@@ -393,8 +398,9 @@ func startHTTPServer(
 	registerHTTPPortalRoutes(mux, routePlan.portalPath, portalOptions, portalCatalogSource)
 
 	cfg.HTTPAddr, _ = gatewayPortalHTTPAddress(cfg.HTTPAddr)
-	if configStore != nil {
-		return startHTTPControlPlaneListener(ctx, cfg, mux, gateway, mcpServer, eebusProvider, configStore)
+	if portalConfig != nil {
+		// The listener releases the writer on exit or startup failure.
+		return startHTTPControlPlaneListener(ctx, cfg, mux, gateway, mcpServer, eebusProvider, portalConfig)
 	}
 	return startHTTPControlPlaneListener(ctx, cfg, mux, gateway, mcpServer, eebusProvider)
 }

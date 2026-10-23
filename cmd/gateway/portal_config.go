@@ -14,18 +14,27 @@ import (
 )
 
 func openGatewayPortalConfig(cfg ebusgateway.Config, registry *runtimecontrol.Registry) *portalconfig.Store {
-	initial := portalconfig.Record{Format: portalconfig.Format, Revision: "0", Drivers: []portalconfig.Driver{}}
+	var drivers []portalconfig.Driver
+	if registry != nil {
+		for _, driver := range registry.List().Drivers {
+			drivers = append(drivers, portalconfig.Driver{ID: string(driver.DriverID), Enabled: driver.Disposition == runtimecontrol.DispositionEnabled})
+		}
+	}
+	store, _ := openGatewayPortalConfigDrivers(cfg, drivers)
+	return store
+}
+
+// openGatewayPortalConfigDrivers opens the host-owned store whose editable
+// drivers, and host-supplied initial enablement, are exactly drivers.
+func openGatewayPortalConfigDrivers(cfg ebusgateway.Config, drivers []portalconfig.Driver) (*portalconfig.Store, error) {
+	initial := portalconfig.Record{Format: portalconfig.Format, Revision: "0", Drivers: append([]portalconfig.Driver{}, drivers...)}
 	plan := newHTTPControlPlaneRoutePlan(cfg, false)
 	constraints := portalconfig.Constraints{
 		GraphQL: plan.graphqlPath != "", MCP: plan.mcpPath != "",
 		AdapterProxy: cfg.ProxyListenAddr != "", Matter: !cfg.M2MGraphQL.Disabled(),
 	}
-	if registry != nil {
-		for _, driver := range registry.List().Drivers {
-			id := string(driver.DriverID)
-			initial.Drivers = append(initial.Drivers, portalconfig.Driver{ID: id, Enabled: driver.Disposition == runtimecontrol.DispositionEnabled})
-			constraints.Drivers = append(constraints.Drivers, id)
-		}
+	for _, driver := range drivers {
+		constraints.Drivers = append(constraints.Drivers, driver.ID)
 	}
 	// Open returns a usable error view even on cold-load failure. Keep that
 	// view mounted and never replace corrupt or unavailable storage with defaults.
@@ -33,7 +42,7 @@ func openGatewayPortalConfig(cfg ebusgateway.Config, registry *runtimecontrol.Re
 	if err != nil {
 		log.Printf("portal configuration unavailable: %v", err)
 	}
-	return store
+	return store, err
 }
 
 func gatewayPortalConfigCallbacks(store *portalconfig.Store, cfg ebusgateway.Config) *portal.ConfigCallbacks {

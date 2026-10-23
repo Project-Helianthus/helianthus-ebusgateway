@@ -62,7 +62,7 @@ func sidecarNativeContract(owner, contract string) runtimecontrol.NativeContract
 	return ref
 }
 
-func prepareManagedSidecars(ctx context.Context, cfg ebusgateway.Config, hub *semhub.Hub, guid string, contributions *gatewayPortalCatalogContributions) *managedSidecars {
+func prepareManagedSidecars(ctx context.Context, cfg ebusgateway.Config, hub *semhub.Hub, guid string, contributions *gatewayPortalCatalogContributions, portalConfig *gatewayPortalConfigRuntime) *managedSidecars {
 	descriptor := func(id runtimecontrol.DriverID, enabled bool, source runtimecontrol.SourceID, native runtimecontrol.NativeContractRef, adapter runtimecontrol.LifecycleAdapter) runtimecontrol.Descriptor {
 		disposition := runtimecontrol.DispositionDisabled
 		if enabled {
@@ -89,6 +89,17 @@ func prepareManagedSidecars(ctx context.Context, cfg ebusgateway.Config, hub *se
 		descriptor(managedGrowattID, cfg.ModbusTCPConfig.GrowattBMSRS485.Enabled, growattSource, sidecarNativeContract("github.com/Project-Helianthus/helianthus-modbus", "RTUProductionEndpoint"), newGrowattManagedDriverFactory(cfg.ModbusTCPConfig.GrowattBMSRS485, modbusProviderGrowattBMS, hub, openGrowattBMSRTUEndpoint)),
 		managedEEBusDescriptor(cfg, source(managedEEBusID)),
 	})
+	// An accepted Portal selection narrows configured eligibility before any
+	// registration or construction. A driver withheld by a record that did not
+	// load stays registered with a failing executor and is never constructed.
+	portalWithheld := make(map[runtimecontrol.DriverID]error, len(descriptors))
+	for i := range descriptors {
+		enabled, withheld := portalConfig.configure(descriptors[i].DriverID, descriptors[i].Disposition == runtimecontrol.DispositionEnabled)
+		if !enabled && descriptors[i].Disposition == runtimecontrol.DispositionEnabled {
+			descriptors[i].Disposition = runtimecontrol.DispositionDisabled
+		}
+		portalWithheld[descriptors[i].DriverID] = withheld
+	}
 	registry := runtimecontrol.NewRegistry(controlHubOwnership{hub: hub})
 	result := &managedSidecars{registry: registry}
 	// Register fixed identities before the configurable Growatt identity.
@@ -114,7 +125,11 @@ func prepareManagedSidecars(ctx context.Context, cfg ebusgateway.Config, hub *se
 		}
 	}
 	for _, d := range descriptors {
-		sidecar := &managedSidecar{descriptor: d, withheld: registrationErrors[d.DriverID]}
+		withheld := registrationErrors[d.DriverID]
+		if withheld == nil {
+			withheld = portalWithheld[d.DriverID]
+		}
+		sidecar := &managedSidecar{descriptor: d, withheld: withheld}
 		result.entries = append(result.entries, sidecar)
 		if sidecar.withheld != nil || d.Disposition != runtimecontrol.DispositionEnabled {
 			continue

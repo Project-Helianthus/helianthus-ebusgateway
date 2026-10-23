@@ -124,6 +124,9 @@ type gatewayRuntimeControlOptions struct {
 	// Disabled is the configured disposition of ebus.primary. Disabled
 	// configuration wins over durable desired state.
 	Disabled bool
+	// PortalConfig is the Portal record loaded before registration. Its
+	// accepted ebus.primary selection narrows Disabled; nil applies none.
+	PortalConfig *gatewayPortalConfigRuntime
 	// Recovery is an optional managed D5 adapter; nil selects the
 	// lifecycle-only composition.
 	Recovery       runtimecontrol.RecoveryAdapter
@@ -142,8 +145,11 @@ type gatewayRuntimeControl struct {
 	bridge   *ebusControlRuntime
 	executor *ebusControlExecutor
 	// withheld is the reason ebus.primary could not be composed (missing
-	// identity, native version or registration), nil when it was.
+	// identity, native version or registration, or a Portal record that did
+	// not load), nil when it was.
 	withheld error
+	// portalConfig is the startup-applied Portal record, nil when none.
+	portalConfig *gatewayPortalConfigRuntime
 
 	watchCancel context.CancelFunc
 	watchDone   chan struct{}
@@ -186,10 +192,11 @@ func startGatewayRuntimeControl(ctx context.Context, opts gatewayRuntimeControlO
 		incarnation = newGatewayIncarnation()
 	}
 	control := &gatewayRuntimeControl{
-		hub:      opts.Hub,
-		registry: runtimecontrol.NewRegistry(controlHubOwnership{hub: opts.Hub}),
-		store:    opts.Store,
-		driver:   opts.Driver,
+		hub:          opts.Hub,
+		registry:     runtimecontrol.NewRegistry(controlHubOwnership{hub: opts.Hub}),
+		store:        opts.Store,
+		driver:       opts.Driver,
+		portalConfig: opts.PortalConfig,
 	}
 	if opts.Sidecars != nil {
 		control.registry = opts.Sidecars.registry
@@ -202,6 +209,12 @@ func startGatewayRuntimeControl(ctx context.Context, opts gatewayRuntimeControlO
 	// 1 + 2: identity, bridge and frozen registration. The bridge binds the
 	// manager hooks here, before the service (the only start owner) runs.
 	control.bridge, control.withheld = composeEBusPrimary(control.registry, opts, incarnation)
+	// The accepted Portal selection narrows configured eligibility only; a
+	// record that did not load withholds the driver, failed and unopened.
+	primaryEnabled, portalWithheld := opts.PortalConfig.configure(id, !opts.Disabled)
+	if control.withheld == nil {
+		control.withheld = portalWithheld
+	}
 	if control.withheld != nil {
 		report(fmt.Errorf("ebus.primary withheld: %w", control.withheld))
 	}
@@ -219,7 +232,7 @@ func startGatewayRuntimeControl(ctx context.Context, opts gatewayRuntimeControlO
 	// 3: durable registration. A failed load disposition writes nothing and
 	// presents every configured driver as FAILED.
 	sidecarStore, sidecarService := opts.Sidecars.serviceConfigs()
-	storeConfigs := append([]runtimestate.ControlDriverConfig{{DriverID: primaryEBusDriverID, Enabled: !opts.Disabled}}, sidecarStore...)
+	storeConfigs := append([]runtimestate.ControlDriverConfig{{DriverID: primaryEBusDriverID, Enabled: primaryEnabled}}, sidecarStore...)
 	serviceConfigs := append([]runtimecontrol.DriverConfig{{DriverID: id, Executor: control.executor}}, sidecarService...)
 	if _, err := opts.Store.BootstrapControl(ctx, storeConfigs); err != nil {
 		report(fmt.Errorf("register drivers in runtime_control: %w (load=%s)", err, opts.Store.ControlLoad().Disposition))
@@ -349,6 +362,14 @@ func (control *gatewayRuntimeControl) Registry() *runtimecontrol.Registry {
 		return nil
 	}
 	return control.registry
+}
+
+// PortalConfig returns the Portal record applied at startup, nil when none.
+func (control *gatewayRuntimeControl) PortalConfig() *gatewayPortalConfigRuntime {
+	if control == nil {
+		return nil
+	}
+	return control.portalConfig
 }
 
 // BindTasks installs the generation-owned post-start task runner. Tasks of

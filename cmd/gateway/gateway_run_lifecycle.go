@@ -79,10 +79,19 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 		}
 	}()
 
+	// Load the Portal desired record before any driver is registered, so its
+	// accepted driver selections become configured eligibility. A record that
+	// does not load keeps the shell up and withholds record-controlled drivers.
+	portalConfig := openGatewayPortalConfigRuntime(cfg)
+	defer func() {
+		if err := portalConfig.Close(); err != nil {
+			log.Printf("portal configuration close: %v", err)
+		}
+	}()
 	// Construct the protocol-neutral manager and stable eBUS provider before
 	// opening any eBUS resource. Driver-local construction failure is retained
 	// as categorical state and never promoted to process failure.
-	sidecars := prepareManagedSidecars(ctx, cfg, semanticHub, runtimeStateMgr.State().Meta.InstanceGUID, portalContributions)
+	sidecars := prepareManagedSidecars(ctx, cfg, semanticHub, runtimeStateMgr.State().Meta.InstanceGUID, portalContributions, portalConfig)
 	bindings := &managedSidecarBindings{sidecars: sidecars}
 	ebusDriver, err := prepareGatewayEBusDriver(&cfg, sidecars.driverConfigs()...)
 	if err != nil {
@@ -108,6 +117,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 		Hub:          semanticHub,
 		Store:        runtimeStateMgr,
 		InstanceGUID: runtimeStateMgr.State().Meta.InstanceGUID,
+		PortalConfig: portalConfig,
 	}))
 	gatewayRuntimeControlStarted(control)
 	defer func() {

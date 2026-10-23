@@ -7,8 +7,10 @@ and [#1002](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/
 This defines the application contract. The bounded desired-record persistence
 and Portal GET/PUT API are implemented. The listener-plan companion for
 [#1307](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1307)
-adds detached planning and pre-save validation; runtime application, authorization
-changes and plugin loading remain outside this slice.
+adds detached planning and pre-save validation.
+[#1335](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1335)
+applies accepted driver selections at gateway startup; sharing, proxy and output
+application, authorization changes and plugin loading remain outside these slices.
 
 ## Owners and precedence
 
@@ -55,6 +57,13 @@ last-known-good fields. Cache contents never become fresh or qualified because
 a sharing selection changed. Existing observe-first policy and cache settings
 remain owned by [Config](../../config.go).
 
+Remaining migration work: host flags outside this record still switch or tune
+passive observation and cache behavior: `-broadcast`, `-observe-first-enabled`,
+`-passive-state-direct-apply`, `-passive-config-direct-apply`,
+`-external-write-policy` and `-semantic-cache-path`. The record neither reads
+nor writes them, and a record that adds a passive or cache member is rejected as
+`invalid_record`. Removing those ordinary toggles is separate work.
+
 ## Bounded desired record
 
 The host owns one local application record, separate from lifecycle control
@@ -98,28 +107,81 @@ adoption; this contract does not change today's defaults by itself.
 
 ## Gateway persistence composition
 
-**Proven**: the production HTTP composition supplies the Portal config callbacks
-from one host-owned store whenever Portal is mounted. `-portal-config-root`
+**Proven**: gateway startup opens one host-owned store before any driver is
+registered, and the production HTTP composition supplies the Portal config
+callbacks from that store whenever Portal is mounted. `-portal-config-root`
 selects an existing, trusted local directory (default `/data`); the store uses
 `portal-config.json` and a separate writer lock there. It never accepts a path
 from the browser or desired record and does not create a missing directory.
-The writer is released on HTTP listener exit or startup failure.
+The writer is released on HTTP listener exit, startup failure or process exit.
 
-The initial driver list comes from the composed runtime-control registry and
-its configured dispositions. Only those driver IDs are editable; unmanaged
-sidecars are excluded. All initial sharing/proxy/output choices are false.
-Desired GraphQL and MCP selections require their respective host-provisioned
-routes, proxy requires host proxy configuration, and Matter requires existing
-M2M configuration. None of these checks proves effective operation.
+The editable drivers are the compiled managed set: `ebus.primary`,
+`eebus.primary`, `growatt.bms.rs485` and `modbus.sunspec`. The set does not
+depend on registration outcomes, so a refused registration never invalidates an
+accepted record; changing the set requires a supported record migration. The
+host-supplied initial record copies their host-configured enablement;
+unmanaged sidecars are excluded. All initial sharing/proxy/output choices are
+false. Desired GraphQL and MCP selections require their respective
+host-provisioned routes, proxy requires host proxy configuration, and Matter
+requires existing M2M configuration. None of these checks proves effective
+operation.
 
 A failed load retains the store's sanitized error view in GET and PUT while
 the Portal shell and bootstrap stay mounted. No failed load is replaced with
-defaults. Saves persist desired choices only; they do not change driver
-lifecycle, listeners, sharing or output publication. Every effective choice
-remains false until runtime application and owner readback are implemented.
-Driver choices remain `withheld`/`evidence_unavailable`; listener-related choices
-use the plan statuses below. Existing host-controlled operation remains outside
-this record's control in this persistence slice.
+defaults. Saves persist desired choices only; while the gateway runs they do
+not change driver lifecycle, listeners, sharing or output publication. Sharing,
+proxy and output choices remain unapplied: their effective state stays false
+and they use the plan statuses below. Existing host-controlled operation remains
+outside this record's control.
+
+### Startup driver application
+
+**Proven**: the [startup composition](../../cmd/gateway/portal_config_runtime.go)
+applies driver selections once, before registration, as configured eligibility
+through the existing registry and runtime control service. Selections are never
+START, STOP or RESTART decisions; durable lifecycle intent and its revision are
+not rewritten. No discovery read is added.
+
+- Revision `0` is the host-supplied initial record and records no local
+  adoption, so host-configured enablement stays in force.
+- After an accepted local edit (revision `1` or later), a false selection
+  registers its driver disabled: it is neither constructed nor started. A
+  retained durable `RUNNING` intent resumes once the driver is selected again
+  and the gateway restarts. A true selection never widens host configuration.
+- Each selected, host-enabled driver is constructed and reconciled once by the
+  existing service.
+- A record file that exists but does not load (corrupt, unsupported, invalid
+  selection, unreadable or locked) withholds every host-enabled driver: it stays
+  registered with a failing executor, is presented as failed and is never
+  constructed or opened. HTTP, health, Portal, MCP, GraphQL and status stay
+  available, and the record is never rewritten. Without any record file, for
+  example under an unprovisioned root, nothing was adopted: host configuration
+  applies and the API reports the load error.
+- An edit saved while running applies at the next start.
+
+Each `state.drivers` row has `driver_id`, `desired` (null without a valid
+record), `effective`, `status` and `reason`. `effective` is true only with a
+current runtime control readback that is enabled, `RUNNING` and not
+safety-quarantined; an unstarted, starting, stopped or failed driver is never
+reported effective. Without a valid record every row has status `error` and the
+load error code as reason. Otherwise the first matching row applies:
+
+| Condition | Status | Reason |
+| --- | --- | --- |
+| Startup withheld the driver | `error` | load error code |
+| Configured eligibility differs from what startup applied | `restart_required` | `restart_required` |
+| Selected, host-disabled | `withheld` | `unsupported_selection` |
+| Revision `0` choice differs from host configuration | `withheld` | `record_not_adopted` |
+| Not applied at startup, or no readback | `withheld` | `evidence_unavailable` |
+| Configured disabled, readback disabled | `disabled` | `not_selected` |
+| Configured enabled, safety-quarantined | `error` | `safety_quarantined` |
+| Configured enabled, readback `RUNNING` | `effective` | `running` |
+| Configured enabled, readback failed | `error` | lower-case lifecycle reason |
+| Configured enabled, desired `STOPPED` | `withheld` | `lifecycle_stopped` |
+| Configured enabled, otherwise | `pending` | lower-case observed state |
+
+A configured-disabled driver with an enabled readback, or a configured-enabled
+driver with a disabled readback, reports `withheld`/`evidence_unavailable`.
 
 ## Detached listener plan and API validation
 
@@ -160,7 +222,7 @@ Successful `GET /api/v1/config` and `PUT /api/v1/config` responses include:
   must not be copied into diagnostic exports.
 - `state.sharing.graphql`, `state.sharing.mcp`, `state.adapter_proxy` and
   `state.output_bindings.matter` mirror their corresponding planned surfaces.
-  Driver state retains its existing desired/effective/status/reason view.
+  Driver rows follow the startup driver application above.
 
 The local surface is always desired; a valid host-reported loopback binding
 gives it scope `local_only`, and a wildcard or non-loopback binding gives it

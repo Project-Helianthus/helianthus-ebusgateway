@@ -250,6 +250,10 @@ type controlRecovery struct {
 	inner   runtimecontrol.RecoveryAdapter
 	drivers []runtimecontrol.DriverID
 	prepare map[runtimecontrol.DriverID]func(context.Context) error
+	// withheld names drivers the Portal record withholds. They are failed
+	// closed here, whatever their durable intent, so a retained STOPPED
+	// intent cannot present them as merely stopped.
+	withheld map[runtimecontrol.DriverID]error
 }
 
 var (
@@ -308,6 +312,12 @@ func (r *controlRecovery) finish(ctx context.Context, blocked map[runtimecontrol
 			continue
 		}
 		if err := prepare(ctx); err != nil {
+			blocked[id] = true
+			prepErrs = append(prepErrs, fmt.Errorf("%s: %w", id, err))
+		}
+	}
+	for id, err := range r.withheld {
+		if !blocked[id] {
 			blocked[id] = true
 			prepErrs = append(prepErrs, fmt.Errorf("%s: %w", id, err))
 		}

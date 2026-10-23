@@ -247,6 +247,7 @@ func startGatewayRuntimeControl(ctx context.Context, opts gatewayRuntimeControlO
 	for _, d := range sidecarService {
 		recovery.drivers = append(recovery.drivers, d.DriverID)
 	}
+	recovery.withheld = opts.Sidecars.portalWithheld()
 	service, err := runtimecontrol.New(runtimecontrol.Options{
 		Store:       &runtimeControlStore{m: opts.Store},
 		Recovery:    recovery,

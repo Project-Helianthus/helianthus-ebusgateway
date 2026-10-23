@@ -767,3 +767,70 @@ func TestM28PartialRecordFailsClosedWithoutRewrite(t *testing.T) {
 		t.Fatal("partial record was rewritten")
 	}
 }
+
+// TestM28RetainedStoppedIntentStillPresentsWithheldSidecarsFailed: a
+// host-enabled sidecar whose durable intent is STOPPED is failed closed when
+// the record did not load, instead of reading as merely stopped.
+func TestM28RetainedStoppedIntentStillPresentsWithheldSidecarsFailed(t *testing.T) {
+	natives := m28Sidecars(t)
+	root := t.TempDir()
+	path := filepath.Join(root, portalConfigRecordFile)
+	stored := []byte(`{"private_marker":true}`)
+	if err := os.WriteFile(path, stored, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env := newRCtlEnv(t)
+	ctx := context.Background()
+	manager := runtimestate.New(runtimestate.Options{Path: env.statePath})
+	if _, err := manager.Load(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.EagerPersistInstanceGUID(ctx, env.guid, runtimestate.IdentitySourceRuntimeState); err != nil {
+		t.Fatal(err)
+	}
+	configs := []runtimestate.ControlDriverConfig{{DriverID: primaryEBusDriverID, Enabled: true}}
+	for _, id := range m28SidecarIDs {
+		configs = append(configs, runtimestate.ControlDriverConfig{DriverID: string(id), Enabled: true})
+	}
+	if _, err := manager.BootstrapControl(ctx, configs); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range m28SidecarIDs {
+		view, err := manager.ControlDriver(string(id))
+		if err != nil {
+			t.Fatal(err)
+		}
+		decideCtx, cancel := context.WithTimeout(ctx, rctlBound)
+		_, err = manager.DecideControl(decideCtx, runtimestate.ControlStop, runtimestate.ControlRequest{DriverID: string(id), ExpectedRevision: view.DesiredRevision},
+			func(runtimestate.ControlPlanInput) (runtimestate.ControlPlan, *runtimestate.ControlRefusal) {
+				return runtimestate.ControlPlan{Current: &runtimestate.ControlTransition{Kind: runtimestate.TransitionStop, Phase: runtimestate.PhasePending}}, nil
+			})
+		cancel()
+		if err != nil {
+			t.Fatalf("seed STOP %s = %v", id, err)
+		}
+		if err := manager.CommitControlWork(ctx, string(id), nil, nil); err != nil {
+			t.Fatalf("settle STOP %s = %v", id, err)
+		}
+	}
+	if err := manager.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	process := env.start(m28Options(root))
+	for _, id := range m28SidecarIDs {
+		status := m28WaitObserved(t, process, id, drivermanager.ObservedFailed)
+		if status.DesiredState != runtimecontrol.DesiredStopped {
+			t.Fatalf("%s desired %s; want retained STOPPED intent", id, status.DesiredState)
+		}
+	}
+	for id, count := range natives.counts() {
+		if count != [2]int32{} {
+			t.Fatalf("withheld %s constructed/started %v; want neither", id, count)
+		}
+	}
+	process.stop()
+	if data, err := os.ReadFile(path); err != nil || !bytes.Equal(data, stored) {
+		t.Fatalf("stored record rewritten (%v)", err)
+	}
+}

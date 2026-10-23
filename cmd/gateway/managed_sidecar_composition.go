@@ -153,6 +153,21 @@ func prepareManagedSidecars(ctx context.Context, cfg ebusgateway.Config, hub *se
 	return result
 }
 
+// portalWithheld names the sidecars withheld because the Portal record did
+// not load.
+func (sidecars *managedSidecars) portalWithheld() map[runtimecontrol.DriverID]error {
+	if sidecars == nil {
+		return nil
+	}
+	withheld := make(map[runtimecontrol.DriverID]error)
+	for _, s := range sidecars.entries {
+		if errors.Is(s.withheld, errPortalConfigWithheld) {
+			withheld[s.descriptor.DriverID] = s.withheld
+		}
+	}
+	return withheld
+}
+
 func (sidecars *managedSidecars) driverConfigs() []drivermanager.DriverConfig {
 	var configs []drivermanager.DriverConfig
 	for _, s := range sidecars.entries {

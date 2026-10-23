@@ -505,11 +505,15 @@ func composeGatewaySemanticOperationRoute(builder *graphql.Builder, snapshots se
 	if err != nil {
 		return fmt.Errorf("compose semantic operation kernel: %w", err)
 	}
-	builder.SetSemanticOperationRouter(semanticoperations.NewRouter(semanticoperations.Config{
+	builder.SetSemanticOperationRouter(semanticoperations.NewRouter(gatewaySemanticOperationConfigFor(semanticoperations.Config{
 		Snapshots: snapshots, Kernel: kernel, Intents: intents, Executors: executors,
-	}))
+	})))
 	return nil
 }
+
+// gatewaySemanticOperationConfigFor is a test seam around the production route
+// composition; production leaves the configuration unchanged.
+var gatewaySemanticOperationConfigFor = func(config semanticoperations.Config) semanticoperations.Config { return config }
 
 // configureGatewayPortalSemanticRead binds Portal to the HTTP shared provider.
 func configureGatewayPortalSemanticRead(opts *portal.Options, provider *hubSemanticSnapshotProvider) {

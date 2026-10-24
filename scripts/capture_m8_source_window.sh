@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 --host HOST --port PORT --phase PRE_RESTART|POST_RESTART --window-id ID --clock-id ID --clock-state ABSOLUTE_FILE --output ABSOLUTE_DIR" >&2
+  echo "usage: $0 --host HOST --port PORT --phase PRE_RESTART|POST_RESTART --window-id ID --clock-id ID --clock-state ABSOLUTE_FILE --output ABSOLUTE_DIR [--operator-socket ABSOLUTE_PATH]" >&2
   exit 2
 }
 
@@ -13,6 +13,7 @@ window_id=""
 output=""
 clock_id=""
 clock_state=""
+operator_socket="/data/eebus-operator/operator-mcp.sock"
 while (($#)); do
   case "$1" in
     --host) host="${2:-}"; shift 2 ;;
@@ -22,6 +23,7 @@ while (($#)); do
     --clock-id) clock_id="${2:-}"; shift 2 ;;
     --clock-state) clock_state="${2:-}"; shift 2 ;;
     --output) output="${2:-}"; shift 2 ;;
+    --operator-socket) operator_socket="${2:-}"; shift 2 ;;
     *) usage ;;
   esac
 done
@@ -32,6 +34,7 @@ done
 [[ "${clock_id}" =~ ^[A-Za-z0-9._-]+$ ]] || usage
 [[ "${output}" == /* && "${output}" != */../* && "${output}" != */.. ]] || usage
 [[ "${clock_state}" == /* && "${clock_state}" != */../* && "${clock_state}" != */.. ]] || usage
+[[ "${operator_socket}" =~ ^/[A-Za-z0-9._/-]+$ && "${operator_socket}" != */../* && "${operator_socket}" != */.. ]] || usage
 command -v jq >/dev/null || { echo "jq is required" >&2; exit 1; }
 command -v ssh >/dev/null || { echo "ssh is required" >&2; exit 1; }
 
@@ -72,11 +75,11 @@ rpc() {
       >"${destination}"
   elif [[ "${boundary}" == "scoped" ]]; then
     printf '%s' "${payload}" | "${ssh_cmd[@]}" \
-      "docker exec -i app_local_helianthus curl -fsS --unix-socket /data/eebus-operator/operator-mcp.sock -H 'Content-Type: application/json' -H 'X-Helianthus-Evidence-Scope: m8-read-only-v1' --data-binary @- http://localhost/mcp" \
+      "docker exec -i app_local_helianthus curl -fsS --unix-socket ${operator_socket} -H 'Content-Type: application/json' -H 'X-Helianthus-Evidence-Scope: m8-read-only-v1' --data-binary @- http://localhost/mcp" \
       >"${destination}"
   elif [[ "${boundary}" == "operator" ]]; then
     printf '%s' "${payload}" | "${ssh_cmd[@]}" \
-      "docker exec -i app_local_helianthus curl -fsS --unix-socket /data/eebus-operator/operator-mcp.sock -H 'Content-Type: application/json' --data-binary @- http://localhost/mcp" \
+      "docker exec -i app_local_helianthus curl -fsS --unix-socket ${operator_socket} -H 'Content-Type: application/json' --data-binary @- http://localhost/mcp" \
       >"${destination}"
   else
     echo "unsupported MCP boundary: ${boundary}" >&2
@@ -92,7 +95,7 @@ wall_anchor_utc="$(jq -er '.wall_anchor_utc' <<<"${clock_start}")"
 monotonic_epoch_id="$(jq -er '.monotonic_epoch_id' <<<"${clock_start}")"
 
 printf '%s' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | "${ssh_cmd[@]}" \
-  "docker exec -i app_local_helianthus curl -fsS --unix-socket /data/eebus-operator/operator-mcp.sock -H 'Content-Type: application/json' -H 'X-Helianthus-Evidence-Scope: m8-read-only-v1' --data-binary @- http://localhost/mcp" \
+  "docker exec -i app_local_helianthus curl -fsS --unix-socket ${operator_socket} -H 'Content-Type: application/json' -H 'X-Helianthus-Evidence-Scope: m8-read-only-v1' --data-binary @- http://localhost/mcp" \
   >"${staging}/tools-list.json"
 jq -e '[.result.tools[].name] == [
   "ebus.v1.registry.devices.list",

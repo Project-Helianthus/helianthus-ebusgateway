@@ -131,7 +131,13 @@ func resolveEEBusOperatorSocket(stateRoot, explicitDir string) (eebusOperatorSoc
 	default:
 		return eebusOperatorSocketLocation{Path: derived}, nil
 	}
-	return eebusOperatorSocketLocation{Path: eebusOperatorFallbackSocket(derived, stateRoot), Fallback: reason}, nil
+	fallback := eebusOperatorFallbackSocket(derived, stateRoot)
+	if eebusPathWithin(fallback, stateRoot) {
+		// Even /tmp lies inside the state root: serving here would add an entry
+		// to the store root, so the endpoint is not served at all.
+		return eebusOperatorSocketLocation{Fallback: reason}, errors.New("no operator socket location outside the eeBUS state root")
+	}
+	return eebusOperatorSocketLocation{Path: fallback, Fallback: reason}, nil
 }
 
 // eebusOperatorFallbackSocket returns the bounded fallback socket path for a

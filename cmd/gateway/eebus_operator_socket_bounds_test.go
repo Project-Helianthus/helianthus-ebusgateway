@@ -649,3 +649,34 @@ func TestM71CreatableRejectsForeignOrInaccessibleExistingDir(t *testing.T) {
 		t.Fatal("inaccessible existing directory must not be accepted")
 	}
 }
+
+// When /tmp is itself the state root and the sibling cannot be created, no
+// location outside the root remains: the endpoint is not served and nothing is
+// created inside the root.
+func TestM71FallbackInsideStateRootServesNoEndpoint(t *testing.T) {
+	m71EndpointStateReset(t)
+	originalTemp := eebusOperatorTempDir
+	t.Cleanup(func() { eebusOperatorTempDir = originalTemp })
+	eebusOperatorTempDir = func() string { return "/tmp" }
+	m71CreatableSeam(t, func(string) bool { return false })
+
+	location, err := resolveEEBusOperatorSocket("/tmp", "")
+	if err == nil || location.Path != "" || location.Explicit {
+		t.Fatalf("location = %+v, err = %v; want no path and an error", location, err)
+	}
+	endpoint, err := openEEBusOperatorEndpoint(context.Background(), nil, "/tmp", "")
+	if endpoint != nil || err != nil {
+		t.Fatalf("endpoint = %v, err = %v; want nil, nil", endpoint, err)
+	}
+	if !eebusOperatorEndpointDown.Load() {
+		t.Fatal("endpoint must be recorded as down")
+	}
+	matches, _ := filepath.Glob("/tmp/" + eebusOperatorFallbackPrefix + "*")
+	for _, m := range matches {
+		if strings.Contains(m, fmt.Sprintf("-%d-", os.Geteuid())) {
+			if _, err := os.Stat(filepath.Join(m, mcp.EEBusV1OperatorSocketName)); err == nil {
+				t.Fatalf("socket created inside the state root: %s", m)
+			}
+		}
+	}
+}

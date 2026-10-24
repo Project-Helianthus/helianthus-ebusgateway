@@ -48,7 +48,7 @@ func initRuntimeStateManager(ctx context.Context, cfg ebusgateway.Config, buildI
 }
 
 func projectGatewayReadiness(ebusProxyReadiness func() string, snapshot eebusRuntimeLifecycleSnapshot) portal.RuntimeReadiness {
-	eebusReadiness := eebusReadinessForLifecycle(snapshot)
+	eebusReadiness := eebusReadinessWithOperatorEndpoint(eebusReadinessForLifecycle(snapshot))
 	proxyReadiness := ebusProxyReadinessDisabled
 	if ebusProxyReadiness != nil {
 		proxyReadiness = ebusProxyReadiness()

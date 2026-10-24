@@ -734,7 +734,7 @@ func waitEEBusRestart(ctx context.Context, delay time.Duration) bool {
 }
 
 func newEEBusAdminHandler(eebusAdapter *eebusRuntimeAdapter, eebusAdmin eebusruntime.AdminV1, readiness eebusadmin.ReadinessV1) (http.Handler, error) {
-	config := eebusadmin.Config{Admin: eebusAdmin, Raw: eebusAdapter, Readiness: func() eebusadmin.ReadinessV1 { return readiness }}
+	config := eebusadmin.Config{Admin: eebusAdmin, Raw: eebusAdapter, Readiness: func() eebusadmin.ReadinessV1 { return eebusReadinessWithOperatorEndpoint(readiness) }}
 	config.Audit = func(event eebusadmin.AuditEvent) {
 		log.Printf("eebus_admin_audit action=%s request_id=%s idempotency=%s prior=%s resulting=%s reason=%s timestamp=%s",
 			event.Action, event.RequestID, event.IdempotencyOutcome, event.PriorStateClass,
@@ -744,7 +744,7 @@ func newEEBusAdminHandler(eebusAdapter *eebusRuntimeAdapter, eebusAdmin eebusrun
 }
 
 func unavailableEEBusAdminHandler(readiness eebusadmin.ReadinessV1) http.Handler {
-	return eebusadmin.NewUnavailableHandlerWithReadiness(func() eebusadmin.ReadinessV1 { return readiness })
+	return eebusadmin.NewUnavailableHandlerWithReadiness(func() eebusadmin.ReadinessV1 { return eebusReadinessWithOperatorEndpoint(readiness) })
 }
 
 func eebusReadinessForLifecycle(snapshot eebusRuntimeLifecycleSnapshot) eebusadmin.ReadinessV1 {

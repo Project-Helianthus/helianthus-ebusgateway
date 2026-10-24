@@ -5,7 +5,7 @@ set -euo pipefail
 # This intentionally consumes neither a sibling checkout nor native hardware.
 docs_repo="https://github.com/Project-Helianthus/helianthus-docs-semantic.git"
 docs_commit="88a422896e1dc8c45a6bf629f08b8bff6115c009"
-semreg_commit="eee54cbd2159ca6808cde6384b229d6812ccdff1"
+semreg_commit="40eb069a9e59120d58d555f424b36972d069b5ec"
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/helianthus-tesla-evse-semreg.XXXXXX")"
 trap 'rm -rf "$tmp_dir"' EXIT
 

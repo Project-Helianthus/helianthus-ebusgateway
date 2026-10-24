@@ -549,9 +549,14 @@ func msp05bGatewayRunConfig(t *testing.T) ebusgateway.Config {
 
 // Sidecars now obey durable intent and reconcile asynchronously. Provision the
 // store and wait for the native startup outcome before testing later failures.
+// A failing eeBUS start keeps its three attempts; only the delay between them
+// is shortened so the outcome arrives within the wait.
 func withManagedSidecarRunState(t *testing.T, cfg *ebusgateway.Config) {
 	t.Helper()
 	withRuntimeControlTestState(t, cfg)
+	originalRetry := eebusManagedStartRetry
+	t.Cleanup(func() { eebusManagedStartRetry = originalRetry })
+	eebusManagedStartRetry.Delay = 5 * time.Millisecond
 	original := gatewayRuntimeControlStarted
 	t.Cleanup(func() { gatewayRuntimeControlStarted = original })
 	gatewayRuntimeControlStarted = func(control *gatewayRuntimeControl) {

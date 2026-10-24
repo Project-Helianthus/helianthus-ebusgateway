@@ -333,21 +333,25 @@ func TestM06FailedEEBusPreservesStartupReason(t *testing.T) {
 		name            string
 		factoryError    string
 		invalidConfig   bool
-		startFailure    bool
+		startFailure    string
 		operatorFailure bool
 		want            eebusadmin.EEBusDegradedReason
 	}{
 		{name: "configuration", invalidConfig: true, want: eebusadmin.EEBusDegradedReasonConfigurationInvalid},
 		{name: "identity", factoryError: "local identity unavailable", want: eebusadmin.EEBusDegradedReasonLocalIdentityUnavailable},
 		{name: "listener", factoryError: "listener bind failed", want: eebusadmin.EEBusDegradedReasonListenerUnavailable},
-		{name: "runtime start", startFailure: true, want: eebusadmin.EEBusDegradedReasonListenerUnavailable},
+		// Native start errors use the construction categories (M69), not a
+		// blanket listener category.
+		{name: "runtime start", startFailure: "synthetic start failure", want: eebusadmin.EEBusDegradedReasonRuntimeFactoryUnavailable},
+		{name: "runtime start listener", startFailure: "listen tcp 192.0.2.1:4712: bind: address already in use", want: eebusadmin.EEBusDegradedReasonListenerUnavailable},
+		{name: "runtime start credentials", startFailure: "eebus runtime protected credentials are unavailable: synthetic", want: eebusadmin.EEBusDegradedReasonLocalIdentityUnavailable},
 		{name: "operator fallback", operatorFailure: true, factoryError: "local identity unavailable", want: eebusadmin.EEBusDegradedReasonLocalIdentityUnavailable},
 		{name: "factory", factoryError: "backend construction failed", want: eebusadmin.EEBusDegradedReasonRuntimeFactoryUnavailable},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			options := m05Options(t, func(eebusruntime.Config) (eebusruntime.Runtime, error) {
-				if test.startFailure {
-					return &msp05bRuntime{startErr: errors.New("synthetic start failure")}, nil
+				if test.startFailure != "" {
+					return &msp05bRuntime{startErr: errors.New(test.startFailure)}, nil
 				}
 				return nil, errors.New(test.factoryError)
 			})

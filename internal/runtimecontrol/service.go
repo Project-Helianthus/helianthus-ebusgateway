@@ -52,6 +52,19 @@ var incarnationPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 type DriverConfig struct {
 	DriverID DriverID
 	Executor LifecycleExecutor
+	// Retry optionally narrows the service retry policy for this driver's
+	// start attempts. The zero value keeps the service policy.
+	Retry RetryPolicy
+}
+
+// RetryPolicy is one driver's bound on the start attempts that follow a
+// retryable executor error. MaxAttempts counts the start attempts of one
+// epoch, including the first, and never raises the service limit; zero
+// keeps it. A positive Delay replaces Options.RetryDelay before each retry
+// of that driver. Neither renews the persisted operation budget.
+type RetryPolicy struct {
+	MaxAttempts int
+	Delay       time.Duration
 }
 
 // Options configures a Service. Store, Recovery, Incarnation and at least one
@@ -173,9 +186,10 @@ type attempt struct {
 }
 
 type driverState struct {
-	id   DriverID
-	exec LifecycleExecutor
-	wake chan struct{}
+	id    DriverID
+	exec  LifecycleExecutor
+	retry RetryPolicy
+	wake  chan struct{}
 
 	// Lock order: mu before Service.viewMu when both are needed.
 	mu   sync.Mutex
@@ -329,7 +343,10 @@ func New(opts Options) (*Service, error) {
 		if isNil(cfg.Executor) {
 			return nil, fmt.Errorf("%w: driver %s has no lifecycle executor", ErrInvalidConfig, cfg.DriverID)
 		}
-		d := &driverState{id: cfg.DriverID, exec: cfg.Executor, wake: make(chan struct{}, 1)}
+		if cfg.Retry.MaxAttempts < 0 || cfg.Retry.MaxAttempts > DefaultMaxAttempts || cfg.Retry.Delay < 0 || cfg.Retry.Delay > DefaultOperationBudget {
+			return nil, fmt.Errorf("%w: driver %s has an invalid retry policy", ErrInvalidConfig, cfg.DriverID)
+		}
+		d := &driverState{id: cfg.DriverID, exec: cfg.Executor, retry: cfg.Retry, wake: make(chan struct{}, 1)}
 		d.cond = sync.NewCond(&d.mu)
 		s.drivers[cfg.DriverID] = d
 		s.order = append(s.order, cfg.DriverID)

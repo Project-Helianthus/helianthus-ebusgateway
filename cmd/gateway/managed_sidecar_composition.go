@@ -13,6 +13,7 @@ import (
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/drivermanager"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/eebusadmin"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimecontrol"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimestate"
@@ -39,12 +40,20 @@ type managedSidecar struct {
 	runtime    *managedSidecarRuntime
 	manager    *drivermanager.Manager
 	withheld   error
-	mu         sync.Mutex
-	key        runtimecontrol.LifecycleCorrelation
-	retired    map[runtimecontrol.LifecycleCorrelation]bool
-	started    chan struct{}
-	startErr   error
+	// retry is the service retry policy of this sidecar's START. The manager
+	// retry budget stays zero, so the service is its only retry owner.
+	retry    runtimecontrol.RetryPolicy
+	mu       sync.Mutex
+	key      runtimecontrol.LifecycleCorrelation
+	retired  map[runtimecontrol.LifecycleCorrelation]bool
+	started  chan struct{}
+	startErr error
 }
+
+// eebusManagedStartRetry restores the startup window of the earlier eeBUS
+// lifecycle for eebus.primary: three start attempts, five seconds apart. The
+// other sidecars keep the service policy and non-retryable start errors.
+var eebusManagedStartRetry = runtimecontrol.RetryPolicy{MaxAttempts: eebusStartupMaxAttempts, Delay: eebusStartupBackoff}
 
 // This seam replaces only inert adapters, before any descriptor is registered.
 var gatewayManagedSidecarDescriptorsFor = func(d []runtimecontrol.Descriptor) []runtimecontrol.Descriptor { return d }
@@ -134,6 +143,9 @@ func prepareManagedSidecars(ctx context.Context, cfg ebusgateway.Config, hub *se
 			withheld = errors.Join(withheld, portal)
 		}
 		sidecar := &managedSidecar{descriptor: d, withheld: withheld}
+		if d.DriverID == managedEEBusID {
+			sidecar.retry = eebusManagedStartRetry
+		}
 		result.entries = append(result.entries, sidecar)
 		if sidecar.withheld != nil || d.Disposition != runtimecontrol.DispositionEnabled {
 			continue
@@ -175,18 +187,66 @@ func (sidecars *managedSidecars) driverConfigs() []drivermanager.DriverConfig {
 			continue
 		}
 		configs = append(configs, drivermanager.DriverConfig{ID: string(s.descriptor.DriverID), Enabled: true, Runtime: s.runtime,
-			Capabilities: []drivermanager.Capability{drivermanager.CapabilityRead, drivermanager.CapabilityRawEvidence, drivermanager.CapabilitySemanticProjection},
-			ClassifyError: func(error) drivermanager.Failure {
-				if s.descriptor.DriverID == managedSunSpecID {
-					log.Printf("Modbus TCP unavailable; continuing without Modbus")
-				}
-				return drivermanager.Failure{Reason: drivermanager.Reason{Code: drivermanager.ReasonProviderUnavailable}}
-			},
-			Retry: drivermanager.RetryPolicy{Budget: 0},
+			Capabilities:  []drivermanager.Capability{drivermanager.CapabilityRead, drivermanager.CapabilityRawEvidence, drivermanager.CapabilitySemanticProjection},
+			ClassifyError: s.classifyStartFailure,
+			Retry:         drivermanager.RetryPolicy{Budget: 0},
 		})
 	}
 	return configs
 }
+
+// classifyStartFailure is the manager classifier of one failed sidecar
+// attempt. It runs once per failed attempt that is still current, so it owns
+// the single operator log line of that failure.
+func (s *managedSidecar) classifyStartFailure(err error) drivermanager.Failure {
+	switch s.descriptor.DriverID {
+	case managedSunSpecID:
+		log.Printf("Modbus TCP unavailable; continuing without Modbus")
+	case managedEEBusID:
+		return classifyManagedEEBusStartFailure(err)
+	}
+	return drivermanager.Failure{Reason: drivermanager.Reason{Code: drivermanager.ReasonProviderUnavailable}}
+}
+
+// classifyManagedEEBusStartFailure logs one sanitized line for a failed
+// eeBUS start: the stage and the closed categories only, never native error
+// text, identities, addresses or paths. A configuration category is
+// reported to the lifecycle as CONFIG_INVALID, every other category as
+// PROVIDER_UNAVAILABLE.
+func classifyManagedEEBusStartFailure(err error) drivermanager.Failure {
+	stage, reason, operatorReason := "lifecycle", eebusadmin.EEBusDegradedReasonUnknownStartupFailure, eebusadmin.EEBusDegradedReason("")
+	var failure *eebusManagedStartError
+	if errors.As(err, &failure) {
+		stage, reason, operatorReason = string(failure.stage), failure.reason, failure.operatorReason
+	}
+	line := "eeBUS runtime unavailable; continuing without eeBUS stage=" + stage + " reason=" + string(reason)
+	if operatorReason != "" {
+		line += " operator_reason=" + string(operatorReason)
+	}
+	log.Print(line)
+	if reason == eebusadmin.EEBusDegradedReasonConfigurationInvalid {
+		return drivermanager.Failure{Reason: drivermanager.Reason{Code: drivermanager.ReasonConfigInvalid}}
+	}
+	return drivermanager.Failure{Reason: drivermanager.Reason{Code: drivermanager.ReasonProviderUnavailable}}
+}
+
+// managedSidecarStartError is the closed executor failure of a sidecar START
+// whose manager attempt did not reach RUNNING. It carries the manager's
+// categorical reason, never native error text, so the control service
+// reports that reason rather than INTERNAL_ERROR. It is retryable only for a
+// sidecar with a service retry policy and a failed, unquarantined attempt;
+// the service decides how many attempts remain.
+type managedSidecarStartError struct {
+	reason    drivermanager.ReasonCode
+	retryable bool
+}
+
+func (e *managedSidecarStartError) Error() string {
+	return drivermanager.ErrUnavailable.Error() + " (" + string(e.reason) + ")"
+}
+func (e *managedSidecarStartError) Unwrap() error                        { return drivermanager.ErrUnavailable }
+func (e *managedSidecarStartError) ReasonCode() drivermanager.ReasonCode { return e.reason }
+func (e *managedSidecarStartError) Retryable() bool                      { return e.retryable }
 
 func (sidecars *managedSidecars) bind(manager *drivermanager.Manager, primary *ebusDriverRuntime) {
 	if sidecars == nil {
@@ -204,7 +264,7 @@ func (sidecars *managedSidecars) serviceConfigs() ([]runtimestate.ControlDriverC
 	if sidecars != nil {
 		for _, s := range sidecars.entries {
 			store = append(store, runtimestate.ControlDriverConfig{DriverID: string(s.descriptor.DriverID), Enabled: s.descriptor.Disposition == runtimecontrol.DispositionEnabled})
-			service = append(service, runtimecontrol.DriverConfig{DriverID: s.descriptor.DriverID, Executor: s})
+			service = append(service, runtimecontrol.DriverConfig{DriverID: s.descriptor.DriverID, Executor: s, Retry: s.retry})
 		}
 	}
 	return store, service
@@ -230,6 +290,22 @@ func sidecarGenerationKey(c runtimecontrol.LifecycleCorrelation) runtimecontrol.
 	return c
 }
 
+// supersedesFailedLocked reports whether c names a later generation of the
+// epoch whose last START completed with a failure. A failed START leaves
+// nothing open, so the service retry of that epoch starts afresh and a STOP
+// of the later generation covers the failed one. Callers hold s.mu.
+func (s *managedSidecar) supersedesFailedLocked(c runtimecontrol.LifecycleCorrelation) bool {
+	if s.started == nil || s.startErr == nil {
+		return false
+	}
+	select {
+	case <-s.started:
+	default:
+		return false
+	}
+	return c.DriverID == s.key.DriverID && c.SourceID == s.key.SourceID && c.Epoch == s.key.Epoch && c.Generation > s.key.Generation
+}
+
 func (s *managedSidecar) Start(ctx context.Context, correlation runtimecontrol.LifecycleCorrelation) error {
 	if s.withheld != nil {
 		return s.withheld
@@ -242,9 +318,16 @@ func (s *managedSidecar) Start(ctx context.Context, correlation runtimecontrol.L
 		return err
 	}
 	s.mu.Lock()
-	if s.retired[sidecarGenerationKey(c)] || (s.started != nil && s.key != c) {
+	if s.retired[sidecarGenerationKey(c)] {
 		s.mu.Unlock()
 		return errEBusControlStale
+	}
+	if s.started != nil && s.key != c {
+		if c.Sequence != s.key.Sequence || !s.supersedesFailedLocked(c) {
+			s.mu.Unlock()
+			return errEBusControlStale
+		}
+		s.started = nil
 	}
 	if s.started != nil {
 		done := s.started
@@ -274,7 +357,8 @@ func (s *managedSidecar) Start(ctx context.Context, correlation runtimecontrol.L
 	if err == nil {
 		snapshot, _ := s.manager.Snapshot(string(s.descriptor.DriverID))
 		if snapshot.ObservedState != drivermanager.ObservedRunning {
-			err = drivermanager.ErrUnavailable
+			err = &managedSidecarStartError{reason: snapshot.Reason.Code,
+				retryable: s.retry.MaxAttempts > 1 && snapshot.ObservedState == drivermanager.ObservedFailed && !snapshot.SafetyQuarantined}
 		}
 	}
 	s.mu.Lock()
@@ -294,10 +378,15 @@ func (s *managedSidecar) Stop(ctx context.Context, correlation runtimecontrol.Li
 		s.mu.Unlock()
 		return runtimecontrol.StopOutcome{NativeClosed: true, SemanticCleaned: true}
 	}
+	successor := false
 	if s.started != nil && sidecarGenerationKey(s.key) != sidecarGenerationKey(c) {
-		s.mu.Unlock()
-		return runtimecontrol.StopOutcome{}
+		if !s.supersedesFailedLocked(c) {
+			s.mu.Unlock()
+			return runtimecontrol.StopOutcome{}
+		}
+		successor = true
 	}
+	failedKey := s.key
 	done := s.started
 	s.mu.Unlock()
 	if s.runtime == nil {
@@ -314,11 +403,14 @@ func (s *managedSidecar) Stop(ctx context.Context, correlation runtimecontrol.Li
 			}
 		}
 		s.mu.Lock()
-		if sidecarGenerationKey(s.key) == sidecarGenerationKey(c) || s.started == nil {
+		if sidecarGenerationKey(s.key) == sidecarGenerationKey(c) || s.started == nil || (successor && s.key == failedKey) {
 			if s.retired == nil {
 				s.retired = make(map[runtimecontrol.LifecycleCorrelation]bool)
 			}
 			s.retired[sidecarGenerationKey(c)] = true
+			if successor {
+				s.retired[sidecarGenerationKey(failedKey)] = true
+			}
 			s.started = nil
 		}
 		s.mu.Unlock()

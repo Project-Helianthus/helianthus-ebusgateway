@@ -13,9 +13,27 @@ The fast B524 path uses `mergeBoilerMirrorFieldsFromSnapshots`, which leaves the
 boiler pump field absent rather than deriving it from circuit 0's
 `PumpStatusRaw`. That circuit observation does not establish boiler pump state;
 the native value remains in
-[`vaillantCircuitSnapshot`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/semantic_vaillant_snapshots.go).
-Other supported mirror fields can still refresh independently. The unused
-circuit-zero register/decoder cleanup remains outside this explanation.
+[`vaillantCircuitSnapshot`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/semantic_vaillant_snapshots.go)
+and is published only as the circuit's own pump field
+(`circuits[].state.pumpActive` in GraphQL, `pump_active` in MCP and Portal).
+The boiler status register table no longer defines any circuit-group entry, so
+neither circuit 0's pump status (RR=0x001B) nor its circuit state (RR=0x001E) has
+a boiler-side decoder. Other supported mirror fields can still refresh
+independently.
+
+**Proven — software source; Unknown — boiler heating status:** the same rule
+applies to `diagnostics.heatingStatusRaw`. Circuit 0 is managed by the
+functional module on the proven topology and can report heating, cooling or DHW
+independently of the boiler, so its circuit state remains on the circuit
+surface (`circuits[].state.circuitState`) and is not copied into the boiler
+diagnostic. No boiler-qualified source is currently implemented, so the
+diagnostic stays unset (null in GraphQL, absent in MCP and Portal). The cache
+conversions drop it in both directions, like the pump, so a legacy
+circuit-derived value is neither restored nor persisted. See
+`TestM62BoilerUnavailableLeavesBoilerFieldsUnknownAndPublishesCircuit`,
+`TestM62BoilerPumpComesOnlyFromB509` and
+`TestM62CachedHeatingStatusRawWithoutBoilerSourceIsDiscarded` in
+[the circuit-zero isolation regression](../cmd/gateway/boiler_circuit_zero_isolation_test.go).
 
 **Proven — load-time discard; Unknown — cached pump provenance:**
 `cacheBoilerToGraphQL` omits the cached pump boolean while restoring other

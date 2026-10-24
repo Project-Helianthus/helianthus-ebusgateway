@@ -412,12 +412,12 @@ func cacheBoilerToGraphQL(cache *semanticCacheBoiler) *graphql.BoilerStatus {
 			DhwTargetTemperatureC: cloneFloatPtr(cache.DhwTargetTemperatureC),
 		},
 		Diagnostics: graphql.BoilerDiagnostics{
-			HeatingStatusRaw: cloneIntPtr(cache.HeatingStatusRaw),
-			DhwStatusRaw:     cloneIntPtr(cache.DhwStatusRaw),
+			DhwStatusRaw: cloneIntPtr(cache.DhwStatusRaw),
 		},
 	}
-	// Cached pump booleans have no provenance and may originate from circuit 0.
-	// Leave the boiler pump unknown until independent live evidence arrives.
+	// Cached pump booleans and heating-status values have no provenance and may
+	// originate from circuit 0. Leave both boiler fields unknown until
+	// independent live boiler evidence arrives.
 	if cache.DhwOperatingMode != nil {
 		v := *cache.DhwOperatingMode
 		out.Config.DhwOperatingMode = &v
@@ -435,7 +435,6 @@ func graphQLBoilerToCache(status *graphql.BoilerStatus) *semanticCacheBoiler {
 		DhwTemperatureC:       cloneFloatPtr(status.State.DhwTemperatureC),
 		DhwTargetTemperatureC: cloneFloatPtr(status.State.DhwTargetTemperatureC),
 		DhwOperatingMode:      cloneStringPtr(status.Config.DhwOperatingMode),
-		HeatingStatusRaw:      cloneIntPtr(status.Diagnostics.HeatingStatusRaw),
 		DhwStatusRaw:          cloneIntPtr(status.Diagnostics.DhwStatusRaw),
 	}
 	return out

@@ -68,7 +68,7 @@ func m71EndpointStateReset(t *testing.T) {
 // whose default location is unusable, under tempDir.
 func m71FallbackFor(t *testing.T, tempDir, stateRoot string) string {
 	t.Helper()
-	got := eebusOperatorFallbackSocket(mcp.EEBusV1OperatorSocketPath(stateRoot))
+	got := eebusOperatorFallbackSocket(mcp.EEBusV1OperatorSocketPath(stateRoot), stateRoot)
 	directory := filepath.Dir(got)
 	if filepath.Dir(directory) != tempDir || !m71FallbackName.MatchString(filepath.Base(directory)) || filepath.Base(got) != mcp.EEBusV1OperatorSocketName {
 		t.Fatalf("fallback socket %q is not <temp dir>/helianthus-eebus-op-<uid>-<id>/operator-mcp.sock", got)
@@ -525,8 +525,8 @@ func TestM71DirectoryCreatableProbe(t *testing.T) {
 	if eebusDirectoryCreatable(filepath.Join(readOnly, "operator")) {
 		t.Fatal("a directory below a read-only ancestor was reported creatable")
 	}
-	if !eebusDirectoryCreatable(readOnly) {
-		t.Fatal("an existing read-only directory needs no creation and was reported unusable")
+	if eebusDirectoryCreatable(readOnly) {
+		t.Fatal("an existing read-only directory cannot take a socket and was reported usable")
 	}
 	closed := filepath.Join(base, "closed")
 	if err := os.Mkdir(closed, 0o000); err != nil {
@@ -614,8 +614,38 @@ func TestM71FallbackNameShape(t *testing.T) {
 	original := eebusOperatorTempDir
 	t.Cleanup(func() { eebusOperatorTempDir = original })
 	eebusOperatorTempDir = func() string { return "/tmp" }
-	got := eebusOperatorFallbackSocket("/data/eebus-operator/operator-mcp.sock")
+	got := eebusOperatorFallbackSocket("/data/eebus-operator/operator-mcp.sock", "/data/eebus")
 	if want := fmt.Sprintf("/tmp/helianthus-eebus-op-%d-", os.Geteuid()); !strings.HasPrefix(got, want) || !m71FallbackName.MatchString(filepath.Base(filepath.Dir(got))) {
 		t.Fatalf("fallback = %q; want %s<id>/operator-mcp.sock", got, want)
+	}
+}
+
+func TestM71FallbackNeverLandsInsideStateRoot(t *testing.T) {
+	original := eebusOperatorTempDir
+	t.Cleanup(func() { eebusOperatorTempDir = original })
+	eebusOperatorTempDir = func() string { return "/data/eebus" }
+	got := eebusOperatorFallbackSocket("/data/eebus-operator/operator-mcp.sock", "/data/eebus")
+	if eebusPathWithin(got, "/data/eebus") {
+		t.Fatalf("fallback socket inside the state root: %q", got)
+	}
+	if !strings.HasPrefix(got, "/tmp/"+eebusOperatorFallbackPrefix) {
+		t.Fatalf("fallback = %q, want a /tmp location", got)
+	}
+}
+
+func TestM71CreatableRejectsForeignOrInaccessibleExistingDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "sock")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if !eebusDirectoryCreatable(dir) {
+		t.Fatal("owned usable directory must be creatable")
+	}
+	if err := os.Chmod(dir, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	if os.Geteuid() != 0 && eebusDirectoryCreatable(dir) {
+		t.Fatal("inaccessible existing directory must not be accepted")
 	}
 }

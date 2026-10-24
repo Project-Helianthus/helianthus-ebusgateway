@@ -114,7 +114,7 @@ func resolveEEBusOperatorSocket(stateRoot, explicitDir string) (eebusOperatorSoc
 		if err != nil {
 			return location, err
 		}
-		if stateRoot != "" && (dir == stateRoot || strings.HasPrefix(dir, stateRoot+string(filepath.Separator))) {
+		if eebusPathWithin(dir, stateRoot) {
 			return location, errors.New("invalid eebus-operator-socket-dir: the directory must be outside the eeBUS state root")
 		}
 		location.Path = filepath.Join(dir, mcp.EEBusV1OperatorSocketName)
@@ -131,21 +131,26 @@ func resolveEEBusOperatorSocket(stateRoot, explicitDir string) (eebusOperatorSoc
 	default:
 		return eebusOperatorSocketLocation{Path: derived}, nil
 	}
-	return eebusOperatorSocketLocation{Path: eebusOperatorFallbackSocket(derived), Fallback: reason}, nil
+	return eebusOperatorSocketLocation{Path: eebusOperatorFallbackSocket(derived, stateRoot), Fallback: reason}, nil
 }
 
 // eebusOperatorFallbackSocket returns the bounded fallback socket path for a
 // default location: a per-instance directory under the temp directory, or
 // under /tmp when the temp directory leaves no room for it. The /tmp path is at
 // most 66 bytes, so the result always fits sockaddr_un.
-func eebusOperatorFallbackSocket(derived string) string {
+func eebusOperatorFallbackSocket(derived, stateRoot string) string {
 	digest := sha256.Sum256([]byte(derived))
 	name := fmt.Sprintf("%s%d-%s", eebusOperatorFallbackPrefix, os.Geteuid(), hex.EncodeToString(digest[:4]))
 	path := filepath.Join(eebusOperatorTempDir(), name, mcp.EEBusV1OperatorSocketName)
-	if !filepath.IsAbs(path) || mcp.ValidateEEBusV1OperatorSocketPath(path) != nil {
+	if !filepath.IsAbs(path) || mcp.ValidateEEBusV1OperatorSocketPath(path) != nil || eebusPathWithin(path, stateRoot) {
 		path = filepath.Join("/tmp", name, mcp.EEBusV1OperatorSocketName)
 	}
 	return path
+}
+
+// eebusPathWithin reports whether path is root or lies inside it.
+func eebusPathWithin(path, root string) bool {
+	return root != "" && (path == root || strings.HasPrefix(path, root+string(filepath.Separator)))
 }
 
 // eebusDirectoryCreatable reports whether dir is a directory already, or can
@@ -160,7 +165,13 @@ func eebusDirectoryCreatable(dir string) bool {
 			if !info.IsDir() {
 				return false
 			}
-			return current == dir || unix.Access(current, unix.W_OK|unix.X_OK) == nil
+			if current == dir {
+				// An existing socket directory must belong to this user and be
+				// usable, as the listener requires.
+				st, ok := info.Sys().(*syscall.Stat_t)
+				return ok && int(st.Uid) == os.Geteuid() && unix.Access(current, unix.R_OK|unix.W_OK|unix.X_OK) == nil
+			}
+			return unix.Access(current, unix.W_OK|unix.X_OK) == nil
 		case !errors.Is(err, fs.ErrNotExist):
 			return false
 		}

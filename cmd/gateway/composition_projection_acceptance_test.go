@@ -830,7 +830,7 @@ func m57Start(t *testing.T, opts m57Options) *m57Process {
 		listened <- struct{}{}
 		return p.listener, nil
 	}
-	startEEBusOperatorEndpoint = func(*mcp.Server, context.Context) (io.Closer, error) {
+	startEEBusOperatorEndpoint = func(*mcp.Server, context.Context, string) (io.Closer, error) {
 		p.operator.starts.Add(1)
 		return p.operator, nil
 	}

@@ -72,11 +72,11 @@ rpc() {
       >"${destination}"
   elif [[ "${boundary}" == "scoped" ]]; then
     printf '%s' "${payload}" | "${ssh_cmd[@]}" \
-      "docker exec -i app_local_helianthus curl -fsS --unix-socket /data/eebus/operator-mcp.sock -H 'Content-Type: application/json' -H 'X-Helianthus-Evidence-Scope: m8-read-only-v1' --data-binary @- http://localhost/mcp" \
+      "docker exec -i app_local_helianthus curl -fsS --unix-socket /data/eebus-operator/operator-mcp.sock -H 'Content-Type: application/json' -H 'X-Helianthus-Evidence-Scope: m8-read-only-v1' --data-binary @- http://localhost/mcp" \
       >"${destination}"
   elif [[ "${boundary}" == "operator" ]]; then
     printf '%s' "${payload}" | "${ssh_cmd[@]}" \
-      "docker exec -i app_local_helianthus curl -fsS --unix-socket /data/eebus/operator-mcp.sock -H 'Content-Type: application/json' --data-binary @- http://localhost/mcp" \
+      "docker exec -i app_local_helianthus curl -fsS --unix-socket /data/eebus-operator/operator-mcp.sock -H 'Content-Type: application/json' --data-binary @- http://localhost/mcp" \
       >"${destination}"
   else
     echo "unsupported MCP boundary: ${boundary}" >&2
@@ -92,7 +92,7 @@ wall_anchor_utc="$(jq -er '.wall_anchor_utc' <<<"${clock_start}")"
 monotonic_epoch_id="$(jq -er '.monotonic_epoch_id' <<<"${clock_start}")"
 
 printf '%s' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | "${ssh_cmd[@]}" \
-  "docker exec -i app_local_helianthus curl -fsS --unix-socket /data/eebus/operator-mcp.sock -H 'Content-Type: application/json' -H 'X-Helianthus-Evidence-Scope: m8-read-only-v1' --data-binary @- http://localhost/mcp" \
+  "docker exec -i app_local_helianthus curl -fsS --unix-socket /data/eebus-operator/operator-mcp.sock -H 'Content-Type: application/json' -H 'X-Helianthus-Evidence-Scope: m8-read-only-v1' --data-binary @- http://localhost/mcp" \
   >"${staging}/tools-list.json"
 jq -e '[.result.tools[].name] == [
   "ebus.v1.registry.devices.list",

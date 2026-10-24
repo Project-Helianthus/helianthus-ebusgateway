@@ -88,6 +88,10 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 			log.Printf("portal configuration close: %v", err)
 		}
 	}()
+	// Earlier builds created the eeBUS operator MCP socket inside the eeBUS
+	// state root, whose store rejects any entry it does not own. Clear that
+	// one stale socket before any eeBUS resource opens.
+	clearLegacyEEBusOperatorSocket(eebusEnabledStateRoot(cfg))
 	// Construct the protocol-neutral manager and stable eBUS provider before
 	// opening any eBUS resource. Driver-local construction failure is retained
 	// as categorical state and never promoted to process failure.

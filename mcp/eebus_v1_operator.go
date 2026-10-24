@@ -7,10 +7,35 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sync"
 )
 
-const eebusV1OperatorSocket = "/data/eebus/operator-mcp.sock"
+const (
+	// EEBusV1OperatorSocketName is the file name of the owner-only operator
+	// socket.
+	EEBusV1OperatorSocketName = "operator-mcp.sock"
+	// eebusV1DefaultStateRoot is the add-on eeBUS state root, used when no
+	// valid state root is configured (eeBUS disabled or misconfigured).
+	eebusV1DefaultStateRoot = "/data/eebus"
+	// eebusV1OperatorDirectorySuffix names the socket directory beside the
+	// state root.
+	eebusV1OperatorDirectorySuffix = "-operator"
+)
+
+// EEBusV1OperatorSocketPath derives the operator socket from the eeBUS state
+// root: <state-root>-operator/operator-mcp.sock. The socket directory is a
+// sibling of the state root, never an entry inside it, because the eeBUS store
+// accepts only its own entries there and rejects any other layout on open. An
+// empty, relative or filesystem-root value derives from the add-on root
+// /data/eebus, so the add-on socket is /data/eebus-operator/operator-mcp.sock.
+func EEBusV1OperatorSocketPath(stateRoot string) string {
+	root := filepath.Clean(stateRoot)
+	if stateRoot == "" || !filepath.IsAbs(root) || root == filepath.Dir(root) {
+		root = eebusV1DefaultStateRoot
+	}
+	return filepath.Join(root+eebusV1OperatorDirectorySuffix, EEBusV1OperatorSocketName)
+}
 
 type eebusV1PeerUIDResolver func(net.Conn) (int, error)
 
@@ -65,17 +90,14 @@ func (server *Server) eebusV1OperatorHandler() http.Handler {
 	})
 }
 
-func (server *Server) eebusV1OperatorSocketPath() string {
-	return eebusV1OperatorSocket
-}
-
-// StartEEBusV1OperatorEndpoint starts the fixed owner-only operator transport.
-func (server *Server) StartEEBusV1OperatorEndpoint(ctx context.Context) (io.Closer, error) {
+// StartEEBusV1OperatorEndpoint starts the owner-only operator transport at
+// socketPath, normally EEBusV1OperatorSocketPath of the configured state root.
+func (server *Server) StartEEBusV1OperatorEndpoint(ctx context.Context, socketPath string) (io.Closer, error) {
 	resolve := eebusV1PlatformPeerUIDResolver()
 	if resolve == nil {
 		return nil, errors.New("eeBUS operator peer credential proof is unsupported")
 	}
-	return server.eebusV1ServeOperator(ctx, eebusV1OperatorSocket, resolve)
+	return server.eebusV1ServeOperator(ctx, socketPath, resolve)
 }
 
 func (server *Server) eebusV1ServeOperator(ctx context.Context, socketPath string, resolve func(net.Conn) (int, error)) (io.Closer, error) {

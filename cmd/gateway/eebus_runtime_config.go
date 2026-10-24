@@ -86,6 +86,26 @@ func eebusDisabledConfigIsInert(cfg ebusgateway.EEBusConfig) bool {
 		pairingIsInert
 }
 
+// eebusConfiguredStateRoot returns the validated eeBUS state root, or "" when
+// none is validly configured. The eeBUS operator MCP socket derives from it
+// (mcp.EEBusV1OperatorSocketPath), beside the root and never inside it.
+func eebusConfiguredStateRoot(cfg ebusgateway.Config) string {
+	root, err := validateEEBusStateRoot(cfg.EEBusConfig.StateRoot)
+	if err != nil {
+		return ""
+	}
+	return root
+}
+
+// eebusEnabledStateRoot returns the validated state root of an enabled eeBUS
+// configuration, or "". An invalid root is reported by the eeBUS driver.
+func eebusEnabledStateRoot(cfg ebusgateway.Config) string {
+	if !cfg.EEBusConfig.Enabled {
+		return ""
+	}
+	return eebusConfiguredStateRoot(cfg)
+}
+
 func validateEEBusStateRoot(value string) (string, error) {
 	if strings.ContainsRune(value, '\x00') {
 		return "", errors.New("eeBUS state root contains NUL")

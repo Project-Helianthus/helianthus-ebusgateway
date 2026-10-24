@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -416,7 +417,7 @@ func startEEBusOperatorRuntimeRetained(
 		return adapter, nil, markEEBusStartupFailure(eebusadmin.EEBusDegradedReasonAdminBoundaryUnavailable, errors.New("construct eeBUS operator runtime: factory returned incomplete capability pair"))
 	}
 	if err := runtime.Start(ctx); err != nil {
-		return adapter, nil, markEEBusStartupFailure(eebusadmin.EEBusDegradedReasonListenerUnavailable, fmt.Errorf("start eeBUS operator runtime: %w", err))
+		return adapter, nil, markEEBusStartupFailure(classifyEEBusStartFailure(err), fmt.Errorf("start eeBUS operator runtime: %w", err))
 	}
 	return adapter, admin, nil
 }
@@ -495,6 +496,17 @@ func eebusMCPCommandRouter(adapter *eebusRuntimeAdapter) mcp.EEBusV1CommandRoute
 	return eebuscommand.New(adapter.runtime)
 }
 
+// classifyEEBusStartFailure classifies a native Start error. The native
+// runtime builds its backend, including the protected identity material
+// under the state root, inside Start, so a start error uses the construction
+// categories instead of a blanket listener category.
+func classifyEEBusStartFailure(err error) eebusadmin.EEBusDegradedReason {
+	if strings.Contains(strings.ToLower(err.Error()), "protected credentials") {
+		return eebusadmin.EEBusDegradedReasonLocalIdentityUnavailable
+	}
+	return classifyEEBusFactoryFailure(err)
+}
+
 func startEEBusRuntime(
 	ctx context.Context,
 	config ebusgateway.EEBusConfig,
@@ -550,7 +562,7 @@ func startEEBusRuntimeRetained(
 		return adapter, markEEBusStartupFailure(classifyEEBusFactoryFailure(factoryErr), fmt.Errorf("construct eeBUS runtime: %w", factoryErr))
 	}
 	if err := runtime.Start(ctx); err != nil {
-		return adapter, markEEBusStartupFailure(eebusadmin.EEBusDegradedReasonListenerUnavailable, fmt.Errorf("start eeBUS runtime: %w", err))
+		return adapter, markEEBusStartupFailure(classifyEEBusStartFailure(err), fmt.Errorf("start eeBUS runtime: %w", err))
 	}
 	return adapter, nil
 }

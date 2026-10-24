@@ -169,20 +169,28 @@ func (driver *eebusManagedDriver) startRuntime(ctx context.Context, operator boo
 		fallback := operator && attemptCtx.Err() == nil && startCtx.Err() == nil
 		cancel()
 		driver.mu.Unlock()
+		failure := &eebusManagedStartError{stage: eebusStartStageReadOnly, reason: eebusStartupFailureReason(err), err: err}
+		if operator {
+			failure.stage = eebusStartStageOperator
+		}
 		if adapter != nil {
 			if closeErr := driver.retireFailedStart(ctx, adapter); closeErr != nil {
-				return 0, errors.Join(err, closeErr)
+				failure.err = errors.Join(err, closeErr)
+				return 0, failure
 			}
 		}
 		if fallback && attemptCtx.Err() == nil {
 			// Only proven cleanup permits the established read-only fallback.
 			number, fallbackErr := driver.startRuntime(attemptCtx, false, err, withdrawal)
 			if fallbackErr != nil {
-				return 0, errors.Join(err, fallbackErr)
+				failure.stage, failure.operatorReason = eebusStartStageReadOnlyFallback, failure.reason
+				failure.reason = eebusStartupFailureReason(fallbackErr)
+				failure.err = errors.Join(err, fallbackErr)
+				return 0, failure
 			}
 			return number, nil
 		}
-		return 0, err
+		return 0, failure
 	}
 	if degraded != nil {
 		adapter.startupDegradedReason = eebusStartupFailureReason(degraded)
@@ -194,6 +202,31 @@ func (driver *eebusManagedDriver) startRuntime(ctx context.Context, operator boo
 	driver.mu.Unlock()
 	return number, nil
 }
+
+// eebusStartStage names the native construction a failed managed start
+// attempted last. It is closed vocabulary, safe for an operator log line.
+type eebusStartStage string
+
+const (
+	eebusStartStageOperator         eebusStartStage = "operator"
+	eebusStartStageReadOnly         eebusStartStage = "read_only"
+	eebusStartStageReadOnlyFallback eebusStartStage = "read_only_fallback"
+)
+
+// eebusManagedStartError is one failed native start of the managed driver.
+// Reason is the closed category of the stage that failed last; when the
+// read-only fallback ran, operatorReason keeps the operator attempt's
+// category. The wrapped native error stays inside the gateway: only the
+// stage and the categories are logged or published.
+type eebusManagedStartError struct {
+	stage          eebusStartStage
+	reason         eebusadmin.EEBusDegradedReason
+	operatorReason eebusadmin.EEBusDegradedReason
+	err            error
+}
+
+func (failure *eebusManagedStartError) Error() string { return failure.err.Error() }
+func (failure *eebusManagedStartError) Unwrap() error { return failure.err }
 
 func (driver *eebusManagedDriver) StartupDegradedReason() eebusadmin.EEBusDegradedReason {
 	driver.mu.Lock()

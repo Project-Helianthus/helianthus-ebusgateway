@@ -46,6 +46,30 @@ The offline Modbus RTU gate includes the `TestM06` composition fixtures alongsid
 Unknown: physical transport behavior and installation qualification; software
 fixtures do not establish either.
 
+### Sidecar start failures
+
+A sidecar START whose manager attempt does not reach `RUNNING` returns a
+closed executor error carrying the manager's reason, so the lifecycle view
+reports `PROVIDER_UNAVAILABLE` (or `CONFIG_INVALID` for an eeBUS
+configuration category) rather than `INTERNAL_ERROR`. The error carries no
+native text. SunSpec and Growatt keep non-retryable start errors and the
+service policy.
+
+eeBUS classifies a native start error with the construction categories, so
+a protected-credentials failure reports `LOCAL_IDENTITY_UNAVAILABLE` and only
+listener errors report `LISTENER_UNAVAILABLE`. Each failed eeBUS start logs
+exactly one line, `eeBUS runtime unavailable; continuing without eeBUS`, with
+the stage (`operator`, `read_only` or `read_only_fallback`) and the closed
+categories only. The eeBUS sidecar keeps a zero manager retry budget; its
+service `RetryPolicy` allows three start attempts five seconds apart, the
+window of the earlier eeBUS lifecycle, so the service is its only retry
+owner. A retry is a later generation of the same epoch, and a failed START
+leaves nothing open. The `TestM69` fixtures in
+[`eebus_start_failure_visibility_test.go`](../../cmd/gateway/eebus_start_failure_visibility_test.go)
+drive the production startup with the add-on's eeBUS flag set and injected
+native factories. They do not establish the native cause on any
+installation.
+
 ## Contract precedence and evidence
 
 The public [runtime driver lifecycle contract](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/architecture/runtime-driver-lifecycle.md)

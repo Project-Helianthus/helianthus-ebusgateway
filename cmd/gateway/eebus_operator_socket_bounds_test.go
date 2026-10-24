@@ -494,6 +494,9 @@ func TestM71DirectoryCreatableProbe(t *testing.T) {
 	if err := os.Symlink(filepath.Join(base, "existing"), filepath.Join(base, "link")); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(base, "existing", "operator", "inner"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	for _, test := range []struct {
 		name string
 		dir  string
@@ -506,6 +509,10 @@ func TestM71DirectoryCreatableProbe(t *testing.T) {
 		{"below a file", filepath.Join(base, "file", "child"), false},
 		{"a link in the way", filepath.Join(base, "link"), false},
 		{"below a link", filepath.Join(base, "link", "child"), false},
+		{"existing directory below a link", filepath.Join(base, "link", "operator"), false},
+		{"existing directory two levels below a link", filepath.Join(base, "link", "operator", "inner"), false},
+		{"missing below an existing directory below a link", filepath.Join(base, "link", "operator", "missing"), false},
+		{"existing directory through its real path", filepath.Join(base, "existing", "operator"), true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if got := eebusDirectoryCreatable(test.dir); got != test.want {
@@ -536,6 +543,75 @@ func TestM71DirectoryCreatableProbe(t *testing.T) {
 	if eebusDirectoryCreatable(filepath.Join(closed, "operator")) {
 		t.Fatal("a directory below an untraversable ancestor was reported creatable")
 	}
+}
+
+// The listener opens every component of the socket directory without following
+// links, so a sibling directory that already exists beneath a linked ancestor
+// (a pre-created /var/run/eebus-operator while /var/run is a link) is rejected
+// there. The location rules must agree: the default moves to the bounded
+// fallback, which is served; a configured directory keeps its path, and the
+// listener's rejection fails the start.
+func TestM71ExistingOperatorDirectoryBelowALinkedAncestorUsesTheFallback(t *testing.T) {
+	m71EndpointStateReset(t)
+	logs := m71CaptureLog(t)
+	base, stateRoot := m71StateRoot(t)
+	tempDir := m71TempDirSeam(t)
+	if err := os.Mkdir(stateRoot+"-operator", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(base, link); err != nil {
+		t.Fatal(err)
+	}
+	linkedRoot := filepath.Join(link, filepath.Base(stateRoot))
+	linkedSibling := linkedRoot + "-operator"
+	if info, err := os.Lstat(linkedSibling); err != nil || !info.IsDir() {
+		t.Fatalf("the pre-created sibling does not resolve through the link: %v", err)
+	}
+	if !eebusDirectoryCreatable(stateRoot + "-operator") {
+		t.Fatal("the pre-created sibling must be usable through its real path")
+	}
+	if eebusDirectoryCreatable(linkedSibling) {
+		t.Fatal("the pre-created sibling beneath a linked ancestor was reported usable")
+	}
+
+	original := startEEBusOperatorEndpoint
+	t.Cleanup(func() { startEEBusOperatorEndpoint = original })
+	var starts []string
+	endpoint := &m71Closer{}
+	startEEBusOperatorEndpoint = func(_ *mcp.Server, _ context.Context, socketPath string) (io.Closer, error) {
+		starts = append(starts, socketPath)
+		return endpoint, nil
+	}
+
+	t.Run("the default moves to the bounded fallback", func(t *testing.T) {
+		want := m71FallbackFor(t, tempDir, linkedRoot)
+		location, err := resolveEEBusOperatorSocket(linkedRoot, "")
+		if err != nil || location != (eebusOperatorSocketLocation{Path: want, Fallback: eebusOperatorFallbackParentNotWritable}) {
+			t.Fatalf("location = %+v, %v; want the bounded fallback for parent_not_writable", location, err)
+		}
+		got, err := openEEBusOperatorEndpoint(context.Background(), nil, linkedRoot, "")
+		if err != nil || got != io.Closer(endpoint) || eebusOperatorEndpointDown.Load() {
+			t.Fatalf("endpoint, error, down = %v, %v, %v; want the endpoint served, not degraded", got, err, eebusOperatorEndpointDown.Load())
+		}
+		if !reflect.DeepEqual(starts, []string{want}) {
+			t.Fatalf("endpoint starts = %q; want only the fallback %q", starts, want)
+		}
+		if lines := m71Lines(logs.String(), m71FallbackLine); len(lines) != 1 || !strings.HasSuffix(lines[0], "reason=parent_not_writable; using a bounded location in the temp directory") {
+			t.Fatalf("fallback log lines = %q; want one ending reason=parent_not_writable", lines)
+		}
+		for _, path := range []string{base, tempDir, want} {
+			if strings.Contains(logs.String(), path) {
+				t.Fatalf("log contains a path:\n%s", logs.String())
+			}
+		}
+	})
+	t.Run("a configured directory keeps its path and is not probed", func(t *testing.T) {
+		location, err := resolveEEBusOperatorSocket(stateRoot, linkedSibling)
+		if want := filepath.Join(linkedSibling, mcp.EEBusV1OperatorSocketName); err != nil || location != (eebusOperatorSocketLocation{Path: want, Explicit: true}) {
+			t.Fatalf("location = %+v, %v; want the configured directory unchanged, without a fallback", location, err)
+		}
+	})
 }
 
 func m71ParseOperatorFlags(args ...string) (ebusgateway.Config, error) {
@@ -634,7 +710,13 @@ func TestM71FallbackNeverLandsInsideStateRoot(t *testing.T) {
 }
 
 func TestM71CreatableRejectsForeignOrInaccessibleExistingDir(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "sock")
+	// The probe refuses a linked ancestor, so the base is resolved first (the
+	// temp directory itself is below a link on some systems).
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(base, "sock")
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}

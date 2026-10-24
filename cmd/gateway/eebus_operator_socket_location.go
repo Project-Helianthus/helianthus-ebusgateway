@@ -162,28 +162,40 @@ func eebusPathWithin(path, root string) bool {
 // eebusDirectoryCreatable reports whether dir is a directory already, or can
 // be created: its nearest existing ancestor is a directory (not a link, which
 // the operator transport refuses to follow) this user can write and search.
+// Every ancestor above that one must be a plain directory too, whether dir
+// exists or not: the listener opens each component without following links, so
+// an existing dir beneath a linked ancestor is rejected there and must be here.
 func eebusDirectoryCreatable(dir string) bool {
 	dir = filepath.Clean(dir)
+	found := false
 	for current := dir; ; {
 		info, err := os.Lstat(current)
 		switch {
 		case err == nil:
+			// Lstat refuses a link only in the last element, so each ancestor
+			// is examined on its own.
 			if !info.IsDir() {
 				return false
 			}
-			if current == dir {
-				// An existing socket directory must belong to this user and be
-				// usable, as the listener requires.
-				st, ok := info.Sys().(*syscall.Stat_t)
-				return ok && int(st.Uid) == os.Geteuid() && unix.Access(current, unix.R_OK|unix.W_OK|unix.X_OK) == nil
+			if !found {
+				found = true
+				if current == dir {
+					// An existing socket directory must belong to this user and be
+					// usable, as the listener requires.
+					st, ok := info.Sys().(*syscall.Stat_t)
+					if !ok || int(st.Uid) != os.Geteuid() || unix.Access(current, unix.R_OK|unix.W_OK|unix.X_OK) != nil {
+						return false
+					}
+				} else if unix.Access(current, unix.W_OK|unix.X_OK) != nil {
+					return false
+				}
 			}
-			return unix.Access(current, unix.W_OK|unix.X_OK) == nil
-		case !errors.Is(err, fs.ErrNotExist):
+		case found || !errors.Is(err, fs.ErrNotExist):
 			return false
 		}
 		parent := filepath.Dir(current)
 		if parent == current {
-			return false
+			return found
 		}
 		current = parent
 	}

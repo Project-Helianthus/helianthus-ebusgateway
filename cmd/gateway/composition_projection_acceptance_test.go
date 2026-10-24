@@ -1472,8 +1472,7 @@ func TestM57LifecycleToolsReplaceGenerationsAndRefuseLatePublication(t *testing.
 		t.Fatalf("predecessor Storage publication exposed after restart: %+v", withheld)
 	}
 	// The successor's native read path is admitted. Its Storage publication is
-	// not asserted here: the shared Growatt publication path refuses a
-	// successor generation of the same epoch (recorded as a candidate blocker).
+	// asserted by the TestM61 fixtures, not here.
 	if result := p.tool(mcp.GrowattBMSRS485V202StatusGetTool, `{}`); result.isError {
 		t.Fatalf("Growatt native read after restart: %s %s", result.code, result.message)
 	}
@@ -1586,11 +1585,229 @@ func TestM57RestartRejectsLateOperationCompletion(t *testing.T) {
 	if p.lookup.calls.Load() != calls || late.calls.Load() != 1 {
 		t.Fatal("a retired-generation request reached executor lookup")
 	}
-	// Successor-generation admission is not asserted: SemReg admission also
-	// validates the retired route's withdrawn capability tombstone (recorded
-	// as a candidate blocker).
+	// Successor-generation admission is asserted by
+	// TestM65RestartedDriverAdmitsOperationsOnItsSuccessor.
 
 	p.stopAndRequireJoined()
+}
+
+// m65Shape is one managed-driver restart as the shared hub sees it. Each shape
+// changes exactly one lifecycle axis of the route: the eBUS restart retires its
+// source epoch, while the SunSpec restart keeps the epoch and fences the prior
+// driver generation. The source ID is the same on both sides of a restart.
+type m65Shape struct {
+	name   string
+	driver runtimecontrol.DriverID
+	// handle returns the publication handle the driver currently holds.
+	handle func(*m57Process) (*semhub.Handle, error)
+	// succeeds reports whether next is the admitted successor of retired.
+	succeeds func(retired, next *semhub.Handle) bool
+	// stale is the identifier the kernel refuses a retired-lifecycle request with.
+	stale semreg.ErrorID
+}
+
+var m65Shapes = []m65Shape{
+	{
+		name: "successor source epoch", driver: primaryEBusDriverID, stale: semreg.StaleSourceEpoch,
+		handle: func(p *m57Process) (*semhub.Handle, error) {
+			return p.control.bridge.PublicationHandle(p.control.bridge.View().Key)
+		},
+		succeeds: func(retired, next *semhub.Handle) bool { return next.Epoch() != retired.Epoch() },
+	},
+	{
+		name: "successor driver generation", driver: managedSunSpecID, stale: semreg.StaleDriverGeneration,
+		handle: func(p *m57Process) (*semhub.Handle, error) {
+			if handle := p.sunspec.currentHandle(); handle != nil {
+				return handle, nil
+			}
+			return nil, errors.New("SunSpec holds no publication handle")
+		},
+		succeeds: func(retired, next *semhub.Handle) bool {
+			return next.Epoch() == retired.Epoch() && next.Generation() == retired.Generation()+1
+		},
+	},
+}
+
+// with returns the request with one member of its mutation input replaced.
+func (r m57OperationRequest) with(t *testing.T, member string, value any) m57OperationRequest {
+	t.Helper()
+	var envelope struct {
+		Query     string `json:"query"`
+		Variables struct {
+			Input map[string]any `json:"input"`
+		} `json:"variables"`
+	}
+	if err := json.Unmarshal(r.body, &envelope); err != nil || envelope.Variables.Input[member] == nil {
+		t.Fatalf("request has no %s member: %v", member, err)
+	}
+	envelope.Variables.Input[member] = value
+	body, err := json.Marshal(map[string]any{"query": envelope.Query, "variables": envelope.Variables})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.body = body
+	return r
+}
+
+// After a managed driver restarts, the shared snapshot holds the retired
+// route's withdrawn capability beside the successor's current one. The
+// successor's operation is admitted, dispatched and confirmed through the
+// production GraphQL route, shared provider and built-in kernel, while every
+// request naming a retired route member is refused without reaching executor
+// lookup. Before the SemReg fix every request for the successor route was
+// refused with capability_unavailable.
+//
+// The fixture's intent owner and executor are the M57 fakes: no production
+// intent owner exists yet, so admission is asserted at the kernel boundary the
+// gateway route uses. The Growatt Storage publication declares no capability,
+// so the vehicles are the two managed drivers that publish one: the real
+// ebus.primary restart and the injected SunSpec managed fake, both restarted
+// through the ordinary MCP lifecycle tool, with the Thermal set_mode route M57
+// already drives published through each driver's admitted source.
+//
+// Route members that differ between the retired and successor routes, and the
+// request that carries each retired value alone:
+//   - source epoch (eBUS shape): refused as stale_source_epoch;
+//   - driver generation (SunSpec shape): refused as stale_driver_generation;
+//   - capability instance: refused with the shape's stale identifier;
+//   - binding: admitted, then refused by the router as binding_mismatch;
+//   - service instance: not a request member; it differs between the routes and
+//     is checked on the admitted route and guard claims.
+//
+// The source ID is held fixed because a restart preserves source identity.
+func TestM65RestartedDriverAdmitsOperationsOnItsSuccessor(t *testing.T) {
+	for _, shape := range m65Shapes {
+		t.Run(shape.name, func(t *testing.T) {
+			p := m57Start(t, m57Options{})
+			running := map[runtimecontrol.DriverID]drivermanager.ObservedState{}
+			for _, id := range m57Drivers {
+				running[id] = drivermanager.ObservedRunning
+			}
+			p.waitObserved(running)
+			hub := p.control.hub
+			shared := p.routeConfig().Snapshots
+			retired, err := shape.handle(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := p.thermal.declare(hub, retired, shape.driver); err != nil {
+				t.Fatal(err)
+			}
+			if err := p.thermal.publish(hub, retired, m57Mode("off")); err != nil {
+				t.Fatal(err)
+			}
+			// The native owner republishes the requested mode through the
+			// generation the driver holds when it completes.
+			republish := func() error {
+				handle, err := shape.handle(p)
+				if err != nil {
+					return err
+				}
+				return p.thermal.publish(hub, handle, m57Mode("heat"))
+			}
+
+			// The retired generation's operation is admitted while it is current.
+			before := m57SetModeRequest(t, m57Asset(t, p.read(m57ThermalAsset), m57ThermalAsset), "heat")
+			beforeExecutor := newM57Executor(shared, republish, false)
+			p.lookup.inject(before.route, beforeExecutor)
+			result, err := p.operate(before)
+			m57RequireResult(t, "operation before the restart", result, err, "readback_confirmed", "applied", "sent", "")
+			if beforeExecutor.calls.Load() != 1 {
+				t.Fatalf("executor calls before the restart = %d", beforeExecutor.calls.Load())
+			}
+
+			p.decide(mcp.RuntimeControlRestartTool, shape.driver)
+			var successor *semhub.Handle
+			m06Wait(t, func() bool {
+				next, err := shape.handle(p)
+				if err != nil || !shape.succeeds(retired, next) {
+					return false
+				}
+				successor = next
+				return true
+			})
+			p.waitObserved(running)
+			if err := p.thermal.publish(hub, successor, m57Mode("off")); err != nil {
+				t.Fatal(err)
+			}
+
+			// The snapshot every post-restart request is admitted against holds
+			// the retired capability as a withdrawn tombstone beside the
+			// successor's, which is the shape that SemReg once refused.
+			view := m57Asset(t, p.read(m57ThermalAsset), m57ThermalAsset)
+			p.requireAdmitted(view, shape.driver)
+			tombstone := false
+			for _, capability := range view.Snapshot.Capabilities {
+				tombstone = tombstone || capability.InstanceID == before.route.CapabilityInstance && capability.Availability == semreg.AvailabilityWithdrawn
+			}
+			if !tombstone || len(view.Snapshot.Capabilities) != 2 {
+				t.Fatalf("restart did not leave the retired capability as a tombstone: %+v", view.Snapshot.Capabilities)
+			}
+
+			// The successor's route is minted from the admitted handle and
+			// shares no route member with the retired one except the source.
+			want := operation.Route{CapabilityInstance: p.thermal.capabilityID(successor, "thermal.capability.set_mode"), ServiceInstance: p.thermal.serviceID(successor, "thermal.service.system"),
+				BindingID: p.thermal.binding(successor), SourceID: successor.Source(), SourceEpochID: successor.Epoch(), DriverGeneration: successor.GenerationID()}
+			request := m57SetModeRequest(t, view, "heat")
+			epochChanged, generationChanged := before.route.SourceEpochID != want.SourceEpochID, before.route.DriverGeneration != want.DriverGeneration
+			if request.route != want || before.route.SourceID != want.SourceID || before.route.CapabilityInstance == want.CapabilityInstance ||
+				before.route.ServiceInstance == want.ServiceInstance || before.route.BindingID == want.BindingID ||
+				epochChanged != (shape.stale == semreg.StaleSourceEpoch) || generationChanged != (shape.stale == semreg.StaleDriverGeneration) {
+				t.Fatalf("retired route %+v, successor route %+v; want %+v with only the source shared and the %s axis changed", before.route, request.route, want, shape.stale)
+			}
+
+			// The successor's operation is admitted on its own route only.
+			executor := newM57Executor(shared, republish, false)
+			p.lookup.inject(request.route, executor)
+			result, err = p.operate(request)
+			m57RequireResult(t, "operation on the successor", result, err, "readback_confirmed", "applied", "sent", "")
+			if executor.calls.Load() != 1 {
+				t.Fatalf("successor executor calls = %d", executor.calls.Load())
+			}
+			dispatch := <-executor.dispatched
+			wantGuard := operation.GuardClaims{AssetID: m57ThermalAsset, ExpectedCapabilityRevision: view.Snapshot.Revisions.Capabilities, CapabilityInstance: want.CapabilityInstance, ExpectedCapabilityInstanceRevision: "1",
+				ServiceInstance: want.ServiceInstance, BindingID: want.BindingID, SourceID: want.SourceID, SourceEpochID: want.SourceEpochID, DriverGeneration: want.DriverGeneration}
+			if dispatch.Route != want || dispatch.Guard != wantGuard {
+				t.Fatalf("admitted route %+v guard %+v; want %+v %+v", dispatch.Route, dispatch.Guard, want, wantGuard)
+			}
+
+			// Every request naming a retired route member stays refused before
+			// executor lookup, whether it carries every retired member or only one.
+			// The successor's operation moved the revisions, so each single-member
+			// request is rebuilt from a fresh read and differs from the successor's
+			// current request in that member alone.
+			current := m57SetModeRequest(t, m57Asset(t, p.read(m57ThermalAsset), m57ThermalAsset), "heat")
+			if current.route != want {
+				t.Fatalf("successor route after its operation %+v; want %+v", current.route, want)
+			}
+			type refusal struct {
+				name    string
+				request m57OperationRequest
+				reason  string
+			}
+			refusals := []refusal{
+				{"request naming the retired route", before, string(shape.stale)},
+				{"retired capability instance", current.with(t, "capabilityInstanceId", before.route.CapabilityInstance), string(shape.stale)},
+				{"retired binding", current.with(t, "bindingId", before.route.BindingID), semanticoperations.ReasonBindingMismatch},
+			}
+			if epochChanged {
+				refusals = append(refusals, refusal{"retired source epoch", current.with(t, "expectedSourceEpochId", before.route.SourceEpochID), string(semreg.StaleSourceEpoch)})
+			}
+			if generationChanged {
+				refusals = append(refusals, refusal{"retired driver generation", current.with(t, "expectedDriverGeneration", before.route.DriverGeneration), string(semreg.StaleDriverGeneration)})
+			}
+			calls := p.lookup.calls.Load()
+			for _, refused := range refusals {
+				result, err := p.operate(refused.request)
+				m57RequireResult(t, refused.name, result, err, "failed", "rejected", "not_sent", refused.reason)
+			}
+			if p.lookup.calls.Load() != calls || beforeExecutor.calls.Load() != 1 || executor.calls.Load() != 1 {
+				t.Fatalf("a retired-route request reached executor lookup: lookups %d->%d", calls, p.lookup.calls.Load())
+			}
+
+			p.stopAndRequireJoined()
+		})
+	}
 }
 
 // A sidecar whose construction is refused stays withheld and unconstructed.

@@ -5,7 +5,7 @@ set -euo pipefail
 # sibling checkout, hardware, a serial endpoint, or credentials.
 docs_repo="https://github.com/Project-Helianthus/helianthus-docs-semantic.git"
 docs_commit="f830ace6c2b9dd1af0e87ce808fa545662578418"
-semreg_commit="eee54cbd2159ca6808cde6384b229d6812ccdff1"
+semreg_commit="40eb069a9e59120d58d555f424b36972d069b5ec"
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/helianthus-growatt-storage.XXXXXX")"
 trap 'rm -rf "$tmp_dir"' EXIT
 

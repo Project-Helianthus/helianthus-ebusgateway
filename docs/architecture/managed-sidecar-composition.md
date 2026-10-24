@@ -380,10 +380,20 @@ unconfigured, so no socket is bound.
   composition, and its publication is fenced. Both are reported as FAILED by
   the MCP list and as `error` in Portal, while the shell and sibling drivers
   keep serving. Every generation task joins at shutdown.
+- After a managed driver restarts, the SemReg kernel admits the successor's
+  operation. The `TestM65` fixtures in the same file restart ebus.primary (a
+  successor source epoch) and the injected SunSpec factory (a successor driver
+  generation of the same epoch) through the ordinary MCP lifecycle tool, with
+  the Thermal set_mode route published through each driver's admitted source.
+  The shared snapshot keeps the retired route's withdrawn capability beside the
+  successor's. The successor's operation is admitted, dispatched on its own
+  route and confirmed, while every request naming a retired route member is
+  refused before executor lookup. The Growatt Storage publication declares no
+  capability, so it is not an operation vehicle. Its successor-generation
+  publication is proven by the `TestM61` fixtures described with the Growatt
+  lifecycle above.
 
-Not established by these fixtures: a Growatt Storage publication from a
-successor generation of the same configured epoch, and operation admission on a
-successor generation of an operation-capable asset. Both are refused by the
-current publication and admission paths and remain open defects. Physical
-transport behavior, installation qualification and release readiness remain
-**Unknown**.
+Not established by these fixtures: operation admission through a production
+intent owner, which does not exist yet; the fake owner and executor lookup stand
+in for it. Physical transport behavior, installation qualification and release
+readiness remain **Unknown**.

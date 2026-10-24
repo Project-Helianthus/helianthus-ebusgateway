@@ -654,8 +654,11 @@ func TestRefreshBoilerStatusFastProjectsB524MirrorsWithoutActiveB524Reads(t *tes
 	if got := poller.circuits[0].PumpStatusRaw; got == nil || *got != pumpRaw {
 		t.Fatalf("circuit pump = %v; want preserved %d", got, pumpRaw)
 	}
-	if snapshot.HeatingStatusRaw == nil || *snapshot.HeatingStatusRaw != int(heatingRaw) {
-		t.Fatalf("heating status = %#v; want %d", snapshot.HeatingStatusRaw, heatingRaw)
+	if snapshot.HeatingStatusRaw != nil {
+		t.Fatalf("boiler heating status = %d; want unset without a boiler-qualified source", *snapshot.HeatingStatusRaw)
+	}
+	if got := poller.circuits[0].CircuitStateRaw; got == nil || *got != heatingRaw {
+		t.Fatalf("circuit state = %v; want preserved %d", got, heatingRaw)
 	}
 	if snapshot.DhwTemperatureC == nil || *snapshot.DhwTemperatureC != dhwTemp {
 		t.Fatalf("dhw temperature = %#v; want %.1f", snapshot.DhwTemperatureC, dhwTemp)

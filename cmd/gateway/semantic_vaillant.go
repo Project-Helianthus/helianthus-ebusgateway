@@ -2647,18 +2647,17 @@ type vaillantSystemSnapshot struct {
 
 type boilerStatusField uint8
 
+// Circuit registers (GG=0x02) are not boiler fields: circuit 0's pump status
+// (RR=0x001B) and circuit state (RR=0x001E) are published only on the circuit
+// surface, so no boiler status field is defined for them.
 const (
 	boilerStatusFieldFlowTemperature boilerStatusField = iota
-	boilerStatusFieldPumpActive
-	boilerStatusFieldHeatingStatusRaw
 )
 
 type boilerStatusRegisterDecoder uint8
 
 const (
 	boilerStatusRegisterDecoderFloat32 boilerStatusRegisterDecoder = iota
-	boilerStatusRegisterDecoderUint16Bool
-	boilerStatusRegisterDecoderUint16Int
 )
 
 type boilerStatusRegisterDefinition struct {
@@ -2684,22 +2683,6 @@ func boilerStatusRegisterDefinitionsForTier(tier boilerStatusTier) []boilerStatu
 				group:    localRegulator.group,
 				instance: regulatorInstance,
 				addr:     system_flow_temperature,
-			},
-			{
-				field:    boilerStatusFieldPumpActive,
-				decoder:  boilerStatusRegisterDecoderUint16Bool,
-				opcode:   localCircuits.opcode,
-				group:    localCircuits.group,
-				instance: 0x00,
-				addr:     circuit_pump_status,
-			},
-			{
-				field:    boilerStatusFieldHeatingStatusRaw,
-				decoder:  boilerStatusRegisterDecoderUint16Int,
-				opcode:   localCircuits.opcode,
-				group:    localCircuits.group,
-				instance: 0x00,
-				addr:     circuit_circuit_state,
 			},
 		}
 	case boilerStatusTierMedium, boilerStatusTierSlow:
@@ -2792,28 +2775,6 @@ func (p *vaillantSemanticPoller) refreshBoilerStatusB524(ctx context.Context, ti
 				// Controller flow is not qualified boiler flow.
 				_ = value
 			}
-		case boilerStatusRegisterDecoderUint16Bool:
-			raw, ok := p.readB524Uint16(ctx, register.opcode, register.group, register.instance, register.addr)
-			if !ok || raw == nil {
-				continue
-			}
-			updated = true
-			switch register.field {
-			case boilerStatusFieldPumpActive:
-				active := *raw != 0
-				snapshot.CentralHeatingPumpActive = &active
-			}
-		case boilerStatusRegisterDecoderUint16Int:
-			raw, ok := p.readB524Uint16(ctx, register.opcode, register.group, register.instance, register.addr)
-			if !ok || raw == nil {
-				continue
-			}
-			updated = true
-			switch register.field {
-			case boilerStatusFieldHeatingStatusRaw:
-				status := int(*raw)
-				snapshot.HeatingStatusRaw = &status
-			}
 		}
 	}
 
@@ -2828,7 +2789,6 @@ func (p *vaillantSemanticPoller) mergeBoilerMirrorFieldsFromSnapshots(snapshot *
 	p.mu.Lock()
 	controller := p.controller
 	system := cloneSystemSnapshot(p.system)
-	circuit := cloneCircuitSnapshot(p.circuits[0x00])
 	p.mu.Unlock()
 	if controller == 0 {
 		return false
@@ -2838,15 +2798,9 @@ func (p *vaillantSemanticPoller) mergeBoilerMirrorFieldsFromSnapshots(snapshot *
 	maxAge := p.boilerMirrorMaxAge()
 	// Fresh controller flow triggers publication without supplying boiler flow.
 	updated := system != nil && system.Controller == controller && system.SystemFlowTemperature != nil && semanticSnapshotObservedWithin(system.SystemFlowTemperatureLiveAt, now, maxAge)
-	if circuit != nil && circuit.Controller == controller {
-		// Circuit pump evidence does not identify the boiler pump. Leave that
-		// field absent so partial merges preserve independent boiler evidence.
-		if circuit.CircuitStateRaw != nil && semanticSnapshotObservedWithin(circuit.CircuitStateLiveAt, now, maxAge) {
-			status := int(*circuit.CircuitStateRaw)
-			snapshot.HeatingStatusRaw = &status
-			updated = true
-		}
-	}
+	// Circuit 0 is not a boiler source. Its pump status and circuit state stay
+	// on the circuit surface; the boiler pump and heating-status diagnostic
+	// remain absent here, so partial merges preserve independent boiler evidence.
 	if updated {
 		p.mergeBoilerDHWFieldsFromSnapshot(snapshot)
 	}

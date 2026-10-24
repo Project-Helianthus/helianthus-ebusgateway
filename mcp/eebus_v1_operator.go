@@ -3,12 +3,14 @@ package mcp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 )
 
 const (
@@ -22,6 +24,23 @@ const (
 	// state root.
 	eebusV1OperatorDirectorySuffix = "-operator"
 )
+
+// EEBusV1OperatorSocketPathLimit is the longest operator socket path a client
+// can dial: sockaddr_un.sun_path less its terminating NUL (107 bytes on Linux,
+// 103 on macOS).
+const EEBusV1OperatorSocketPathLimit = len(syscall.RawSockaddrUnix{}.Path) - 1
+
+// ValidateEEBusV1OperatorSocketPath rejects a socket path that exceeds
+// EEBusV1OperatorSocketPathLimit. The Linux listener binds through a short
+// /proc/self/fd alias, so an over-long path would bind and still be
+// undialable; it is refused before anything is bound. The error carries the
+// lengths only, never the path.
+func ValidateEEBusV1OperatorSocketPath(path string) error {
+	if length := len(path); length > EEBusV1OperatorSocketPathLimit {
+		return fmt.Errorf("eeBUS operator socket path is %d bytes; the AF_UNIX limit is %d", length, EEBusV1OperatorSocketPathLimit)
+	}
+	return nil
+}
 
 // EEBusV1OperatorSocketPath derives the operator socket from the eeBUS state
 // root: <state-root>-operator/operator-mcp.sock. The socket directory is a
@@ -115,6 +134,9 @@ func (server *Server) eebusV1ServeOperator(ctx context.Context, socketPath strin
 	}
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if err := ValidateEEBusV1OperatorSocketPath(socketPath); err != nil {
+		return nil, err
 	}
 
 	base, err := eebusV1PlatformListenOperator(socketPath)

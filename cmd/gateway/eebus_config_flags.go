@@ -42,6 +42,22 @@ func bindEEBusFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 		cfg.EEBusConfig.StateRoot = path
 		return nil
 	})
+	fs.Func("eebus-operator-socket-dir", "directory of the owner-only eeBUS operator MCP socket (default <eebus-state-root>-operator, with a bounded temp-directory fallback when that is unusable; an explicit directory that cannot be used fails startup)", func(value string) error {
+		path, err := normalizeEEBusPath("eebus-operator-socket-dir", value)
+		if err != nil {
+			return err
+		}
+		if path == "" {
+			cfg.EEBusConfig.OperatorSocketDir = ""
+			return nil
+		}
+		dir, err := validateEEBusOperatorSocketDir(path)
+		if err != nil {
+			return err
+		}
+		cfg.EEBusConfig.OperatorSocketDir = dir
+		return nil
+	})
 	fs.BoolVar(&cfg.EEBusConfig.DiscoveryEnabled, "eebus-discovery-enabled", cfg.EEBusConfig.DiscoveryEnabled, "enable eeBUS discovery")
 	fs.Func("eebus-certificate-path", "eeBUS certificate file path", func(value string) error {
 		path, err := normalizeEEBusPath("eebus-certificate-path", value)

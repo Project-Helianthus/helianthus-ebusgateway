@@ -97,6 +97,12 @@ func eebusConfiguredStateRoot(cfg ebusgateway.Config) string {
 	return root
 }
 
+// eebusOperatorSocketDirectory returns the operator MCP socket directory the
+// operator configured explicitly, or "" for the default location.
+func eebusOperatorSocketDirectory(cfg ebusgateway.Config) string {
+	return cfg.EEBusConfig.OperatorSocketDir
+}
+
 // eebusEnabledStateRoot returns the validated state root of an enabled eeBUS
 // configuration, or "". An invalid root is reported by the eeBUS driver.
 func eebusEnabledStateRoot(cfg ebusgateway.Config) string {

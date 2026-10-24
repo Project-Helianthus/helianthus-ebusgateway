@@ -92,6 +92,12 @@ type EEBusConfig struct {
 	TrustStorePath     string
 	RemoteSKIAllowlist []string
 	PairingWindowMode  EEBusPairingWindowMode
+	// OperatorSocketDir is the directory of the owner-only eeBUS operator MCP
+	// socket. Empty selects the default, the sibling "<StateRoot>-operator" of
+	// the state root, with a bounded fallback when that cannot be used. It is
+	// independent of the eeBUS runtime sidecar: it applies with eeBUS disabled
+	// too, because the operator MCP endpoint does not depend on the sidecar.
+	OperatorSocketDir string
 }
 
 // M2MGraphQLConfig configures the dedicated public M2M API listener. The field

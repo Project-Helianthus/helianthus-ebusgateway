@@ -51,6 +51,10 @@ const (
 	m71StoreRejected = "eebus runtime protected credentials are unavailable: protected runtime material: state unavailable"
 	m71RemovedLine   = "eeBUS state root: removed stale operator-mcp.sock left by an earlier gateway build"
 	m71LeftLine      = "eeBUS state root: operator-mcp.sock left in place"
+	// The operator socket location lines: the fallback line carries the
+	// reason category only, the unavailable line the cause category only.
+	m71FallbackLine    = "eeBUS operator MCP socket: default location unusable"
+	m71UnavailableLine = "eeBUS operator MCP endpoint unavailable"
 )
 
 // m71StoreTemporary matches the store's manifest temporaries.
@@ -320,9 +324,22 @@ func (p *m71Process) stop() {
 	}
 }
 
+// m71Options varies the production lifecycle of m71Start.
+type m71Options struct {
+	// configure adjusts the configuration after the add-on eeBUS flags.
+	configure func(*ebusgateway.Config)
+	// operatorError makes the operator endpoint fail to start at a path.
+	operatorError func(socketPath string) error
+}
+
 // m71Start runs the production lifecycle with the add-on eeBUS configuration
 // and waits until eebus.primary settles at RUNNING or FAILED.
 func m71Start(t *testing.T, stateRoot string) (*m71Process, runtimecontrol.DriverStatus) {
+	t.Helper()
+	return m71StartWith(t, stateRoot, m71Options{})
+}
+
+func m71StartWith(t *testing.T, stateRoot string, opts m71Options) (*m71Process, runtimecontrol.DriverStatus) {
 	t.Helper()
 	env := newRCtlEnv(t)
 	p := &m71Process{t: t, done: make(chan error, 1)}
@@ -374,6 +391,11 @@ func m71Start(t *testing.T, stateRoot string) (*m71Process, runtimecontrol.Drive
 		p.mu.Lock()
 		p.socketPaths = append(p.socketPaths, socketPath)
 		p.mu.Unlock()
+		if opts.operatorError != nil {
+			if err := opts.operatorError(socketPath); err != nil {
+				return nil, err
+			}
+		}
 		if runtime.GOOS == "linux" {
 			return operator(server, ctx, socketPath)
 		}
@@ -407,6 +429,9 @@ func m71Start(t *testing.T, stateRoot string) (*m71Process, runtimecontrol.Drive
 	cfg.MDNSAdvertise = false
 	cfg.PortalConfigRoot = t.TempDir()
 	cfg.EEBusConfig = m71AddonEEBusConfig(t, stateRoot)
+	if opts.configure != nil {
+		opts.configure(&cfg)
+	}
 	if !cfg.M2MGraphQL.Disabled() || cfg.ProxyListenAddr != "" {
 		t.Fatal("fixture configuration would open a listener outside the control-plane seam")
 	}
@@ -454,6 +479,13 @@ func m71Start(t *testing.T, stateRoot string) (*m71Process, runtimecontrol.Drive
 // <state-root>-operator/operator-mcp.sock.
 func m71AssertRunningWithOperatorSocketBeside(t *testing.T, p *m71Process, status runtimecontrol.DriverStatus, stateRoot string) {
 	t.Helper()
+	m71AssertRunningWithOperatorSocketAt(t, p, status, stateRoot, filepath.Join(stateRoot+"-operator", mcp.EEBusV1OperatorSocketName))
+}
+
+// m71AssertRunningWithOperatorSocketAt is the same check for a live owner-only
+// operator socket at want, which must lie outside the state root.
+func m71AssertRunningWithOperatorSocketAt(t *testing.T, p *m71Process, status runtimecontrol.DriverStatus, stateRoot, want string) {
+	t.Helper()
 	lifecycle := (&managedSidecarBindings{sidecars: p.sidecars}).eebusLifecycleSnapshot()
 	if status.ObservedState != drivermanager.ObservedRunning || status.Reason != drivermanager.ReasonNone {
 		t.Fatalf("eebus.primary = %s/%s degraded=%q; want RUNNING/NONE (store rejected entries %q; state root entries %q)", status.ObservedState, status.Reason, lifecycle.DegradedReason, p.storeRejections(), m71Inventory(t, stateRoot))
@@ -469,7 +501,6 @@ func m71AssertRunningWithOperatorSocketBeside(t *testing.T, p *m71Process, statu
 	}
 	m71AssertStoreOnly(t, stateRoot)
 
-	want := filepath.Join(stateRoot+"-operator", mcp.EEBusV1OperatorSocketName)
 	if sockets := p.operatorSockets(); len(sockets) != 1 || sockets[0] != want {
 		t.Fatalf("operator endpoint paths = %q; want [%q]", sockets, want)
 	}
@@ -501,6 +532,13 @@ func TestM71OperatorSocketLivesBesideTheEEBusStateRoot(t *testing.T) {
 	text := logs.String()
 	if lines := append(m71Lines(text, m71RemovedLine), m71Lines(text, m71LeftLine)...); len(lines) != 0 {
 		t.Fatalf("fresh state root logged a legacy socket outcome: %q", lines)
+	}
+	// The add-on default stays the sibling: no fallback, no degraded endpoint.
+	if lines := append(m71Lines(text, m71FallbackLine), m71Lines(text, m71UnavailableLine)...); len(lines) != 0 {
+		t.Fatalf("add-on default location logged a fallback or an unavailable endpoint: %q", lines)
+	}
+	if readiness := projectGatewayReadiness(nil, (&managedSidecarBindings{sidecars: p.sidecars}).eebusLifecycleSnapshot()); readiness.EEBusReadiness != "READY" || readiness.EEBusDegradedReason != "" {
+		t.Fatalf("eeBUS readiness = %s/%s; want READY", readiness.EEBusReadiness, readiness.EEBusDegradedReason)
 	}
 }
 

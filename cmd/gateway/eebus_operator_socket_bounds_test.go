@@ -614,6 +614,79 @@ func TestM71ExistingOperatorDirectoryBelowALinkedAncestorUsesTheFallback(t *test
 	})
 }
 
+func TestM71OperatorSocketRejectsStateRootAliases(t *testing.T) {
+	base, root := m71StateRoot(t)
+	alias := filepath.Join(base, "alias")
+	if err := os.Symlink(root, alias); err != nil {
+		t.Fatal(err)
+	}
+	parentAlias := filepath.Join(base, "parent-alias")
+	if err := os.Symlink(base, parentAlias); err != nil {
+		t.Fatal(err)
+	}
+	for _, stateRoot := range []string{alias, filepath.Join(parentAlias, filepath.Base(root)), filepath.Join(alias, "new-store")} {
+		physicalRoot := root
+		if filepath.Base(stateRoot) == "new-store" {
+			physicalRoot = filepath.Join(root, "new-store")
+		}
+		for _, dir := range []string{physicalRoot, filepath.Join(physicalRoot, "operator")} {
+			location, err := resolveEEBusOperatorSocket(stateRoot, dir)
+			if err == nil || !strings.Contains(err.Error(), "outside the eeBUS state root") || !location.Explicit || location.Path != "" {
+				t.Fatalf("resolve(%q, %q) = %+v, %v; want rejection before a socket can be created", stateRoot, dir, location, err)
+			}
+		}
+		location, err := resolveEEBusOperatorSocket(stateRoot, root+"-operator")
+		if err != nil || location.Path == "" {
+			t.Fatalf("outside sibling rejected: %+v, %v", location, err)
+		}
+	}
+}
+
+func TestM71OperatorSocketDefaultCannotResolveInsideStateRoot(t *testing.T) {
+	base := m71Base(t)
+	alias := filepath.Join(base, "store")
+	root := alias + "-operator"
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(root, alias); err != nil {
+		t.Fatal(err)
+	}
+	tempDir := m71TempDirSeam(t)
+	location, err := resolveEEBusOperatorSocket(alias, "")
+	if err != nil || location.Path != m71FallbackFor(t, tempDir, alias) || location.Fallback == "" {
+		t.Fatalf("resolve = %+v, %v; want fallback outside the physical store", location, err)
+	}
+}
+
+func TestM71OperatorSocketFallbackAvoidsStateRootAlias(t *testing.T) {
+	base, root := m71StateRoot(t)
+	alias := filepath.Join(base, "alias")
+	if err := os.Symlink(root, alias); err != nil {
+		t.Fatal(err)
+	}
+	original := eebusOperatorTempDir
+	t.Cleanup(func() { eebusOperatorTempDir = original })
+	eebusOperatorTempDir = func() string { return root }
+	m71CreatableSeam(t, func(string) bool { return false })
+	location, err := resolveEEBusOperatorSocket(alias, "")
+	if err != nil || filepath.Dir(filepath.Dir(location.Path)) != "/tmp" || location.Fallback == "" {
+		t.Fatalf("resolve = %+v, %v; want fallback outside the aliased temp directory", location, err)
+	}
+}
+
+func TestM71OperatorSocketUnresolvableStateRootFailsClosed(t *testing.T) {
+	base := m71Base(t)
+	alias := filepath.Join(base, "alias")
+	if err := os.Symlink(filepath.Join(base, "missing"), alias); err != nil {
+		t.Fatal(err)
+	}
+	location, err := resolveEEBusOperatorSocket(alias, filepath.Join(base, "operator"))
+	if err == nil || !location.Explicit || location.Path != "" {
+		t.Fatalf("resolve = %+v, %v; want rejection when the root identity is unknown", location, err)
+	}
+}
+
 func m71ParseOperatorFlags(args ...string) (ebusgateway.Config, error) {
 	cfg := ebusgateway.DefaultConfig()
 	fs := flag.NewFlagSet("operator-dir", flag.ContinueOnError)

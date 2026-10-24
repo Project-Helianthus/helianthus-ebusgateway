@@ -126,7 +126,7 @@ func resolveEEBusOperatorSocket(stateRoot, explicitDir string) (eebusOperatorSoc
 	switch {
 	case mcp.ValidateEEBusV1OperatorSocketPath(derived) != nil:
 		reason = eebusOperatorFallbackPathTooLong
-	case !eebusOperatorDirectoryCreatable(filepath.Dir(derived)):
+	case eebusPathWithin(derived, stateRoot) || !eebusOperatorDirectoryCreatable(filepath.Dir(derived)):
 		reason = eebusOperatorFallbackParentNotWritable
 	default:
 		return eebusOperatorSocketLocation{Path: derived}, nil
@@ -154,9 +154,49 @@ func eebusOperatorFallbackSocket(derived, stateRoot string) string {
 	return path
 }
 
-// eebusPathWithin reports whether path is root or lies inside it.
+// eebusPathWithin reports whether path is root or lies inside it after resolving
+// aliases. An unresolved identity fails closed rather than risking a store entry.
 func eebusPathWithin(path, root string) bool {
-	return root != "" && (path == root || strings.HasPrefix(path, root+string(filepath.Separator)))
+	if root == "" {
+		return false
+	}
+	resolvedRoot, err := eebusResolveExistingAncestor(root)
+	if err != nil {
+		return true
+	}
+	resolvedPath, err := eebusResolveExistingAncestor(path)
+	if err != nil {
+		return true
+	}
+	return resolvedPath == resolvedRoot || strings.HasPrefix(resolvedPath, resolvedRoot+string(filepath.Separator))
+}
+
+// eebusResolveExistingAncestor resolves links even when the final directories
+// have not been created yet. Lstat distinguishes a missing suffix from a dangling
+// link, which must fail closed instead of being treated as a new directory.
+func eebusResolveExistingAncestor(path string) (string, error) {
+	current := filepath.Clean(path)
+	var suffix []string
+	for {
+		if _, err := os.Lstat(current); err == nil {
+			resolved, err := filepath.EvalSymlinks(current)
+			if err != nil {
+				return "", err
+			}
+			for i := len(suffix) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, suffix[i])
+			}
+			return resolved, nil
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return "", err
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", fs.ErrNotExist
+		}
+		suffix = append(suffix, filepath.Base(current))
+		current = parent
+	}
 }
 
 // eebusDirectoryCreatable reports whether dir is a directory already, or can

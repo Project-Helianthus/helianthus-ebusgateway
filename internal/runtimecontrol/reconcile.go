@@ -117,6 +117,22 @@ func (s *Service) startLimit() int {
 	return s.maxAttempts
 }
 
+// driverRetryAllows applies one driver's RetryPolicy after a retryable
+// failure of start attempt n of the current epoch (the epoch's generation
+// counts its attempts). The service limits still apply on their own.
+func (d *driverState) driverRetryAllows(n int) bool {
+	return d.retry.MaxAttempts == 0 || n < d.retry.MaxAttempts
+}
+
+// retryDelayFor is the backoff before the next start attempt of a driver:
+// its own RetryPolicy delay when set, otherwise the service retry delay.
+func (s *Service) retryDelayFor(d *driverState, attempt int) time.Duration {
+	if d.retry.Delay > 0 {
+		return d.retry.Delay
+	}
+	return s.retryDelay(attempt)
+}
+
 // cleanupLimit is the highest persisted AttemptsUsed a slot may reach: the
 // start attempts plus the single reserved cleanup attempt. Each cleanup Stop
 // is charged durably before it runs and the slot's original deadline is never
@@ -708,9 +724,9 @@ func (s *Service) runTypedAttempt(d *driverState, t Transition, a *attempt) (boo
 		if errors.Is(a.ctx.Err(), context.DeadlineExceeded) {
 			return s.exhaust(d, t, drivermanager.ReasonRetryExhausted)
 		}
-		if retryable(err) && t.AttemptsUsed < s.startLimit() && s.now().Before(t.DeadlineUTC) {
+		if retryable(err) && t.AttemptsUsed < s.startLimit() && d.driverRetryAllows(int(t.Generation)) && s.now().Before(t.DeadlineUTC) {
 			s.observe(d, observation{state: drivermanager.ObservedBackoff, reason: drivermanager.ReasonRetryScheduled})
-			if !sleepCtx(a.ctx, s.retryDelay(t.AttemptsUsed)) {
+			if !sleepCtx(a.ctx, s.retryDelayFor(d, t.AttemptsUsed)) {
 				if s.isFenced(d, a) || s.ctx.Err() != nil {
 					return true, 0
 				}
@@ -930,9 +946,9 @@ func (s *Service) runUntyped(d *driverState) {
 			finishUntyped(observation{state: drivermanager.ObservedFailed, reason: drivermanager.ReasonRetryExhausted})
 			return
 		}
-		if retryable(err) && attempts < s.maxAttempts && s.now().Before(deadline) {
+		if retryable(err) && attempts < s.maxAttempts && d.driverRetryAllows(attempts) && s.now().Before(deadline) {
 			s.observe(d, observation{state: drivermanager.ObservedBackoff, reason: drivermanager.ReasonRetryScheduled})
-			sleepCtx(a.ctx, s.retryDelay(attempts))
+			sleepCtx(a.ctx, s.retryDelayFor(d, attempts))
 			proceed := s.settle(d, a, func() { a.corr.Generation++ })
 			if !proceed {
 				return

@@ -719,6 +719,15 @@ more than 128 drivers and an attempt limit above 8, all before any store,
 executor or adapter call; `Start` refuses a driver set that differs from the
 store's visible drivers without writing.
 
+A `DriverConfig` may carry a `RetryPolicy` that narrows the retry policy for
+that driver only. Its `MaxAttempts` bounds the start attempts of one epoch
+(the generation counts them) and never raises the service limit; a positive
+`Delay` replaces the service retry delay before each of that driver's
+retries. A retry still needs a retryable executor error and stays inside the
+persisted per-operation budget. The zero value keeps the service policy, and
+`New` refuses a negative value, an attempt limit above 8 or a delay above the
+30-second budget.
+
 **Decisions.** `Control` decodes the closed two-member request (refusal-table
 row 1) and `Decide` checks the method and registration (rows 1 and 2)
 without the store; the store applies rows 3 to 10 under its namespace-wide

@@ -469,6 +469,22 @@ func TestM69FailedStartAdmitsOnlyItsRetrySuccessor(t *testing.T) {
 			t.Fatalf("late START of the failed generation = %v; want stale", err)
 		}
 	})
+	t.Run("late START of the failed generation stays stale after the successor stops", func(t *testing.T) {
+		entry, native := newEntry(t)
+		native.fail = false
+		successor := failed
+		successor.Generation++
+		if err := entry.Start(context.Background(), successor); err != nil {
+			t.Fatal(err)
+		}
+		if out := entry.Stop(context.Background(), successor); !out.NativeClosed {
+			t.Fatalf("STOP of the successor = %+v; want closed", out)
+		}
+		starts := native.starts.Load()
+		if err := entry.Start(context.Background(), failed); !errors.Is(err, errEBusControlStale) || native.starts.Load() != starts {
+			t.Fatalf("replayed START of the failed generation = %v, starts %d->%d; want stale without a native start", err, starts, native.starts.Load())
+		}
+	})
 	// Every field of the key varies, each in an otherwise valid successor.
 	// Epoch: dropping the epoch comparison in supersedesFailedLocked.
 	// Sequence: dropping the sequence comparison in Start. SourceID and

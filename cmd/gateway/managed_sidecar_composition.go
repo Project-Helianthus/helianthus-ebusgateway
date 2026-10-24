@@ -327,6 +327,10 @@ func (s *managedSidecar) Start(ctx context.Context, correlation runtimecontrol.L
 			s.mu.Unlock()
 			return errEBusControlStale
 		}
+		if s.retired == nil {
+			s.retired = make(map[runtimecontrol.LifecycleCorrelation]bool)
+		}
+		s.retired[sidecarGenerationKey(s.key)] = true
 		s.started = nil
 	}
 	if s.started != nil {

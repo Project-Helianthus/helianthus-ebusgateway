@@ -70,6 +70,34 @@ drive the production startup with the add-on's eeBUS flag set and injected
 native factories. They do not establish the native cause on any
 installation.
 
+### Modbus TCP driver instances
+
+The [multi-endpoint contract](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/api/modbus-multi-endpoint-runtime.md)
+governs this composition. Configuration v1 (`-modbus-tcp-endpoint` or the
+single-line `-modbus-tcp-endpoint-file`) still composes exactly one
+`modbus.sunspec` descriptor with its source, durable record, transport limits
+and log lines unchanged. Configuration v2, the owner-only document read
+through `-modbus-tcp-endpoints-file`, composes one descriptor per entry. Its
+driver ID is the family base, plus a dot and the label unless the label is
+`default`. Each descriptor owns exactly one source, derived from that driver ID
+and the instance GUID as before. The Modbus TCP set registers as one batch:
+a duplicate or a source collision refuses only the set, with no factory call.
+
+Each instance has its own connection, worker, unit, cycle, generation,
+durable record and retry budget, so a failure, STOP or RESTART of one instance
+leaves every other instance and eBUS, eeBUS, HTTP and MCP untouched. A v2
+instance holds one connection with one request in flight. Every request of
+the instance, including retries and on-demand reads, passes one gate that
+enforces the gap after the previous completion and the settle wait after each
+connect; a wait never extends a read or attempt bound. Huawei families
+register withheld (`FAMILY_NOT_ADMITTED`): they list as FAILED with
+`PROVIDER_UNAVAILABLE`, log one categorical line and construct, dial and
+publish nothing. Raw reads, retained observations, the PV projection and its
+Portal panel keep addressing the v1 slot only: the v1 endpoint, or the v2
+`sunspec` entry labelled `default`. Logs carry driver IDs, never endpoints.
+The `TestH08` fixtures in `cmd/gateway` and `internal/modbusadapter` cover
+this offline; they qualify no installation.
+
 ## Contract precedence and evidence
 
 The public [runtime driver lifecycle contract](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/architecture/runtime-driver-lifecycle.md)
@@ -329,9 +357,9 @@ and native qualification; no status read opens an endpoint.
 | SunSpec TCP | Proven: TCP adapter and qualify/refresh path exist. | Requires the existing exact native profile and observation evidence; availability does not qualify a peer. | Proven: managed factory, shared service registration and generation-guarded consumer bindings. |
 | Growatt BMS RS-485 | Proven: production provider/open seam exists. | Existing family/revision admission and qualified native evidence remain required. | Proven: inert managed factory and generation-owned lifecycle wrapper exist. Shared service registration and generation-guarded consumer rebinding are composed. Semantic recovery remains subject to the managed-recorder boundary. No Protocol II or CAN inference. |
 | eeBUS | Proven: runtime, operator adapter and slot exist. | Existing trust, pairing and native use-case evidence remain independent of process health. | Proven: shared service registration and generation-guarded runtime, operator and capture bindings. Native qualification and semantic promotion remain separate. |
-| Huawei SmartLogger | Typed/injected-provider contracts exist; availability alone is insufficient. | Unknown for an unprovisioned peer/profile. | Withheld: no activation without its own accepted evidence and composition decision. |
-| Huawei EMMA | Typed/injected-provider contracts exist. | Unknown without its own native evidence. | Withheld; SunSpec or SmartLogger evidence cannot activate it. |
-| Huawei S-Dongle | Typed/injected-provider contracts exist. | Unknown without its own native evidence. | Withheld; no inherited route or qualification. |
+| Huawei SmartLogger | Typed/injected-provider contracts exist; availability alone is insufficient. | Unknown for an unprovisioned peer/profile. | Withheld: a configured entry registers as a withheld instance (`FAMILY_NOT_ADMITTED`) that sends nothing; no activation without its own accepted evidence and composition decision. |
+| Huawei EMMA | Typed/injected-provider contracts exist. | Unknown without its own native evidence. | Withheld as a registered instance (`FAMILY_NOT_ADMITTED`); SunSpec or SmartLogger evidence cannot activate it. |
+| Huawei S-Dongle | Typed/injected-provider contracts exist. | Unknown without its own native evidence. | Withheld as a registered instance (`FAMILY_NOT_ADMITTED`); no inherited route or qualification. |
 | Growatt Protocol II | Typed/injected-provider contracts exist. | Separate evidence required; BMS RS-485 evidence is insufficient. | Withheld pending its own evidence and decision. |
 | OutBack | Typed/injected-provider contracts exist. | Unknown without its own accepted native evidence. | Withheld pending its own evidence and decision. |
 | CAN | Proposed host observation contract; no activation established by this document. | Unknown; native ownership/evidence decisions required. | Withheld. The [CAN observation proposal](can-metric-observation-contract.md) supplies no live route. |

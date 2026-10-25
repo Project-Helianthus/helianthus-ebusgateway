@@ -233,6 +233,29 @@ positive/negative, live-observable and transport obligations without inventing I
 | INT-13 Matter output binding | [Projection contract](../architecture/matter-output-binding-v1.md) plus [native binding owner][matter-owner]; projection alone supplies no runtime or fabric evidence | Not run | Unknown | Unassessed | Unassessed |
 | Prior RTU evidence applicability | [R01 upstream PR][rtu], [J19 gateway PR][rtu-pin]; historical evidence only, no repeated hardware session scheduled | Not run | Unknown | Unassessed | Unassessed |
 
+The Huawei Modbus TCP rows below cover each gateway family of the
+[multi-endpoint contract][modbus-multi]. The gateway registers every Huawei
+instance withheld (`FAMILY_NOT_ADMITTED`) until that family's native contract
+admits a qualification, so no row can leave **Not run** before then. The
+per-row evidence record rule above applies to each row; a family summary
+cannot replace its four rows. The governing references are completed by the
+issues that compose and publish each family.
+
+| Case / family | Governing reference and scope | Result | Evidence grade | Qualification | Admission |
+|---|---|---|---|---|---|
+| HUAWEI-SMARTLOGGER identity | [Multi-endpoint contract][modbus-multi], family `huawei.smartlogger`: the declared family's own bounded identity reads on one configured instance; no other family's reads | Not run | Unknown | Unassessed | Unassessed |
+| HUAWEI-SMARTLOGGER monitoring publication | [Multi-endpoint contract][modbus-multi], family `huawei.smartlogger`: per-instance publication under the instance source and asset rule; withheld instances publish nothing | Not run | Unknown | Unassessed | Unassessed |
+| HUAWEI-SMARTLOGGER degraded and reconnect | [Multi-endpoint contract][modbus-multi], family `huawei.smartlogger`: per-instance failure isolation, one request in flight with the configured gap and settle wait, reconnect backoff; other instances, eBUS, HTTP and MCP unaffected | Not run | Unknown | Unassessed | Unassessed |
+| HUAWEI-SMARTLOGGER negative cross-family | [Multi-endpoint contract][modbus-multi], family `huawei.smartlogger`: an instance facing another family's identity is withheld and never switches family | Not run | Unknown | Unassessed | Unassessed |
+| HUAWEI-EMMA identity | [Multi-endpoint contract][modbus-multi], family `huawei.emma`: the declared family's own bounded identity reads on one configured instance; no other family's reads | Not run | Unknown | Unassessed | Unassessed |
+| HUAWEI-EMMA monitoring publication | [Multi-endpoint contract][modbus-multi], family `huawei.emma`: per-instance publication under the instance source and asset rule; withheld instances publish nothing | Not run | Unknown | Unassessed | Unassessed |
+| HUAWEI-EMMA degraded and reconnect | [Multi-endpoint contract][modbus-multi], family `huawei.emma`: per-instance failure isolation, one request in flight with the configured gap and settle wait, reconnect backoff; other instances, eBUS, HTTP and MCP unaffected | Not run | Unknown | Unassessed | Unassessed |
+| HUAWEI-EMMA negative cross-family | [Multi-endpoint contract][modbus-multi], family `huawei.emma`: an instance facing another family's identity is withheld and never switches family | Not run | Unknown | Unassessed | Unassessed |
+| HUAWEI-SDONGLE identity | [Multi-endpoint contract][modbus-multi], family `huawei.sdongle`: the declared family's own bounded identity reads on one configured instance; no other family's reads | Not run | Unknown | Unassessed | Unassessed |
+| HUAWEI-SDONGLE monitoring publication | [Multi-endpoint contract][modbus-multi], family `huawei.sdongle`: per-instance publication under the instance source and asset rule; withheld instances publish nothing | Not run | Unknown | Unassessed | Unassessed |
+| HUAWEI-SDONGLE degraded and reconnect | [Multi-endpoint contract][modbus-multi], family `huawei.sdongle`: per-instance failure isolation, one request in flight with the configured gap and settle wait, reconnect backoff; other instances, eBUS, HTTP and MCP unaffected | Not run | Unknown | Unassessed | Unassessed |
+| HUAWEI-SDONGLE negative cross-family | [Multi-endpoint contract][modbus-multi], family `huawei.sdongle`: an instance facing another family's identity is withheld and never switches family | Not run | Unknown | Unassessed | Unassessed |
+
 ### Prior RTU evidence and its limits
 
 The R01/J19 record (modbus PR #40) reports all checks passing in a one-time read-only
@@ -275,3 +298,4 @@ offline RTU gate.
 [matter-owner]: https://github.com/Project-Helianthus/helianthus-matter-binding/issues/4
 [rtu]: https://github.com/Project-Helianthus/helianthus-modbus/pull/40
 [rtu-pin]: https://github.com/Project-Helianthus/helianthus-ebusgateway/pull/1092
+[modbus-multi]: https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/api/modbus-multi-endpoint-runtime.md

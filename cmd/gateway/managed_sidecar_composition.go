@@ -40,6 +40,8 @@ type managedSidecar struct {
 	runtime    *managedSidecarRuntime
 	manager    *drivermanager.Manager
 	withheld   error
+	// modbusTCP is the frozen instance of a Modbus TCP driver; nil otherwise.
+	modbusTCP *modbusTCPInstance
 	// retry is the service retry policy of this sidecar's START. The manager
 	// retry budget stays zero, so the service is its only retry owner.
 	retry    runtimecontrol.RetryPolicy
@@ -86,18 +88,28 @@ func prepareManagedSidecars(ctx context.Context, cfg ebusgateway.Config, hub *se
 		return runtimecontrol.SourceID(string(id) + ":" + guid)
 	}
 	var pvGeneration atomic.Uint64
-	work := func(ctx context.Context, adapter *modbusadapter.Adapter) modbusManagedWork {
-		return newManagedSunSpecWork(ctx, adapter, contributions, pvGeneration.Add(1))
+	// One managed driver instance per Modbus TCP endpoint. Configuration v1 is
+	// exactly the historical modbus.sunspec descriptor; a refused v2 set
+	// registers no Modbus TCP instance and withholds nothing else.
+	instances, err := modbusTCPInstancesFor(cfg.ModbusTCPConfig)
+	if err != nil {
+		log.Printf("Modbus TCP instance set refused; continuing without Modbus TCP")
+	}
+	tcpNative := sidecarNativeContract("github.com/Project-Helianthus/helianthus-modbus", "TCPEndpoint")
+	tcpInstances := make(map[runtimecontrol.DriverID]modbusTCPInstance, len(instances))
+	descriptors := make([]runtimecontrol.Descriptor, 0, len(instances)+2)
+	for _, instance := range instances {
+		tcpInstances[instance.driverID] = instance
+		descriptors = append(descriptors, descriptor(instance.driverID, instance.enabled, source(instance.driverID), tcpNative, modbusTCPInstanceAdapter(instance, hub, contributions, &pvGeneration)))
 	}
 	growattSource := runtimecontrol.SourceID(cfg.ModbusTCPConfig.GrowattBMSRS485.SourceID)
 	if growattSource == "" {
 		growattSource = source(managedGrowattID)
 	}
-	descriptors := gatewayManagedSidecarDescriptorsFor([]runtimecontrol.Descriptor{
-		descriptor(managedSunSpecID, cfg.ModbusTCPConfig.Enabled, source(managedSunSpecID), sidecarNativeContract("github.com/Project-Helianthus/helianthus-modbus", "TCPEndpoint"), newModbusManagedDriverAdapter(cfg.ModbusTCPConfig, hub, dialModbusEndpointFn, newModbusEndpointFn, work)),
+	descriptors = gatewayManagedSidecarDescriptorsFor(append(descriptors,
 		descriptor(managedGrowattID, cfg.ModbusTCPConfig.GrowattBMSRS485.Enabled, growattSource, sidecarNativeContract("github.com/Project-Helianthus/helianthus-modbus", "RTUProductionEndpoint"), newGrowattManagedDriverFactory(cfg.ModbusTCPConfig.GrowattBMSRS485, modbusProviderGrowattBMS, hub, openGrowattBMSRTUEndpoint)),
 		managedEEBusDescriptor(cfg, source(managedEEBusID)),
-	})
+	))
 	// An accepted Portal selection narrows configured eligibility before any
 	// registration or construction. A driver withheld by a record that did not
 	// load stays registered with a failing executor and is never constructed.
@@ -130,7 +142,22 @@ func prepareManagedSidecars(ctx context.Context, cfg ebusgateway.Config, hub *se
 		}
 	}
 	registrationErrors := make(map[runtimecontrol.DriverID]error)
-	for _, id := range []runtimecontrol.DriverID{managedSunSpecID, managedEEBusID, managedGrowattID} {
+	// All Modbus TCP instances register as one set: a duplicate driver or a
+	// source collision refuses the set with zero factory calls and withholds
+	// only the set.
+	var tcpSet []runtimecontrol.Descriptor
+	for _, d := range descriptors {
+		if _, ok := tcpInstances[d.DriverID]; ok {
+			tcpSet = append(tcpSet, d)
+		}
+	}
+	if len(tcpSet) > 0 {
+		err := registry.Register(tcpSet...)
+		for _, d := range tcpSet {
+			registrationErrors[d.DriverID] = err
+		}
+	}
+	for _, id := range []runtimecontrol.DriverID{managedEEBusID, managedGrowattID} {
 		for _, d := range descriptors {
 			if d.DriverID == id {
 				registrationErrors[id] = registry.Register(d)
@@ -143,6 +170,12 @@ func prepareManagedSidecars(ctx context.Context, cfg ebusgateway.Config, hub *se
 			withheld = errors.Join(withheld, portal)
 		}
 		sidecar := &managedSidecar{descriptor: d, withheld: withheld}
+		if instance, ok := tcpInstances[d.DriverID]; ok {
+			sidecar.modbusTCP = &instance
+			if sidecar.withheld == nil && d.Disposition == runtimecontrol.DispositionEnabled && instance.withheld != "" {
+				sidecar.withheld = modbusTCPWithheldFailure(instance)
+			}
+		}
 		if d.DriverID == managedEEBusID {
 			sidecar.retry = eebusManagedStartRetry
 		}
@@ -199,10 +232,12 @@ func (sidecars *managedSidecars) driverConfigs() []drivermanager.DriverConfig {
 // attempt. It runs once per failed attempt that is still current, so it owns
 // the single operator log line of that failure.
 func (s *managedSidecar) classifyStartFailure(err error) drivermanager.Failure {
-	switch s.descriptor.DriverID {
-	case managedSunSpecID:
+	switch {
+	case s.modbusTCP != nil && s.modbusTCP.v2:
+		log.Printf("Modbus TCP instance unavailable; continuing driver=%s", s.descriptor.DriverID)
+	case s.descriptor.DriverID == managedSunSpecID:
 		log.Printf("Modbus TCP unavailable; continuing without Modbus")
-	case managedEEBusID:
+	case s.descriptor.DriverID == managedEEBusID:
 		return classifyManagedEEBusStartFailure(err)
 	}
 	return drivermanager.Failure{Reason: drivermanager.Reason{Code: drivermanager.ReasonProviderUnavailable}}
@@ -715,7 +750,13 @@ func (p *managedModbusMCPProvider) TeslaGen3EVSESemanticCurrent(ctx context.Cont
 	}
 	return p.tesla.TeslaGen3EVSESemanticCurrent(ctx)
 }
-func (p *managedModbusMCPProvider) ModbusV1CoreAvailable() bool { return p.cfg.Enabled }
+
+// ModbusV1CoreAvailable reports the v1 slot: raw reads, retained observations
+// and the PV projection address only that instance, and are unavailable as
+// for an unconfigured provider when it is not configured.
+func (p *managedModbusMCPProvider) ModbusV1CoreAvailable() bool {
+	return modbusTCPV1SlotConfigured(p.cfg)
+}
 func (p *managedModbusMCPProvider) GrowattStoragePortalAvailable() bool {
 	return p.cfg.GrowattBMSRS485.Enabled
 }
@@ -732,17 +773,26 @@ func (p *managedModbusMCPProvider) ModbusV1OptionalToolAvailable(tool string) bo
 func (b *managedSidecarBindings) observeTransports(ctx context.Context, cfg ebusgateway.Config, store *ebusgateway.BusObservabilityStore) func() {
 	watchCtx, cancel := context.WithCancel(ctx)
 	var wg sync.WaitGroup
+	// The Modbus TCP status is one aggregate over every instance; publication
+	// is serialized so the latest instance change is never overwritten by an
+	// older aggregate.
+	var modbusMu sync.Mutex
+	publishModbus := func() {
+		modbusMu.Lock()
+		defer modbusMu.Unlock()
+		store.SetTransportRuntimeStatus(modbusRuntimeTransportStatus(cfg.ModbusTCPConfig, b.modbusTCPStarted()))
+	}
 	for _, s := range b.sidecars.entries {
-		if s.descriptor.DriverID != managedSunSpecID && s.descriptor.DriverID != managedEEBusID {
+		if !s.isModbusTCP() && s.descriptor.DriverID != managedEEBusID {
 			continue
 		}
 		wg.Add(1)
 		go func(s *managedSidecar) {
 			defer wg.Done()
 			for {
-				snapshot, changed, ok := s.manager.Watch(string(s.descriptor.DriverID))
-				if s.descriptor.DriverID == managedSunSpecID {
-					store.SetTransportRuntimeStatus(modbusRuntimeTransportStatus(cfg.ModbusTCPConfig, ok && snapshot.ObservedState == drivermanager.ObservedRunning))
+				_, changed, ok := s.manager.Watch(string(s.descriptor.DriverID))
+				if s.isModbusTCP() {
+					publishModbus()
 				} else {
 					store.SetTransportRuntimeStatus(eebusRuntimeTransportStatus(b.eebusLifecycleSnapshot()))
 				}
@@ -760,8 +810,31 @@ func (b *managedSidecarBindings) observeTransports(ctx context.Context, cfg ebus
 	return func() { cancel(); wg.Wait() }
 }
 
+// isModbusTCP reports a Modbus TCP driver instance.
+func (s *managedSidecar) isModbusTCP() bool {
+	return s.modbusTCP != nil || s.descriptor.DriverID == managedSunSpecID
+}
+
+// modbusTCPStarted reports whether every enabled, unwithheld Modbus TCP
+// instance is RUNNING. A withheld or disabled instance never makes the
+// aggregate ready on its own. Status reads perform no endpoint I/O.
+func (b *managedSidecarBindings) modbusTCPStarted() bool {
+	candidates := 0
+	for _, s := range b.sidecars.entries {
+		if !s.isModbusTCP() || s.withheld != nil || s.descriptor.Disposition != runtimecontrol.DispositionEnabled {
+			continue
+		}
+		candidates++
+		snapshot, ok := s.manager.Snapshot(string(s.descriptor.DriverID))
+		if !ok || snapshot.ObservedState != drivermanager.ObservedRunning {
+			return false
+		}
+	}
+	return candidates > 0
+}
+
 func (b *managedSidecarBindings) semanticMetrics(cfg ebusgateway.Config, tesla *teslaHSCRetainedOwner, at time.Time) []ebusgateway.SemanticMetricsDomain {
-	domains := semanticPrometheusDomains(nil, nil, tesla, cfg.ModbusTCPConfig.Enabled, cfg.ModbusTCPConfig.GrowattBMSRS485.Enabled, cfg.PrometheusEVSEEnabled, cfg.ModbusTCPConfig.GrowattBMSRS485.AssetID, at)
+	domains := semanticPrometheusDomains(nil, nil, tesla, modbusTCPV1SlotConfigured(cfg.ModbusTCPConfig), cfg.ModbusTCPConfig.GrowattBMSRS485.Enabled, cfg.PrometheusEVSEEnabled, cfg.ModbusTCPConfig.GrowattBMSRS485.AssetID, at)
 	_ = b.modbus(context.Background(), func(a *modbusadapter.Adapter) error {
 		pv := semanticPrometheusDomains(a, nil, nil, true, false, false, "", at)
 		for i := range domains {
@@ -799,4 +872,24 @@ func (sidecars *managedSidecars) shutdownError() error {
 		}
 	}
 	return result
+}
+
+// modbusTCPInstanceAdapter is the descriptor adapter of one instance. A
+// withheld family registers an adapter that is never invoked; a composed
+// sunspec instance gets its own worker, and only the v1 slot owns the Portal
+// PV panel generation.
+func modbusTCPInstanceAdapter(instance modbusTCPInstance, hub *semhub.Hub, contributions *gatewayPortalCatalogContributions, pvGeneration *atomic.Uint64) runtimecontrol.LifecycleAdapter {
+	if instance.withheld != "" {
+		return runtimecontrol.NewAdapter(func(context.Context, runtimecontrol.Construction) (*modbusManagedDriver, error) {
+			return nil, errModbusTCPFamilyNotAdmitted
+		})
+	}
+	work := func(ctx context.Context, adapter *modbusadapter.Adapter) modbusManagedWork {
+		var generation uint64
+		if instance.v1Slot {
+			generation = pvGeneration.Add(1)
+		}
+		return newManagedSunSpecInstanceWork(ctx, adapter, contributions, generation, instance)
+	}
+	return newModbusInstanceDriverAdapter(instance.config, instance.pacing, hub, dialModbusEndpointFn, newModbusEndpointFn, work)
 }

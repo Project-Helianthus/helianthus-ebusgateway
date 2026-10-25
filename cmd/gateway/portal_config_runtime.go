@@ -95,7 +95,7 @@ func portalConfigHostEnabled(cfg ebusgateway.Config, id runtimecontrol.DriverID)
 	case managedGrowattID:
 		return cfg.ModbusTCPConfig.GrowattBMSRS485.Enabled
 	case managedSunSpecID:
-		return cfg.ModbusTCPConfig.Enabled
+		return modbusTCPV1SlotConfigured(cfg.ModbusTCPConfig)
 	}
 	return false
 }

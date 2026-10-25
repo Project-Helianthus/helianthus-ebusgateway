@@ -67,15 +67,16 @@ type managedSunSpecWork struct {
 	err           error
 	// portal is set for the instance that owns the Portal PV panel: the v1
 	// slot only, which the panel keeps addressing.
-	portal bool
-	unit   byte
-	cycle  time.Duration
-	logf   func(string, ...any)
+	portal  bool
+	unit    byte
+	cycle   time.Duration
+	attempt time.Duration
+	logf    func(string, ...any)
 }
 
 func newManagedSunSpecWork(ctx context.Context, adapter *modbusadapter.Adapter, contributions *gatewayPortalCatalogContributions, generation uint64) *managedSunSpecWork {
 	return &managedSunSpecWork{ctx: ctx, adapter: adapter, contributions: contributions, generation: generation,
-		portal: true, unit: sunSpecLiveSmokeUnitID, cycle: sunSpecLiveSmokeCycleInterval, logf: log.Printf}
+		portal: true, unit: sunSpecLiveSmokeUnitID, cycle: sunSpecLiveSmokeCycleInterval, attempt: sunSpecLiveSmokeAttemptTimeout, logf: log.Printf}
 }
 
 // newManagedSunSpecInstanceWork prepares the work of one sunspec instance with
@@ -83,6 +84,7 @@ func newManagedSunSpecWork(ctx context.Context, adapter *modbusadapter.Adapter, 
 func newManagedSunSpecInstanceWork(ctx context.Context, adapter *modbusadapter.Adapter, contributions *gatewayPortalCatalogContributions, generation uint64, instance modbusTCPInstance) *managedSunSpecWork {
 	work := newManagedSunSpecWork(ctx, adapter, contributions, generation)
 	work.portal, work.unit, work.cycle, work.logf = instance.v1Slot, instance.unit, instance.cycle, modbusTCPLogf(instance)
+	work.attempt = sunSpecPacedAttemptTimeout(instance.pacing)
 	return work
 }
 
@@ -93,7 +95,7 @@ func (work *managedSunSpecWork) Start() {
 			return
 		}
 	}
-	work.worker = newGatewaySunSpecInstanceLiveSmokeWorker(work.ctx, work.adapter, work.unit, work.cycle, work.logf)
+	work.worker = newGatewaySunSpecInstanceLiveSmokeWorker(work.ctx, work.adapter, work.unit, work.cycle, work.attempt, work.logf)
 	work.worker.Start()
 }
 func (work *managedSunSpecWork) Close() error {

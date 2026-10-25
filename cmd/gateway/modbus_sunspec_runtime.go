@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
@@ -388,7 +389,22 @@ func newGatewaySunSpecLiveSmokeWorker(
 	adapter *modbusadapter.Adapter,
 	logf func(string, ...any),
 ) *sunSpecLiveSmokeWorker {
-	return newGatewaySunSpecInstanceLiveSmokeWorker(parent, adapter, sunSpecLiveSmokeUnitID, sunSpecLiveSmokeCycleInterval, logf)
+	return newGatewaySunSpecInstanceLiveSmokeWorker(parent, adapter, sunSpecLiveSmokeUnitID, sunSpecLiveSmokeCycleInterval, sunSpecLiveSmokeAttemptTimeout, logf)
+}
+
+// sunSpecLiveSmokeChainReads bounds the sequential requests of the supported
+// eight-model chain, with one reconnect of headroom.
+const sunSpecLiveSmokeChainReads = 18
+
+// sunSpecPacedAttemptTimeout sizes one acquisition attempt for a paced
+// instance: the base bound plus the gap before every chained read and the
+// settle wait after the first connect and one reconnect. Without pacing the
+// base bound is kept.
+func sunSpecPacedAttemptTimeout(pacing *ebusgateway.ModbusTCPPacing) time.Duration {
+	if pacing == nil {
+		return sunSpecLiveSmokeAttemptTimeout
+	}
+	return sunSpecLiveSmokeAttemptTimeout + sunSpecLiveSmokeChainReads*pacing.Gap + 2*pacing.Settle
 }
 
 // newGatewaySunSpecInstanceLiveSmokeWorker builds one instance's qualification
@@ -400,6 +416,7 @@ func newGatewaySunSpecInstanceLiveSmokeWorker(
 	adapter *modbusadapter.Adapter,
 	unit byte,
 	cycle time.Duration,
+	attempt time.Duration,
 	logf func(string, ...any),
 ) *sunSpecLiveSmokeWorker {
 	producer, err := modbusadapter.NewSunSpecProducer(adapter, modbusadapter.SunSpecProducerConfig{
@@ -414,5 +431,5 @@ func newGatewaySunSpecInstanceLiveSmokeWorker(
 		return nil
 	}
 	driver := &modbusSunSpecLiveSmokeDriver{adapter: adapter, producer: producer}
-	return newSunSpecLiveSmokeWorkerWithWait(parent, sunSpecLiveSmokeAttemptTimeout, cycle, driver, modbusSunSpecLiveSmokeQualifier{}, logf, waitSunSpecLiveSmokeCycle)
+	return newSunSpecLiveSmokeWorkerWithWait(parent, attempt, cycle, driver, modbusSunSpecLiveSmokeQualifier{}, logf, waitSunSpecLiveSmokeCycle)
 }

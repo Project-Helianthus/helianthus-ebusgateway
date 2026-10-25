@@ -225,6 +225,9 @@ type driverState struct {
 	// corr is the correlation the driver's current observation refers to:
 	// the attempt being started or the generation being withdrawn.
 	corr LifecycleCorrelation
+	// native is the newest executor-originated observation awaiting the
+	// reconciler (ObserveNative); nil when none is queued.
+	native *pendingNative
 
 	diagMu sync.Mutex
 	diags  []Diagnostic

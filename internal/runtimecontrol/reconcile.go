@@ -76,6 +76,10 @@ func (s *Service) reconcileStep(d *driverState) (bool, time.Duration) {
 			s.runUntyped(d)
 			return true, 0
 		}
+		// Executor-originated observations are serialized with every
+		// service transition: they are applied only here, by the driver's
+		// own reconciler, while no work slot exists.
+		s.applyNative(d, rec)
 		return false, 0
 	}
 	if t.Phase == PhaseCleanup && !t.NativeClosePending && !t.SemanticCleanupPending {

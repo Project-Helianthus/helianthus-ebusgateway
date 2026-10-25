@@ -907,6 +907,53 @@ func (bridge *ebusControlRuntime) View() ebusControlView {
 	return view
 }
 
+// NativeObservation derives, from one manager snapshot, the executor
+// observation of the current epoch once its opening START succeeded. It
+// reports DriverManager's own failure replacement after RUNNING: BACKOFF, a
+// retry STARTING, the recovered RUNNING or DEGRADED generation, and the
+// terminal FAILED when the native retry budget is spent (CLOSE_UNCONFIRMED
+// and quarantine for an unproven close). The correlation is the one the
+// service opened the epoch with; same-epoch replacements keep it. STOPPING,
+// STOPPED and DISABLED belong to the service's STOP path and a fenced epoch
+// reports nothing, so a service transition is never overwritten.
+func (bridge *ebusControlRuntime) NativeObservation(snapshot drivermanager.Snapshot) (runtimecontrol.LifecycleCorrelation, runtimecontrol.NativeObservation, bool) {
+	bridge.mu.Lock()
+	defer bridge.mu.Unlock()
+	epoch := bridge.current
+	if epoch == nil || epoch.fenced || epoch.native == 0 {
+		return runtimecontrol.LifecycleCorrelation{}, runtimecontrol.NativeObservation{}, false
+	}
+	select {
+	case <-epoch.startDone:
+		if epoch.startErr != nil {
+			return runtimecontrol.LifecycleCorrelation{}, runtimecontrol.NativeObservation{}, false
+		}
+	default:
+		// The opening START is still the service's own operation.
+		return runtimecontrol.LifecycleCorrelation{}, runtimecontrol.NativeObservation{}, false
+	}
+	corr := runtimecontrol.LifecycleCorrelation{DriverID: epoch.key.DriverID, SourceID: epoch.key.SourceID,
+		Epoch: epoch.key.Epoch, Generation: epoch.key.Generation, Sequence: epoch.key.Sequence}
+	obs := runtimecontrol.NativeObservation{State: snapshot.ObservedState, Reason: snapshot.Reason.Code}
+	switch {
+	case bridge.quarantined || snapshot.SafetyQuarantined:
+		obs = runtimecontrol.NativeObservation{State: drivermanager.ObservedFailed, Reason: drivermanager.ReasonCloseUnconfirmed, Quarantined: true}
+	case snapshot.ObservedState == drivermanager.ObservedRunning || snapshot.ObservedState == drivermanager.ObservedDegraded:
+		if snapshot.Generation != uint64(epoch.native) {
+			// A replacement mapping is still being held; wait for it.
+			return runtimecontrol.LifecycleCorrelation{}, runtimecontrol.NativeObservation{}, false
+		}
+	case snapshot.ObservedState == drivermanager.ObservedBackoff || snapshot.ObservedState == drivermanager.ObservedStarting:
+	case snapshot.ObservedState == drivermanager.ObservedFailed:
+		if snapshot.ActiveOperation != 0 {
+			return runtimecontrol.LifecycleCorrelation{}, runtimecontrol.NativeObservation{}, false
+		}
+	default:
+		return runtimecontrol.LifecycleCorrelation{}, runtimecontrol.NativeObservation{}, false
+	}
+	return corr, obs, true
+}
+
 // Mappings returns the driver-to-native generation mappings recorded in
 // this process, in admission order.
 func (bridge *ebusControlRuntime) Mappings() []ebusGenerationMapping {

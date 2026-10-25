@@ -20,7 +20,16 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 
 const adapterDirectENSProtocol ebusgateway.TransportProtocol = "adapter-direct-ens"
 
-func wireAdapterDirectWithConnectionLost(ctx context.Context, cfg *ebusgateway.Config, onConnectionLost func()) (func() error, activeTxnClassifier, error) {
+// adapterDirectBlackholeThreshold is a test-only override of the mux AM27
+// blackhole threshold. Zero keeps the adaptermux default of 30 seconds;
+// production never sets it.
+var adapterDirectBlackholeThreshold time.Duration
+
+// wireAdapterDirectWithConnectionLost composes one adapter-direct generation.
+// onConnectionLost, when set, becomes the generation's lifecycle owner: it is
+// called at most once with the closed trigger category of the first terminal
+// loss (the adapter connection, AM27 included, or the proxy listener).
+func wireAdapterDirectWithConnectionLost(ctx context.Context, cfg *ebusgateway.Config, onConnectionLost func(reason string)) (func() error, activeTxnClassifier, error) {
 	normalized, err := ebusgateway.NormalizeEBusDriverTransportConfig(cfg.TransportConfig)
 	if err != nil {
 		return nil, nil, err
@@ -110,6 +119,7 @@ func wireAdapterDirectWithConnectionLost(ctx context.Context, cfg *ebusgateway.C
 	if muxCfg.DialTimeout == 0 {
 		muxCfg.DialTimeout = 5 * time.Second
 	}
+	muxCfg.BlackholeThreshold = adapterDirectBlackholeThreshold
 	// Mux read timeout controls how often the idle-timeout branch runs
 	// (tryGrantAndStart) AND how quickly activeCh receives bytes from
 	// the upstream ENH transport. 50ms matches the eBUS SYN interval so
@@ -141,10 +151,16 @@ func wireAdapterDirectWithConnectionLost(ctx context.Context, cfg *ebusgateway.C
 	}
 
 	mux := adaptermux.New(muxCfg)
-	connectionLostOwner := onConnectionLost
+	var connectionLostOwner, proxyListenerLost func()
 	if onConnectionLost != nil {
+		// One shared one-shot owner: the first terminal loss of this
+		// generation (upstream or listener) is reported, with its trigger.
 		var connectionLostOnce sync.Once
-		connectionLostOwner = func() { connectionLostOnce.Do(onConnectionLost) }
+		report := func(reason string) {
+			connectionLostOnce.Do(func() { onConnectionLost(reason) })
+		}
+		connectionLostOwner = func() { report(ebusLossAdapterConnection) }
+		proxyListenerLost = func() { report(ebusLossProxyListener) }
 	}
 	mux.SetConnectionLostCallback(connectionLostOwner)
 	// Codex PR #502 P2: the instance-scoped classifier is returned to
@@ -180,7 +196,7 @@ func wireAdapterDirectWithConnectionLost(ctx context.Context, cfg *ebusgateway.C
 	// external clients like ebusd).
 	var proxyListener *adaptermux.ProxyListener
 	if cfg.ProxyListenAddr != "" {
-		onProxyFatal := adapterDirectProxyFatalCallback(mux, connectionLostOwner)
+		onProxyFatal := adapterDirectProxyFatalCallback(mux, proxyListenerLost)
 		pl, err := adaptermux.NewProxyListenerWithFatalCallback(ctx, mux, cfg.ProxyListenAddr, log.Default(), onProxyFatal)
 		if err != nil {
 			if cerr := mux.Close(); cerr != nil {

@@ -25,6 +25,18 @@ const (
 	defaultEBusRetryJitterRatio   = 0.2
 )
 
+// ebusDriverRetryPolicy is the bounded native recovery policy of ebus.primary
+// after a reported connection loss: five attempts, the first after one second
+// and each further delay doubled up to thirty seconds, with 20% jitter. When
+// it is spent DriverManager publishes FAILED/RETRY_EXHAUSTED. Tests narrow the
+// delays through this seam; production never reassigns it.
+var ebusDriverRetryPolicy = drivermanager.RetryPolicy{
+	Budget:       defaultEBusRetryBudget,
+	InitialDelay: defaultEBusRetryInitialDelay,
+	MaxDelay:     defaultEBusRetryMaxDelay,
+	JitterRatio:  defaultEBusRetryJitterRatio,
+}
+
 type ebusDriverController struct {
 	manager         *drivermanager.Manager
 	runtime         *ebusDriverRuntime
@@ -53,18 +65,19 @@ func newEBusDriverController(cfg ebusgateway.Config, sidecars ...drivermanager.D
 			drivermanager.CapabilityWrite,
 		},
 		ClassifyError: classifyEBusDriverError,
-		Retry: drivermanager.RetryPolicy{
-			Budget:       defaultEBusRetryBudget,
-			InitialDelay: defaultEBusRetryInitialDelay,
-			MaxDelay:     defaultEBusRetryMaxDelay,
-			JitterRatio:  defaultEBusRetryJitterRatio,
-		},
+		Retry:         ebusDriverRetryPolicy,
 	}}, sidecars...)})
 	if err != nil {
 		return nil, err
 	}
+	runtime.recovery.budget = ebusDriverRetryPolicy.Budget
 	reporter := func(correlation drivermanager.Correlation, rawErr error) {
-		manager.ReportFailure(primaryEBusDriverID, correlation, classifyEBusDriverError(rawErr))
+		// The loss is recorded under the recovery log's lock together with
+		// its acceptance, so the first replacement attempt always logs the
+		// loss as its reason. A stale or repeated report is not logged.
+		runtime.recovery.reportLoss(correlation.Generation, ebusConnectionLossReason(rawErr), func() bool {
+			return manager.ReportFailure(primaryEBusDriverID, correlation, classifyEBusDriverError(rawErr))
+		})
 	}
 	runtime.reporter = reporter
 	controller := &ebusDriverController{
@@ -170,7 +183,7 @@ func buildManagedAdapterDirectGeneration(factoryCtx context.Context, cfg ebusgat
 	adapterCtx, adapterCancel := context.WithCancel(factoryCtx)
 	generationCfg := cfg
 	health := &ebusGenerationHealth{}
-	closer, classifier, err := wireAdapterDirectWithConnectionLost(adapterCtx, &generationCfg, health.connectionLost)
+	closer, classifier, err := wireAdapterDirectWithConnectionLost(adapterCtx, &generationCfg, health.connectionLostBecause)
 	if err != nil {
 		adapterCancel()
 		return nil, err
@@ -354,6 +367,10 @@ type ebusDriverRuntime struct {
 	reporter ebusFailureReporter
 	running  chan<- drivermanager.Correlation
 	current  atomic.Pointer[managedEBusGeneration]
+	// recovery logs the bounded manager-owned recovery after a reported
+	// connection loss: the loss, every replacement attempt with its reason
+	// and outcome, and the admitted recovered generation.
+	recovery ebusRecoveryLog
 
 	// lifecycleMu orders activation and withdrawal for the private B503
 	// observer. Observer callbacks are bounded local FSM mutations: they must
@@ -426,6 +443,8 @@ func (runtime *ebusDriverRuntime) Start(ctx context.Context) (uint64, error) {
 	if runtime == nil || runtime.runtime == nil {
 		return 0, drivermanager.ErrUnavailable
 	}
+	// A fresh start (process start, START, RESTART) is not a recovery.
+	runtime.recovery.reset()
 	generation, err := runtime.runtime.Start(ctx)
 	if err == nil {
 		runtime.captureGeneration(generation)
@@ -439,7 +458,9 @@ func (runtime *ebusDriverRuntime) Replace(ctx context.Context) (uint64, error) {
 	}
 	runtime.FenceWithdrawal()
 	runtime.current.Store(nil)
+	attempt := runtime.recovery.attemptStarted()
 	generation, err := runtime.runtime.Replace(ctx)
+	runtime.recovery.attemptFinished(attempt, generation, err)
 	if err == nil {
 		runtime.captureGeneration(generation)
 	}
@@ -452,6 +473,7 @@ func (runtime *ebusDriverRuntime) Stop(ctx context.Context) error {
 	}
 	runtime.FenceWithdrawal()
 	runtime.current.Store(nil)
+	runtime.recovery.reset()
 	return mapEBusLifecycleError(runtime.runtime.Stop(ctx))
 }
 
@@ -547,7 +569,11 @@ func (runtime *ebusDriverRuntime) BindCorrelation(correlation drivermanager.Corr
 		}
 		return nil
 	})
-	if err != nil || runtime.running == nil {
+	if err != nil {
+		return
+	}
+	runtime.recovery.admitted(correlation.Generation)
+	if runtime.running == nil {
 		return
 	}
 	select {
@@ -1160,6 +1186,7 @@ type managedEBusEndpoint struct {
 type ebusGenerationHealth struct {
 	mu          sync.Mutex
 	lost        bool
+	reason      string
 	reported    bool
 	correlation drivermanager.Correlation
 	reporter    ebusFailureReporter
@@ -1171,13 +1198,29 @@ type managedEBusProxyLifecycle interface {
 }
 
 func (health *ebusGenerationHealth) connectionLost() {
+	health.connectionLostBecause(ebusLossAdapterConnection)
+}
+
+// connectionLostBecause records the generation's terminal connection loss
+// with its closed trigger category (adapter connection or proxy listener).
+func (health *ebusGenerationHealth) connectionLostBecause(reason string) {
 	health.mu.Lock()
-	health.lost = true
+	if !health.lost {
+		health.lost = true
+		health.reason = reason
+	}
 	reporter, correlation := health.pendingReportLocked()
+	lossErr := health.lossErrorLocked()
 	health.mu.Unlock()
 	if reporter != nil {
-		reporter(correlation, ebuserrors.ErrAdapterReset)
+		reporter(correlation, lossErr)
 	}
+}
+
+// lossErrorLocked is the reported loss: an adapter reset carrying the
+// trigger category, so classification stays a retryable dependency loss.
+func (health *ebusGenerationHealth) lossErrorLocked() error {
+	return &ebusConnectionLoss{reason: health.reason}
 }
 
 func (health *ebusGenerationHealth) bind(correlation drivermanager.Correlation, reporter ebusFailureReporter) {
@@ -1188,9 +1231,10 @@ func (health *ebusGenerationHealth) bind(correlation drivermanager.Correlation, 
 	health.correlation = correlation
 	health.reporter = reporter
 	report, reportCorrelation := health.pendingReportLocked()
+	lossErr := health.lossErrorLocked()
 	health.mu.Unlock()
 	if report != nil {
-		report(reportCorrelation, ebuserrors.ErrAdapterReset)
+		report(reportCorrelation, lossErr)
 	}
 }
 

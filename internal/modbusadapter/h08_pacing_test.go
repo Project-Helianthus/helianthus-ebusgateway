@@ -16,12 +16,14 @@ import (
 // were ever in flight together.
 type h08PacingEndpoint struct {
 	fakeEndpoint
-	mu        sync.Mutex
-	connected []time.Time
-	starts    []time.Time
-	ends      []time.Time
-	inFlight  int
-	maxFlight int
+	mu             sync.Mutex
+	connected      []time.Time
+	starts         []time.Time
+	ends           []time.Time
+	inFlight       int
+	maxFlight      int
+	enqueueEntered chan struct{}
+	enqueueRelease chan struct{}
 }
 
 func (endpoint *h08PacingEndpoint) OpenConnection(conn net.Conn) (modbus.TCPConnectionHandle, error) {
@@ -32,6 +34,10 @@ func (endpoint *h08PacingEndpoint) OpenConnection(conn net.Conn) (modbus.TCPConn
 }
 
 func (endpoint *h08PacingEndpoint) EnqueueRead(plan modbus.TCPReadPlan) (modbus.TCPRequestHandle, error) {
+	if endpoint.enqueueEntered != nil {
+		close(endpoint.enqueueEntered)
+		<-endpoint.enqueueRelease
+	}
 	endpoint.mu.Lock()
 	endpoint.starts = append(endpoint.starts, time.Now())
 	endpoint.inFlight++
@@ -177,5 +183,62 @@ func TestH08NilPacingKeepsConfigurationV1Unpaced(t *testing.T) {
 	}
 	if adapter.config.Pacing != nil {
 		t.Fatal("v1 adapter carries a pacing gate")
+	}
+}
+
+func TestH08PacingContendedAdmissionEndsWithCallerBound(t *testing.T) {
+	for _, operation := range []string{"read", "read_with_reconnect", "reconnect"} {
+		t.Run(operation, func(t *testing.T) {
+			adapter, endpoint := h08PacedAdapter(t, &Pacing{})
+			endpoint.enqueueEntered = make(chan struct{})
+			endpoint.enqueueRelease = make(chan struct{})
+			plan := h08ReadPlan(t)
+			var releaseOnce sync.Once
+			releaseWorker := func() { releaseOnce.Do(func() { close(endpoint.enqueueRelease) }) }
+			workerDone := make(chan error, 1)
+			go func() {
+				_, err := adapter.ExecuteRead(context.Background(), plan)
+				workerDone <- err
+			}()
+			defer func() {
+				releaseWorker()
+				<-workerDone
+			}()
+			select {
+			case <-endpoint.enqueueEntered:
+			case <-time.After(time.Second):
+				t.Fatal("worker did not reach endpoint admission")
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+			defer cancel()
+			callerDone := make(chan error, 1)
+			go func() {
+				var err error
+				switch operation {
+				case "read":
+					_, err = adapter.ExecuteRead(ctx, plan)
+				case "read_with_reconnect":
+					_, err = adapter.ExecuteReadWithReconnect(ctx, plan)
+				case "reconnect":
+					err = adapter.Reconnect(ctx)
+				}
+				callerDone <- err
+			}()
+			select {
+			case err := <-callerDone:
+				if !errors.Is(err, context.DeadlineExceeded) {
+					t.Errorf("contended caller = %v, want deadline", err)
+				}
+			case <-time.After(time.Second):
+				releaseWorker()
+				<-callerDone
+				t.Error("caller remained blocked behind active worker after its deadline")
+			}
+			endpoint.mu.Lock()
+			defer endpoint.mu.Unlock()
+			if len(endpoint.starts) != 0 || len(endpoint.connected) != 1 {
+				t.Errorf("expired admission sent requests or reconnected: requests=%d connects=%d", len(endpoint.starts), len(endpoint.connected))
+			}
+		})
 	}
 }

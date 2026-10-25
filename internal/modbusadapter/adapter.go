@@ -191,6 +191,29 @@ type ReadPlan struct {
 	Reads              []modbus.TCPLogicalRead
 }
 
+// contextMutex serializes operations while allowing a waiting caller to leave
+// at its context bound. Its zero value is ready for use.
+type contextMutex struct {
+	once sync.Once
+	held chan struct{}
+}
+
+func (mu *contextMutex) Lock(ctx context.Context) error {
+	mu.once.Do(func() { mu.held = make(chan struct{}, 1) })
+	select {
+	case mu.held <- struct{}{}:
+		if err := ctx.Err(); err != nil {
+			mu.Unlock()
+			return err
+		}
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (mu *contextMutex) Unlock() { <-mu.held }
+
 // Adapter owns exactly one endpoint and its active connection generation.
 type Adapter struct {
 	endpoint   Endpoint
@@ -202,7 +225,7 @@ type Adapter struct {
 	closeOnce         sync.Once
 	closeErr          error
 	nativeCloseFailed atomic.Bool
-	executeMu         sync.Mutex
+	executeMu         contextMutex
 	connectionMu      sync.RWMutex
 	closed            bool
 	lastRequest       modbus.TCPRequestHandle
@@ -526,7 +549,9 @@ func (adapter *Adapter) Reconnect(ctx context.Context) error {
 	if adapter == nil || adapter.endpoint == nil || ctx == nil {
 		return errors.New("modbus TCP adapter unavailable")
 	}
-	adapter.executeMu.Lock()
+	if err := adapter.executeMu.Lock(ctx); err != nil {
+		return err
+	}
 	defer adapter.executeMu.Unlock()
 	_, err := adapter.reconnectLocked(ctx, false)
 	return err
@@ -586,7 +611,9 @@ func (adapter *Adapter) ExecuteRead(ctx context.Context, plan ReadPlan) (modbus.
 	if adapter == nil || adapter.endpoint == nil {
 		return modbus.TCPReadBatch{}, errors.New("modbus TCP adapter unavailable")
 	}
-	adapter.executeMu.Lock()
+	if err := adapter.executeMu.Lock(ctx); err != nil {
+		return modbus.TCPReadBatch{}, err
+	}
 	defer adapter.executeMu.Unlock()
 	return adapter.executeReadLocked(ctx, plan)
 }
@@ -598,7 +625,9 @@ func (adapter *Adapter) ExecuteReadWithReconnect(ctx context.Context, plan ReadP
 	if adapter == nil || adapter.endpoint == nil {
 		return modbus.TCPReadBatch{}, errors.New("modbus TCP adapter unavailable")
 	}
-	adapter.executeMu.Lock()
+	if err := adapter.executeMu.Lock(ctx); err != nil {
+		return modbus.TCPReadBatch{}, err
+	}
 	defer adapter.executeMu.Unlock()
 	batch, err := adapter.executeReadLocked(ctx, plan)
 	if err == nil {

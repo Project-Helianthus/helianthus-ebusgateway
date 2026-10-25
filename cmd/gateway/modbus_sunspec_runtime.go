@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,7 +18,6 @@ const (
 	sunSpecLiveSmokeReadTimeout        = 2 * time.Second
 	sunSpecLiveSmokeAttemptTimeout     = 10 * time.Second
 	sunSpecLiveSmokeCycleInterval      = 15 * time.Second
-	sunSpecLiveSmokeCurrentFlavor      = modbusreg.SunSpecFroniusObservedFlavorV11ID
 )
 
 type sunSpecLiveSmokeDecision string
@@ -49,7 +49,10 @@ type sunSpecLiveSmokeQualification struct {
 	Flavor           string
 	CapabilityReason modbusreg.SunSpecCapabilityReason
 	FlavorReason     modbusreg.SunSpecFroniusFlavorReason
-	Err              error
+	// FlavorEvaluations carries the registry's per-flavor reasons so a refusal
+	// is diagnosable from the decision line.
+	FlavorEvaluations []modbusadapter.SunSpecFlavorEvaluation
+	Err               error
 }
 
 type sunSpecLiveSmokeResult struct {
@@ -61,6 +64,12 @@ type sunSpecLiveSmokeResult struct {
 	Sample     string
 	Capability string
 	Flavor     string
+	// CapabilityReason and FlavorReasons are the registry's own refusal or
+	// match reasons in the decision-line token form (see
+	// formatSunSpecLiveSmokeFlavorReasons). They hold enum names and flavor
+	// versions only: no sample, capability or flavor ID, serial or endpoint.
+	CapabilityReason string
+	FlavorReasons    string
 }
 
 type sunSpecLiveSmokeDriver interface {
@@ -125,12 +134,13 @@ func (modbusSunSpecLiveSmokeQualifier) Qualify(_ context.Context, _ sunSpecLiveS
 		return sunSpecLiveSmokeQualification{Err: poll.Err}
 	}
 	return sunSpecLiveSmokeQualification{
-		Outcome:          poll.Qualification.Outcome,
-		Sample:           poll.Qualification.SampleID,
-		Capability:       poll.Qualification.CapabilityID,
-		Flavor:           poll.Qualification.FlavorID,
-		CapabilityReason: poll.Qualification.CapabilityReason,
-		FlavorReason:     poll.Qualification.FlavorReason,
+		Outcome:           poll.Qualification.Outcome,
+		Sample:            poll.Qualification.SampleID,
+		Capability:        poll.Qualification.CapabilityID,
+		Flavor:            poll.Qualification.FlavorID,
+		CapabilityReason:  poll.Qualification.CapabilityReason,
+		FlavorReason:      poll.Qualification.FlavorReason,
+		FlavorEvaluations: poll.Qualification.FlavorEvaluations,
 	}
 }
 
@@ -155,12 +165,7 @@ func runSunSpecLiveSmoke(
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
-	defer func() {
-		logf(
-			"modbus sunspec live smoke decision=%s outcome=%s category=%s attempts=%d recovered=%t",
-			result.Decision, result.Outcome, result.Category, result.Attempts, result.Recovered,
-		)
-	}()
+	defer func() { logSunSpecLiveSmokeDecision(logf, result) }()
 	if ctx == nil || attemptTimeout <= 0 || driver == nil || qualifier == nil {
 		return result
 	}
@@ -202,12 +207,69 @@ func deadlineOrNow(ctx context.Context) time.Time {
 	return deadline
 }
 
+// logSunSpecLiveSmokeDecision writes the one decision line of a live-smoke
+// cycle. The leading fields and their order are fixed; capability= and flavors=
+// follow them. A decision without a qualification prints "-" for both.
+func logSunSpecLiveSmokeDecision(logf func(string, ...any), result sunSpecLiveSmokeResult) {
+	if logf == nil {
+		return
+	}
+	logf(
+		"modbus sunspec live smoke decision=%s outcome=%s category=%s attempts=%d recovered=%t capability=%s flavors=%s",
+		result.Decision, result.Outcome, result.Category, result.Attempts, result.Recovered,
+		sunSpecLiveSmokeField(result.CapabilityReason), sunSpecLiveSmokeField(result.FlavorReasons),
+	)
+}
+
+func sunSpecLiveSmokeField(value string) string {
+	if value == "" {
+		return "-"
+	}
+	return value
+}
+
+// sunSpecLiveSmokeToken reduces a registry name to one whitespace-free word of
+// [A-Za-z0-9._-] so a decision line stays a single parseable record.
+func sunSpecLiveSmokeToken(value string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '_', r == '-':
+			return r
+		default:
+			return '_'
+		}
+	}, value)
+}
+
+// formatSunSpecLiveSmokeFlavorReasons renders every registry flavor decision
+// as <flavor version>:<reason>, comma separated in registry order, for example
+// "1.0.0:FIRMWARE_MISMATCH,1.1.0:FIRMWARE_MISMATCH,1.2.0:MATCHED". The version
+// is the part of the flavor ID after its last '@'.
+func formatSunSpecLiveSmokeFlavorReasons(evaluations []modbusadapter.SunSpecFlavorEvaluation) string {
+	entries := make([]string, 0, len(evaluations))
+	for _, evaluation := range evaluations {
+		version := evaluation.FlavorID
+		if at := strings.LastIndexByte(version, '@'); at >= 0 {
+			version = version[at+1:]
+		}
+		entries = append(entries,
+			sunSpecLiveSmokeField(sunSpecLiveSmokeToken(version))+":"+
+				sunSpecLiveSmokeField(sunSpecLiveSmokeToken(string(evaluation.Reason))))
+	}
+	return strings.Join(entries, ",")
+}
+
 func mapSunSpecLiveSmokeQualification(qualification sunSpecLiveSmokeQualification, base sunSpecLiveSmokeResult) sunSpecLiveSmokeResult {
 	base.Sample, base.Capability, base.Flavor = "", "", ""
+	base.CapabilityReason, base.FlavorReasons = "", ""
 	if qualification.Err != nil {
 		base.Decision, base.Outcome, base.Category = sunSpecLiveSmokeDecisionStop, "error", "qualification_error"
 		return base
 	}
+	// The registry's reasons accompany every decision, including STOP, so a
+	// refusal is diagnosable; they carry no sample, capability or flavor ID.
+	base.CapabilityReason = sunSpecLiveSmokeToken(string(qualification.CapabilityReason))
+	base.FlavorReasons = formatSunSpecLiveSmokeFlavorReasons(qualification.FlavorEvaluations)
 	switch qualification.Outcome {
 	case modbusadapter.SunSpecQualificationGO:
 		if qualification.Sample == "" ||
@@ -233,8 +295,17 @@ func mapSunSpecLiveSmokeQualification(qualification sunSpecLiveSmokeQualificatio
 	}
 }
 
+// isSupportedSunSpecLiveSmokeFlavor lists every Fronius GEN24 observed flavor
+// the registry may select. A registry match on any other ID is incoherent.
 func isSupportedSunSpecLiveSmokeFlavor(flavor string) bool {
-	return flavor == modbusreg.SunSpecFroniusObservedFlavorID || flavor == sunSpecLiveSmokeCurrentFlavor
+	switch flavor {
+	case modbusreg.SunSpecFroniusObservedFlavorID,
+		modbusreg.SunSpecFroniusObservedFlavorV11ID,
+		modbusreg.SunSpecFroniusObservedFlavorV12ID:
+		return true
+	default:
+		return false
+	}
 }
 
 type sunSpecLiveSmokeWorker struct {
@@ -321,7 +392,9 @@ func newGatewaySunSpecLiveSmokeWorker(
 		ReadTimeout:        sunSpecLiveSmokeReadTimeout,
 	})
 	if err != nil {
-		logf("modbus sunspec live smoke decision=STOP outcome=error category=configuration_error attempts=0 recovered=false")
+		logSunSpecLiveSmokeDecision(logf, sunSpecLiveSmokeResult{
+			Decision: sunSpecLiveSmokeDecisionStop, Outcome: "error", Category: "configuration_error",
+		})
 		return nil
 	}
 	driver := &modbusSunSpecLiveSmokeDriver{adapter: adapter, producer: producer}

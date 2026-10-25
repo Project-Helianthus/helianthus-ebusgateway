@@ -88,10 +88,24 @@ func Words(headers ...uint16) []uint16 {
 	return words
 }
 
+// Common firmware strings of the accepted Fronius GEN24 observed replays. The
+// registry compares the firmware string exactly: FroniusFirmwareEarlier is the
+// tuple of flavors 1.0.0 and 1.1.0, FroniusFirmwareCurrent that of flavor 1.2.0.
+const (
+	FroniusFirmwareEarlier = "1.41.11-1"
+	FroniusFirmwareCurrent = "1.42.9-1"
+)
+
 // ObservedFroniusFloatWords returns the accepted observed-monitoring replay.
 func ObservedFroniusFloatWords() []uint16 {
+	return ObservedFroniusFloatWordsForFirmware(FroniusFirmwareEarlier)
+}
+
+// ObservedFroniusFloatWordsForFirmware returns the observed-monitoring chain
+// (without the controls model) under the given Common firmware string.
+func ObservedFroniusFloatWordsForFirmware(firmware string) []uint16 {
 	return fixtureWords(
-		fixtureModel{1, 65, commonPayload("Fronius", "Symo GEN24 10.0", "1.41.11-1")},
+		fixtureModel{1, 65, commonPayload("Fronius", "Symo GEN24 10.0", firmware)},
 		fixtureModel{113, 60, floatInverterPayload()},
 		fixtureModel{120, 26, make([]uint16, 26)},
 		fixtureModel{121, 30, make([]uint16, 30)},
@@ -104,8 +118,16 @@ func ObservedFroniusFloatWords() []uint16 {
 // ObservedFroniusFloatControlsWords returns the accepted replay including the
 // standard controls model used by qualification and semantic publication tests.
 func ObservedFroniusFloatControlsWords() []uint16 {
+	return ObservedFroniusFloatControlsWordsForFirmware(FroniusFirmwareEarlier)
+}
+
+// ObservedFroniusFloatControlsWordsForFirmware returns the controls chain
+// (models 1, 113, 120, 121, 122, 123, 160, 124) under the given Common
+// firmware string. With FroniusFirmwareCurrent it is the walked tuple of the
+// registry's 1.2.0 observed flavor.
+func ObservedFroniusFloatControlsWordsForFirmware(firmware string) []uint16 {
 	return fixtureWords(
-		fixtureModel{1, 65, commonPayload("Fronius", "Symo GEN24 10.0", "1.41.11-1")},
+		fixtureModel{1, 65, commonPayload("Fronius", "Symo GEN24 10.0", firmware)},
 		fixtureModel{113, 60, floatInverterPayload()},
 		fixtureModel{120, 26, make([]uint16, 26)},
 		fixtureModel{121, 30, make([]uint16, 30)},

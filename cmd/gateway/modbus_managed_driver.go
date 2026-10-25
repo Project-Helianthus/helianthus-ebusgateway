@@ -77,8 +77,11 @@ type modbusManagedAttempt struct {
 // modbusManagedDriver is inert until the shared manager starts it. M06 binds
 // the service correlation before startup and owns registration and consumers.
 type modbusManagedDriver struct {
-	mu           sync.Mutex
-	config       ebusgateway.ModbusTCPConfig
+	mu     sync.Mutex
+	config ebusgateway.ModbusTCPConfig
+	// pacing is the configuration v2 request rhythm of this instance; nil for
+	// configuration v1.
+	pacing       *ebusgateway.ModbusTCPPacing
 	hub          *semhub.Hub
 	dial         modbusadapter.Dialer
 	factory      modbusadapter.Factory
@@ -96,18 +99,30 @@ var _ drivermanager.Runtime = (*modbusManagedDriver)(nil)
 // newModbusManagedDriverAdapter exposes compiled construction without adding
 // registration or starting a native endpoint. Work remains injectable for M06.
 func newModbusManagedDriverAdapter(config ebusgateway.ModbusTCPConfig, hub *semhub.Hub, dial modbusadapter.Dialer, factory modbusadapter.Factory, work modbusManagedWorkFactory) runtimecontrol.LifecycleAdapter {
+	return newModbusInstanceDriverAdapter(config, nil, hub, dial, factory, work)
+}
+
+// newModbusInstanceDriverAdapter is the typed factory of one Modbus TCP driver
+// instance. It captures that instance's validated configuration; registration
+// stores it without invoking it, and the frozen construction material carries
+// no endpoint.
+func newModbusInstanceDriverAdapter(config ebusgateway.ModbusTCPConfig, pacing *ebusgateway.ModbusTCPPacing, hub *semhub.Hub, dial modbusadapter.Dialer, factory modbusadapter.Factory, work modbusManagedWorkFactory) runtimecontrol.LifecycleAdapter {
+	if pacing != nil {
+		copied := *pacing
+		pacing = &copied
+	}
 	return runtimecontrol.NewAdapter(func(ctx context.Context, construction runtimecontrol.Construction) (*modbusManagedDriver, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if _, err := mapModbusRuntimeConfig(config); err != nil {
+		if _, err := mapModbusInstanceRuntimeConfig(config, pacing); err != nil {
 			return nil, err
 		}
 		if construction.DriverID == "" || len(construction.Sources) != 1 || construction.Sources[0] == "" {
 			return nil, errors.New("modbus managed construction identity incomplete")
 		}
 		construction.Sources = append([]runtimecontrol.SourceID(nil), construction.Sources...)
-		return &modbusManagedDriver{config: config, hub: hub, dial: dial, factory: factory, workFactory: work, construction: construction}, nil
+		return &modbusManagedDriver{config: config, pacing: pacing, hub: hub, dial: dial, factory: factory, workFactory: work, construction: construction}, nil
 	})
 }
 
@@ -249,7 +264,7 @@ func (a *modbusManagedAttempt) nativeCloseUnconfirmed() bool {
 // already settled its provisional cleanup, with any close failure latched on
 // the scope; every later failure retires the attempt before started closes.
 func (driver *modbusManagedDriver) open(ctx context.Context, a *modbusManagedAttempt) {
-	a.adapter, a.openErr = startModbusRuntimeWithPublication(ctx, driver.config, driver.hub, driver.dial, driver.factory, a.scope)
+	a.adapter, a.openErr = startModbusInstanceRuntimeWithPublication(ctx, driver.config, driver.pacing, driver.hub, driver.dial, driver.factory, a.scope)
 	a.startErr = a.openErr
 	close(a.opened)
 	if a.openErr != nil {

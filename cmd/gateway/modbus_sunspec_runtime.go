@@ -381,13 +381,29 @@ func (worker *sunSpecLiveSmokeWorker) Close() error {
 	return nil
 }
 
+// newGatewaySunSpecLiveSmokeWorker builds the worker with the configuration
+// v1 unit and cycle.
 func newGatewaySunSpecLiveSmokeWorker(
 	parent context.Context,
 	adapter *modbusadapter.Adapter,
 	logf func(string, ...any),
 ) *sunSpecLiveSmokeWorker {
+	return newGatewaySunSpecInstanceLiveSmokeWorker(parent, adapter, sunSpecLiveSmokeUnitID, sunSpecLiveSmokeCycleInterval, logf)
+}
+
+// newGatewaySunSpecInstanceLiveSmokeWorker builds one instance's qualification
+// and live-smoke worker. Each instance has its own worker, attempt counters,
+// unit and cycle; the read and attempt bounds are those of record V3 for
+// every instance.
+func newGatewaySunSpecInstanceLiveSmokeWorker(
+	parent context.Context,
+	adapter *modbusadapter.Adapter,
+	unit byte,
+	cycle time.Duration,
+	logf func(string, ...any),
+) *sunSpecLiveSmokeWorker {
 	producer, err := modbusadapter.NewSunSpecProducer(adapter, modbusadapter.SunSpecProducerConfig{
-		UnitID:             sunSpecLiveSmokeUnitID,
+		UnitID:             unit,
 		AuthorizationScope: sunSpecLiveSmokeAuthorizationScope,
 		ReadTimeout:        sunSpecLiveSmokeReadTimeout,
 	})
@@ -398,5 +414,5 @@ func newGatewaySunSpecLiveSmokeWorker(
 		return nil
 	}
 	driver := &modbusSunSpecLiveSmokeDriver{adapter: adapter, producer: producer}
-	return newSunSpecLiveSmokeWorker(parent, sunSpecLiveSmokeAttemptTimeout, driver, modbusSunSpecLiveSmokeQualifier{}, logf)
+	return newSunSpecLiveSmokeWorkerWithWait(parent, sunSpecLiveSmokeAttemptTimeout, cycle, driver, modbusSunSpecLiveSmokeQualifier{}, logf, waitSunSpecLiveSmokeCycle)
 }

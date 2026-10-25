@@ -30,6 +30,11 @@ var startGatewayReleaseChecker = func(checker *releasecheck.Checker, ctx context
 }
 
 func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result error) {
+	// Registered first, so it runs last: no error leaving the process carries
+	// an endpoint of the configuration v2 document.
+	defer func() {
+		result = redactFileSourcedModbusEndpoints(result, modbusTCPDocumentEndpoints(cfg.ModbusTCPConfig)...)
+	}()
 	resolvedBuildInfo, err := prepareGatewayRunConfig(&cfg)
 	if err != nil {
 		return err

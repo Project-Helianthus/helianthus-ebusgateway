@@ -51,6 +51,20 @@ type Config struct {
 	// SemanticPV is the PV asset class of the process's semantic publication
 	// hub. Every discovered PV asset is declared and published through it.
 	SemanticPV *semhub.Class
+	// Pacing is the optional request rhythm of one configuration v2 instance.
+	// Nil keeps the configuration v1 behavior unchanged.
+	Pacing *Pacing
+}
+
+// Pacing gates every request of one adapter: the worker, qualification,
+// retries and on-demand reads. Requests already serialize on the adapter, so
+// at most one is in flight; Gap is the minimum idle time between the
+// completion of one transaction and the start of the next, and Settle is the
+// wait after each successful connect before the first request. A wait never
+// extends a read or attempt bound: it ends with its caller's context.
+type Pacing struct {
+	Gap    time.Duration
+	Settle time.Duration
 }
 
 // PublicationScope binds one adapter to its managed generation. Withdrawal is
@@ -205,6 +219,10 @@ type Adapter struct {
 	startedMono          time.Time
 	wallNow              func() time.Time
 	monotonicNow         func() time.Time
+	// Pacing state is guarded by executeMu, or owned by Start before the
+	// adapter is shared.
+	connectedAt time.Time
+	completedAt time.Time
 }
 
 const maxRetainedProfileObservations = 32
@@ -356,6 +374,7 @@ func Start(
 		}
 	}
 	adapter := &Adapter{
+		connectedAt:     time.Now(),
 		endpoint:        endpoint,
 		connection:      handle,
 		source:          config.Endpoint.RuntimeAcquisitionSource,
@@ -557,6 +576,7 @@ func (adapter *Adapter) reconnectLocked(ctx context.Context, requireOwnerAuthori
 		return false, errors.Join(fmt.Errorf("reopen Modbus TCP endpoint: %w", err), connection.Close())
 	}
 	adapter.connection = handle
+	adapter.connectedAt = time.Now()
 	return true, nil
 }
 
@@ -595,6 +615,12 @@ func (adapter *Adapter) ExecuteReadWithReconnect(ctx context.Context, plan ReadP
 }
 
 func (adapter *Adapter) executeReadLocked(ctx context.Context, plan ReadPlan) (modbus.TCPReadBatch, error) {
+	if pacing := adapter.config.Pacing; pacing != nil {
+		if err := adapter.awaitPacingLocked(ctx, *pacing); err != nil {
+			return modbus.TCPReadBatch{}, err
+		}
+		defer func() { adapter.completedAt = time.Now() }()
+	}
 	handle, err := adapter.EnqueueRead(plan)
 	if err != nil {
 		return modbus.TCPReadBatch{}, err
@@ -608,6 +634,30 @@ func (adapter *Adapter) executeReadLocked(ctx context.Context, plan ReadPlan) (m
 		return modbus.TCPReadBatch{}, err
 	}
 	return adapter.Read(ctx)
+}
+
+// awaitPacingLocked waits until both the settle time after the latest connect
+// and the gap after the latest completed transaction have elapsed. The caller
+// holds executeMu, so no other request of this adapter can start meanwhile.
+func (adapter *Adapter) awaitPacingLocked(ctx context.Context, pacing Pacing) error {
+	ready := adapter.connectedAt.Add(pacing.Settle)
+	if !adapter.completedAt.IsZero() {
+		if next := adapter.completedAt.Add(pacing.Gap); next.After(ready) {
+			ready = next
+		}
+	}
+	wait := time.Until(ready)
+	if wait <= 0 {
+		return ctx.Err()
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // RecordProfileObservation retains a bounded exact replay record. Profile

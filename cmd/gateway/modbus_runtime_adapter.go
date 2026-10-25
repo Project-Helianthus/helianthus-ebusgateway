@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"time"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter"
@@ -21,8 +22,10 @@ var (
 	dialModbusEndpointFn modbusadapter.Dialer = (&net.Dialer{}).DialContext
 )
 
-func startModbusRuntimeWithPublication(ctx context.Context, config ebusgateway.ModbusTCPConfig, hub *semhub.Hub, dial modbusadapter.Dialer, factory modbusadapter.Factory, scope *modbusadapter.PublicationScope) (*modbusadapter.Adapter, error) {
-	runtimeConfig, err := mapModbusRuntimeConfig(config)
+// startModbusInstanceRuntimeWithPublication opens one instance's endpoint; a
+// nil pacing keeps the configuration v1 transport.
+func startModbusInstanceRuntimeWithPublication(ctx context.Context, config ebusgateway.ModbusTCPConfig, pacing *ebusgateway.ModbusTCPPacing, hub *semhub.Hub, dial modbusadapter.Dialer, factory modbusadapter.Factory, scope *modbusadapter.PublicationScope) (*modbusadapter.Adapter, error) {
+	runtimeConfig, err := mapModbusInstanceRuntimeConfig(config, pacing)
 	if err != nil {
 		return nil, fmt.Errorf("map Modbus TCP runtime configuration: %w", err)
 	}
@@ -62,17 +65,35 @@ type managedSunSpecWork struct {
 	worker        *sunSpecLiveSmokeWorker
 	lease         *gatewayPortalContributionLifecycle
 	err           error
+	// portal is set for the instance that owns the Portal PV panel: the v1
+	// slot only, which the panel keeps addressing.
+	portal bool
+	unit   byte
+	cycle  time.Duration
+	logf   func(string, ...any)
 }
 
 func newManagedSunSpecWork(ctx context.Context, adapter *modbusadapter.Adapter, contributions *gatewayPortalCatalogContributions, generation uint64) *managedSunSpecWork {
-	return &managedSunSpecWork{ctx: ctx, adapter: adapter, contributions: contributions, generation: generation}
+	return &managedSunSpecWork{ctx: ctx, adapter: adapter, contributions: contributions, generation: generation,
+		portal: true, unit: sunSpecLiveSmokeUnitID, cycle: sunSpecLiveSmokeCycleInterval, logf: log.Printf}
 }
+
+// newManagedSunSpecInstanceWork prepares the work of one sunspec instance with
+// its own unit, cycle and categorical log key.
+func newManagedSunSpecInstanceWork(ctx context.Context, adapter *modbusadapter.Adapter, contributions *gatewayPortalCatalogContributions, generation uint64, instance modbusTCPInstance) *managedSunSpecWork {
+	work := newManagedSunSpecWork(ctx, adapter, contributions, generation)
+	work.portal, work.unit, work.cycle, work.logf = instance.v1Slot, instance.unit, instance.cycle, modbusTCPLogf(instance)
+	return work
+}
+
 func (work *managedSunSpecWork) Start() {
-	work.lease, work.err = startGatewayPortalContributionLifecycle(work.contributions, contributionv1.DriverGeneration{DriverID: "pv.primary", Generation: work.generation}, []contributionv1.Manifest{gatewayPortalPVDescriptor()})
-	if work.err != nil {
-		return
+	if work.portal {
+		work.lease, work.err = startGatewayPortalContributionLifecycle(work.contributions, contributionv1.DriverGeneration{DriverID: "pv.primary", Generation: work.generation}, []contributionv1.Manifest{gatewayPortalPVDescriptor()})
+		if work.err != nil {
+			return
+		}
 	}
-	work.worker = newGatewaySunSpecLiveSmokeWorker(work.ctx, work.adapter, log.Printf)
+	work.worker = newGatewaySunSpecInstanceLiveSmokeWorker(work.ctx, work.adapter, work.unit, work.cycle, work.logf)
 	work.worker.Start()
 }
 func (work *managedSunSpecWork) Close() error {

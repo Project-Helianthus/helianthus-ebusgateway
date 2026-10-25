@@ -34,10 +34,11 @@ func gatewayMDNSText(cfg ebusgateway.Config) []string {
 }
 
 func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) *gatewayFlagInputs {
-	inputs := &gatewayFlagInputs{}
+	inputs := &gatewayFlagInputs{flags: fs}
 	if fs == nil || cfg == nil {
 		return inputs
 	}
+	bindModbusTCPFlagInputs(&cfg.ModbusTCPConfig, inputs)
 
 	fs.StringVar((*string)(&cfg.TransportConfig.Protocol), "transport", string(cfg.TransportConfig.Protocol), "transport protocol: enh, ens, udp-plain, tcp-plain, or ebusd-tcp")
 	fs.StringVar(&cfg.TransportConfig.Network, "network", cfg.TransportConfig.Network, "transport network: unix, tcp, or udp")
@@ -48,6 +49,7 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) *gatewayFlagInputs {
 	fs.BoolVar(&cfg.ModbusTCPConfig.Enabled, "modbus-tcp-enabled", cfg.ModbusTCPConfig.Enabled, "enable the read-only Modbus TCP sidecar")
 	fs.StringVar(&cfg.ModbusTCPConfig.Endpoint, "modbus-tcp-endpoint", cfg.ModbusTCPConfig.Endpoint, "Modbus TCP endpoint URI (tcp://host:port)")
 	fs.StringVar(&inputs.modbusEndpointFile, "modbus-tcp-endpoint-file", "", "path to an owner-only file containing the Modbus TCP endpoint URI")
+	fs.StringVar(&inputs.modbusEndpointsFile, modbusEndpointsFlag, "", "path to the owner-only Modbus TCP endpoints document (configuration v2; excludes every other modbus-tcp flag)")
 	fs.DurationVar(&cfg.ModbusTCPConfig.DialTimeout, "modbus-tcp-dial-timeout", cfg.ModbusTCPConfig.DialTimeout, "Modbus TCP dial timeout")
 	fs.BoolVar(&cfg.ModbusTCPConfig.GrowattBMSRS485.Enabled, "growatt-bms-rs485-enabled", cfg.ModbusTCPConfig.GrowattBMSRS485.Enabled, "enable the exact read-only Growatt BMS RS-485 V2.02 observer")
 	fs.StringVar(&cfg.ModbusTCPConfig.GrowattBMSRS485.AssetID, "growatt-bms-rs485-asset-id", cfg.ModbusTCPConfig.GrowattBMSRS485.AssetID, "explicit non-secret stable Growatt BMS semantic asset identity")

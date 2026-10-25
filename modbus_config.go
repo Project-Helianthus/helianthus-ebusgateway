@@ -5,11 +5,39 @@ import "time"
 // ModbusTCPConfig is the disabled-by-default gateway composition boundary.
 // Add-on and CLI configuration are introduced separately in FMV3-M4-03.
 type ModbusTCPConfig struct {
-	Enabled         bool
-	Endpoint        string
-	DialTimeout     time.Duration
+	Enabled     bool
+	Endpoint    string
+	DialTimeout time.Duration
+	// Endpoints is configuration v2: the validated endpoint list of the
+	// owner-only endpoints document, one managed driver instance per entry.
+	// It is empty for configuration v1, which keeps Endpoint and DialTimeout.
+	// Endpoints never appear in arguments, environment or logs.
+	Endpoints       []ModbusTCPEndpointConfig
 	GrowattBMSRS485 GrowattBMSRS485Config
 	TeslaGen3HSC    TeslaGen3HSCRetainedConfig
+}
+
+// ModbusTCPEndpointConfig is one validated configuration v2 entry with every
+// optional member resolved to its value or default. Label and Family are
+// public identifiers; Endpoint is protected material.
+type ModbusTCPEndpointConfig struct {
+	Label       string
+	Family      string
+	Endpoint    string
+	DialTimeout time.Duration
+	// Units is the routed-unit allowlist; empty means the family default.
+	Units  []byte
+	Pacing ModbusTCPPacing
+}
+
+// ModbusTCPPacing is the resolved per-instance request rhythm: one
+// connection, one request in flight, and these waits and intervals.
+type ModbusTCPPacing struct {
+	Gap            time.Duration
+	Settle         time.Duration
+	Cycle          time.Duration
+	BackoffFloor   time.Duration
+	BackoffCeiling time.Duration
 }
 
 // TeslaGen3HSCRetainedConfig enables the non-send owner for completed,

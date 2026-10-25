@@ -71,7 +71,9 @@ type managedSunSpecWork struct {
 	unit    byte
 	cycle   time.Duration
 	attempt time.Duration
-	logf    func(string, ...any)
+	// startToStart measures the cycle interval between cycle starts.
+	startToStart bool
+	logf         func(string, ...any)
 }
 
 func newManagedSunSpecWork(ctx context.Context, adapter *modbusadapter.Adapter, contributions *gatewayPortalCatalogContributions, generation uint64) *managedSunSpecWork {
@@ -84,7 +86,7 @@ func newManagedSunSpecWork(ctx context.Context, adapter *modbusadapter.Adapter, 
 func newManagedSunSpecInstanceWork(ctx context.Context, adapter *modbusadapter.Adapter, contributions *gatewayPortalCatalogContributions, generation uint64, instance modbusTCPInstance) *managedSunSpecWork {
 	work := newManagedSunSpecWork(ctx, adapter, contributions, generation)
 	work.portal, work.unit, work.cycle, work.logf = instance.v1Slot, instance.unit, instance.cycle, modbusTCPLogf(instance)
-	work.attempt = sunSpecPacedAttemptTimeout(instance.pacing)
+	work.startToStart = instance.pacing != nil
 	return work
 }
 
@@ -95,7 +97,7 @@ func (work *managedSunSpecWork) Start() {
 			return
 		}
 	}
-	work.worker = newGatewaySunSpecInstanceLiveSmokeWorker(work.ctx, work.adapter, work.unit, work.cycle, work.attempt, work.logf)
+	work.worker = newGatewaySunSpecInstanceLiveSmokeWorker(work.ctx, work.adapter, work.unit, work.cycle, work.attempt, work.startToStart, work.logf)
 	work.worker.Start()
 }
 func (work *managedSunSpecWork) Close() error {

@@ -7,7 +7,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
@@ -338,13 +337,33 @@ func newSunSpecLiveSmokeWorkerWithWait(
 	logf func(string, ...any),
 	wait sunSpecLiveSmokeWait,
 ) *sunSpecLiveSmokeWorker {
+	return newSunSpecLiveSmokeWorkerCore(parent, attemptTimeout, cycleInterval, false, driver, qualifier, logf, wait)
+}
+
+// newSunSpecLiveSmokeWorkerCore runs serial cycles. With startToStart the
+// interval is measured between cycle starts, so a cycle that used part of it
+// shortens the wait; otherwise the interval follows completion.
+func newSunSpecLiveSmokeWorkerCore(
+	parent context.Context,
+	attemptTimeout, cycleInterval time.Duration,
+	startToStart bool,
+	driver sunSpecLiveSmokeDriver,
+	qualifier sunSpecLiveSmokeQualifier,
+	logf func(string, ...any),
+	wait sunSpecLiveSmokeWait,
+) *sunSpecLiveSmokeWorker {
 	ctx, cancel := context.WithCancel(parent)
 	worker := &sunSpecLiveSmokeWorker{cancel: cancel, done: make(chan struct{})}
 	worker.run = func() {
 		defer close(worker.done)
 		for {
+			started := time.Now()
 			_ = runSunSpecLiveSmoke(ctx, attemptTimeout, driver, qualifier, logf)
-			if wait(ctx, cycleInterval) != nil {
+			delay := cycleInterval
+			if startToStart {
+				delay = max(cycleInterval-time.Since(started), 0)
+			}
+			if wait(ctx, delay) != nil {
 				return
 			}
 		}
@@ -389,22 +408,7 @@ func newGatewaySunSpecLiveSmokeWorker(
 	adapter *modbusadapter.Adapter,
 	logf func(string, ...any),
 ) *sunSpecLiveSmokeWorker {
-	return newGatewaySunSpecInstanceLiveSmokeWorker(parent, adapter, sunSpecLiveSmokeUnitID, sunSpecLiveSmokeCycleInterval, sunSpecLiveSmokeAttemptTimeout, logf)
-}
-
-// sunSpecLiveSmokeChainReads bounds the sequential requests of the supported
-// eight-model chain, with one reconnect of headroom.
-const sunSpecLiveSmokeChainReads = 18
-
-// sunSpecPacedAttemptTimeout sizes one acquisition attempt for a paced
-// instance: the base bound plus the gap before every chained read and the
-// settle wait after the first connect and one reconnect. Without pacing the
-// base bound is kept.
-func sunSpecPacedAttemptTimeout(pacing *ebusgateway.ModbusTCPPacing) time.Duration {
-	if pacing == nil {
-		return sunSpecLiveSmokeAttemptTimeout
-	}
-	return sunSpecLiveSmokeAttemptTimeout + sunSpecLiveSmokeChainReads*pacing.Gap + 2*pacing.Settle
+	return newGatewaySunSpecInstanceLiveSmokeWorker(parent, adapter, sunSpecLiveSmokeUnitID, sunSpecLiveSmokeCycleInterval, sunSpecLiveSmokeAttemptTimeout, false, logf)
 }
 
 // newGatewaySunSpecInstanceLiveSmokeWorker builds one instance's qualification
@@ -417,6 +421,7 @@ func newGatewaySunSpecInstanceLiveSmokeWorker(
 	unit byte,
 	cycle time.Duration,
 	attempt time.Duration,
+	startToStart bool,
 	logf func(string, ...any),
 ) *sunSpecLiveSmokeWorker {
 	producer, err := modbusadapter.NewSunSpecProducer(adapter, modbusadapter.SunSpecProducerConfig{
@@ -431,5 +436,5 @@ func newGatewaySunSpecInstanceLiveSmokeWorker(
 		return nil
 	}
 	driver := &modbusSunSpecLiveSmokeDriver{adapter: adapter, producer: producer}
-	return newSunSpecLiveSmokeWorkerWithWait(parent, attempt, cycle, driver, modbusSunSpecLiveSmokeQualifier{}, logf, waitSunSpecLiveSmokeCycle)
+	return newSunSpecLiveSmokeWorkerCore(parent, attempt, cycle, startToStart, driver, modbusSunSpecLiveSmokeQualifier{}, logf, waitSunSpecLiveSmokeCycle)
 }

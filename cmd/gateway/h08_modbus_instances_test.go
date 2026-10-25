@@ -740,3 +740,47 @@ func TestH08OneEntryDefaultDocumentMatchesV1ExceptPacing(t *testing.T) {
 		t.Fatalf("pacing across the move: v1 %+v / %+v, v2 %+v / %+v", mappedV1.Endpoint.PoolLimits, mappedV1.Pacing, mappedV2.Endpoint.PoolLimits, mappedV2.Pacing)
 	}
 }
+
+// TestH08PacedInstanceKeepsAttemptBound pins that pacing consumes the
+// existing acquisition budget instead of extending it.
+func TestH08PacedInstanceKeepsAttemptBound(t *testing.T) {
+	pacing := ebusgateway.ModbusTCPPacing{Gap: 2 * time.Second, Settle: 10 * time.Second, Cycle: 15 * time.Second}
+	work := newManagedSunSpecInstanceWork(context.Background(), nil, nil, 1, modbusTCPInstance{pacing: &pacing, unit: 1, cycle: pacing.Cycle})
+	if work.attempt != sunSpecLiveSmokeAttemptTimeout {
+		t.Fatalf("paced attempt bound = %s; want %s", work.attempt, sunSpecLiveSmokeAttemptTimeout)
+	}
+	if !work.startToStart {
+		t.Fatal("paced instance must measure its cycle between starts")
+	}
+}
+
+// TestH08WorkerCycleIsMeasuredBetweenStarts pins that a cycle which used part
+// of the interval shortens the wait for a start-to-start worker.
+func TestH08WorkerCycleIsMeasuredBetweenStarts(t *testing.T) {
+	delays := make(chan time.Duration, 1)
+	driver := &sunSpecLiveSmokeFakeDriver{}
+	driver.pollFn = func(context.Context, sunSpecLiveSmokeAttempt) (sunSpecLiveSmokePollResult, error) {
+		time.Sleep(300 * time.Millisecond)
+		return sunSpecLiveSmokePollResult{}, errors.New("failed")
+	}
+	qualifier := &sunSpecLiveSmokeFakeQualifier{}
+	worker := newSunSpecLiveSmokeWorkerCore(context.Background(), time.Second, 2*time.Second, true, driver, qualifier, func(string, ...any) {},
+		func(ctx context.Context, delay time.Duration) error {
+			select {
+			case delays <- delay:
+			default:
+			}
+			<-ctx.Done()
+			return ctx.Err()
+		})
+	worker.Start()
+	defer func() { _ = worker.Close() }()
+	select {
+	case delay := <-delays:
+		if delay > 1800*time.Millisecond || delay <= 0 {
+			t.Fatalf("start-to-start delay = %s; want below 1.8s", delay)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker never waited")
+	}
+}

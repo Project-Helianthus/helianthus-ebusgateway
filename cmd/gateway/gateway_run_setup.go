@@ -441,7 +441,8 @@ func (control *gatewayRuntimeControl) EBusAdmitted() bool {
 
 // startWatch drives task synchronisation from every manager change, so a
 // manager-owned same-epoch replacement, a loss of admission or a late
-// admission is reconciled without waiting for a lifecycle decision.
+// admission is reconciled without waiting for a lifecycle decision. The same
+// watch forwards the manager's own post-RUNNING transitions to the service.
 func (control *gatewayRuntimeControl) startWatch() {
 	if control.bridge == nil {
 		return
@@ -449,10 +450,19 @@ func (control *gatewayRuntimeControl) startWatch() {
 	ctx, cancel := context.WithCancel(context.Background())
 	control.watchCancel, control.watchDone = cancel, make(chan struct{})
 	manager := control.bridge.manager
+	// Manager-owned replacement after RUNNING (BACKOFF, retries, recovery
+	// or the terminal FAILED) reaches the service view from this watch.
+	forwarder := &ebusNativeForwarder{bridge: control.bridge, service: control.service}
+	if control.driver != nil && control.driver.runtime != nil {
+		forwarder.recovery = &control.driver.runtime.recovery
+	}
 	go func() {
 		defer close(control.watchDone)
 		for {
-			_, changed, ok := manager.Watch(primaryEBusDriverID)
+			snapshot, changed, ok := manager.Watch(primaryEBusDriverID)
+			if ok {
+				forwarder.forward(snapshot)
+			}
 			control.executor.sync(ctx)
 			if !ok {
 				return

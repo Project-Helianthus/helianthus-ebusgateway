@@ -2269,10 +2269,10 @@ tests. The bridge tests and the J10 service tests together cover LIFE-02.
 The rows that need semantic assets, staged activation batches, per-asset
 cursors or shared assets (LIFE-14–LIFE-24 and LIFE-27–LIFE-30, LIFE-22
 included) do not apply to an asset-free source. They stay with the first
-family migration that declares assets. The service has no seam yet for
-executor-originated observations, so a manager-driven `BACKOFF` or
-generation advance after `RUNNING` is visible in the bridge view and not in
-the service view.
+family migration that declares assets. Executor-originated observations
+reach the service through `Service.ObserveNative`, described with the shell
+integration below, so a manager-driven `BACKOFF`, retry or terminal `FAILED`
+after `RUNNING` is visible in the service view as well as the bridge view.
 
 ### S4/S6/S7 shell integration (implemented production composition)
 
@@ -2407,11 +2407,38 @@ hold withdraws them (fence, one bounded join) and refuses while they drain,
 as a retryable dependency failure that DriverManager retries within its own
 budget.
 
-Limits of this composition: the service has no seam for executor-originated
-observations and its correlation carries no `SourceID`. Manager-driven
-`BACKOFF` or replacement after `RUNNING` stays visible only in the bridge
-view, and the driver-to-native generation mapping stays process-local. A
-dedicated follow-up issue owns these seams.
+Manager-owned recovery after `RUNNING`. When a generation reports its own
+loss (the adapter-direct mux delegates a terminal read error or the AM27
+blackhole, the proxy listener fails, or a consumer call finds the provider
+transport closed), DriverManager withdraws the generation and runs the
+bounded `ebus.primary` retry policy: five replacement attempts, the first
+after one second and each further delay doubled up to thirty seconds, with
+20% jitter. The AM27 threshold itself is unchanged. The gateway logs the
+loss with its closed trigger category, every replacement attempt with its
+reason (the trigger, then the previous attempt's failure category) and its
+outcome, and the admitted recovered generation. The lines carry closed
+categories and counters only, never an endpoint or native error text.
+
+The gateway's manager watch forwards these manager-driven transitions to the
+service through `Service.ObserveNative`, once the epoch's opening START has
+succeeded: `BACKOFF` with `RETRY_SCHEDULED`, a retry `STARTING`, the
+recovered `RUNNING` or `DEGRADED` generation, and the terminal `FAILED` with
+`RETRY_EXHAUSTED` (or `CLOSE_UNCONFIRMED` with quarantine) when the budget
+is spent. The service's own reconciler applies such an observation only
+while the driver has no work slot, no held decision and no attempt in
+flight, and only for the source epoch and driver generation of the admitted
+generation. A stale or foreign observation is dropped. `STOPPING`, `STOPPED`
+and `DISABLED` are never accepted from an executor. An observation changes no
+desired state, slot, budget or cleanup obligation, so a `FAILED` generation
+is still withdrawn by a later `STOP` or `RESTART`. A quarantining observation
+blocks admission like a service-observed unconfirmed close. As a result
+`helianthus.runtime.list`, `helianthus.runtime.get` and the Portal driver
+readback leave `RUNNING` as soon as the transport is lost. They never show
+`RUNNING` over a closed transport. Automatic recovery ends at `FAILED`; an
+operator `helianthus.runtime.restart` starts a new epoch.
+
+Limits of this composition: the service correlation carries no `SourceID`
+and the driver-to-native generation mapping stays process-local.
 
 ## 8. Upward flow
 

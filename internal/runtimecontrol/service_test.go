@@ -2388,9 +2388,13 @@ type hookStore struct {
 	Store
 	failAdvance atomic.Bool
 	driverHook  atomic.Pointer[func(DriverID) ControlRecord]
+	advanceHook atomic.Pointer[func()]
 }
 
 func (h *hookStore) AdvanceCatalog(ctx context.Context) (CatalogRevision, error) {
+	if fn := h.advanceHook.Swap(nil); fn != nil {
+		(*fn)()
+	}
 	if h.failAdvance.Load() {
 		return 0, errors.New("synthetic advance failure")
 	}

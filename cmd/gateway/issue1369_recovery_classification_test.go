@@ -14,10 +14,11 @@ import (
 )
 
 // Issue #1369: under the persistent policy only a failure that retrying
-// cannot heal ends the recovery. A dial failure, a timeout and a transport
-// close are retryable; a rejected configuration, a lifecycle identity
-// mismatch and a stale or unavailable runtime (an explicit stop or restart
-// superseded the attempt) are terminal, each with its own reason.
+// cannot heal ends the recovery. A dial failure, a timeout, a transport close
+// and (since #1373) an INIT the endpoint rejects are retryable; a
+// configuration rejected before any dial, a lifecycle identity mismatch and a
+// stale or unavailable runtime (an explicit stop or restart superseded the
+// attempt) are terminal, each with its own reason.
 func TestIssue1369OnlyNonHealingFailuresAreTerminal(t *testing.T) {
 	refusedDial := issue1369RefusedDial(t)
 	for name, tc := range map[string]struct {
@@ -33,8 +34,8 @@ func TestIssue1369OnlyNonHealingFailuresAreTerminal(t *testing.T) {
 		"connection loss":     {&ebusConnectionLoss{reason: ebusLossAdapterConnection}, true, drivermanager.ReasonDependencyUnavailable},
 		"proxy listen":        {&net.OpError{Op: "listen", Net: "tcp", Err: errors.New("address already in use")}, true, drivermanager.ReasonDependencyUnavailable},
 		"admission gate":      {fmt.Errorf("ebus control: replacement admission gate: %w", context.DeadlineExceeded), true, drivermanager.ReasonDependencyUnavailable},
-		"endpoint rejected":   {fmt.Errorf("invalid gateway transport endpoint: %w: %w", ebuserrors.ErrInvalidPayload, errors.New("missing scheme")), false, drivermanager.ReasonConfigInvalid},
-		"protocol rejected":   {fmt.Errorf("gateway transport init failed: enh init ebus error 0x01: %w", ebuserrors.ErrInvalidPayload), false, drivermanager.ReasonConfigInvalid},
+		"endpoint rejected":   {rejectEBusConfig(fmt.Errorf("invalid gateway transport endpoint: %w: %w", ebuserrors.ErrInvalidPayload, errors.New("missing scheme"))), false, drivermanager.ReasonConfigInvalid},
+		"INIT rejected":       {fmt.Errorf("gateway transport init failed: enh init ebus error 0x01: %w", ebuserrors.ErrInvalidPayload), true, drivermanager.ReasonDependencyUnavailable},
 		"identity mismatch":   {errEBusControlHubNotLive, false, drivermanager.ReasonInternalError},
 		"identity wrapped":    {fmt.Errorf("hold: %w", errEBusControlHubNotLive), false, drivermanager.ReasonInternalError},
 		"stale correlation":   {fmt.Errorf("%w: %w", drivermanager.ErrUnavailable, errEBusControlStale), false, drivermanager.ReasonProviderUnavailable},

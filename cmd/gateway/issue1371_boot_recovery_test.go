@@ -211,55 +211,10 @@ func TestIssue1371DownAtBootBacksOffThenRunsWhenTheEndpointAppears(t *testing.T)
 	}
 }
 
-// A failure that retrying cannot heal still fails the opening START, with
-// its own reason and without a retry.
-func TestIssue1371TerminalClassAtBootFailsTheStartWithItsReason(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		protocol ebusgateway.TransportProtocol
-		stream   bool
-	}{
-		{"adapter_direct", ebusgateway.TransportAdapterDirect, true},
-		{"proxy_class", ebusgateway.TransportENH, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			clock := newIssue1369Clock(issue1369NoJitter)
-			logs := captureIssue1367Logs(t)
-			withIssue1371Seams(t, clock, logs)
-			endpoint := newIssue1367Endpoint(t, tc.stream)
-			endpoint.rejectInit.Store(true)
-			process := startIssue1371Process(t, clock, endpoint, tc.protocol)
-
-			failed := waitIssue1367Status(t, process, drivermanager.ObservedFailed, drivermanager.ReasonConfigInvalid, logs)
-			if failed.SafetyQuarantined || failed.DesiredState != runtimecontrol.DesiredRunning || failed.NextAttempt != 0 {
-				t.Fatalf("terminal view = %+v; want desired RUNNING, not quarantined, no schedule", failed)
-			}
-			requireIssue1367List(t, process, drivermanager.ObservedFailed, drivermanager.ReasonConfigInvalid)
-			if got, reason := portalConfigReadbackStatus(failed); got != "error" || reason != "config_invalid" {
-				t.Fatalf("Portal readback = %s/%s; want error/config_invalid", got, reason)
-			}
-			time.Sleep(50 * time.Millisecond)
-			if len(clock.recorded()) != 0 {
-				t.Fatalf("scheduled retries = %d; want none after a terminal class", len(clock.recorded()))
-			}
-			for _, event := range issue1367ObservedSince(process, 0) {
-				if event.ObservedState == drivermanager.ObservedBackoff {
-					t.Fatalf("a terminal class at boot published BACKOFF: %+v", event)
-				}
-			}
-			logs.requireOrdered(t, `ebus.primary: start attempt 1 failed (class=invalid_payload, error="ebus: payload does not match expected schema")`)
-			if logs.count("recovery continues") != 0 || logs.count("ebus.primary: recovery attempt") != 0 {
-				t.Fatalf("a terminal class at boot opened a recovery:\n%s", issue1367RecoveryLines(logs.text()))
-			}
-
-			// Once the condition is corrected an operator RESTART recovers.
-			endpoint.rejectInit.Store(false)
-			process.decide(runtimecontrol.MethodRestart)
-			waitIssue1367Status(t, process, drivermanager.ObservedRunning, drivermanager.ReasonNone, logs)
-			requireIssue1367Version(t, process, endpoint.sessionCount())
-		})
-	}
-}
+// A terminal class still fails the opening START with its own reason and
+// without a retry: TestIssue1373ValidationRejectedConfigurationFailsBeforeAnyDial
+// covers it for both classes. An INIT the endpoint rejects at boot is a
+// retryable handshake failure (TestIssue1373FailedInitHandshakeAtBootEntersRecoveryAndRuns).
 
 func TestIssue1371RestartDuringBootBackoffRecoversAndResetsSchedule(t *testing.T) {
 	clock := newIssue1369Clock(issue1369NoJitter)

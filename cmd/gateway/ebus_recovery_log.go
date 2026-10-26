@@ -61,12 +61,17 @@ func ebusConnectionLossReason(err error) string {
 }
 
 // ebusRecoveryFailureCategory maps one failed attempt to its closed error
-// class.
+// class. config_rejected is the only class of a configuration that local
+// validation rejected before any dial; invalid_payload and transport_closed
+// are a peer's answer.
 func ebusRecoveryFailureCategory(err error) string {
 	var opErr *net.OpError
+	var rejection *ebusConfigRejection
 	switch {
 	case err == nil:
 		return "none"
+	case errors.As(err, &rejection):
+		return "config_rejected"
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		return "canceled"
 	case errors.Is(err, transport.ErrDriverSafetyQuarantined):
@@ -89,6 +94,8 @@ func ebusRecoveryFailureCategory(err error) string {
 		return "handshake_timeout"
 	case errors.Is(err, ebuserrors.ErrInvalidPayload):
 		return "invalid_payload"
+	case errors.Is(err, ebuserrors.ErrTransportClosed):
+		return "transport_closed"
 	case errors.Is(err, transport.ErrDriverUnavailable):
 		return "runtime_unavailable"
 	}
@@ -159,6 +166,19 @@ func ebusInnermostError(err error) error {
 	return err
 }
 
+// ebusHandshakeText is the handshake outcome of a failed attempt whose
+// connection reached the INIT handshake, as a trailing field of its log
+// line: the INIT attempts made, the features seen in answers that did not
+// confirm the requested ones, and the payload class of each failed INIT
+// attempt. It is empty for an attempt that never reached INIT.
+func ebusHandshakeText(err error) string {
+	var failure *ebusHandshakeFailure
+	if !errors.As(err, &failure) {
+		return ""
+	}
+	return ", handshake=(" + failure.outcome.String() + ")"
+}
+
 // ebusRecoveryPhase names the schedule phase of one attempt of a series.
 func ebusRecoveryPhase(attempt, budget int) string {
 	if attempt <= budget {
@@ -171,7 +191,8 @@ func ebusRecoveryPhase(attempt, budget int) string {
 // ebus.primary connection loss: the loss with its trigger, every replacement
 // attempt with its number, phase and reason (the trigger, then the previous
 // attempt's error class), every failure with its error class and cause text
-// (never the endpoint), and the admitted recovered generation. It also logs
+// (never the endpoint) and, when the attempt reached the INIT handshake, the
+// handshake outcome, and the admitted recovered generation. It also logs
 // each failed start attempt outside a recovery series with the same cause; a
 // failed start that DriverManager follows with a persistent recovery series
 // opens that series (startRecovering), so its retries are logged like the
@@ -268,7 +289,7 @@ func (l *ebusRecoveryLog) attemptFinished(attempt int, generation uint64, err er
 	if err != nil {
 		class := ebusRecoveryFailureCategory(err)
 		l.reason = "retry_after_" + class
-		l.printf("ebus.primary: recovery attempt %d failed (class=%s, error=%q)", attempt, class, ebusRecoveryErrorText(err))
+		l.printf("ebus.primary: recovery attempt %d failed (class=%s, error=%q%s)", attempt, class, ebusRecoveryErrorText(err), ebusHandshakeText(err))
 		return
 	}
 	l.pending = generation
@@ -293,7 +314,7 @@ func (l *ebusRecoveryLog) startFinished(err error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.starts++
-	l.printf("ebus.primary: start attempt %d failed (class=%s, error=%q)", l.starts, ebusRecoveryFailureCategory(err), ebusRecoveryErrorText(err))
+	l.printf("ebus.primary: start attempt %d failed (class=%s, error=%q%s)", l.starts, ebusRecoveryFailureCategory(err), ebusRecoveryErrorText(err), ebusHandshakeText(err))
 }
 
 // startRecovering logs a failed start whose retryable failure DriverManager
@@ -305,7 +326,7 @@ func (l *ebusRecoveryLog) startRecovering(err error) {
 	defer l.mu.Unlock()
 	l.starts++
 	class := ebusRecoveryFailureCategory(err)
-	l.printf("ebus.primary: start attempt %d failed (class=%s, error=%q); %s", l.starts, class, ebusRecoveryErrorText(err), l.scheduleText())
+	l.printf("ebus.primary: start attempt %d failed (class=%s, error=%q%s); %s", l.starts, class, ebusRecoveryErrorText(err), ebusHandshakeText(err), l.scheduleText())
 	l.active, l.attempt, l.reason, l.pending = true, 0, "retry_after_"+class, 0
 	l.flushDeferred(false)
 }

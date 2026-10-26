@@ -2425,27 +2425,37 @@ the same owner and follows the same policy. The AM27 threshold itself is
 unchanged.
 
 Only a retryable failure continues the series: a dial failure, a timeout, a
-closed transport or a refused admission while the predecessor's tasks drain.
-A failure that retrying cannot heal ends it `FAILED` with its own reason: a
-rejected configuration (an invalid endpoint, or an endpoint that rejects the
-configured protocol's INIT) as `CONFIG_INVALID`, a lifecycle identity
+closed or refused endpoint, a refused admission while the predecessor's
+tasks drain, and every answer of the peer. A failed INIT handshake (the
+adapter answers with features that do not confirm the requested ones, rejects
+INIT or drops the connection) and a malformed adapter payload are the peer's
+answer: a degraded or restarting adapter produces them, so they never prove a
+local configuration error. A failure that retrying cannot heal ends the
+series `FAILED` with its own reason, and these are limited to conditions that
+are provably local: a configuration that local validation rejected before any
+dial as `CONFIG_INVALID` (an endpoint that does not normalize, a missing
+network or address, a protocol the gateway cannot open over the configured
+network, an adapter-direct option that does not parse), a lifecycle identity
 mismatch (the hub source no longer carries the epoch and generation the
 bridge holds) as `INTERNAL_ERROR`, an unavailable or superseded runtime as
 `PROVIDER_UNAVAILABLE`, and an unconfirmed close as `CLOSE_UNCONFIRMED` with
-quarantine. An explicit `STOP` ends the series with `STOPPED`. An operator
-`RESTART`, also one during a backoff wait, cancels the wait at once and opens
-a new epoch whose next failure series starts again with the full fast budget.
+quarantine. The proxy class runs the same validation before its dial, so a
+failure after the dial is always the peer's. An explicit `STOP` ends the
+series with `STOPPED`. An operator `RESTART`, also one during a backoff wait,
+cancels the wait at once and opens a new epoch whose next failure series
+starts again with the full fast budget.
 `RETRY_EXHAUSTED` is not reached by `ebus.primary`.
 
 Opening START admitted into recovery. The opening START of an epoch (process
 start, `START` after `STOP`, `RESTART`) runs under the service's
 per-operation budget of thirty seconds, and that budget bounds only its first
 attempt. When the first attempt fails for a retryable reason (a dial failure,
-a timeout, a closed transport), DriverManager schedules the first retry of a
-persistent series, and the bridge admits the START into that recovery at the
-first manager snapshot that shows it: `BACKOFF` with `RETRY_SCHEDULED`, the
-schedule, a persistent series (`RetrySnapshot.Persistent`), desired `RUNNING`,
-and a manager revision after the bridge dispatched this epoch's start.
+a timeout, a closed transport, a failed INIT handshake), DriverManager
+schedules the first retry of a persistent series, and the bridge admits the
+START into that recovery at the first manager snapshot that shows it:
+`BACKOFF` with `RETRY_SCHEDULED`, the schedule, a persistent series
+(`RetrySnapshot.Persistent`), desired `RUNNING`, and a manager revision after
+the bridge dispatched this epoch's start.
 `Start` then returns `runtimecontrol.RecoveringStart` with that `BACKOFF`.
 The service admits the epoch like a `RUNNING` one: the slot completes, the
 cleanup obligations pass to the admitted generation, so `STOP` and
@@ -2469,12 +2479,20 @@ every visible `BACKOFF` with the next attempt's number, due time (UTC), delay
 and phase, every replacement attempt with its number, phase and reason (the
 trigger, then the previous attempt's error class), every failed attempt with
 its closed error class and cause text, and the admitted recovered generation.
-A failed start outside a recovery series is logged the same way. The cause
-text is the innermost cause of the failure (the socket call and its errno,
-a resolver's verdict, an i/o timeout or a protocol sentinel). The wrapping
-that names the dialed address is dropped, anything address-like that remains
-is redacted, and the text is bounded to one line, so no line names an
-endpoint.
+A failed attempt whose connection reached the INIT handshake also carries the
+handshake outcome: `handshake=(init_attempts=N, features_seen=..., payload_class=...)`
+names the INIT attempts made inside the construction (the adapter-direct
+multiplexer retries INIT up to five times, the proxy class sends one), the
+features byte of every answer that did not confirm the requested features,
+and the payload class of every INIT attempt that failed (`invalid_payload`,
+`timeout`, `transport_closed`, `adapter_host_error`, `adapter_reset` or
+`failed`). The class of a rejected configuration is `config_rejected`, and
+it never carries a handshake. A failed start outside a recovery series is
+logged the same way. The cause text is the innermost cause of the failure
+(the socket call and its errno, a resolver's verdict, an i/o timeout or a
+protocol sentinel). The wrapping that names the dialed address is dropped,
+anything address-like that remains is redacted, and the text is bounded to
+one line, so no line names an endpoint.
 
 The gateway's manager watch forwards these manager-driven transitions to the
 service through `Service.ObserveNative`, once the epoch's opening START has

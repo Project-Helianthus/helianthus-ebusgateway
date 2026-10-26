@@ -524,68 +524,10 @@ func TestIssue1369PersistentBackoffCapAndJitterBoundsUntilExplicitStop(t *testin
 	}
 }
 
-// A failure that retrying cannot heal still ends the recovery in the
-// terminal state with its own reason: the endpoint is reachable again but
-// rejects the configured protocol's INIT, which the gateway classifies as a
-// rejected configuration.
-func TestIssue1369NonHealingRecoveryFailureEndsTerminalWithItsReason(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		protocol ebusgateway.TransportProtocol
-		stream   bool
-		loss     string
-	}{
-		{"adapter_direct", ebusgateway.TransportAdapterDirect, true, ebusLossAdapterConnection},
-		{"proxy_class", ebusgateway.TransportENH, false, ebusLossTransportClosed},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			clock := newIssue1369Clock(issue1369NoJitter)
-			withIssue1369Seams(t, clock)
-			logs := captureIssue1367Logs(t)
-			endpoint := newIssue1367Endpoint(t, tc.stream)
-			process := startIssue1369Process(t, clock, endpoint, tc.protocol)
-			before := process.status()
-
-			endpoint.rejectInit.Store(true)
-			if tc.stream {
-				endpoint.stall()
-			} else {
-				endpoint.drop()
-				issue1367DetectProxyLoss(t, process, logs)
-			}
-			failed := waitIssue1367Status(t, process, drivermanager.ObservedFailed, drivermanager.ReasonConfigInvalid, logs)
-			if failed.SafetyQuarantined || failed.DesiredState != runtimecontrol.DesiredRunning || failed.NextAttempt != 0 {
-				t.Fatalf("terminal view = %+v; want desired RUNNING, not quarantined, no schedule", failed)
-			}
-			requireIssue1367List(t, process, drivermanager.ObservedFailed, drivermanager.ReasonConfigInvalid)
-			if got, reason := portalConfigReadbackStatus(failed); got != "error" || reason != "config_invalid" {
-				t.Fatalf("Portal readback = %s/%s; want error/config_invalid", got, reason)
-			}
-			if snapshot := process.control.driver.Snapshot(); snapshot.ObservedState != drivermanager.ObservedFailed || snapshot.Reason.Code != drivermanager.ReasonConfigInvalid {
-				t.Fatalf("manager snapshot = %s/%s; want FAILED/CONFIG_INVALID", snapshot.ObservedState, snapshot.Reason.Code)
-			}
-			retries := clock.recorded()
-			issue1369RequireSchedule(t, retries, before.DesiredRevision, issue1369NoJitter)
-			if len(retries) != 1 {
-				t.Fatalf("scheduled retries = %d; want only the one after the loss", len(retries))
-			}
-			logs.requireOrdered(t,
-				fmt.Sprintf("ebus.primary: recovery attempt 1 (reason=%s, phase=fast)", tc.loss),
-				`ebus.primary: recovery attempt 1 failed (class=invalid_payload, error="ebus: payload does not match expected schema")`,
-				"ebus.primary: lifecycle FAILED (reason=CONFIG_INVALID, safety_quarantined=false); retrying cannot heal this condition")
-			time.Sleep(50 * time.Millisecond)
-			if logs.count("ebus.primary: recovery attempt 2") != 0 || len(clock.recorded()) != 1 {
-				t.Fatalf("recovery retried a non-healing failure:\n%s", issue1367RecoveryLines(logs.text()))
-			}
-
-			// Once the condition is corrected an operator RESTART recovers.
-			endpoint.rejectInit.Store(false)
-			process.decide(runtimecontrol.MethodRestart)
-			waitIssue1367Status(t, process, drivermanager.ObservedRunning, drivermanager.ReasonNone, logs)
-			requireIssue1367Version(t, process, endpoint.sessionCount())
-		})
-	}
-}
+// An endpoint that is reachable again but rejects INIT is a retryable
+// handshake failure since #1373; its tests, and those of the terminal class
+// left (a configuration rejected before any dial), are in
+// issue1373_handshake_retryable_test.go.
 
 func TestIssue1369RestartDuringPersistentBackoffRecoversAndResetsSchedule(t *testing.T) {
 	clock := newIssue1369Clock(issue1369NoJitter)

@@ -110,7 +110,12 @@ func TestIssue1367RecoveredLogPrecedesRunningWatchLog(t *testing.T) {
 	forwarder := &ebusNativeForwarder{logf: sink.logf, recovery: recovery}
 	forwarder.last = runtimecontrol.NativeObservation{State: drivermanager.ObservedBackoff, Reason: drivermanager.ReasonRetryScheduled}
 	forwarder.logTransition(runtimecontrol.LifecycleCorrelation{}, runtimecontrol.NativeObservation{State: drivermanager.ObservedRunning, Reason: drivermanager.ReasonNone}, drivermanager.Snapshot{Generation: 2})
-	// The late BindCorrelation path must stay silent.
+	// The watch won the race: completion waits for the health binding.
+	for _, line := range sink.snapshot() {
+		if strings.Contains(line, "recovered on attempt") || strings.Contains(line, "lifecycle RUNNING") {
+			t.Fatalf("logged before health binding: %q", line)
+		}
+	}
 	recovery.admitted(2)
 
 	lines := sink.snapshot()
@@ -134,5 +139,33 @@ func TestIssue1367RecoveredLogPrecedesRunningWatchLog(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("recovered logged %d times", count)
+	}
+}
+
+// A loss replayed at binding after the watch saw RUNNING must not be logged
+// as a recovery, and the series must restart without being reset by the watch.
+func TestIssue1367WatchRunningBeforeBindingWithReplayedLossIsNotRecovery(t *testing.T) {
+	sink := &issue1367LineSink{}
+	recovery := &ebusRecoveryLog{budget: 5, logf: sink.logf}
+	recovery.reportLoss(1, ebusLossAdapterConnection, func() bool { return true })
+	attempt := recovery.attemptStarted()
+	recovery.attemptFinished(attempt, 2, nil)
+
+	forwarder := &ebusNativeForwarder{logf: sink.logf, recovery: recovery}
+	forwarder.last = runtimecontrol.NativeObservation{State: drivermanager.ObservedBackoff, Reason: drivermanager.ReasonRetryScheduled}
+	forwarder.logTransition(runtimecontrol.LifecycleCorrelation{}, runtimecontrol.NativeObservation{State: drivermanager.ObservedRunning, Reason: drivermanager.ReasonNone}, drivermanager.Snapshot{Generation: 2})
+	// Binding replays the retained loss, then completes.
+	recovery.reportLoss(2, ebusLossAdapterConnection, func() bool { return true })
+	recovery.admitted(2)
+
+	text := strings.Join(sink.snapshot(), "\n")
+	if strings.Contains(text, "recovered on attempt") {
+		t.Fatalf("replayed loss reported as recovery:\n%s", text)
+	}
+	if !recovery.continuing() {
+		t.Fatalf("series was reset by the watch:\n%s", text)
+	}
+	if !strings.Contains(text, "lifecycle RUNNING") {
+		t.Fatalf("RUNNING line lost:\n%s", text)
 	}
 }

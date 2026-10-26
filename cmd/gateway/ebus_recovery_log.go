@@ -107,6 +107,11 @@ type ebusRecoveryLog struct {
 	// pending is the generation the latest attempt constructed and that is
 	// not yet admitted; a following attempt means its admission was refused.
 	pending uint64
+	// bound is the latest generation whose health binding completed.
+	bound uint64
+	// deferred is the RUNNING watch line held back until the pending
+	// generation is bound, so the recovered line stays ordered before it.
+	deferred func()
 }
 
 func (l *ebusRecoveryLog) printf(format string, args ...any) {
@@ -128,6 +133,7 @@ func (l *ebusRecoveryLog) reportLoss(generation uint64, reason string, report fu
 		return
 	}
 	l.active, l.attempt, l.reason, l.pending = true, 0, reason, 0
+	l.flushDeferred()
 	l.printf("ebus.primary: connection lost (reason=%s, generation=%d); bounded recovery scheduled (at most %d attempts)", reason, generation, l.budget)
 }
 
@@ -171,17 +177,52 @@ func (l *ebusRecoveryLog) attemptFinished(attempt int, generation uint64, err er
 	l.printf("ebus.primary: recovery attempt %d/%d reconnected (generation=%d); awaiting admission", attempt, l.budget, generation)
 }
 
-// admitted closes the series when the generation the latest attempt built
-// was published RUNNING. A loss replayed at binding reopened the series and
-// cleared pending, so it is not reported as a recovery.
+// flushDeferred emits a held RUNNING line; the caller holds the lock.
+func (l *ebusRecoveryLog) flushDeferred() {
+	if line := l.deferred; line != nil {
+		l.deferred = nil
+		line()
+	}
+}
+
+// complete closes the series with the recovered line; the caller holds the lock.
+func (l *ebusRecoveryLog) complete(generation uint64) {
+	l.printf("ebus.primary: recovered on attempt %d/%d (generation=%d)", l.attempt, l.budget, generation)
+	l.active, l.attempt, l.reason, l.pending = false, 0, "", 0
+}
+
+// admitted records that the health binding of generation completed, the
+// point at which a loss that raced construction has been replayed. It closes
+// the series when that generation is the one the latest attempt built. A
+// loss replayed at binding reopened the series and cleared pending, so it is
+// not reported as a recovery.
 func (l *ebusRecoveryLog) admitted(generation uint64) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if !l.active || l.pending == 0 || l.pending != generation {
-		return
+	l.bound = generation
+	if l.active && l.pending != 0 && l.pending == generation {
+		l.complete(generation)
 	}
-	l.printf("ebus.primary: recovered on attempt %d/%d (generation=%d)", l.attempt, l.budget, generation)
-	l.active, l.attempt, l.reason, l.pending = false, 0, "", 0
+	l.flushDeferred()
+}
+
+// running handles the RUNNING watch notification of generation. The recovered
+// line is gated on the health binding: when the generation is still unbound,
+// line is held until admitted or a replayed loss releases it. Otherwise line
+// follows any recovered line immediately.
+func (l *ebusRecoveryLog) running(generation uint64, line func()) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.active && l.pending != 0 && l.pending == generation {
+		if l.bound != generation {
+			l.flushDeferred()
+			l.deferred = line
+			return
+		}
+		l.complete(generation)
+	}
+	l.flushDeferred()
+	line()
 }
 
 // reset ends any series without a line: an explicit start or stop is not a
@@ -190,6 +231,7 @@ func (l *ebusRecoveryLog) reset() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.active, l.attempt, l.reason, l.pending = false, 0, "", 0
+	l.flushDeferred()
 }
 
 // ebusNativeForwarder projects DriverManager's own ebus.primary transitions
@@ -256,10 +298,14 @@ func (f *ebusNativeForwarder) logTransition(corr runtimecontrol.LifecycleCorrela
 		}
 		f.printf("ebus.primary: lifecycle BACKOFF (reason=%s, attempts_remaining=%d, next_attempt_in=%s)", obs.Reason, remaining, wait.Round(time.Millisecond))
 	case drivermanager.ObservedRunning:
-		if f.recovery != nil {
-			f.recovery.admitted(snapshot.Generation)
+		line := func() {
+			f.printf("ebus.primary: lifecycle RUNNING (generation=%d, recovered)", snapshot.Generation)
 		}
-		f.printf("ebus.primary: lifecycle RUNNING (generation=%d, recovered)", snapshot.Generation)
+		if f.recovery != nil {
+			f.recovery.running(snapshot.Generation, line)
+		} else {
+			line()
+		}
 	case drivermanager.ObservedDegraded:
 		f.printf("ebus.primary: lifecycle DEGRADED (reason=%s)", obs.Reason)
 	case drivermanager.ObservedFailed:

@@ -300,3 +300,65 @@ func TestNativeObservationSurvivesDecisionHoldThatReleases(t *testing.T) {
 	f.svc.releaseDecision(d, false)
 	nativeWaitStatus(t, f, drivermanager.ObservedFailed, drivermanager.ReasonRetryExhausted)
 }
+
+// A stale-generation callback arriving while a valid observation is queued
+// must not replace it.
+func TestNativeObservationStaleCallbackKeepsQueuedObservation(t *testing.T) {
+	f := newFixture(t, svcOpts{drivers: enabled(string(nativeDriver))})
+	corr := nativeLive(t, f)
+	d := f.svc.drivers[nativeDriver]
+
+	d.mu.Lock()
+	d.deciding++
+	d.mu.Unlock()
+	if !f.svc.ObserveNative(corr, NativeObservation{State: drivermanager.ObservedFailed, Reason: drivermanager.ReasonRetryExhausted, Quarantined: true}) {
+		t.Fatal("valid observation was not queued")
+	}
+	stale := corr
+	stale.Generation++
+	f.svc.ObserveNative(stale, NativeObservation{State: drivermanager.ObservedBackoff, Reason: drivermanager.ReasonRetryScheduled})
+	d.mu.Lock()
+	kept := d.native != nil && d.native.obs.State == drivermanager.ObservedFailed
+	d.mu.Unlock()
+	if !kept {
+		t.Fatal("stale callback replaced the queued FAILED observation")
+	}
+	f.svc.releaseDecision(d, false)
+	nativeWaitStatus(t, f, drivermanager.ObservedFailed, drivermanager.ReasonRetryExhausted)
+}
+
+// A record read before an accepted transition released its hold must not
+// let the queued observation through once a work slot exists.
+func TestNativeObservationRereadsWorkSlot(t *testing.T) {
+	f := newFixture(t, svcOpts{drivers: enabled(string(nativeDriver))})
+	corr := nativeLive(t, f)
+	d := f.svc.drivers[nativeDriver]
+	stale, err := f.svc.store.Driver(nativeDriver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	f.execs[nativeDriver].setStop(func(context.Context, LifecycleCorrelation) StopOutcome {
+		once.Do(func() { close(entered) })
+		<-release
+		return StopOutcome{NativeClosed: true, SemanticCleaned: true}
+	})
+	defer close(release)
+	f.mustDecide(MethodRestart, nativeDriver)
+	<-entered
+	if f.record(nativeDriver).Current == nil {
+		t.Fatal("expected a committed work slot")
+	}
+	d.mu.Lock()
+	d.deciding, d.inflight, d.untyped, d.ambiguous = 0, nil, nil, nil
+	d.live = &attempt{corr: corr}
+	d.corr = corr
+	d.native = &pendingNative{corr: corr, obs: NativeObservation{State: drivermanager.ObservedBackoff, Reason: drivermanager.ReasonRetryScheduled}}
+	d.mu.Unlock()
+	before := f.status(nativeDriver)
+	f.svc.applyNative(d, stale)
+	if got := f.status(nativeDriver); got.ObservedState == drivermanager.ObservedBackoff && before.ObservedState != got.ObservedState {
+		t.Fatalf("native observation published over a committed work slot: %+v", got)
+	}
+}

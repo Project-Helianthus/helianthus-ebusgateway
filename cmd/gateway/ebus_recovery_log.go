@@ -112,6 +112,9 @@ type ebusRecoveryLog struct {
 	// deferred is the RUNNING watch line held back until the pending
 	// generation is bound, so the recovered line stays ordered before it.
 	deferred func()
+	// deferredPublish is the service publication that belongs to deferred: it
+	// is released only by the health binding, never by a loss or a reset.
+	deferredPublish func()
 }
 
 func (l *ebusRecoveryLog) printf(format string, args ...any) {
@@ -133,7 +136,7 @@ func (l *ebusRecoveryLog) reportLoss(generation uint64, reason string, report fu
 		return
 	}
 	l.active, l.attempt, l.reason, l.pending = true, 0, reason, 0
-	l.flushDeferred()
+	l.flushDeferred(false)
 	l.printf("ebus.primary: connection lost (reason=%s, generation=%d); bounded recovery scheduled (at most %d attempts)", reason, generation, l.budget)
 }
 
@@ -178,10 +181,14 @@ func (l *ebusRecoveryLog) attemptFinished(attempt int, generation uint64, err er
 }
 
 // flushDeferred emits a held RUNNING line; the caller holds the lock.
-func (l *ebusRecoveryLog) flushDeferred() {
-	if line := l.deferred; line != nil {
-		l.deferred = nil
+func (l *ebusRecoveryLog) flushDeferred(publish bool) {
+	line, pub := l.deferred, l.deferredPublish
+	l.deferred, l.deferredPublish = nil, nil
+	if line != nil {
 		line()
+	}
+	if publish && pub != nil {
+		pub()
 	}
 }
 
@@ -203,26 +210,29 @@ func (l *ebusRecoveryLog) admitted(generation uint64) {
 	if l.active && l.pending != 0 && l.pending == generation {
 		l.complete(generation)
 	}
-	l.flushDeferred()
+	l.flushDeferred(true)
 }
 
 // running handles the RUNNING watch notification of generation. The recovered
 // line is gated on the health binding: when the generation is still unbound,
 // line is held until admitted or a replayed loss releases it. Otherwise line
-// follows any recovered line immediately.
-func (l *ebusRecoveryLog) running(generation uint64, line func()) {
+// follows any recovered line immediately. publish, the service publication of
+// the RUNNING observation, is held and released with the line, and dropped
+// with it when a replayed loss or a newer notification supersedes it.
+func (l *ebusRecoveryLog) running(generation uint64, line, publish func()) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.active && l.pending != 0 && l.pending == generation {
 		if l.bound != generation {
-			l.flushDeferred()
-			l.deferred = line
+			l.flushDeferred(false)
+			l.deferred, l.deferredPublish = line, publish
 			return
 		}
 		l.complete(generation)
 	}
-	l.flushDeferred()
+	l.flushDeferred(false)
 	line()
+	publish()
 }
 
 // reset ends any series without a line: an explicit start or stop is not a
@@ -231,7 +241,7 @@ func (l *ebusRecoveryLog) reset() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.active, l.attempt, l.reason, l.pending = false, 0, "", 0
-	l.flushDeferred()
+	l.flushDeferred(false)
 }
 
 // ebusNativeForwarder projects DriverManager's own ebus.primary transitions
@@ -269,18 +279,23 @@ func (f *ebusNativeForwarder) forward(snapshot drivermanager.Snapshot) {
 	if !ok {
 		return
 	}
-	f.logTransition(corr, obs, snapshot)
-	f.service.ObserveNative(corr, obs)
+	publish := func() { f.service.ObserveNative(corr, obs) }
+	if !f.logTransition(corr, obs, snapshot, publish) {
+		publish()
+	}
 }
 
-func (f *ebusNativeForwarder) logTransition(corr runtimecontrol.LifecycleCorrelation, obs runtimecontrol.NativeObservation, snapshot drivermanager.Snapshot) {
+// logTransition logs the transition and reports whether it took over the
+// service publication: a recovered RUNNING is published by the recovery log
+// at the health-binding boundary, together with its line.
+func (f *ebusNativeForwarder) logTransition(corr runtimecontrol.LifecycleCorrelation, obs runtimecontrol.NativeObservation, snapshot drivermanager.Snapshot, publish func()) bool {
 	if corr.Epoch != f.epoch {
 		// A new epoch opens with the service's own RUNNING.
 		f.epoch, f.last = corr.Epoch, runtimecontrol.NativeObservation{State: drivermanager.ObservedRunning, Reason: drivermanager.ReasonNone}
 	}
 	previous := f.last
 	if previous == obs {
-		return
+		return false
 	}
 	f.last = obs
 	switch obs.State {
@@ -302,13 +317,14 @@ func (f *ebusNativeForwarder) logTransition(corr runtimecontrol.LifecycleCorrela
 			f.printf("ebus.primary: lifecycle RUNNING (generation=%d, recovered)", snapshot.Generation)
 		}
 		if f.recovery != nil {
-			f.recovery.running(snapshot.Generation, line)
-		} else {
-			line()
+			f.recovery.running(snapshot.Generation, line, publish)
+			return true
 		}
+		line()
 	case drivermanager.ObservedDegraded:
 		f.printf("ebus.primary: lifecycle DEGRADED (reason=%s)", obs.Reason)
 	case drivermanager.ObservedFailed:
 		f.printf("ebus.primary: lifecycle FAILED (reason=%s, safety_quarantined=%t); automatic recovery ended, request helianthus.runtime.restart", obs.Reason, obs.Quarantined)
 	}
+	return false
 }

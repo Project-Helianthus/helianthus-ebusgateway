@@ -63,6 +63,14 @@ func (s *Service) ObserveNative(corr LifecycleCorrelation, obs NativeObservation
 		return false
 	}
 	d.mu.Lock()
+	// A callback for a generation other than the admitted one would only be
+	// dropped by the reconciler; it must not first replace a queued
+	// observation of the admitted generation.
+	if d.live != nil && (corr.Epoch != d.live.corr.Epoch || corr.Generation != d.live.corr.Generation) {
+		d.mu.Unlock()
+		s.wakeDriver(d)
+		return true
+	}
 	d.native = &pendingNative{corr: corr, obs: obs}
 	d.mu.Unlock()
 	s.wakeDriver(d)
@@ -84,6 +92,17 @@ func (s *Service) applyNative(d *driverState, rec ControlRecord) {
 	}
 	d.native = nil
 	live := d.live
+	if pending != nil {
+		// The record the reconciler read may predate a decision that committed
+		// and released since: re-read the durable slot under the guards, which
+		// are clear, so an accepted STOP or RESTART is always seen.
+		fresh, err := s.store.Driver(d.id)
+		if err != nil || fresh.Current != nil {
+			d.mu.Unlock()
+			return
+		}
+		rec = fresh
+	}
 	apply := pending != nil && live != nil && rec.DesiredState == DesiredRunning &&
 		!d.quarantined && !d.recoveryBlocked &&
 		pending.corr.Epoch == live.corr.Epoch && pending.corr.Generation == live.corr.Generation &&

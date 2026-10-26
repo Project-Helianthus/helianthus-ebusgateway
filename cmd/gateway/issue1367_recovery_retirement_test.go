@@ -107,16 +107,23 @@ func TestIssue1367RecoveredLogPrecedesRunningWatchLog(t *testing.T) {
 	attempt := recovery.attemptStarted()
 	recovery.attemptFinished(attempt, 2, nil)
 
+	published := 0
 	forwarder := &ebusNativeForwarder{logf: sink.logf, recovery: recovery}
 	forwarder.last = runtimecontrol.NativeObservation{State: drivermanager.ObservedBackoff, Reason: drivermanager.ReasonRetryScheduled}
-	forwarder.logTransition(runtimecontrol.LifecycleCorrelation{}, runtimecontrol.NativeObservation{State: drivermanager.ObservedRunning, Reason: drivermanager.ReasonNone}, drivermanager.Snapshot{Generation: 2})
+	forwarder.logTransition(runtimecontrol.LifecycleCorrelation{}, runtimecontrol.NativeObservation{State: drivermanager.ObservedRunning, Reason: drivermanager.ReasonNone}, drivermanager.Snapshot{Generation: 2}, func() { published++ })
 	// The watch won the race: completion waits for the health binding.
 	for _, line := range sink.snapshot() {
 		if strings.Contains(line, "recovered on attempt") || strings.Contains(line, "lifecycle RUNNING") {
 			t.Fatalf("logged before health binding: %q", line)
 		}
 	}
+	if published != 0 {
+		t.Fatalf("RUNNING published to the service before the health binding")
+	}
 	recovery.admitted(2)
+	if published != 1 {
+		t.Fatalf("RUNNING published %d times after the health binding; want 1", published)
+	}
 
 	lines := sink.snapshot()
 	recovered, running := -1, -1
@@ -151,12 +158,16 @@ func TestIssue1367WatchRunningBeforeBindingWithReplayedLossIsNotRecovery(t *test
 	attempt := recovery.attemptStarted()
 	recovery.attemptFinished(attempt, 2, nil)
 
+	published := 0
 	forwarder := &ebusNativeForwarder{logf: sink.logf, recovery: recovery}
 	forwarder.last = runtimecontrol.NativeObservation{State: drivermanager.ObservedBackoff, Reason: drivermanager.ReasonRetryScheduled}
-	forwarder.logTransition(runtimecontrol.LifecycleCorrelation{}, runtimecontrol.NativeObservation{State: drivermanager.ObservedRunning, Reason: drivermanager.ReasonNone}, drivermanager.Snapshot{Generation: 2})
+	forwarder.logTransition(runtimecontrol.LifecycleCorrelation{}, runtimecontrol.NativeObservation{State: drivermanager.ObservedRunning, Reason: drivermanager.ReasonNone}, drivermanager.Snapshot{Generation: 2}, func() { published++ })
 	// Binding replays the retained loss, then completes.
 	recovery.reportLoss(2, ebusLossAdapterConnection, func() bool { return true })
 	recovery.admitted(2)
+	if published != 0 {
+		t.Fatalf("RUNNING of a generation whose loss was replayed at binding was published %d times", published)
+	}
 
 	text := strings.Join(sink.snapshot(), "\n")
 	if strings.Contains(text, "recovered on attempt") {

@@ -272,3 +272,31 @@ func TestNativeObservationQuarantineBlocksAdmission(t *testing.T) {
 		t.Fatalf("observed %+v; quarantine was overwritten", got)
 	}
 }
+
+// A decision that raises its hold between the reconciler's check and the
+// apply, then fails to persist, must not lose the queued terminal FAILED.
+func TestNativeObservationSurvivesDecisionHoldThatReleases(t *testing.T) {
+	f := newFixture(t, svcOpts{drivers: enabled(string(nativeDriver))})
+	corr := nativeLive(t, f)
+	d := f.svc.drivers[nativeDriver]
+
+	d.mu.Lock()
+	d.deciding++
+	d.native = &pendingNative{corr: corr, obs: NativeObservation{State: drivermanager.ObservedFailed, Reason: drivermanager.ReasonRetryExhausted}}
+	d.mu.Unlock()
+
+	rec, err := f.svc.store.Driver(nativeDriver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.svc.applyNative(d, rec)
+	d.mu.Lock()
+	kept := d.native != nil
+	d.mu.Unlock()
+	if !kept {
+		t.Fatal("applyNative discarded the queued observation during a decision hold")
+	}
+
+	f.svc.releaseDecision(d, false)
+	nativeWaitStatus(t, f, drivermanager.ObservedFailed, drivermanager.ReasonRetryExhausted)
+}

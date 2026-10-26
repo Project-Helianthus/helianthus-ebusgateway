@@ -75,10 +75,16 @@ func (s *Service) ObserveNative(corr LifecycleCorrelation, obs NativeObservation
 func (s *Service) applyNative(d *driverState, rec ControlRecord) {
 	d.mu.Lock()
 	pending := d.native
+	// A decision, attempt or ambiguous hold raised after the reconciler's own
+	// check keeps the observation queued: the release wakes the reconciler,
+	// which then applies it or drops it as stale.
+	if pending != nil && (d.inflight != nil || d.untyped != nil || d.deciding > 0 || d.ambiguous != nil) {
+		d.mu.Unlock()
+		return
+	}
 	d.native = nil
 	live := d.live
 	apply := pending != nil && live != nil && rec.DesiredState == DesiredRunning &&
-		d.inflight == nil && d.untyped == nil && d.deciding == 0 && d.ambiguous == nil &&
 		!d.quarantined && !d.recoveryBlocked &&
 		pending.corr.Epoch == live.corr.Epoch && pending.corr.Generation == live.corr.Generation &&
 		d.corr.Epoch == live.corr.Epoch && d.corr.Generation == live.corr.Generation

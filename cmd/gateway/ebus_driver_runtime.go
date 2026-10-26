@@ -177,6 +177,11 @@ func newEBusDriverFactory(cfg ebusgateway.Config, protocol ebusgateway.Transport
 		connected := observeEBusDial(&generationCfg.TransportConfig)
 		active, activeClose, err := ebusgateway.OpenEBusDriverTransport(ctx, generationCfg)
 		if err != nil {
+			if cfg.Transport != nil {
+				// The injected resource is consumed even when INIT fails;
+				// this factory cannot construct a replacement for a retry.
+				return nil, errors.Join(transport.ErrDriverUnavailable, err)
+			}
 			// After a successful dial of an ENH or ENS endpoint only the INIT
 			// handshake can fail: the configuration passed validation.
 			if connected.Load() && (normalized.Protocol == ebusgateway.TransportENH || normalized.Protocol == ebusgateway.TransportENS) {
@@ -272,7 +277,8 @@ func buildManagedAdapterDirectGeneration(factoryCtx context.Context, cfg ebusgat
 // from the rest. Non-retryable, so terminal under the persistent policy, are
 // only conditions that are provably local: a configuration that local
 // validation rejected before any dial (CONFIG_INVALID), an unavailable or
-// stale runtime (an explicit stop or restart superseded the attempt) and a
+// stale runtime (an explicit stop or restart superseded the attempt), a
+// consumed one-shot injected transport, and a
 // lifecycle identity mismatch (the hub source no longer carries the epoch and
 // generation the bridge holds). Everything else is a retryable dependency
 // loss: a dial failure, a timeout, a closed transport, and every answer of

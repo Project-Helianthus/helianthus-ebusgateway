@@ -526,6 +526,41 @@ func TestIssue1373ProxyClassValidationMatchesTheTransportConstructor(t *testing.
 
 type issue1373NopTransport struct{ transport.RawTransport }
 
+type issue1373FailingInitTransport struct {
+	transport.RawTransport
+	err   error
+	calls int
+}
+
+func (raw *issue1373FailingInitTransport) Init(byte) (byte, error) {
+	raw.calls++
+	return 0, raw.err
+}
+
+func (*issue1373FailingInitTransport) Close() error { return nil }
+
+func TestIssue1373InjectedInitFailureIsTerminal(t *testing.T) {
+	for _, cause := range []error{ebuserrors.ErrInvalidPayload, ebuserrors.ErrTimeout, ebuserrors.ErrTransportClosed} {
+		t.Run(cause.Error(), func(t *testing.T) {
+			raw := &issue1373FailingInitTransport{err: cause}
+			cfg := ebusgateway.DefaultConfig()
+			cfg.Transport = raw
+			factory := newEBusDriverFactory(cfg, ebusgateway.TransportENH, false, &ebusV8CumulativeCounter{})
+			managed, err := factory(context.Background())
+			if managed != nil || !errors.Is(err, cause) || raw.calls != 1 {
+				t.Fatalf("construction = %v, %v; INIT calls = %d; want no generation and original INIT failure", managed, err, raw.calls)
+			}
+			failure := classifyEBusDriverError(err)
+			if failure.Reason.Retryable || failure.Reason.Code != drivermanager.ReasonProviderUnavailable {
+				t.Fatalf("injected INIT failure = %+v; want terminal PROVIDER_UNAVAILABLE", failure)
+			}
+			if _, err := factory(context.Background()); !errors.Is(err, transport.ErrDriverUnavailable) || raw.calls != 1 {
+				t.Fatalf("consumed transport reused: error = %v, INIT calls = %d", err, raw.calls)
+			}
+		})
+	}
+}
+
 // The adapter-direct handshake trace records every INIT attempt line of the
 // multiplexer until the construction returns and passes every line to the
 // process log unchanged. Each field of the outcome is varied on its own.

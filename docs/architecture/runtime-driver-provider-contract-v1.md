@@ -2446,6 +2446,11 @@ cancels the wait at once and opens a new epoch whose next failure series
 starts again with the full fast budget.
 `RETRY_EXHAUSTED` is not reached by `ebus.primary`.
 
+An injected transport is a one-shot resource: the factory cannot reconstruct
+it after consumption. If its INIT fails, the first attempt ends terminally
+with `PROVIDER_UNAVAILABLE`, preserving the INIT cause without scheduling a
+retry. This does not classify the peer's answer as invalid configuration.
+
 Opening START admitted into recovery. The opening START of an epoch (process
 start, `START` after `STOP`, `RESTART`) runs under the service's
 per-operation budget of thirty seconds, and that budget bounds only its first

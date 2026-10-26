@@ -110,9 +110,16 @@ func (s *Service) applyNative(d *driverState, rec ControlRecord) {
 	if apply && pending.obs.Quarantined {
 		d.quarantined = true
 	}
+	if apply {
+		// The decision guard spans the publication: a STOP or RESTART that
+		// begins now is refused as busy instead of committing between the
+		// checks above and the published observation.
+		d.deciding++
+	}
 	d.mu.Unlock()
 	if !apply {
 		return
 	}
+	defer s.releaseDecision(d, false)
 	s.observe(d, observation{state: pending.obs.State, reason: pending.obs.Reason, quarantined: pending.obs.Quarantined})
 }

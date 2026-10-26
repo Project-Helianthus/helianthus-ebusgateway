@@ -362,3 +362,36 @@ func TestNativeObservationRereadsWorkSlot(t *testing.T) {
 		t.Fatalf("native observation published over a committed work slot: %+v", got)
 	}
 }
+
+// A STOP that begins after the durable reread but before the native
+// observation is published must not commit in between: the decision guard
+// spans the publication, so the operator decision is refused as busy and
+// the native BACKOFF cannot be published over an accepted STOP.
+func TestNativeObservationPublicationHoldsDecisionGuard(t *testing.T) {
+	var hs *hookStore
+	f := newFixture(t, svcOpts{drivers: enabled(string(nativeDriver)),
+		wrap: func(s Store) Store { hs = &hookStore{Store: s}; return hs }})
+	corr := nativeLive(t, f)
+	reached, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	t.Cleanup(func() { once.Do(func() { close(release) }) })
+	hook := func() {
+		close(reached)
+		<-release
+	}
+	hs.advanceHook.Store(&hook)
+	if !f.svc.ObserveNative(corr, NativeObservation{State: drivermanager.ObservedBackoff, Reason: drivermanager.ReasonRetryScheduled}) {
+		t.Fatal("well-formed observation not queued")
+	}
+	select {
+	case <-reached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("native observation did not reach publication")
+	}
+	_, err := f.decide(MethodStop, nativeDriver)
+	refusalOf(t, err, RefusalTransitionBusy, 8)
+	once.Do(func() { close(release) })
+	nativeWaitStatus(t, f, drivermanager.ObservedBackoff, drivermanager.ReasonRetryScheduled)
+	f.mustDecide(MethodStop, nativeDriver)
+	f.waitSettled(nativeDriver, drivermanager.ObservedStopped)
+}

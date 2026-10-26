@@ -1,16 +1,18 @@
 package runtimecontrol
 
 import (
+	"errors"
 	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/drivermanager"
 )
 
 // NativeObservation is one executor-originated lifecycle observation of the
-// generation that a driver's last successful START admitted. It reports what
-// the native lifecycle owner did on its own after RUNNING: a failure
-// replacement in BACKOFF, one of its STARTING attempts, the recovered RUNNING
-// or DEGRADED generation, or a terminal FAILED for a failure that retrying
+// generation that a driver's last successful START admitted, RUNNING or into
+// the native owner's recovery (RecoveringStart). It reports what the native
+// lifecycle owner did on its own after that admission: a failure replacement
+// or retry in BACKOFF, one of its STARTING attempts, the recovered RUNNING or
+// DEGRADED generation, or a terminal FAILED for a failure that retrying
 // cannot heal (with Quarantined for an unconfirmed close).
 //
 // A BACKOFF observation may carry the owner's schedule: NextAttempt is the
@@ -23,6 +25,39 @@ type NativeObservation struct {
 	Quarantined    bool
 	NextAttempt    int
 	NextAttemptUTC time.Time
+}
+
+// RecoveringStart is the Start outcome of an executor whose native lifecycle
+// owner took the opening generation into its own persistent recovery: the
+// first attempt failed for a retryable reason, and the owner keeps retrying
+// under its own schedule while the driver is desired RUNNING. The service
+// admits the generation as it admits a RUNNING one, so its cleanup
+// obligations pass to the admitted generation and a later STOP or RESTART
+// withdraws it. It publishes Observation instead of RUNNING. The owner's
+// later transitions arrive through Service.ObserveNative.
+//
+// Observation must be BACKOFF with RETRY_SCHEDULED, optionally with its
+// schedule. Any other value is treated as a failed Start, so the service
+// settles the generation's cleanup obligations and nothing stays open.
+type RecoveringStart struct {
+	Observation NativeObservation
+}
+
+func (r *RecoveringStart) Error() string {
+	return "runtimecontrol: start admitted into native recovery"
+}
+
+// recoveringStart returns the observation of a valid RecoveringStart outcome.
+func recoveringStart(err error) (NativeObservation, bool) {
+	var recovering *RecoveringStart
+	if !errors.As(err, &recovering) || recovering == nil {
+		return NativeObservation{}, false
+	}
+	obs := recovering.Observation
+	if obs.State != drivermanager.ObservedBackoff || obs.Reason != drivermanager.ReasonRetryScheduled || !nativeObservable(obs) {
+		return NativeObservation{}, false
+	}
+	return obs, true
 }
 
 // pendingNative is the newest queued executor observation of one driver.

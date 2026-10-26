@@ -2437,6 +2437,33 @@ quarantine. An explicit `STOP` ends the series with `STOPPED`. An operator
 a new epoch whose next failure series starts again with the full fast budget.
 `RETRY_EXHAUSTED` is not reached by `ebus.primary`.
 
+Opening START admitted into recovery. The opening START of an epoch (process
+start, `START` after `STOP`, `RESTART`) runs under the service's
+per-operation budget of thirty seconds, and that budget bounds only its first
+attempt. When the first attempt fails for a retryable reason (a dial failure,
+a timeout, a closed transport), DriverManager schedules the first retry of a
+persistent series, and the bridge admits the START into that recovery at the
+first manager snapshot that shows it: `BACKOFF` with `RETRY_SCHEDULED`, the
+schedule, a persistent series (`RetrySnapshot.Persistent`), desired `RUNNING`,
+and a manager revision after the bridge dispatched this epoch's start.
+`Start` then returns `runtimecontrol.RecoveringStart` with that `BACKOFF`.
+The service admits the epoch like a `RUNNING` one: the slot completes, the
+cleanup obligations pass to the admitted generation, so `STOP` and
+`RESTART` withdraw it, and a repeated `START` is a no-op. The service
+publishes the `BACKOFF` with its schedule instead of `RUNNING`. From then on
+the recovery is the one described above: the same policy and terminal set,
+the same forwarded transitions, the same view and the same log lines. The
+failed start is logged with its class, cause text and the schedule, and each
+retry is a recovery attempt whose first reason is the failed start's class.
+The first successful construction is admitted as the epoch's generation, and
+`RUNNING` reaches the service as a native observation. A terminal class
+still fails the START with its own reason, because DriverManager publishes
+`FAILED` for it and never schedules a retry. A first attempt that is still in
+flight when the budget ends fails the START as before. A `RecoveringStart`
+whose observation the service cannot admit is a failed start: its generation
+is withdrawn. Drivers with a bounded policy are unchanged: their retries
+stay within the opening START's budget.
+
 The gateway logs the loss with its closed trigger category and the schedule,
 every visible `BACKOFF` with the next attempt's number, due time (UTC), delay
 and phase, every replacement attempt with its number, phase and reason (the
@@ -2451,8 +2478,9 @@ endpoint.
 
 The gateway's manager watch forwards these manager-driven transitions to the
 service through `Service.ObserveNative`, once the epoch's opening START has
-succeeded: `BACKOFF` with `RETRY_SCHEDULED` and its schedule (the ordinal of
-the next attempt within the failure series and its due time), a retry
+succeeded or was admitted into recovery: `BACKOFF` with `RETRY_SCHEDULED`
+and its schedule (the ordinal of the next attempt within the failure series
+and its due time), a retry
 `STARTING`, the recovered `RUNNING` or `DEGRADED` generation, and the
 terminal `FAILED` of a failure that retrying cannot heal (or
 `CLOSE_UNCONFIRMED` with quarantine). The service's own reconciler applies

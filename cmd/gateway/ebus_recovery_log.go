@@ -172,7 +172,10 @@ func ebusRecoveryPhase(attempt, budget int) string {
 // attempt with its number, phase and reason (the trigger, then the previous
 // attempt's error class), every failure with its error class and cause text
 // (never the endpoint), and the admitted recovered generation. It also logs
-// each failed start attempt outside a recovery series with the same cause.
+// each failed start attempt outside a recovery series with the same cause; a
+// failed start that DriverManager follows with a persistent recovery series
+// opens that series (startRecovering), so its retries are logged like the
+// recovery after a loss.
 type ebusRecoveryLog struct {
 	mu sync.Mutex
 	// budget is the number of fast attempts; persistent is the phase that
@@ -293,6 +296,20 @@ func (l *ebusRecoveryLog) startFinished(err error) {
 	l.printf("ebus.primary: start attempt %d failed (class=%s, error=%q)", l.starts, ebusRecoveryFailureCategory(err), ebusRecoveryErrorText(err))
 }
 
+// startRecovering logs a failed start whose retryable failure DriverManager
+// turns into a persistent recovery series, with its error class, cause text
+// and the schedule, and opens that series: the manager's next attempt is the
+// series' first attempt, with the failure's class as its reason.
+func (l *ebusRecoveryLog) startRecovering(err error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.starts++
+	class := ebusRecoveryFailureCategory(err)
+	l.printf("ebus.primary: start attempt %d failed (class=%s, error=%q); %s", l.starts, class, ebusRecoveryErrorText(err), l.scheduleText())
+	l.active, l.attempt, l.reason, l.pending = true, 0, "retry_after_"+class, 0
+	l.flushDeferred(false)
+}
+
 // flushDeferred emits a held RUNNING line; the caller holds the lock.
 func (l *ebusRecoveryLog) flushDeferred(publish bool) {
 	line, pub := l.deferred, l.deferredPublish
@@ -359,7 +376,8 @@ func (l *ebusRecoveryLog) reset() {
 }
 
 // ebusNativeForwarder projects DriverManager's own ebus.primary transitions
-// after RUNNING into the runtime control service, the owner of
+// after the opening START (RUNNING, or admitted into the persistent recovery
+// after a failed first attempt) into the runtime control service, the owner of
 // helianthus.runtime.list and of the Portal driver readback, and logs the
 // visible state with its schedule. It runs on the manager watch only.
 type ebusNativeForwarder struct {
@@ -403,8 +421,14 @@ func (f *ebusNativeForwarder) forward(snapshot drivermanager.Snapshot) {
 // at the health-binding boundary, together with its line.
 func (f *ebusNativeForwarder) logTransition(corr runtimecontrol.LifecycleCorrelation, obs runtimecontrol.NativeObservation, snapshot drivermanager.Snapshot, publish func()) bool {
 	if corr.Epoch != f.epoch {
-		// A new epoch opens with the service's own RUNNING.
+		// A new epoch opens with the service's own RUNNING, or with the
+		// BACKOFF of an opening START admitted into recovery: then every
+		// forwarded transition, its first BACKOFF and its RUNNING included,
+		// is new.
 		f.epoch, f.last = corr.Epoch, runtimecontrol.NativeObservation{State: drivermanager.ObservedRunning, Reason: drivermanager.ReasonNone}
+		if f.bridge.openedInRecovery(corr.Epoch) {
+			f.last = runtimecontrol.NativeObservation{}
+		}
 	}
 	previous := f.last
 	if previous == obs {

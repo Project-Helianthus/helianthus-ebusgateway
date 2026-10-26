@@ -151,6 +151,17 @@ type ebusControlEpoch struct {
 	startDone chan struct{}
 	startErr  error
 
+	// dispatched and dispatchRevision record the manager revision read just
+	// before the opening start was dispatched; only a later manager
+	// transition can belong to this epoch's start.
+	dispatched       bool
+	dispatchRevision uint64
+	// recovering reports that the opening START was admitted into
+	// DriverManager's persistent recovery (see recoveryHandoverLocked);
+	// recoveryObs is the BACKOFF observation of that admission.
+	recovering  bool
+	recoveryObs runtimecontrol.NativeObservation
+
 	retired    bool
 	retiring   chan struct{}
 	closeClass drivermanager.CloseClass
@@ -414,8 +425,11 @@ func (bridge *ebusControlRuntime) fenceLocked(epoch *ebusControlEpoch) {
 }
 
 // runStart asks DriverManager for exactly one native start of this
-// operation and waits for its terminal result. Retries, backoff and drain
-// stay inside DriverManager.
+// operation and waits for its result. Retries, backoff and drain stay inside
+// DriverManager. The service's operation budget (ctx) bounds the opening
+// attempt only: once DriverManager has scheduled a retry of a persistent
+// series, the START is admitted into that recovery (a RecoveringStart), and
+// its later transitions reach the service through NativeObservation.
 func (bridge *ebusControlRuntime) runStart(ctx context.Context, epoch *ebusControlEpoch) error {
 	if err := bridge.startManager(ctx, epoch); err != nil {
 		reason := drivermanager.ReasonProviderUnavailable
@@ -428,9 +442,14 @@ func (bridge *ebusControlRuntime) runStart(ctx context.Context, epoch *ebusContr
 		snapshot, changed, _ := bridge.manager.Watch(string(bridge.id))
 		bridge.mu.Lock()
 		fenced, current, native := epoch.fenced, bridge.current == epoch, epoch.native
+		recovering := !fenced && current && bridge.recoveryHandoverLocked(epoch, snapshot)
+		recovery := epoch.recoveryObs
 		bridge.mu.Unlock()
 		if fenced || !current {
 			return bridge.failStart(epoch, ebusControlFailure(drivermanager.ReasonInternalError, errEBusControlStale))
+		}
+		if recovering {
+			return &runtimecontrol.RecoveringStart{Observation: recovery}
 		}
 		switch snapshot.ObservedState {
 		case drivermanager.ObservedRunning, drivermanager.ObservedDegraded:
@@ -444,6 +463,13 @@ func (bridge *ebusControlRuntime) runStart(ctx context.Context, epoch *ebusContr
 			if epoch.fenced {
 				bridge.mu.Unlock()
 				continue
+			}
+			if epoch.recovering {
+				// The manager watch admitted the recovery meanwhile; its
+				// RUNNING reaches the service as a native observation.
+				recovery := epoch.recoveryObs
+				bridge.mu.Unlock()
+				return &runtimecontrol.RecoveringStart{Observation: recovery}
 			}
 			close(epoch.startDone)
 			bridge.mu.Unlock()
@@ -468,6 +494,60 @@ func (bridge *ebusControlRuntime) runStart(ctx context.Context, epoch *ebusContr
 			return bridge.failStart(epoch, ebusControlFailure(drivermanager.ReasonInternalError, ctx.Err()))
 		}
 	}
+}
+
+// recoveryHandoverLocked admits the opening START of epoch into
+// DriverManager's persistent recovery and reports whether it is admitted. It
+// admits once, at the first manager snapshot that shows a retry scheduled
+// for this epoch's start in a persistent series: BACKOFF with
+// RETRY_SCHEDULED and a schedule, desired RUNNING, no quarantine, and a
+// revision after the dispatch, so a snapshot from before this epoch's start
+// never qualifies. The opening START must still be in flight and the epoch
+// current and unfenced. A terminal failure never qualifies: it is FAILED, and
+// it still fails the START. Admission closes startDone without an error,
+// which lets NativeObservation forward the manager's later transitions. Both
+// runStart and the manager watch (NativeObservation) call it, so whichever
+// sees the BACKOFF first admits it. The caller holds bridge.mu.
+func (bridge *ebusControlRuntime) recoveryHandoverLocked(epoch *ebusControlEpoch, snapshot drivermanager.Snapshot) bool {
+	if epoch.recovering {
+		return true
+	}
+	if epoch != bridge.current || epoch.fenced || !epoch.dispatched || bridge.quarantined {
+		return false
+	}
+	select {
+	case <-epoch.startDone:
+		return false
+	default:
+	}
+	retry := snapshot.Retry
+	if snapshot.ObservedState != drivermanager.ObservedBackoff || snapshot.Reason.Code != drivermanager.ReasonRetryScheduled ||
+		snapshot.DesiredState != drivermanager.DesiredRunning || snapshot.SafetyQuarantined || snapshot.Revision <= epoch.dispatchRevision ||
+		retry == nil || !retry.Persistent || retry.Attempt < 1 || retry.NotBeforeUTC.IsZero() {
+		return false
+	}
+	epoch.recovering = true
+	epoch.recoveryObs = runtimecontrol.NativeObservation{State: drivermanager.ObservedBackoff, Reason: drivermanager.ReasonRetryScheduled,
+		NextAttempt: retry.Attempt, NextAttemptUTC: retry.NotBeforeUTC.UTC()}
+	close(epoch.startDone)
+	return true
+}
+
+// openedInRecovery reports whether the opening START of the given epoch was
+// admitted into DriverManager's persistent recovery rather than RUNNING.
+func (bridge *ebusControlRuntime) openedInRecovery(epoch runtimecontrol.SourceEpoch) bool {
+	if bridge == nil {
+		return false
+	}
+	bridge.mu.Lock()
+	defer bridge.mu.Unlock()
+	if current := bridge.current; current != nil && current.key.Epoch == epoch {
+		return current.recovering
+	}
+	if past := bridge.history[epoch]; past != nil {
+		return past.recovering
+	}
+	return false
 }
 
 // startManager requests the native start. A predecessor's construction may
@@ -505,8 +585,12 @@ func (bridge *ebusControlRuntime) dispatchStart(epoch *ebusControlEpoch) error {
 	}
 	bridge.dispatchMu.Lock()
 	defer bridge.dispatchMu.Unlock()
+	before, _ := bridge.manager.Snapshot(string(bridge.id))
 	bridge.mu.Lock()
 	stale := epoch.fenced || bridge.current != epoch
+	if !stale {
+		epoch.dispatched, epoch.dispatchRevision = true, before.Revision
+	}
 	bridge.mu.Unlock()
 	if stale {
 		return errEBusControlStale
@@ -536,6 +620,9 @@ func (bridge *ebusControlRuntime) awaitStart(ctx context.Context, epoch *ebusCon
 	}
 	if epoch.fenced {
 		return ebusControlFailure(drivermanager.ReasonInternalError, errEBusControlStale)
+	}
+	if epoch.recovering {
+		return &runtimecontrol.RecoveringStart{Observation: epoch.recoveryObs}
 	}
 	return nil
 }
@@ -908,20 +995,23 @@ func (bridge *ebusControlRuntime) View() ebusControlView {
 }
 
 // NativeObservation derives, from one manager snapshot, the executor
-// observation of the current epoch once its opening START succeeded. It
-// reports DriverManager's own failure replacement after RUNNING: BACKOFF with
-// the scheduled attempt number and due time, a retry STARTING, the recovered
-// RUNNING or DEGRADED generation, and the terminal FAILED of a failure that
-// retrying cannot heal (CLOSE_UNCONFIRMED and quarantine for an unproven
-// close). The correlation is the one the
-// service opened the epoch with; same-epoch replacements keep it. STOPPING,
-// STOPPED and DISABLED belong to the service's STOP path and a fenced epoch
-// reports nothing, so a service transition is never overwritten.
+// observation of the current epoch once its opening START succeeded or was
+// admitted into DriverManager's persistent recovery. It reports
+// DriverManager's own failure replacement after RUNNING, or its retries after
+// a failed opening attempt: BACKOFF with the scheduled attempt number and due
+// time, a retry STARTING, the recovered RUNNING or DEGRADED generation, and
+// the terminal FAILED of a failure that retrying cannot heal
+// (CLOSE_UNCONFIRMED and quarantine for an unproven close). The correlation
+// is the one the service opened the epoch with; same-epoch replacements keep
+// it. STOPPING, STOPPED and DISABLED belong to the service's STOP path and a
+// fenced epoch reports nothing, so a service transition is never
+// overwritten. A snapshot that admits the opening START into recovery
+// (recoveryHandoverLocked) is reported as that BACKOFF.
 func (bridge *ebusControlRuntime) NativeObservation(snapshot drivermanager.Snapshot) (runtimecontrol.LifecycleCorrelation, runtimecontrol.NativeObservation, bool) {
 	bridge.mu.Lock()
 	defer bridge.mu.Unlock()
 	epoch := bridge.current
-	if epoch == nil || epoch.fenced || epoch.native == 0 {
+	if epoch == nil || epoch.fenced {
 		return runtimecontrol.LifecycleCorrelation{}, runtimecontrol.NativeObservation{}, false
 	}
 	select {
@@ -930,7 +1020,13 @@ func (bridge *ebusControlRuntime) NativeObservation(snapshot drivermanager.Snaps
 			return runtimecontrol.LifecycleCorrelation{}, runtimecontrol.NativeObservation{}, false
 		}
 	default:
-		// The opening START is still the service's own operation.
+		// The opening START is still the service's own operation, unless
+		// this snapshot admits it into the manager's recovery.
+		if !bridge.recoveryHandoverLocked(epoch, snapshot) {
+			return runtimecontrol.LifecycleCorrelation{}, runtimecontrol.NativeObservation{}, false
+		}
+	}
+	if epoch.native == 0 && !epoch.recovering {
 		return runtimecontrol.LifecycleCorrelation{}, runtimecontrol.NativeObservation{}, false
 	}
 	corr := runtimecontrol.LifecycleCorrelation{DriverID: epoch.key.DriverID, SourceID: epoch.key.SourceID,

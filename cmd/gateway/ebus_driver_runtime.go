@@ -491,9 +491,12 @@ func (runtime *ebusDriverRuntime) Start(ctx context.Context) (uint64, error) {
 		return 0, drivermanager.ErrUnavailable
 	}
 	// A fresh start (process start, START, RESTART) is not a recovery; its
-	// failures are logged as start attempts. A manager-owned retry after a
-	// refused admission also arrives here while a recovery series is open:
-	// it is the series' next attempt.
+	// failures are logged as start attempts. A retryable failure under the
+	// persistent policy opens a recovery series, as a connection loss does:
+	// DriverManager keeps retrying while the driver is desired RUNNING. The
+	// manager-owned retries of that series, and a retry after a refused
+	// admission, arrive here while the series is open: each is the series'
+	// next attempt.
 	attempt := 0
 	if runtime.recovery.continuing() {
 		attempt = runtime.recovery.attemptStarted()
@@ -501,15 +504,32 @@ func (runtime *ebusDriverRuntime) Start(ctx context.Context) (uint64, error) {
 		runtime.recovery.freshStart()
 	}
 	generation, err := runtime.runtime.Start(ctx)
-	if attempt != 0 {
+	switch {
+	case attempt != 0:
 		runtime.recovery.attemptFinished(attempt, generation, err)
-	} else {
+	case err != nil && runtime.startFailureRecovers(err):
+		runtime.recovery.startRecovering(err)
+	default:
 		runtime.recovery.startFinished(err)
 	}
 	if err == nil {
 		runtime.captureGeneration(generation)
 	}
 	return generation, mapEBusLifecycleError(err)
+}
+
+// startFailureRecovers reports whether DriverManager follows a failed fresh
+// start with a persistent recovery series: the failure is retryable (a dial
+// failure, a timeout, a transport close), nothing is quarantined, the policy
+// is persistent and the driver is still desired RUNNING. Otherwise the
+// failure ends the start with its own reason.
+func (runtime *ebusDriverRuntime) startFailureRecovers(err error) bool {
+	mapped := mapEBusLifecycleError(err)
+	if !runtime.recovery.persistent.Enabled || runtime.desiredRunning == nil || !runtime.desiredRunning() ||
+		errors.Is(mapped, drivermanager.ErrSafetyQuarantined) || runtime.SafetyQuarantined() {
+		return false
+	}
+	return classifyEBusDriverError(mapped).Reason.Retryable
 }
 
 func (runtime *ebusDriverRuntime) Replace(ctx context.Context) (uint64, error) {

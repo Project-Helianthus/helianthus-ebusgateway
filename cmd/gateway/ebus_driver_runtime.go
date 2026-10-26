@@ -71,6 +71,10 @@ func newEBusDriverController(cfg ebusgateway.Config, sidecars ...drivermanager.D
 		return nil, err
 	}
 	runtime.recovery.budget = ebusDriverRetryPolicy.Budget
+	runtime.desiredRunning = func() bool {
+		snapshot, ok := manager.Snapshot(primaryEBusDriverID)
+		return ok && snapshot.DesiredState == drivermanager.DesiredRunning
+	}
 	reporter := func(correlation drivermanager.Correlation, rawErr error) {
 		// The loss is recorded under the recovery log's lock together with
 		// its acceptance, so the first replacement attempt always logs the
@@ -371,6 +375,10 @@ type ebusDriverRuntime struct {
 	// connection loss: the loss, every replacement attempt with its reason
 	// and outcome, and the admitted recovered generation.
 	recovery ebusRecoveryLog
+	// desiredRunning reports whether the manager still wants ebus.primary
+	// RUNNING; it separates a manager-internal retirement from an explicit
+	// stop. Unset means every Stop is explicit.
+	desiredRunning func() bool
 
 	// lifecycleMu orders activation and withdrawal for the private B503
 	// observer. Observer callbacks are bounded local FSM mutations: they must
@@ -443,9 +451,19 @@ func (runtime *ebusDriverRuntime) Start(ctx context.Context) (uint64, error) {
 	if runtime == nil || runtime.runtime == nil {
 		return 0, drivermanager.ErrUnavailable
 	}
-	// A fresh start (process start, START, RESTART) is not a recovery.
-	runtime.recovery.reset()
+	// A fresh start (process start, START, RESTART) is not a recovery. A
+	// manager-owned retry after a refused admission also arrives here while
+	// the series is open and within its budget: it is the next attempt.
+	attempt := 0
+	if runtime.recovery.continuing() {
+		attempt = runtime.recovery.attemptStarted()
+	} else {
+		runtime.recovery.reset()
+	}
 	generation, err := runtime.runtime.Start(ctx)
+	if attempt != 0 {
+		runtime.recovery.attemptFinished(attempt, generation, err)
+	}
 	if err == nil {
 		runtime.captureGeneration(generation)
 	}
@@ -473,7 +491,12 @@ func (runtime *ebusDriverRuntime) Stop(ctx context.Context) error {
 	}
 	runtime.FenceWithdrawal()
 	runtime.current.Store(nil)
-	runtime.recovery.reset()
+	// Only an explicit stop ends the series. The manager also calls Stop to
+	// retire a constructed generation whose admission was refused while it
+	// still wants RUNNING; recovery goes on through that retirement.
+	if runtime.desiredRunning == nil || !runtime.desiredRunning() {
+		runtime.recovery.reset()
+	}
 	return mapEBusLifecycleError(runtime.runtime.Stop(ctx))
 }
 

@@ -453,6 +453,9 @@ func (control *gatewayRuntimeControl) startWatch() {
 	// Manager-owned replacement after RUNNING (BACKOFF, retries, recovery
 	// or the terminal FAILED) reaches the service view from this watch.
 	forwarder := &ebusNativeForwarder{bridge: control.bridge, service: control.service}
+	if control.driver != nil && control.driver.runtime != nil {
+		forwarder.recovery = &control.driver.runtime.recovery
+	}
 	go func() {
 		defer close(control.watchDone)
 		for {

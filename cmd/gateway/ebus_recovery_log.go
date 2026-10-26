@@ -131,6 +131,13 @@ func (l *ebusRecoveryLog) reportLoss(generation uint64, reason string, report fu
 	l.printf("ebus.primary: connection lost (reason=%s, generation=%d); bounded recovery scheduled (at most %d attempts)", reason, generation, l.budget)
 }
 
+// continuing reports an open series that still has attempts left.
+func (l *ebusRecoveryLog) continuing() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.active && l.attempt < l.budget
+}
+
 // attemptStarted logs one replacement attempt before its construction.
 func (l *ebusRecoveryLog) attemptStarted() int {
 	l.mu.Lock()
@@ -194,6 +201,9 @@ type ebusNativeForwarder struct {
 	service *runtimecontrol.Service
 	logf    func(string, ...any)
 	now     func() time.Time
+	// recovery, when set, closes its series before the RUNNING line of a
+	// recovered generation, so the recovered line is never logged after it.
+	recovery *ebusRecoveryLog
 
 	epoch runtimecontrol.SourceEpoch
 	last  runtimecontrol.NativeObservation
@@ -246,6 +256,9 @@ func (f *ebusNativeForwarder) logTransition(corr runtimecontrol.LifecycleCorrela
 		}
 		f.printf("ebus.primary: lifecycle BACKOFF (reason=%s, attempts_remaining=%d, next_attempt_in=%s)", obs.Reason, remaining, wait.Round(time.Millisecond))
 	case drivermanager.ObservedRunning:
+		if f.recovery != nil {
+			f.recovery.admitted(snapshot.Generation)
+		}
 		f.printf("ebus.primary: lifecycle RUNNING (generation=%d, recovered)", snapshot.Generation)
 	case drivermanager.ObservedDegraded:
 		f.printf("ebus.primary: lifecycle DEGRADED (reason=%s)", obs.Reason)

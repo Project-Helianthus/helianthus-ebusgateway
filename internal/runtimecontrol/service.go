@@ -180,6 +180,9 @@ type attempt struct {
 	fenced   bool
 	sequence LifecycleSequence // typed slot sequence, 0 for an untyped attempt
 	admitted bool
+	// recovering marks an admission into the native owner's recovery
+	// (RecoveringStart) rather than RUNNING.
+	recovering bool
 	// pendingGen marks a retry whose generation increment is not yet
 	// committed; only the driver's reconciler touches it.
 	pendingGen bool

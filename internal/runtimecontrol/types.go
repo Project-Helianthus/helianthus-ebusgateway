@@ -365,8 +365,10 @@ type Store interface {
 // The service never constructs it and never performs endpoint I/O itself.
 type LifecycleExecutor interface {
 	// Start opens one generation under the given correlation. A nil error
-	// means the generation is admitted. A failed Start leaves nothing open.
-	// An error whose Retryable method reports true schedules a bounded retry.
+	// means the generation is admitted. A *RecoveringStart is not a failure:
+	// the generation is admitted into its native owner's own recovery. A
+	// failed Start leaves nothing open. An error whose Retryable method
+	// reports true schedules a bounded retry.
 	Start(ctx context.Context, correlation LifecycleCorrelation) error
 	// Stop withdraws and closes the generation of the given correlation. It
 	// must accept a correlation whose generation never opened.

@@ -688,7 +688,8 @@ func (s *Service) runTypedAttempt(d *driverState, t Transition, a *attempt) (boo
 		if s.fencedByStore(d, t) {
 			return true, 0
 		}
-		if err == nil && (a.ctx.Err() != nil || !s.now().Before(t.DeadlineUTC)) {
+		recovery, recovering := recoveringStart(err)
+		if (err == nil || recovering) && (a.ctx.Err() != nil || !s.now().Before(t.DeadlineUTC)) {
 			// A success after the attempt's budget is never admitted; its
 			// generation is withdrawn through the slot's obligations.
 			if s.isFenced(d, a) {
@@ -696,9 +697,8 @@ func (s *Service) runTypedAttempt(d *driverState, t Transition, a *attempt) (boo
 			}
 			return s.exhaust(d, t, drivermanager.ReasonRetryExhausted)
 		}
-		if err == nil {
-			running := observation{state: drivermanager.ObservedRunning, reason: drivermanager.ReasonNone,
-				epoch: a.corr.Epoch, generation: a.corr.Generation}
+		if err == nil || recovering {
+			admittedObs := admissionObservation(a.corr, recovery, recovering)
 			expired := false
 			admitted := s.settle(d, a, func() {
 				// The hold may outlast the budget: revalidate it here.
@@ -707,10 +707,11 @@ func (s *Service) runTypedAttempt(d *driverState, t Transition, a *attempt) (boo
 					return
 				}
 				a.admitted = true
+				a.recovering = recovering
 				d.live = a
 				d.autoStartDone = true
 				d.corr = a.corr
-				s.stageObservation(d.id, running)
+				s.stageObservation(d.id, admittedObs)
 			})
 			if !admitted {
 				return true, 0
@@ -718,7 +719,7 @@ func (s *Service) runTypedAttempt(d *driverState, t Transition, a *attempt) (boo
 			if expired {
 				return s.exhaust(d, t, drivermanager.ReasonRetryExhausted)
 			}
-			s.commitObserved(d, running)
+			s.commitObserved(d, admittedObs)
 			return s.completeStart(d, t, a)
 		}
 		s.report(&LifecycleError{DriverID: d.id, Kind: t.Kind, Err: err})
@@ -749,6 +750,29 @@ func (s *Service) runTypedAttempt(d *driverState, t Transition, a *attempt) (boo
 	}
 }
 
+// malformedRecoveringStart reports a RecoveringStart whose observation the
+// service refuses: the executor left a native recovery running that cannot
+// be admitted, so the generation must be withdrawn like a failed start's.
+func malformedRecoveringStart(err error) bool {
+	var recovering *RecoveringStart
+	if !errors.As(err, &recovering) {
+		return false
+	}
+	_, ok := recoveringStart(err)
+	return !ok
+}
+
+// admissionObservation is the observation published when a start admits its
+// generation: RUNNING, or the native owner's recovery BACKOFF with its
+// schedule for a RecoveringStart.
+func admissionObservation(corr LifecycleCorrelation, recovery NativeObservation, recovering bool) observation {
+	if !recovering {
+		return observation{state: drivermanager.ObservedRunning, reason: drivermanager.ReasonNone, epoch: corr.Epoch, generation: corr.Generation}
+	}
+	return observation{state: recovery.State, reason: recovery.Reason, epoch: corr.Epoch, generation: corr.Generation,
+		nextAttempt: recovery.NextAttempt, nextAttemptUTC: recovery.NextAttemptUTC.UTC()}
+}
+
 // completeStart marks the admitted slot terminal: its obligations now belong
 // to the admitted generation, which a later STOP or RESTART withdraws.
 func (s *Service) completeStart(d *driverState, t Transition, a *attempt) (bool, time.Duration) {
@@ -767,7 +791,11 @@ func (s *Service) completeStart(d *driverState, t Transition, a *attempt) (bool,
 	}
 	d.mu.Unlock()
 	a.cancel()
-	s.appendDiagnostic(d, done, "RUNNING")
+	outcome := "RUNNING"
+	if a.recovering {
+		outcome = "BACKOFF"
+	}
+	s.appendDiagnostic(d, done, outcome)
 	return true, 0
 }
 
@@ -845,15 +873,17 @@ func (s *Service) runUntyped(d *driverState) {
 		return
 	}
 	attempts := 0
-	var withdrawLate func()
-	// finishUntyped publishes the attempt's terminal observation. A RUNNING
-	// admission is revalidated under the hold: the wait behind a decision may
-	// outlast the budget, and an expired success is never admitted. It reports
-	// false in that case, leaving the late generation to withdrawLate.
-	finishUntyped := func(obs observation) bool {
+	var withdrawLate func(drivermanager.ReasonCode)
+	// finishUntyped publishes the attempt's terminal observation; admit
+	// installs the generation as the admitted one (RUNNING, or the native
+	// owner's recovery). An admission is revalidated under the hold: the
+	// wait behind a decision may outlast the budget, and an expired success
+	// is never admitted. It reports false in that case, leaving the late
+	// generation to withdrawLate.
+	finishUntyped := func(obs observation, admit bool) bool {
 		expired := false
 		admitted := s.settle(d, a, func() {
-			if obs.state == drivermanager.ObservedRunning && (a.ctx.Err() != nil || !s.now().Before(deadline)) {
+			if admit && (a.ctx.Err() != nil || !s.now().Before(deadline)) {
 				expired = true
 				return
 			}
@@ -861,8 +891,9 @@ func (s *Service) runUntyped(d *driverState) {
 			d.corr = a.corr
 			d.untyped = nil
 			d.autoStartDone = true
-			if obs.state == drivermanager.ObservedRunning {
+			if admit {
 				a.admitted = true
+				a.recovering = obs.state != drivermanager.ObservedRunning
 				d.live = a
 			}
 			s.stageObservation(d.id, obs)
@@ -875,13 +906,14 @@ func (s *Service) runUntyped(d *driverState) {
 		}
 		return true
 	}
-	withdrawLate = func() {
-		// A success after the attempt's budget is never admitted; the
-		// started generation is withdrawn, and an unconfirmed close
-		// quarantines the driver. The withdrawal stays bounded by the
-		// attempt's original deadline: no new deadline is computed, so a
-		// withdrawal after that deadline gets one Stop with an
-		// already-expired context and no retry.
+	withdrawLate = func(reason drivermanager.ReasonCode) {
+		// A success after the attempt's budget is never admitted, and a
+		// malformed RecoveringStart cannot be: the started generation is
+		// withdrawn, and an unconfirmed close quarantines the driver. The
+		// withdrawal stays bounded by the attempt's original deadline: no
+		// new deadline is computed, so a withdrawal after that deadline gets
+		// one Stop with an already-expired context and no retry. A proven
+		// withdrawal ends FAILED with reason.
 		var out StopOutcome
 		for i := 0; i < s.maxAttempts; i++ {
 			out = s.stopBounded(d, a.corr, deadline)
@@ -907,14 +939,14 @@ func (s *Service) runUntyped(d *driverState) {
 			s.observe(d, observation{state: drivermanager.ObservedFailed, reason: drivermanager.ReasonRetryExhausted})
 			return
 		}
-		finishUntyped(observation{state: drivermanager.ObservedFailed, reason: drivermanager.ReasonRetryExhausted})
+		finishUntyped(observation{state: drivermanager.ObservedFailed, reason: reason}, false)
 	}
 	for {
 		if s.ctx.Err() != nil || s.isFenced(d, a) {
 			return
 		}
 		if attempts >= s.maxAttempts || !s.now().Before(deadline) {
-			finishUntyped(observation{state: drivermanager.ObservedFailed, reason: drivermanager.ReasonRetryExhausted})
+			finishUntyped(observation{state: drivermanager.ObservedFailed, reason: drivermanager.ReasonRetryExhausted}, false)
 			return
 		}
 		attempts++
@@ -932,13 +964,14 @@ func (s *Service) runUntyped(d *driverState) {
 		if rec, rerr := s.store.Driver(d.id); rerr == nil && rec.Current != nil {
 			return // a cancellation slot owns this correlation now
 		}
-		if err == nil && (a.ctx.Err() != nil || !s.now().Before(deadline)) {
-			withdrawLate()
+		recovery, recovering := recoveringStart(err)
+		if (err == nil || recovering) && (a.ctx.Err() != nil || !s.now().Before(deadline)) {
+			withdrawLate(drivermanager.ReasonRetryExhausted)
 			return
 		}
-		if err == nil {
-			if !finishUntyped(observation{state: drivermanager.ObservedRunning, reason: drivermanager.ReasonNone}) {
-				withdrawLate()
+		if err == nil || recovering {
+			if !finishUntyped(admissionObservation(current, recovery, recovering), true) {
+				withdrawLate(drivermanager.ReasonRetryExhausted)
 			}
 			return
 		}
@@ -946,8 +979,14 @@ func (s *Service) runUntyped(d *driverState) {
 		if s.isFenced(d, a) {
 			return
 		}
+		if malformedRecoveringStart(err) {
+			// The executor reported a native recovery it left running,
+			// with an observation the service cannot admit: withdraw it.
+			withdrawLate(drivermanager.ReasonInternalError)
+			return
+		}
 		if errors.Is(a.ctx.Err(), context.DeadlineExceeded) {
-			finishUntyped(observation{state: drivermanager.ObservedFailed, reason: drivermanager.ReasonRetryExhausted})
+			finishUntyped(observation{state: drivermanager.ObservedFailed, reason: drivermanager.ReasonRetryExhausted}, false)
 			return
 		}
 		if retryable(err) && attempts < s.maxAttempts && d.driverRetryAllows(attempts) && s.now().Before(deadline) {
@@ -959,7 +998,7 @@ func (s *Service) runUntyped(d *driverState) {
 			}
 			continue
 		}
-		finishUntyped(observation{state: drivermanager.ObservedFailed, reason: failureReason(err)})
+		finishUntyped(observation{state: drivermanager.ObservedFailed, reason: failureReason(err)}, false)
 		return
 	}
 }

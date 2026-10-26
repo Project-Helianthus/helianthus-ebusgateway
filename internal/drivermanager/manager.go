@@ -94,6 +94,10 @@ type RetrySnapshot struct {
 	// success, an explicit Start or Replace and a new reported failure open
 	// a new series.
 	Attempt int
+	// Persistent reports that the driver's policy continues this series
+	// past the fast budget while the driver is desired RUNNING: only a
+	// non-retryable failure, a safety quarantine or an explicit Stop ends it.
+	Persistent bool
 }
 
 // Correlation fences callbacks from both stale generations and superseded
@@ -975,7 +979,8 @@ func (manager *Manager) scheduleRetryLocked(driver *managedDriver, operation uin
 	remaining := driver.retryRemaining
 	delay := manager.nextRetryDelay(driver)
 	driver.retrySeries++
-	retry := &RetrySnapshot{Eligible: true, BudgetRemaining: remaining, NotBeforeUTC: manager.now().Add(delay), Attempt: driver.retrySeries}
+	retry := &RetrySnapshot{Eligible: true, BudgetRemaining: remaining, NotBeforeUTC: manager.now().Add(delay), Attempt: driver.retrySeries,
+		Persistent: driver.cfg.Retry.Persistent.Enabled}
 	manager.transitionLocked(driver, ObservedBackoff, Reason{Code: ReasonRetryScheduled, Retryable: true}, retry, nil)
 	driver.retryToken++
 	token := driver.retryToken

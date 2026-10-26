@@ -205,3 +205,55 @@ for (let index = 0; index < 6; index++) test(`M27 option ${index} saves only its
   h.respond(fixture()); await h.shell.requestConfiguration(true);
   assert.deepEqual(JSON.parse(h.requests.at(-1).body), expected);
 });
+
+// Issue #1375: a driver the host reports in backoff shows when its next attempt
+// is due, which attempt that is and the last failure. A row without a valid
+// schedule shows none of it.
+const backoffRow = (recovery) => ({ driver_id: "fixture.family.b", desired: true, effective: false, status: "pending", reason: "backoff", ...(recovery === undefined ? {} : { recovery }) });
+const goodRecovery = () => ({ attempt: 3, next_attempt_at: "2000-01-01T00:00:08Z", last_failure_class: "DIAL_FAILED", last_failure_cause: "dial: connection refused" });
+async function renderedWith(row) {
+  const h = harness(); const view = fixture();
+  view.state.drivers = [row, view.state.drivers[1]];
+  h.respond(view); await h.shell.requestConfiguration(false);
+  return h.elements.get("config-fields").innerHTML;
+}
+
+test("Issue 1375 Portal shows the next attempt time of a driver in backoff", async () => {
+  const html = await renderedWith(backoffRow(goodRecovery()));
+  assert.match(html, /Driver fixture\.family\.b[\s\S]*Status: pending; Reason: backoff; Next attempt: 2000-01-01T00:00:08Z \(attempt 3\); Last failure: DIAL_FAILED \(dial: connection refused\)<\/span>/);
+  // Only the backoff row shows a schedule.
+  assert.equal(html.match(/Next attempt:/g).length, 1);
+  assert.match(html, /Driver fixture\.family\.a[\s\S]*Reason: not_selected<\/span>/);
+});
+
+test("Issue 1375 Portal shows no schedule for a row without a recovery member", async () => {
+  for (const row of [backoffRow(), { ...backoffRow(), status: "effective", reason: "running", effective: true }]) {
+    const html = await renderedWith(row);
+    assert.doesNotMatch(html, /Next attempt|Last failure|attempt \d/);
+  }
+});
+
+test("Issue 1375 Portal shows the failure class without a cause, and nothing for an invalid schedule", async () => {
+  assert.match(await renderedWith(backoffRow({ ...goodRecovery(), last_failure_cause: "" })), /Next attempt: 2000-01-01T00:00:08Z \(attempt 3\); Last failure: DIAL_FAILED<\/span>/);
+  assert.match(await renderedWith(backoffRow({ ...goodRecovery(), last_failure_class: "TIMEOUT", last_failure_cause: "i/o timeout" })), /Last failure: TIMEOUT \(i\/o timeout\)/);
+  for (const recovery of [
+    null, {}, [], "text", 7,
+    { ...goodRecovery(), attempt: 0 }, { ...goodRecovery(), attempt: -1 }, { ...goodRecovery(), attempt: 1.5 }, { ...goodRecovery(), attempt: "3" },
+    { ...goodRecovery(), next_attempt_at: "" }, { ...goodRecovery(), next_attempt_at: 946684808 }, { ...goodRecovery(), next_attempt_at: undefined },
+  ]) assert.doesNotMatch(await renderedWith(backoffRow(recovery)), /Next attempt/, JSON.stringify(recovery));
+});
+
+test("Issue 1375 Portal escapes the recovery text", async () => {
+  const html = await renderedWith(backoffRow({ attempt: 2, next_attempt_at: "<b>due</b>", last_failure_class: "<i>class</i>", last_failure_cause: '"><img src=x onerror=alert(1)>' }));
+  assert.doesNotMatch(html, /<b>due|<i>class|<img/);
+  assert.match(html, /&lt;b&gt;due&lt;\/b&gt; \(attempt 2\); Last failure: &lt;i&gt;class&lt;\/i&gt; \(&quot;&gt;&lt;img src=x onerror=alert\(1\)&gt;\)/);
+});
+
+test("Issue 1375 Portal renders the schedule it receives from the config API", async () => {
+  const h = harness(); const view = fixture();
+  view.state.drivers = [backoffRow(goodRecovery()), view.state.drivers[1]];
+  h.respond(view); assert.equal(await h.shell.requestConfiguration(false), true);
+  // The draft sent back on save is still the closed desired record.
+  assert.deepEqual(Object.keys(plain(h.shell._configDraft)).sort(), ["adapter_proxy", "drivers", "format", "output_bindings", "revision", "sharing"]);
+  assert.equal(h.shell._configView.state.drivers[0].recovery.attempt, 3);
+});

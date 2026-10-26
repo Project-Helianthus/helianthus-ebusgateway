@@ -528,7 +528,8 @@ func (bridge *ebusControlRuntime) recoveryHandoverLocked(epoch *ebusControlEpoch
 	}
 	epoch.recovering = true
 	epoch.recoveryObs = runtimecontrol.NativeObservation{State: drivermanager.ObservedBackoff, Reason: drivermanager.ReasonRetryScheduled,
-		NextAttempt: retry.Attempt, NextAttemptUTC: retry.NotBeforeUTC.UTC()}
+		NextAttempt: retry.Attempt, NextAttemptUTC: retry.NotBeforeUTC.UTC(),
+		FailureClass: retry.LastFailure.Class, FailureCause: retry.LastFailure.Cause}
 	close(epoch.startDone)
 	return true
 }
@@ -998,10 +999,12 @@ func (bridge *ebusControlRuntime) View() ebusControlView {
 // observation of the current epoch once its opening START succeeded or was
 // admitted into DriverManager's persistent recovery. It reports
 // DriverManager's own failure replacement after RUNNING, or its retries after
-// a failed opening attempt: BACKOFF with the scheduled attempt number and due
-// time, a retry STARTING, the recovered RUNNING or DEGRADED generation, and
-// the terminal FAILED of a failure that retrying cannot heal
-// (CLOSE_UNCONFIRMED and quarantine for an unproven close). The correlation
+// a failed opening attempt: BACKOFF with the scheduled attempt number, due
+// time and the failure that scheduled it (its class and redacted cause, as the
+// manager recorded them with the schedule), a retry STARTING, the recovered
+// RUNNING or DEGRADED generation, and the terminal FAILED of a failure that
+// retrying cannot heal (CLOSE_UNCONFIRMED and quarantine for an unproven
+// close). The correlation
 // is the one the service opened the epoch with; same-epoch replacements keep
 // it. STOPPING, STOPPED and DISABLED belong to the service's STOP path and a
 // fenced epoch reports nothing, so a service transition is never
@@ -1042,9 +1045,10 @@ func (bridge *ebusControlRuntime) NativeObservation(snapshot drivermanager.Snaps
 		}
 	case snapshot.ObservedState == drivermanager.ObservedBackoff:
 		// The manager's schedule: the next attempt of the failure series and
-		// when it is due.
+		// when it is due, with the failure that scheduled it.
 		if retry := snapshot.Retry; retry != nil && retry.Attempt > 0 && !retry.NotBeforeUTC.IsZero() {
 			obs.NextAttempt, obs.NextAttemptUTC = retry.Attempt, retry.NotBeforeUTC.UTC()
+			obs.FailureClass, obs.FailureCause = retry.LastFailure.Class, retry.LastFailure.Cause
 		}
 	case snapshot.ObservedState == drivermanager.ObservedStarting:
 	case snapshot.ObservedState == drivermanager.ObservedFailed:

@@ -1,4 +1,45 @@
 {
+  "get_backoff_with_recovery": {
+    "arguments": {
+      "DriverID": "ebus.primary"
+    },
+    "envelope": {
+      "data": {
+        "catalog_revision": "29",
+        "driver": {
+          "driver_id": "ebus.primary",
+          "enabled": true,
+          "desired_state": "RUNNING",
+          "desired_revision": "7",
+          "observed_state": "BACKOFF",
+          "reason": "RETRY_SCHEDULED",
+          "safety_quarantined": false,
+          "revision": "29",
+          "recovery": {
+            "attempt": 3,
+            "next_attempt_at": "2000-01-01T00:00:08Z",
+            "last_failure_class": "DIAL_FAILED",
+            "last_failure_cause": "dial: connection refused"
+          }
+        }
+      },
+      "error": null,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "one cached BACKOFF entry with its recovery member",
+    "tool": "helianthus.runtime.get"
+  },
   "get_driver": {
     "arguments": {
       "DriverID": "ebus.primary"
@@ -208,6 +249,41 @@
     "service": "never consulted",
     "tool": "helianthus.runtime.get"
   },
+  "get_running_after_recovery": {
+    "arguments": {
+      "DriverID": "ebus.primary"
+    },
+    "envelope": {
+      "data": {
+        "catalog_revision": "30",
+        "driver": {
+          "driver_id": "ebus.primary",
+          "enabled": true,
+          "desired_state": "RUNNING",
+          "desired_revision": "7",
+          "observed_state": "RUNNING",
+          "reason": "NONE",
+          "safety_quarantined": false,
+          "revision": "30"
+        }
+      },
+      "error": null,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "the same driver recovered: RUNNING without the member, at catalog revision 30",
+    "tool": "helianthus.runtime.get"
+  },
   "get_unregistered": {
     "arguments": {
       "DriverID": "ebus.secondary"
@@ -236,6 +312,88 @@
     },
     "service": "NOT_FOUND row 2",
     "tool": "helianthus.runtime.get"
+  },
+  "list_backoff_recovery_other_empty_cause": {
+    "arguments": {},
+    "envelope": {
+      "data": {
+        "catalog_revision": "29",
+        "drivers": [
+          {
+            "driver_id": "ebus.primary",
+            "enabled": true,
+            "desired_state": "RUNNING",
+            "desired_revision": "7",
+            "observed_state": "BACKOFF",
+            "reason": "RETRY_SCHEDULED",
+            "safety_quarantined": false,
+            "revision": "29",
+            "recovery": {
+              "attempt": 1,
+              "next_attempt_at": "2000-01-01T00:00:08.25Z",
+              "last_failure_class": "OTHER",
+              "last_failure_cause": ""
+            }
+          }
+        ]
+      },
+      "error": null,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "BACKOFF with fractional-second due time, class OTHER and an empty cause",
+    "tool": "helianthus.runtime.list"
+  },
+  "list_backoff_with_recovery": {
+    "arguments": {},
+    "envelope": {
+      "data": {
+        "catalog_revision": "29",
+        "drivers": [
+          {
+            "driver_id": "ebus.primary",
+            "enabled": true,
+            "desired_state": "RUNNING",
+            "desired_revision": "7",
+            "observed_state": "BACKOFF",
+            "reason": "RETRY_SCHEDULED",
+            "safety_quarantined": false,
+            "revision": "29",
+            "recovery": {
+              "attempt": 3,
+              "next_attempt_at": "2000-01-01T00:00:08Z",
+              "last_failure_class": "DIAL_FAILED",
+              "last_failure_cause": "dial: connection refused"
+            }
+          }
+        ]
+      },
+      "error": null,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "BACKOFF with a published schedule: the recovery member carries attempt, due time, failure class and cause",
+    "tool": "helianthus.runtime.list"
   },
   "list_disabled_driver_visible": {
     "arguments": {},
@@ -394,6 +552,111 @@
       }
     },
     "service": "unconfirmed close: FAILED/CLOSE_UNCONFIRMED with the safety quarantine",
+    "tool": "helianthus.runtime.list"
+  },
+  "list_recovery_absent_outside_backoff": {
+    "arguments": {},
+    "envelope": {
+      "data": {
+        "catalog_revision": "29",
+        "drivers": [
+          {
+            "driver_id": "fixture.a.disabled",
+            "enabled": true,
+            "desired_state": "RUNNING",
+            "desired_revision": "7",
+            "observed_state": "DISABLED",
+            "reason": "CONFIG_DISABLED",
+            "safety_quarantined": false,
+            "revision": "29"
+          },
+          {
+            "driver_id": "fixture.b.stopped",
+            "enabled": true,
+            "desired_state": "RUNNING",
+            "desired_revision": "7",
+            "observed_state": "STOPPED",
+            "reason": "OPERATOR_STOPPED",
+            "safety_quarantined": false,
+            "revision": "29"
+          },
+          {
+            "driver_id": "fixture.c.starting",
+            "enabled": true,
+            "desired_state": "RUNNING",
+            "desired_revision": "7",
+            "observed_state": "STARTING",
+            "reason": "START_REQUESTED",
+            "safety_quarantined": false,
+            "revision": "29"
+          },
+          {
+            "driver_id": "fixture.d.running",
+            "enabled": true,
+            "desired_state": "RUNNING",
+            "desired_revision": "7",
+            "observed_state": "RUNNING",
+            "reason": "NONE",
+            "safety_quarantined": false,
+            "revision": "29"
+          },
+          {
+            "driver_id": "fixture.e.degraded",
+            "enabled": true,
+            "desired_state": "RUNNING",
+            "desired_revision": "7",
+            "observed_state": "DEGRADED",
+            "reason": "CAPABILITY_DEGRADED",
+            "safety_quarantined": false,
+            "revision": "29"
+          },
+          {
+            "driver_id": "fixture.f.stopping",
+            "enabled": true,
+            "desired_state": "RUNNING",
+            "desired_revision": "7",
+            "observed_state": "STOPPING",
+            "reason": "STOP_REQUESTED",
+            "safety_quarantined": false,
+            "revision": "29"
+          },
+          {
+            "driver_id": "fixture.g.failed",
+            "enabled": true,
+            "desired_state": "RUNNING",
+            "desired_revision": "7",
+            "observed_state": "FAILED",
+            "reason": "RETRY_EXHAUSTED",
+            "safety_quarantined": false,
+            "revision": "29"
+          },
+          {
+            "driver_id": "fixture.h.running-retry-reason",
+            "enabled": true,
+            "desired_state": "RUNNING",
+            "desired_revision": "7",
+            "observed_state": "RUNNING",
+            "reason": "RETRY_SCHEDULED",
+            "safety_quarantined": false,
+            "revision": "29"
+          }
+        ]
+      },
+      "error": null,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "every state but BACKOFF has no recovery member, even with a leftover schedule and failure",
     "tool": "helianthus.runtime.list"
   },
   "list_rejects_array": {

@@ -179,16 +179,31 @@ func runtimeControlTools() []Tool {
 }
 
 // runtimeControlDriverV1 is the wire projection of one cached DriverStatus,
-// in the contract's field order.
+// in the contract's field order. Recovery is the one optional member: it is
+// present only while the driver is in BACKOFF with a published schedule, and
+// absent (never null, never empty) in every other state.
 type runtimeControlDriverV1 struct {
-	DriverID          string `json:"driver_id"`
-	Enabled           bool   `json:"enabled"`
-	DesiredState      string `json:"desired_state"`
-	DesiredRevision   string `json:"desired_revision"`
-	ObservedState     string `json:"observed_state"`
-	Reason            string `json:"reason"`
-	SafetyQuarantined bool   `json:"safety_quarantined"`
-	Revision          string `json:"revision"`
+	DriverID          string                    `json:"driver_id"`
+	Enabled           bool                      `json:"enabled"`
+	DesiredState      string                    `json:"desired_state"`
+	DesiredRevision   string                    `json:"desired_revision"`
+	ObservedState     string                    `json:"observed_state"`
+	Reason            string                    `json:"reason"`
+	SafetyQuarantined bool                      `json:"safety_quarantined"`
+	Revision          string                    `json:"revision"`
+	Recovery          *runtimeControlRecoveryV1 `json:"recovery,omitempty"`
+}
+
+// runtimeControlRecoveryV1 is the closed recovery object, all four members
+// required: the one-based number of the attempt scheduled for NextAttemptAt, its
+// due time (RFC 3339 UTC, Z designator), the failure class (DIAL_FAILED,
+// TIMEOUT, TRANSPORT_CLOSED or OTHER) and the address-free cause text of at
+// most 160 printable ASCII characters.
+type runtimeControlRecoveryV1 struct {
+	Attempt          int    `json:"attempt"`
+	NextAttemptAt    string `json:"next_attempt_at"`
+	LastFailureClass string `json:"last_failure_class"`
+	LastFailureCause string `json:"last_failure_cause"`
 }
 
 type runtimeControlListDataV1 struct {
@@ -202,7 +217,7 @@ type runtimeControlGetDataV1 struct {
 }
 
 func runtimeControlDriver(status runtimecontrol.DriverStatus) runtimeControlDriverV1 {
-	return runtimeControlDriverV1{
+	driver := runtimeControlDriverV1{
 		DriverID:          string(status.DriverID),
 		Enabled:           status.Enabled,
 		DesiredState:      string(status.DesiredState),
@@ -212,6 +227,15 @@ func runtimeControlDriver(status runtimecontrol.DriverStatus) runtimeControlDriv
 		SafetyQuarantined: status.SafetyQuarantined,
 		Revision:          strconv.FormatUint(uint64(status.Revision), 10),
 	}
+	if recovery, ok := status.Recovery(); ok {
+		driver.Recovery = &runtimeControlRecoveryV1{
+			Attempt:          recovery.Attempt,
+			NextAttemptAt:    recovery.NextAttemptAt,
+			LastFailureClass: string(recovery.FailureClass),
+			LastFailureCause: recovery.FailureCause,
+		}
+	}
+	return driver
 }
 
 func runtimeControlListData(catalog runtimecontrol.Catalog) runtimeControlListDataV1 {

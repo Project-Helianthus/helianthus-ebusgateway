@@ -554,6 +554,14 @@ func TestIssue1373InjectedInitFailureIsTerminal(t *testing.T) {
 			if failure.Reason.Retryable || failure.Reason.Code != drivermanager.ReasonProviderUnavailable {
 				t.Fatalf("injected INIT failure = %+v; want terminal PROVIDER_UNAVAILABLE", failure)
 			}
+			var out bytes.Buffer
+			recoveryLog := ebusRecoveryLog{logf: func(format string, args ...any) {
+				_, _ = fmt.Fprintf(&out, format, args...)
+			}}
+			recoveryLog.startFinished(err)
+			if want := fmt.Sprintf("error=%q", cause.Error()); !strings.Contains(out.String(), want) {
+				t.Fatalf("start failure log = %q; want original INIT cause %q", out.String(), want)
+			}
 			if _, err := factory(context.Background()); !errors.Is(err, transport.ErrDriverUnavailable) || raw.calls != 1 {
 				t.Fatalf("consumed transport reused: error = %v, INIT calls = %d", err, raw.calls)
 			}

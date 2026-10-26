@@ -180,7 +180,7 @@ func newEBusDriverFactory(cfg ebusgateway.Config, protocol ebusgateway.Transport
 			if cfg.Transport != nil {
 				// The injected resource is consumed even when INIT fails;
 				// this factory cannot construct a replacement for a retry.
-				return nil, errors.Join(transport.ErrDriverUnavailable, err)
+				return nil, errors.Join(err, transport.ErrDriverUnavailable)
 			}
 			// After a successful dial of an ENH or ENS endpoint only the INIT
 			// handshake can fail: the configuration passed validation.

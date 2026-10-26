@@ -741,8 +741,16 @@ func TestEBusControlHubProofMismatchFailsClosed(t *testing.T) {
 	if snapshot.Generation != 0 || len(snapshot.EffectiveCapabilities) != 0 || snapshot.ObservedState == drivermanager.ObservedRunning {
 		t.Fatalf("snapshot = %#v, want no published generation", snapshot)
 	}
-	if plant.constructed() != 2 || !plant.raw(0).isClosed() || !plant.raw(1).isClosed() {
-		t.Fatalf("constructed=%d, want the attempt and one manager retry, both retired", plant.constructed())
+	// The hub no longer carries the generation the bridge holds: retrying
+	// cannot heal that identity mismatch (issue #1369), so the attempt is
+	// retired and the manager ends FAILED without a retry.
+	if plant.constructed() != 1 || !plant.raw(0).isClosed() {
+		t.Fatalf("constructed=%d, want the one attempt, retired, and no manager retry", plant.constructed())
+	}
+	var failure *ebusControlError
+	if !errors.As(err, &failure) || failure.ReasonCode() != drivermanager.ReasonInternalError || !errors.Is(err, errEBusControlStartFailed) ||
+		err.Error() != errEBusControlStartFailed.Error()+": "+string(drivermanager.ReasonInternalError) {
+		t.Fatalf("Start error = %v, want the manager's terminal INTERNAL_ERROR (not an exhausted retry budget)", err)
 	}
 	if len(plant.bridge.Mappings()) != 0 {
 		t.Fatalf("mappings = %#v", plant.bridge.Mappings())

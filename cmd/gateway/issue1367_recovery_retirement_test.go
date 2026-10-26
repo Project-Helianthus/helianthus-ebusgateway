@@ -68,10 +68,10 @@ func TestIssue1367RecoverySeriesSurvivesHeldAdmissionRetirement(t *testing.T) {
 
 	text := strings.Join(sink.snapshot(), "\n")
 	for _, want := range []string{
-		"recovery attempt 1/5 (reason=adapter_connection_lost)",
-		"recovery attempt 2/5 (reason=retry_after_admission_refused)",
-		"recovery attempt 2/5 reconnected",
-		"recovered on attempt 2/5",
+		"recovery attempt 1 (reason=adapter_connection_lost, phase=fast)",
+		"recovery attempt 2 (reason=retry_after_admission_refused, phase=fast)",
+		"recovery attempt 2 reconnected",
+		"recovered on attempt 2",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("log lacks %q:\n%s", want, text)

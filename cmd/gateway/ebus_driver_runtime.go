@@ -18,24 +18,47 @@ import (
 const primaryEBusDriverID = "ebus.primary"
 
 const (
-	defaultEBusDriverDrainTimeout = 2 * time.Second
-	defaultEBusRetryBudget        = 5
-	defaultEBusRetryInitialDelay  = time.Second
-	defaultEBusRetryMaxDelay      = 30 * time.Second
-	defaultEBusRetryJitterRatio   = 0.2
+	defaultEBusDriverDrainTimeout     = 2 * time.Second
+	defaultEBusRetryBudget            = 5
+	defaultEBusRetryInitialDelay      = time.Second
+	defaultEBusRetryMaxDelay          = 30 * time.Second
+	defaultEBusRetryJitterRatio       = 0.2
+	defaultEBusPersistentInitialDelay = time.Second
+	defaultEBusPersistentMaxDelay     = 5 * time.Minute
 )
 
-// ebusDriverRetryPolicy is the bounded native recovery policy of ebus.primary
-// after a reported connection loss: five attempts, the first after one second
-// and each further delay doubled up to thirty seconds, with 20% jitter. When
-// it is spent DriverManager publishes FAILED/RETRY_EXHAUSTED. Tests narrow the
-// delays through this seam; production never reassigns it.
+// ebusDriverRetryPolicy is the native recovery policy of ebus.primary. Five
+// fast attempts come first, the first after one second and each further
+// delay doubled up to thirty seconds. While the driver is desired RUNNING,
+// the series then continues without end: the delay restarts at one second
+// and doubles up to five minutes. Every delay carries 20% jitter and stays
+// within its phase's bounds. Only a retryable failure (a dial failure, a
+// timeout, a transport close) continues the series; a failure that retrying
+// cannot heal ends it FAILED with its own reason. Tests narrow the delays
+// through this seam; production never reassigns it.
 var ebusDriverRetryPolicy = drivermanager.RetryPolicy{
 	Budget:       defaultEBusRetryBudget,
 	InitialDelay: defaultEBusRetryInitialDelay,
 	MaxDelay:     defaultEBusRetryMaxDelay,
 	JitterRatio:  defaultEBusRetryJitterRatio,
+	Persistent: drivermanager.PersistentRetry{
+		Enabled:      true,
+		InitialDelay: defaultEBusPersistentInitialDelay,
+		MaxDelay:     defaultEBusPersistentMaxDelay,
+	},
 }
+
+// ebusRetryClock is the clock, jitter source and retry wait of the
+// ebus.primary DriverManager. The zero value keeps DriverManager's defaults.
+type ebusRetryClock struct {
+	now    func() time.Time
+	jitter func(time.Duration) time.Duration
+	wait   func(context.Context, time.Duration) bool
+}
+
+// ebusDriverRetryClock is a test-only seam that drives the retry schedule
+// deterministically; production never sets it.
+var ebusDriverRetryClock ebusRetryClock
 
 type ebusDriverController struct {
 	manager         *drivermanager.Manager
@@ -66,11 +89,16 @@ func newEBusDriverController(cfg ebusgateway.Config, sidecars ...drivermanager.D
 		},
 		ClassifyError: classifyEBusDriverError,
 		Retry:         ebusDriverRetryPolicy,
-	}}, sidecars...)})
+	}}, sidecars...),
+		Now:         ebusDriverRetryClock.now,
+		RetryJitter: ebusDriverRetryClock.jitter,
+		RetryWait:   ebusDriverRetryClock.wait,
+	})
 	if err != nil {
 		return nil, err
 	}
 	runtime.recovery.budget = ebusDriverRetryPolicy.Budget
+	runtime.recovery.persistent = ebusDriverRetryPolicy.Persistent
 	runtime.desiredRunning = func() bool {
 		snapshot, ok := manager.Snapshot(primaryEBusDriverID)
 		return ok && snapshot.DesiredState == drivermanager.DesiredRunning
@@ -229,12 +257,22 @@ func buildManagedAdapterDirectGeneration(factoryCtx context.Context, cfg ebusgat
 	return managed, nil
 }
 
+// classifyEBusDriverError separates the failures that retrying cannot heal
+// from the rest. Non-retryable, so terminal under the persistent policy: an
+// unavailable or stale runtime (an explicit stop or restart superseded the
+// attempt), a rejected configuration (an invalid endpoint or a protocol the
+// endpoint refuses) and a lifecycle identity mismatch (the hub source no
+// longer carries the epoch and generation the bridge holds). Everything else
+// (a dial failure, a timeout, a closed transport) is a retryable dependency
+// loss.
 func classifyEBusDriverError(err error) drivermanager.Failure {
 	switch {
 	case errors.Is(err, drivermanager.ErrUnavailable), errors.Is(err, transport.ErrDriverUnavailable):
 		return drivermanager.Failure{Reason: drivermanager.Reason{Code: drivermanager.ReasonProviderUnavailable}}
 	case errors.Is(err, ebuserrors.ErrInvalidPayload):
 		return drivermanager.Failure{Reason: drivermanager.Reason{Code: drivermanager.ReasonConfigInvalid}}
+	case errors.Is(err, errEBusControlHubNotLive):
+		return drivermanager.Failure{Reason: drivermanager.Reason{Code: drivermanager.ReasonInternalError}}
 	default:
 		return drivermanager.Failure{Reason: drivermanager.Reason{Code: drivermanager.ReasonDependencyUnavailable, Retryable: true}}
 	}
@@ -371,9 +409,10 @@ type ebusDriverRuntime struct {
 	reporter ebusFailureReporter
 	running  chan<- drivermanager.Correlation
 	current  atomic.Pointer[managedEBusGeneration]
-	// recovery logs the bounded manager-owned recovery after a reported
-	// connection loss: the loss, every replacement attempt with its reason
-	// and outcome, and the admitted recovered generation.
+	// recovery logs the manager-owned recovery after a reported connection
+	// loss: the loss, every replacement attempt with its reason and outcome
+	// (error class and cause), and the admitted recovered generation; and
+	// every failed start attempt outside such a series.
 	recovery ebusRecoveryLog
 	// desiredRunning reports whether the manager still wants ebus.primary
 	// RUNNING; it separates a manager-internal retirement from an explicit
@@ -451,18 +490,21 @@ func (runtime *ebusDriverRuntime) Start(ctx context.Context) (uint64, error) {
 	if runtime == nil || runtime.runtime == nil {
 		return 0, drivermanager.ErrUnavailable
 	}
-	// A fresh start (process start, START, RESTART) is not a recovery. A
-	// manager-owned retry after a refused admission also arrives here while
-	// the series is open and within its budget: it is the next attempt.
+	// A fresh start (process start, START, RESTART) is not a recovery; its
+	// failures are logged as start attempts. A manager-owned retry after a
+	// refused admission also arrives here while a recovery series is open:
+	// it is the series' next attempt.
 	attempt := 0
 	if runtime.recovery.continuing() {
 		attempt = runtime.recovery.attemptStarted()
 	} else {
-		runtime.recovery.reset()
+		runtime.recovery.freshStart()
 	}
 	generation, err := runtime.runtime.Start(ctx)
 	if attempt != 0 {
 		runtime.recovery.attemptFinished(attempt, generation, err)
+	} else {
+		runtime.recovery.startFinished(err)
 	}
 	if err == nil {
 		runtime.captureGeneration(generation)

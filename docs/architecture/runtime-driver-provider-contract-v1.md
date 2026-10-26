@@ -1985,9 +1985,13 @@ current process epoch.
 The gateway manager may retain its bounded lifecycle construction retry policy.
 It does not retry a native operation or duplicate an adapter's reconnect loop.
 An adapter may report a retry classification and owner-authorized earliest time;
-the manager consumes it within one configured lifecycle budget. Modbus reconnect
-and request retry remain inside the current Modbus owner and its one total
-operation context.
+the manager consumes it within one configured lifecycle budget. A driver policy
+may add a persistent phase after that budget: while the driver is desired
+`RUNNING`, a retryable failure series then continues with capped exponential
+backoff instead of ending `FAILED`/`RETRY_EXHAUSTED`. Only `ebus.primary`
+enables it (described under the shell integration below); every other driver
+keeps the bounded budget. Modbus reconnect and request retry remain inside the
+current Modbus owner and its one total operation context.
 
 ## 7. Lifecycle ordering
 
@@ -2411,31 +2415,64 @@ Manager-owned recovery after `RUNNING`. When a generation reports its own
 loss (the adapter-direct mux delegates a terminal read error or the AM27
 blackhole, the proxy listener fails, or a consumer call finds the provider
 transport closed), DriverManager withdraws the generation and runs the
-bounded `ebus.primary` retry policy: five replacement attempts, the first
-after one second and each further delay doubled up to thirty seconds, with
-20% jitter. The AM27 threshold itself is unchanged. The gateway logs the
-loss with its closed trigger category, every replacement attempt with its
-reason (the trigger, then the previous attempt's failure category) and its
-outcome, and the admitted recovered generation. The lines carry closed
-categories and counters only, never an endpoint or native error text.
+`ebus.primary` retry policy. Five fast replacement attempts come first: the
+first after one second, each further delay doubled up to thirty seconds.
+While the driver is desired `RUNNING` the series then never ends by itself:
+the persistent phase restarts at one second and doubles up to five minutes.
+Every delay carries 20% jitter and is clamped to its phase's bounds, so a
+delay on the cap lies between four and five minutes. The proxy class reaches
+the same owner and follows the same policy. The AM27 threshold itself is
+unchanged.
+
+Only a retryable failure continues the series: a dial failure, a timeout, a
+closed transport or a refused admission while the predecessor's tasks drain.
+A failure that retrying cannot heal ends it `FAILED` with its own reason: a
+rejected configuration (an invalid endpoint, or an endpoint that rejects the
+configured protocol's INIT) as `CONFIG_INVALID`, a lifecycle identity
+mismatch (the hub source no longer carries the epoch and generation the
+bridge holds) as `INTERNAL_ERROR`, an unavailable or superseded runtime as
+`PROVIDER_UNAVAILABLE`, and an unconfirmed close as `CLOSE_UNCONFIRMED` with
+quarantine. An explicit `STOP` ends the series with `STOPPED`. An operator
+`RESTART`, also one during a backoff wait, cancels the wait at once and opens
+a new epoch whose next failure series starts again with the full fast budget.
+`RETRY_EXHAUSTED` is not reached by `ebus.primary`.
+
+The gateway logs the loss with its closed trigger category and the schedule,
+every visible `BACKOFF` with the next attempt's number, due time (UTC), delay
+and phase, every replacement attempt with its number, phase and reason (the
+trigger, then the previous attempt's error class), every failed attempt with
+its closed error class and cause text, and the admitted recovered generation.
+A failed start outside a recovery series is logged the same way. The cause
+text is the innermost cause of the failure (the socket call and its errno,
+a resolver's verdict, an i/o timeout or a protocol sentinel). The wrapping
+that names the dialed address is dropped, anything address-like that remains
+is redacted, and the text is bounded to one line, so no line names an
+endpoint.
 
 The gateway's manager watch forwards these manager-driven transitions to the
 service through `Service.ObserveNative`, once the epoch's opening START has
-succeeded: `BACKOFF` with `RETRY_SCHEDULED`, a retry `STARTING`, the
-recovered `RUNNING` or `DEGRADED` generation, and the terminal `FAILED` with
-`RETRY_EXHAUSTED` (or `CLOSE_UNCONFIRMED` with quarantine) when the budget
-is spent. The service's own reconciler applies such an observation only
-while the driver has no work slot, no held decision and no attempt in
-flight, and only for the source epoch and driver generation of the admitted
-generation. A stale or foreign observation is dropped. `STOPPING`, `STOPPED`
-and `DISABLED` are never accepted from an executor. An observation changes no
-desired state, slot, budget or cleanup obligation, so a `FAILED` generation
-is still withdrawn by a later `STOP` or `RESTART`. A quarantining observation
-blocks admission like a service-observed unconfirmed close. As a result
-`helianthus.runtime.list`, `helianthus.runtime.get` and the Portal driver
-readback leave `RUNNING` as soon as the transport is lost. They never show
-`RUNNING` over a closed transport. Automatic recovery ends at `FAILED`; an
-operator `helianthus.runtime.restart` starts a new epoch.
+succeeded: `BACKOFF` with `RETRY_SCHEDULED` and its schedule (the ordinal of
+the next attempt within the failure series and its due time), a retry
+`STARTING`, the recovered `RUNNING` or `DEGRADED` generation, and the
+terminal `FAILED` of a failure that retrying cannot heal (or
+`CLOSE_UNCONFIRMED` with quarantine). The service's own reconciler applies
+such an observation only while the driver has no work slot, no held decision
+and no attempt in flight, and only for the source epoch and driver generation
+of the admitted generation. A stale or foreign observation is dropped.
+`STOPPING`, `STOPPED` and `DISABLED` are never accepted from an executor, and
+a schedule is accepted only with `BACKOFF`, with both of its fields set. An
+observation changes no desired state, slot, budget or cleanup obligation, so
+a `FAILED` generation is still withdrawn by a later `STOP` or `RESTART`. A
+quarantining observation blocks admission like a service-observed unconfirmed
+close. As a result `helianthus.runtime.list`, `helianthus.runtime.get` and
+the Portal driver readback leave `RUNNING` as soon as the transport is lost.
+They never show `RUNNING` over a closed transport. The service view's
+`DriverStatus` carries the schedule as `NextAttempt` and `NextAttemptUTC`
+while it shows that `BACKOFF`, and zero values in every other state; service
+events stay categorical and do not carry it. The `helianthus.runtime.*` MCP
+projection keeps its closed driver object (see "Data." above), so the
+schedule is not an MCP member. An operator `helianthus.runtime.restart`
+starts a new epoch.
 
 Limits of this composition: the service correlation carries no `SourceID`
 and the driver-to-native generation mapping stays process-local.

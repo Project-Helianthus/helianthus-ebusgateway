@@ -261,3 +261,38 @@ func TestM28ConfigDriverStatesComeFromHost(t *testing.T) {
 		t.Fatalf("default rows changed: %s", w.Body.String())
 	}
 }
+
+// Issue #1375: a driver row carries the recovery schedule only while the host
+// reports the driver in backoff. The member is closed to the four members of
+// the MCP runtime tools' recovery object, and it is absent, never null, in every
+// other row.
+func TestIssue1375ConfigDriverRecoveryIsOptionalAndClosed(t *testing.T) {
+	accepted := portalconfig.Record{Format: portalconfig.Format, Revision: "2", Drivers: []portalconfig.Driver{{ID: "family.primary", Enabled: true}, {ID: "family.secondary", Enabled: true}}}
+	enabled := true
+	h := NewHandler(Options{Config: &ConfigCallbacks{
+		Read: func(context.Context) (portalconfig.Record, error) { return accepted, nil },
+		Drivers: func(context.Context, *portalconfig.Record) []ConfigDriverState {
+			return []ConfigDriverState{
+				{DriverID: "family.primary", Desired: &enabled, Status: "pending", Reason: "backoff",
+					Recovery: &ConfigDriverRecovery{Attempt: 3, NextAttemptAt: "2000-01-01T00:00:08Z", LastFailureClass: "DIAL_FAILED", LastFailureCause: "dial: connection refused"}},
+				{DriverID: "family.secondary", Desired: &enabled, Effective: true, Status: "effective", Reason: "running"},
+			}
+		},
+	}})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/config", nil))
+	var got struct {
+		State struct {
+			Drivers json.RawMessage `json:"drivers"`
+		} `json:"state"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	const want = `[{"driver_id":"family.primary","desired":true,"effective":false,"status":"pending","reason":"backoff",` +
+		`"recovery":{"attempt":3,"next_attempt_at":"2000-01-01T00:00:08Z","last_failure_class":"DIAL_FAILED","last_failure_cause":"dial: connection refused"}},` +
+		`{"driver_id":"family.secondary","desired":true,"effective":true,"status":"effective","reason":"running"}]`
+	if string(got.State.Drivers) != want {
+		t.Fatalf("rows = %s\nwant %s", got.State.Drivers, want)
+	}
+}

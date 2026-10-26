@@ -107,8 +107,14 @@ func newEBusDriverController(cfg ebusgateway.Config, sidecars ...drivermanager.D
 		// The loss is recorded under the recovery log's lock together with
 		// its acceptance, so the first replacement attempt always logs the
 		// loss as its reason. A stale or repeated report is not logged.
-		runtime.recovery.reportLoss(correlation.Generation, ebusConnectionLossReason(rawErr), func() bool {
-			return manager.ReportFailure(primaryEBusDriverID, correlation, classifyEBusDriverError(rawErr))
+		reason := ebusConnectionLossReason(rawErr)
+		runtime.recovery.reportLoss(correlation.Generation, reason, func() bool {
+			failure := classifyEBusDriverError(rawErr)
+			if failure.Reason.Retryable {
+				// The recovery view names the closed trigger of the loss.
+				failure.Detail = ebusLossDetail(reason)
+			}
+			return manager.ReportFailure(primaryEBusDriverID, correlation, failure)
 		})
 	}
 	runtime.reporter = reporter
@@ -294,7 +300,7 @@ func classifyEBusDriverError(err error) drivermanager.Failure {
 	case errors.Is(err, errEBusControlHubNotLive):
 		return drivermanager.Failure{Reason: drivermanager.Reason{Code: drivermanager.ReasonInternalError}}
 	default:
-		return drivermanager.Failure{Reason: drivermanager.Reason{Code: drivermanager.ReasonDependencyUnavailable, Retryable: true}}
+		return drivermanager.Failure{Reason: drivermanager.Reason{Code: drivermanager.ReasonDependencyUnavailable, Retryable: true}, Detail: ebusFailureDetail(err)}
 	}
 }
 

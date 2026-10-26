@@ -981,7 +981,9 @@ store write, a reconciler or a decision.
 exactly `{catalog_revision, driver}`. A driver object has exactly
 `driver_id`, `enabled`, `desired_state`, `desired_revision`,
 `observed_state`, `reason`, `safety_quarantined` and `revision`, in that
-order, projected from the cached `DriverStatus`. List entries come from one
+order, projected from the cached `DriverStatus`, and one optional member,
+`recovery`, last, present only while `observed_state` is `BACKOFF` with a
+published schedule (see "Recovery member" below). List entries come from one
 coherent view in bytewise `driver_id` order, each carrying the view's catalog
 revision, with `drivers: []` for an empty catalog; get uses its entry's
 revision as `catalog_revision`. Revisions are canonical decimal strings and
@@ -993,6 +995,23 @@ STOP while desired `STOPPED` are no-ops after the revision comparison. Every
 accepted RESTART takes a new revision and executes one replacement; after a
 lost RESTART response an old-revision retry conflicts, and a fresh-revision
 retry after settlement restarts again.
+
+**Recovery member.** `DriverStatus.Recovery` renders the optional `recovery`
+object of the
+[MCP page](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/api/mcp.md)
+from the cached view, and the Portal driver row of the
+[configuration API](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/docs/architecture/portal-config-sharing.md)
+carries the same object. It exists only while the entry is in `BACKOFF` and
+the executor reported a schedule, an attempt number from one and a due time;
+every other state has no member, whatever its reason, and a `BACKOFF` without a
+schedule omits it. Its four members are all required: `attempt` is the number of the
+attempt scheduled, `next_attempt_at` its due time in UTC with the `Z`
+designator, `last_failure_class` one of `DIAL_FAILED`, `TIMEOUT`,
+`TRANSPORT_CLOSED` and `OTHER`, and `last_failure_cause` display text of at
+most 160 printable ASCII characters. A schedule whose failure the executor did
+not describe is published as `OTHER` with an empty cause. Accepted-mutation data
+and `REVISION_CONFLICT` data never carry it, and the member adds no tool,
+argument, error code or GraphQL field.
 
 **Envelope and errors.** All five tools use the ordinary envelope:
 `meta.contract` `helianthus-ebus-mcp` 1.0, `meta.consistency` `LIVE` with no
@@ -2519,11 +2538,30 @@ close. As a result `helianthus.runtime.list`, `helianthus.runtime.get` and
 the Portal driver readback leave `RUNNING` as soon as the transport is lost.
 They never show `RUNNING` over a closed transport. The service view's
 `DriverStatus` carries the schedule as `NextAttempt` and `NextAttemptUTC`
-while it shows that `BACKOFF`, and zero values in every other state; service
-events stay categorical and do not carry it. The `helianthus.runtime.*` MCP
-projection keeps its closed driver object (see "Data." above), so the
-schedule is not an MCP member. An operator `helianthus.runtime.restart`
-starts a new epoch.
+while it shows that `BACKOFF`, together with the failure that scheduled the
+retry (`LastFailureClass` and `LastFailureCause`), and zero values in every
+other state; service events stay categorical and do not carry them. The
+failure comes from DriverManager: its classifier attaches a `FailureDetail`
+(a closed class and a cause text) to the failure of a start or replacement
+attempt, and the loss reporter attaches the closed trigger of a lost
+connection. The manager stores it in `RetrySnapshot.LastFailure` with the
+schedule and never interprets it, so it takes no part in any retry decision.
+The class maps from the error categories of the recovery log: a failed dial
+(`dial_refused`, `dial_unreachable`, `dial_failed`) is `DIAL_FAILED`; a dial or
+INIT timeout (`dial_timeout`, `handshake_timeout`) or an exceeded deadline is
+`TIMEOUT`; a closed transport (`transport_closed`), an adapter that reset the
+connection and a lost adapter connection or transport are `TRANSPORT_CLOSED`;
+every other category, and a lost proxy listener or provider, is `OTHER`. The
+cause text is the log's redacted innermost cause, or `connection lost (trigger)`
+with the closed trigger for a lost connection, and the service reduces it again
+before it enters the view:
+printable ASCII on one line, every address shape of the public contract
+(IP and hardware address groups, `host:port`, URL schemes, paths, `user@host`,
+dotted host names and the host label after `dial`, `lookup`, `resolve` or
+`connect to`) replaced, at most 160 characters. The `helianthus.runtime.*`
+MCP projection renders the `recovery` member from this view only (see "Data."
+above), and so does the Portal driver row. An operator
+`helianthus.runtime.restart` starts a new epoch.
 
 Limits of this composition: the service correlation carries no `SourceID`
 and the driver-to-native generation mapping stays process-local.

@@ -834,6 +834,21 @@ function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
+// configRecoveryText shows the recovery schedule a driver in backoff reports:
+// when its next attempt is due, which attempt that is, and the last failure. It
+// is empty for a driver without a valid schedule.
+function configRecoveryText(recovery) {
+  const attempt = recovery?.attempt;
+  const due = recovery?.next_attempt_at;
+  if (!Number.isInteger(attempt) || attempt < 1 || typeof due !== "string" || due === "") return "";
+  const failureClass = recovery.last_failure_class;
+  const cause = recovery.last_failure_cause;
+  const failure = typeof failureClass === "string" && failureClass !== ""
+    ? `; Last failure: ${escapeHtml(failureClass)}${typeof cause === "string" && cause !== "" ? ` (${escapeHtml(cause)})` : ""}`
+    : "";
+  return `; Next attempt: ${escapeHtml(due)} (attempt ${attempt})${failure}`;
+}
+
 function formatFixed(value, digits = 1) {
   const number = Number(value);
   if (!Number.isFinite(number)) {
@@ -1676,7 +1691,7 @@ class PortalShell extends HTMLElement {
       const state = option.state;
       const unavailable = this._configView?.historical || !state || state.status === "withheld" || state.status === "error" || state.reason === "evidence_unavailable";
       const effective = unavailable ? "Unavailable" : state.effective === true ? "Enabled" : state.effective === false ? "Disabled" : "Unknown";
-      return `<p><label><input type="checkbox" data-config-index="${index}" ${option.value ? "checked" : ""} ${this._configBusy ? "disabled" : ""}> ${escapeHtml(option.label)} desired selection</label><br><span>Saved desired: ${state?.desired === true ? "Selected" : state?.desired === false ? "Unselected" : "Unknown"}; Effective: ${effective}; Status: ${escapeHtml(state?.status || "unknown")}; Reason: ${escapeHtml(state?.reason || "unavailable")}</span></p>`;
+      return `<p><label><input type="checkbox" data-config-index="${index}" ${option.value ? "checked" : ""} ${this._configBusy ? "disabled" : ""}> ${escapeHtml(option.label)} desired selection</label><br><span>Saved desired: ${state?.desired === true ? "Selected" : state?.desired === false ? "Unselected" : "Unknown"}; Effective: ${effective}; Status: ${escapeHtml(state?.status || "unknown")}; Reason: ${escapeHtml(state?.reason || "unavailable")}${configRecoveryText(state?.recovery)}</span></p>`;
     }).join("");
     fields.querySelectorAll("[data-config-index]").forEach((input) => {
       input.addEventListener("change", () => {

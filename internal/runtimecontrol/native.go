@@ -19,12 +19,20 @@ import (
 // ordinal, from one, of the scheduled retry within the current failure series
 // and NextAttemptUTC the time it is due. Both are set together or not at all,
 // and only for BACKOFF.
+//
+// A BACKOFF observation may also describe the failure that scheduled the
+// retry: FailureClass is one of the closed classes and FailureCause is display
+// text from which the owner has already removed every address. A cause needs
+// its class, and neither is accepted outside BACKOFF. The service bounds and
+// re-checks the cause before it enters the view.
 type NativeObservation struct {
 	State          drivermanager.ObservedState
 	Reason         drivermanager.ReasonCode
 	Quarantined    bool
 	NextAttempt    int
 	NextAttemptUTC time.Time
+	FailureClass   drivermanager.FailureClass
+	FailureCause   string
 }
 
 // RecoveringStart is the Start outcome of an executor whose native lifecycle
@@ -60,6 +68,14 @@ func recoveringStart(err error) (NativeObservation, bool) {
 	return obs, true
 }
 
+// observationOf is the service observation of a valid executor observation:
+// the schedule in UTC and the failure cause bounded and address-free.
+func observationOf(obs NativeObservation) observation {
+	return observation{state: obs.State, reason: obs.Reason, quarantined: obs.Quarantined,
+		nextAttempt: obs.NextAttempt, nextAttemptUTC: obs.NextAttemptUTC.UTC(),
+		failureClass: obs.FailureClass, failureCause: sanitizeFailureCause(obs.FailureCause)}
+}
+
 // pendingNative is the newest queued executor observation of one driver.
 // Only the latest is kept: each one reports the owner's current state.
 type pendingNative struct {
@@ -76,6 +92,10 @@ func nativeObservable(obs NativeObservation) bool {
 	}
 	scheduled := obs.NextAttempt != 0 || !obs.NextAttemptUTC.IsZero()
 	if scheduled && (obs.State != drivermanager.ObservedBackoff || obs.NextAttempt < 1 || obs.NextAttemptUTC.IsZero()) {
+		return false
+	}
+	failure := obs.FailureClass != "" || obs.FailureCause != ""
+	if failure && (obs.State != drivermanager.ObservedBackoff || !obs.FailureClass.Valid()) {
 		return false
 	}
 	switch obs.State {
@@ -171,6 +191,5 @@ func (s *Service) applyNative(d *driverState, rec ControlRecord) {
 		return
 	}
 	defer s.releaseDecision(d, false)
-	s.observe(d, observation{state: pending.obs.State, reason: pending.obs.Reason, quarantined: pending.obs.Quarantined,
-		nextAttempt: pending.obs.NextAttempt, nextAttemptUTC: pending.obs.NextAttemptUTC.UTC()})
+	s.observe(d, observationOf(pending.obs))
 }

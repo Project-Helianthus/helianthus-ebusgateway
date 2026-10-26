@@ -399,6 +399,33 @@ func rcOutputCases() []rcOutputCase {
 	quarantined.Drivers[0].SafetyQuarantined = true
 	disabled := rcCatalog()
 	disabled.Drivers[1] = rcStatus("fixture.second", drivermanager.ObservedDisabled, drivermanager.ReasonConfigDisabled, runtimecontrol.DesiredRunning, 5, 29)
+	scheduled := rcSingleDriverCatalog(rcBackoffStatus(nil))
+	scheduledOther := rcSingleDriverCatalog(rcBackoffStatus(func(s *runtimecontrol.DriverStatus) {
+		s.NextAttempt, s.NextAttemptUTC = 1, rcRecoveryDue.Add(250*time.Millisecond)
+		s.LastFailureClass, s.LastFailureCause = drivermanager.FailureOther, ""
+	}))
+	recovered := rcSingleDriverCatalog(rcStatus("ebus.primary", drivermanager.ObservedRunning, drivermanager.ReasonNone, runtimecontrol.DesiredRunning, 7, 30))
+	// Every state but BACKOFF is built with a leftover schedule and failure.
+	leftover := runtimecontrol.Catalog{Revision: 29, EventCursor: 41}
+	for _, state := range []struct {
+		id       string
+		observed drivermanager.ObservedState
+		reason   drivermanager.ReasonCode
+	}{
+		{"fixture.a.disabled", drivermanager.ObservedDisabled, drivermanager.ReasonConfigDisabled},
+		{"fixture.b.stopped", drivermanager.ObservedStopped, drivermanager.ReasonOperatorStopped},
+		{"fixture.c.starting", drivermanager.ObservedStarting, drivermanager.ReasonStartRequested},
+		{"fixture.d.running", drivermanager.ObservedRunning, drivermanager.ReasonNone},
+		{"fixture.e.degraded", drivermanager.ObservedDegraded, drivermanager.ReasonCapabilityDegraded},
+		{"fixture.f.stopping", drivermanager.ObservedStopping, drivermanager.ReasonStopRequested},
+		{"fixture.g.failed", drivermanager.ObservedFailed, drivermanager.ReasonRetryExhausted},
+		{"fixture.h.running-retry-reason", drivermanager.ObservedRunning, drivermanager.ReasonRetryScheduled},
+	} {
+		status := rcBackoffStatus(func(s *runtimecontrol.DriverStatus) {
+			s.DriverID, s.ObservedState, s.Reason = runtimecontrol.DriverID(state.id), state.observed, state.reason
+		})
+		leftover.Drivers = append(leftover.Drivers, status)
+	}
 	conflict := func(context.Context, runtimecontrol.Method, runtimecontrol.Request) (runtimecontrol.DesiredView, error) {
 		return runtimecontrol.DesiredView{}, &runtimecontrol.Refusal{Code: runtimecontrol.RefusalRevisionConflict, Row: 6, Reason: "expected revision differs",
 			View: &runtimecontrol.DesiredView{DesiredState: runtimecontrol.DesiredRunning, DesiredRevision: 9}}
@@ -416,6 +443,11 @@ func rcOutputCases() []rcOutputCase {
 		{name: "list_withheld_view", tool: RuntimeControlListTool, args: `{}`, catalog: &withheld, service: "control state unreadable: every driver withheld FAILED at revision 0"},
 		{name: "list_quarantined_driver", tool: RuntimeControlListTool, args: `{}`, catalog: &quarantined, service: "unconfirmed close: FAILED/CLOSE_UNCONFIRMED with the safety quarantine"},
 		{name: "list_disabled_driver_visible", tool: RuntimeControlListTool, args: `{}`, catalog: &disabled, service: "a disabled driver stays listed"},
+		{name: "list_backoff_with_recovery", tool: RuntimeControlListTool, args: `{}`, catalog: &scheduled, service: "BACKOFF with a published schedule: the recovery member carries attempt, due time, failure class and cause"},
+		{name: "list_backoff_recovery_other_empty_cause", tool: RuntimeControlListTool, args: `{}`, catalog: &scheduledOther, service: "BACKOFF with fractional-second due time, class OTHER and an empty cause"},
+		{name: "list_recovery_absent_outside_backoff", tool: RuntimeControlListTool, args: `{}`, catalog: &leftover, service: "every state but BACKOFF has no recovery member, even with a leftover schedule and failure"},
+		{name: "get_backoff_with_recovery", tool: RuntimeControlGetTool, args: `{"DriverID":"ebus.primary"}`, catalog: &scheduled, service: "one cached BACKOFF entry with its recovery member"},
+		{name: "get_running_after_recovery", tool: RuntimeControlGetTool, args: `{"DriverID":"ebus.primary"}`, catalog: &recovered, service: "the same driver recovered: RUNNING without the member, at catalog revision 30"},
 		{name: "list_rejects_member", tool: RuntimeControlListTool, args: `{"consistency":"LIVE"}`, service: "never consulted"},
 		{name: "list_rejects_null", tool: RuntimeControlListTool, args: `null`, service: "never consulted"},
 		{name: "list_rejects_array", tool: RuntimeControlListTool, args: `[]`, service: "never consulted"},

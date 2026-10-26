@@ -1,0 +1,36 @@
+{
+  "list_backoff_with_recovery": {
+    "catalog_revision": "29",
+    "drivers": [
+      {
+        "driver_id": "ebus.primary",
+        "enabled": true,
+        "desired_state": "RUNNING",
+        "desired_revision": "7",
+        "observed_state": "BACKOFF",
+        "reason": "RETRY_SCHEDULED",
+        "safety_quarantined": false,
+        "revision": "29",
+        "recovery": {
+          "attempt": 3,
+          "next_attempt_at": "2000-01-01T00:00:08Z",
+          "last_failure_class": "DIAL_FAILED",
+          "last_failure_cause": "dial: connection refused"
+        }
+      }
+    ]
+  },
+  "get_running_without_recovery": {
+    "catalog_revision": "30",
+    "driver": {
+      "driver_id": "ebus.primary",
+      "enabled": true,
+      "desired_state": "RUNNING",
+      "desired_revision": "7",
+      "observed_state": "RUNNING",
+      "reason": "NONE",
+      "safety_quarantined": false,
+      "revision": "30"
+    }
+  }
+}

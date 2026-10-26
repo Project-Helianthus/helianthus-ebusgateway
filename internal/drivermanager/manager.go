@@ -98,6 +98,11 @@ type RetrySnapshot struct {
 	// past the fast budget while the driver is desired RUNNING: only a
 	// non-retryable failure, a safety quarantine or an explicit Stop ends it.
 	Persistent bool
+	// LastFailure describes the failure that scheduled this retry, as its
+	// driver's classifier reported it. It is display material only: it takes
+	// no part in the schedule or in any retry decision, and it is the zero
+	// value when the classifier supplied none.
+	LastFailure FailureDetail
 }
 
 // Correlation fences callbacks from both stale generations and superseded
@@ -125,6 +130,54 @@ type Snapshot struct {
 
 type Failure struct {
 	Reason Reason
+	// Detail optionally describes the failure for display. Only a retryable
+	// failure that schedules a retry carries it into the snapshot.
+	Detail FailureDetail
+}
+
+// FailureClass is the closed, protocol-neutral kind of a failed attempt or of a
+// lost connection.
+type FailureClass string
+
+const (
+	// FailureDialFailed: the transport connection could not be established.
+	FailureDialFailed FailureClass = "DIAL_FAILED"
+	// FailureTimeout: the attempt, or an established transport, exceeded its
+	// time limit.
+	FailureTimeout FailureClass = "TIMEOUT"
+	// FailureTransportClosed: an established transport was closed or lost.
+	FailureTransportClosed FailureClass = "TRANSPORT_CLOSED"
+	// FailureOther: any other retryable failure.
+	FailureOther FailureClass = "OTHER"
+)
+
+// Valid reports whether the class is one of the closed set.
+func (class FailureClass) Valid() bool {
+	switch class {
+	case FailureDialFailed, FailureTimeout, FailureTransportClosed, FailureOther:
+		return true
+	}
+	return false
+}
+
+// FailureDetail is what a driver's classifier says about one failure: its
+// class and a short cause text from which the driver has already removed every
+// address. The manager stores the cause verbatim and never interprets it; a
+// class outside the closed set is stored as FailureOther, and a detail with
+// neither class nor cause stays the zero value.
+type FailureDetail struct {
+	Class FailureClass
+	Cause string
+}
+
+func (detail FailureDetail) normalized() FailureDetail {
+	if detail.Class == "" && detail.Cause == "" {
+		return FailureDetail{}
+	}
+	if !detail.Class.Valid() {
+		detail.Class = FailureOther
+	}
+	return detail
 }
 
 type RetryPolicy struct {
@@ -933,7 +986,7 @@ func (manager *Manager) finishAttempt(driver *managedDriver, control *attemptCon
 		driver.needsReplace = true
 	}
 	if failure.Reason.Retryable && driver.retryContinuesLocked() {
-		manager.scheduleRetryLocked(driver, operation, replace)
+		manager.scheduleRetryLocked(driver, operation, replace, failure.Detail)
 		return
 	}
 	if failure.Reason.Retryable {
@@ -975,12 +1028,12 @@ func (manager *Manager) nextRetryDelay(driver *managedDriver) time.Duration {
 	return retryDelay(persistent, index, manager.jitter)
 }
 
-func (manager *Manager) scheduleRetryLocked(driver *managedDriver, operation uint64, replace bool) {
+func (manager *Manager) scheduleRetryLocked(driver *managedDriver, operation uint64, replace bool, detail FailureDetail) {
 	remaining := driver.retryRemaining
 	delay := manager.nextRetryDelay(driver)
 	driver.retrySeries++
 	retry := &RetrySnapshot{Eligible: true, BudgetRemaining: remaining, NotBeforeUTC: manager.now().Add(delay), Attempt: driver.retrySeries,
-		Persistent: driver.cfg.Retry.Persistent.Enabled}
+		Persistent: driver.cfg.Retry.Persistent.Enabled, LastFailure: detail.normalized()}
 	manager.transitionLocked(driver, ObservedBackoff, Reason{Code: ReasonRetryScheduled, Retryable: true}, retry, nil)
 	driver.retryToken++
 	token := driver.retryToken
@@ -1121,7 +1174,7 @@ func (manager *Manager) ReportFailure(id string, correlation Correlation, failur
 	driver.resetRetryLocked()
 	if failure.Reason.Retryable {
 		if driver.retryContinuesLocked() {
-			manager.scheduleRetryLocked(driver, operation, true)
+			manager.scheduleRetryLocked(driver, operation, true, failure.Detail)
 			return true
 		}
 		failure.Reason = Reason{Code: ReasonRetryExhausted}

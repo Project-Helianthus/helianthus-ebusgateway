@@ -108,6 +108,14 @@ type DriverStatus struct {
 	// and the time it is due. They are zero in every other state.
 	NextAttempt    int
 	NextAttemptUTC time.Time
+	// LastFailureClass and LastFailureCause describe the failure that
+	// scheduled that retry, as the executor reported it: one of the closed
+	// failure classes (empty when the executor named none) and display text
+	// that is bounded, printable ASCII and free of addresses. Both are empty
+	// in every state but a BACKOFF with an executor-reported failure.
+	// DriverStatus.Recovery is their rendering.
+	LastFailureClass drivermanager.FailureClass
+	LastFailureCause string
 }
 
 // Catalog is one coherent cached view: every served driver sorted bytewise by
@@ -166,9 +174,13 @@ type observation struct {
 	epoch       SourceEpoch
 	generation  DriverGeneration
 	// nextAttempt and nextAttemptUTC carry an executor-reported BACKOFF
-	// schedule; zero for every service-originated observation.
+	// schedule; zero for every service-originated observation. failureClass
+	// and failureCause describe the failure that scheduled it, with the cause
+	// already bounded and address-free.
 	nextAttempt    int
 	nextAttemptUTC time.Time
+	failureClass   drivermanager.FailureClass
+	failureCause   string
 }
 
 // attempt is one in-memory start attempt and its correlation. fenced is
@@ -1376,6 +1388,7 @@ func (s *Service) buildLocked(catalog ControlCatalog) Catalog {
 			ObservedState: obs.state, Reason: obs.reason, SafetyQuarantined: obs.quarantined}
 		if obs.state == drivermanager.ObservedBackoff {
 			entry.NextAttempt, entry.NextAttemptUTC = obs.nextAttempt, obs.nextAttemptUTC
+			entry.LastFailureClass, entry.LastFailureCause = obs.failureClass, obs.failureCause
 		}
 		if ok {
 			entry.Enabled = rec.Enabled
@@ -1384,6 +1397,7 @@ func (s *Service) buildLocked(catalog ControlCatalog) Catalog {
 			if rec.Failed {
 				entry.ObservedState, entry.Reason = drivermanager.ObservedFailed, drivermanager.ReasonInternalError
 				entry.NextAttempt, entry.NextAttemptUTC = 0, time.Time{}
+				entry.LastFailureClass, entry.LastFailureCause = "", ""
 			}
 		}
 		if entry.ObservedState == "" {

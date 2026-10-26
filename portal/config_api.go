@@ -23,12 +23,28 @@ type ConfigCallbacks struct {
 
 // ConfigDriverState is one driver's desired selection (nil when no valid
 // record is available), owner-confirmed effective state and closed status.
+// Recovery is present only while the owner reports the driver in backoff with a
+// schedule; it is absent, never null, in every other state.
 type ConfigDriverState struct {
-	DriverID  string `json:"driver_id"`
-	Desired   *bool  `json:"desired"`
-	Effective bool   `json:"effective"`
-	Status    string `json:"status"`
-	Reason    string `json:"reason"`
+	DriverID  string                `json:"driver_id"`
+	Desired   *bool                 `json:"desired"`
+	Effective bool                  `json:"effective"`
+	Status    string                `json:"status"`
+	Reason    string                `json:"reason"`
+	Recovery  *ConfigDriverRecovery `json:"recovery,omitempty"`
+}
+
+// ConfigDriverRecovery is the recovery schedule of a driver in backoff, in the
+// shape of the MCP runtime tools' recovery member: the one-based number of the
+// attempt scheduled for NextAttemptAt, its due time (RFC 3339 UTC, Z
+// designator), the failure class (DIAL_FAILED, TIMEOUT, TRANSPORT_CLOSED or
+// OTHER) and the address-free cause text of at most 160 printable ASCII
+// characters.
+type ConfigDriverRecovery struct {
+	Attempt          int    `json:"attempt"`
+	NextAttemptAt    string `json:"next_attempt_at"`
+	LastFailureClass string `json:"last_failure_class"`
+	LastFailureCause string `json:"last_failure_cause"`
 }
 
 // driverStates never lets a missing host callback claim application.

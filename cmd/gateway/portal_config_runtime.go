@@ -178,6 +178,9 @@ func (r *gatewayPortalConfigRuntime) driverStates(record *portalconfig.Record, r
 			DriverID:  string(id),
 			Effective: observed && status.Enabled && status.ObservedState == drivermanager.ObservedRunning && !status.SafetyQuarantined,
 		}
+		if observed {
+			state.Recovery = portalConfigRecovery(status)
+		}
 		if record == nil {
 			state.Status, state.Reason = "error", r.errorCode()
 		} else {
@@ -222,6 +225,21 @@ func (r *gatewayPortalConfigRuntime) selectionStatus(id runtimecontrol.DriverID,
 		return "withheld", "evidence_unavailable"
 	}
 	return portalConfigReadbackStatus(status)
+}
+
+// portalConfigRecovery is the recovery schedule of a driver the owner reports
+// in backoff, and nil in every other state.
+func portalConfigRecovery(status runtimecontrol.DriverStatus) *portal.ConfigDriverRecovery {
+	recovery, ok := status.Recovery()
+	if !ok {
+		return nil
+	}
+	return &portal.ConfigDriverRecovery{
+		Attempt:          recovery.Attempt,
+		NextAttemptAt:    recovery.NextAttemptAt,
+		LastFailureClass: string(recovery.FailureClass),
+		LastFailureCause: recovery.FailureCause,
+	}
 }
 
 // portalConfigReadbackStatus maps the service view of a configured-enabled

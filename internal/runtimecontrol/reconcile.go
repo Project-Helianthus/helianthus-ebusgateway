@@ -769,8 +769,9 @@ func admissionObservation(corr LifecycleCorrelation, recovery NativeObservation,
 	if !recovering {
 		return observation{state: drivermanager.ObservedRunning, reason: drivermanager.ReasonNone, epoch: corr.Epoch, generation: corr.Generation}
 	}
-	return observation{state: recovery.State, reason: recovery.Reason, epoch: corr.Epoch, generation: corr.Generation,
-		nextAttempt: recovery.NextAttempt, nextAttemptUTC: recovery.NextAttemptUTC.UTC()}
+	admitted := observationOf(recovery)
+	admitted.epoch, admitted.generation = corr.Epoch, corr.Generation
+	return admitted
 }
 
 // completeStart marks the admitted slot terminal: its obligations now belong

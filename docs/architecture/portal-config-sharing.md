@@ -183,6 +183,20 @@ load error code as reason. Otherwise the first matching row applies:
 A configured-disabled driver with an enabled readback, or a configured-enabled
 driver with a disabled readback, reports `withheld`/`evidence_unavailable`.
 
+A row also carries an optional `recovery` object while the readback is a
+`BACKOFF` with a published schedule, and no `recovery` member in every other
+state (never `null`, never empty). Its members are the ones of the MCP runtime
+tools' `recovery` member, projected from the same cached readback:
+`attempt` (the one-based number of the attempt scheduled), `next_attempt_at`
+(when it is due, RFC 3339 UTC with the `Z` designator), `last_failure_class`
+(`DIAL_FAILED`, `TIMEOUT`, `TRANSPORT_CLOSED` or `OTHER`) and
+`last_failure_cause` (display text of at most 160 printable ASCII characters
+with every address removed). The Portal shows when the next attempt is due, the
+attempt number and the last failure beside the row's status and reason; it
+parses none of the text. The member changes no status, reason or `effective`
+value. The public contract is the
+[MCP page](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/api/mcp.md).
+
 ## Detached listener plan and API validation
 
 **Proven**: the [planner](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/internal/portalconfig/sharing.go)

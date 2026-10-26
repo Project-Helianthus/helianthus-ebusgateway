@@ -102,6 +102,12 @@ type DriverStatus struct {
 	Reason            drivermanager.ReasonCode
 	SafetyQuarantined bool
 	Revision          CatalogRevision
+	// NextAttempt and NextAttemptUTC are the executor's scheduled retry while
+	// ObservedState is a BACKOFF it reported (Service.ObserveNative): the
+	// ordinal, from one, of the next attempt in the current failure series
+	// and the time it is due. They are zero in every other state.
+	NextAttempt    int
+	NextAttemptUTC time.Time
 }
 
 // Catalog is one coherent cached view: every served driver sorted bytewise by
@@ -159,6 +165,10 @@ type observation struct {
 	quarantined bool
 	epoch       SourceEpoch
 	generation  DriverGeneration
+	// nextAttempt and nextAttemptUTC carry an executor-reported BACKOFF
+	// schedule; zero for every service-originated observation.
+	nextAttempt    int
+	nextAttemptUTC time.Time
 }
 
 // attempt is one in-memory start attempt and its correlation. fenced is
@@ -1361,12 +1371,16 @@ func (s *Service) buildLocked(catalog ControlCatalog) Catalog {
 		obs := s.observed[id]
 		entry := DriverStatus{DriverID: id, Revision: catalog.CatalogRevision, DesiredState: DesiredStopped,
 			ObservedState: obs.state, Reason: obs.reason, SafetyQuarantined: obs.quarantined}
+		if obs.state == drivermanager.ObservedBackoff {
+			entry.NextAttempt, entry.NextAttemptUTC = obs.nextAttempt, obs.nextAttemptUTC
+		}
 		if ok {
 			entry.Enabled = rec.Enabled
 			entry.DesiredState = rec.DesiredState
 			entry.DesiredRevision = rec.DesiredRevision
 			if rec.Failed {
 				entry.ObservedState, entry.Reason = drivermanager.ObservedFailed, drivermanager.ReasonInternalError
+				entry.NextAttempt, entry.NextAttemptUTC = 0, time.Time{}
 			}
 		}
 		if entry.ObservedState == "" {

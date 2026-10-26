@@ -1,17 +1,28 @@
 package runtimecontrol
 
-import "github.com/Project-Helianthus/helianthus-ebusgateway/internal/drivermanager"
+import (
+	"time"
+
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/drivermanager"
+)
 
 // NativeObservation is one executor-originated lifecycle observation of the
 // generation that a driver's last successful START admitted. It reports what
 // the native lifecycle owner did on its own after RUNNING: a failure
 // replacement in BACKOFF, one of its STARTING attempts, the recovered RUNNING
-// or DEGRADED generation, or a terminal FAILED once its bounded retry budget
-// is spent (with Quarantined for an unconfirmed close).
+// or DEGRADED generation, or a terminal FAILED for a failure that retrying
+// cannot heal (with Quarantined for an unconfirmed close).
+//
+// A BACKOFF observation may carry the owner's schedule: NextAttempt is the
+// ordinal, from one, of the scheduled retry within the current failure series
+// and NextAttemptUTC the time it is due. Both are set together or not at all,
+// and only for BACKOFF.
 type NativeObservation struct {
-	State       drivermanager.ObservedState
-	Reason      drivermanager.ReasonCode
-	Quarantined bool
+	State          drivermanager.ObservedState
+	Reason         drivermanager.ReasonCode
+	Quarantined    bool
+	NextAttempt    int
+	NextAttemptUTC time.Time
 }
 
 // pendingNative is the newest queued executor observation of one driver.
@@ -26,6 +37,10 @@ type pendingNative struct {
 // are never accepted from an executor.
 func nativeObservable(obs NativeObservation) bool {
 	if obs.Reason == "" {
+		return false
+	}
+	scheduled := obs.NextAttempt != 0 || !obs.NextAttemptUTC.IsZero()
+	if scheduled && (obs.State != drivermanager.ObservedBackoff || obs.NextAttempt < 1 || obs.NextAttemptUTC.IsZero()) {
 		return false
 	}
 	switch obs.State {
@@ -121,5 +136,6 @@ func (s *Service) applyNative(d *driverState, rec ControlRecord) {
 		return
 	}
 	defer s.releaseDecision(d, false)
-	s.observe(d, observation{state: pending.obs.State, reason: pending.obs.Reason, quarantined: pending.obs.Quarantined})
+	s.observe(d, observation{state: pending.obs.State, reason: pending.obs.Reason, quarantined: pending.obs.Quarantined,
+		nextAttempt: pending.obs.NextAttempt, nextAttemptUTC: pending.obs.NextAttemptUTC.UTC()})
 }

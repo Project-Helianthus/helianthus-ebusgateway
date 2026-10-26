@@ -84,9 +84,16 @@ type Reason struct {
 func (reason Reason) String() string { return string(reason.Code) }
 
 type RetrySnapshot struct {
-	Eligible        bool
+	Eligible bool
+	// BudgetRemaining counts the fast attempts left, the scheduled one
+	// included. It is zero in the persistent phase.
 	BudgetRemaining int
 	NotBeforeUTC    time.Time
+	// Attempt is the ordinal, from one, of the scheduled retry within the
+	// current failure series; every earlier retry of the series failed. A
+	// success, an explicit Start or Replace and a new reported failure open
+	// a new series.
+	Attempt int
 }
 
 // Correlation fences callbacks from both stale generations and superseded
@@ -123,6 +130,23 @@ type RetryPolicy struct {
 	// JitterRatio is the symmetric jitter bound around each exponential
 	// delay. Zero selects the default 20%; a negative value disables jitter.
 	JitterRatio float64
+	// Persistent continues a retryable failure series once the Budget fast
+	// attempts are spent. The zero value keeps the bounded behavior: the
+	// series ends FAILED/RETRY_EXHAUSTED.
+	Persistent PersistentRetry
+}
+
+// PersistentRetry is the phase that follows the fast attempts of a retry
+// series while the driver is desired RUNNING. Its delays restart at
+// InitialDelay and double up to MaxDelay, with the policy's JitterRatio; a
+// delay is always clamped to [InitialDelay, MaxDelay]. Only a retryable
+// failure continues the series, so a non-retryable failure (configuration
+// rejected, a stale or foreign identity), a safety quarantine and an
+// explicit Stop still end it. Start and Replace reset the schedule.
+type PersistentRetry struct {
+	Enabled      bool
+	InitialDelay time.Duration
+	MaxDelay     time.Duration
 }
 
 // Runtime is the protocol-neutral lifecycle boundary implemented by adapters.
@@ -284,9 +308,13 @@ type DriverConfig struct {
 }
 
 type Config struct {
-	Drivers           []DriverConfig
-	Now               func() time.Time
-	RetryJitter       func(time.Duration) time.Duration
+	Drivers     []DriverConfig
+	Now         func() time.Time
+	RetryJitter func(time.Duration) time.Duration
+	// RetryWait waits out the delay of one scheduled retry and reports
+	// whether the retry is due; it returns false once ctx ends. Nil selects a
+	// timer. Tests inject it to drive a retry schedule without real time.
+	RetryWait         func(ctx context.Context, delay time.Duration) bool
 	LateRetireTimeout time.Duration
 }
 
@@ -295,6 +323,7 @@ type Manager struct {
 	cancel context.CancelFunc
 	now    func() time.Time
 	jitter func(time.Duration) time.Duration
+	wait   func(context.Context, time.Duration) bool
 	// lateRetireTimeout bounds cleanup of a provider that completed admission
 	// after its manager operation had already been superseded.
 	lateRetireTimeout time.Duration
@@ -312,19 +341,22 @@ type managedDriver struct {
 	opMu sync.Mutex
 	mu   sync.RWMutex
 
-	desired           DesiredState
-	observed          ObservedState
-	reason            Reason
-	retry             *RetrySnapshot
-	generation        uint64
-	revision          uint64
-	attempt           uint64
-	effective         []Capability
-	quarantined       bool
-	changedAt         time.Time
-	operationSeq      uint64
-	activeOperation   uint64
-	retryRemaining    int
+	desired         DesiredState
+	observed        ObservedState
+	reason          Reason
+	retry           *RetrySnapshot
+	generation      uint64
+	revision        uint64
+	attempt         uint64
+	effective       []Capability
+	quarantined     bool
+	changedAt       time.Time
+	operationSeq    uint64
+	activeOperation uint64
+	retryRemaining  int
+	// retrySeries counts the retries scheduled in the current failure
+	// series; it resets together with retryRemaining.
+	retrySeries       int
 	retryToken        uint64
 	retryCancel       context.CancelFunc
 	retryNeedsReplace bool
@@ -348,6 +380,10 @@ func New(cfg Config) (*Manager, error) {
 	if jitter == nil {
 		jitter = defaultRetryJitter
 	}
+	wait := cfg.RetryWait
+	if wait == nil {
+		wait = defaultRetryWait
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	lateRetireTimeout := cfg.LateRetireTimeout
 	if lateRetireTimeout <= 0 {
@@ -358,6 +394,7 @@ func New(cfg Config) (*Manager, error) {
 		cancel:            cancel,
 		now:               now,
 		jitter:            jitter,
+		wait:              wait,
 		lateRetireTimeout: lateRetireTimeout,
 		drivers:           make(map[string]*managedDriver, len(cfg.Drivers)),
 	}
@@ -530,7 +567,7 @@ func (manager *Manager) start(ctx context.Context, id string, async bool) error 
 		return ErrUnavailable
 	}
 	driver.desired = DesiredRunning
-	driver.retryRemaining = driver.cfg.Retry.Budget
+	driver.resetRetryLocked()
 	operation := driver.nextOperationLocked()
 	replace := driver.needsReplace
 	manager.transitionLocked(driver, ObservedStarting, Reason{Code: ReasonStartRequested}, nil, nil)
@@ -583,7 +620,7 @@ func (manager *Manager) Replace(ctx context.Context, id string) error {
 		return ErrUnavailable
 	}
 	driver.desired = DesiredRunning
-	driver.retryRemaining = driver.cfg.Retry.Budget
+	driver.resetRetryLocked()
 	operation := driver.nextOperationLocked()
 	manager.fenceWithdrawalLocked(driver)
 	manager.transitionLocked(driver, ObservedStopping, Reason{Code: ReasonStopRequested}, nil, nil)
@@ -869,7 +906,7 @@ func (manager *Manager) finishAttempt(driver *managedDriver, control *attemptCon
 		driver.attempt = 1
 		driver.quarantined = false
 		driver.needsReplace = false
-		driver.retryRemaining = driver.cfg.Retry.Budget
+		driver.resetRetryLocked()
 		driver.activeOperation = 0
 		bindCorrelation = Correlation{Generation: generation}
 		if activator, ok := driver.cfg.Runtime.(correlationActivator); ok {
@@ -891,7 +928,7 @@ func (manager *Manager) finishAttempt(driver *managedDriver, control *attemptCon
 	if replace {
 		driver.needsReplace = true
 	}
-	if failure.Reason.Retryable && driver.retryRemaining > 0 {
+	if failure.Reason.Retryable && driver.retryContinuesLocked() {
 		manager.scheduleRetryLocked(driver, operation, replace)
 		return
 	}
@@ -902,11 +939,44 @@ func (manager *Manager) finishAttempt(driver *managedDriver, control *attemptCon
 	manager.transitionLocked(driver, ObservedFailed, failure.Reason, nil, nil)
 }
 
+// resetRetryLocked opens a new failure series: the full fast budget and the
+// persistent schedule from its first delay.
+func (driver *managedDriver) resetRetryLocked() {
+	driver.retryRemaining = driver.cfg.Retry.Budget
+	driver.retrySeries = 0
+}
+
+// retryContinuesLocked reports whether a retryable failure schedules another
+// retry: while fast attempts remain, and afterwards only under a persistent
+// policy.
+func (driver *managedDriver) retryContinuesLocked() bool {
+	return driver.retryRemaining > 0 || driver.cfg.Retry.Persistent.Enabled
+}
+
+// nextRetryDelay picks the delay of the next retry of the series: the fast
+// schedule while budget remains, then the persistent schedule, which
+// restarts at its own initial delay. It consumes one fast attempt.
+func (manager *Manager) nextRetryDelay(driver *managedDriver) time.Duration {
+	policy := driver.cfg.Retry
+	if driver.retryRemaining > 0 {
+		index := policy.Budget - driver.retryRemaining
+		driver.retryRemaining--
+		return retryDelay(policy, index, manager.jitter)
+	}
+	index := driver.retrySeries - policy.Budget
+	if index < 0 {
+		index = 0
+	}
+	persistent := RetryPolicy{InitialDelay: policy.Persistent.InitialDelay, MaxDelay: policy.Persistent.MaxDelay, JitterRatio: policy.JitterRatio}
+	return retryDelay(persistent, index, manager.jitter)
+}
+
 func (manager *Manager) scheduleRetryLocked(driver *managedDriver, operation uint64, replace bool) {
-	delay := retryDelay(driver.cfg.Retry, driver.cfg.Retry.Budget-driver.retryRemaining, manager.jitter)
-	retry := &RetrySnapshot{Eligible: true, BudgetRemaining: driver.retryRemaining, NotBeforeUTC: manager.now().Add(delay)}
+	remaining := driver.retryRemaining
+	delay := manager.nextRetryDelay(driver)
+	driver.retrySeries++
+	retry := &RetrySnapshot{Eligible: true, BudgetRemaining: remaining, NotBeforeUTC: manager.now().Add(delay), Attempt: driver.retrySeries}
 	manager.transitionLocked(driver, ObservedBackoff, Reason{Code: ReasonRetryScheduled, Retryable: true}, retry, nil)
-	driver.retryRemaining--
 	driver.retryToken++
 	token := driver.retryToken
 	driver.retryNeedsReplace = replace
@@ -922,12 +992,8 @@ func (manager *Manager) scheduleRetryLocked(driver *managedDriver, operation uin
 
 func (manager *Manager) runRetry(ctx context.Context, driver *managedDriver, operation, token uint64, delay time.Duration) {
 	defer manager.wg.Done()
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
+	if !manager.wait(ctx, delay) {
 		return
-	case <-timer.C:
 	}
 
 	driver.opMu.Lock()
@@ -1047,9 +1113,9 @@ func (manager *Manager) ReportFailure(id string, correlation Correlation, failur
 	// later Runtime.Replace/Stop owner's responsibility.
 	manager.fenceWithdrawalLocked(driver)
 	driver.needsReplace = true
-	driver.retryRemaining = driver.cfg.Retry.Budget
+	driver.resetRetryLocked()
 	if failure.Reason.Retryable {
-		if driver.retryRemaining > 0 {
+		if driver.retryContinuesLocked() {
 			manager.scheduleRetryLocked(driver, operation, true)
 			return true
 		}
@@ -1143,6 +1209,14 @@ func normalizeRetryPolicy(policy RetryPolicy) RetryPolicy {
 	} else if policy.JitterRatio > 0.5 {
 		policy.JitterRatio = 0.5
 	}
+	if policy.Persistent.Enabled {
+		if policy.Persistent.InitialDelay <= 0 {
+			policy.Persistent.InitialDelay = time.Second
+		}
+		if policy.Persistent.MaxDelay < policy.Persistent.InitialDelay {
+			policy.Persistent.MaxDelay = policy.Persistent.InitialDelay
+		}
+	}
 	return policy
 }
 
@@ -1176,6 +1250,17 @@ func retryDelay(policy RetryPolicy, index int, jitter func(time.Duration) time.D
 		return policy.MaxDelay
 	}
 	return delay
+}
+
+func defaultRetryWait(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 func defaultRetryJitter(limit time.Duration) time.Duration {

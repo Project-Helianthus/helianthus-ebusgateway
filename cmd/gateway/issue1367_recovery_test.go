@@ -3,15 +3,17 @@ package main
 // Issue #1367: after the adaptermux AM27 blackhole trigger delegates
 // recovery, the ebus.primary lifecycle owner (DriverManager behind the
 // runtime control bridge) re-establishes the adapter-direct connection with a
-// bounded, logged backoff, or leaves RUNNING for a visible state with a
-// reason. helianthus.runtime.list, the Portal readback and the adapter status
-// must never keep RUNNING over a closed transport. The proxy-class (ENH)
-// endpoint goes through the same owner and is covered by twin tests.
+// logged backoff, and leaves RUNNING for a visible state meanwhile.
+// helianthus.runtime.list, the Portal readback and the adapter status must
+// never keep RUNNING over a closed transport. The proxy-class (ENH) endpoint
+// goes through the same owner and is covered by twin tests.
 //
 // Every test drives the production composition (run, with the rctl process
 // seams) against a scripted loopback ENH endpoint. Only two test seams are
 // narrowed: the mux AM27 threshold (production keeps 30 s) and the delays of
-// the bounded native retry policy (the budget of five attempts is kept).
+// the native retry policy (its shape is kept: five fast attempts, then the
+// persistent phase of issue #1369). The tests of the persistent phase itself
+// are in issue1369_persistent_recovery_test.go.
 
 import (
 	"bytes"
@@ -39,15 +41,21 @@ const (
 	issue1367RetryMax           = 600 * time.Millisecond
 )
 
+// issue1367Schedule is the schedule text of the narrowed policy.
+const issue1367Schedule = "recovery continues while desired RUNNING (5 fast attempts, then backoff from 300ms doubling to 600ms)"
+
 // issue1367Endpoint is a scripted ENH endpoint. Every session answers INIT
 // and INFO (the version payload is the session index, so a recovered
 // generation is distinguishable); a streaming endpoint (adapter-direct)
 // sends one SYN every 10 ms after INFO until the session is stalled, which
-// keeps the TCP connection open and silent like the observed blackhole.
+// keeps the TCP connection open and silent like the observed blackhole. With
+// rejectInit set, a session answers INIT with an eBUS error, which the
+// gateway classifies as a rejected configuration.
 type issue1367Endpoint struct {
-	t       *testing.T
-	stream  bool
-	address string
+	t          *testing.T
+	stream     bool
+	address    string
+	rejectInit atomic.Bool
 
 	mu       sync.Mutex
 	listener net.Listener
@@ -177,6 +185,10 @@ func (endpoint *issue1367Endpoint) serve(session *issue1367Session) {
 	}()
 	ready := make(chan struct{})
 	var readyOnce sync.Once
+	// ended releases the streamer of a session that closed before INFO (an
+	// INIT the endpoint rejected, for example).
+	ended := make(chan struct{})
+	defer close(ended)
 	if endpoint.stream {
 		endpoint.wg.Add(1)
 		go func() {
@@ -184,6 +196,8 @@ func (endpoint *issue1367Endpoint) serve(session *issue1367Session) {
 			select {
 			case <-ready:
 			case <-session.stall:
+				return
+			case <-ended:
 				return
 			}
 			ticker := time.NewTicker(10 * time.Millisecond)
@@ -218,7 +232,11 @@ func (endpoint *issue1367Endpoint) serve(session *issue1367Session) {
 		}
 		switch frame.Command {
 		case transport.ENHReqInit:
-			if session.write(transport.EncodeENH(transport.ENHResResetted, 0x01)) != nil {
+			reply := transport.EncodeENH(transport.ENHResResetted, 0x01)
+			if endpoint.rejectInit.Load() {
+				reply = transport.EncodeENH(transport.ENHResErrorEBUS, 0x01)
+			}
+			if session.write(reply) != nil {
 				return
 			}
 		case transport.ENHReqInfo:
@@ -308,7 +326,8 @@ func withIssue1367Seams(t *testing.T) {
 	t.Helper()
 	previousThreshold, previousPolicy := adapterDirectBlackholeThreshold, ebusDriverRetryPolicy
 	adapterDirectBlackholeThreshold = issue1367BlackholeThreshold
-	ebusDriverRetryPolicy = drivermanager.RetryPolicy{Budget: defaultEBusRetryBudget, InitialDelay: issue1367RetryInitial, MaxDelay: issue1367RetryMax, JitterRatio: -1}
+	ebusDriverRetryPolicy = drivermanager.RetryPolicy{Budget: defaultEBusRetryBudget, InitialDelay: issue1367RetryInitial, MaxDelay: issue1367RetryMax, JitterRatio: -1,
+		Persistent: drivermanager.PersistentRetry{Enabled: true, InitialDelay: issue1367RetryInitial, MaxDelay: issue1367RetryMax}}
 	t.Cleanup(func() { adapterDirectBlackholeThreshold, ebusDriverRetryPolicy = previousThreshold, previousPolicy })
 }
 
@@ -405,49 +424,7 @@ func issue1367RequireRecoveringView(t *testing.T, process *rctlProcess, logs *is
 	}
 }
 
-func issue1367RequireExhaustedView(t *testing.T, process *rctlProcess, logs *issue1367Logs, cursor uint64) {
-	t.Helper()
-	status := waitIssue1367Status(t, process, drivermanager.ObservedFailed, drivermanager.ReasonRetryExhausted, logs)
-	if status.SafetyQuarantined || status.DesiredState != runtimecontrol.DesiredRunning {
-		t.Fatalf("exhausted status = %+v; want desired RUNNING, not quarantined", status)
-	}
-	requireIssue1367List(t, process, drivermanager.ObservedFailed, drivermanager.ReasonRetryExhausted)
-	if got, reason := portalConfigReadbackStatus(status); got != "error" || reason != "retry_exhausted" {
-		t.Fatalf("Portal readback after the bound = %s/%s; want error/retry_exhausted", got, reason)
-	}
-	if got := process.adapterStatus(); got != adapterStatusUnavailable {
-		t.Fatalf("adapter status after the bound = %q; want %q", got, adapterStatusUnavailable)
-	}
-	if _, err := issue1367Version(process); !errors.Is(err, ebuserrors.ErrTransportClosed) {
-		t.Fatalf("version query after the bound = %v; want transport connection closed", err)
-	}
-	// Once the transport closed the view never returned to RUNNING.
-	for _, event := range issue1367ObservedSince(process, cursor) {
-		if event.ObservedState == drivermanager.ObservedRunning {
-			t.Fatalf("service view returned to RUNNING over a closed transport: %+v", event)
-		}
-	}
-	snapshot := process.control.driver.Snapshot()
-	if snapshot.ObservedState != drivermanager.ObservedFailed || snapshot.Reason.Code != drivermanager.ReasonRetryExhausted {
-		t.Fatalf("manager snapshot = %s/%s; want FAILED/RETRY_EXHAUSTED", snapshot.ObservedState, snapshot.Reason.Code)
-	}
-}
-
-func issue1367AttemptLines(budget int, reason string, failedCategory string) []string {
-	lines := make([]string, 0, 2*budget)
-	for attempt := 1; attempt <= budget; attempt++ {
-		attemptReason := reason
-		if attempt > 1 {
-			attemptReason = "retry_after_" + failedCategory
-		}
-		lines = append(lines,
-			fmt.Sprintf("ebus.primary: recovery attempt %d/%d (reason=%s)", attempt, budget, attemptReason),
-			fmt.Sprintf("ebus.primary: recovery attempt %d/%d failed (category=%s)", attempt, budget, failedCategory))
-	}
-	return lines
-}
-
-func TestIssue1367AdapterDirectStallPastAM27RecoversThroughBoundedLoggedBackoff(t *testing.T) {
+func TestIssue1367AdapterDirectStallPastAM27RecoversThroughLoggedBackoff(t *testing.T) {
 	withIssue1367Seams(t)
 	logs := captureIssue1367Logs(t)
 	endpoint := newIssue1367Endpoint(t, true)
@@ -460,7 +437,7 @@ func TestIssue1367AdapterDirectStallPastAM27RecoversThroughBoundedLoggedBackoff(
 	// The first reconnect attempt is refused; the endpoint comes back once
 	// that failure is logged, so the second attempt reconnects.
 	endpoint.refuse()
-	logs.onLine("ebus.primary: recovery attempt 1/5 failed (category=dial_refused)", endpoint.open)
+	logs.onLine("ebus.primary: recovery attempt 1 failed (class=dial_refused", endpoint.open)
 	endpoint.stall()
 
 	issue1367RequireRecoveringView(t, process, logs)
@@ -496,13 +473,13 @@ func TestIssue1367AdapterDirectStallPastAM27RecoversThroughBoundedLoggedBackoff(
 	// "connection recovery delegated to lifecycle owner".
 	logs.requireOrdered(t,
 		"triggering reconnect (AM27)",
-		fmt.Sprintf("ebus.primary: connection lost (reason=adapter_connection_lost, generation=%d); bounded recovery scheduled (at most 5 attempts)", first.Generation),
-		"ebus.primary: lifecycle BACKOFF (reason=RETRY_SCHEDULED, attempts_remaining=5, next_attempt_in=",
-		"ebus.primary: recovery attempt 1/5 (reason=adapter_connection_lost)",
-		"ebus.primary: recovery attempt 1/5 failed (category=dial_refused)",
-		"ebus.primary: recovery attempt 2/5 (reason=retry_after_dial_refused)",
-		fmt.Sprintf("ebus.primary: recovery attempt 2/5 reconnected (generation=%d); awaiting admission", recovered.Generation),
-		fmt.Sprintf("ebus.primary: recovered on attempt 2/5 (generation=%d)", recovered.Generation),
+		fmt.Sprintf("ebus.primary: connection lost (reason=adapter_connection_lost, generation=%d); %s", first.Generation, issue1367Schedule),
+		"ebus.primary: lifecycle BACKOFF (reason=RETRY_SCHEDULED, next_attempt=1, next_attempt_at=",
+		"ebus.primary: recovery attempt 1 (reason=adapter_connection_lost, phase=fast)",
+		`ebus.primary: recovery attempt 1 failed (class=dial_refused, error="connect: connection refused")`,
+		"ebus.primary: recovery attempt 2 (reason=retry_after_dial_refused, phase=fast)",
+		fmt.Sprintf("ebus.primary: recovery attempt 2 reconnected (generation=%d); awaiting admission", recovered.Generation),
+		fmt.Sprintf("ebus.primary: recovered on attempt 2 (generation=%d)", recovered.Generation),
 		fmt.Sprintf("ebus.primary: lifecycle RUNNING (generation=%d, recovered)", recovered.Generation),
 	)
 	issue1367RequireOneDelegation(t, logs)
@@ -518,41 +495,6 @@ func issue1367RequireOneDelegation(t *testing.T, logs *issue1367Logs) {
 	}
 }
 
-func TestIssue1367AdapterDirectUnrecoverableStallLeavesRunningForRetryExhausted(t *testing.T) {
-	withIssue1367Seams(t)
-	logs := captureIssue1367Logs(t)
-	endpoint := newIssue1367Endpoint(t, true)
-	process := startIssue1367Process(t, endpoint, ebusgateway.TransportAdapterDirect)
-	process.waitObserved(drivermanager.ObservedRunning)
-	requireIssue1367Version(t, process, 1)
-	first := process.control.driver.Snapshot()
-	cursor := process.control.Service().List().EventCursor
-
-	endpoint.refuse()
-	endpoint.stall()
-	issue1367RequireRecoveringView(t, process, logs)
-	issue1367RequireExhaustedView(t, process, logs, cursor)
-
-	issue1367RequireOneDelegation(t, logs)
-	ordered := []string{
-		"triggering reconnect (AM27)",
-		fmt.Sprintf("ebus.primary: connection lost (reason=adapter_connection_lost, generation=%d); bounded recovery scheduled (at most 5 attempts)", first.Generation),
-	}
-	ordered = append(ordered, issue1367AttemptLines(defaultEBusRetryBudget, ebusLossAdapterConnection, "dial_refused")...)
-	ordered = append(ordered, "ebus.primary: lifecycle FAILED (reason=RETRY_EXHAUSTED, safety_quarantined=false); automatic recovery ended, request helianthus.runtime.restart")
-	logs.requireOrdered(t, ordered...)
-	if got := logs.count("ebus.primary: recovery attempt 6/"); got != 0 {
-		t.Fatal("recovery exceeded its bound")
-	}
-
-	// The FAILED generation keeps its withdrawal obligations: an operator
-	// RESTART still recovers once the endpoint answers again.
-	endpoint.open()
-	process.decide(runtimecontrol.MethodRestart)
-	waitIssue1367Status(t, process, drivermanager.ObservedRunning, drivermanager.ReasonNone, logs)
-	requireIssue1367Version(t, process, endpoint.sessionCount())
-}
-
 func TestIssue1367ProxyClassTransportLossRecoversThroughSameLifecycleOwner(t *testing.T) {
 	withIssue1367Seams(t)
 	logs := captureIssue1367Logs(t)
@@ -564,7 +506,7 @@ func TestIssue1367ProxyClassTransportLossRecoversThroughSameLifecycleOwner(t *te
 	cursor := process.control.Service().List().EventCursor
 
 	endpoint.refuse()
-	logs.onLine("ebus.primary: recovery attempt 1/5 failed (category=dial_refused)", endpoint.open)
+	logs.onLine("ebus.primary: recovery attempt 1 failed (class=dial_refused", endpoint.open)
 	endpoint.drop()
 	// The proxy class has no mux: the closed transport is observed by the
 	// next consumer call, as the adapter-info poller does.
@@ -584,36 +526,14 @@ func TestIssue1367ProxyClassTransportLossRecoversThroughSameLifecycleOwner(t *te
 		t.Fatalf("service view transitions = %+v; want RUNNING left during recovery and restored", events)
 	}
 	logs.requireOrdered(t,
-		fmt.Sprintf("ebus.primary: connection lost (reason=transport_closed, generation=%d); bounded recovery scheduled (at most 5 attempts)", first.Generation),
-		"ebus.primary: lifecycle BACKOFF (reason=RETRY_SCHEDULED, attempts_remaining=5, next_attempt_in=",
-		"ebus.primary: recovery attempt 1/5 (reason=transport_closed)",
-		"ebus.primary: recovery attempt 1/5 failed (category=dial_refused)",
-		"ebus.primary: recovery attempt 2/5 (reason=retry_after_dial_refused)",
-		fmt.Sprintf("ebus.primary: recovered on attempt 2/5 (generation=%d)", recovered.Generation),
+		fmt.Sprintf("ebus.primary: connection lost (reason=transport_closed, generation=%d); %s", first.Generation, issue1367Schedule),
+		"ebus.primary: lifecycle BACKOFF (reason=RETRY_SCHEDULED, next_attempt=1, next_attempt_at=",
+		"ebus.primary: recovery attempt 1 (reason=transport_closed, phase=fast)",
+		`ebus.primary: recovery attempt 1 failed (class=dial_refused, error="connect: connection refused")`,
+		"ebus.primary: recovery attempt 2 (reason=retry_after_dial_refused, phase=fast)",
+		fmt.Sprintf("ebus.primary: recovered on attempt 2 (generation=%d)", recovered.Generation),
 		fmt.Sprintf("ebus.primary: lifecycle RUNNING (generation=%d, recovered)", recovered.Generation),
 	)
-}
-
-func TestIssue1367ProxyClassUnrecoverableLossLeavesRunningForRetryExhausted(t *testing.T) {
-	withIssue1367Seams(t)
-	logs := captureIssue1367Logs(t)
-	endpoint := newIssue1367Endpoint(t, false)
-	process := startIssue1367Process(t, endpoint, ebusgateway.TransportENH)
-	process.waitObserved(drivermanager.ObservedRunning)
-	requireIssue1367Version(t, process, 1)
-	first := process.control.driver.Snapshot()
-	cursor := process.control.Service().List().EventCursor
-
-	endpoint.refuse()
-	endpoint.drop()
-	issue1367DetectProxyLoss(t, process, logs)
-	issue1367RequireRecoveringView(t, process, logs)
-	issue1367RequireExhaustedView(t, process, logs, cursor)
-
-	ordered := []string{fmt.Sprintf("ebus.primary: connection lost (reason=transport_closed, generation=%d); bounded recovery scheduled (at most 5 attempts)", first.Generation)}
-	ordered = append(ordered, issue1367AttemptLines(defaultEBusRetryBudget, ebusLossTransportClosed, "dial_refused")...)
-	ordered = append(ordered, "ebus.primary: lifecycle FAILED (reason=RETRY_EXHAUSTED, safety_quarantined=false); automatic recovery ended, request helianthus.runtime.restart")
-	logs.requireOrdered(t, ordered...)
 }
 
 // issue1367DetectProxyLoss issues consumer INFO queries until the manager

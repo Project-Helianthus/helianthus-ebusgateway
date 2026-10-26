@@ -768,7 +768,7 @@ func (bridge *ebusControlRuntime) holdAdmission(ctx context.Context, hold driver
 	if replacement && bridge.admitGate != nil {
 		if err := bridge.admitGate(ctx); err != nil {
 			// Classified by the driver as a retryable dependency failure, so
-			// DriverManager retries the replacement within its own budget.
+			// DriverManager retries the replacement under its retry policy.
 			return fmt.Errorf("ebus control: replacement admission gate: %w", err)
 		}
 	}
@@ -909,10 +909,11 @@ func (bridge *ebusControlRuntime) View() ebusControlView {
 
 // NativeObservation derives, from one manager snapshot, the executor
 // observation of the current epoch once its opening START succeeded. It
-// reports DriverManager's own failure replacement after RUNNING: BACKOFF, a
-// retry STARTING, the recovered RUNNING or DEGRADED generation, and the
-// terminal FAILED when the native retry budget is spent (CLOSE_UNCONFIRMED
-// and quarantine for an unproven close). The correlation is the one the
+// reports DriverManager's own failure replacement after RUNNING: BACKOFF with
+// the scheduled attempt number and due time, a retry STARTING, the recovered
+// RUNNING or DEGRADED generation, and the terminal FAILED of a failure that
+// retrying cannot heal (CLOSE_UNCONFIRMED and quarantine for an unproven
+// close). The correlation is the one the
 // service opened the epoch with; same-epoch replacements keep it. STOPPING,
 // STOPPED and DISABLED belong to the service's STOP path and a fenced epoch
 // reports nothing, so a service transition is never overwritten.
@@ -943,7 +944,13 @@ func (bridge *ebusControlRuntime) NativeObservation(snapshot drivermanager.Snaps
 			// A replacement mapping is still being held; wait for it.
 			return runtimecontrol.LifecycleCorrelation{}, runtimecontrol.NativeObservation{}, false
 		}
-	case snapshot.ObservedState == drivermanager.ObservedBackoff || snapshot.ObservedState == drivermanager.ObservedStarting:
+	case snapshot.ObservedState == drivermanager.ObservedBackoff:
+		// The manager's schedule: the next attempt of the failure series and
+		// when it is due.
+		if retry := snapshot.Retry; retry != nil && retry.Attempt > 0 && !retry.NotBeforeUTC.IsZero() {
+			obs.NextAttempt, obs.NextAttemptUTC = retry.Attempt, retry.NotBeforeUTC.UTC()
+		}
+	case snapshot.ObservedState == drivermanager.ObservedStarting:
 	case snapshot.ObservedState == drivermanager.ObservedFailed:
 		if snapshot.ActiveOperation != 0 {
 			return runtimecontrol.LifecycleCorrelation{}, runtimecontrol.NativeObservation{}, false

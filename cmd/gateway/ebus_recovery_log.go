@@ -3,8 +3,12 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net"
+	"os"
+	"regexp"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -56,8 +60,8 @@ func ebusConnectionLossReason(err error) string {
 	return ebusLossProviderFailed
 }
 
-// ebusRecoveryFailureCategory maps one failed replacement attempt to a closed
-// category. Native error text is never logged: it can carry the endpoint.
+// ebusRecoveryFailureCategory maps one failed attempt to its closed error
+// class.
 func ebusRecoveryFailureCategory(err error) string {
 	var opErr *net.OpError
 	switch {
@@ -91,15 +95,91 @@ func ebusRecoveryFailureCategory(err error) string {
 	return "start_failed"
 }
 
-// ebusRecoveryLog records the bounded recovery DriverManager runs after a
-// reported ebus.primary connection loss: the loss with its trigger, every
-// replacement attempt with its reason (the trigger, then the previous
-// attempt's failure category) and outcome, and the admitted recovered
-// generation. Lines carry closed categories and counters only.
+// ebusRecoveryErrorTextLimit bounds the logged cause text.
+const ebusRecoveryErrorTextLimit = 160
+
+// ebusEndpointLike matches what could name an endpoint in a cause text: a
+// URI, a user@host form, a bracketed IPv6 literal, an IPv4 literal and a
+// host:port pair. Matches are replaced, never logged.
+var ebusEndpointLike = regexp.MustCompile(`(?i)[a-z][a-z0-9+.-]*://\S*|\S+@\S+|\[[0-9a-f:.%]*\](:[0-9]+)?|\b[0-9]{1,3}(\.[0-9]{1,3}){3}(:[0-9]+)?\b|\b[a-z0-9-]+(\.[a-z0-9-]+)*:[0-9]{1,5}\b`)
+
+// ebusRecoveryErrorText is the cause text of one failed attempt without the
+// endpoint. Wrapping layers name the dialed address, so the text is taken
+// from the innermost cause: the socket call and its errno ("connect:
+// connection refused"), a resolver's verdict, an i/o timeout or a protocol
+// sentinel. Anything address-like that remains is redacted and the text is
+// bounded.
+func ebusRecoveryErrorText(err error) string {
+	if err == nil {
+		return ""
+	}
+	var text string
+	var sysErr *os.SyscallError
+	var dnsErr *net.DNSError
+	var opErr *net.OpError
+	switch {
+	case errors.As(err, &sysErr):
+		text = sysErr.Error()
+	case errors.As(err, &dnsErr):
+		text = "lookup: " + dnsErr.Err
+	case errors.As(err, &opErr) && opErr.Err != nil:
+		text = ebusInnermostError(opErr.Err).Error()
+	default:
+		text = ebusInnermostError(err).Error()
+	}
+	text = ebusEndpointLike.ReplaceAllString(text, "<redacted>")
+	text = strings.Join(strings.Fields(text), " ")
+	if len(text) > ebusRecoveryErrorTextLimit {
+		text = text[:ebusRecoveryErrorTextLimit]
+	}
+	return text
+}
+
+// ebusInnermostError follows the wrap chain to its end; for a multi-error
+// wrap it follows the first wrapped error.
+func ebusInnermostError(err error) error {
+	for depth := 0; depth < 32; depth++ {
+		var next error
+		switch wrapped := err.(type) {
+		case interface{ Unwrap() error }:
+			next = wrapped.Unwrap()
+		case interface{ Unwrap() []error }:
+			for _, candidate := range wrapped.Unwrap() {
+				if candidate != nil {
+					next = candidate
+					break
+				}
+			}
+		}
+		if next == nil {
+			return err
+		}
+		err = next
+	}
+	return err
+}
+
+// ebusRecoveryPhase names the schedule phase of one attempt of a series.
+func ebusRecoveryPhase(attempt, budget int) string {
+	if attempt <= budget {
+		return "fast"
+	}
+	return "persistent"
+}
+
+// ebusRecoveryLog records the recovery DriverManager runs after a reported
+// ebus.primary connection loss: the loss with its trigger, every replacement
+// attempt with its number, phase and reason (the trigger, then the previous
+// attempt's error class), every failure with its error class and cause text
+// (never the endpoint), and the admitted recovered generation. It also logs
+// each failed start attempt outside a recovery series with the same cause.
 type ebusRecoveryLog struct {
-	mu     sync.Mutex
-	budget int
-	logf   func(string, ...any)
+	mu sync.Mutex
+	// budget is the number of fast attempts; persistent is the phase that
+	// follows them while the driver is desired RUNNING.
+	budget     int
+	persistent drivermanager.PersistentRetry
+	logf       func(string, ...any)
 
 	active  bool
 	attempt int
@@ -115,6 +195,9 @@ type ebusRecoveryLog struct {
 	// deferredPublish is the service publication that belongs to deferred: it
 	// is released only by the health binding, never by a loss or a reset.
 	deferredPublish func()
+	// starts counts the consecutive failed start attempts outside a
+	// recovery series; an admitted generation or an explicit stop clears it.
+	starts int
 }
 
 func (l *ebusRecoveryLog) printf(format string, args ...any) {
@@ -135,16 +218,25 @@ func (l *ebusRecoveryLog) reportLoss(generation uint64, reason string, report fu
 	if !report() {
 		return
 	}
-	l.active, l.attempt, l.reason, l.pending = true, 0, reason, 0
+	l.active, l.attempt, l.reason, l.pending, l.starts = true, 0, reason, 0, 0
 	l.flushDeferred(false)
-	l.printf("ebus.primary: connection lost (reason=%s, generation=%d); bounded recovery scheduled (at most %d attempts)", reason, generation, l.budget)
+	l.printf("ebus.primary: connection lost (reason=%s, generation=%d); %s", reason, generation, l.scheduleText())
 }
 
-// continuing reports an open series that still has attempts left.
+// scheduleText describes the recovery schedule of a series.
+func (l *ebusRecoveryLog) scheduleText() string {
+	if l.persistent.Enabled {
+		return fmt.Sprintf("recovery continues while desired RUNNING (%d fast attempts, then backoff from %s doubling to %s)", l.budget, l.persistent.InitialDelay, l.persistent.MaxDelay)
+	}
+	return fmt.Sprintf("bounded recovery scheduled (at most %d attempts)", l.budget)
+}
+
+// continuing reports an open series that has attempts left: always under
+// the persistent policy, otherwise within the fast budget.
 func (l *ebusRecoveryLog) continuing() bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.active && l.attempt < l.budget
+	return l.active && (l.persistent.Enabled || l.attempt < l.budget)
 }
 
 // attemptStarted logs one replacement attempt before its construction.
@@ -158,7 +250,7 @@ func (l *ebusRecoveryLog) attemptStarted() int {
 		l.reason, l.pending = "retry_after_admission_refused", 0
 	}
 	l.attempt++
-	l.printf("ebus.primary: recovery attempt %d/%d (reason=%s)", l.attempt, l.budget, l.reason)
+	l.printf("ebus.primary: recovery attempt %d (reason=%s, phase=%s)", l.attempt, l.reason, ebusRecoveryPhase(l.attempt, l.budget))
 	return l.attempt
 }
 
@@ -171,13 +263,34 @@ func (l *ebusRecoveryLog) attemptFinished(attempt int, generation uint64, err er
 		return
 	}
 	if err != nil {
-		category := ebusRecoveryFailureCategory(err)
-		l.reason = "retry_after_" + category
-		l.printf("ebus.primary: recovery attempt %d/%d failed (category=%s)", attempt, l.budget, category)
+		class := ebusRecoveryFailureCategory(err)
+		l.reason = "retry_after_" + class
+		l.printf("ebus.primary: recovery attempt %d failed (class=%s, error=%q)", attempt, class, ebusRecoveryErrorText(err))
 		return
 	}
 	l.pending = generation
-	l.printf("ebus.primary: recovery attempt %d/%d reconnected (generation=%d); awaiting admission", attempt, l.budget, generation)
+	l.printf("ebus.primary: recovery attempt %d reconnected (generation=%d); awaiting admission", attempt, generation)
+}
+
+// freshStart ends any open series without a line before a start that is
+// not a recovery attempt; the start failure count is kept.
+func (l *ebusRecoveryLog) freshStart() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.active, l.attempt, l.reason, l.pending = false, 0, "", 0
+	l.flushDeferred(false)
+}
+
+// startFinished logs a failed start attempt outside a recovery series with
+// its error class and cause text.
+func (l *ebusRecoveryLog) startFinished(err error) {
+	if err == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.starts++
+	l.printf("ebus.primary: start attempt %d failed (class=%s, error=%q)", l.starts, ebusRecoveryFailureCategory(err), ebusRecoveryErrorText(err))
 }
 
 // flushDeferred emits a held RUNNING line; the caller holds the lock.
@@ -194,7 +307,7 @@ func (l *ebusRecoveryLog) flushDeferred(publish bool) {
 
 // complete closes the series with the recovered line; the caller holds the lock.
 func (l *ebusRecoveryLog) complete(generation uint64) {
-	l.printf("ebus.primary: recovered on attempt %d/%d (generation=%d)", l.attempt, l.budget, generation)
+	l.printf("ebus.primary: recovered on attempt %d (generation=%d)", l.attempt, generation)
 	l.active, l.attempt, l.reason, l.pending = false, 0, "", 0
 }
 
@@ -207,6 +320,7 @@ func (l *ebusRecoveryLog) admitted(generation uint64) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.bound = generation
+	l.starts = 0
 	if l.active && l.pending != 0 && l.pending == generation {
 		l.complete(generation)
 	}
@@ -235,24 +349,23 @@ func (l *ebusRecoveryLog) running(generation uint64, line, publish func()) {
 	publish()
 }
 
-// reset ends any series without a line: an explicit start or stop is not a
-// recovery outcome.
+// reset ends any series without a line and clears the start failure count:
+// an explicit stop is not a recovery outcome.
 func (l *ebusRecoveryLog) reset() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.active, l.attempt, l.reason, l.pending = false, 0, "", 0
+	l.active, l.attempt, l.reason, l.pending, l.starts = false, 0, "", 0, 0
 	l.flushDeferred(false)
 }
 
 // ebusNativeForwarder projects DriverManager's own ebus.primary transitions
 // after RUNNING into the runtime control service, the owner of
 // helianthus.runtime.list and of the Portal driver readback, and logs the
-// visible state with its bound. It runs on the manager watch only.
+// visible state with its schedule. It runs on the manager watch only.
 type ebusNativeForwarder struct {
 	bridge  *ebusControlRuntime
 	service *runtimecontrol.Service
 	logf    func(string, ...any)
-	now     func() time.Time
 	// recovery, when set, closes its series before the RUNNING line of a
 	// recovered generation, so the recovered line is never logged after it.
 	recovery *ebusRecoveryLog
@@ -300,18 +413,23 @@ func (f *ebusNativeForwarder) logTransition(corr runtimecontrol.LifecycleCorrela
 	f.last = obs
 	switch obs.State {
 	case drivermanager.ObservedBackoff:
-		remaining, wait := 0, time.Duration(0)
-		if snapshot.Retry != nil {
-			remaining = snapshot.Retry.BudgetRemaining
-			now := time.Now
-			if f.now != nil {
-				now = f.now
-			}
-			if wait = snapshot.Retry.NotBeforeUTC.Sub(now()); wait < 0 {
-				wait = 0
-			}
+		retry := snapshot.Retry
+		if retry == nil {
+			f.printf("ebus.primary: lifecycle BACKOFF (reason=%s)", obs.Reason)
+			break
 		}
-		f.printf("ebus.primary: lifecycle BACKOFF (reason=%s, attempts_remaining=%d, next_attempt_in=%s)", obs.Reason, remaining, wait.Round(time.Millisecond))
+		// The delay is the one DriverManager chose: both instants come from
+		// its clock at the same transition.
+		delay := retry.NotBeforeUTC.Sub(snapshot.ChangedAtUTC)
+		if delay < 0 {
+			delay = 0
+		}
+		phase := "persistent"
+		if retry.BudgetRemaining > 0 {
+			phase = "fast"
+		}
+		f.printf("ebus.primary: lifecycle BACKOFF (reason=%s, next_attempt=%d, next_attempt_at=%s, delay=%s, phase=%s)",
+			obs.Reason, retry.Attempt, retry.NotBeforeUTC.UTC().Format(ebusRecoveryTimeLayout), delay.Round(time.Millisecond), phase)
 	case drivermanager.ObservedRunning:
 		line := func() {
 			f.printf("ebus.primary: lifecycle RUNNING (generation=%d, recovered)", snapshot.Generation)
@@ -324,7 +442,10 @@ func (f *ebusNativeForwarder) logTransition(corr runtimecontrol.LifecycleCorrela
 	case drivermanager.ObservedDegraded:
 		f.printf("ebus.primary: lifecycle DEGRADED (reason=%s)", obs.Reason)
 	case drivermanager.ObservedFailed:
-		f.printf("ebus.primary: lifecycle FAILED (reason=%s, safety_quarantined=%t); automatic recovery ended, request helianthus.runtime.restart", obs.Reason, obs.Quarantined)
+		f.printf("ebus.primary: lifecycle FAILED (reason=%s, safety_quarantined=%t); retrying cannot heal this condition, automatic recovery ended, request helianthus.runtime.restart once it is corrected", obs.Reason, obs.Quarantined)
 	}
 	return false
 }
+
+// ebusRecoveryTimeLayout is the UTC timestamp layout of the recovery lines.
+const ebusRecoveryTimeLayout = "2006-01-02T15:04:05.000Z07:00"

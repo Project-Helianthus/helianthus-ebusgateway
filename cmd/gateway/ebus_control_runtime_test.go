@@ -1536,7 +1536,8 @@ func TestEBusControlServiceBackoffRestartPreservesD3(t *testing.T) {
 // recorded result.
 func TestEBusControlServiceFailedStartKeepsReservedCleanup(t *testing.T) {
 	plant := newCtlPlant(t, ctlPlantOptions{budget: 0})
-	invalid := func(context.Context) error { return ebuserrors.ErrInvalidPayload }
+	// A configuration rejected before any dial: the terminal start failure.
+	invalid := func(context.Context) error { return rejectEBusConfig(ebuserrors.ErrInvalidPayload) }
 	plant.script(invalid, invalid)
 	service := newCtlService(t, ctlStatePath(t), plant, "inc1", 1)
 	service.waitSettled(drivermanager.ObservedFailed)

@@ -49,13 +49,20 @@ const issue1367Schedule = "recovery continues while desired RUNNING (5 fast atte
 // generation is distinguishable); a streaming endpoint (adapter-direct)
 // sends one SYN every 10 ms after INFO until the session is stalled, which
 // keeps the TCP connection open and silent like the observed blackhole. With
-// rejectInit set, a session answers INIT with an eBUS error, which the
-// gateway classifies as a rejected configuration.
+// rejectInit set, a session answers INIT with an eBUS error; initReply, when
+// set, scripts every INIT answer instead; with closeOnAccept set, every
+// accepted session is closed at once. The gateway treats all of these as a
+// retryable handshake failure of the adapter, never as a rejected
+// configuration.
 type issue1367Endpoint struct {
 	t          *testing.T
 	stream     bool
 	address    string
 	rejectInit atomic.Bool
+	// initReply answers the n-th INIT request (from one) of the session with
+	// the given index; an empty answer is silence.
+	initReply     atomic.Pointer[func(session, request int) []byte]
+	closeOnAccept atomic.Bool
 
 	mu       sync.Mutex
 	listener net.Listener
@@ -113,6 +120,9 @@ func (endpoint *issue1367Endpoint) open() {
 			endpoint.sessions[session] = struct{}{}
 			endpoint.wg.Add(1)
 			endpoint.mu.Unlock()
+			if endpoint.closeOnAccept.Load() {
+				_ = conn.Close()
+			}
 			go endpoint.serve(session)
 		}
 	}()
@@ -175,6 +185,13 @@ func (session *issue1367Session) write(frames ...[2]byte) error {
 	return nil
 }
 
+func (session *issue1367Session) writeRaw(data []byte) error {
+	session.writeMu.Lock()
+	defer session.writeMu.Unlock()
+	_, err := session.conn.Write(data)
+	return err
+}
+
 func (endpoint *issue1367Endpoint) serve(session *issue1367Session) {
 	defer endpoint.wg.Done()
 	defer func() {
@@ -216,6 +233,7 @@ func (endpoint *issue1367Endpoint) serve(session *issue1367Session) {
 		}()
 	}
 	pair := make([]byte, 2)
+	inits := 0
 	for {
 		if _, err := io.ReadFull(session.conn, pair[:1]); err != nil {
 			return
@@ -232,11 +250,17 @@ func (endpoint *issue1367Endpoint) serve(session *issue1367Session) {
 		}
 		switch frame.Command {
 		case transport.ENHReqInit:
-			reply := transport.EncodeENH(transport.ENHResResetted, 0x01)
+			inits++
+			resetted := transport.EncodeENH(transport.ENHResResetted, 0x01)
+			reply := resetted[:]
 			if endpoint.rejectInit.Load() {
-				reply = transport.EncodeENH(transport.ENHResErrorEBUS, 0x01)
+				rejected := transport.EncodeENH(transport.ENHResErrorEBUS, 0x01)
+				reply = rejected[:]
 			}
-			if session.write(reply) != nil {
+			if script := endpoint.initReply.Load(); script != nil {
+				reply = (*script)(session.index, inits)
+			}
+			if len(reply) > 0 && session.writeRaw(reply) != nil {
 				return
 			}
 		case transport.ENHReqInfo:
@@ -571,6 +595,8 @@ func TestIssue1367RecoveryFailureCategoriesAreClosed(t *testing.T) {
 		"dial other":          {&net.OpError{Op: "dial", Net: "tcp", Err: errors.New("other")}, "dial_failed"},
 		"handshake timeout":   {fmt.Errorf("adaptermux: INIT handshake failed: %w", ebuserrors.ErrTimeout), "handshake_timeout"},
 		"invalid payload":     {fmt.Errorf("x: %w", ebuserrors.ErrInvalidPayload), "invalid_payload"},
+		"transport closed":    {fmt.Errorf("enh transport read closed: %w", ebuserrors.ErrTransportClosed), "transport_closed"},
+		"config rejected":     {rejectEBusConfig(fmt.Errorf("x: %w", ebuserrors.ErrInvalidPayload)), "config_rejected"},
 		"quarantined":         {transport.ErrDriverSafetyQuarantined, "close_unconfirmed"},
 		"drain timeout":       {transport.ErrDriverStopTimeout, "drain_timeout"},
 		"runtime unavailable": {transport.ErrDriverUnavailable, "runtime_unavailable"},

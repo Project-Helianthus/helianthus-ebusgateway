@@ -33,9 +33,9 @@ const (
 // the series then continues without end: the delay restarts at one second
 // and doubles up to five minutes. Every delay carries 20% jitter and stays
 // within its phase's bounds. Only a retryable failure (a dial failure, a
-// timeout, a transport close) continues the series; a failure that retrying
-// cannot heal ends it FAILED with its own reason. Tests narrow the delays
-// through this seam; production never reassigns it.
+// timeout, a transport close, a failed INIT handshake) continues the series;
+// a failure that retrying cannot heal ends it FAILED with its own reason.
+// Tests narrow the delays through this seam; production never reassigns it.
 var ebusDriverRetryPolicy = drivermanager.RetryPolicy{
 	Budget:       defaultEBusRetryBudget,
 	InitialDelay: defaultEBusRetryInitialDelay,
@@ -169,8 +169,24 @@ func newEBusDriverFactory(cfg ebusgateway.Config, protocol ebusgateway.Transport
 		if cfg.Transport != nil && !injectedUsed.CompareAndSwap(false, true) {
 			return nil, transport.ErrDriverUnavailable
 		}
-		active, activeClose, err := ebusgateway.OpenEBusDriverTransport(ctx, cfg)
+		normalized, err := validateEBusDriverTransport(cfg)
 		if err != nil {
+			return nil, rejectEBusConfig(err)
+		}
+		generationCfg := cfg
+		connected := observeEBusDial(&generationCfg.TransportConfig)
+		active, activeClose, err := ebusgateway.OpenEBusDriverTransport(ctx, generationCfg)
+		if err != nil {
+			if cfg.Transport != nil {
+				// The injected resource is consumed even when INIT fails;
+				// this factory cannot construct a replacement for a retry.
+				return nil, errors.Join(err, transport.ErrDriverUnavailable)
+			}
+			// After a successful dial of an ENH or ENS endpoint only the INIT
+			// handshake can fail: the configuration passed validation.
+			if connected.Load() && (normalized.Protocol == ebusgateway.TransportENH || normalized.Protocol == ebusgateway.TransportENS) {
+				err = ebusProxyHandshakeFailure(err)
+			}
 			return nil, err
 		}
 		if active == nil {
@@ -258,19 +274,23 @@ func buildManagedAdapterDirectGeneration(factoryCtx context.Context, cfg ebusgat
 }
 
 // classifyEBusDriverError separates the failures that retrying cannot heal
-// from the rest. Non-retryable, so terminal under the persistent policy: an
-// unavailable or stale runtime (an explicit stop or restart superseded the
-// attempt), a rejected configuration (an invalid endpoint or a protocol the
-// endpoint refuses) and a lifecycle identity mismatch (the hub source no
-// longer carries the epoch and generation the bridge holds). Everything else
-// (a dial failure, a timeout, a closed transport) is a retryable dependency
-// loss.
+// from the rest. Non-retryable, so terminal under the persistent policy, are
+// only conditions that are provably local: a configuration that local
+// validation rejected before any dial (CONFIG_INVALID), an unavailable or
+// stale runtime (an explicit stop or restart superseded the attempt), a
+// consumed one-shot injected transport, and a
+// lifecycle identity mismatch (the hub source no longer carries the epoch and
+// generation the bridge holds). Everything else is a retryable dependency
+// loss: a dial failure, a timeout, a closed transport, and every answer of
+// the peer, a failed or unconfirmed INIT handshake and a malformed payload
+// included. A peer's answer is never evidence of a local configuration error.
 func classifyEBusDriverError(err error) drivermanager.Failure {
+	var rejection *ebusConfigRejection
 	switch {
+	case errors.As(err, &rejection):
+		return drivermanager.Failure{Reason: drivermanager.Reason{Code: drivermanager.ReasonConfigInvalid}}
 	case errors.Is(err, drivermanager.ErrUnavailable), errors.Is(err, transport.ErrDriverUnavailable):
 		return drivermanager.Failure{Reason: drivermanager.Reason{Code: drivermanager.ReasonProviderUnavailable}}
-	case errors.Is(err, ebuserrors.ErrInvalidPayload):
-		return drivermanager.Failure{Reason: drivermanager.Reason{Code: drivermanager.ReasonConfigInvalid}}
 	case errors.Is(err, errEBusControlHubNotLive):
 		return drivermanager.Failure{Reason: drivermanager.Reason{Code: drivermanager.ReasonInternalError}}
 	default:
@@ -520,9 +540,9 @@ func (runtime *ebusDriverRuntime) Start(ctx context.Context) (uint64, error) {
 
 // startFailureRecovers reports whether DriverManager follows a failed fresh
 // start with a persistent recovery series: the failure is retryable (a dial
-// failure, a timeout, a transport close), nothing is quarantined, the policy
-// is persistent and the driver is still desired RUNNING. Otherwise the
-// failure ends the start with its own reason.
+// failure, a timeout, a transport close, a failed INIT handshake), nothing is
+// quarantined, the policy is persistent and the driver is still desired
+// RUNNING. Otherwise the failure ends the start with its own reason.
 func (runtime *ebusDriverRuntime) startFailureRecovers(err error) bool {
 	mapped := mapEBusLifecycleError(err)
 	if !runtime.recovery.persistent.Enabled || runtime.desiredRunning == nil || !runtime.desiredRunning() ||

@@ -1,5 +1,5 @@
-github.com/Project-Helianthus/helianthus-ebusgo v0.5.1-0.20261016195038-aac63867791e h1:v85sX3mL2epUNwmTEp/f2Objmk7wKEqKnLTS10sRliI=
-github.com/Project-Helianthus/helianthus-ebusgo v0.5.1-0.20261016195038-aac63867791e/go.mod h1:thVkNAfYJ0Qv4jvdpr6xeCFokeUQAeuAbq510DXYXMU=
+github.com/Project-Helianthus/helianthus-ebusgo v0.5.1-0.20261027131913-af6c5843b1e3 h1:HRx4MsFn0Fae8PEbJ84jEy4bsKyX22pc+u66OEryqUs=
+github.com/Project-Helianthus/helianthus-ebusgo v0.5.1-0.20261027131913-af6c5843b1e3/go.mod h1:thVkNAfYJ0Qv4jvdpr6xeCFokeUQAeuAbq510DXYXMU=
 github.com/Project-Helianthus/helianthus-ebusreg v0.0.0-20261016182529-f90a3e330da7 h1:GNe9PgQI86HXxGkj/NA7bCNTJRfrP3FcMPAp25Gdruc=
 github.com/Project-Helianthus/helianthus-ebusreg v0.0.0-20261016182529-f90a3e330da7/go.mod h1:MhgS/S+s+EJ4+8c9KXom+pAXLTRYcjLI8qVSVCvsQu4=
 github.com/Project-Helianthus/helianthus-eebus-go v0.7.1-helianthus.21 h1:WCK8rbEMxEe2162DYk4RySASomCrevTpDsqi3p6NZSA=

@@ -58,11 +58,13 @@ type arbitrator struct {
 
 	// ownershipGen advances on every ownership transition (confirm,
 	// release, forceRelease) and lifecycleEpoch on every lifecycle fence
-	// (adapter reset, reconnect, close). Both are guarded by mu, the lock
-	// commitWhileOwnershipCurrent holds across its check and its commit
-	// (issue #1003).
+	// (adapter reset, reconnect, close). ownershipGen is guarded by mu, the
+	// lock commitWhileOwnershipCurrent holds across its check and its commit;
+	// lifecycleEpoch is atomic so a fence never waits behind a stalled commit
+	// write (a Close must stay able to reach the upstream close that unblocks
+	// it) (issue #1003).
 	ownershipGen   uint64
-	lifecycleEpoch uint64
+	lifecycleEpoch atomic.Uint64
 
 	// pendingGateway holds the gateway's pending START request, if any.
 	// Only one gateway request can be pending at a time.
@@ -655,7 +657,7 @@ func (a *arbitrator) currentOwnershipToken(sessionID uint64) (ownershipToken, bo
 	if !a.hasOwner || a.currentOwner != sessionID {
 		return ownershipToken{}, false
 	}
-	return ownershipToken{sessionID: sessionID, gen: a.ownershipGen, epoch: a.lifecycleEpoch}, true
+	return ownershipToken{sessionID: sessionID, gen: a.ownershipGen, epoch: a.lifecycleEpoch.Load()}, true
 }
 
 // commitWhileOwnershipCurrent runs commit while holding mu, only if tok still
@@ -667,7 +669,7 @@ func (a *arbitrator) currentOwnershipToken(sessionID uint64) (ownershipToken, bo
 func (a *arbitrator) commitWhileOwnershipCurrent(tok ownershipToken, commit func() error) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.lifecycleEpoch != tok.epoch {
+	if a.lifecycleEpoch.Load() != tok.epoch {
 		return errOwnershipLifecycleFenced
 	}
 	if !a.hasOwner || a.currentOwner != tok.sessionID || a.ownershipGen != tok.gen {
@@ -679,10 +681,13 @@ func (a *arbitrator) commitWhileOwnershipCurrent(tok ownershipToken, commit func
 // fenceLifecycle ends every ownership period taken before it for the purpose
 // of commitWhileOwnershipCurrent. Called at adapter reset, reconnect and
 // close.
+//
+// The fence does not take mu: a commit already past its epoch check may still
+// be inside its write, and a fence that waited for it would block Close (and
+// reconnect) before they reach the upstream close that unblocks that write.
+// Any commit that checks after the fence sees the new epoch and writes nothing.
 func (a *arbitrator) fenceLifecycle() {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.lifecycleEpoch++
+	a.lifecycleEpoch.Add(1)
 }
 
 // forceRelease releases bus ownership regardless of which session

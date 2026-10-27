@@ -619,11 +619,9 @@ func TestRawContinuity_ResetBetweenLeadAndSuffixSuppressesSuffix(t *testing.T) {
 	grantRawGateway(t, mux, up, 0x10)
 	at := mux.ActiveTransport()
 
-	up.setWriteHook(func(symbol byte) {
-		if symbol == protocol.SymbolEscape {
-			mux.handleReset()
-		}
-	})
+	// The lead is written under the ownership lock, so the boundary is
+	// injected at the commit point between the lead and the suffix.
+	mux.gatewaySuffixCommitHook = func() { mux.handleReset() }
 	_, err := at.Write([]byte{protocol.SymbolEscape})
 	if !errors.Is(err, ebuserrors.ErrAdapterReset) {
 		t.Fatalf("Write error = %v; want ErrAdapterReset", err)
@@ -644,12 +642,10 @@ func TestRawContinuity_ResetAfterLeadEchoBeforeSuffixSuppressesSuffix(t *testing
 	grantRawGateway(t, mux, up, 0x10)
 	at := mux.ActiveTransport()
 
-	up.setWriteHook(func(symbol byte) {
-		if symbol == protocol.SymbolEscape {
-			mux.observeGatewayLeadEcho(protocol.SymbolEscape, transport.StreamEvent{})
-			mux.handleReset()
-		}
-	})
+	mux.gatewaySuffixCommitHook = func() {
+		mux.observeGatewayLeadEcho(protocol.SymbolEscape, transport.StreamEvent{})
+		mux.handleReset()
+	}
 	_, err := at.Write([]byte{protocol.SymbolEscape})
 	if !errors.Is(err, ebuserrors.ErrAdapterReset) {
 		t.Fatalf("Write error = %v; want ErrAdapterReset", err)
@@ -1142,4 +1138,63 @@ func TestRawContinuity_MalformedSuffixEchoFailsThePair(t *testing.T) {
 	if active {
 		t.Fatal("gateway transaction still active after the failed pair")
 	}
+}
+
+// TestRawContinuity_ResetBeforeLeadCommitWithholdsBothSymbols: a reset that
+// lands after the ownership check but before the lead is committed (the
+// pre-arm window) puts nothing on the bus.
+func TestRawContinuity_ResetBeforeLeadCommitWithholdsBothSymbols(t *testing.T) {
+	mux, up, _ := newRawContinuityMux(t)
+	grantRawGateway(t, mux, up, 0x10)
+	at := mux.ActiveTransport()
+
+	mux.gatewayLeadCommitHook = func() { mux.handleReset() }
+	_, err := at.Write([]byte{protocol.SymbolEscape})
+	if !errors.Is(err, ebuserrors.ErrAdapterReset) {
+		t.Fatalf("Write error = %v; want ErrAdapterReset", err)
+	}
+	if got := up.written(); len(got) != 0 {
+		t.Fatalf("upstream SEND symbols = % X; want none after the pre-commit reset", got)
+	}
+	if mux.gatewayLeadWait.Load() != nil {
+		t.Fatal("pair wait survived the reset boundary")
+	}
+}
+
+// TestRawContinuity_LifecycleFenceDoesNotWaitForStalledCommit: a stalled
+// suffix write holds the arbitrator lock; the Close/reconnect fence must still
+// return so the upstream close that unblocks the write can run.
+func TestRawContinuity_LifecycleFenceDoesNotWaitForStalledCommit(t *testing.T) {
+	mux, up, _ := newRawContinuityMux(t)
+	grantRawGateway(t, mux, up, 0x10)
+	at := mux.ActiveTransport()
+
+	stalled := make(chan struct{})
+	release := make(chan struct{})
+	up.setWriteHook(func(symbol byte) {
+		if symbol == 0x00 {
+			close(stalled)
+			<-release
+		}
+		up.wire(symbol)
+	})
+	done := make(chan error, 1)
+	go func() {
+		_, err := at.Write([]byte{protocol.SymbolEscape})
+		done <- err
+	}()
+	<-stalled
+	fenced := make(chan struct{})
+	go func() {
+		mux.retireGatewayLeadWait(errors.New("adaptermux: closed"))
+		close(fenced)
+	}()
+	select {
+	case <-fenced:
+	case <-time.After(5 * time.Second):
+		close(release)
+		t.Fatal("lifecycle fence blocked behind a stalled suffix write")
+	}
+	close(release)
+	<-done
 }

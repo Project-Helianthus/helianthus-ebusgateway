@@ -213,9 +213,10 @@ func (m *Mux) armGatewayLeadWait(lead, suffix byte) *gatewayLeadWait {
 // retireGatewayLeadWait fences the current ownership period for escape-pair
 // suffix commits and resolves an outstanding wait with err, at a lifecycle
 // boundary (adapter reset, reconnect, close). The fence is taken under the
-// arbitrator lock the suffix commit holds across its check and its write, so
-// a suffix is either fully written before the boundary or not written at all;
-// a retired pair can never be acknowledged by a symbol observed after it.
+// lifecycle epoch the commits check under the arbitrator lock, so a commit
+// that checks after the boundary writes nothing; the fence itself never waits
+// for a commit write in flight, so Close can always reach the upstream close.
+// A retired pair can never be acknowledged by a symbol observed after it.
 func (m *Mux) retireGatewayLeadWait(err error) {
 	m.arb.fenceLifecycle()
 	if w := m.gatewayLeadWait.Swap(nil); w != nil {
@@ -334,11 +335,28 @@ func (m *Mux) writeSymbols(tr transport.RawTransport, symbols []byte) error {
 	if upstreamSuppliesRawSymbols(tr) {
 		wait = m.armGatewayLeadWait(lead, suffix)
 	}
-	if _, err := tr.Write([]byte{lead}); err != nil {
+	if hook := m.gatewayLeadCommitHook; hook != nil {
+		hook()
+	}
+	// The lead is committed under the same ownership check as the suffix, so
+	// a boundary that landed between the token and the arm cannot let an
+	// unowned pair onto the bus.
+	leadErr := m.arb.commitWhileOwnershipCurrent(tok, func() error {
+		_, err := tr.Write([]byte{lead})
+		return err
+	})
+	if leadErr != nil {
 		if wait != nil {
 			m.dropGatewayLeadWait(wait)
 		}
-		return err
+		switch {
+		case errors.Is(leadErr, errOwnershipLifecycleFenced):
+			return errGatewayLeadEcho{err: fmt.Errorf("adaptermux: escape lead withheld after a lifecycle boundary: %w", ebuserrors.ErrAdapterReset)}
+		case errors.Is(leadErr, errOwnershipChanged):
+			return errGatewayLeadEcho{err: fmt.Errorf("adaptermux: escape lead withheld after ownership ended: %w", errNotBusOwner)}
+		default:
+			return leadErr
+		}
 	}
 	if hook := m.gatewaySuffixCommitHook; hook != nil {
 		hook()

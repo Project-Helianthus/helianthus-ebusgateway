@@ -667,6 +667,9 @@ type Mux struct {
 	// interleaving a lifecycle boundary at the commit point; nil in
 	// production.
 	gatewaySuffixCommitHook func()
+	// gatewayLeadCommitHook, when set, runs after the wait is armed and
+	// before the lead is committed; nil in production.
+	gatewayLeadCommitHook func()
 
 	// externalAbandonAfter schedules the external-session abandon
 	// watchdog (F-34/F-35). It defaults to time.AfterFunc; it is a field

@@ -183,8 +183,13 @@ func TestIssue1373FailedInitHandshakeDuringRecoveryIsRetriedUntilTheAdapterAnswe
 			}
 			issue1369RequireNoTerminalEvent(t, process, cursor)
 
-			lines := []string{fmt.Sprintf("ebus.primary: connection lost (reason=%s, generation=%d); %s", loss, first.Generation, issue1373Schedule)}
-			lines = append(lines, issue1373AttemptLines(retries, loss, issue1373Repeat(tc.fields, healAt-1))...)
+			// The loss line (recovery log) and the first BACKOFF line (manager
+			// watch) come from different goroutines and have no fixed order:
+			// the loss line is required before the first attempt, and the
+			// BACKOFF line opens the ordered sequence below.
+			lossLine := fmt.Sprintf("ebus.primary: connection lost (reason=%s, generation=%d); %s", loss, first.Generation, issue1373Schedule)
+			logs.requireOrdered(t, lossLine, fmt.Sprintf("ebus.primary: recovery attempt 1 (reason=%s, phase=fast)", loss))
+			lines := issue1373AttemptLines(retries, loss, issue1373Repeat(tc.fields, healAt-1))
 			lines = append(lines,
 				fmt.Sprintf("ebus.primary: recovery attempt %d reconnected (generation=%d); awaiting admission", healAt, recovered.Generation),
 				fmt.Sprintf("ebus.primary: recovered on attempt %d (generation=%d)", healAt, recovered.Generation),
@@ -324,7 +329,12 @@ func TestIssue1373ClosedEndpointRecoversOnSchedule(t *testing.T) {
 				}
 			}
 			refused := `class=dial_refused, error="connect: connection refused"`
-			lines := []string{fmt.Sprintf("ebus.primary: connection lost (reason=%s, generation=%d); %s", loss, first.Generation, issue1373Schedule)}
+			// The loss line and the first BACKOFF line are written by
+			// different goroutines and are not ordered against each other.
+			logs.requireOrdered(t,
+				fmt.Sprintf("ebus.primary: connection lost (reason=%s, generation=%d); %s", loss, first.Generation, issue1373Schedule),
+				fmt.Sprintf("ebus.primary: recovery attempt 1 (reason=%s, phase=fast)", loss))
+			var lines []string
 			attemptLines := issue1373AttemptLines(retries, loss, append([]string{"class=transport_closed", "class=transport_closed"}, issue1373Repeat(refused, healAt-refuseAt)...))
 			for _, line := range attemptLines {
 				// The dropped-connection lines are matched above.

@@ -149,9 +149,10 @@ through one of these):
 | BI-02 | `blocked-infra` | every `UARTENS-*`, `UARTENH-*`, `UARTRAW-*` cell, without execution | `uart_direct_hardware_absent` | steer: UART-direct reserved |
 | PL-01 | `planned` | every `UDP-*` and `TCP-*` grid cell | `mux_southbound_plain_not_implemented` | the mux accepts only `enh`/`ens` upstream; no open ticket implements plain southbound framing |
 | PL-02 | `planned` | every `*-PX09`, `*-PX10`, `*-PX11` cell | `mux_local_responder_not_implemented` | #991 (deferred) |
+| PL-03 | `planned` | `ENS-AD12`, `ENH-AD12` | `mux_raw_symbol_forwarding_not_implemented` | the raw-symbol contract is settled but not implemented: ENH/ENS decoding still collapses escape pairs before the mux sees them ([mux-raw-symbol-continuity.md](../docs/architecture/mux-raw-symbol-continuity.md)); the cells leave PL-03 when the raw-forwarding slice of #1003 lands and the inventory version is bumped |
 
 Precedence for the reported reason when categories overlap: BI-02, then PL-01,
-then PL-02. Old expected-failure reasons that are not carried (T07/T08, and
+then PL-02, then PL-03. Old expected-failure reasons that are not carried (T07/T08, and
 ebusd → proxy over plain UDP) are listed in the cell map.
 
 Projected verdict mix for the first hardware run if the candidate code keeps
@@ -159,12 +160,13 @@ today's mux scope (no plain southbound, no local responder):
 
 | Cells | Count | Expected verdict |
 |---|---|---|
-| `ENS`, `ENH` × (AD01–AD10, AD12, PX01–PX08, PX12, CX01) | 42 | executed; `pass` expected |
+| `ENS`, `ENH` × (AD01–AD10, PX01–PX08, PX12, CX01) | 40 | executed; `pass` expected |
+| `ENS`, `ENH` × AD12 | 2 | `planned` (PL-03) |
 | `ENS`, `ENH` × PX09–PX11 | 6 | `planned` (PL-02) |
 | `UDP`, `TCP` × all 24 | 48 | `planned` (PL-01) |
 | UART rows × all 24 | 72 | `blocked-infra` (BI-02) |
 | compatibility block | 5 | executed; `pass` expected |
-| **total** | **173** | 47 executed, 54 planned, 72 blocked-infra |
+| **total** | **173** | 45 executed, 56 planned, 72 blocked-infra |
 
 ## 6. Index completion (AD10, AD11, AD12)
 
@@ -180,7 +182,7 @@ replaced side. Each pair is compared with the record design of
 `development/ad10-migration-equivalence.md` in `helianthus-docs-ebus`: values,
 presence, types, units and lineage per semantic field, and MCP/GraphQL parity,
 as separate decisions; equal values with wrong provenance are not equivalence.
-`UDP-AD10` and `TCP-AD10` stay planned with the rest of PL-01. UART rows have no
+`ENH-AD10` is also paired with `EBUSD-ES01` (ebusd-tcp over the same ENH setup) as a second replaced side, with the same record design, so a semantic or lineage regression seen by users migrating from ebusd-tcp is not hidden behind the `S-DS01` pair. `UDP-AD10` and `TCP-AD10` stay planned with the rest of PL-01. UART rows have no
 non-mux composition today; their `AD10` cells stay blocked-infra and need a
 replaced side defined before they can execute.
 
@@ -215,7 +217,7 @@ The settled contract
   tracking) use a separately decoded logical view that keeps escape provenance;
   that view is a host projection, not the wire contract.
 
-The `AD12` cells assert this on every row: no double escaping, no collapsed
+The `AD12` cells assert this on every row once raw forwarding is implemented; until then `ENS-AD12` and `ENH-AD12` are `planned` (PL-03) rather than failing or falsely passing, and the switch to `adaptermux-v2` does not wait for them. The assertion: no double escaping, no collapsed
 pair, raw `0xAA` as the only structural SYN, reserved bytes in a CRC position
 sent and verified as both raw symbols.
 
@@ -267,6 +269,7 @@ Proposal for the implementation ticket:
 - **Environment** keeps the existing `MATRIX_*` variables and adds
   `MATRIX_SOUTHBOUND_TRANSPORT`, `MATRIX_INVARIANT`, `MATRIX_COMPOSITION`,
   `MATRIX_NORTHBOUND_CLIENT`.
+- **Aggregation of per-setup runs** `--session-id <label>` and `--candidate <label>` are required with `--transports`; all filtered invocations of one session share one `--output-dir`. Each invocation writes only its own case directories and then rebuilds `index.json` from every `verdict.json` in the directory whose `session_id` and `candidate` match, so the last invocation yields the full inventory; a verdict carrying a different `session_id` or `candidate`, or a second `hardware_setup` for one transport, makes the rebuild fail instead of merging. A case re-run replaces its own directory. Cells not yet run are absent from the index, so the gate's exact-inventory rule rejects a partial aggregate.
 - **Flags** `--transports ENS,ENH` selects the cells of one hardware setup;
   `--external-client ebusd|vrc-explorer` selects the CX01 client; the
   `--start-proxy`/`--stop-proxy` commands are not used by `adaptermux-v2`;

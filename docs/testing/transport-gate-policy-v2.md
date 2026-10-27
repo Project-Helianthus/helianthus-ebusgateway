@@ -60,7 +60,7 @@ implied either way.
 | same file, owner-override block | comment: covers "the eBUS TRANSPORT_MATRIX_REPORT (T01..T88) check and the AD01..AD12 block" | covers the `adaptermux-v2` `TRANSPORT_MATRIX_REPORT` check, AD cells included; behavior unchanged |
 | same file, AD block (`adapter_direct_touched`, `HELIANTHUS_AD_GATE_SKIP`) | an `internal/adaptermux/*.go` change fails unless `HELIANTHUS_AD_GATE_SKIP` names a reason, because "a formal matrix report ... is pending implementation" | the AD cells are part of the report; the block checks that the report's AD cells are present and accepted, and `HELIANTHUS_AD_GATE_SKIP` is removed |
 | same file, messages and comments naming the old matrix | "TRANSPORT_MATRIX_REPORT is required for eBUS transport/protocol changes", "expected 88 cases", "require current M6a T01..T88 evidence" (B503 classifier comment), "Keep the 88-case transport gate" (SemReg comment), "an unrelated 88-case transport report" (main loop comment) | name the `adaptermux-v2` matrix; no behavior change in the classifiers |
-| [scripts/transport_gate_test.py](../../scripts/transport_gate_test.py) | 88-case report fixtures | `adaptermux-v2` fixtures, with negative cases for: wrong suite, unknown or missing case, duplicate case, `planned` outside PL-01/PL-02, `uart_direct_hardware_absent` on a non-UART cell, `xfail` outside XF-01, `xpass`, two hardware setups within one transport |
+| [scripts/transport_gate_test.py](../../scripts/transport_gate_test.py) | 88-case report fixtures | `adaptermux-v2` fixtures, with negative cases for: wrong suite, unknown or missing case, duplicate case, `planned` outside PL-01/PL-02/PL-03, `uart_direct_hardware_absent` on a non-UART cell, `xfail` outside XF-01, `xpass`, two hardware setups within one transport |
 | [AGENTS.md](../../AGENTS.md), "Gates and validation" | "require the applicable T01..T88 result"; the override "covers only the physical requirements (the eBUS `TRANSPORT_MATRIX_REPORT` T01..T88 check and the AD01..AD12 block)" | "require the applicable AdapterMux conformance matrix (`adaptermux-v2`) result"; the override covers the eBUS `TRANSPORT_MATRIX_REPORT` `adaptermux-v2` check, AD cells included |
 | [internal/matrix/topology.go](../../internal/matrix/topology.go), [internal/matrix/runner.go](../../internal/matrix/runner.go), [cmd/matrix-runner/main.go](../../cmd/matrix-runner/main.go) | suites `full88` (default) and `passive` | suite `adaptermux-v2` added by the implementation ticket; the switch makes it the default; `full88` stays generable to reproduce historical reports until the proxy repository is archived |
 | [docs/testing/consolidated-candidate-handoff.md](consolidated-candidate-handoff.md) | range rows T01–T04, T05–T08, T09–T24, T25–T88, PX01–PX12; rows AD01–AD12 | one row per axis-1 transport and family (AD, PX, CX), the compatibility block, AD11 marked retired; the session section names both reports |
@@ -79,7 +79,9 @@ listed in `author-evidence/issue1378-matrix-v2/dependent-ticket-comments.md`.
 ## 4. Report format the gate will check
 
 `TRANSPORT_MATRIX_REPORT` points at the `index.json` written by
-`matrix-runner --suite adaptermux-v2`. Existing fields keep their meaning; the
+`matrix-runner --suite adaptermux-v2`; when the session runs one hardware setup
+at a time, the filtered invocations share one output directory and session
+and the last one leaves the aggregated index (matrix page §7). Existing fields keep their meaning; the
 new fields are those proposed in §7 of the matrix page.
 
 | Field | Rule |
@@ -102,7 +104,7 @@ Acceptance per outcome:
 | `xpass` | never | gate fails |
 | `fail` | never | gate fails |
 | `blocked-infra` | `infra_reason = adapter_no_signal` on an executable cell (BI-01), or `infra_reason = uart_direct_hardware_absent` on a UART cell (BI-02) | gate fails |
-| `planned` | the cell is in PL-01 or PL-02 and `planned_reason` equals its category reason | gate fails |
+| `planned` | the cell is in PL-01, PL-02 or PL-03 and `planned_reason` equals its category reason | gate fails |
 
 The gate prints one summary line with counts per outcome and per transport,
 like today's `transport gate: PASS (...)` line. Pairing the two reports of the
@@ -149,8 +151,9 @@ acceptance, and the override reason in the ship wrappers changes as in §3.
 
 ## 6. Residual risk stated for the switch
 
-- 54 of 173 cells are `planned` in the projected first run (no plain southbound
-  framing in the mux; no local responder for PX09–PX11) and 72 are
+- 56 of 173 cells are `planned` in the projected first run (no plain southbound
+  framing in the mux; no local responder for PX09–PX11; raw symbol forwarding
+  not implemented for `ENS-AD12` and `ENH-AD12`) and 72 are
   `blocked-infra` (UART-direct). The gate accepts them only through their
   categories; they are not passing evidence.
 - The compatibility cells keep the non-mux direct transports and ebusd-tcp

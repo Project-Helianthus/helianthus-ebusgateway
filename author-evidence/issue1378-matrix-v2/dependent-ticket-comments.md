@@ -107,11 +107,11 @@ the AdapterMux and its listener, and the open helianthus-vrc-explorer issues
 > - Compatibility cells on the setup of their transport: `ENS-DS01`,
 >   `ENH-DS01`, `UDP-DS01`, `TCP-DS01`, `EBUSD-ES01`.
 >
-> Projected with today's mux scope: 47 executed (`ENS`/`ENH` × AD01–AD10,
-> AD12, PX01–PX08, PX12, CX01, plus the five compatibility cells), 54 planned
-> (`UDP-*`, `TCP-*`; `*-PX09` to `*-PX11` with no local responder in the mux),
+> Projected with today's mux scope: 45 executed (`ENS`/`ENH` × AD01–AD10,
+> PX01–PX08, PX12, CX01, plus the five compatibility cells), 56 planned
+> (`UDP-*`, `TCP-*`; `*-PX09` to `*-PX11` with no local responder in the mux; `ENS-AD12`, `ENH-AD12` until raw forwarding lands),
 > 72 blocked-infra (UART-direct). Accepted non-pass verdicts only through the
-> categories XF-01, BI-01, BI-02, PL-01, PL-02 of the matrix page.
+> categories XF-01, BI-01, BI-02, PL-01, PL-02, PL-03 of the matrix page.
 >
 > Old-form runs T13–T16 (proxy single-client with an ENH gateway leg) are the
 > additional proxy-side baseline of `ENS-AD10`, `ENH-AD10`, `UDP-AD10`,
@@ -209,8 +209,8 @@ the AdapterMux and its listener, and the open helianthus-vrc-explorer issues
 >   `EBUSD-ES01`;
 > - AD11 as a retired, non-gate row;
 > - acceptance categories XF-01, BI-01 (`adapter_no_signal`), BI-02
->   (`uart_direct_hardware_absent`), PL-01, PL-02, with `planned` accepted only
->   inside PL-01 and PL-02.
+>   (`uart_direct_hardware_absent`), PL-01, PL-02, PL-03, with `planned` accepted only
+>   inside PL-01, PL-02 and PL-03.
 >
 > For the 0.7 consolidated session the catalogue must carry both forms (the
 > last `full88` and the first `adaptermux-v2`); after the gate switch only the

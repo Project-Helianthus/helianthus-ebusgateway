@@ -319,9 +319,13 @@ the AdapterMux and its listener, and the open helianthus-vrc-explorer issues
 > only from echoed RECEIVED; local emulated response inside the responder
 > window; late responder bytes rejected and counted) became cells of the mux on
 > every southbound, `<T>-PX09` to `<T>-PX11`. The mux has no local responder
-> today, so all 21 cells are planned (category PL-02, reason
-> `mux_local_responder_not_implemented`) and leave that state when the
-> registered responder ownership of this issue exists. Whether that is wanted
+> today, so all 21 cells are unexecuted. By the matrix precedence (BI-02, then
+> PL-01, then PL-02, then PL-03) only the six `ENS`/`ENH` cells are reported as
+> `planned` PL-02 (reason `mux_local_responder_not_implemented`) and leave that
+> state when the registered responder ownership of this issue exists; the six
+> `UDP`/`TCP` cells stay `planned` PL-01 (plain southbound) and the nine UART
+> cells stay `blocked-infra` BI-02 (no hardware), so completing this issue
+> alone does not make all 21 executable. Whether that is wanted
 > for 0.7 is an operator decision; this comment changes neither the deferral
 > nor the scope above.
 >

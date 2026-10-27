@@ -209,8 +209,10 @@ The settled contract
 - raw wire symbols at the mux boundary: each escape lead and suffix, and each
   unescaped `0xAA`, is its own symbol, delivered immediately and in order to
   external ENH sessions, without waiting for a suffix;
-- host-side escaping on both paths: every `SEND` from the gateway or an
-  external client is one physical wire byte, expanded by the host; receive
+- host-side escaping on both paths: the gateway encodes its logical bytes into
+  physical wire symbols on the host; a raw `SEND` from an external ENH client
+  is already one physical wire symbol and is passed through, never escaped
+  again; receive
   decoding of `A9 00` / `A9 01` happens on the host side, never in the adapter
   stream;
 - internal consumers (gateway active path, passive reconstruction, phase

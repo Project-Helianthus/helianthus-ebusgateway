@@ -166,7 +166,11 @@ type startResult struct {
 	granted   bool
 	cancelled bool // AM55: true when client-initiated SYN cancel — no FAILED delivery
 	initiator byte // initiator byte for STARTED/FAILED payload fidelity
-	err       error
+	// startedQueued reports that the mux already queued the granted
+	// external session's STARTED at its stream position (issue #1003);
+	// the session must not deliver a second STARTED.
+	startedQueued bool
+	err           error
 }
 
 // gatewaySessionID is the reserved session ID for the gateway's

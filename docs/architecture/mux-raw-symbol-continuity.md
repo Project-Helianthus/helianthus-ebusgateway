@@ -1,8 +1,60 @@
 # Mux raw-symbol and echo continuity
 
-Status: proposed contract and current-code inventory for issue #1142. Refs
-parent #1003; this partial slice does not close the parent or implement raw ENH
-forwarding. No runtime or external-client compatibility success is claimed.
+Status: contract and current-code inventory for issue #1142, partly
+implemented by the parent #1003 slice summarized under "Implementation status"
+below. The inventory tables describe the code before that slice. No
+external-client compatibility success is claimed until the open items listed
+there are closed.
+
+## Implementation status (issue #1003)
+
+Implemented in `internal/adaptermux` (see `raw_symbols.go`) and covered by the
+deterministic regressions in `raw_symbol_continuity_test.go`:
+
+- Raw view at the upstream boundary. When the upstream supplies the optional
+  `ReadEventWithRawSymbol` capability, every observed RECEIVED wire symbol is
+  delivered to every external session immediately and in upstream order, one
+  RECEIVED per wire symbol: `A9 00` and `A9 01` reach sessions as two
+  symbols, the lead before its suffix exists, and a structural `AA` as one.
+  The logical item a symbol completed (with `WasEscaped`) is then processed
+  for phase tracking, passive reconstruction and the gateway active path,
+  without a second session delivery. Raw symbols are never regenerated from
+  logical bytes; an upstream without the capability keeps the previous
+  logical session delivery. The v8 classifier judges the logical item and,
+  in enforce mode, drops its raw symbol from the session view with it.
+- Independent write normalization. External sessions pass raw SEND symbols
+  through unchanged. The gateway active path advertises logical writes only
+  when the upstream SEND contract is raw-symbol (ENH/ENS) and its receive side
+  is logical; the mux then encodes a logical payload `A9` as `A9 00` and a
+  payload `AA` as `A9 01`, sends a structural `AA` only when explicitly
+  marked, and verifies every symbol: the first eligible raw echo must be the
+  lead (an unsolicited structural SYN is not eligible) and the pair is
+  verified through the escaped logical echo. The pair's two SEND requests go
+  out back to back, because waiting a round trip for the lead's echo could
+  exceed the upstream decoder's 32 ms escape-pending cap and split a correct
+  pair. A mismatched lead fails the write as a collision; reset, reconnect
+  and close retire the wait.
+- Grant visibility. The external winner's STARTED is queued on the goroutine
+  that observed the grant, so it keeps its stream position behind older
+  symbols and ahead of newer ones. The F-34/F-35 abandon watchdog starts when
+  STARTED has been written to the client, bound to its grant generation; the
+  wire-idle SYN grace and maximum ownership still bound a grant whose STARTED
+  never reaches the client.
+- Session output pacing reserves one slot per eBUS wire symbol (RECEIVED,
+  STARTED, FAILED) and none for control frames, instead of one per encoded
+  ENH TCP byte.
+
+Open items: the raw view requires the matching helianthus-ebusgo transport
+capability at the pinned dependency; a raw-symbol client that waits for each
+echo adds its own round trip between an escape lead and its suffix, and when
+that gap exceeds the upstream decoder's 32 ms escape-pending cap the logical
+view splits the pair (the raw view stays exact), which needs a decision on
+that cap; the public native ENH document
+([`protocols/enh.md`](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/protocols/enh.md))
+still assigns SEND escape encoding to the adapter, which contradicts the
+transparent single-symbol SEND this slice relies on and must be reconciled;
+bounded-backpressure loss reporting, native timing, the close/replacement
+race (F01/J21) and independent review remain outside this slice.
 
 ## Authority and evidence
 

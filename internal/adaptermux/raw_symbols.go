@@ -1,0 +1,313 @@
+package adaptermux
+
+import (
+	"errors"
+	"fmt"
+	"time"
+
+	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
+	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
+	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
+)
+
+// Raw-symbol continuity at the mux upstream boundary (issue #1003, contract
+// docs/architecture/mux-raw-symbol-continuity.md).
+//
+// The mux consumes two views of the same upstream stream:
+//
+//   - the raw view: every RECEIVED wire symbol the upstream observed, in
+//     order, including an escape lead before its suffix exists. External
+//     ENH sessions are fed from this view only, one RECEIVED per wire
+//     symbol, so a logical 0xA9 or 0xAA reaches them as the two observed
+//     symbols and a raw-symbol client can wait for each individual echo;
+//   - the logical view: decoded bytes with escape provenance (WasEscaped).
+//     Wire-phase tracking, passive reconstruction, the gateway active path
+//     and the arbitration lifecycle consume this view, unchanged.
+//
+// The raw view is never regenerated from logical bytes. An upstream that
+// cannot supply it keeps the previous logical session delivery.
+
+// upstreamRawSymbolReader is the optional upstream capability that supplies
+// the raw view (helianthus-ebusgo transport.RawSymbolStreamReader). It is
+// declared here with existing types so the mux detects the capability at
+// run time. Each call returns one ordered item: either an observed RECEIVED
+// wire symbol (hasSymbol) together with the logical item it completed (ev,
+// zero Kind when it completed none), or a control item (hasSymbol false).
+type upstreamRawSymbolReader interface {
+	ReadEventWithRawSymbol() (ev transport.StreamEvent, symbol byte, hasSymbol bool, err error)
+}
+
+// upstreamItem is one ordered item read at the mux upstream boundary.
+type upstreamItem struct {
+	// event is the logical or control item. Its Kind is zero for a raw
+	// symbol that completed no logical item (an escape lead, a 0xAA
+	// absorbed inside a pending pair, or a symbol discarded by a decode
+	// fault).
+	event transport.StreamEvent
+	// rawSymbol is the observed wire symbol when hasRaw is set.
+	rawSymbol byte
+	hasRaw    bool
+}
+
+// readUpstreamItem reads the next ordered item from the adapter transport,
+// preferring the raw view when the upstream supplies it.
+func (m *Mux) readUpstreamItem() (upstreamItem, error) {
+	m.connMu.Lock()
+	tr := m.upstream
+	m.connMu.Unlock()
+
+	if tr == nil {
+		return upstreamItem{}, errors.New("adaptermux: not connected")
+	}
+	if reader, ok := tr.(upstreamRawSymbolReader); ok {
+		ev, symbol, hasSymbol, err := reader.ReadEventWithRawSymbol()
+		if err != nil {
+			return upstreamItem{}, err
+		}
+		return upstreamItem{event: ev, rawSymbol: symbol, hasRaw: hasSymbol}, nil
+	}
+	ev, err := m.readUpstream()
+	if err != nil {
+		return upstreamItem{}, err
+	}
+	return upstreamItem{event: ev}, nil
+}
+
+// upstreamSuppliesRawSymbols reports whether tr provides the raw view, which
+// is what makes an escape lead's own echo observable to the mux.
+func upstreamSuppliesRawSymbols(tr transport.RawTransport) bool {
+	_, ok := tr.(upstreamRawSymbolReader)
+	return ok
+}
+
+// onRawSymbol handles one observed RECEIVED wire symbol before its logical
+// item (if any) is processed. It runs on the readLoop goroutine, so session
+// delivery keeps exact upstream order relative to every other item the
+// readLoop delivers, including a granted session's STARTED.
+func (m *Mux) onRawSymbol(symbol byte, logical transport.StreamEvent) {
+	if logical.Kind == 0 && symbol != protocol.SymbolSyn {
+		// A raw-only non-SYN symbol (typically an escape lead) is wire
+		// activity even though no logical byte completed yet. A raw-only
+		// 0xAA can be an absorbed injection inside a pending pair; it never
+		// refreshes the activity clock, matching the logical SYN rule.
+		m.stateMu.Lock()
+		m.lastWireActivity = time.Now()
+		m.stateMu.Unlock()
+	}
+	m.deliverRawToSessions(symbol)
+	m.observeGatewayLeadEcho(symbol, logical)
+}
+
+// deliverRawToSessions delivers one observed wire symbol to every external
+// session, owner included (F-18 echo contract), as one ENH RECEIVED.
+func (m *Mux) deliverRawToSessions(symbol byte) {
+	m.sessionsMu.Lock()
+	defer m.sessionsMu.Unlock()
+	for _, sess := range m.sessions {
+		sess.deliverReceived(symbol)
+	}
+}
+
+// Write normalization (independent of receive normalization).
+//
+// ENH and ENS SEND requests each transmit exactly one raw wire symbol; the
+// adapter performs no escape encoding on the send path (a transparent
+// adapter echoes each SEND data byte as one RECEIVED, and raw-symbol ENH
+// clients escape before SEND and wait for each symbol's echo). External
+// sessions therefore pass their raw SEND symbols through unchanged: a client
+// that sends 0xA9 and then 0x00 produces exactly those two wire symbols.
+//
+// The gateway active path writes logical bytes (protocol.Bus applies no
+// escaping when the path reports BytesAreUnescaped). The mux encodes those
+// writes itself: a payload 0xA9 becomes the raw symbols 0xA9 0x00, a payload
+// 0xAA becomes 0xA9 0x01, and only a write explicitly marked structural via
+// SignalNextWriteIsStructuralSyn goes out as a raw 0xAA SYN. The decision
+// never consults the upstream's receive-side flag on its own: the active
+// path advertises logical writes only when the upstream SEND contract is
+// raw-symbol (activeWritesAreLogical) AND its receive side is logical,
+// because protocol.Bus learns both directions from one EscapeAware flag.
+
+// upstreamSendIsRawSymbol reports the upstream SEND contract: true for the
+// ENH/ENS adapter protocols, whose SEND request transmits one raw symbol.
+func (m *Mux) upstreamSendIsRawSymbol() bool {
+	switch m.cfg.Protocol {
+	case "enh", "ens", "":
+		return true
+	default:
+		return false
+	}
+}
+
+// activeReadsAreLogical reports the receive-side normalization of the active
+// path: the upstream delivers decoded logical bytes with escape provenance.
+func (m *Mux) activeReadsAreLogical() bool {
+	return m.bytesAreUnescaped()
+}
+
+// activeWritesAreLogical reports the write-side normalization of the active
+// path: the mux accepts logical bytes from protocol.Bus and encodes reserved
+// payload values into raw SEND symbols itself.
+func (m *Mux) activeWritesAreLogical() bool {
+	return m.upstreamSendIsRawSymbol()
+}
+
+// activePathIsLogical is what the active path advertises to protocol.Bus via
+// BytesAreUnescaped, and therefore exactly when the mux must encode gateway
+// writes: protocol.Bus escapes nothing in that mode and unescapes nothing.
+func (m *Mux) activePathIsLogical() bool {
+	return m.activeReadsAreLogical() && m.activeWritesAreLogical()
+}
+
+// gatewaySendSymbols encodes one logical gateway write into the raw wire
+// symbols its SEND requests transmit. structural marks the end-of-message
+// SYN; any other 0xAA, and every 0xA9, is payload and is escaped.
+func gatewaySendSymbols(data byte, structural bool) []byte {
+	switch {
+	case data == protocol.SymbolSyn && structural:
+		return []byte{protocol.SymbolSyn}
+	case data == protocol.SymbolEscape:
+		return []byte{protocol.SymbolEscape, 0x00}
+	case data == protocol.SymbolSyn:
+		return []byte{protocol.SymbolEscape, 0x01}
+	default:
+		return []byte{data}
+	}
+}
+
+// gatewayLeadEchoTimeout bounds how long the gateway write path waits for the
+// raw echo of an escape lead before it fails the write. It matches the
+// active-path read bound protocol.Bus applies to every echo.
+const gatewayLeadEchoTimeout = activeChanTimeout
+
+// gatewayLeadWait is the single outstanding raw-echo expectation for the
+// escape lead of a gateway write. It is published through Mux.gatewayLeadWait
+// (an atomic pointer); whoever swaps it out resolves it, exactly once.
+type gatewayLeadWait struct {
+	lead   byte
+	result chan gatewayLeadOutcome // capacity 1, resolved at most once
+}
+
+type gatewayLeadOutcome struct {
+	observed byte
+	err      error // non-nil when a lifecycle boundary retired the wait
+}
+
+// armGatewayLeadWait registers the raw-echo expectation for a gateway escape
+// lead. The caller arms before writing the lead, so the echo cannot be
+// observed before the expectation exists. Gateway writes are serialized by
+// sendLoop, so at most one wait is outstanding.
+func (m *Mux) armGatewayLeadWait(lead byte) *gatewayLeadWait {
+	w := &gatewayLeadWait{lead: lead, result: make(chan gatewayLeadOutcome, 1)}
+	m.gatewayLeadWait.Store(w)
+	return w
+}
+
+// retireGatewayLeadWait resolves an outstanding lead wait with err at a
+// lifecycle boundary (adapter reset, reconnect, close). A retired lead can
+// never be acknowledged by a symbol observed after the boundary.
+func (m *Mux) retireGatewayLeadWait(err error) {
+	if w := m.gatewayLeadWait.Swap(nil); w != nil {
+		w.result <- gatewayLeadOutcome{err: err}
+	}
+}
+
+// observeGatewayLeadEcho resolves an outstanding gateway lead wait with the
+// next eligible raw symbol. An unsolicited structural SYN (raw 0xAA that
+// completed a logical wire SYN) can never satisfy a payload escape lead; it
+// is mid-write bus noise exactly as the logical P10.2 gate treats it, so the
+// wait continues. Any other symbol resolves the wait once: equal to the lead
+// is the echo, anything else is a mismatch.
+func (m *Mux) observeGatewayLeadEcho(symbol byte, logical transport.StreamEvent) {
+	if logical.Kind == transport.StreamEventWireSyn ||
+		(logical.Kind == transport.StreamEventByte && logical.Byte == protocol.SymbolSyn && !logical.WasEscaped) {
+		return
+	}
+	w := m.gatewayLeadWait.Load()
+	if w == nil || !m.gatewayLeadWait.CompareAndSwap(w, nil) {
+		return
+	}
+	w.result <- gatewayLeadOutcome{observed: symbol}
+}
+
+// awaitGatewayLeadEcho waits for the raw echo of an escape lead the gateway
+// just wrote. It returns nil only when the echoed symbol equals the lead.
+func (m *Mux) awaitGatewayLeadEcho(w *gatewayLeadWait) error {
+	timer := time.NewTimer(gatewayLeadEchoTimeout)
+	defer timer.Stop()
+	select {
+	case out := <-w.result:
+		if out.err != nil {
+			return out.err
+		}
+		if out.observed != w.lead {
+			return fmt.Errorf("adaptermux: escape lead echo mismatch (wrote 0x%02X, observed 0x%02X): %w",
+				w.lead, out.observed, ebuserrors.ErrBusCollision)
+		}
+		return nil
+	case <-timer.C:
+		m.dropGatewayLeadWait(w)
+		return fmt.Errorf("adaptermux: escape lead 0x%02X echo not observed: %w", w.lead, ebuserrors.ErrTimeout)
+	case <-m.ctx.Done():
+		m.dropGatewayLeadWait(w)
+		return fmt.Errorf("adaptermux: %w", m.ctx.Err())
+	}
+}
+
+// dropGatewayLeadWait clears w if it is still the outstanding wait.
+func (m *Mux) dropGatewayLeadWait(w *gatewayLeadWait) {
+	m.gatewayLeadWait.CompareAndSwap(w, nil)
+}
+
+// writeSymbols transmits the raw symbols of one requested write and
+// verifies every symbol. A single symbol (every external SEND, and every
+// gateway byte that needs no escaping) is verified by the existing echo
+// paths.
+//
+// An escape pair is sent as two SEND requests back to back, with no host
+// round trip between them. The upstream decoder abandons a pending lead
+// after its escape-pending cap (32 ms of host time, frame-atomic-visibility
+// v8 §1.3); waiting for the lead's echo before sending the suffix would let
+// an adapter round trip near that cap split a correct pair into a dropped
+// lead and a plain suffix. Verification still covers both symbols: with the
+// raw view the first eligible raw symbol after the write must be the lead
+// (a mismatch fails the write as a collision), and the logical echo
+// protocol.Bus checks carries WasEscaped=true, which the decoder produces
+// only from the lead followed by its suffix. Without the raw view the
+// logical echo verifies the pair.
+func (m *Mux) writeSymbols(tr transport.RawTransport, symbols []byte) error {
+	if len(symbols) == 1 {
+		_, err := tr.Write(symbols)
+		return err
+	}
+	lead, suffix := symbols[0], symbols[1]
+	var wait *gatewayLeadWait
+	if upstreamSuppliesRawSymbols(tr) {
+		wait = m.armGatewayLeadWait(lead)
+	}
+	if _, err := tr.Write([]byte{lead}); err != nil {
+		if wait != nil {
+			m.dropGatewayLeadWait(wait)
+		}
+		return err
+	}
+	if _, err := tr.Write([]byte{suffix}); err != nil {
+		if wait != nil {
+			m.dropGatewayLeadWait(wait)
+		}
+		return err
+	}
+	if wait != nil {
+		if err := m.awaitGatewayLeadEcho(wait); err != nil {
+			return errGatewayLeadEcho{err: err}
+		}
+	}
+	return nil
+}
+
+// errGatewayLeadEcho marks a failed escape-lead verification so doSend can
+// return it to protocol.Bus unchanged (its class drives retry handling)
+// instead of reclassifying it as an adapter write failure.
+type errGatewayLeadEcho struct{ err error }
+
+func (e errGatewayLeadEcho) Error() string { return e.err.Error() }
+func (e errGatewayLeadEcho) Unwrap() error { return e.err }

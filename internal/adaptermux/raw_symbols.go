@@ -3,7 +3,6 @@ package adaptermux
 import (
 	"errors"
 	"fmt"
-	"sync/atomic"
 	"time"
 
 	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
@@ -181,62 +180,89 @@ func gatewaySendSymbols(data byte, structural bool) []byte {
 const gatewayLeadEchoTimeout = activeChanTimeout
 
 // gatewayLeadWait is the single outstanding raw-echo expectation for the
-// escape lead of a gateway write. It is published through Mux.gatewayLeadWait
-// (an atomic pointer); whoever swaps it out resolves it, exactly once.
+// escape pair of a gateway write: the lead's echo, then the suffix's echo as
+// the symbol immediately following it. It is published through
+// Mux.gatewayLeadWait (an atomic pointer); whoever swaps it out resolves it,
+// exactly once.
 type gatewayLeadWait struct {
-	lead    byte
-	result  chan gatewayLeadOutcome // capacity 1, resolved at most once
-	retired atomic.Bool             // set by a lifecycle boundary before it resolves result
+	lead   byte
+	suffix byte
+	result chan gatewayLeadOutcome // capacity 1, resolved at most once
+	// leadSeen is set when the lead's echo was observed; from then on the
+	// very next raw symbol decides the pair. Read and written only by the
+	// readLoop goroutine (observeGatewayLeadEcho).
+	leadSeen bool
 }
 
 type gatewayLeadOutcome struct {
-	observed byte
-	err      error // non-nil when a lifecycle boundary retired the wait
+	observed   byte
+	suffixStep bool  // observed answered the suffix (else the lead)
+	err        error // non-nil when a lifecycle boundary retired the wait
 }
 
 // armGatewayLeadWait registers the raw-echo expectation for a gateway escape
-// lead. The caller arms before writing the lead, so the echo cannot be
+// pair. The caller arms before writing the lead, so the echo cannot be
 // observed before the expectation exists. Gateway writes are serialized by
 // sendLoop, so at most one wait is outstanding.
-func (m *Mux) armGatewayLeadWait(lead byte) *gatewayLeadWait {
-	w := &gatewayLeadWait{lead: lead, result: make(chan gatewayLeadOutcome, 1)}
+func (m *Mux) armGatewayLeadWait(lead, suffix byte) *gatewayLeadWait {
+	w := &gatewayLeadWait{lead: lead, suffix: suffix, result: make(chan gatewayLeadOutcome, 1)}
 	m.gatewayLeadWait.Store(w)
 	return w
 }
 
-// retireGatewayLeadWait resolves an outstanding lead wait with err at a
-// lifecycle boundary (adapter reset, reconnect, close). A retired lead can
-// never be acknowledged by a symbol observed after the boundary.
+// retireGatewayLeadWait fences the current ownership period for escape-pair
+// suffix commits and resolves an outstanding wait with err, at a lifecycle
+// boundary (adapter reset, reconnect, close). The fence is taken under the
+// arbitrator lock the suffix commit holds across its check and its write, so
+// a suffix is either fully written before the boundary or not written at all;
+// a retired pair can never be acknowledged by a symbol observed after it.
 func (m *Mux) retireGatewayLeadWait(err error) {
-	// The epoch fences a write whose wait was already resolved by the lead
-	// echo: the boundary still has to stop that write's suffix.
-	m.gatewayLeadEpoch.Add(1)
+	m.arb.fenceLifecycle()
 	if w := m.gatewayLeadWait.Swap(nil); w != nil {
-		w.retired.Store(true)
 		w.result <- gatewayLeadOutcome{err: err}
 	}
 }
 
-// observeGatewayLeadEcho resolves an outstanding gateway lead wait with the
-// next eligible raw symbol. An unsolicited structural SYN (raw 0xAA that
-// completed a logical wire SYN) can never satisfy a payload escape lead; it
-// is mid-write bus noise exactly as the logical P10.2 gate treats it, so the
-// wait continues. Any other symbol resolves the wait once: equal to the lead
-// is the echo, anything else is a mismatch.
+// observeGatewayLeadEcho advances an outstanding gateway escape-pair wait
+// with the next raw symbol.
+//
+// Lead step: an unsolicited structural SYN (raw 0xAA that completed a logical
+// wire SYN) can never satisfy a payload escape lead; it is mid-write bus
+// noise exactly as the logical P10.2 gate treats it, so the wait continues.
+// The lead's echo moves the wait to the suffix step; any other symbol
+// resolves it as a lead mismatch.
+//
+// Suffix step: the suffix's echo must be the symbol immediately following
+// the lead's echo. Whatever that symbol is resolves the wait, so a malformed
+// suffix fails the pair and a later well-formed pair (for example A9 FF A9 00)
+// can never acknowledge it.
 func (m *Mux) observeGatewayLeadEcho(symbol byte, logical transport.StreamEvent) {
-	if logical.Kind == transport.StreamEventWireSyn ||
-		(logical.Kind == transport.StreamEventByte && logical.Byte == protocol.SymbolSyn && !logical.WasEscaped) {
-		return
-	}
 	w := m.gatewayLeadWait.Load()
-	if w == nil || !m.gatewayLeadWait.CompareAndSwap(w, nil) {
+	if w == nil {
 		return
 	}
-	w.result <- gatewayLeadOutcome{observed: symbol}
+	if !w.leadSeen {
+		if logical.Kind == transport.StreamEventWireSyn ||
+			(logical.Kind == transport.StreamEventByte && logical.Byte == protocol.SymbolSyn && !logical.WasEscaped) {
+			return
+		}
+		if symbol == w.lead {
+			w.leadSeen = true
+			return
+		}
+		if m.gatewayLeadWait.CompareAndSwap(w, nil) {
+			w.result <- gatewayLeadOutcome{observed: symbol}
+		}
+		return
+	}
+	if m.gatewayLeadWait.CompareAndSwap(w, nil) {
+		w.result <- gatewayLeadOutcome{observed: symbol, suffixStep: true}
+	}
 }
 
-// awaitGatewayLeadEcho waits for the raw echo of an escape lead the gateway
-// just wrote. It returns nil only when the echoed symbol equals the lead.
+// awaitGatewayLeadEcho waits until the raw echoes of the escape pair the
+// gateway just wrote decided it. It returns nil only when the lead's echo was
+// followed immediately by the suffix's echo.
 func (m *Mux) awaitGatewayLeadEcho(w *gatewayLeadWait) error {
 	timer := time.NewTimer(gatewayLeadEchoTimeout)
 	defer timer.Stop()
@@ -245,14 +271,18 @@ func (m *Mux) awaitGatewayLeadEcho(w *gatewayLeadWait) error {
 		if out.err != nil {
 			return out.err
 		}
-		if out.observed != w.lead {
+		if !out.suffixStep {
 			return fmt.Errorf("adaptermux: escape lead echo mismatch (wrote 0x%02X, observed 0x%02X): %w",
 				w.lead, out.observed, ebuserrors.ErrBusCollision)
+		}
+		if out.observed != w.suffix {
+			return fmt.Errorf("adaptermux: escape suffix echo mismatch (wrote 0x%02X 0x%02X, observed 0x%02X 0x%02X): %w",
+				w.lead, w.suffix, w.lead, out.observed, ebuserrors.ErrBusCollision)
 		}
 		return nil
 	case <-timer.C:
 		m.dropGatewayLeadWait(w)
-		return fmt.Errorf("adaptermux: escape lead 0x%02X echo not observed: %w", w.lead, ebuserrors.ErrTimeout)
+		return fmt.Errorf("adaptermux: escape pair 0x%02X 0x%02X echo not observed: %w", w.lead, w.suffix, ebuserrors.ErrTimeout)
 	case <-m.ctx.Done():
 		m.dropGatewayLeadWait(w)
 		return fmt.Errorf("adaptermux: %w", m.ctx.Err())
@@ -274,39 +304,62 @@ func (m *Mux) dropGatewayLeadWait(w *gatewayLeadWait) {
 // after its escape-pending cap (32 ms of host time, frame-atomic-visibility
 // v8 §1.3); waiting for the lead's echo before sending the suffix would let
 // an adapter round trip near that cap split a correct pair into a dropped
-// lead and a plain suffix. Verification still covers both symbols: with the
-// raw view the first eligible raw symbol after the write must be the lead
-// (a mismatch fails the write as a collision), and the logical echo
-// protocol.Bus checks carries WasEscaped=true, which the decoder produces
-// only from the lead followed by its suffix. Without the raw view the
-// logical echo verifies the pair.
+// lead and a plain suffix.
+//
+// The suffix belongs to the ownership period the lead was sent in. It is
+// written inside arbitrator.commitWhileOwnershipCurrent, which holds the
+// arbitrator lock across the check and the write; every ownership
+// transition and every lifecycle fence (reset, reconnect, close) takes that
+// lock. A boundary is therefore either ordered before the check, and the
+// suffix is never transmitted (the write fails once), or it waits until the
+// suffix write returned. Nothing can retire the pair between the check and
+// the write.
+//
+// Verification covers both symbols: with the raw view the first eligible
+// raw symbol after the write must be the lead and the symbol immediately
+// after it must be the suffix (anything else fails the write as a
+// collision); the logical echo protocol.Bus then checks carries
+// WasEscaped=true. Without the raw view the logical echo verifies the pair.
 func (m *Mux) writeSymbols(tr transport.RawTransport, symbols []byte) error {
 	if len(symbols) == 1 {
 		_, err := tr.Write(symbols)
 		return err
 	}
 	lead, suffix := symbols[0], symbols[1]
+	tok, owned := m.arb.currentOwnershipToken(gatewaySessionID)
+	if !owned {
+		return errGatewayLeadEcho{err: errNotBusOwner}
+	}
 	var wait *gatewayLeadWait
 	if upstreamSuppliesRawSymbols(tr) {
-		wait = m.armGatewayLeadWait(lead)
+		wait = m.armGatewayLeadWait(lead, suffix)
 	}
-	epoch := m.gatewayLeadEpoch.Load()
 	if _, err := tr.Write([]byte{lead}); err != nil {
 		if wait != nil {
 			m.dropGatewayLeadWait(wait)
 		}
 		return err
 	}
-	// A lifecycle boundary between the two writes retires the wait and
-	// releases ownership; the suffix must not be transmitted after it.
-	if wait != nil && (wait.retired.Load() || m.gatewayLeadEpoch.Load() != epoch) {
-		return errGatewayLeadEcho{err: fmt.Errorf("adaptermux: %w", ebuserrors.ErrAdapterReset)}
+	if hook := m.gatewaySuffixCommitHook; hook != nil {
+		hook()
 	}
-	if _, err := tr.Write([]byte{suffix}); err != nil {
+	var writeErr error
+	commitErr := m.arb.commitWhileOwnershipCurrent(tok, func() error {
+		_, writeErr = tr.Write([]byte{suffix})
+		return writeErr
+	})
+	if commitErr != nil {
 		if wait != nil {
 			m.dropGatewayLeadWait(wait)
 		}
-		return err
+		switch {
+		case errors.Is(commitErr, errOwnershipLifecycleFenced):
+			return errGatewayLeadEcho{err: fmt.Errorf("adaptermux: escape suffix withheld after a lifecycle boundary: %w", ebuserrors.ErrAdapterReset)}
+		case errors.Is(commitErr, errOwnershipChanged):
+			return errGatewayLeadEcho{err: fmt.Errorf("adaptermux: escape suffix withheld after ownership ended: %w", errNotBusOwner)}
+		default:
+			return commitErr
+		}
 	}
 	if wait != nil {
 		if err := m.awaitGatewayLeadEcho(wait); err != nil {

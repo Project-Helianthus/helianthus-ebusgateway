@@ -661,8 +661,12 @@ type Mux struct {
 	// write path, resolved once by the readLoop's raw-symbol handling or
 	// retired at reset/reconnect/close. See raw_symbols.go.
 	gatewayLeadWait atomic.Pointer[gatewayLeadWait]
-	// gatewayLeadEpoch counts lifecycle boundaries that retire lead waits.
-	gatewayLeadEpoch atomic.Uint64
+
+	// gatewaySuffixCommitHook, when set, runs after a gateway escape lead
+	// was written and before its suffix commit. Test-only seam for
+	// interleaving a lifecycle boundary at the commit point; nil in
+	// production.
+	gatewaySuffixCommitHook func()
 
 	// externalAbandonAfter schedules the external-session abandon
 	// watchdog (F-34/F-35). It defaults to time.AfterFunc; it is a field
@@ -1582,11 +1586,17 @@ func (m *Mux) reconnect() (delegated bool, err error) {
 	owner := m.connectionLostOwner()
 	delegated = owner != nil
 	managedGateHeld := false
-	// Issue #1003: a gateway write waiting for an escape lead's raw echo
-	// holds its managed-use lease. The old stream can no longer deliver
-	// that echo, so retire the wait first: the write fails promptly and
-	// releases the lease before the managed gate is drained below.
-	m.retireGatewayLeadWait(fmt.Errorf("adaptermux: adapter disconnected: %w", ebuserrors.ErrAdapterReset))
+	// Issue #1003: a gateway write waiting for an escape pair's raw echoes
+	// holds its managed-use lease, and an escape suffix commit holds the
+	// arbitrator lock while it writes. The old stream can no longer echo
+	// that pair, so the reconnect fences it: the write fails promptly and
+	// releases the lease before the managed gate is drained. On the
+	// delegated path the fence follows the upstream close, which unblocks
+	// a suffix write stalled on the old connection.
+	retireErr := fmt.Errorf("adaptermux: adapter disconnected: %w", ebuserrors.ErrAdapterReset)
+	if !delegated {
+		m.retireGatewayLeadWait(retireErr)
+	}
 	if delegated {
 		m.connectionLossDelegated.Store(true)
 
@@ -1605,6 +1615,7 @@ func (m *Mux) reconnect() (delegated bool, err error) {
 				m.logger.Printf("adaptermux: managed conn close: %v", closeErr)
 			}
 		}
+		m.retireGatewayLeadWait(retireErr)
 
 		m.connectionUseMu.Lock()
 		managedGateHeld = true

@@ -1027,3 +1027,119 @@ func TestSessionPacer_LongFormReceivedReservesOneSlot(t *testing.T) {
 		t.Fatalf("last reserved slot %v; want the frame's own emit time, not after the client read it at %v", last, readDone)
 	}
 }
+
+// TestRawContinuity_RetireAtSuffixCommitPointWithholdsSuffix interleaves an
+// adapter RESETTED at the exact commit point of an escape pair: after the
+// lead was written, before the suffix commit. The reset fences the
+// ownership period, so the suffix never reaches the upstream and the write
+// fails exactly once.
+func TestRawContinuity_RetireAtSuffixCommitPointWithholdsSuffix(t *testing.T) {
+	mux, up, _ := newRawContinuityMux(t)
+	grantRawGateway(t, mux, up, 0x10)
+	at := mux.ActiveTransport()
+
+	var resets atomic.Int32
+	mux.gatewaySuffixCommitHook = func() {
+		resets.Add(1)
+		mux.handleReset()
+	}
+	failuresBefore := mux.activeTxn.writeErrTotal.Load()
+	_, err := at.Write([]byte{protocol.SymbolEscape})
+	if !errors.Is(err, ebuserrors.ErrAdapterReset) {
+		t.Fatalf("Write error = %v; want ErrAdapterReset", err)
+	}
+	if got := resets.Load(); got != 1 {
+		t.Fatalf("commit-point hook ran %d times; want 1", got)
+	}
+	if got := up.written(); !equalBytes(got, []byte{protocol.SymbolEscape}) {
+		t.Fatalf("upstream SEND symbols = % X; want only the lead (no suffix after the reset)", got)
+	}
+	if got := mux.activeTxn.writeErrTotal.Load() - failuresBefore; got != 1 {
+		t.Fatalf("active write failures = %d; want exactly 1", got)
+	}
+	if mux.gatewayLeadWait.Load() != nil {
+		t.Fatal("pair wait survived the reset boundary")
+	}
+}
+
+// TestRawContinuity_ReleaseAtSuffixCommitPointWithholdsSuffix: an ownership
+// release at the commit point ends the ownership period the lead was sent
+// in; the suffix is not transmitted.
+func TestRawContinuity_ReleaseAtSuffixCommitPointWithholdsSuffix(t *testing.T) {
+	mux, up, _ := newRawContinuityMux(t)
+	grantRawGateway(t, mux, up, 0x10)
+	at := mux.ActiveTransport()
+
+	mux.gatewaySuffixCommitHook = func() { mux.arb.releaseOwnership(gatewaySessionID) }
+	_, err := at.Write([]byte{protocol.SymbolEscape})
+	if !errors.Is(err, errNotBusOwner) {
+		t.Fatalf("Write error = %v; want errNotBusOwner", err)
+	}
+	if got := up.written(); !equalBytes(got, []byte{protocol.SymbolEscape}) {
+		t.Fatalf("upstream SEND symbols = % X; want only the lead", got)
+	}
+}
+
+// TestRawContinuity_SuffixWriteHoldsTheOwnershipLock: the suffix is written
+// while the arbitrator lock is held, the lock every lifecycle fence and
+// ownership transition needs, so none of them can run between the commit
+// check and the write.
+func TestRawContinuity_SuffixWriteHoldsTheOwnershipLock(t *testing.T) {
+	mux, up, _ := newRawContinuityMux(t)
+	grantRawGateway(t, mux, up, 0x10)
+	at := mux.ActiveTransport()
+
+	var checked atomic.Bool
+	up.setWriteHook(func(symbol byte) {
+		if symbol == 0x00 {
+			checked.Store(true)
+			if mux.arb.mu.TryLock() {
+				mux.arb.mu.Unlock()
+				t.Error("suffix written without holding the arbitrator lock; a reset could interleave")
+			}
+		}
+		up.wire(symbol)
+	})
+	if _, err := at.Write([]byte{protocol.SymbolEscape}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if !checked.Load() {
+		t.Fatal("suffix write was not observed")
+	}
+	if b, escaped := readActive(t, at); b != protocol.SymbolEscape || !escaped {
+		t.Fatalf("logical echo = 0x%02X escaped=%v; want 0xA9 escaped=true", b, escaped)
+	}
+}
+
+// TestRawContinuity_MalformedSuffixEchoFailsThePair: the raw echoes
+// A9 FF A9 00 follow the gateway's A9 00. The symbol immediately after the
+// lead's echo is FF, so the pair fails as a collision; the later well-formed
+// pair does not acknowledge it. Sessions still receive every observed symbol.
+func TestRawContinuity_MalformedSuffixEchoFailsThePair(t *testing.T) {
+	mux, up, _ := newRawContinuityMux(t)
+	_, monitor := addRawClient(t, mux)
+	grantRawGateway(t, mux, up, 0x10)
+	monitor.expectReceived(0x10)
+	at := mux.ActiveTransport()
+
+	up.setWriteHook(func(symbol byte) {
+		if symbol == 0x00 {
+			up.wire(0xA9, 0xFF, 0xA9, 0x00)
+		}
+	})
+	failuresBefore := mux.activeTxn.writeErrTotal.Load()
+	_, err := at.Write([]byte{protocol.SymbolEscape})
+	if !errors.Is(err, ebuserrors.ErrBusCollision) {
+		t.Fatalf("Write error = %v; want ErrBusCollision (malformed suffix echo)", err)
+	}
+	if got := mux.activeTxn.writeErrTotal.Load() - failuresBefore; got != 1 {
+		t.Fatalf("active write failures = %d; want exactly 1", got)
+	}
+	monitor.expectReceived(0xA9, 0xFF, 0xA9, 0x00)
+	mux.stateMu.Lock()
+	active := mux.gatewayTxnActive
+	mux.stateMu.Unlock()
+	if active {
+		t.Fatal("gateway transaction still active after the failed pair")
+	}
+}

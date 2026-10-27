@@ -28,12 +28,17 @@ deterministic regressions in `raw_symbol_continuity_test.go`:
   is logical; the mux then encodes a logical payload `A9` as `A9 00` and a
   payload `AA` as `A9 01`, sends a structural `AA` only when explicitly
   marked, and verifies every symbol: the first eligible raw echo must be the
-  lead (an unsolicited structural SYN is not eligible) and the pair is
-  verified through the escaped logical echo. The pair's two SEND requests go
-  out back to back, because waiting a round trip for the lead's echo could
-  exceed the upstream decoder's 32 ms escape-pending cap and split a correct
-  pair. A mismatched lead fails the write as a collision; reset, reconnect
-  and close retire the wait.
+  lead (an unsolicited structural SYN is not eligible), the symbol
+  immediately after it must be the suffix, and the pair is then verified
+  through the escaped logical echo. A mismatched lead or a malformed suffix
+  fails the write as a collision; a later well-formed pair never
+  acknowledges it. The pair's two SEND requests go out back to back,
+  because waiting a round trip for the lead's echo could exceed the upstream
+  decoder's 32 ms escape-pending cap and split a correct pair. The suffix is
+  committed under the arbitrator lock that every ownership transition and
+  every reset, reconnect or close fence takes, so a boundary either precedes
+  the commit check (no suffix is sent and the write fails once) or waits
+  until the suffix write returned.
 - Grant visibility. The external winner's STARTED is queued on the goroutine
   that observed the grant, so it keeps its stream position behind older
   symbols and ahead of newer ones. The F-34/F-35 abandon watchdog starts when

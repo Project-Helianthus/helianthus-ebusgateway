@@ -34,11 +34,15 @@ deterministic regressions in `raw_symbol_continuity_test.go`:
   fails the write as a collision; a later well-formed pair never
   acknowledges it. The pair's two SEND requests go out back to back,
   because waiting a round trip for the lead's echo could exceed the upstream
-  decoder's 32 ms escape-pending cap and split a correct pair. The suffix is
-  committed under the arbitrator lock that every ownership transition and
-  every reset, reconnect or close fence takes, so a boundary either precedes
-  the commit check (no suffix is sent and the write fails once) or waits
-  until the suffix write returned.
+  decoder's 32 ms escape-pending cap and split a correct pair. Lead and
+  suffix are each committed under the arbitrator lock, which every ownership
+  transition takes, after checking the reset, reconnect or close fence: a
+  commit that checks after a boundary sends nothing and the write fails
+  once, and a boundary's ownership release waits until an in-flight write
+  returned. Close and reconnect close the upstream before that teardown, so
+  a stalled write fails instead of holding it. The pair verifier sees every
+  observed raw symbol in wire order before the v8 session-view filter, so
+  an `AA` that filter drops between lead and suffix still fails the pair.
 - Grant visibility. The external winner's STARTED is queued on the goroutine
   that observed the grant, so it keeps its stream position behind older
   symbols and ahead of newer ones. The F-34/F-35 abandon watchdog starts when

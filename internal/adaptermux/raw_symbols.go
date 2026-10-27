@@ -80,10 +80,12 @@ func upstreamSuppliesRawSymbols(tr transport.RawTransport) bool {
 	return ok
 }
 
-// onRawSymbol handles one observed RECEIVED wire symbol before its logical
-// item (if any) is processed. It runs on the readLoop goroutine, so session
-// delivery keeps exact upstream order relative to every other item the
-// readLoop delivers, including a granted session's STARTED.
+// onRawSymbol delivers one observed RECEIVED wire symbol that passed the
+// session-view filter, before its logical item (if any) is processed. It runs
+// on the readLoop goroutine, so session delivery keeps exact upstream order
+// relative to every other item the readLoop delivers, including a granted
+// session's STARTED. The gateway escape-pair verifier is fed earlier, from
+// every observed symbol, by readLoop itself.
 func (m *Mux) onRawSymbol(symbol byte, logical transport.StreamEvent) {
 	if logical.Kind == 0 && symbol != protocol.SymbolSyn {
 		// A raw-only non-SYN symbol (typically an escape lead) is wire
@@ -95,7 +97,6 @@ func (m *Mux) onRawSymbol(symbol byte, logical transport.StreamEvent) {
 		m.stateMu.Unlock()
 	}
 	m.deliverRawToSessions(symbol)
-	m.observeGatewayLeadEcho(symbol, logical)
 }
 
 // deliverRawToSessions delivers one observed wire symbol to every external

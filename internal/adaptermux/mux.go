@@ -962,6 +962,30 @@ func (m *Mux) Close() error {
 			m.cancel()
 		}
 
+		// Close the adapter transport before any arbitration teardown.
+		// The readLoop blocks in m.upstream, not necessarily m.conn; test
+		// transports and some wrappers are distinct objects, so closing
+		// only conn can leave readLoop parked forever. Issue #1003: a
+		// gateway escape-pair commit holds the arbitrator lock while its
+		// write is in flight, and the teardown below takes that lock
+		// (forceRelease, failAllPending), directly or behind a readLoop
+		// that holds stateMu while waiting for it. Closing first fails a
+		// stalled write, so the commit returns and the teardown proceeds
+		// instead of waiting for a write deadline (or forever, with
+		// deadlines disabled). The pointers stay published until the
+		// teardown below is done, so a racing tryGrantAndStart still sees
+		// the (now closed) transport's capabilities and fails through its
+		// normal error paths.
+		m.connMu.Lock()
+		upstream := m.upstream
+		conn := m.conn
+		m.connMu.Unlock()
+		if upstream != nil {
+			m.closeErr = upstream.Close()
+		} else if conn != nil {
+			m.closeErr = conn.Close()
+		}
+
 		// Cancel in-flight pending START if any.
 		m.retireGatewayLeadWait(errors.New("adaptermux: closed"))
 		m.stateMu.Lock()
@@ -1040,20 +1064,10 @@ func (m *Mux) Close() error {
 		}
 		sessWg.Wait()
 
-		// Close adapter transport. The readLoop blocks in m.upstream, not
-		// necessarily m.conn; test transports and some wrappers are distinct
-		// objects, so closing only conn can leave readLoop parked forever.
 		m.connMu.Lock()
-		upstream := m.upstream
-		conn := m.conn
 		m.upstream = nil
 		m.conn = nil
 		m.connMu.Unlock()
-		if upstream != nil {
-			m.closeErr = upstream.Close()
-		} else if conn != nil {
-			m.closeErr = conn.Close()
-		}
 
 		m.wg.Wait()
 
@@ -1598,6 +1612,16 @@ func (m *Mux) reconnect() (delegated bool, err error) {
 	// a suffix write stalled on the old connection.
 	retireErr := fmt.Errorf("adaptermux: adapter disconnected: %w", ebuserrors.ErrAdapterReset)
 	if !delegated {
+		// Close the old connection for callback-free muxes before the
+		// arbitration teardown below, for the same reason as the managed
+		// path: a commit write stalled on it holds the arbitrator lock.
+		m.connMu.Lock()
+		if m.conn != nil {
+			if err := m.conn.Close(); err != nil {
+				m.logger.Printf("adaptermux: old conn close: %v", err)
+			}
+		}
+		m.connMu.Unlock()
 		m.retireGatewayLeadWait(retireErr)
 	}
 	if delegated {
@@ -1735,17 +1759,9 @@ func (m *Mux) reconnect() (delegated bool, err error) {
 		m.logger.Printf("adaptermux: active channel full, dropping disconnect notification")
 	}
 
-	// Close the old connection for callback-free muxes. Managed teardown
-	// detached and closed the transport before draining provider use above.
-	if !delegated {
-		m.connMu.Lock()
-		if m.conn != nil {
-			if err := m.conn.Close(); err != nil {
-				m.logger.Printf("adaptermux: old conn close: %v", err)
-			}
-		}
-		m.connMu.Unlock()
-	}
+	// The old connection was closed before the teardown above (managed
+	// teardown detached and closed the transport before draining provider
+	// use; callback-free muxes closed the connection first as well).
 	if delegated {
 		owner()
 		m.logger.Printf("adaptermux: connection recovery delegated to lifecycle owner")
@@ -1941,6 +1957,15 @@ func (m *Mux) readLoop() {
 		// consistently. A raw-only item (no logical item) is not
 		// classified.
 		event := item.event
+		// Issue #1003: the gateway escape-pair verifier sees every
+		// observed raw symbol in true wire order, before any session-view
+		// filtering below. The v8 AA-injection filter only shapes what
+		// sessions (and the logical consumers) receive; an 0xAA it drops
+		// between an escape lead and its suffix still decides the pair
+		// (A9 AA 00 fails it as a malformed echo).
+		if item.hasRaw {
+			m.observeGatewayLeadEcho(item.rawSymbol, event)
+		}
 		if m.v8 != nil && event.Kind != 0 {
 			if m.v8.Observe(event, time.Now()) {
 				continue

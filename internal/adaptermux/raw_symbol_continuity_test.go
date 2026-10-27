@@ -46,10 +46,14 @@ type rawUpstream struct {
 	startHook func(byte)
 	decoder   transport.EbusEscapeDecoder
 	unescaped bool
+	// closeCh is closed by Close; a Write still in progress at that point
+	// fails, as a transport write does when its connection is closed.
+	closeCh   chan struct{}
+	closeOnce sync.Once
 }
 
 func newRawUpstream() *rawUpstream {
-	return &rawUpstream{steps: make(chan rawStep, 1024), unescaped: true}
+	return &rawUpstream{steps: make(chan rawStep, 1024), unescaped: true, closeCh: make(chan struct{})}
 }
 
 func (u *rawUpstream) ReadEventWithRawSymbol() (transport.StreamEvent, byte, bool, error) {
@@ -75,10 +79,18 @@ func (u *rawUpstream) Write(p []byte) (int, error) {
 			hook(b)
 		}
 	}
+	select {
+	case <-u.closeCh:
+		return 0, net.ErrClosed
+	default:
+	}
 	return len(p), nil
 }
 
-func (u *rawUpstream) Close() error { return nil }
+func (u *rawUpstream) Close() error {
+	u.closeOnce.Do(func() { close(u.closeCh) })
+	return nil
+}
 
 func (u *rawUpstream) RequestStart(initiator byte) error {
 	u.mu.Lock()
@@ -1197,4 +1209,79 @@ func TestRawContinuity_LifecycleFenceDoesNotWaitForStalledCommit(t *testing.T) {
 	}
 	close(release)
 	<-done
+}
+
+// TestRawContinuity_EnforceDroppedAAStillDecidesThePendingSuffix: in enforce
+// mode the v8 filter drops the raw-only 0xAA observed right after the lead's
+// echo of a gateway escape pair. The verifier still sees the true wire order
+// A9 AA 00, so the pair fails as a malformed echo and the later 00 never
+// acknowledges it; sessions keep the filtered view (no AA).
+func TestRawContinuity_EnforceDroppedAAStillDecidesThePendingSuffix(t *testing.T) {
+	mux, up, _ := newRawContinuityMuxMode(t, v8classifier.ModeEnforce)
+	_, monitor := addRawClient(t, mux)
+	grantRawGateway(t, mux, up, 0x10)
+	monitor.expectReceived(0x10)
+	at := mux.ActiveTransport()
+
+	up.setWriteHook(func(symbol byte) {
+		if symbol == 0x00 {
+			up.wire(0xA9, protocol.SymbolSyn, 0x00)
+		}
+	})
+	dropsBefore := mux.V8Classifier().EnforceDropsAppliedTotal()
+	_, err := at.Write([]byte{protocol.SymbolEscape})
+	if !errors.Is(err, ebuserrors.ErrBusCollision) {
+		t.Fatalf("Write error = %v; want ErrBusCollision (A9 AA 00 is a malformed echo)", err)
+	}
+	monitor.expectReceived(0xA9, 0x00)
+	if got := mux.V8Classifier().EnforceDropsAppliedTotal() - dropsBefore; got != 1 {
+		t.Fatalf("enforce drops = %d; want 1 (the AA between lead and suffix)", got)
+	}
+}
+
+// TestRawContinuity_CloseUnblocksStalledSuffixWrite calls the real Close
+// while a gateway escape suffix write is stalled inside its ownership
+// commit. Close must close the upstream first, which fails the stalled
+// write, and return promptly instead of waiting behind the commit.
+func TestRawContinuity_CloseUnblocksStalledSuffixWrite(t *testing.T) {
+	mux, up, _ := newRawContinuityMux(t)
+	grantRawGateway(t, mux, up, 0x10)
+	at := mux.ActiveTransport()
+
+	stalled := make(chan struct{})
+	up.setWriteHook(func(symbol byte) {
+		if symbol == 0x00 {
+			close(stalled)
+			<-up.closeCh // the write stays in flight until the upstream closes
+		}
+	})
+	done := make(chan error, 1)
+	go func() {
+		_, err := at.Write([]byte{protocol.SymbolEscape})
+		done <- err
+	}()
+	select {
+	case <-stalled:
+	case <-time.After(rawTestBound):
+		t.Fatal("suffix write did not start")
+	}
+	closed := make(chan error, 1)
+	go func() { closed <- mux.Close() }()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(rawTestBound):
+		_ = up.Close() // unblock the stalled write so the fixture can exit
+		t.Fatal("Close blocked behind a stalled escape suffix write")
+	}
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("stalled suffix write reported success after Close")
+		}
+	case <-time.After(rawTestBound):
+		t.Fatal("stalled suffix write did not fail after Close")
+	}
 }

@@ -208,6 +208,9 @@ func (m *Mux) armGatewayLeadWait(lead byte) *gatewayLeadWait {
 // lifecycle boundary (adapter reset, reconnect, close). A retired lead can
 // never be acknowledged by a symbol observed after the boundary.
 func (m *Mux) retireGatewayLeadWait(err error) {
+	// The epoch fences a write whose wait was already resolved by the lead
+	// echo: the boundary still has to stop that write's suffix.
+	m.gatewayLeadEpoch.Add(1)
 	if w := m.gatewayLeadWait.Swap(nil); w != nil {
 		w.retired.Store(true)
 		w.result <- gatewayLeadOutcome{err: err}
@@ -287,6 +290,7 @@ func (m *Mux) writeSymbols(tr transport.RawTransport, symbols []byte) error {
 	if upstreamSuppliesRawSymbols(tr) {
 		wait = m.armGatewayLeadWait(lead)
 	}
+	epoch := m.gatewayLeadEpoch.Load()
 	if _, err := tr.Write([]byte{lead}); err != nil {
 		if wait != nil {
 			m.dropGatewayLeadWait(wait)
@@ -295,7 +299,7 @@ func (m *Mux) writeSymbols(tr transport.RawTransport, symbols []byte) error {
 	}
 	// A lifecycle boundary between the two writes retires the wait and
 	// releases ownership; the suffix must not be transmitted after it.
-	if wait != nil && wait.retired.Load() {
+	if wait != nil && (wait.retired.Load() || m.gatewayLeadEpoch.Load() != epoch) {
 		return errGatewayLeadEcho{err: fmt.Errorf("adaptermux: %w", ebuserrors.ErrAdapterReset)}
 	}
 	if _, err := tr.Write([]byte{suffix}); err != nil {

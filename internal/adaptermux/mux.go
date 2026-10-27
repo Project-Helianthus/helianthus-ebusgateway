@@ -661,6 +661,8 @@ type Mux struct {
 	// write path, resolved once by the readLoop's raw-symbol handling or
 	// retired at reset/reconnect/close. See raw_symbols.go.
 	gatewayLeadWait atomic.Pointer[gatewayLeadWait]
+	// gatewayLeadEpoch counts lifecycle boundaries that retire lead waits.
+	gatewayLeadEpoch atomic.Uint64
 
 	// externalAbandonAfter schedules the external-session abandon
 	// watchdog (F-34/F-35). It defaults to time.AfterFunc; it is a field

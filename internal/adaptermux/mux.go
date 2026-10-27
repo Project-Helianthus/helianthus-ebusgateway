@@ -1929,6 +1929,13 @@ func (m *Mux) readLoop() {
 			if m.v8.Observe(event, time.Now()) {
 				continue
 			}
+		} else if m.v8 != nil && item.hasRaw && item.rawSymbol == protocol.SymbolSyn {
+			// A raw-only 0xAA (absorbed inside a pending escape pair) has
+			// no logical item but is still a wire SYN the AA-injection
+			// filter must judge; a drop withholds it from sessions.
+			if m.v8.Observe(transport.StreamEvent{Kind: transport.StreamEventWireSyn, Byte: protocol.SymbolSyn}, time.Now()) {
+				continue
+			}
 		}
 
 		// Issue #1003: raw view first. External sessions receive the

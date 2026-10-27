@@ -934,6 +934,26 @@ func TestRawContinuity_EnforceDropRemovesRawSymbolToo(t *testing.T) {
 	}
 }
 
+// TestRawContinuity_EnforceDropsAbsorbedAAInsidePendingPair: a raw-only 0xAA
+// observed while an escape lead is pending has no logical item; in enforce
+// mode the AA-injection filter still withholds it from sessions.
+func TestRawContinuity_EnforceDropsAbsorbedAAInsidePendingPair(t *testing.T) {
+	mux, up, _ := newRawContinuityMuxMode(t, v8classifier.ModeEnforce)
+	_, monitor := addRawClient(t, mux)
+
+	up.steps <- rawStep{ev: transport.StreamEvent{Kind: transport.StreamEventFailed, Data: 0x71}}
+	monitor.expectReceived(0x71)
+
+	up.wire(0xA9)
+	monitor.expectReceived(0xA9)
+	up.steps <- rawStep{symbol: protocol.SymbolSyn, hasSymbol: true}
+	up.wire(0x10)
+	monitor.expectReceived(0x10)
+	if got := mux.V8Classifier().EnforceDropsAppliedTotal(); got != 1 {
+		t.Fatalf("EnforceDropsAppliedTotal = %d; want 1", got)
+	}
+}
+
 // TestSessionPacer_LongFormReceivedReservesOneSlot drives writeFrame: after
 // one long-form RECEIVED frame (two ENH bytes, one wire symbol) the pacer's
 // last reserved slot is that frame's own emit time. Reserving a slot per ENH

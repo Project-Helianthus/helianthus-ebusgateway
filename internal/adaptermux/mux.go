@@ -4364,15 +4364,18 @@ func (m *Mux) completeArbitrationGrant(sessionID uint64, initiator byte, notify 
 	// immediately after grant, so no abandon scenario exists.
 	startedQueued := false
 	if sessionID != gatewaySessionID {
+		// The enqueue happens under sessionsMu, the lock every symbol
+		// delivery to sessions takes, so on the blocking StartArbitration
+		// path (grant observed off the readLoop) STARTED is never
+		// interleaved with a symbol delivery in progress.
 		m.sessionsMu.Lock()
-		sess := m.sessions[sessionID]
-		m.sessionsMu.Unlock()
-		if sess != nil {
+		if sess := m.sessions[sessionID]; sess != nil {
 			sess.bytesSentSinceGrant.Store(0)
 			grantGen := sess.grantGeneration.Add(1)
 			sess.deliverStartedForGrant(initiator, grantGen)
 			startedQueued = true
 		}
+		m.sessionsMu.Unlock()
 	}
 
 	// F-18: per-session echo tracker removed; gateway-side

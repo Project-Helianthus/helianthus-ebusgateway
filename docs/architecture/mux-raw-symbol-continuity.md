@@ -51,8 +51,9 @@ that gap exceeds the upstream decoder's 32 ms escape-pending cap the logical
 view splits the pair (the raw view stays exact), which needs a decision on
 that cap; the public native ENH document
 ([`protocols/enh.md`](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/protocols/enh.md))
-still assigns SEND escape encoding to the adapter, which contradicts the
-transparent single-symbol SEND this slice relies on and must be reconciled;
+assigns TX escaping to the host and defines each SEND as one physical wire
+byte, which is the transparent single-symbol SEND this slice relies on, so no
+escape encoding is expected from the adapter;
 bounded-backpressure loss reporting, native timing, the close/replacement
 race (F01/J21) and independent review remain outside this slice.
 

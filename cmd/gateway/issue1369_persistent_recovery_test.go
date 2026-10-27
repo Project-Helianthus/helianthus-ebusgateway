@@ -177,6 +177,20 @@ func (clock *issue1369Clock) waitBlocked(t *testing.T, attempt int, logs *issue1
 	}
 }
 
+// waitReleased waits until n retry waits ended because their context was
+// canceled. The retry goroutine counts a canceled wait after the cancel, so
+// the count is not ordered before the state the cancel leads to.
+func (clock *issue1369Clock) waitReleased(t *testing.T, n int32, logs *issue1367Logs) {
+	t.Helper()
+	deadline := time.Now().Add(rctlBound)
+	for clock.released.Load() != n {
+		if time.Now().After(deadline) {
+			t.Fatalf("canceled retry waits = %d; want %d; recovery log:\n%s", clock.released.Load(), n, issue1367RecoveryLines(logs.text()))
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // withIssue1369Seams narrows the AM27 threshold, keeps the production retry
 // policy and injects clock.
 func withIssue1369Seams(t *testing.T, clock *issue1369Clock) {

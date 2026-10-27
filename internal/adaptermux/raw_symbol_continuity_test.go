@@ -611,6 +611,31 @@ func TestRawContinuity_GatewayLeadRetiredByAdapterReset(t *testing.T) {
 	}
 }
 
+// TestRawContinuity_ResetBetweenLeadAndSuffixSuppressesSuffix: a RESETTED
+// boundary processed after the lead write retires the wait and releases
+// ownership, so the suffix is never transmitted.
+func TestRawContinuity_ResetBetweenLeadAndSuffixSuppressesSuffix(t *testing.T) {
+	mux, up, _ := newRawContinuityMux(t)
+	grantRawGateway(t, mux, up, 0x10)
+	at := mux.ActiveTransport()
+
+	up.setWriteHook(func(symbol byte) {
+		if symbol == protocol.SymbolEscape {
+			mux.handleReset()
+		}
+	})
+	_, err := at.Write([]byte{protocol.SymbolEscape})
+	if !errors.Is(err, ebuserrors.ErrAdapterReset) {
+		t.Fatalf("Write error = %v; want ErrAdapterReset", err)
+	}
+	up.mu.Lock()
+	writes := append([]byte(nil), up.writes...)
+	up.mu.Unlock()
+	if len(writes) == 0 || writes[len(writes)-1] != protocol.SymbolEscape {
+		t.Fatalf("upstream writes = % X; want the lead as the last symbol and no suffix", writes)
+	}
+}
+
 // TestRawContinuity_GatewayLeadRetiredByClose: closing the mux fails an
 // outstanding lead wait instead of leaving the write blocked.
 func TestRawContinuity_GatewayLeadRetiredByClose(t *testing.T) {

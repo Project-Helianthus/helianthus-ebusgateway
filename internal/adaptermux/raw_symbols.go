@@ -3,6 +3,7 @@ package adaptermux
 import (
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
@@ -183,8 +184,9 @@ const gatewayLeadEchoTimeout = activeChanTimeout
 // escape lead of a gateway write. It is published through Mux.gatewayLeadWait
 // (an atomic pointer); whoever swaps it out resolves it, exactly once.
 type gatewayLeadWait struct {
-	lead   byte
-	result chan gatewayLeadOutcome // capacity 1, resolved at most once
+	lead    byte
+	result  chan gatewayLeadOutcome // capacity 1, resolved at most once
+	retired atomic.Bool             // set by a lifecycle boundary before it resolves result
 }
 
 type gatewayLeadOutcome struct {
@@ -207,6 +209,7 @@ func (m *Mux) armGatewayLeadWait(lead byte) *gatewayLeadWait {
 // never be acknowledged by a symbol observed after the boundary.
 func (m *Mux) retireGatewayLeadWait(err error) {
 	if w := m.gatewayLeadWait.Swap(nil); w != nil {
+		w.retired.Store(true)
 		w.result <- gatewayLeadOutcome{err: err}
 	}
 }
@@ -289,6 +292,11 @@ func (m *Mux) writeSymbols(tr transport.RawTransport, symbols []byte) error {
 			m.dropGatewayLeadWait(wait)
 		}
 		return err
+	}
+	// A lifecycle boundary between the two writes retires the wait and
+	// releases ownership; the suffix must not be transmitted after it.
+	if wait != nil && wait.retired.Load() {
+		return errGatewayLeadEcho{err: fmt.Errorf("adaptermux: %w", ebuserrors.ErrAdapterReset)}
 	}
 	if _, err := tr.Write([]byte{suffix}); err != nil {
 		if wait != nil {

@@ -6,21 +6,21 @@ following the operator steer of 2026-10-27 recorded on that issue. This page
 defines the schema of the matrix that replaces the 88-case transport matrix. It
 is not in force, claims no result and changes no code: until the new matrix has
 run once on hardware, the 88-case `TRANSPORT_MATRIX_REPORT` check, the
-AD01..AD12 block of [scripts/transport_gate.sh](../scripts/transport_gate.sh)
+AD01..AD12 block of [scripts/transport_gate.sh](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/scripts/transport_gate.sh)
 and the owner override citing
 [#1099](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1099)
 remain the gate. Companion pages:
 
-- [M7-adaptermux-conformance-cell-map.md](M7-adaptermux-conformance-cell-map.md):
+- [M7-adaptermux-conformance-cell-map.md](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/matrix/M7-adaptermux-conformance-cell-map.md):
   where each of T01–T88 goes (deliverable a).
-- [transport-gate-policy-v2.md](../docs/testing/transport-gate-policy-v2.md):
+- [transport-gate-policy-v2.md](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/docs/testing/transport-gate-policy-v2.md):
   what the gate, the ship scripts and the override point at once this matrix has
   run (deliverable d).
 
 ## 1. Shape of the product
 
 The proxy is deprecated and its multiplexing role is carried by the AdapterMux
-([internal/adaptermux](../internal/adaptermux/)). The matrix is one product with
+([internal/adaptermux](https://github.com/Project-Helianthus/helianthus-ebusgateway/tree/main/internal/adaptermux)). The matrix is one product with
 one report:
 
 - a **grid** of axis 1 (southbound transport: where the symbol stream comes
@@ -44,8 +44,8 @@ for. Hardware is needed once per transport, never once per permutation (§8).
 | `UARTENH` | UART-direct, ENH-over-serial | ENH framing at 9600 baud on a serial line (`protocols/ens.md`) | no | reserved: blocked-infra (BI-02) |
 | `UARTRAW` | UART-direct, RAW | raw eBUS symbols from a line interface; no public native serial contract exists yet (Unknown) | no | reserved: blocked-infra (BI-02) |
 
-"Mux today" is read from [internal/adaptermux/mux.go](../internal/adaptermux/mux.go)
-and [cmd/gateway/gateway_adapter_direct.go](../cmd/gateway/gateway_adapter_direct.go).
+"Mux today" is read from [internal/adaptermux/mux.go](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/internal/adaptermux/mux.go)
+and [cmd/gateway/gateway_adapter_direct.go](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/gateway_adapter_direct.go).
 The UART-direct rows are reserved now and stay blocked-infra until the hardware
 exists, as the steer requires.
 
@@ -61,7 +61,7 @@ What changes between rows, and therefore why each invariant runs on each row:
 
 Twenty-four invariants: AD01–AD10 and AD12 (AD11 is retired, §6), PX01–PX12,
 and CX01. AD assertions are quoted from the AD01..AD12 block of
-[scripts/transport_gate.sh](../scripts/transport_gate.sh); their public
+[scripts/transport_gate.sh](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/scripts/transport_gate.sh); their public
 contracts and offline candidates are indexed in `helianthus-docs-ebus`
 (`development/ad01-ad12-evidence-index.md`). The multiplexer architecture page
 in that repository numbers its design decisions AD01–AD12 as well; those are a
@@ -144,12 +144,12 @@ through one of these):
 
 | Category | Verdict | Cells | Exact reason string | Origin |
 |---|---|---|---|---|
-| XF-01 | `xfail` | `UDP-CX01`, `TCP-CX01`, once they leave PL-01 | `southbound plain udp/tcp under dual-client load reports no signal (carried from proxy dual-client)` | the 30 carried dual-client expected failures (cell map) |
+| XF-01 | `xfail` | `TCP-CX01` only, once it leaves PL-01; `UDP-CX01` must pass (the T65/T66 baseline) | `southbound plain tcp under dual-client load reports no signal (carried from proxy dual-client)` | the 16 carried TCP dual-client expected failures (cell map) |
 | BI-01 | `blocked-infra` | any executable cell | `adapter_no_signal` | unchanged from the current runner and gate |
 | BI-02 | `blocked-infra` | every `UARTENS-*`, `UARTENH-*`, `UARTRAW-*` cell, without execution | `uart_direct_hardware_absent` | steer: UART-direct reserved |
 | PL-01 | `planned` | every `UDP-*` and `TCP-*` grid cell | `mux_southbound_plain_not_implemented` | the mux accepts only `enh`/`ens` upstream; no open ticket implements plain southbound framing |
 | PL-02 | `planned` | every `*-PX09`, `*-PX10`, `*-PX11` cell | `mux_local_responder_not_implemented` | #991 (deferred) |
-| PL-03 | `planned` | `ENS-AD05`, `ENH-AD05`, `ENS-AD08`, `ENH-AD08`, `ENS-AD12`, `ENH-AD12` | `mux_raw_symbol_forwarding_not_implemented` | the raw-symbol contract is settled but not implemented: ENH/ENS decoding still collapses escape pairs before the mux sees them, so raw-pair delivery to an external session (AD05), per-symbol echo of raw symbols (AD08) and the wire-symbol assertions (AD12) cannot hold ([mux-raw-symbol-continuity.md](../docs/architecture/mux-raw-symbol-continuity.md)); the cells leave PL-03 when the raw-forwarding slice of #1003 lands and the inventory version is bumped |
+| PL-03 | `planned` | `ENS-AD05`, `ENH-AD05`, `ENS-AD08`, `ENH-AD08`, `ENS-AD12`, `ENH-AD12` | `mux_raw_symbol_forwarding_not_implemented` | the raw-symbol contract is settled but not implemented: ENH/ENS decoding still collapses escape pairs before the mux sees them, so raw-pair delivery to an external session (AD05), per-symbol echo of raw symbols (AD08) and the wire-symbol assertions (AD12) cannot hold ([mux-raw-symbol-continuity.md](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/docs/architecture/mux-raw-symbol-continuity.md)); the cells leave PL-03 when the raw-forwarding slice of #1003 lands and the inventory version is bumped |
 
 Precedence for the reported reason when categories overlap: BI-02, then PL-01,
 then PL-02, then PL-03. Old expected-failure reasons that are not carried (T07/T08, and
@@ -204,7 +204,7 @@ architecture text "ENH protocol delivers logical bytes (no escape sequences)"
 contradicts the native ENH receive path, as the evidence index already records.
 The settled contract
 ([#1003](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1003),
-[mux-raw-symbol-continuity.md](../docs/architecture/mux-raw-symbol-continuity.md)):
+[mux-raw-symbol-continuity.md](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/docs/architecture/mux-raw-symbol-continuity.md)):
 
 - raw wire symbols at the mux boundary: each escape lead and suffix, and each
   unescaped `0xAA`, is its own symbol, delivered immediately and in order to
@@ -234,8 +234,8 @@ pairing note in `development/ad10-migration-equivalence.md`.
 
 ## 7. matrix-runner case naming for 0.7 (proposal, not implemented)
 
-Current scheme, read from [internal/matrix](../internal/matrix/) and
-[cmd/matrix-runner](../cmd/matrix-runner/): case IDs are an upper-case prefix
+Current scheme, read from [internal/matrix](https://github.com/Project-Helianthus/helianthus-ebusgateway/tree/main/internal/matrix) and
+[cmd/matrix-runner](https://github.com/Project-Helianthus/helianthus-ebusgateway/tree/main/cmd/matrix-runner): case IDs are an upper-case prefix
 and two digits (`T01`–`T88`, `P01`–`P06`); suites are `full88` (default) and
 `passive`; expected-failure keys are upper-cased (`normalizeExpectedFailures`);
 each case writes `<output-dir>/<case_id>/configs`, `logs/runner.log` and
@@ -270,16 +270,17 @@ Proposal for the implementation ticket:
   `session_id`, `candidate` (opaque association label, no source coordinates).
 - **Environment** keeps the existing `MATRIX_*` variables and adds
   `MATRIX_SOUTHBOUND_TRANSPORT`, `MATRIX_INVARIANT`, `MATRIX_COMPOSITION`,
-  `MATRIX_NORTHBOUND_CLIENT`.
-- **Aggregation of per-setup runs** `--session-id <label>` and `--candidate <label>` are required with `--transports`; all filtered invocations of one session share one `--output-dir`. Each invocation writes only its own case directories and then rebuilds `index.json` from every `verdict.json` in the directory whose `session_id` and `candidate` match, so the last invocation yields the full inventory; a verdict carrying a different `session_id` or `candidate`, or a second `hardware_setup` for one transport, makes the rebuild fail instead of merging. A case re-run replaces its own directory. Cells not yet run are absent from the index, so the gate's exact-inventory rule rejects a partial aggregate.
+  `MATRIX_NORTHBOUND_CLIENT`, `MATRIX_HARDWARE_SETUP`.
+- **Aggregation of per-setup runs** `--session-id <label>`, `--candidate <label>`, `--target <label>` and `--hardware-setup <label>` are required with `--transports` (the setup label is opaque, must be non-empty, and applies to every cell of the selected transports, `EBUSD-ES01` included when it runs with the ENH setup; an empty label is rejected at start); all filtered invocations of one session share one `--output-dir`. Each invocation writes only its own case directories and then rebuilds `index.json` from every `verdict.json` in the directory whose `session_id` and `candidate` match, so the last invocation yields the full inventory; a verdict carrying a different `session_id`, `candidate` or `target`, or a second `hardware_setup` for one transport, makes the rebuild fail instead of merging. A case re-run replaces its own directory. Cells not yet run are absent from the index, so the gate's exact-inventory rule rejects a partial aggregate.
 - **Flags** `--transports ENS,ENH` selects the cells of one hardware setup;
   `--external-client ebusd|vrc-explorer` selects the CX01 client; the
   `--start-proxy`/`--stop-proxy` commands are not used by `adaptermux-v2`;
   `--start-ebusd`/`--stop-ebusd` remain for the external client.
 - **Reserved cells** UART cells are written with outcome `blocked-infra` and
   `infra_reason = uart_direct_hardware_absent` without executing commands;
-  PL-01 and PL-02 cells are written with outcome `planned` and their
-  `planned_reason`. This is new: today `planned` comes only from a dry run.
+  PL-01, PL-02 and PL-03 cells are written with outcome `planned` and their
+  `planned_reason`, without executing commands (PL-03 cells included: they never
+  run against the missing raw forwarding, and they stay in the 173-cell inventory). This is new: today `planned` comes only from a dry run.
 - **Default expected failures** move from `defaultExpectedFailure` to an
   explicit inventory table for the suite (XF-01 only).
 

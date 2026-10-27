@@ -5,25 +5,25 @@ Status: planning deliverable (a) of
 written against the operator steer of 2026-10-27 recorded on that issue. It
 maps every case of the current 88-case transport matrix to the conformance
 matrix v2 defined in
-[M7-adaptermux-conformance-matrix.md](M7-adaptermux-conformance-matrix.md).
+[M7-adaptermux-conformance-matrix.md](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/matrix/M7-adaptermux-conformance-matrix.md).
 No case below has a result, and nothing here retires a case from the gate in
 force: until the new matrix has run once on hardware, the 88-case
 `TRANSPORT_MATRIX_REPORT` check in
-[scripts/transport_gate.sh](../scripts/transport_gate.sh), its AD01..AD12 block
+[scripts/transport_gate.sh](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/scripts/transport_gate.sh), its AD01..AD12 block
 and the owner override that cites
 [#1099](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1099)
 stay as they are. The policy that later re-points them is
-[transport-gate-policy-v2.md](../docs/testing/transport-gate-policy-v2.md).
+[transport-gate-policy-v2.md](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/docs/testing/transport-gate-policy-v2.md).
 
 ## Source of the old cases
 
 The 88 cases are generated, not hand-listed. Their identity and order come from
-`GenerateTopologyCases` in [internal/matrix/topology.go](../internal/matrix/topology.go)
+`GenerateTopologyCases` in [internal/matrix/topology.go](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/internal/matrix/topology.go)
 (transports in the order ENS, ENH, UDP-plain, TCP-plain; `T%02d` numbering), and
 their default expectation from `defaultExpectedFailure` in
-[internal/matrix/runner.go](../internal/matrix/runner.go), asserted by
+[internal/matrix/runner.go](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/internal/matrix/runner.go), asserted by
 `TestDefaultExpectedFailureCoverage` in
-[internal/matrix/runner_test.go](../internal/matrix/runner_test.go): 40 cases
+[internal/matrix/runner_test.go](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/internal/matrix/runner_test.go): 40 cases
 default to an expected failure (T07, T08 and 38 dual-client cases). The public
 runbook in `helianthus-docs-ebus` (`development/smoke-matrix.md`) still states
 42 cases and a T06..T08 range; the code is authoritative and that runbook text
@@ -40,22 +40,22 @@ is a known discrepancy for its own follow-up.
 
 1. **ebusd as the configured transport is still supported**, so the single
    ebusd-tcp compatibility cell is kept. Evidence in this repository:
-   `TransportEbusdTCP` (`"ebusd-tcp"`) in [config.go](../config.go); the
-   `-transport` flag in [cmd/gateway/gateway_cli.go](../cmd/gateway/gateway_cli.go)
+   `TransportEbusdTCP` (`"ebusd-tcp"`) in [config.go](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/config.go); the
+   `-transport` flag in [cmd/gateway/gateway_cli.go](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/gateway_cli.go)
    accepts `enh, ens, udp-plain, tcp-plain, or ebusd-tcp`; ebusd-tcp timeout
-   clamping in [gateway.go](../gateway.go); the ebusd-tcp scan preload in
-   [cmd/gateway/startup_scan.go](../cmd/gateway/startup_scan.go); and the fixed
+   clamping in [gateway.go](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/gateway.go); the ebusd-tcp scan preload in
+   [cmd/gateway/startup_scan.go](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/startup_scan.go); and the fixed
    ebusd-tcp row of the responder capability in
-   [cmd/gateway/gateway_responder_capability.go](../cmd/gateway/gateway_responder_capability.go).
-   [AGENTS.md](../AGENTS.md) does not withdraw it; its gate rule names the
+   [cmd/gateway/gateway_responder_capability.go](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/gateway_responder_capability.go).
+   [AGENTS.md](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/AGENTS.md) does not withdraw it; its gate rule names the
    T01..T88 result, which includes T05–T08. In ebusd-tcp mode the AdapterMux is
    not in the path (`wireAdapterDirectWithConnectionLost` in
-   [cmd/gateway/gateway_adapter_direct.go](../cmd/gateway/gateway_adapter_direct.go)
+   [cmd/gateway/gateway_adapter_direct.go](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/gateway_adapter_direct.go)
    composes the mux only for `adapter-direct` and `adapter-direct-ens`), so the
    kept cell sits in the compatibility block, outside the two axes.
 2. **The non-mux direct transports are still supported.** `enh`, `ens`,
    `udp-plain` and `tcp-plain` without the `adapter-direct://` scheme do not
-   compose the mux, and [internal/adaptermux/mux.go](../internal/adaptermux/mux.go)
+   compose the mux, and [internal/adaptermux/mux.go](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/internal/adaptermux/mux.go)
    accepts only the `enh` and `ens` upstream protocols. T01–T04 therefore keep
    their subject and are kept as compatibility cells. If a later decision routes
    every configured transport through the mux, these four cells become absorbed
@@ -104,7 +104,7 @@ Reason codes used in the table:
 
 Expected-failure column: `XF-01` marks an old default expected failure whose
 cause (southbound plain UDP/TCP under dual-client load) survives and is carried
-to the CX01 cell of that transport as the expected-failure category XF-01 of
+to the CX01 cell of that transport (`TCP-CX01` only) as the expected-failure category XF-01 of
 the matrix document; "not carried" marks one whose cause leaves with the
 retired leg.
 
@@ -144,10 +144,10 @@ retired leg.
 | T30 | proxy dual-client; gateway → proxy ENS; proxy → adapter ENH; ebusd → proxy ENH | pass | retired | D1 | `ENH-CX01`, `ENH-AD05`, `ENH-AD06`, `ENH-AD07`; client leg `ENS-DS01` | — |
 | T31 | proxy dual-client; gateway → proxy ENS; proxy → adapter ENH; ebusd → proxy UDP-plain | xfail | retired | D2 | `ENH-CX01`, `ENH-AD05`, `ENH-AD06`, `ENH-AD07`; client leg `ENS-DS01`; plain listener question with #1001 | XF not carried (D2) |
 | T32 | proxy dual-client; gateway → proxy ENS; proxy → adapter ENH; ebusd → proxy TCP-plain | pass | retired | D2 | `ENH-CX01`, `ENH-AD05`, `ENH-AD06`, `ENH-AD07`; client leg `ENS-DS01`; plain listener question with #1001 | — |
-| T33 | proxy dual-client; gateway → proxy ENS; proxy → adapter UDP-plain; ebusd → proxy ENS | xfail | retired | D1 | `UDP-CX01`, `UDP-AD05`, `UDP-AD06`, `UDP-AD07`; client leg `ENS-DS01` | XF-01 → `UDP-CX01` |
-| T34 | proxy dual-client; gateway → proxy ENS; proxy → adapter UDP-plain; ebusd → proxy ENH | xfail | retired | D1 | `UDP-CX01`, `UDP-AD05`, `UDP-AD06`, `UDP-AD07`; client leg `ENS-DS01` | XF-01 → `UDP-CX01` |
-| T35 | proxy dual-client; gateway → proxy ENS; proxy → adapter UDP-plain; ebusd → proxy UDP-plain | xfail | retired | D2 | `UDP-CX01`, `UDP-AD05`, `UDP-AD06`, `UDP-AD07`; client leg `ENS-DS01`; plain listener question with #1001 | XF-01 → `UDP-CX01` |
-| T36 | proxy dual-client; gateway → proxy ENS; proxy → adapter UDP-plain; ebusd → proxy TCP-plain | xfail | retired | D2 | `UDP-CX01`, `UDP-AD05`, `UDP-AD06`, `UDP-AD07`; client leg `ENS-DS01`; plain listener question with #1001 | XF-01 → `UDP-CX01` |
+| T33 | proxy dual-client; gateway → proxy ENS; proxy → adapter UDP-plain; ebusd → proxy ENS | xfail | retired | D1 | `UDP-CX01`, `UDP-AD05`, `UDP-AD06`, `UDP-AD07`; client leg `ENS-DS01` | not carried (`UDP-CX01` keeps the T65/T66 pass baseline) |
+| T34 | proxy dual-client; gateway → proxy ENS; proxy → adapter UDP-plain; ebusd → proxy ENH | xfail | retired | D1 | `UDP-CX01`, `UDP-AD05`, `UDP-AD06`, `UDP-AD07`; client leg `ENS-DS01` | not carried (`UDP-CX01` keeps the T65/T66 pass baseline) |
+| T35 | proxy dual-client; gateway → proxy ENS; proxy → adapter UDP-plain; ebusd → proxy UDP-plain | xfail | retired | D2 | `UDP-CX01`, `UDP-AD05`, `UDP-AD06`, `UDP-AD07`; client leg `ENS-DS01`; plain listener question with #1001 | not carried (`UDP-CX01` keeps the T65/T66 pass baseline) |
+| T36 | proxy dual-client; gateway → proxy ENS; proxy → adapter UDP-plain; ebusd → proxy TCP-plain | xfail | retired | D2 | `UDP-CX01`, `UDP-AD05`, `UDP-AD06`, `UDP-AD07`; client leg `ENS-DS01`; plain listener question with #1001 | not carried (`UDP-CX01` keeps the T65/T66 pass baseline) |
 | T37 | proxy dual-client; gateway → proxy ENS; proxy → adapter TCP-plain; ebusd → proxy ENS | xfail | retired | D1 | `TCP-CX01`, `TCP-AD05`, `TCP-AD06`, `TCP-AD07`; client leg `ENS-DS01` | XF-01 → `TCP-CX01` |
 | T38 | proxy dual-client; gateway → proxy ENS; proxy → adapter TCP-plain; ebusd → proxy ENH | xfail | retired | D1 | `TCP-CX01`, `TCP-AD05`, `TCP-AD06`, `TCP-AD07`; client leg `ENS-DS01` | XF-01 → `TCP-CX01` |
 | T39 | proxy dual-client; gateway → proxy ENS; proxy → adapter TCP-plain; ebusd → proxy UDP-plain | xfail | retired | D2 | `TCP-CX01`, `TCP-AD05`, `TCP-AD06`, `TCP-AD07`; client leg `ENS-DS01`; plain listener question with #1001 | XF-01 → `TCP-CX01` |
@@ -160,10 +160,10 @@ retired leg.
 | T46 | proxy dual-client; gateway → proxy ENH; proxy → adapter ENH; ebusd → proxy ENH | pass | retired | D1 | `ENH-CX01`, `ENH-AD05`, `ENH-AD06`, `ENH-AD07`; client leg `ENH-DS01` | — |
 | T47 | proxy dual-client; gateway → proxy ENH; proxy → adapter ENH; ebusd → proxy UDP-plain | xfail | retired | D2 | `ENH-CX01`, `ENH-AD05`, `ENH-AD06`, `ENH-AD07`; client leg `ENH-DS01`; plain listener question with #1001 | XF not carried (D2) |
 | T48 | proxy dual-client; gateway → proxy ENH; proxy → adapter ENH; ebusd → proxy TCP-plain | pass | retired | D2 | `ENH-CX01`, `ENH-AD05`, `ENH-AD06`, `ENH-AD07`; client leg `ENH-DS01`; plain listener question with #1001 | — |
-| T49 | proxy dual-client; gateway → proxy ENH; proxy → adapter UDP-plain; ebusd → proxy ENS | xfail | retired | D1 | `UDP-CX01`, `UDP-AD05`, `UDP-AD06`, `UDP-AD07`; client leg `ENH-DS01` | XF-01 → `UDP-CX01` |
-| T50 | proxy dual-client; gateway → proxy ENH; proxy → adapter UDP-plain; ebusd → proxy ENH | xfail | retired | D1 | `UDP-CX01`, `UDP-AD05`, `UDP-AD06`, `UDP-AD07`; client leg `ENH-DS01` | XF-01 → `UDP-CX01` |
-| T51 | proxy dual-client; gateway → proxy ENH; proxy → adapter UDP-plain; ebusd → proxy UDP-plain | xfail | retired | D2 | `UDP-CX01`, `UDP-AD05`, `UDP-AD06`, `UDP-AD07`; client leg `ENH-DS01`; plain listener question with #1001 | XF-01 → `UDP-CX01` |
-| T52 | proxy dual-client; gateway → proxy ENH; proxy → adapter UDP-plain; ebusd → proxy TCP-plain | xfail | retired | D2 | `UDP-CX01`, `UDP-AD05`, `UDP-AD06`, `UDP-AD07`; client leg `ENH-DS01`; plain listener question with #1001 | XF-01 → `UDP-CX01` |
+| T49 | proxy dual-client; gateway → proxy ENH; proxy → adapter UDP-plain; ebusd → proxy ENS | xfail | retired | D1 | `UDP-CX01`, `UDP-AD05`, `UDP-AD06`, `UDP-AD07`; client leg `ENH-DS01` | not carried (`UDP-CX01` keeps the T65/T66 pass baseline) |
+| T50 | proxy dual-client; gateway → proxy ENH; proxy → adapter UDP-plain; ebusd → proxy ENH | xfail | retired | D1 | `UDP-CX01`, `UDP-AD05`, `UDP-AD06`, `UDP-AD07`; client leg `ENH-DS01` | not carried (`UDP-CX01` keeps the T65/T66 pass baseline) |
+| T51 | proxy dual-client; gateway → proxy ENH; proxy → adapter UDP-plain; ebusd → proxy UDP-plain | xfail | retired | D2 | `UDP-CX01`, `UDP-AD05`, `UDP-AD06`, `UDP-AD07`; client leg `ENH-DS01`; plain listener question with #1001 | not carried (`UDP-CX01` keeps the T65/T66 pass baseline) |
+| T52 | proxy dual-client; gateway → proxy ENH; proxy → adapter UDP-plain; ebusd → proxy TCP-plain | xfail | retired | D2 | `UDP-CX01`, `UDP-AD05`, `UDP-AD06`, `UDP-AD07`; client leg `ENH-DS01`; plain listener question with #1001 | not carried (`UDP-CX01` keeps the T65/T66 pass baseline) |
 | T53 | proxy dual-client; gateway → proxy ENH; proxy → adapter TCP-plain; ebusd → proxy ENS | xfail | retired | D1 | `TCP-CX01`, `TCP-AD05`, `TCP-AD06`, `TCP-AD07`; client leg `ENH-DS01` | XF-01 → `TCP-CX01` |
 | T54 | proxy dual-client; gateway → proxy ENH; proxy → adapter TCP-plain; ebusd → proxy ENH | xfail | retired | D1 | `TCP-CX01`, `TCP-AD05`, `TCP-AD06`, `TCP-AD07`; client leg `ENH-DS01` | XF-01 → `TCP-CX01` |
 | T55 | proxy dual-client; gateway → proxy ENH; proxy → adapter TCP-plain; ebusd → proxy UDP-plain | xfail | retired | D2 | `TCP-CX01`, `TCP-AD05`, `TCP-AD06`, `TCP-AD07`; client leg `ENH-DS01`; plain listener question with #1001 | XF-01 → `TCP-CX01` |
@@ -178,8 +178,8 @@ retired leg.
 | T64 | proxy dual-client; gateway → proxy UDP-plain; proxy → adapter ENH; ebusd → proxy TCP-plain | pass | retired | D2 | `ENH-CX01`, `ENH-AD05`, `ENH-AD06`, `ENH-AD07`; client leg `UDP-DS01`; plain listener question with #1001 | — |
 | T65 | proxy dual-client; gateway → proxy UDP-plain; proxy → adapter UDP-plain; ebusd → proxy ENS | pass | retired | D1 | `UDP-CX01`, `UDP-AD05`, `UDP-AD06`, `UDP-AD07`; client leg `UDP-DS01` | — |
 | T66 | proxy dual-client; gateway → proxy UDP-plain; proxy → adapter UDP-plain; ebusd → proxy ENH | pass | retired | D1 | `UDP-CX01`, `UDP-AD05`, `UDP-AD06`, `UDP-AD07`; client leg `UDP-DS01` | — |
-| T67 | proxy dual-client; gateway → proxy UDP-plain; proxy → adapter UDP-plain; ebusd → proxy UDP-plain | xfail | retired | D2 | `UDP-CX01`, `UDP-AD05`, `UDP-AD06`, `UDP-AD07`; client leg `UDP-DS01`; plain listener question with #1001 | XF-01 → `UDP-CX01` |
-| T68 | proxy dual-client; gateway → proxy UDP-plain; proxy → adapter UDP-plain; ebusd → proxy TCP-plain | xfail | retired | D2 | `UDP-CX01`, `UDP-AD05`, `UDP-AD06`, `UDP-AD07`; client leg `UDP-DS01`; plain listener question with #1001 | XF-01 → `UDP-CX01` |
+| T67 | proxy dual-client; gateway → proxy UDP-plain; proxy → adapter UDP-plain; ebusd → proxy UDP-plain | xfail | retired | D2 | `UDP-CX01`, `UDP-AD05`, `UDP-AD06`, `UDP-AD07`; client leg `UDP-DS01`; plain listener question with #1001 | not carried (`UDP-CX01` keeps the T65/T66 pass baseline) |
+| T68 | proxy dual-client; gateway → proxy UDP-plain; proxy → adapter UDP-plain; ebusd → proxy TCP-plain | xfail | retired | D2 | `UDP-CX01`, `UDP-AD05`, `UDP-AD06`, `UDP-AD07`; client leg `UDP-DS01`; plain listener question with #1001 | not carried (`UDP-CX01` keeps the T65/T66 pass baseline) |
 | T69 | proxy dual-client; gateway → proxy UDP-plain; proxy → adapter TCP-plain; ebusd → proxy ENS | xfail | retired | D1 | `TCP-CX01`, `TCP-AD05`, `TCP-AD06`, `TCP-AD07`; client leg `UDP-DS01` | XF-01 → `TCP-CX01` |
 | T70 | proxy dual-client; gateway → proxy UDP-plain; proxy → adapter TCP-plain; ebusd → proxy ENH | xfail | retired | D1 | `TCP-CX01`, `TCP-AD05`, `TCP-AD06`, `TCP-AD07`; client leg `UDP-DS01` | XF-01 → `TCP-CX01` |
 | T71 | proxy dual-client; gateway → proxy UDP-plain; proxy → adapter TCP-plain; ebusd → proxy UDP-plain | xfail | retired | D2 | `TCP-CX01`, `TCP-AD05`, `TCP-AD06`, `TCP-AD07`; client leg `UDP-DS01`; plain listener question with #1001 | XF-01 → `TCP-CX01` |
@@ -192,10 +192,10 @@ retired leg.
 | T78 | proxy dual-client; gateway → proxy TCP-plain; proxy → adapter ENH; ebusd → proxy ENH | pass | retired | D1 | `ENH-CX01`, `ENH-AD05`, `ENH-AD06`, `ENH-AD07`; client leg `TCP-DS01` | — |
 | T79 | proxy dual-client; gateway → proxy TCP-plain; proxy → adapter ENH; ebusd → proxy UDP-plain | xfail | retired | D2 | `ENH-CX01`, `ENH-AD05`, `ENH-AD06`, `ENH-AD07`; client leg `TCP-DS01`; plain listener question with #1001 | XF not carried (D2) |
 | T80 | proxy dual-client; gateway → proxy TCP-plain; proxy → adapter ENH; ebusd → proxy TCP-plain | pass | retired | D2 | `ENH-CX01`, `ENH-AD05`, `ENH-AD06`, `ENH-AD07`; client leg `TCP-DS01`; plain listener question with #1001 | — |
-| T81 | proxy dual-client; gateway → proxy TCP-plain; proxy → adapter UDP-plain; ebusd → proxy ENS | xfail | retired | D1 | `UDP-CX01`, `UDP-AD05`, `UDP-AD06`, `UDP-AD07`; client leg `TCP-DS01` | XF-01 → `UDP-CX01` |
-| T82 | proxy dual-client; gateway → proxy TCP-plain; proxy → adapter UDP-plain; ebusd → proxy ENH | xfail | retired | D1 | `UDP-CX01`, `UDP-AD05`, `UDP-AD06`, `UDP-AD07`; client leg `TCP-DS01` | XF-01 → `UDP-CX01` |
-| T83 | proxy dual-client; gateway → proxy TCP-plain; proxy → adapter UDP-plain; ebusd → proxy UDP-plain | xfail | retired | D2 | `UDP-CX01`, `UDP-AD05`, `UDP-AD06`, `UDP-AD07`; client leg `TCP-DS01`; plain listener question with #1001 | XF-01 → `UDP-CX01` |
-| T84 | proxy dual-client; gateway → proxy TCP-plain; proxy → adapter UDP-plain; ebusd → proxy TCP-plain | xfail | retired | D2 | `UDP-CX01`, `UDP-AD05`, `UDP-AD06`, `UDP-AD07`; client leg `TCP-DS01`; plain listener question with #1001 | XF-01 → `UDP-CX01` |
+| T81 | proxy dual-client; gateway → proxy TCP-plain; proxy → adapter UDP-plain; ebusd → proxy ENS | xfail | retired | D1 | `UDP-CX01`, `UDP-AD05`, `UDP-AD06`, `UDP-AD07`; client leg `TCP-DS01` | not carried (`UDP-CX01` keeps the T65/T66 pass baseline) |
+| T82 | proxy dual-client; gateway → proxy TCP-plain; proxy → adapter UDP-plain; ebusd → proxy ENH | xfail | retired | D1 | `UDP-CX01`, `UDP-AD05`, `UDP-AD06`, `UDP-AD07`; client leg `TCP-DS01` | not carried (`UDP-CX01` keeps the T65/T66 pass baseline) |
+| T83 | proxy dual-client; gateway → proxy TCP-plain; proxy → adapter UDP-plain; ebusd → proxy UDP-plain | xfail | retired | D2 | `UDP-CX01`, `UDP-AD05`, `UDP-AD06`, `UDP-AD07`; client leg `TCP-DS01`; plain listener question with #1001 | not carried (`UDP-CX01` keeps the T65/T66 pass baseline) |
+| T84 | proxy dual-client; gateway → proxy TCP-plain; proxy → adapter UDP-plain; ebusd → proxy TCP-plain | xfail | retired | D2 | `UDP-CX01`, `UDP-AD05`, `UDP-AD06`, `UDP-AD07`; client leg `TCP-DS01`; plain listener question with #1001 | not carried (`UDP-CX01` keeps the T65/T66 pass baseline) |
 | T85 | proxy dual-client; gateway → proxy TCP-plain; proxy → adapter TCP-plain; ebusd → proxy ENS | xfail | retired | D1 | `TCP-CX01`, `TCP-AD05`, `TCP-AD06`, `TCP-AD07`; client leg `TCP-DS01` | XF-01 → `TCP-CX01` |
 | T86 | proxy dual-client; gateway → proxy TCP-plain; proxy → adapter TCP-plain; ebusd → proxy ENH | xfail | retired | D1 | `TCP-CX01`, `TCP-AD05`, `TCP-AD06`, `TCP-AD07`; client leg `TCP-DS01` | XF-01 → `TCP-CX01` |
 | T87 | proxy dual-client; gateway → proxy TCP-plain; proxy → adapter TCP-plain; ebusd → proxy UDP-plain | xfail | retired | D2 | `TCP-CX01`, `TCP-AD05`, `TCP-AD06`, `TCP-AD07`; client leg `TCP-DS01`; plain listener question with #1001 | XF-01 → `TCP-CX01` |
@@ -211,12 +211,13 @@ retired leg.
 | **total** | **88** | 4 + 1 + 1 + 2 + 16 + 32 + 32 = 88 |
 
 Every row names at least one new cell, so no case leaves without a keeper. Of
-the 40 old default expected failures, 30 are carried as XF-01 to `UDP-CX01` and
-`TCP-CX01`, 8 (ebusd → proxy plain UDP over an ENS or ENH southbound) leave with
-the plain-listener leg, and 2 (T07, T08) leave with ebusd's own adapter
-transport: 30 + 8 + 2 = 40. T65 and T66 were the only plain-southbound
-dual-client cases expected to pass, and only with a gateway → proxy UDP leg that
-no longer exists; `UDP-CX01` therefore starts with the carried category.
+the 40 old default expected failures, 16 are carried as XF-01 to `TCP-CX01`,
+8 (ebusd → proxy plain UDP over an ENS or ENH southbound) leave with the
+plain-listener leg, 2 (T07, T08) leave with ebusd's own adapter transport, and
+14 (UDP-plain southbound) are not carried: 16 + 8 + 2 + 14 = 40. T65 and T66
+were plain-southbound dual-client cases expected to pass with an ENS or ENH
+external client, so `UDP-CX01` keeps that pass baseline and is not in XF-01: once
+it leaves PL-01 a no-signal result there fails the gate.
 
 ## Keepers, reverse view
 
@@ -236,7 +237,7 @@ adjunct of the proxy repository whose cases move into the mux's arbitration
 ## Adjacent passive suite (outside the 88; not decided here)
 
 The passive smoke suite P01–P06 (`GeneratePassiveSmokeCases`, checked by
-[scripts/passive_smoke_gate.sh](../scripts/passive_smoke_gate.sh)) is not part
+[scripts/passive_smoke_gate.sh](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/scripts/passive_smoke_gate.sh)) is not part
 of T01–T88 and the steer does not re-point it. Three of its cases depend on the
 same proxy topologies:
 

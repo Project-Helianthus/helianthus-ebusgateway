@@ -447,7 +447,8 @@ Title: `AdapterMux southbound UDP-plain and TCP-plain framing`
 > southbound axis, but the mux accepts only `enh` and `ens` upstream, so the 48
 > `UDP-*` and `TCP-*` cells stay planned (PL-01). With the proxy, plain
 > southbound existed; dual-client runs over it were expected to fail (carried
-> as XF-01 to `UDP-CX01` and `TCP-CX01`). Scope: define and implement the
+> as XF-01 to `TCP-CX01`; `UDP-CX01` keeps the passing baseline of the old
+> UDP-plain dual-client cases with ENS and ENH clients). Scope: define and implement the
 > mux's own arbitration, echo verification, escape handling and loss boundary
 > on a raw symbol stream (the public UDP-plain contract defines none of them),
 > with deterministic tests; then the cells execute. Until then the plain

@@ -572,11 +572,30 @@ func TestRawContinuity_GatewayLeadMismatchFailsAsCollision(t *testing.T) {
 	if got := up.written(); !equalBytes(got, []byte{0xA9, 0x00}) {
 		t.Fatalf("upstream SEND symbols = % X; want A9 00", got)
 	}
+	// The failed pair hands the transaction to the bounded collision
+	// recovery lifecycle: protocol.Bus waits for two SYN symbols before it
+	// retries, so they must reach the active path, after which Retry
+	// releases the grant.
+	lifecycle := at.(transport.CollisionRecoveryLifecycle)
+	token := lifecycle.CollisionRecoveryToken()
+	if token == 0 {
+		t.Fatal("no collision recovery token after a lead-echo collision")
+	}
+	up.wire(protocol.SymbolSyn, protocol.SymbolSyn)
+	for i := 0; i < protocol.CollisionRetryResyncSYNCount; i++ {
+		if b, _ := readActive(t, at); b != protocol.SymbolSyn {
+			t.Fatalf("recovery read %d = 0x%02X; want SYN", i, b)
+		}
+	}
+	lifecycle.CompleteCollisionRecovery(token, transport.CollisionRecoveryRetry)
 	mux.stateMu.Lock()
 	active := mux.gatewayTxnActive
 	mux.stateMu.Unlock()
 	if active {
-		t.Fatal("gateway transaction still active after a failed write")
+		t.Fatal("gateway transaction still active after collision recovery completed")
+	}
+	if _, _, owned := mux.arb.owner(); owned {
+		t.Fatal("grant not released after collision recovery")
 	}
 }
 
@@ -1144,11 +1163,10 @@ func TestRawContinuity_MalformedSuffixEchoFailsThePair(t *testing.T) {
 		t.Fatalf("active write failures = %d; want exactly 1", got)
 	}
 	monitor.expectReceived(0xA9, 0xFF, 0xA9, 0x00)
-	mux.stateMu.Lock()
-	active := mux.gatewayTxnActive
-	mux.stateMu.Unlock()
-	if active {
-		t.Fatal("gateway transaction still active after the failed pair")
+	// The collision hands the transaction to the bounded recovery
+	// lifecycle (see the lead-mismatch test) rather than abandoning it.
+	if mux.ActiveTransport().(transport.CollisionRecoveryLifecycle).CollisionRecoveryToken() == 0 {
+		t.Fatal("no collision recovery token after the failed pair")
 	}
 }
 

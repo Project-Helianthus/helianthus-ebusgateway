@@ -3328,7 +3328,8 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	// Counter (synSuppressedPreEcho) preserved for backward-compat with
 	// existing diag tests; semantically it now covers a superset.
 	preFirstEchoSyn := hasOwner && ownerID == gatewaySessionID &&
-		m.gatewayTxnActive && m.activeTxn.bytesDeliveredToActive.Load() == 0
+		m.gatewayTxnActive && m.activeTxn.bytesDeliveredToActive.Load() == 0 &&
+		!collisionRecoveryActive
 	preEchoSuppressed := preFirstEchoSyn || preEchoMidFrameSuppress || collisionResyncSurplusSYN
 	if preEchoSuppressed {
 		m.activeTxn.synSuppressedPreEcho.Add(1)
@@ -5282,6 +5283,14 @@ func (m *Mux) doSendNormalized(sessionID uint64, data byte, structural bool) err
 		if errors.As(err, &leadErr) {
 			// Escape-lead verification failed: return the bus-level
 			// class (collision, timeout, reset) to protocol.Bus as is.
+			if errors.Is(leadErr.err, ebuserrors.ErrBusCollision) {
+				// protocol.Bus now waits for two SYN symbols before it
+				// retries, so the transaction must stay live to deliver
+				// them: hand it to the bounded collision recovery
+				// lifecycle instead of rolling it back.
+				sendOK = true
+				m.enterWriteCollisionRecovery()
+			}
 			return leadErr.err
 		}
 		return fmt.Errorf("%w: %v", errAdapterWrite, err)

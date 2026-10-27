@@ -107,9 +107,9 @@ the AdapterMux and its listener, and the open helianthus-vrc-explorer issues
 > - Compatibility cells on the setup of their transport: `ENS-DS01`,
 >   `ENH-DS01`, `UDP-DS01`, `TCP-DS01`, `EBUSD-ES01`.
 >
-> Projected with today's mux scope: 45 executed (`ENS`/`ENH` × AD01–AD10,
-> PX01–PX08, PX12, CX01, plus the five compatibility cells), 56 planned
-> (`UDP-*`, `TCP-*`; `*-PX09` to `*-PX11` with no local responder in the mux; `ENS-AD12`, `ENH-AD12` until raw forwarding lands),
+> Projected with today's mux scope: 41 executed (`ENS`/`ENH` × AD01–AD04, AD06,
+> AD07, AD09, AD10, PX01–PX08, PX12, CX01, plus the five compatibility cells), 60 planned
+> (`UDP-*`, `TCP-*`; `*-PX09` to `*-PX11` with no local responder in the mux; `ENS`/`ENH` × AD05, AD08, AD12 until raw forwarding lands),
 > 72 blocked-infra (UART-direct). Accepted non-pass verdicts only through the
 > categories XF-01, BI-01, BI-02, PL-01, PL-02, PL-03 of the matrix page.
 >
@@ -134,7 +134,8 @@ the AdapterMux and its listener, and the open helianthus-vrc-explorer issues
 >   planned; UART-direct reserved).
 > - Northbound side: `<T>-AD01` to `<T>-AD10` and `<T>-AD12` on all seven
 >   rows, 77 cells, of which `ENS-AD01`…`ENS-AD10`, `ENS-AD12` and
->   `ENH-AD01`…`ENH-AD10`, `ENH-AD12` (22 cells) execute in the first run.
+>   `ENH-AD01`…`ENH-AD10`, `ENH-AD12` (22 cells) are in scope; 16 execute in the first run and the
+>   six AD05, AD08 and AD12 cells stay `planned` (PL-03) until raw forwarding lands.
 > - AD10 keeps an equivalence test plan: per southbound, the replaced
 >   configuration (`<T>-DS01`, or the proxy route T13–T16 in the transition
 >   session) against the mux, compared per semantic field with MCP/GraphQL

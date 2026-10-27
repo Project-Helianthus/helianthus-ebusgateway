@@ -149,7 +149,7 @@ through one of these):
 | BI-02 | `blocked-infra` | every `UARTENS-*`, `UARTENH-*`, `UARTRAW-*` cell, without execution | `uart_direct_hardware_absent` | steer: UART-direct reserved |
 | PL-01 | `planned` | every `UDP-*` and `TCP-*` grid cell | `mux_southbound_plain_not_implemented` | the mux accepts only `enh`/`ens` upstream; no open ticket implements plain southbound framing |
 | PL-02 | `planned` | every `*-PX09`, `*-PX10`, `*-PX11` cell | `mux_local_responder_not_implemented` | #991 (deferred) |
-| PL-03 | `planned` | `ENS-AD12`, `ENH-AD12` | `mux_raw_symbol_forwarding_not_implemented` | the raw-symbol contract is settled but not implemented: ENH/ENS decoding still collapses escape pairs before the mux sees them ([mux-raw-symbol-continuity.md](../docs/architecture/mux-raw-symbol-continuity.md)); the cells leave PL-03 when the raw-forwarding slice of #1003 lands and the inventory version is bumped |
+| PL-03 | `planned` | `ENS-AD05`, `ENH-AD05`, `ENS-AD08`, `ENH-AD08`, `ENS-AD12`, `ENH-AD12` | `mux_raw_symbol_forwarding_not_implemented` | the raw-symbol contract is settled but not implemented: ENH/ENS decoding still collapses escape pairs before the mux sees them, so raw-pair delivery to an external session (AD05), per-symbol echo of raw symbols (AD08) and the wire-symbol assertions (AD12) cannot hold ([mux-raw-symbol-continuity.md](../docs/architecture/mux-raw-symbol-continuity.md)); the cells leave PL-03 when the raw-forwarding slice of #1003 lands and the inventory version is bumped |
 
 Precedence for the reported reason when categories overlap: BI-02, then PL-01,
 then PL-02, then PL-03. Old expected-failure reasons that are not carried (T07/T08, and
@@ -160,13 +160,13 @@ today's mux scope (no plain southbound, no local responder):
 
 | Cells | Count | Expected verdict |
 |---|---|---|
-| `ENS`, `ENH` × (AD01–AD10, PX01–PX08, PX12, CX01) | 40 | executed; `pass` expected |
-| `ENS`, `ENH` × AD12 | 2 | `planned` (PL-03) |
+| `ENS`, `ENH` × (AD01–AD04, AD06, AD07, AD09, AD10, PX01–PX08, PX12, CX01) | 36 | executed; `pass` expected |
+| `ENS`, `ENH` × (AD05, AD08, AD12) | 6 | `planned` (PL-03) |
 | `ENS`, `ENH` × PX09–PX11 | 6 | `planned` (PL-02) |
 | `UDP`, `TCP` × all 24 | 48 | `planned` (PL-01) |
 | UART rows × all 24 | 72 | `blocked-infra` (BI-02) |
 | compatibility block | 5 | executed; `pass` expected |
-| **total** | **173** | 45 executed, 56 planned, 72 blocked-infra |
+| **total** | **173** | 41 executed, 60 planned, 72 blocked-infra |
 
 ## 6. Index completion (AD10, AD11, AD12)
 
@@ -217,7 +217,7 @@ The settled contract
   tracking) use a separately decoded logical view that keeps escape provenance;
   that view is a host projection, not the wire contract.
 
-The `AD12` cells assert this on every row once raw forwarding is implemented; until then `ENS-AD12` and `ENH-AD12` are `planned` (PL-03) rather than failing or falsely passing, and the switch to `adaptermux-v2` does not wait for them. The assertion: no double escaping, no collapsed
+The `AD12` cells assert this on every row once raw forwarding is implemented; until then `ENS-AD12` and `ENH-AD12`, and the AD05 and AD08 cells whose raw-pair delivery and per-symbol echo depend on the same forwarding, are `planned` (PL-03) rather than failing or falsely passing, and the switch to `adaptermux-v2` does not wait for them. The assertion: no double escaping, no collapsed
 pair, raw `0xAA` as the only structural SYN, reserved bytes in a CRC position
 sent and verified as both raw symbols.
 
@@ -263,7 +263,7 @@ Proposal for the implementation ticket:
   `uart-raw`, `ebusd-tcp`), `invariant`, `invariant_family` (`AD`, `PX`, `CX`,
   `COMPAT`), `composition` (`mux`, `direct`, `ebusd-tcp`), `northbound_client`
   (`none`, `ebusd`, `vrc-explorer`, `synthetic-enh`), `hardware_setup` (opaque
-  per-transport setup label), `session_id` (opaque), `planned_reason`.
+  per-transport setup label), `session_id` (opaque), `candidate` (the same opaque label as the index; the aggregation below compares it per case), `planned_reason`.
 - **Index fields** added to `index.json`: `matrix_inventory_version`,
   `session_id`, `candidate` (opaque association label, no source coordinates).
 - **Environment** keeps the existing `MATRIX_*` variables and adds
@@ -285,16 +285,17 @@ Synthetic example of one case entry (no real run):
 
 ```json
 {
-  "case_id": "ENH-AD12",
+  "case_id": "ENH-AD01",
   "suite": "adaptermux-v2",
   "kind": "mux-invariant",
   "southbound_transport": "enh",
-  "invariant": "AD12",
+  "invariant": "AD01",
   "invariant_family": "AD",
   "composition": "mux",
   "northbound_client": "ebusd",
   "hardware_setup": "setup-enh",
   "session_id": "session-a",
+  "candidate": "candidate-a",
   "target": "ha-addon",
   "status": "passed",
   "outcome": "pass",

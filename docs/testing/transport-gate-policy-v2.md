@@ -91,7 +91,8 @@ new fields are those proposed in §7 of the matrix page.
 | `session_id` | one opaque value for the whole report |
 | `candidate` | opaque association label; no source coordinates, addresses or serials |
 | `cases[].case_id` | the set equals the declared inventory exactly (173 cells today); no duplicates, no extras |
-| `cases[].southbound_transport`, `cases[].invariant` | consistent with the case ID (`ENH-AD12` → `enh`, `AD12`) |
+| `cases[].session_id`, `cases[].candidate` | each equals the report-level value; a case carrying another value fails the gate |
+| `cases[].southbound_transport`, `cases[].invariant` | consistent with the case ID (`ENH-AD01` → `enh`, `AD01`) |
 | `cases[].hardware_setup` | every executed cell of one transport carries the same value; `EBUSD-ES01` carries the ENH value |
 | `cases[].outcome` with `expected`, `expectation`, `infra_reason`, `planned_reason` | accepted as below |
 
@@ -122,11 +123,11 @@ Synthetic shape (values illustrative, two of 173 cases shown):
   "session_id": "session-a",
   "candidate": "candidate-a",
   "cases": [
-    {"case_id": "ENH-AD12", "southbound_transport": "enh", "invariant": "AD12",
-     "hardware_setup": "setup-enh", "outcome": "pass", "expected": "pass",
+    {"case_id": "ENH-AD01", "southbound_transport": "enh", "invariant": "AD01",
+     "session_id": "session-a", "candidate": "candidate-a", "hardware_setup": "setup-enh", "outcome": "pass", "expected": "pass",
      "expectation": "", "infra_reason": "", "planned_reason": ""},
     {"case_id": "UARTRAW-CX01", "southbound_transport": "uart-raw", "invariant": "CX01",
-     "hardware_setup": "", "outcome": "blocked-infra", "expected": "pass",
+     "session_id": "session-a", "candidate": "candidate-a", "hardware_setup": "", "outcome": "blocked-infra", "expected": "pass",
      "expectation": "", "infra_reason": "uart_direct_hardware_absent", "planned_reason": ""}
   ]
 }
@@ -151,9 +152,9 @@ acceptance, and the override reason in the ship wrappers changes as in §3.
 
 ## 6. Residual risk stated for the switch
 
-- 56 of 173 cells are `planned` in the projected first run (no plain southbound
+- 60 of 173 cells are `planned` in the projected first run (no plain southbound
   framing in the mux; no local responder for PX09–PX11; raw symbol forwarding
-  not implemented for `ENS-AD12` and `ENH-AD12`) and 72 are
+  not implemented for the `ENS` and `ENH` cells of AD05, AD08 and AD12) and 72 are
   `blocked-infra` (UART-direct). The gate accepts them only through their
   categories; they are not passing evidence.
 - The compatibility cells keep the non-mux direct transports and ebusd-tcp

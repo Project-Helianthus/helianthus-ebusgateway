@@ -1094,6 +1094,14 @@ failed outcome write leaves the intent pending (`ErrOutcomeNotDurable`) until
 `Flush`, `Secure` or a restore resolves it. An uncertain hub completion blocks
 the source and its assets for the rest of the process.
 
+A control callback reserves its asset and byte charge before persistence.
+Confirmed pre-commit failures release only that reservation and charge.
+Ambiguous writes retain both for the rest of the control call, including after
+readback settlement, because their staging bytes may be durable. A failed
+callback does not authorize submission. Accepted control bytes must match the
+successfully staged bytes; a missing stage or mismatch blocks the source and
+assets as uncertain without persisting an outcome.
+
 **Clock.** Each new point is `max(H + d + (m - m0), last + 1)`, where `H` is
 the asset's durable high-water mark, `d` the verified elapsed time from its
 anchor to the process sample `m0` taken at restore, and `m` the current

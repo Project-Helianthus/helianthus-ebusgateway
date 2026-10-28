@@ -105,8 +105,11 @@ loss, example and link review; no keyword test establishes correctness.
 The existing eBUS MCP envelope, namespace and circuit field shape remain in place.
 The [legacy reader](../../cmd/gateway/semantic_vaillant.go) now follows the native
 RR0020 correction: ordinary circuit refresh and pseudo-circuit evidence no longer
-acquire RR0020 as a float. The float reader rejects OP02/GG02/RR0020 before live
-acquisition or cache lookup, independently of instance and payload width. Neither
+acquire RR0020 as a float, including startup pseudo-circuit discovery. Startup
+uses measured RR0008 alone as temperature evidence for that pseudo-circuit;
+plausible RR0020 bytes cannot establish its presence. The float reader rejects
+OP02/GG02/RR0020 before live acquisition or cache lookup, independently of instance
+and payload width. Neither
 one raw byte nor four plausible float bytes supplies a calculated temperature.
 Snapshot cloning discards retained calculated-flow values, and merging ignores
 incoming calculated-flow values, including cache-source publication. The existing
@@ -116,7 +119,8 @@ independent, including their per-field last-known-good retention.
 
 [Focused reader regressions](../../cmd/gateway/o18_circuit_rr0020_test.go) exercise
 synthetic selector neighbors, acquisition, ordinary and pseudo-circuit refresh,
-partial merges and cache-source publication. This repair is a partial advance of
+startup pseudo-circuit absence and measured-flow publication, partial merges and
+cache-source publication. This repair is a partial advance of
 [#1253](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1253),
 not a complete thermal cutover. **Proven:** the repaired reader withholds the
 contradictory temperature interpretation. **Unknown:** raw status semantics and

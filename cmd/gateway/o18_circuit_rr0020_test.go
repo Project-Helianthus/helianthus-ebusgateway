@@ -174,6 +174,62 @@ func TestO18RawCannotEstablishPseudoCircuit(t *testing.T) {
 	}
 }
 
+func TestO18StartupRawCannotEstablishPseudoCircuit(t *testing.T) {
+	for _, payload := range [][]byte{{0}, testB524Float32Payload(55)} {
+		for _, measured := range []bool{false, true} {
+			t.Run(fmt.Sprintf("width%d/measured%v", len(payload), measured), func(t *testing.T) {
+				rawRequests, flowRequests := 0, 0
+				provider := graphql.NewLiveSemanticProvider()
+				p := &vaillantSemanticPoller{
+					controller: 0x15, source: 0x7f, provider: provider,
+					sendFrameFn: func(_ context.Context, f protocol.Frame) (*protocol.Frame, error) {
+						if len(f.Data) != 6 || f.Data[0] != 2 || f.Data[2] != 2 {
+							t.Fatalf("unexpected selector %v", f.Data)
+						}
+						addr := uint16(f.Data[4]) | uint16(f.Data[5])<<8
+						switch addr {
+						case circuit_type:
+							return testB524ResponseForSelectorPayload(f.Data, 0, 0), nil
+						case circuit_flow_temp:
+							if f.Data[3] != dhwPseudoCircuitInstance {
+								t.Fatalf("unexpected flow instance %d", f.Data[3])
+							}
+							flowRequests++
+							if measured {
+								return testB524ResponseForSelectorPayload(f.Data, testB524Float32Payload(41.5)...), nil
+							}
+							// Known reply without usable measured-flow evidence.
+							return testB524ResponseForSelectorPayload(f.Data, 0), nil
+						case circuit_calc_flow_temp:
+							rawRequests++
+							return testB524ResponseForSelectorPayload(f.Data, payload...), nil
+						default:
+							t.Fatalf("unexpected register %04x", addr)
+							return nil, nil
+						}
+					},
+				}
+				p.refreshCircuitsStartup(context.Background())
+				entry := p.circuits[dhwPseudoCircuitInstance]
+				out := provider.Circuits()
+				if measured {
+					if entry == nil || !entry.Active || entry.CalcFlowTempC != nil || entry.FlowTemperatureC == nil || *entry.FlowTemperatureC != 41.5 {
+						t.Fatalf("startup snapshot=%+v", entry)
+					}
+					if len(out) != 1 || out[0].State.CalcFlowTempC != nil || out[0].State.FlowTemperatureC == nil || *out[0].State.FlowTemperatureC != 41.5 {
+						t.Fatalf("startup publication=%+v", out)
+					}
+				} else if entry != nil || len(out) != 0 {
+					t.Fatalf("raw evidence established startup pseudo-circuit: snapshot=%+v publication=%+v", entry, out)
+				}
+				if rawRequests != 0 || flowRequests != 1 {
+					t.Fatalf("startup requests: RR0020=%d RR0008=%d; want 0 and 1", rawRequests, flowRequests)
+				}
+			})
+		}
+	}
+}
+
 func TestO18RawEvidenceStillReadable(t *testing.T) {
 	for _, payload := range [][]byte{{0}, testB524Float32Payload(55)} {
 		t.Run(fmt.Sprintf("width%d", len(payload)), func(t *testing.T) {

@@ -126,4 +126,33 @@ expect_rejected "$test_dir/spaces.log" pr "$test_dir/touched"
 printf 'synthetic file_test.go.extra\0' > "$test_dir/touched"
 expect_flake "$test_dir/spaces.log" pr "$test_dir/touched"
 
+# Execute the workflow failure handler so ordinary findings remain visible even
+# when classification rejects them. The preceding lint step must stay failed.
+python3 - "$script_dir/../.github/workflows/ci.yml" "$test_dir" <<'PYTEST'
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+workflow = Path(sys.argv[1]).read_text()
+test_dir = Path(sys.argv[2])
+handler = workflow.split("      - name: Identify self-hosted staticcheck runner flake\n", 1)[1]
+run = handler.split("        run: |\n", 1)[1]
+run = "\n".join(line[10:] for line in run.splitlines())
+assert "continue-on-error:" not in workflow, "lint failures must remain failures"
+ordinary = "other_test.go:1:2: SA4006: unused value (staticcheck)\n"
+(test_dir / "ordinary.log").write_text(ordinary)
+for filename, accepted in (("ordinary.log", False), ("first.log", True)):
+    log = test_dir / filename
+    result = subprocess.run(
+        ["bash", "-eo", "pipefail", "-c", run],
+        env={**os.environ, "EVENT_NAME": "push", "LINT_LOG": str(log)},
+        text=True, capture_output=True, check=False,
+    )
+    assert result.stdout.startswith(log.read_text()), result.stdout + result.stderr
+    assert (result.returncode == 0) == accepted, result.stdout + result.stderr
+    assert ("::warning::" in result.stdout) == accepted, result.stdout
+print("lint failure diagnostics: 2 checks passed")
+PYTEST
+
 printf 'lint flake guard: %s checks passed\n' "$checks"

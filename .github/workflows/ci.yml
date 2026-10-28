@@ -128,6 +128,8 @@ jobs:
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
+          # Keep every diagnostic visible even when flake classification rejects it.
+          cat "$LINT_LOG"
           if [ "$EVENT_NAME" = pull_request ]; then
             git diff --no-renames --name-only -z "$PR_BASE...$PR_HEAD" > "$CHANGED_FILES"
             bash scripts/lint_flake_guard.sh "$LINT_LOG" pr "$CHANGED_FILES"

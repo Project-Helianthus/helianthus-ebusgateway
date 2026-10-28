@@ -65,6 +65,11 @@ type arbitrator struct {
 	// it) (issue #1003).
 	ownershipGen   uint64
 	lifecycleEpoch atomic.Uint64
+	// ownerEpoch is the lifecycleEpoch observed when the current ownership
+	// was confirmed. Tokens carry it rather than the live epoch, so a fence
+	// that lands before the reset handler releases the old grant still ends
+	// that grant's period.
+	ownerEpoch uint64
 
 	// pendingGateway holds the gateway's pending START request, if any.
 	// Only one gateway request can be pending at a time.
@@ -605,6 +610,7 @@ func (a *arbitrator) confirmOwnership(sessionID uint64, initiator byte) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.ownershipGen++
+	a.ownerEpoch = a.lifecycleEpoch.Load()
 	a.hasOwner = true
 	a.currentOwner = sessionID
 	a.currentInitiator = initiator
@@ -657,7 +663,7 @@ func (a *arbitrator) currentOwnershipToken(sessionID uint64) (ownershipToken, bo
 	if !a.hasOwner || a.currentOwner != sessionID {
 		return ownershipToken{}, false
 	}
-	return ownershipToken{sessionID: sessionID, gen: a.ownershipGen, epoch: a.lifecycleEpoch.Load()}, true
+	return ownershipToken{sessionID: sessionID, gen: a.ownershipGen, epoch: a.ownerEpoch}, true
 }
 
 // commitWhileOwnershipCurrent runs commit while holding mu, only if tok still

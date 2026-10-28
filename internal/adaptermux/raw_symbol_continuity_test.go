@@ -1303,3 +1303,27 @@ func TestRawContinuity_CloseUnblocksStalledSuffixWrite(t *testing.T) {
 		t.Fatal("stalled suffix write did not fail after Close")
 	}
 }
+
+// TestRawContinuity_TokenTakenAfterFenceBeforeReleaseIsFenced: a token taken
+// for a grant confirmed before a lifecycle fence, but after the fence and
+// before the old ownership is released, must not commit.
+func TestRawContinuity_TokenTakenAfterFenceBeforeReleaseIsFenced(t *testing.T) {
+	arb := newArbitrator()
+	arb.confirmOwnership(7, 0x10)
+	arb.fenceLifecycle()
+	tok, ok := arb.currentOwnershipToken(7)
+	if !ok {
+		t.Fatal("old grant should still be visible before release")
+	}
+	called := false
+	err := arb.commitWhileOwnershipCurrent(tok, func() error { called = true; return nil })
+	if !errors.Is(err, errOwnershipLifecycleFenced) || called {
+		t.Fatalf("commit after fence: err=%v called=%v", err, called)
+	}
+	arb.forceRelease()
+	arb.confirmOwnership(7, 0x10)
+	tok, _ = arb.currentOwnershipToken(7)
+	if err := arb.commitWhileOwnershipCurrent(tok, func() error { return nil }); err != nil {
+		t.Fatalf("fresh grant after fence must commit: %v", err)
+	}
+}

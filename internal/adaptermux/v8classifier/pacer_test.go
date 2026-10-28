@@ -1136,3 +1136,27 @@ func TestPacer_EmitterMayReArm(t *testing.T) {
 		t.Errorf("SoftTimeoutTotal() = %d after re-arm-from-emitter + cancel; want 1 (only first arm fired; re-armed fire must no-op via gen mismatch)", got)
 	}
 }
+
+func TestPacer_OutputPreviewAndResume(t *testing.T) {
+	p := NewPacer()
+	if got := p.NextOutput(t0); !got.Equal(t0) {
+		t.Fatalf("first preview=%v", got)
+	}
+	if !p.LastScheduledEmit().IsZero() {
+		t.Fatal("preview reserved a slot")
+	}
+	p.Schedule(t0)
+	for i := 0; i < 3; i++ {
+		if got := p.NextOutput(t0); !got.Equal(t0.Add(TauWireByte)) {
+			t.Fatalf("preview %d=%v", i, got)
+		}
+	}
+	late := t0.Add(time.Second)
+	if got := p.NextOutput(late); !got.Equal(late) {
+		t.Fatalf("late preview=%v", got)
+	}
+	p.ResumeOutput(late)
+	if got := p.Schedule(late); !got.Equal(late.Add(TauWireByte)) {
+		t.Fatalf("resumed cadence=%v", got)
+	}
+}

@@ -130,8 +130,26 @@ type O22Report struct {
 
 func O22ReadReport(r io.Reader) (O22Report, error) {
 	var report O22Report
-	err := o22Decode(r, &report)
-	return report, err
+	// A pointer distinguishes an explicit empty declaration from missing/null.
+	var wire struct {
+		*O22Report
+		Records []struct {
+			O22Record
+			Omissions *string `json:"omissions"`
+		} `json:"records"`
+	}
+	wire.O22Report = &report
+	if err := o22Decode(r, &wire); err != nil {
+		return report, err
+	}
+	for i, record := range wire.Records {
+		if record.Omissions == nil {
+			return report, fmt.Errorf("record %d requires a non-null omissions string", i)
+		}
+		record.O22Record.Omissions = *record.Omissions
+		report.Records = append(report.Records, record.O22Record)
+	}
+	return report, nil
 }
 func o22Contains(values []string, s string) bool {
 	for _, v := range values {

@@ -317,6 +317,54 @@ func o22Report(c O22Catalogue, form string) O22Report {
 	}
 	return r
 }
+func TestO22ReadReportOmissions(t *testing.T) {
+	c := o22Load(t)
+	// Fabricated live claims exercise completion without supplying hardware evidence.
+	base := o22Report(c, "full88")
+	base.Source = "live"
+	for i := range base.Records {
+		base.Records[i].Source = "live"
+	}
+	b, err := json.Marshal(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := O22ReadReport(strings.NewReader(string(b)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if complete, err := O22ValidateReport(c, parsed, base.O22Identity); err != nil || !complete {
+		t.Fatalf("explicit empty omissions control: %v %v", complete, err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(b, &wire); err != nil {
+		t.Fatal(err)
+	}
+	record := wire["records"].([]any)[len(base.Records)-1].(map[string]any)
+	for _, value := range []any{nil, false, 0, []any{}, map[string]any{}} {
+		t.Run(fmt.Sprintf("type-%T", value), func(t *testing.T) {
+			record["omissions"] = value
+			input, err := json.Marshal(wire)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := O22ReadReport(strings.NewReader(string(input))); err == nil {
+				t.Fatal("non-string omissions admitted")
+			}
+		})
+	}
+	t.Run("missing", func(t *testing.T) {
+		delete(record, "omissions")
+		input, err := json.Marshal(wire)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := O22ReadReport(strings.NewReader(string(input))); err == nil {
+			t.Fatal("missing omissions admitted")
+		}
+	})
+}
+
 func TestO22ReportIdentityMutations(t *testing.T) {
 	c := o22Load(t)
 	base := o22Report(c, "full88")

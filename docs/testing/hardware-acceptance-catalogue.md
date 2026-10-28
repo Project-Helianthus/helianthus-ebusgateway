@@ -58,6 +58,8 @@ omissions, evidence grade, qualification and admission. Range summaries never
 replace individual cases. Each case also has a unique review ID, bound to its
 candidate, session, target, gate, case and record ID, marked current and
 independently reviewed. A single family review cannot stand in for row reviews.
+Every record must explicitly declare `omissions` as a non-null string; an empty
+string declares no omissions. The report reader rejects missing or null declarations.
 
 These are opaque public-safe associations, not source coordinates, contributor
 identities or an authentication mechanism. The caller verifies actual review

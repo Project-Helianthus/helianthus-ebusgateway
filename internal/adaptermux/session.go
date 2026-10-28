@@ -800,8 +800,21 @@ func (s *session) writeLoop() {
 				adaptermuxSessionBacklogFlushesTotal.Add(1)
 				s.mux.logger.Printf("adaptermux: session %d frame latency backlog flush: backlog_flushes=%d", s.id, total)
 			}
-			// Preserve FIFO across symbols and control notifications. Arrivals
-			// may wake the writer to detect a backlog, never to reorder it.
+			// Outside a flush, arbitration notifications interrupt pacing and
+			// overtake only RECEIVED frames. Any other control frame fences
+			// this scan, so notifications never cross a reset boundary.
+			if !s.flushBacklog {
+				for i, frame := range pending {
+					if frame.kind == sessionFrameReceived {
+						continue
+					}
+					if frame.kind == sessionFrameStarted || frame.kind == sessionFrameFailed {
+						copy(pending[1:i+1], pending[:i])
+						pending[0] = frame
+					}
+					break
+				}
+			}
 			if !s.flushBacklog && pending[0].kind == sessionFrameReceived {
 				if delay := time.Until(pacer.NextOutput(time.Now())); delay > 0 {
 					timer := time.NewTimer(delay)

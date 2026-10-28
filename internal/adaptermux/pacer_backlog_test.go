@@ -136,20 +136,79 @@ func TestSessionPacer_PriorityDoesNotReserveCadence(t *testing.T) {
 	}
 }
 
-func TestSessionPacer_NotificationPreservesFIFO(t *testing.T) {
+func TestSessionPacer_NotificationInterruptsWait(t *testing.T) {
 	for _, kind := range []sessionFrameKind{sessionFrameStarted, sessionFrameFailed} {
-		t.Run(fmt.Sprint(kind), func(t *testing.T) {
-			s, c := backlogSession(t, nil)
-			pacer := s.mux.SessionPacer(s.id)
-			pacer.SetTau(50 * time.Millisecond)
-			pacer.Schedule(time.Now())
-			s.sendCh <- sessionFrame{kind: sessionFrameReceived, payload: 0x12}
-			s.sendCh <- sessionFrame{kind: kind, payload: 0x31}
-			writes := awaitBacklogWrites(t, c, 2)
-			if !bytes.Equal(writes[0].data, []byte{0x12}) {
-				t.Fatalf("notification overtook older symbol: %x", writes[0].data)
-			}
-		})
+		for _, n := range []int{1, 2} {
+			t.Run(fmt.Sprintf("kind_%d/symbols_%d", kind, n), func(t *testing.T) {
+				s, c := backlogSession(t, nil)
+				pacer := s.mux.SessionPacer(s.id)
+				const tau = 200 * time.Millisecond
+				pacer.SetTau(tau)
+				anchor := time.Now()
+				pacer.Schedule(anchor)
+				for i := 0; i < n; i++ {
+					s.sendCh <- sessionFrame{kind: sessionFrameReceived, payload: byte(0x12 + i)}
+				}
+				// Wait until the writer has taken the symbols into its pacing wait.
+				deadline := time.Now().Add(tau / 2)
+				for len(s.sendCh) != 0 && time.Now().Before(deadline) {
+					time.Sleep(time.Millisecond)
+				}
+				if len(s.sendCh) != 0 {
+					t.Fatal("writer did not consume pending symbols")
+				}
+				s.sendCh <- sessionFrame{kind: kind, payload: 0x31}
+				response := transport.ENHResStarted
+				if kind == sessionFrameFailed {
+					response = transport.ENHResFailed
+				}
+				encoded := transport.EncodeENH(response, 0x31)
+				writes := awaitBacklogWrites(t, c, n+1)
+				if !bytes.Equal(writes[0].data, encoded[:]) {
+					t.Fatalf("first write %x; want priority notification %x", writes[0].data, encoded)
+				}
+				if !writes[0].at.Before(anchor.Add(tau / 2)) {
+					t.Fatal("notification did not interrupt the pacing wait")
+				}
+				for i := 0; i < n; i++ {
+					if !bytes.Equal(writes[i+1].data, []byte{byte(0x12 + i)}) {
+						t.Fatalf("symbol %d lost or reordered: %x", i, writes[i+1].data)
+					}
+					if writes[i+1].at.Before(anchor.Add(time.Duration(i+1) * tau)) {
+						t.Fatalf("symbol %d lost cadence", i)
+					}
+				}
+				if got := s.backlogFlushes.Load(); got != 0 {
+					t.Fatalf("priority delivery triggered %d flushes", got)
+				}
+			})
+		}
+	}
+}
+
+func TestSessionPacer_NotificationKeepsControlBoundary(t *testing.T) {
+	for _, kind := range []sessionFrameKind{sessionFrameStarted, sessionFrameFailed} {
+		for _, boundary := range []sessionFrameKind{sessionFrameResetted, sessionFrameInfo, sessionFrameErrorEBUS, sessionFrameErrorHost} {
+			t.Run(fmt.Sprintf("kind_%d/boundary_%d", kind, boundary), func(t *testing.T) {
+				frames := []sessionFrame{
+					{kind: sessionFrameReceived, payload: 0x12},
+					{kind: boundary, payload: 1},
+					{kind: kind, payload: 0x31},
+				}
+				_, c := backlogSession(t, frames)
+				writes := awaitBacklogWrites(t, c, len(frames))
+				expected := &backlogConn{written: make(chan struct{}, len(frames))}
+				encoder := &session{conn: expected}
+				for i, frame := range frames {
+					if err := encoder.writeFrame(frame); err != nil {
+						t.Fatal(err)
+					}
+					if !bytes.Equal(writes[i].data, expected.writes[i].data) {
+						t.Fatalf("write %d=%x; want %x across control boundary", i, writes[i].data, expected.writes[i].data)
+					}
+				}
+			})
+		}
 	}
 }
 
@@ -337,7 +396,7 @@ func TestSessionPacer_BacklogFlushFreezesSnapshot(t *testing.T) {
 	}
 }
 
-// Notifications arriving during a blocked flush retain their FIFO position.
+// The frozen flush snapshot stays FIFO; later notifications interrupt pacing.
 func TestSessionPacer_NotificationArrivesDuringBacklogFlush(t *testing.T) {
 	boundaries := []struct {
 		name  string
@@ -397,7 +456,13 @@ func TestSessionPacer_NotificationArrivesDuringBacklogFlush(t *testing.T) {
 							t.Fatal("flush write did not complete")
 						}
 					}
-					want := append(append([]sessionFrame(nil), initial...), arrivals...)
+					wantArrivals := append([]sessionFrame(nil), arrivals...)
+					if boundary.name == "none" || !laterBoundary {
+						wantArrivals = []sessionFrame{notification, received(0x13), received(0x14)}
+					} else if boundary.frame.kind == sessionFrameStarted || boundary.frame.kind == sessionFrameFailed {
+						wantArrivals = []sessionFrame{boundary.frame, notification, received(0x13), received(0x14)}
+					}
+					want := append(append([]sessionFrame(nil), initial...), wantArrivals...)
 					writes := awaitBacklogWrites(t, &c.backlogConn, len(want))
 					// Encode expectations through a separate, unpaced session.
 					expected := &backlogConn{written: make(chan struct{}, 16)}

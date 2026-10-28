@@ -677,7 +677,7 @@ func (t *echoTracker) IsQueueJustDrained() bool {
 // stall after consuming echo K but before recording K+1 would keep
 // queueJustDrained=true; the next wire SYN would be suppressed as
 // "between writes" and idle release would not fire until
-// MaxOwnershipDuration (10s). Decouples the sentinel lifetime from
+// MaxOwnershipDuration. Decouples the sentinel lifetime from
 // the IdleReleaseGrace contract.
 //
 // Exported (PascalCase) for the same reason as IsQueueJustDrained:

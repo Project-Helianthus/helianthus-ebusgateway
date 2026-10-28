@@ -36,6 +36,8 @@ import (
 // labels were misleading; le_25000 must include faster frames.
 var adaptermuxSessionFrameLatencyBucketTotal = expvar.NewMap("adaptermux_session_frame_latency_us_bucket_total")
 
+var adaptermuxSessionBacklogFlushesTotal = expvar.NewInt("adaptermux_session_backlog_flushes_total")
+
 // adaptermuxSessionFrameLatencySlowThresholdMicros is the per-frame
 // latency above which we emit a structured log line so operators can
 // see concrete slow samples without parsing the bucket histogram. 25 ms
@@ -83,12 +85,13 @@ func recordLatencyBuckets(elapsedUs int64) {
 }
 
 const (
-	// defaultSessionSendBuffer is the default send channel capacity
-	// for external sessions. If the buffer fills, the session is
+	// defaultSessionSendBuffer bounds retained frames, including writer
+	// lookahead, for external sessions. If the channel fills, the session is
 	// forcibly closed (backpressure protection, from proxy convention).
 	defaultSessionSendBuffer = 8192
 
 	maxSessionPacerBacklog = 2
+	sessionWriterLookahead = maxSessionPacerBacklog + 1
 
 	// maxSessions is the hard ceiling on concurrent external sessions.
 	// Prevents unbounded memory growth from runaway connections (AM25/AM50).
@@ -205,7 +208,7 @@ type sessionFrame struct {
 	//
 	// We store an int64 (8 bytes) rather than a time.Time (24 bytes,
 	// because of the wall/ext/Location triple) because every external
-	// session preallocates an 8192-entry ring buffer (sendCh) and the
+	// session reserves an 8192-frame budget (sendCh plus lookahead) and the
 	// gateway may host up to maxSessions=1000 sessions; a 24-byte
 	// field would inflate baseline channel capacity by ~128 MiB across
 	// the session pool versus the 8-byte form (Codex P2 PR #619).
@@ -256,7 +259,7 @@ func (m *Mux) AddSession(conn net.Conn) uint64 {
 		id:     id,
 		conn:   conn,
 		mux:    m,
-		sendCh: make(chan sessionFrame, defaultSessionSendBuffer),
+		sendCh: make(chan sessionFrame, defaultSessionSendBuffer-sessionWriterLookahead),
 		done:   make(chan struct{}),
 	}
 
@@ -752,7 +755,8 @@ func (s *session) deliverInfo(b byte) {
 func (s *session) writeLoop() {
 	defer s.wg.Done()
 
-	var pending []sessionFrame
+	var lookahead [sessionWriterLookahead]sessionFrame
+	pending := lookahead[:0]
 	flushRemaining := 0
 	for {
 		if len(pending) == 0 {
@@ -775,15 +779,9 @@ func (s *session) writeLoop() {
 		// ModeOff retains its FIFO, zero-pacer path. Snapshot only frames
 		// already available, so a producer cannot keep the writer draining.
 		if pacer := s.mux.SessionPacer(s.id); pacer != nil {
-			// Inspect arrivals between writes, including during a flush, so
-			// arbitration notifications can overtake the remaining mirrors.
-			// Bound staging to one frozen snapshot plus one channel's worth
-			// of arrivals; sustained overload retains disconnect backpressure.
-			for n := len(s.sendCh); n > 0; n-- {
-				if len(pending) >= 2*cap(s.sendCh) {
-					go s.mux.RemoveSession(s.id)
-					return
-				}
+			// Look ahead only far enough to detect a symbol backlog. Never
+			// drain a full channel into a second buffer while TCP is stalled.
+			for n := len(s.sendCh); n > 0 && len(pending) <= maxSessionPacerBacklog; n-- {
 				pending = append(pending, <-s.sendCh)
 			}
 			queuedSymbols := 0
@@ -797,36 +795,19 @@ func (s *session) writeLoop() {
 			}
 			if !s.flushBacklog && queuedSymbols > maxSessionPacerBacklog {
 				s.flushBacklog = true
-				flushRemaining = len(pending)
+				flushRemaining = len(pending) + len(s.sendCh)
 				total := s.backlogFlushes.Add(1)
-				adaptermuxSessionFrameLatencyBucketTotal.Add("backlog_flushes", 1)
+				adaptermuxSessionBacklogFlushesTotal.Add(1)
 				s.mux.logger.Printf("adaptermux: session %d frame latency backlog flush: backlog_flushes=%d", s.id, total)
 			}
-			// Arbitration notifications overtake mirrored traffic, but never
-			// cross a reset or another control boundary. Preserve all payloads.
-			for i, frame := range pending {
-				if frame.kind == sessionFrameStarted || frame.kind == sessionFrameFailed {
-					if s.flushBacklog && i >= flushRemaining {
-						// This later notification joins the flush, but later
-						// RECEIVED frames never inherit its cadence bypass.
-						flushRemaining++
-					}
-					copy(pending[1:i+1], pending[:i])
-					pending[0] = frame
-					break
-				}
-				if frame.kind != sessionFrameReceived {
-					break
-				}
-			}
-			// Wait without reserving a slot so incoming traffic can wake the
-			// writer, trigger a flush or present a priority notification.
+			// Preserve FIFO across symbols and control notifications. Arrivals
+			// may wake the writer to detect a backlog, never to reorder it.
 			if !s.flushBacklog && pending[0].kind == sessionFrameReceived {
 				if delay := time.Until(pacer.NextOutput(time.Now())); delay > 0 {
 					timer := time.NewTimer(delay)
 					select {
 					case <-timer.C:
-					case frame := <-s.sendCh:
+					case frame := <-s.pacerArrival(pending):
 						timer.Stop()
 						pending = append(pending, frame)
 						continue
@@ -841,7 +822,8 @@ func (s *session) writeLoop() {
 			}
 		}
 		frame := pending[0]
-		pending = pending[1:]
+		copy(pending, pending[1:])
+		pending = pending[:len(pending)-1]
 		err := s.writeFrame(frame)
 		if err == nil && frame.kind == sessionFrameStarted && frame.grantGen != 0 && s.mux != nil {
 			// Issue #1003: the grant became visible to the client
@@ -898,6 +880,14 @@ func (s *session) writeLoop() {
 			}
 		}
 	}
+}
+
+// pacerArrival bounds writer lookahead even when controls occupy the window.
+func (s *session) pacerArrival(pending []sessionFrame) <-chan sessionFrame {
+	if len(pending) > maxSessionPacerBacklog {
+		return nil
+	}
+	return s.sendCh
 }
 
 // writeFrame encodes and writes an ENH frame to the client connection.

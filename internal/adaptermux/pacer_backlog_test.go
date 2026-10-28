@@ -76,12 +76,12 @@ func TestSessionPacer_BacklogBurst(t *testing.T) {
 				response = transport.ENHResFailed
 			}
 			encoded := transport.EncodeENH(response, 0x31)
-			if !bytes.Equal(writes[0].data, encoded[:]) {
-				t.Fatalf("first write %x; want priority frame %x", writes[0].data, encoded)
+			if !bytes.Equal(writes[100].data, encoded[:]) {
+				t.Fatalf("last write %x; want notification %x", writes[100].data, encoded)
 			}
 			for i := 0; i < 100; i++ {
-				if !bytes.Equal(writes[i+1].data, []byte{byte(i)}) {
-					t.Fatalf("mirrored frame %d changed: %x", i, writes[i+1].data)
+				if !bytes.Equal(writes[i].data, []byte{byte(i)}) {
+					t.Fatalf("mirrored frame %d changed: %x", i, writes[i].data)
 				}
 			}
 			if elapsed := writes[100].at.Sub(writes[0].at); elapsed > 5*time.Millisecond {
@@ -136,27 +136,20 @@ func TestSessionPacer_PriorityDoesNotReserveCadence(t *testing.T) {
 	}
 }
 
-func TestSessionPacer_PriorityInterruptsWait(t *testing.T) {
-	s, c := backlogSession(t, nil)
-	pacer := s.mux.SessionPacer(s.id)
-	pacer.SetTau(200 * time.Millisecond)
-	pacer.Schedule(time.Now())
-	s.sendCh <- sessionFrame{kind: sessionFrameReceived, payload: 0x12}
-	// The long synthetic cadence leaves the writer waiting for the mirror.
-	time.Sleep(10 * time.Millisecond)
-	s.sendCh <- sessionFrame{kind: sessionFrameStarted, payload: 0x31}
-	timer := time.NewTimer(50 * time.Millisecond)
-	defer timer.Stop()
-	select {
-	case <-c.written:
-	case <-timer.C:
-		t.Fatal("STARTED waited for mirrored cadence")
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	started := transport.EncodeENH(transport.ENHResStarted, 0x31)
-	if !bytes.Equal(c.writes[0].data, started[:]) {
-		t.Fatalf("first write=%x; want STARTED", c.writes[0].data)
+func TestSessionPacer_NotificationPreservesFIFO(t *testing.T) {
+	for _, kind := range []sessionFrameKind{sessionFrameStarted, sessionFrameFailed} {
+		t.Run(fmt.Sprint(kind), func(t *testing.T) {
+			s, c := backlogSession(t, nil)
+			pacer := s.mux.SessionPacer(s.id)
+			pacer.SetTau(50 * time.Millisecond)
+			pacer.Schedule(time.Now())
+			s.sendCh <- sessionFrame{kind: sessionFrameReceived, payload: 0x12}
+			s.sendCh <- sessionFrame{kind: kind, payload: 0x31}
+			writes := awaitBacklogWrites(t, c, 2)
+			if !bytes.Equal(writes[0].data, []byte{0x12}) {
+				t.Fatalf("notification overtook older symbol: %x", writes[0].data)
+			}
+		})
 	}
 }
 
@@ -344,9 +337,8 @@ func TestSessionPacer_BacklogFlushFreezesSnapshot(t *testing.T) {
 	}
 }
 
-// Notifications arriving during a blocked flush must be visible before the
-// remaining mirrors, while both snapshot and newly arrived controls fence them.
-func TestSessionPacer_PriorityArrivesDuringBacklogFlush(t *testing.T) {
+// Notifications arriving during a blocked flush retain their FIFO position.
+func TestSessionPacer_NotificationArrivesDuringBacklogFlush(t *testing.T) {
 	boundaries := []struct {
 		name  string
 		frame sessionFrame
@@ -374,11 +366,10 @@ func TestSessionPacer_PriorityArrivesDuringBacklogFlush(t *testing.T) {
 					}
 					s := &session{id: 1, mux: mux, conn: c, sendCh: make(chan sessionFrame, 256), done: make(chan struct{})}
 					received := func(b byte) sessionFrame { return sessionFrame{kind: sessionFrameReceived, payload: b} }
-					initial := []sessionFrame{received(0x10), received(0x11)}
+					initial := []sessionFrame{received(0x10), received(0x11), received(0x12)}
 					if boundary.name != "none" && !laterBoundary {
 						initial = append(initial, boundary.frame)
 					}
-					initial = append(initial, received(0x12))
 					for _, f := range initial {
 						s.sendCh <- f
 					}
@@ -406,24 +397,7 @@ func TestSessionPacer_PriorityArrivesDuringBacklogFlush(t *testing.T) {
 							t.Fatal("flush write did not complete")
 						}
 					}
-					want := []sessionFrame{received(0x10)}
-					if boundary.frame.kind == sessionFrameStarted || boundary.frame.kind == sessionFrameFailed {
-						// The older notification also has priority over mirrors,
-						// but the newly arrived notification must follow it.
-						if laterBoundary {
-							want = append(want, boundary.frame)
-						} else {
-							want = []sessionFrame{boundary.frame, received(0x10)}
-						}
-						want = append(want, notification, received(0x11), received(0x12), received(0x13))
-					} else if boundary.name == "none" {
-						want = append(want, notification, received(0x11), received(0x12), received(0x13))
-					} else if laterBoundary {
-						want = append(want, received(0x11), received(0x12), received(0x13), boundary.frame, notification)
-					} else {
-						want = append(want, received(0x11), boundary.frame, notification, received(0x12), received(0x13))
-					}
-					want = append(want, received(0x14))
+					want := append(append([]sessionFrame(nil), initial...), arrivals...)
 					writes := awaitBacklogWrites(t, &c.backlogConn, len(want))
 					// Encode expectations through a separate, unpaced session.
 					expected := &backlogConn{written: make(chan struct{}, 16)}
@@ -449,5 +423,66 @@ func TestSessionPacer_PriorityArrivesDuringBacklogFlush(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+// A stalled TCP write must not free a second channel's worth of capacity.
+func TestSessionPacer_BlockedWriteBoundsLookahead(t *testing.T) {
+	mux, _, _, cleanup := newClassifiedTestMux(t, v8classifier.ModeShadow)
+	t.Cleanup(cleanup)
+	mux.ensureSessionPacer(1)
+	c := &snapshotBacklogConn{
+		backlogConn: backlogConn{written: make(chan struct{}, 256)},
+		entered:     make(chan byte, 3), release: make(chan struct{}),
+	}
+	const capacity = 128
+	s := &session{id: 1, mux: mux, conn: c, sendCh: make(chan sessionFrame, capacity), done: make(chan struct{})}
+	for i := 0; i < capacity; i++ {
+		s.sendCh <- sessionFrame{kind: sessionFrameReceived, payload: 0x10}
+	}
+	s.wg.Add(1)
+	go s.writeLoop()
+	t.Cleanup(func() { s.closed.Store(true); close(s.done); close(c.release); s.wg.Wait() })
+	select {
+	case <-c.entered:
+	case <-time.After(time.Second):
+		t.Fatal("writer did not stall")
+	}
+	if got := len(s.sendCh); got != capacity-(maxSessionPacerBacklog+1) {
+		t.Fatalf("stalled writer drained %d frames; want only three", capacity-got)
+	}
+}
+
+func TestSessionPacer_FlushMetricIsSeparate(t *testing.T) {
+	before := adaptermuxSessionBacklogFlushesTotal.Value()
+	_, c := backlogSession(t, []sessionFrame{
+		{kind: sessionFrameReceived, payload: 1},
+		{kind: sessionFrameReceived, payload: 2},
+		{kind: sessionFrameReceived, payload: 3},
+	})
+	awaitBacklogWrites(t, c, 3)
+	if adaptermuxSessionBacklogFlushesTotal.Value() <= before {
+		t.Fatal("flush counter did not increase")
+	}
+	if adaptermuxSessionFrameLatencyBucketTotal.Get("backlog_flushes") != nil {
+		t.Fatal("flush counter polluted latency histogram")
+	}
+}
+
+func TestSessionPacer_SessionBudgetIncludesLookahead(t *testing.T) {
+	mux, _, _, cleanup := newClassifiedTestMux(t, v8classifier.ModeShadow)
+	t.Cleanup(cleanup)
+	server, client := net.Pipe()
+	t.Cleanup(func() { _ = client.Close() })
+	id := mux.AddSession(server)
+	if id == 0 {
+		t.Fatal("session rejected")
+	}
+	t.Cleanup(func() { mux.RemoveSession(id) })
+	mux.sessionsMu.Lock()
+	s := mux.sessions[id]
+	mux.sessionsMu.Unlock()
+	if got := cap(s.sendCh) + sessionWriterLookahead; got != defaultSessionSendBuffer {
+		t.Fatalf("channel plus writer budget=%d; want %d", got, defaultSessionSendBuffer)
 	}
 }

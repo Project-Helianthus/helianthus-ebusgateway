@@ -1,9 +1,9 @@
 # Detached listener owner readback
 
-**Proven**: [O11DeriveListenerReadback](../../internal/portalconfig/o11_readback.go)
+**Proven**: [O11DeriveListenerReadback](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/internal/portalconfig/o11_readback.go)
 adds an offline projection beside the existing
-[sharing planner](../../internal/portalconfig/sharing.go), following the
-[sharing contract](portal-config-sharing.md). It accepts the current accepted
+[sharing planner](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/internal/portalconfig/sharing.go), following the
+[sharing contract](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/docs/architecture/portal-config-sharing.md). It accepts the current accepted
 desired record, host-owned planned bindings and explicit owner observations.
 Each observation identifies a surface, applied application revision, listener
 owner, address, port and observed availability. These are trusted owner inputs,

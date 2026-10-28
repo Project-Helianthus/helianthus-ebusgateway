@@ -1083,10 +1083,10 @@ func (w *Writer) Control(ctx context.Context, spec []byte) ([]AssetOutcome, erro
 	}
 	var stageMu sync.Mutex
 	stagedBytes := len(spec)
-	stagedSet := map[AssetID]bool{}
+	stagedSet := map[AssetID]*StagedBatch{}
 	before := func(b StagedBatch) error {
 		stageMu.Lock()
-		if !owned[b.Asset] || stagedSet[b.Asset] {
+		if _, reserved := stagedSet[b.Asset]; !owned[b.Asset] || reserved {
 			stageMu.Unlock()
 			return fmt.Errorf("%w: unexpected or repeated attempt for %s", ErrInvalidStaging, b.Asset)
 		}
@@ -1099,6 +1099,7 @@ func (w *Writer) Control(ctx context.Context, spec []byte) ([]AssetOutcome, erro
 			return &Refusal{Code: RefusalResourceExhausted, Reason: "staged bytes exceed the operation bound"}
 		}
 		stagedBytes += len(b.Bytes) + len(b.Meta)
+		stagedSet[b.Asset] = nil
 		stageMu.Unlock()
 		c := cloneStaged(b)
 		err := r.commit(ctx, true, false, func(s *walStream) error {
@@ -1115,11 +1116,14 @@ func (w *Writer) Control(ctx context.Context, spec []byte) ([]AssetOutcome, erro
 			}
 			return fmt.Errorf("%w: asset not in intent", ErrInvalidStaging)
 		})
-		if err == nil {
-			stageMu.Lock()
-			stagedSet[b.Asset] = true
-			stageMu.Unlock()
+		stageMu.Lock()
+		if err != nil {
+			delete(stagedSet, b.Asset)
+			stagedBytes -= len(c.Bytes) + len(c.Meta)
+		} else {
+			stagedSet[b.Asset] = &c
 		}
+		stageMu.Unlock()
 		return err
 	}
 	outs := r.hub.Control(ctx, w.source.id, append([]byte(nil), spec...), point, before)
@@ -1140,9 +1144,9 @@ func (w *Writer) Control(ctx context.Context, spec []byte) ([]AssetOutcome, erro
 		stageMu.Lock()
 		staged := stagedSet[id]
 		stageMu.Unlock()
-		if out.Accepted != nil && !staged {
-			// An acceptance whose attempt was never durably staged has no
-			// write-ahead record: the path is blocked as uncertain.
+		if out.Accepted != nil && (staged == nil || !bytes.Equal(out.Accepted.Batch.Bytes, staged.Bytes)) {
+			// An acceptance must match its exact durable attempt; otherwise
+			// the path is blocked as uncertain without recording the outcome.
 			out, uncertain = AssetOutcome{Asset: id, Uncertain: true}, true
 		}
 		final = append(final, out)

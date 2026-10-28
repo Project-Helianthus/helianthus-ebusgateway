@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -40,6 +42,7 @@ func TestO19LateSurfaceCleanup(t *testing.T) {
 				closeGate = plant.gateNextClose()
 			}
 
+			var installOnce sync.Once
 			entered, release, installed := make(chan struct{}), make(chan struct{}), make(chan struct{})
 			released := false
 			defer func() {
@@ -51,8 +54,12 @@ func TestO19LateSurfaceCleanup(t *testing.T) {
 				JoinTimeout: 20 * time.Millisecond,
 				Admitted:    ebusControlGenerationAdmitted(plant.bridge),
 				Tasks: []ebusGenerationTask{{Name: "o19.surface", Run: func(_ context.Context, scope *ebusGenerationScope) error {
-					defer close(installed)
-					return installProcessSurface(scope, func() error { close(entered); <-release; return nil })
+					var err error
+					installOnce.Do(func() {
+						defer close(installed)
+						err = installProcessSurface(scope, func() error { close(entered); <-release; return nil })
+					})
+					return err
 				}}},
 			})
 			if err != nil {
@@ -66,20 +73,15 @@ func TestO19LateSurfaceCleanup(t *testing.T) {
 				t.Fatal(err)
 			}
 			o19Await(t, entered)
-			for _, change := range []func(*runtimecontrol.LifecycleCorrelation){
-				func(c *runtimecontrol.LifecycleCorrelation) { c.DriverID = "o19.foreign" },
-				func(c *runtimecontrol.LifecycleCorrelation) { c.Epoch = "o19.foreign" },
-				func(c *runtimecontrol.LifecycleCorrelation) { c.Generation++ },
-				func(c *runtimecontrol.LifecycleCorrelation) { c.SourceID = "source:o19-foreign" },
-			} {
-				foreign := corr
-				change(&foreign)
-				if out := executor.Stop(ctlCtx(t), foreign); out.NativeClosed || out.SemanticCleaned {
-					t.Fatal("foreign STOP returned cleanup proof")
-				}
-				if runner.Status().Phase != ebusGenerationRunning {
-					t.Fatal("foreign STOP fenced predecessor")
-				}
+			foreign := ctlCorr("o19.unbound", 1, 1)
+			if out := executor.Stop(ctlCtx(t), foreign); !out.NativeClosed || !out.SemanticCleaned {
+				t.Fatalf("unbound epoch did not reach bridge: %+v", out)
+			}
+			if runner.Status().Phase != ebusGenerationRunning {
+				t.Fatal("foreign epoch STOP fenced predecessor")
+			}
+			if err := plant.bridge.Start(ctlCtx(t), foreign); err == nil {
+				t.Fatal("foreign epoch STOP did not tombstone its epoch")
 			}
 			if out := executor.Stop(ctlCtx(t), corr); out.NativeClosed || out.SemanticCleaned {
 				t.Fatalf("premature proof: %+v", out)
@@ -142,13 +144,21 @@ func TestO19LateSurfaceCleanup(t *testing.T) {
 					t.Fatal("proven cleanup still blocked")
 				}
 			}
-			if out := executor.Stop(ctlCtx(t), corr); out.NativeClosed != pending.out.NativeClosed || out.SemanticCleaned != pending.out.SemanticCleaned {
-				t.Fatalf("repeated stop changed proof: %+v", out)
+			if out := executor.Stop(ctlCtx(t), corr); !out.NativeClosed || !out.SemanticCleaned {
+				t.Fatalf("retried stop did not prove cleanup: %+v", out)
+			}
+			if executor.o19CleanupBlocked() {
+				t.Fatal("retried cleanup still blocked")
+			}
+			if err := executor.Start(ctlCtx(t), ctlCorr("o19.successor", 1, 2)); err != nil {
+				t.Fatalf("successor after retried cleanup: %v", err)
 			}
 			if plant.hub.count("RetireEpoch") != 1 {
 				t.Fatal("repeated cleanup")
 			}
-			if !failed && nativeStops.Load() != 1 {
+			// The injected failure returns before the native runtime callback;
+			// recovery must reach that callback exactly once in either case.
+			if nativeStops.Load() != 1 {
 				t.Fatalf("native STOP calls = %d; want exactly one", nativeStops.Load())
 			}
 
@@ -206,5 +216,124 @@ func TestO19CloseProofAdmissionGuard(t *testing.T) {
 		if want && executor.admitGate(context.Background()) == nil {
 			t.Fatal("replacement gate bypassed proof")
 		}
+	}
+}
+
+func o19ReadyExecutor(t *testing.T, plant *ctlPlant) (*ebusControlExecutor, runtimecontrol.LifecycleCorrelation) {
+	t.Helper()
+	ready := make(chan struct{})
+	var readyOnce sync.Once
+	runner, err := newEBusGenerationTaskRunner(ebusGenerationTaskConfig{
+		JoinTimeout: time.Second,
+		Admitted:    ebusControlGenerationAdmitted(plant.bridge),
+		Tasks:       []ebusGenerationTask{{Name: "o19.ready", Run: func(context.Context, *ebusGenerationScope) error { readyOnce.Do(func() { close(ready) }); return nil }}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor := &ebusControlExecutor{bridge: plant.bridge}
+	executor.bind(runner, func(bool) {})
+	plant.bridge.SetAdmitGate(executor.admitGate)
+	corr := ctlCorr("o19.ready", 1, 1)
+	if err := executor.Start(ctlCtx(t), corr); err != nil {
+		t.Fatal(err)
+	}
+	o19Await(t, ready)
+	return executor, corr
+}
+
+func TestO19RetirementRetry(t *testing.T) {
+	plant := newCtlPlant(t, ctlPlantOptions{budget: 1})
+	executor, corr := o19ReadyExecutor(t, plant)
+	var nativeStops atomic.Int32
+	plant.ebus.desiredRunning = func() bool { nativeStops.Add(1); return false }
+	plant.hub.setHook("RetireEpoch", func() error { return errors.New("synthetic retirement failure") })
+	if out := executor.Stop(ctlCtx(t), corr); !out.NativeClosed || out.SemanticCleaned {
+		t.Fatalf("first stop = %+v", out)
+	}
+	if !executor.o19CleanupBlocked() {
+		t.Fatal("missing retirement admitted successor")
+	}
+	plant.hub.setHook("RetireEpoch", nil)
+	if out := executor.Stop(ctlCtx(t), corr); !out.NativeClosed || !out.SemanticCleaned {
+		t.Fatalf("retried stop = %+v", out)
+	}
+	if nativeStops.Load() != 1 {
+		t.Fatalf("proven native close repeated: %d", nativeStops.Load())
+	}
+	if err := executor.Start(ctlCtx(t), ctlCorr("o19.next", 1, 2)); err != nil {
+		t.Fatalf("successor after retirement retry: %v", err)
+	}
+}
+
+func TestO19NormalStopCallerContextAndSync(t *testing.T) {
+	plant := newCtlPlant(t, ctlPlantOptions{budget: 1, drain: 2 * time.Second})
+	closeGate := plant.gateNextClose()
+	defer close(closeGate)
+	executor, corr := o19ReadyExecutor(t, plant)
+	var synced atomic.Bool
+	executor.bind(executor.runner, func(force bool) {
+		if !force {
+			synced.Store(true)
+		}
+	})
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	executor.Stop(ctx, corr)
+	executor.mu.Lock()
+	pending := executor.o19Cleanup
+	executor.mu.Unlock()
+	if pending == nil {
+		t.Fatal("missing cleanup")
+	}
+	// Bridge Stop must finish its expired-context attempt while native close
+	// remains held. A detached context instead waits for that close.
+	select {
+	case <-pending.done:
+	case <-time.After(time.Second):
+		t.Fatal("normal STOP replaced expired caller context")
+	}
+	// The initial return can precede the bridge's fence; another STOP joins
+	// the completed attempt and must resync after the fence is visible.
+	executor.Stop(ctx, corr)
+	if !synced.Load() {
+		t.Fatal("normal STOP did not resync runner")
+	}
+}
+
+func TestO19NativeCloseRetry(t *testing.T) {
+	plant := newCtlPlant(t, ctlPlantOptions{budget: 1, stopFailures: 1})
+	executor, corr := o19ReadyExecutor(t, plant)
+	if out := executor.Stop(ctlCtx(t), corr); out.NativeClosed || !out.SemanticCleaned {
+		t.Fatalf("first stop = %+v", out)
+	}
+	if err := executor.Start(ctlCtx(t), ctlCorr("o19.next", 1, 2)); err == nil {
+		t.Fatal("successor admitted after failed native close")
+	}
+	if out := executor.Stop(ctlCtx(t), corr); !out.NativeClosed || !out.SemanticCleaned {
+		t.Fatalf("retried stop = %+v", out)
+	}
+	if plant.hub.count("RetireEpoch") != 1 {
+		t.Fatal("successful retirement repeated")
+	}
+	if err := executor.Start(ctlCtx(t), ctlCorr("o19.next", 1, 2)); err != nil {
+		t.Fatalf("successor after native close retry: %v", err)
+	}
+}
+
+func TestO19NormalStopSync(t *testing.T) {
+	plant := newCtlPlant(t, ctlPlantOptions{budget: 1})
+	executor, corr := o19ReadyExecutor(t, plant)
+	var synced atomic.Bool
+	executor.bind(executor.runner, func(force bool) {
+		if !force {
+			synced.Store(true)
+		}
+	})
+	if out := executor.Stop(ctlCtx(t), corr); !out.NativeClosed || !out.SemanticCleaned {
+		t.Fatalf("normal stop = %+v", out)
+	}
+	if !synced.Load() {
+		t.Fatal("normal STOP did not resync runner")
 	}
 }

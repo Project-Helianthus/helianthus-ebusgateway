@@ -540,9 +540,10 @@ type ebusControlExecutor struct {
 
 // o19SurfaceCleanup is one joined obligation of the exact predecessor run.
 type o19SurfaceCleanup struct {
-	key  ebusGenerationKey
-	done chan struct{}
-	out  runtimecontrol.StopOutcome
+	key   ebusGenerationKey
+	done  chan struct{}
+	out   runtimecontrol.StopOutcome
+	start chan context.Context
 }
 
 func (executor *ebusControlExecutor) o19CleanupBlocked() bool {
@@ -566,27 +567,33 @@ func o19MatchesStop(key ebusGenerationKey, corr runtimecontrol.LifecycleCorrelat
 
 // Register before fencing: even a late installation cannot leave the run
 // joined while its native cleanup is still outstanding. The existing fence
-// waiter supplies serialization; this obligation never retries native close.
-func (executor *ebusControlExecutor) o19JoinCleanup(runner *ebusGenerationTaskRunner, key ebusGenerationKey, corr runtimecontrol.LifecycleCorrelation) *o19SurfaceCleanup {
+// waiter supplies serialization. Later STOP calls retry any missing proof through
+// the bridge, which owns close and retirement idempotence.
+func (executor *ebusControlExecutor) o19JoinCleanup(runner *ebusGenerationTaskRunner, key ebusGenerationKey, corr runtimecontrol.LifecycleCorrelation) (*o19SurfaceCleanup, bool) {
 	executor.mu.Lock()
 	defer executor.mu.Unlock()
 	if pending := executor.o19Cleanup; pending != nil && pending.key == key {
-		return pending
+		return pending, false
 	}
 	runner.mu.Lock()
 	run := runner.current
 	if run == nil || run.key != key || run.joined {
 		runner.mu.Unlock()
-		return nil
+		return nil, false
 	}
-	pending := &o19SurfaceCleanup{key: key, done: make(chan struct{})}
+	pending := &o19SurfaceCleanup{key: key, done: make(chan struct{}), start: make(chan context.Context, 1)}
 	executor.o19Cleanup = pending
 	const unit = "o19.surface-stop-cleanup"
 	run.enterLocked(unit)
 	runner.mu.Unlock()
 	go func() {
 		<-run.locked
-		ctx, cancel := context.WithTimeout(context.Background(), executor.bridge.cleanupTimeout)
+		ctx := <-pending.start
+		cancel := func() {}
+		if ctx == nil {
+			// Only a fence that outlived its wait needs independent cleanup.
+			ctx, cancel = context.WithTimeout(context.Background(), executor.bridge.cleanupTimeout)
+		}
 		out := executor.bridge.Stop(ctx, corr)
 		cancel()
 		executor.mu.Lock()
@@ -597,7 +604,7 @@ func (executor *ebusControlExecutor) o19JoinCleanup(runner *ebusGenerationTaskRu
 		run.exitLocked(unit)
 		runner.mu.Unlock()
 	}()
-	return pending
+	return pending, true
 }
 
 var _ runtimecontrol.LifecycleExecutor = (*ebusControlExecutor)(nil)
@@ -658,28 +665,49 @@ func (executor *ebusControlExecutor) Stop(ctx context.Context, corr runtimecontr
 		// Nothing was ever composed, so nothing opened natively or in the hub.
 		return runtimecontrol.StopOutcome{NativeClosed: true, SemanticCleaned: true}
 	}
+	// A run that did not join must not stack a second bounded join on STOP:
+	// it only clears admission here and stays DRAINING for a later retry.
+	joinedRun := true
+	defer func() {
+		if joinedRun {
+			executor.sync(ctx)
+		} else {
+			executor.clearAdmission()
+		}
+	}()
 	executor.mu.Lock()
 	pending := executor.o19Cleanup
 	executor.mu.Unlock()
 	if pending != nil && o19MatchesStop(pending.key, corr) {
 		select {
 		case <-pending.done:
-			return pending.out
+			// A completed attempt is not final unless both proofs exist.
+			out := executor.bridge.Stop(ctx, corr)
+			executor.mu.Lock()
+			pending.out.NativeClosed = pending.out.NativeClosed || out.NativeClosed
+			pending.out.SemanticCleaned = pending.out.SemanticCleaned || out.SemanticCleaned
+			out = pending.out
+			executor.mu.Unlock()
+			return out
 		default:
 		}
 	}
 	runner, withdrawn := executor.tasks()
 	if runner != nil {
 		status := runner.Status()
-		if status.Phase == ebusGenerationRunning || status.Phase == ebusGenerationDraining {
+		if (status.Phase == ebusGenerationRunning || status.Phase == ebusGenerationDraining) && o19MatchesStop(status.Key, corr) {
 			key := status.Key
 			// STOP has its own operation sequence; predecessor identity excludes it.
-			if !o19MatchesStop(key, corr) {
-				return runtimecontrol.StopOutcome{}
-			}
-			pending := executor.o19JoinCleanup(runner, key, corr)
+			pending, created := executor.o19JoinCleanup(runner, key, corr)
 			if pending != nil {
 				serialized := runner.Fence(key)
+				if created {
+					if serialized {
+						pending.start <- ctx
+					} else {
+						pending.start <- nil
+					}
+				}
 				if withdrawn != nil {
 					withdrawn(true)
 				}
@@ -688,8 +716,11 @@ func (executor *ebusControlExecutor) Stop(ctx context.Context, corr runtimecontr
 				}
 				select {
 				case <-pending.done:
-					runner.Withdraw(ctx, key)
-					return pending.out
+					joinedRun = runner.Withdraw(ctx, key).Joined
+					executor.mu.Lock()
+					out := pending.out
+					executor.mu.Unlock()
+					return out
 				case <-ctx.Done():
 					return runtimecontrol.StopOutcome{}
 				}
@@ -702,9 +733,7 @@ func (executor *ebusControlExecutor) Stop(ctx context.Context, corr runtimecontr
 		// successor installs its own only after its own validation.
 		withdrawn(true)
 	}
-	out := executor.bridge.Stop(ctx, corr)
-	executor.sync(ctx)
-	return out
+	return executor.bridge.Stop(ctx, corr)
 }
 
 // sync reconciles the runner with the bridge's admitted generation and
@@ -713,14 +742,25 @@ func (executor *ebusControlExecutor) sync(ctx context.Context) {
 	if executor.bridge == nil {
 		return
 	}
-	runner, withdrawn := executor.tasks()
+	runner, _ := executor.tasks()
 	if runner == nil {
 		return
 	}
-	if _, admitted := ebusControlGeneration(executor.bridge); !admitted && withdrawn != nil {
-		withdrawn(false)
-	}
+	executor.clearAdmission()
 	_, _ = runner.SyncEBusControl(ctx, executor.bridge)
+}
+
+// clearAdmission drops process-level admission artefacts once the bridge
+// admits no generation. It never waits.
+func (executor *ebusControlExecutor) clearAdmission() {
+	if executor.bridge == nil {
+		return
+	}
+	if _, withdrawn := executor.tasks(); withdrawn != nil {
+		if _, admitted := ebusControlGeneration(executor.bridge); !admitted {
+			withdrawn(false)
+		}
+	}
 }
 
 // admitGate is the bridge's replacement admission gate: it withdraws the

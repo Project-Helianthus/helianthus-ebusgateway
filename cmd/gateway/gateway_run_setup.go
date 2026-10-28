@@ -531,10 +531,73 @@ type ebusControlExecutor struct {
 	bridge   *ebusControlRuntime
 	withheld error
 
-	mu        sync.Mutex
-	runner    *ebusGenerationTaskRunner
-	withdrawn func(force bool)
-	closed    bool
+	mu         sync.Mutex
+	runner     *ebusGenerationTaskRunner
+	withdrawn  func(force bool)
+	closed     bool
+	o19Cleanup *o19SurfaceCleanup
+}
+
+// o19SurfaceCleanup is one joined obligation of the exact predecessor run.
+type o19SurfaceCleanup struct {
+	key  ebusGenerationKey
+	done chan struct{}
+	out  runtimecontrol.StopOutcome
+}
+
+func (executor *ebusControlExecutor) o19CleanupBlocked() bool {
+	executor.mu.Lock()
+	defer executor.mu.Unlock()
+	pending := executor.o19Cleanup
+	if pending == nil {
+		return false
+	}
+	select {
+	case <-pending.done:
+		return !pending.out.NativeClosed || !pending.out.SemanticCleaned
+	default:
+		return true
+	}
+}
+
+func o19MatchesStop(key ebusGenerationKey, corr runtimecontrol.LifecycleCorrelation) bool {
+	return key.Control.DriverID == corr.DriverID && key.Control.Epoch == corr.Epoch && key.Control.Generation == corr.Generation && (corr.SourceID == "" || key.Control.SourceID == corr.SourceID)
+}
+
+// Register before fencing: even a late installation cannot leave the run
+// joined while its native cleanup is still outstanding. The existing fence
+// waiter supplies serialization; this obligation never retries native close.
+func (executor *ebusControlExecutor) o19JoinCleanup(runner *ebusGenerationTaskRunner, key ebusGenerationKey, corr runtimecontrol.LifecycleCorrelation) *o19SurfaceCleanup {
+	executor.mu.Lock()
+	defer executor.mu.Unlock()
+	if pending := executor.o19Cleanup; pending != nil && pending.key == key {
+		return pending
+	}
+	runner.mu.Lock()
+	run := runner.current
+	if run == nil || run.key != key || run.joined {
+		runner.mu.Unlock()
+		return nil
+	}
+	pending := &o19SurfaceCleanup{key: key, done: make(chan struct{})}
+	executor.o19Cleanup = pending
+	const unit = "o19.surface-stop-cleanup"
+	run.enterLocked(unit)
+	runner.mu.Unlock()
+	go func() {
+		<-run.locked
+		ctx, cancel := context.WithTimeout(context.Background(), executor.bridge.cleanupTimeout)
+		out := executor.bridge.Stop(ctx, corr)
+		cancel()
+		executor.mu.Lock()
+		pending.out = out
+		close(pending.done)
+		executor.mu.Unlock()
+		runner.mu.Lock()
+		run.exitLocked(unit)
+		runner.mu.Unlock()
+	}()
+	return pending
 }
 
 var _ runtimecontrol.LifecycleExecutor = (*ebusControlExecutor)(nil)
@@ -572,6 +635,9 @@ func (executor *ebusControlExecutor) Start(ctx context.Context, corr runtimecont
 		}
 		return ebusControlFailure(drivermanager.ReasonConfigInvalid, cause)
 	}
+	if executor.o19CleanupBlocked() {
+		return errEBusGenerationTasksDraining
+	}
 	if runner, _ := executor.tasks(); runner != nil {
 		if status := runner.Status(); status.Phase == ebusGenerationDraining {
 			if join := runner.Withdraw(ctx, status.Key); !join.Joined {
@@ -585,45 +651,58 @@ func (executor *ebusControlExecutor) Start(ctx context.Context, corr runtimecont
 }
 
 func (executor *ebusControlExecutor) Stop(ctx context.Context, corr runtimecontrol.LifecycleCorrelation) runtimecontrol.StopOutcome {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if executor.bridge == nil {
 		// Nothing was ever composed, so nothing opened natively or in the hub.
 		return runtimecontrol.StopOutcome{NativeClosed: true, SemanticCleaned: true}
 	}
+	executor.mu.Lock()
+	pending := executor.o19Cleanup
+	executor.mu.Unlock()
+	if pending != nil && o19MatchesStop(pending.key, corr) {
+		select {
+		case <-pending.done:
+			return pending.out
+		default:
+		}
+	}
 	runner, withdrawn := executor.tasks()
-	var fenced *ebusGenerationKey
 	if runner != nil {
-		if status := runner.Status(); status.Phase == ebusGenerationRunning && status.Key.Control.DriverID == corr.DriverID && status.Key.Control.Epoch == corr.Epoch {
-			// The runner fence is the serialization point for the stopped
-			// generation's effects; it runs before the bridge fences and
-			// outside every bridge and manager lock.
+		status := runner.Status()
+		if status.Phase == ebusGenerationRunning || status.Phase == ebusGenerationDraining {
 			key := status.Key
-			fenced = &key
-			if !runner.Fence(key) {
-				// An in-flight effect of the generation outlasted the fence
-				// bound: serialization has not completed, so the bridge STOP
-				// fence is deferred. The generation stays DRAINING, the
-				// source stays withdrawn and the cleanup stays pending.
+			// STOP has its own operation sequence; predecessor identity excludes it.
+			if !o19MatchesStop(key, corr) {
+				return runtimecontrol.StopOutcome{}
+			}
+			pending := executor.o19JoinCleanup(runner, key, corr)
+			if pending != nil {
+				serialized := runner.Fence(key)
 				if withdrawn != nil {
 					withdrawn(true)
 				}
-				return runtimecontrol.StopOutcome{}
+				if !serialized {
+					return runtimecontrol.StopOutcome{}
+				}
+				select {
+				case <-pending.done:
+					runner.Withdraw(ctx, key)
+					return pending.out
+				case <-ctx.Done():
+					return runtimecontrol.StopOutcome{}
+				}
 			}
 		}
 	}
+
 	if withdrawn != nil {
 		// The stopped generation's admitted source is withdrawn now; a
 		// successor installs its own only after its own validation.
 		withdrawn(true)
 	}
 	out := executor.bridge.Stop(ctx, corr)
-	if runner != nil && fenced != nil {
-		// One bounded drain. A generation that does not join stays
-		// DRAINING with its pending names and keeps the next start blocked;
-		// no second timeout runs here.
-		if join := runner.Withdraw(ctx, *fenced); !join.Joined {
-			return out
-		}
-	}
 	executor.sync(ctx)
 	return out
 }
@@ -649,6 +728,9 @@ func (executor *ebusControlExecutor) sync(ctx context.Context) {
 // while they have not joined. The replacement stays unadmitted, DriverManager
 // keeps owning its retry, and status stays truthful (runner DRAINING).
 func (executor *ebusControlExecutor) admitGate(ctx context.Context) error {
+	if executor.o19CleanupBlocked() {
+		return errEBusGenerationTasksDraining
+	}
 	runner, withdrawn := executor.tasks()
 	if runner == nil {
 		return nil

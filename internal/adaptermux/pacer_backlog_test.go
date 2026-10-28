@@ -90,9 +90,15 @@ func TestSessionPacer_BacklogBurst(t *testing.T) {
 				t.Fatalf("flushes=%d; want 1", got)
 			}
 			pacer := s.mux.SessionPacer(s.id)
+			// Write notification precedes its return and the cadence rebase.
+			deadline := time.Now().Add(time.Second)
 			last := pacer.LastScheduledEmit()
-			if last.Before(writes[0].at) || last.After(writes[100].at) {
-				t.Fatalf("cadence anchor outside flush: %v", last)
+			for last.Before(writes[100].at) && time.Now().Before(deadline) {
+				time.Sleep(time.Millisecond)
+				last = pacer.LastScheduledEmit()
+			}
+			if last.Before(writes[100].at) || last.After(time.Now()) {
+				t.Fatalf("cadence anchor must follow final flush egress: %v", last)
 			}
 			next := pacer.Schedule(last)
 			if !next.Equal(last.Add(v8classifier.TauWireByte)) {
@@ -214,5 +220,55 @@ func TestSessionPacer_ControlFramesDoNotFlush(t *testing.T) {
 	}
 	if !s.mux.SessionPacer(s.id).LastScheduledEmit().IsZero() {
 		t.Fatal("control frames reserved cadence")
+	}
+}
+
+// blockingBacklogConn holds the final flush write beyond a symbol period.
+type blockingBacklogConn struct {
+	backlogConn
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (c *blockingBacklogConn) Write(p []byte) (int, error) {
+	if p[0] == 0x12 {
+		close(c.entered)
+		<-c.release
+	}
+	return c.backlogConn.Write(p)
+}
+
+func TestSessionPacer_BacklogRecoveryAfterBlockedWrite(t *testing.T) {
+	mux, _, _, cleanup := newClassifiedTestMux(t, v8classifier.ModeShadow)
+	defer cleanup()
+	mux.ensureSessionPacer(1)
+	pacer := mux.SessionPacer(1)
+	const tau = 20 * time.Millisecond
+	pacer.SetTau(tau)
+	c := &blockingBacklogConn{
+		backlogConn: backlogConn{written: make(chan struct{}, 4)},
+		entered:     make(chan struct{}), release: make(chan struct{}),
+	}
+	s := &session{id: 1, mux: mux, conn: c, flushBacklog: true}
+	finished := make(chan error, 1)
+	go func() { finished <- s.writeFrame(sessionFrame{kind: sessionFrameReceived, payload: 0x12}) }()
+	<-c.entered
+	// Force the pre-write anchor to expire before completing final egress.
+	time.Sleep(2 * tau)
+	releasedAt := time.Now()
+	close(c.release)
+	if err := <-finished; err != nil {
+		t.Fatal(err)
+	}
+	if got := pacer.LastScheduledEmit(); got.Before(releasedAt) {
+		t.Fatalf("cadence anchor %v precedes successful egress %v", got, releasedAt)
+	}
+	s.flushBacklog = false
+	if err := s.writeFrame(sessionFrame{kind: sessionFrameReceived, payload: 0x13}); err != nil {
+		t.Fatal(err)
+	}
+	writes := awaitBacklogWrites(t, &c.backlogConn, 2)
+	if gap := writes[1].at.Sub(writes[0].at); gap < tau {
+		t.Fatalf("ordinary frame followed blocked flush after %v; want >=%v", gap, tau)
 	}
 }

@@ -928,10 +928,11 @@ func (s *session) writeFrame(frame sessionFrame) error {
 	// Keep ordinary mirrored symbols at wire cadence. A queued burst is
 	// drained without sleeps and rebases the cadence on actual egress.
 	// STARTED/FAILED bypass scheduling; every ENH frame remains one Write.
+	var flushPacer *v8classifier.Pacer
 	if s.mux != nil && s.mux.v8 != nil {
 		if pacer := s.mux.SessionPacer(s.id); pacer != nil {
 			if s.flushBacklog {
-				pacer.ResumeOutput(time.Now())
+				flushPacer = pacer
 			} else if frame.kind != sessionFrameStarted && frame.kind != sessionFrameFailed {
 				if emitAt, paced := reserveSymbolSlots(pacer, time.Now(), sessionFrameSymbols(frame.kind)); paced {
 					if delay := time.Until(emitAt); delay > 0 {
@@ -951,6 +952,10 @@ func (s *session) writeFrame(frame sessionFrame) error {
 		}
 	}
 	_, err := s.conn.Write(buf)
+	if err == nil && flushPacer != nil {
+		// A blocked Write must not leave the next ordinary slot in the past.
+		flushPacer.ResumeOutput(time.Now())
+	}
 	return err
 }
 

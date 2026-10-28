@@ -13,7 +13,7 @@ deterministic regressions in `raw_symbol_continuity_test.go`:
 
 - Raw view at the upstream boundary. When the upstream supplies the optional
   `ReadEventWithRawSymbol` capability, every observed RECEIVED wire symbol is
-  delivered to every external session immediately and in upstream order, one
+  enqueued for every external session in upstream order, one
   RECEIVED per wire symbol: `A9 00` and `A9 01` reach sessions as two
   symbols, the lead before its suffix exists, and a structural `AA` as one.
   The logical item a symbol completed (with `WasEscaped`) is then processed
@@ -44,14 +44,24 @@ deterministic regressions in `raw_symbol_continuity_test.go`:
   observed raw symbol in wire order before the v8 session-view filter, so
   an `AA` that filter drops between lead and suffix still fails the pair.
 - Grant visibility. The external winner's STARTED is queued on the goroutine
-  that observed the grant, so it keeps its stream position behind older
-  symbols and ahead of newer ones. The F-34/F-35 abandon watchdog starts when
-  STARTED has been written to the client, bound to its grant generation; the
-  wire-idle SYN grace and maximum ownership still bound a grant whose STARTED
-  never reaches the client.
-- Session output pacing reserves one slot per eBUS wire symbol (RECEIVED,
-  STARTED, FAILED) and none for control frames, instead of one per encoded
-  ENH TCP byte.
+  that observed the grant. With pacing enabled, STARTED and FAILED bypass
+  scheduling and overtake older queued RECEIVED frames within the leading
+  uninterrupted run of RECEIVED frames. They never cross RESETTED, INFO,
+  ERROR_EBUS, ERROR_HOST or another arbitration notification. Already written
+  frames and relative RECEIVED order are preserved. ModeOff keeps FIFO order.
+  The F-34/F-35 abandon watchdog starts when STARTED has been written to the
+  client, bound to its grant generation; the wire-idle SYN grace and maximum
+  ownership still bound a grant whose STARTED never reaches the client.
+- Session output pacing reserves one slot per RECEIVED wire symbol, independent
+  of encoded ENH TCP length. STARTED, FAILED and control frames reserve none.
+  More than two queued RECEIVED frames trigger a bounded snapshot flush without
+  pacing sleeps; no payload is dropped and each ENH frame remains one Write.
+  Each successful flush Write rebases cadence at completion, so the next
+  ordinary symbol waits one period even after a blocked connection recovers.
+  These are host egress scheduling rules, not recovered native symbol timing.
+  The required public companion is
+  [session output delivery](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/architecture/adaptermux/session-output-delivery.md);
+  it must be published before or with this change.
 
 Open items: the raw view requires the matching helianthus-ebusgo transport
 capability at the pinned dependency; a raw-symbol client that waits for each
@@ -145,7 +155,7 @@ them as implemented guarantees. They constrain ordering, not scheduler design.
 
 | Transition | Required output/state boundary | Current behavior / remaining proof |
 | --- | --- | --- |
-| Matched STARTED for external owner | Winner receives `STARTED(initiator)` once, no duplicate RECEIVED initiator. Other external sessions and passive receive the initiator once; gateway active receives no external transaction bytes. | `readLoop`, `handleArbitrationResponse`, `completeArbitrationGrant` and `handleStart` implement this routing. Notification is asynchronous; enqueue/delivery ordering under backlog needs proof. |
+| Matched STARTED for external owner | Winner receives `STARTED(initiator)` once, no duplicate RECEIVED initiator. Other external sessions and passive receive the initiator once; gateway active receives no external transaction bytes. | `readLoop`, `handleArbitrationResponse`, `completeArbitrationGrant` and `handleStart` implement this routing. STARTED is enqueued at grant observation; paced delivery can overtake the leading queued RECEIVED run without crossing another control frame. The abandon watchdog starts after successful STARTED egress. |
 | Matched STARTED for gateway | Gateway arbitration call completes; no fabricated duplicate source echo. External observers receive the initiator; passive self-echo suppression remains. | Current routing in `readLoop` and source preloading in `completeArbitrationGrant`; raw reserved-byte follow-through remains parent work. |
 | Final ACK then structural SYN | Retain transaction ownership through final ACK; process trailing structural SYN as terminal before next grant, preserving observer order. Payload `AA` does not terminate. | Full-frame echo assertions exercise trailing SYN release; they do not establish all raw/provenance cases. |
 | External close / replacement | Retire old pending START, writes, decode fragments, output and timers before any successor can claim them. Replacement is a new session even with the same initiator. Old echoes may remain bus observations, never successor acknowledgments. Other consumers continue unless upstream itself breaks. | `RemoveSession` removes arbitration state, cancels pending START/watchdogs and closes the old session. `AddSession` allocates a new ID. This is not proof of every queued-send/close race; F01/J21 own that fix. |
@@ -155,13 +165,15 @@ them as implemented guarantees. They constrain ordering, not scheduler design.
 
 Maintain already delivered order; a reset may invalidate queued old logical
 bytes as current active draining does, but the loss must not be described as
-successful delivery. Do not move STARTED ahead of older observed symbols to
-solve latency. Its visibility must be compatible with abandonment deadlines;
-current grant-time watchdog and session pacing do not prove that property.
-`writeFrame` currently reserves pacing by encoded ENH byte count; that is not
-proof of eBUS symbol cadence or native timing. Scheduling changes remain parent
-work. Do not erase retained valid last-known fields on a partial transaction
-failure; invalidate only the affected in-flight reconstruction/currentness.
+successful delivery. Paced session delivery permits STARTED/FAILED to overtake
+only the leading queued RECEIVED run as described above; this is an explicit
+exception to cross-kind enqueue order, while RECEIVED-to-RECEIVED order remains
+intact. ModeOff retains FIFO delivery. Grant abandonment is timed from successful
+STARTED egress. A RECEIVED frame consumes one pacing slot irrespective of ENH
+encoding length; arbitration notifications consume none. A backlog flush rebases
+at successful Write completion. None of these host operations proves native
+symbol timing. Do not erase retained valid last-known fields on a partial
+transaction failure; invalidate only the affected in-flight reconstruction/currentness.
 
 ## Synthetic traces: required consumer outputs
 

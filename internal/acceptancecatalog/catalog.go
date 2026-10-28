@@ -33,18 +33,19 @@ type O22Transition struct {
 	ExpectedFailure string   `json:"expected_failure"`
 }
 type O22Catalogue struct {
-	Version               string              `json:"version"`
-	ResultSchema          string              `json:"result_schema"`
-	ResultSchemaSignature string              `json:"result_schema_signature"`
-	ActiveForm            string              `json:"active_form"`
-	HandoffRows           []O22Row            `json:"handoff_rows"`
-	Forms                 map[string][]string `json:"forms"`
-	V2Cells               []string            `json:"v2_cells"`
-	RetiredV2             []string            `json:"retired_v2"`
-	Categories            []O22Category       `json:"categories"`
-	CategoryPrecedence    []string            `json:"category_precedence"`
-	Transition            []O22Transition     `json:"transition"`
-	ResultVocabulary      []string            `json:"result_vocabulary"`
+	Version                string              `json:"version"`
+	ResultSchema           string              `json:"result_schema"`
+	ResultSchemaSignature  string              `json:"result_schema_signature"`
+	ActiveForm             string              `json:"active_form"`
+	HandoffRows            []O22Row            `json:"handoff_rows"`
+	Forms                  map[string][]string `json:"forms"`
+	V2Cells                []string            `json:"v2_cells"`
+	RetiredV2              []string            `json:"retired_v2"`
+	Full88ExpectedFailures []O22Category       `json:"full88_expected_failures,omitempty"`
+	Categories             []O22Category       `json:"categories"`
+	CategoryPrecedence     []string            `json:"category_precedence"`
+	Transition             []O22Transition     `json:"transition"`
+	ResultVocabulary       []string            `json:"result_vocabulary"`
 }
 
 func o22Decode(r io.Reader, v any) error {
@@ -217,11 +218,12 @@ func O22ValidateReport(c O22Catalogue, r O22Report, expected O22Identity) (bool,
 			return false, fmt.Errorf("pass lacks proven complete evidence")
 		}
 		if record.Outcome == "planned" || record.Outcome == "xfail" || record.Outcome == "blocked-infra" {
-			if r.Form != "adaptermux-v2" {
-				return false, fmt.Errorf("category result outside v2")
+			categories := c.Categories
+			if r.Form == "full88" {
+				categories = c.Full88ExpectedFailures
 			}
 			allowed := false
-			for _, cat := range c.Categories {
+			for _, cat := range categories {
 				if cat.ID == record.Category && cat.Outcome == record.Outcome && cat.Reason == record.Reason && o22Contains(cat.Cases, record.CaseID) {
 					allowed = true
 				}

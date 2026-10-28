@@ -28,7 +28,7 @@
       "minLength": 1
     },
     "catalogue_version": {
-      "const": "1"
+      "const": "2"
     },
     "form": {
       "enum": [

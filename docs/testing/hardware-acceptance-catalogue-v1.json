@@ -1,7 +1,7 @@
 {
-  "version": "1",
+  "version": "2",
   "result_schema": "hardware-acceptance-result-v1.schema.json",
-  "result_schema_signature": "MFLmyeuYWEKUP5ueLtPJQ+jXwFAzEYXzcjBBkQvn0zk=",
+  "result_schema_signature": "vhinMjlgGgPyqmYR1uxZSi1cxcYPFj8eX6XPEddJzeA=",
   "active_form": "full88",
   "handoff_rows": [
     {
@@ -1087,6 +1087,76 @@
   ],
   "retired_v2": [
     "AD11"
+  ],
+  "full88_expected_failures": [
+    {
+      "id": "FULL88-XF-01",
+      "outcome": "xfail",
+      "reason": "ebusd direct udp/tcp to adapter reports no signal in matrix runs",
+      "cases": [
+        "T07",
+        "T08"
+      ]
+    },
+    {
+      "id": "FULL88-XF-02",
+      "outcome": "xfail",
+      "reason": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "cases": [
+        "T33",
+        "T34",
+        "T35",
+        "T36",
+        "T49",
+        "T50",
+        "T51",
+        "T52",
+        "T67",
+        "T68",
+        "T81",
+        "T82",
+        "T83",
+        "T84"
+      ]
+    },
+    {
+      "id": "FULL88-XF-03",
+      "outcome": "xfail",
+      "reason": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "cases": [
+        "T37",
+        "T38",
+        "T39",
+        "T40",
+        "T53",
+        "T54",
+        "T55",
+        "T56",
+        "T69",
+        "T70",
+        "T71",
+        "T72",
+        "T85",
+        "T86",
+        "T87",
+        "T88"
+      ]
+    },
+    {
+      "id": "FULL88-XF-04",
+      "outcome": "xfail",
+      "reason": "proxy dual-client with ebusd northbound udp reports no signal",
+      "cases": [
+        "T27",
+        "T31",
+        "T43",
+        "T47",
+        "T59",
+        "T63",
+        "T75",
+        "T79"
+      ]
+    }
   ],
   "categories": [
     {

@@ -5,7 +5,7 @@ This publication supplies offline inventory and result validation. It changes no
 active gate and reports no candidate, physical result, release closure or authority
 to access equipment. Nothing is stable before Helianthus 1.0.
 
-The versioned artifacts are [catalogue v1](hardware-acceptance-catalogue-v1.json)
+The v1-format artifacts (catalogue version 2) are [catalogue v1](hardware-acceptance-catalogue-v1.json)
 and [result schema v1](hardware-acceptance-result-v1.schema.json). The
 [standard-library reader](../../internal/acceptancecatalog/catalog.go) accepts
 only a version/signature pair in a separately trusted ledger. Consumers must
@@ -37,6 +37,13 @@ Both forms belong to the consolidated transition session; publishing the v2
 form does not activate it. Current full88 and AD01–AD12 remain active until the
 operator session and separate switch change. Passive P01–P06 remain unchanged;
 proxy-dependent passive decisions remain with their owners.
+
+Full88 expected failures are classified separately in `full88_expected_failures`.
+Its four FULL88-XF categories enumerate the runner's 40 default cases and exact
+expectation reasons. An `xfail` record must supply the matching category and
+reason; custom runner overrides require a separately reviewed catalogue update.
+These records are structurally valid but leave acceptance incomplete. Planned
+and infrastructure-blocked categories remain restricted to the v2 form.
 
 Category membership and exact reasons are machine readable. BI-02 precedes
 PL-01, then PL-02, then PL-03. The projected v2 inventory has 41 executable,
@@ -91,6 +98,7 @@ revision identifiers. Whitespace in either input is immaterial.
 | Version | Canonical catalogue signature (SHA-256 base64) |
 |---|---|
 | 1 | dgQZfJpvcTWqfdroLGAAKl8T+/Th28VeKtZKOyPC/70= |
+| 2 | wRyjMhSFWd3AJtm3OPlrL1TgZavYzPatH+u9D1eBIcU= |
 
 Any added, removed or renamed gate/case, changed transition, category, result
 vocabulary or schema requires a new catalogue version and a new ledger entry;

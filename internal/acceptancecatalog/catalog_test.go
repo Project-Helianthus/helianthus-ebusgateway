@@ -1,6 +1,7 @@
 package acceptancecatalog
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -9,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/matrix"
 )
 
 func o22File(t *testing.T, name string) []byte {
@@ -85,7 +88,7 @@ func o22Handoff(text string) []O22Row {
 }
 func TestO22PublishedArtifacts(t *testing.T) {
 	c := o22Load(t)
-	if c.Version != "1" || c.ActiveForm != "full88" || len(c.HandoffRows) != 65 || len(c.Forms["full88"]) != 64 || len(c.V2Cells) != 173 || len(c.Forms["adaptermux-v2"]) != 220 {
+	if c.Version != "2" || c.ActiveForm != "full88" || len(c.HandoffRows) != 65 || len(c.Forms["full88"]) != 64 || len(c.V2Cells) != 173 || len(c.Forms["adaptermux-v2"]) != 220 {
 		t.Fatal("unexpected publication inventory")
 	}
 	o22Equal(t, c.RetiredV2, []string{"AD11"})
@@ -95,6 +98,9 @@ func TestO22PublishedArtifacts(t *testing.T) {
 	}
 	if schema["$schema"] != "https://json-schema.org/draft/2020-12/schema" {
 		t.Fatal("schema draft")
+	}
+	if schema["properties"].(map[string]any)["catalogue_version"].(map[string]any)["const"] != c.Version {
+		t.Fatal("schema catalogue version mismatch")
 	}
 	// Independently require all serialized record/review fields in the schema.
 	defs := schema["$defs"].(map[string]any)
@@ -244,18 +250,20 @@ func TestO22CatalogueMutations(t *testing.T) {
 	c := o22Load(t)
 	ledger := o22Ledger(t)
 	mutations := map[string]func(*O22Catalogue){
-		"remove-gate": func(c *O22Catalogue) { c.Forms["full88"] = c.Forms["full88"][1:] },
-		"add-gate":    func(c *O22Catalogue) { c.Forms["full88"] = append(c.Forms["full88"], "O22-extra") },
-		"rename-gate": func(c *O22Catalogue) { c.HandoffRows[0].ID = "O22-renamed" },
-		"remove-case": func(c *O22Catalogue) { c.HandoffRows[0].Cases = c.HandoffRows[0].Cases[1:] },
-		"add-case":    func(c *O22Catalogue) { c.HandoffRows[0].Cases = append(c.HandoffRows[0].Cases, "O22-extra") },
-		"rename-case": func(c *O22Catalogue) { c.HandoffRows[0].Cases[0] = "O22-renamed" },
+		"full88-expected-reason": func(c *O22Catalogue) { c.Full88ExpectedFailures[0].Reason = "O22-other" },
+		"full88-expected-case":   func(c *O22Catalogue) { c.Full88ExpectedFailures[0].Cases[0] = "T01" },
+		"remove-gate":            func(c *O22Catalogue) { c.Forms["full88"] = c.Forms["full88"][1:] },
+		"add-gate":               func(c *O22Catalogue) { c.Forms["full88"] = append(c.Forms["full88"], "O22-extra") },
+		"rename-gate":            func(c *O22Catalogue) { c.HandoffRows[0].ID = "O22-renamed" },
+		"remove-case":            func(c *O22Catalogue) { c.HandoffRows[0].Cases = c.HandoffRows[0].Cases[1:] },
+		"add-case":               func(c *O22Catalogue) { c.HandoffRows[0].Cases = append(c.HandoffRows[0].Cases, "O22-extra") },
+		"rename-case":            func(c *O22Catalogue) { c.HandoffRows[0].Cases[0] = "O22-renamed" },
 		"historical-required": func(c *O22Catalogue) {
 			c.Forms["full88"] = append(c.Forms["full88"], "Prior RTU evidence applicability")
 		},
 		"retired-required":        func(c *O22Catalogue) { c.Forms["adaptermux-v2"] = append(c.Forms["adaptermux-v2"], "AD11") },
 		"unknown-version":         func(c *O22Catalogue) { c.Version = "O22-unknown" },
-		"unreviewed-version-bump": func(c *O22Catalogue) { c.Version = "2" },
+		"unreviewed-version-bump": func(c *O22Catalogue) { c.Version = "3" },
 		"vocabulary":              func(c *O22Catalogue) { c.ResultVocabulary = append(c.ResultVocabulary, "O22-unknown") },
 	}
 	for name, mutate := range mutations {
@@ -496,6 +504,84 @@ func TestO22HandoffMutationControls(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			if reflect.DeepEqual(o22Handoff(changed), c.HandoffRows) {
 				t.Fatal("handoff inventory mutation not detected")
+			}
+		})
+	}
+}
+
+func TestO22Full88ExpectedFailures(t *testing.T) {
+	c := o22Load(t)
+	// Dry-run expectations come from the current runner without hardware access.
+	runner, err := matrix.NewRunner(matrix.RunnerOptions{OutputDir: t.TempDir(), Suite: "full88"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	verdicts, err := runner.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{}
+	for _, verdict := range verdicts {
+		if verdict.Expected == "fail" {
+			want[verdict.CaseID] = verdict.Expectation
+		}
+	}
+	got := map[string]string{}
+	for _, cat := range c.Full88ExpectedFailures {
+		if cat.Outcome != "xfail" {
+			t.Fatal("full88 category must be an expected failure")
+		}
+		for _, id := range cat.Cases {
+			if _, exists := got[id]; exists {
+				t.Fatal("duplicate full88 expected failure")
+			}
+			got[id] = cat.Reason
+		}
+	}
+	o22Equal(t, got, want)
+	if len(got) != 40 {
+		t.Fatal("full88 expected failure inventory changed")
+	}
+	for _, source := range []string{"synthetic", "live"} {
+		t.Run(source, func(t *testing.T) {
+			r := o22Report(c, "full88")
+			r.Source = source
+			first := -1
+			for i := range r.Records {
+				record := &r.Records[i]
+				record.Source = source
+				for _, cat := range c.Full88ExpectedFailures {
+					if o22Contains(cat.Cases, record.CaseID) {
+						record.Outcome, record.Category, record.Reason = cat.Outcome, cat.ID, cat.Reason
+						record.EvidenceGrade = "Unknown"
+						if first < 0 {
+							first = i
+						}
+					}
+				}
+			}
+			if complete, err := O22ValidateReport(c, r, r.O22Identity); err != nil || complete {
+				t.Fatalf("full88 expected failures: %v %v", complete, err)
+			}
+			for _, field := range []string{"Category", "Reason"} {
+				changed := o22Clone(r)
+				reflect.ValueOf(&changed.Records[first]).Elem().FieldByName(field).SetString("O22-other")
+				if _, err := O22ValidateReport(c, changed, r.O22Identity); err == nil {
+					t.Fatalf("incorrect %s admitted", field)
+				}
+			}
+			for _, id := range []string{"T01", "T65", "T66", "AD01"} {
+				changed := o22Clone(r)
+				for i := range changed.Records {
+					if changed.Records[i].CaseID == id {
+						changed.Records[i].Outcome = "xfail"
+						changed.Records[i].Category = r.Records[first].Category
+						changed.Records[i].Reason = r.Records[first].Reason
+					}
+				}
+				if _, err := O22ValidateReport(c, changed, r.O22Identity); err == nil {
+					t.Fatalf("undeclared xfail %s admitted", id)
+				}
 			}
 		})
 	}

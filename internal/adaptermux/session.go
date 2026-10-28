@@ -753,6 +753,7 @@ func (s *session) writeLoop() {
 	defer s.wg.Done()
 
 	var pending []sessionFrame
+	flushRemaining := 0
 	for {
 		if len(pending) == 0 {
 			select {
@@ -774,12 +775,16 @@ func (s *session) writeLoop() {
 		// ModeOff retains its FIFO, zero-pacer path. Snapshot only frames
 		// already available, so a producer cannot keep the writer draining.
 		if pacer := s.mux.SessionPacer(s.id); pacer != nil {
-			// Freeze an active flush at its original snapshot. Later arrivals
-			// must be evaluated against the backlog bound after it completes.
-			if !s.flushBacklog {
-				for n := min(len(s.sendCh), cap(s.sendCh)-len(pending)); n > 0; n-- {
-					pending = append(pending, <-s.sendCh)
+			// Inspect arrivals between writes, including during a flush, so
+			// arbitration notifications can overtake the remaining mirrors.
+			// Bound staging to one frozen snapshot plus one channel's worth
+			// of arrivals; sustained overload retains disconnect backpressure.
+			for n := len(s.sendCh); n > 0; n-- {
+				if len(pending) >= 2*cap(s.sendCh) {
+					go s.mux.RemoveSession(s.id)
+					return
 				}
+				pending = append(pending, <-s.sendCh)
 			}
 			queuedSymbols := 0
 			for _, frame := range pending {
@@ -792,6 +797,7 @@ func (s *session) writeLoop() {
 			}
 			if !s.flushBacklog && queuedSymbols > maxSessionPacerBacklog {
 				s.flushBacklog = true
+				flushRemaining = len(pending)
 				total := s.backlogFlushes.Add(1)
 				adaptermuxSessionFrameLatencyBucketTotal.Add("backlog_flushes", 1)
 				s.mux.logger.Printf("adaptermux: session %d frame latency backlog flush: backlog_flushes=%d", s.id, total)
@@ -800,6 +806,11 @@ func (s *session) writeLoop() {
 			// cross a reset or another control boundary. Preserve all payloads.
 			for i, frame := range pending {
 				if frame.kind == sessionFrameStarted || frame.kind == sessionFrameFailed {
+					if s.flushBacklog && i >= flushRemaining {
+						// This later notification joins the flush, but later
+						// RECEIVED frames never inherit its cadence bypass.
+						flushRemaining++
+					}
 					copy(pending[1:i+1], pending[:i])
 					pending[0] = frame
 					break
@@ -880,8 +891,11 @@ func (s *session) writeLoop() {
 			go s.mux.RemoveSession(s.id)
 			return
 		}
-		if len(pending) == 0 {
-			s.flushBacklog = false
+		if s.flushBacklog {
+			flushRemaining--
+			if flushRemaining == 0 {
+				s.flushBacklog = false
+			}
 		}
 	}
 }

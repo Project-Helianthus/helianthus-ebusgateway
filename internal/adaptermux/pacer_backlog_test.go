@@ -2,6 +2,7 @@ package adaptermux
 
 import (
 	"bytes"
+	"fmt"
 	"net"
 	"sync"
 	"testing"
@@ -340,5 +341,113 @@ func TestSessionPacer_BacklogFlushFreezesSnapshot(t *testing.T) {
 	}
 	if got := s.backlogFlushes.Load(); got != 1 {
 		t.Fatalf("flushes=%d; want 1", got)
+	}
+}
+
+// Notifications arriving during a blocked flush must be visible before the
+// remaining mirrors, while both snapshot and newly arrived controls fence them.
+func TestSessionPacer_PriorityArrivesDuringBacklogFlush(t *testing.T) {
+	boundaries := []struct {
+		name  string
+		frame sessionFrame
+	}{
+		{"none", sessionFrame{}},
+		{"reset", sessionFrame{kind: sessionFrameResetted, payload: 1}},
+		{"info", sessionFrame{kind: sessionFrameInfo, payload: 1}},
+		{"error_ebus", sessionFrame{kind: sessionFrameErrorEBUS}},
+		{"error_host", sessionFrame{kind: sessionFrameErrorHost}},
+		{"started", sessionFrame{kind: sessionFrameStarted, payload: 2}},
+		{"failed", sessionFrame{kind: sessionFrameFailed, payload: 2}},
+	}
+	for _, kind := range []sessionFrameKind{sessionFrameStarted, sessionFrameFailed} {
+		for _, boundary := range boundaries {
+			for _, laterBoundary := range []bool{false, true} {
+				t.Run(fmt.Sprintf("kind_%d/%s/later_%t", kind, boundary.name, laterBoundary), func(t *testing.T) {
+					mux, _, _, cleanup := newClassifiedTestMux(t, v8classifier.ModeShadow)
+					t.Cleanup(cleanup)
+					mux.ensureSessionPacer(1)
+					const tau = 20 * time.Millisecond
+					mux.SessionPacer(1).SetTau(tau)
+					c := &snapshotBacklogConn{
+						backlogConn: backlogConn{written: make(chan struct{}, 16)},
+						entered:     make(chan byte, 3), release: make(chan struct{}),
+					}
+					s := &session{id: 1, mux: mux, conn: c, sendCh: make(chan sessionFrame, 256), done: make(chan struct{})}
+					received := func(b byte) sessionFrame { return sessionFrame{kind: sessionFrameReceived, payload: b} }
+					initial := []sessionFrame{received(0x10), received(0x11)}
+					if boundary.name != "none" && !laterBoundary {
+						initial = append(initial, boundary.frame)
+					}
+					initial = append(initial, received(0x12))
+					for _, f := range initial {
+						s.sendCh <- f
+					}
+					s.wg.Add(1)
+					go s.writeLoop()
+					t.Cleanup(func() { s.closed.Store(true); close(s.done); close(c.release); s.wg.Wait() })
+					select {
+					case <-c.entered:
+					case <-time.After(time.Second):
+						t.Fatal("flush did not start")
+					}
+					arrivals := []sessionFrame{received(0x13)}
+					if boundary.name != "none" && laterBoundary {
+						arrivals = append(arrivals, boundary.frame)
+					}
+					notification := sessionFrame{kind: kind, payload: 0x31}
+					arrivals = append(arrivals, notification, received(0x14))
+					for _, f := range arrivals {
+						s.sendCh <- f
+					}
+					for i := 0; i < 3; i++ {
+						select {
+						case c.release <- struct{}{}:
+						case <-time.After(time.Second):
+							t.Fatal("flush write did not complete")
+						}
+					}
+					want := []sessionFrame{received(0x10)}
+					if boundary.frame.kind == sessionFrameStarted || boundary.frame.kind == sessionFrameFailed {
+						// The older notification also has priority over mirrors,
+						// but the newly arrived notification must follow it.
+						if laterBoundary {
+							want = append(want, boundary.frame)
+						} else {
+							want = []sessionFrame{boundary.frame, received(0x10)}
+						}
+						want = append(want, notification, received(0x11), received(0x12), received(0x13))
+					} else if boundary.name == "none" {
+						want = append(want, notification, received(0x11), received(0x12), received(0x13))
+					} else if laterBoundary {
+						want = append(want, received(0x11), received(0x12), received(0x13), boundary.frame, notification)
+					} else {
+						want = append(want, received(0x11), boundary.frame, notification, received(0x12), received(0x13))
+					}
+					want = append(want, received(0x14))
+					writes := awaitBacklogWrites(t, &c.backlogConn, len(want))
+					// Encode expectations through a separate, unpaced session.
+					expected := &backlogConn{written: make(chan struct{}, 16)}
+					encoder := &session{conn: expected}
+					var previousMirror time.Time
+					for i, f := range want {
+						if err := encoder.writeFrame(f); err != nil {
+							t.Fatal(err)
+						}
+						if !bytes.Equal(writes[i].data, expected.writes[i].data) {
+							t.Fatalf("write %d=%x; want %x", i, writes[i].data, expected.writes[i].data)
+						}
+						if f.kind == sessionFrameReceived {
+							if f.payload >= 0x13 && writes[i].at.Sub(previousMirror) < tau {
+								t.Fatalf("later mirror %x inherited flush cadence", f.payload)
+							}
+							previousMirror = writes[i].at
+						}
+					}
+					if got := s.backlogFlushes.Load(); got != 1 {
+						t.Fatalf("flushes=%d; want 1", got)
+					}
+				})
+			}
+		}
 	}
 }

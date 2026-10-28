@@ -2704,7 +2704,7 @@ func (m *Mux) onLogicalReceived(symbol byte, wasEscaped bool, deliverToSessions 
 		m.activeTxn.inactiveReas != ReasonNone && foreignInitiatorByte {
 		// Issue #1401: a foreign initiator byte after the gateway's
 		// transaction already ended (normally inside the IdleReleaseGrace
-		// tail) is another master's telegram on the wire. The gateway lost
+		// tail) is another initiator's telegram on the wire. The gateway lost
 		// the bus; holding the grant until the SYN after that telegram
 		// would only block external bidders. The transaction's own reason
 		// is already recorded and its activeCh content (the terminator

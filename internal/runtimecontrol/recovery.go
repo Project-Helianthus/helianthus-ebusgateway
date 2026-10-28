@@ -1102,7 +1102,8 @@ func (w *Writer) Control(ctx context.Context, spec []byte) ([]AssetOutcome, erro
 		stagedSet[b.Asset] = nil
 		stageMu.Unlock()
 		c := cloneStaged(b)
-		err := r.commit(ctx, true, false, func(s *walStream) error {
+		r.writeMu.Lock()
+		arm, err := r.commitLocked(ctx, true, false, func(s *walStream) error {
 			e := s.entry(w.source.id, wal)
 			if e == nil {
 				return fmt.Errorf("%w: intent entry missing", ErrInvalidStaging)
@@ -1116,14 +1117,20 @@ func (w *Writer) Control(ctx context.Context, spec []byte) ([]AssetOutcome, erro
 			}
 			return fmt.Errorf("%w: asset not in intent", ErrInvalidStaging)
 		})
+		r.writeMu.Unlock()
 		stageMu.Lock()
-		if err != nil {
+		if err != nil && !arm {
+			// Only confirmed failures release the reservation. An ambiguous
+			// write may be adopted by readback, so keep it charged for this call.
 			delete(stagedSet, b.Asset)
 			stagedBytes -= len(c.Bytes) + len(c.Meta)
-		} else {
+		} else if err == nil {
 			stagedSet[b.Asset] = &c
 		}
 		stageMu.Unlock()
+		if arm {
+			r.armReadback()
+		}
 		return err
 	}
 	outs := r.hub.Control(ctx, w.source.id, append([]byte(nil), spec...), point, before)

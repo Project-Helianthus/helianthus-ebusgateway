@@ -18,9 +18,14 @@ type o20Store struct {
 	material *RecoveryMaterial
 	writes   int
 	before   func(*RecoveryMaterial) error
+	closed   bool
 }
 
-func (s *o20Store) AdmissionOpen() bool { return true }
+func (s *o20Store) AdmissionOpen() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return !s.closed
+}
 func (s *o20Store) Recovery() *RecoveryMaterial {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -92,6 +97,7 @@ func o20Stream(t *testing.T, store *o20Store) walStream {
 	return stream
 }
 
+// Identity variants verify round trips; every mismatch changes only accepted bytes.
 func TestO20AcceptedBytes(t *testing.T) {
 	for _, field := range []string{"baseline", "source", "asset", "epoch", "generation", "sequence", "digest", "bytes"} {
 		for _, mismatch := range []bool{false, true} {
@@ -306,5 +312,96 @@ func TestO20FailedReservationRollback(t *testing.T) {
 	o20Stream(t, store)
 	if !failed || store.writes != 5 {
 		t.Fatalf("failure=%t writes=%d, want one failure and four durable writes", failed, store.writes)
+	}
+}
+
+// Readback may adopt the failed write before the staging callback returns.
+func TestO20AmbiguousReservationRetained(t *testing.T) {
+	for _, inline := range []bool{false, true} {
+		t.Run(fmt.Sprintf("inline_readback=%t", inline), func(t *testing.T) {
+			batch, sibling := o20Batch("o20-asset"), o20Batch("o20-sibling")
+			batch.Bytes = bytes.Repeat([]byte("x"), MaxStagedBytes/2)
+			rec, writer, store, hub := o20Recorder(t, "o20-source", batch.Asset, sibling.Asset)
+			failure := errors.New("o20 synthetic ambiguous commit")
+			failed := false
+			store.before = func(m *RecoveryMaterial) error {
+				stream, err := decodeStream(m.Payload)
+				if err != nil {
+					return err
+				}
+				for _, asset := range stream.Entries[0].Assets {
+					if asset.Asset == batch.Asset && asset.Staged != nil && !failed {
+						failed = true
+						store.mu.Lock()
+						store.material = &RecoveryMaterial{DriverIDs: append([]DriverID(nil), m.DriverIDs...), Payload: append([]byte(nil), m.Payload...)}
+						store.closed = true
+						store.mu.Unlock()
+						return failure
+					}
+				}
+				return nil
+			}
+			settle := func() {
+				store.mu.Lock()
+				store.closed = false
+				store.mu.Unlock()
+				rec.ReadbackResolved()
+				rec.mu.Lock()
+				pending := rec.amb != nil
+				entry := rec.stream.entry("o20-source", 1)
+				adopted := false
+				if entry != nil {
+					for _, asset := range entry.Assets {
+						if asset.Asset == batch.Asset && asset.Staged != nil && bytes.Equal(asset.Staged.Bytes, batch.Bytes) {
+							adopted = true
+						}
+					}
+				}
+				rec.mu.Unlock()
+				if pending || !adopted {
+					t.Fatal("readback did not adopt the staging write")
+				}
+			}
+			if inline {
+				rec.BindReadback(settle)
+			}
+			hub.control = func(_ SourceID, point uint64, before func(StagedBatch) error) []AssetOutcome {
+				if err := before(batch); !errors.Is(err, failure) {
+					t.Fatalf("ambiguous staging = %v", err)
+				}
+				if !inline {
+					settle()
+				}
+				oversized := cloneStaged(sibling)
+				oversized.Bytes = bytes.Repeat([]byte("y"), MaxStagedBytes/2)
+				if err := before(oversized); refusalCode(err) != RefusalResourceExhausted {
+					t.Fatalf("ambiguous byte charge released: %v", err)
+				}
+				if err := before(batch); !errors.Is(err, ErrInvalidStaging) {
+					t.Errorf("ambiguous reservation released: %v", err)
+				}
+				if err := before(sibling); err != nil {
+					t.Fatalf("bounded sibling staging = %v", err)
+				}
+				return []AssetOutcome{{Asset: batch.Asset, Uncertain: true}, o20Accepted(sibling, point)}
+			}
+			if _, err := writer.Control(context.Background(), nil); !errors.Is(err, ErrOutcomeUncertain) {
+				t.Fatalf("control = %v", err)
+			}
+			stream := o20Stream(t, store)
+			if len(stream.Entries) != 1 {
+				t.Fatalf("entries = %d", len(stream.Entries))
+			}
+			total := len(stream.Entries[0].Spec)
+			for _, asset := range stream.Entries[0].Assets {
+				if asset.Staged == nil || asset.Outcome != nil {
+					t.Fatalf("unexpected durable asset: %+v", asset)
+				}
+				total += len(asset.Staged.Bytes) + len(asset.Staged.Meta)
+			}
+			if total > MaxStagedBytes || !failed || store.writes != 3 {
+				t.Fatalf("bytes=%d failure=%t writes=%d", total, failed, store.writes)
+			}
+		})
 	}
 }

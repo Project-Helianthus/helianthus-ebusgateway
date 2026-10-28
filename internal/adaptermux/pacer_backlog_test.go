@@ -157,6 +157,7 @@ func TestSessionPacer_NotificationInterruptsWait(t *testing.T) {
 				if len(s.sendCh) != 0 {
 					t.Fatal("writer did not consume pending symbols")
 				}
+				notificationAt := time.Now()
 				s.sendCh <- sessionFrame{kind: kind, payload: 0x31}
 				response := transport.ENHResStarted
 				if kind == sessionFrameFailed {
@@ -164,25 +165,99 @@ func TestSessionPacer_NotificationInterruptsWait(t *testing.T) {
 				}
 				encoded := transport.EncodeENH(response, 0x31)
 				writes := awaitBacklogWrites(t, c, n+1)
-				if !bytes.Equal(writes[0].data, encoded[:]) {
-					t.Fatalf("first write %x; want priority notification %x", writes[0].data, encoded)
+				if !bytes.Equal(writes[n].data, encoded[:]) {
+					t.Fatalf("write after older symbols %x; want notification %x", writes[n].data, encoded)
 				}
-				if !writes[0].at.Before(anchor.Add(tau / 2)) {
+				if !writes[n].at.Before(anchor.Add(tau / 2)) {
 					t.Fatal("notification did not interrupt the pacing wait")
 				}
+				if gap := writes[n].at.Sub(notificationAt); gap > 5*time.Millisecond {
+					t.Fatalf("notification took %v after enqueue; want <=5ms", gap)
+				}
 				for i := 0; i < n; i++ {
-					if !bytes.Equal(writes[i+1].data, []byte{byte(0x12 + i)}) {
-						t.Fatalf("symbol %d lost or reordered: %x", i, writes[i+1].data)
+					if !bytes.Equal(writes[i].data, []byte{byte(0x12 + i)}) {
+						t.Fatalf("symbol %d lost or reordered: %x", i, writes[i].data)
 					}
-					if writes[i+1].at.Before(anchor.Add(time.Duration(i+1) * tau)) {
-						t.Fatalf("symbol %d lost cadence", i)
+					if !writes[i].at.Before(anchor.Add(tau / 2)) {
+						t.Fatalf("symbol %d was held back by pacing", i)
 					}
 				}
+				if gap := writes[n].at.Sub(writes[n-1].at); gap > 5*time.Millisecond {
+					t.Fatalf("notification followed flushed prefix after %v; want <=5ms", gap)
+				}
+				// Only the older prefix is unpaced; the next symbol resumes cadence.
+				s.sendCh <- sessionFrame{kind: sessionFrameReceived, payload: 0x42}
+				writes = awaitBacklogWrites(t, c, 1)
+				if !bytes.Equal(writes[n+1].data, []byte{0x42}) {
+					t.Fatalf("post-notification symbol changed: %x", writes[n+1].data)
+				}
+				if gap := writes[n+1].at.Sub(writes[n].at); gap < tau {
+					t.Fatalf("post-notification symbol lost cadence: %v; want >=%v", gap, tau)
+				}
 				if got := s.backlogFlushes.Load(); got != 0 {
-					t.Fatalf("priority delivery triggered %d flushes", got)
+					t.Fatalf("notification delivery triggered %d backlog flushes", got)
 				}
 			})
 		}
+	}
+}
+
+// An ENH client begins echo comparison as soon as STARTED is visible.
+// Older traffic must be consumed while it is still waiting for the grant.
+func TestSessionPacer_StartedPreservesClientEchoState(t *testing.T) {
+	for _, n := range []int{1, 2} {
+		t.Run(fmt.Sprintf("symbols_%d", n), func(t *testing.T) {
+			frames := make([]sessionFrame, 0, n+1)
+			for i := 0; i < n; i++ {
+				frames = append(frames, sessionFrame{kind: sessionFrameReceived, payload: byte(0x12 + i)})
+			}
+			frames = append(frames, sessionFrame{kind: sessionFrameStarted, payload: 0x31})
+			s, c := backlogSession(t, frames)
+			writes := awaitBacklogWrites(t, c, len(frames))
+			var parser transport.ENHParser
+			awaitingEcho := false
+			observed := 0
+			const sent = 0x42
+			consume := func(write backlogWrite) {
+				messages, err := parser.Parse(write.data)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, msg := range messages {
+					switch msg.Command {
+					case transport.ENHResStarted:
+						if observed != n {
+							t.Fatalf("client began SEND with %d older symbols still pending", n-observed)
+						}
+						awaitingEcho = true
+						// Model the adapter echo of the client's first post-grant SEND.
+						s.sendCh <- sessionFrame{kind: sessionFrameReceived, payload: sent}
+					case transport.ENHResReceived:
+						if awaitingEcho {
+							if msg.Data != sent {
+								t.Fatalf("client echo collision: received %x; sent %x", msg.Data, sent)
+							}
+							awaitingEcho = false
+						} else {
+							if msg.Data != byte(0x12+observed) {
+								t.Fatalf("older symbol %d changed: %x", observed, msg.Data)
+							}
+							observed++
+						}
+					default:
+						t.Fatalf("unexpected client message: %+v", msg)
+					}
+				}
+			}
+			for _, write := range writes {
+				consume(write)
+			}
+			writes = awaitBacklogWrites(t, c, 1)
+			consume(writes[n+1])
+			if awaitingEcho || observed != n {
+				t.Fatalf("client did not complete SEND echo: awaiting=%t older=%d", awaitingEcho, observed)
+			}
+		})
 	}
 }
 
@@ -456,13 +531,9 @@ func TestSessionPacer_NotificationArrivesDuringBacklogFlush(t *testing.T) {
 							t.Fatal("flush write did not complete")
 						}
 					}
-					wantArrivals := append([]sessionFrame(nil), arrivals...)
-					if boundary.name == "none" || !laterBoundary {
-						wantArrivals = []sessionFrame{notification, received(0x13), received(0x14)}
-					} else if boundary.frame.kind == sessionFrameStarted || boundary.frame.kind == sessionFrameFailed {
-						wantArrivals = []sessionFrame{boundary.frame, notification, received(0x13), received(0x14)}
-					}
-					want := append(append([]sessionFrame(nil), initial...), wantArrivals...)
+					want := append(append([]sessionFrame(nil), initial...), arrivals...)
+					flushPrefix := boundary.name == "none" || !laterBoundary ||
+						boundary.frame.kind == sessionFrameStarted || boundary.frame.kind == sessionFrameFailed
 					writes := awaitBacklogWrites(t, &c.backlogConn, len(want))
 					// Encode expectations through a separate, unpaced session.
 					expected := &backlogConn{written: make(chan struct{}, 16)}
@@ -476,7 +547,11 @@ func TestSessionPacer_NotificationArrivesDuringBacklogFlush(t *testing.T) {
 							t.Fatalf("write %d=%x; want %x", i, writes[i].data, expected.writes[i].data)
 						}
 						if f.kind == sessionFrameReceived {
-							if f.payload >= 0x13 && writes[i].at.Sub(previousMirror) < tau {
+							if f.payload == 0x13 && flushPrefix {
+								if gap := writes[i+1].at.Sub(writes[i].at); gap > 5*time.Millisecond {
+									t.Fatalf("notification followed flushed prefix after %v; want <=5ms", gap)
+								}
+							} else if f.payload >= 0x13 && writes[i].at.Sub(previousMirror) < tau {
 								t.Fatalf("later mirror %x inherited flush cadence", f.payload)
 							}
 							previousMirror = writes[i].at

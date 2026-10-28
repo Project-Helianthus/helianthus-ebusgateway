@@ -45,10 +45,10 @@ deterministic regressions in `raw_symbol_continuity_test.go`:
   an `AA` that filter drops between lead and suffix still fails the pair.
 - Grant visibility. The external winner's STARTED is queued on the goroutine
   that observed the grant, behind older RECEIVED frames. All session frames
-  retain FIFO order when pacing is off or a backlog snapshot is flushing.
-  Otherwise STARTED and FAILED interrupt a pacing wait and overtake the
-  RECEIVED prefix in the bounded lookahead, reserving no pacing slots. They
-  never cross RESETTED or other control frames. The F-34/F-35 abandon
+  retain FIFO order. STARTED and FAILED interrupt a pacing wait by draining
+  the older RECEIVED prefix in the bounded lookahead without pacing, then
+  writing the notification immediately after it. They reserve no pacing
+  slots and never cross RESETTED or other control frames. The F-34/F-35 abandon
   watchdog starts after successful STARTED delivery, bound to its grant
   generation; wire-idle SYN grace and maximum ownership still bound a grant
   whose STARTED never reaches the client.
@@ -56,7 +56,9 @@ deterministic regressions in `raw_symbol_continuity_test.go`:
   of encoded ENH TCP length. Control frames reserve none. A three-frame FIFO
   lookahead containing more than two RECEIVED frames triggers a snapshot flush
   without pacing sleeps. The snapshot includes frames already in the send
-  channel; later arrivals are evaluated for notification priority after it finishes.
+  channel; later arrivals are evaluated for notification-triggered prefix
+  draining after it finishes. Draining one or two older symbols for a
+  notification does not increment the backlog flush counter.
   Writer lookahead uses a fixed three-frame array; the send channel reserves
   that space within the existing 8,192-frame session budget. Overflow retains
   disconnect backpressure. Each successful flush Write rebases cadence at
@@ -160,7 +162,7 @@ them as implemented guarantees. They constrain ordering, not scheduler design.
 
 | Transition | Required output/state boundary | Current behavior / remaining proof |
 | --- | --- | --- |
-| Matched STARTED for external owner | Winner receives `STARTED(initiator)` once, no duplicate RECEIVED initiator. Other external sessions and passive receive the initiator once; gateway active receives no external transaction bytes. | `readLoop`, `handleArbitrationResponse`, `completeArbitrationGrant` and `handleStart` implement this routing. STARTED is enqueued at grant observation; delivery can overtake paced RECEIVED frames within the bounded lookahead, without crossing control boundaries or reordering a flushing snapshot. The abandon watchdog starts after successful STARTED egress. |
+| Matched STARTED for external owner | Winner receives `STARTED(initiator)` once, no duplicate RECEIVED initiator. Other external sessions and passive receive the initiator once; gateway active receives no external transaction bytes. | `readLoop`, `handleArbitrationResponse`, `completeArbitrationGrant` and `handleStart` implement this routing. STARTED is enqueued at grant observation; delivery drains older RECEIVED frames within the bounded lookahead without pacing, then writes STARTED in FIFO order, without crossing control boundaries or reordering a flushing snapshot. The abandon watchdog starts after successful STARTED egress. |
 | Matched STARTED for gateway | Gateway arbitration call completes; no fabricated duplicate source echo. External observers receive the initiator; passive self-echo suppression remains. | Current routing in `readLoop` and source preloading in `completeArbitrationGrant`; raw reserved-byte follow-through remains parent work. |
 | Final ACK then structural SYN | Retain transaction ownership through final ACK; process trailing structural SYN as terminal before next grant, preserving observer order. Payload `AA` does not terminate. | Full-frame echo assertions exercise trailing SYN release; they do not establish all raw/provenance cases. |
 | External close / replacement | Retire old pending START, writes, decode fragments, output and timers before any successor can claim them. Replacement is a new session even with the same initiator. Old echoes may remain bus observations, never successor acknowledgments. Other consumers continue unless upstream itself breaks. | `RemoveSession` removes arbitration state, cancels pending START/watchdogs and closes the old session. `AddSession` allocates a new ID. This is not proof of every queued-send/close race; F01/J21 own that fix. |
@@ -171,9 +173,9 @@ them as implemented guarantees. They constrain ordering, not scheduler design.
 Maintain already delivered order; a reset may invalidate queued old logical
 bytes as current active draining does, but the loss must not be described as
 successful delivery. Session delivery preserves RECEIVED order and control
-boundaries. Outside a flushing snapshot, STARTED/FAILED can overtake the
-RECEIVED prefix of the bounded lookahead to interrupt a pacing wait; with
-pacing off, all frames retain enqueue order.
+boundaries. Outside a flushing snapshot, STARTED/FAILED interrupt a pacing
+wait by draining the older RECEIVED prefix of the bounded lookahead without
+pacing, then writing the notification. All frames retain enqueue order.
 Grant abandonment is timed from successful STARTED egress. A RECEIVED frame consumes one pacing slot irrespective of ENH
 encoding length; arbitration notifications consume none. A backlog flush rebases
 at successful Write completion. None of these host operations proves native

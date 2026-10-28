@@ -800,17 +800,18 @@ func (s *session) writeLoop() {
 				adaptermuxSessionBacklogFlushesTotal.Add(1)
 				s.mux.logger.Printf("adaptermux: session %d frame latency backlog flush: backlog_flushes=%d", s.id, total)
 			}
-			// Outside a flush, arbitration notifications interrupt pacing and
-			// overtake only RECEIVED frames. Any other control frame fences
-			// this scan, so notifications never cross a reset boundary.
+			// Outside a backlog flush, drain the older RECEIVED prefix without
+			// pacing through its arbitration notification. Keep strict FIFO so
+			// pre-grant traffic cannot be mistaken for a post-grant SEND echo.
+			// Other controls fence this scan; the backlog counter is unchanged.
 			if !s.flushBacklog {
 				for i, frame := range pending {
 					if frame.kind == sessionFrameReceived {
 						continue
 					}
-					if frame.kind == sessionFrameStarted || frame.kind == sessionFrameFailed {
-						copy(pending[1:i+1], pending[:i])
-						pending[0] = frame
+					if i > 0 && (frame.kind == sessionFrameStarted || frame.kind == sessionFrameFailed) {
+						s.flushBacklog = true
+						flushRemaining = i + 1
 					}
 					break
 				}

@@ -509,12 +509,8 @@ func (p *vaillantSemanticPoller) readDhwPseudoCircuitStartupEvidence(ctx context
 	if isDhwPseudoCircuitTemperatureEvidence(flow) {
 		snapshot.FlowTemperatureC = flow
 	}
-	calc, calcKnown := p.readDhwPseudoCircuitStartupTemperatureEvidence(ctx, instance, circuit_calc_flow_temp)
-	if isDhwPseudoCircuitTemperatureEvidence(calc) {
-		snapshot.CalcFlowTempC = calc
-	}
-	if snapshot.FlowTemperatureC == nil && snapshot.CalcFlowTempC == nil {
-		return nil, flowKnown && calcKnown
+	if snapshot.FlowTemperatureC == nil {
+		return nil, flowKnown
 	}
 	return snapshot, true
 }

@@ -73,7 +73,7 @@ const (
 	circuit_flow_temp      = uint16(0x0008) // flow_temperature (VF[x])
 	circuit_pump_status    = uint16(0x001B) // pump_status (observed Vaillant "Status Pump")
 	circuit_circuit_state  = uint16(0x001E) // circuit_state (observed Vaillant "Status circuit"; 0=standby 1=heating 2=cooling 3=dhw)
-	circuit_calc_flow_temp = uint16(0x0020) // calculated_flow_temperature
+	circuit_calc_flow_temp = uint16(0x0020) // legacy selector name; circuit_unknown_10 raw evidence, not a temperature
 	circuit_mixer_position = uint16(0x0021) // mixer_position_pct
 	circuit_humidity       = uint16(0x0022) // room_humidity_pct
 	circuit_dew_point      = uint16(0x0023) // dew_point_temperature
@@ -2006,11 +2006,6 @@ func (p *vaillantSemanticPoller) refreshCircuits(ctx context.Context) {
 			snapshot.PumpStatusLiveAt = now
 			anyRead = true
 		}
-		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_calc_flow_temp); ok {
-			v := value
-			snapshot.CalcFlowTempC = &v
-			anyRead = true
-		}
 		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_mixer_position); ok {
 			v := value
 			snapshot.MixerPositionPct = &v
@@ -2072,12 +2067,8 @@ func (p *vaillantSemanticPoller) readDhwPseudoCircuitEvidence(ctx context.Contex
 	if isDhwPseudoCircuitTemperatureEvidence(flow) {
 		snapshot.FlowTemperatureC = flow
 	}
-	calc, calcKnown := p.readDhwPseudoCircuitTemperatureEvidence(ctx, instance, circuit_calc_flow_temp)
-	if isDhwPseudoCircuitTemperatureEvidence(calc) {
-		snapshot.CalcFlowTempC = calc
-	}
-	if snapshot.FlowTemperatureC == nil && snapshot.CalcFlowTempC == nil {
-		return nil, flowKnown && calcKnown
+	if snapshot.FlowTemperatureC == nil {
+		return nil, flowKnown
 	}
 	return snapshot, true
 }
@@ -2204,9 +2195,6 @@ func mergeCircuitSnapshotNonDestructive(existing, incoming *vaillantCircuitSnaps
 		merged.PumpStatusRaw = cloneUint16Ptr(incoming.PumpStatusRaw)
 		merged.PumpStatusLiveAt = incoming.PumpStatusLiveAt
 	}
-	if incoming.CalcFlowTempC != nil {
-		merged.CalcFlowTempC = cloneFloat64Ptr(incoming.CalcFlowTempC)
-	}
 	if incoming.MixerPositionPct != nil {
 		merged.MixerPositionPct = cloneFloat64Ptr(incoming.MixerPositionPct)
 	}
@@ -2247,12 +2235,12 @@ func cloneCircuitSnapshot(snapshot *vaillantCircuitSnapshot) *vaillantCircuitSna
 		FrostProtectionC:   cloneFloat64Ptr(snapshot.FrostProtectionC),
 		PumpStatusRaw:      cloneUint16Ptr(snapshot.PumpStatusRaw),
 		PumpStatusLiveAt:   snapshot.PumpStatusLiveAt,
-		CalcFlowTempC:      cloneFloat64Ptr(snapshot.CalcFlowTempC),
-		MixerPositionPct:   cloneFloat64Ptr(snapshot.MixerPositionPct),
-		HumidityPct:        cloneFloat64Ptr(snapshot.HumidityPct),
-		DewPointC:          cloneFloat64Ptr(snapshot.DewPointC),
-		PumpHoursRaw:       cloneUint32Ptr(snapshot.PumpHoursRaw),
-		PumpStartsRaw:      cloneUint32Ptr(snapshot.PumpStartsRaw),
+		// CalcFlowTempC stays unavailable, including snapshots retained before the RR0020 correction.
+		MixerPositionPct: cloneFloat64Ptr(snapshot.MixerPositionPct),
+		HumidityPct:      cloneFloat64Ptr(snapshot.HumidityPct),
+		DewPointC:        cloneFloat64Ptr(snapshot.DewPointC),
+		PumpHoursRaw:     cloneUint32Ptr(snapshot.PumpHoursRaw),
+		PumpStartsRaw:    cloneUint32Ptr(snapshot.PumpStartsRaw),
 	}
 }
 
@@ -7627,6 +7615,11 @@ func (p *vaillantSemanticPoller) readB524ValueLive(ctx context.Context, opcode, 
 }
 
 func (p *vaillantSemanticPoller) readB524Float32LE(ctx context.Context, opcode, group, instance byte, addr uint16) (float64, bool) {
+	// The circuit RR0020 selector is raw evidence in the native catalog.
+	// Reject it before acquisition or cache lookup, regardless of payload width.
+	if opcode == localCircuits.opcode && group == localCircuits.group && addr == circuit_calc_flow_temp {
+		return 0, false
+	}
 	raw, ok := p.readB524Value(ctx, opcode, group, instance, addr)
 	if !ok || len(raw) < 4 {
 		return 0, false

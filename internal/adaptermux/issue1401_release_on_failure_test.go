@@ -377,15 +377,25 @@ func TestIssue1401_WriteErrorReleasesAtOnce(t *testing.T) {
 }
 
 // TestIssue1401_MaxOwnershipDefaultIsLastResortGuard pins point 3: the
-// default cap is 1.5 s, an explicit value is kept, and a stuck grant that no
+// default gateway cap is 1.5 s, explicit limits are kept, and a stuck grant that no
 // failure path ended is released by the cap once it is exceeded (and not
 // before).
 func TestIssue1401_MaxOwnershipDefaultIsLastResortGuard(t *testing.T) {
-	if got := New(Config{}).cfg.MaxOwnershipDuration; got != 1500*time.Millisecond {
-		t.Fatalf("default MaxOwnershipDuration = %v, want 1.5s", got)
+	if got := New(Config{}).ownershipDurationLimit(gatewaySessionID); got != 1500*time.Millisecond {
+		t.Fatalf("default gateway ownership limit = %v, want 1.5s", got)
 	}
 	if got := New(Config{MaxOwnershipDuration: 7 * time.Second}).cfg.MaxOwnershipDuration; got != 7*time.Second {
 		t.Fatalf("explicit MaxOwnershipDuration = %v, want 7s", got)
+	}
+
+	if got := New(Config{}).cfg.MaxOwnershipDuration; got != 10*time.Second {
+		t.Fatalf("shared MaxOwnershipDuration = %v, want 10s", got)
+	}
+	if got := New(Config{GatewayMaxOwnershipDuration: 7 * time.Second}).ownershipDurationLimit(gatewaySessionID); got != 7*time.Second {
+		t.Fatalf("explicit gateway ownership limit = %v, want 7s", got)
+	}
+	if got := New(Config{MaxOwnershipDuration: time.Second}).ownershipDurationLimit(gatewaySessionID); got != time.Second {
+		t.Fatalf("shorter shared ownership limit = %v, want 1s", got)
 	}
 
 	mux, mock, _, cleanup := newP3TestMux(t)
@@ -449,5 +459,38 @@ func TestIssue1401_InactiveReasonCountsByReason(t *testing.T) {
 		if counts[reason] != 1 {
 			t.Fatalf("snapshot %s = %d, want 1", reason, counts[reason])
 		}
+	}
+}
+
+// External grants keep their existing budget even when logical wire activity
+// arrives after the gateway's shorter last-resort limit.
+func TestIssue1401_ExternalOwnershipBudgetThroughLogicalReceive(t *testing.T) {
+	const externalSessionID = uint64(7)
+	for _, tc := range []struct {
+		name      string
+		age       time.Duration
+		wantOwner bool
+	}{
+		{"active_after_gateway_cap", 5 * time.Second, true},
+		{"shared_cap_still_releases", 11 * time.Second, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mux := New(Config{})
+			mux.arb.confirmOwnership(externalSessionID, 0x31)
+			mux.busOwned = time.Now().Add(-tc.age)
+			mux.lastWireActivity = time.Now()
+			// Use the full logical receive path: direct onSYNLocked calls
+			// bypass the hard ownership timeout.
+			mux.onLogicalReceived(0x31, false, true)
+			if got := mux.arb.isOwner(externalSessionID); got != tc.wantOwner {
+				t.Fatalf("external ownership after %v grant = %v, want %v", tc.age, got, tc.wantOwner)
+			}
+			if tc.wantOwner {
+				mux.onLogicalReceived(protocol.SymbolSyn, false, true)
+				if !mux.arb.isOwner(externalSessionID) {
+					t.Fatal("fresh wire activity must keep the external grant through SYN")
+				}
+			}
+		})
 	}
 }

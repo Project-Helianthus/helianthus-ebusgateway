@@ -50,17 +50,15 @@ type Config struct {
 	ReconnectMaxDelay time.Duration
 
 	// MaxOwnershipDuration is the hard limit on continuous bus ownership,
-	// measured from the grant. Default: 1500ms.
-	//
-	// Issue #1401: this is a last-resort guard, not the normal exit. A
-	// single eBUS exchange (request, ACK, response, ACK, SYN) completes in
-	// a few hundred milliseconds even with NACK and CRC retransmissions;
-	// gateway transactions that fail end their ownership at the failure
-	// (write error, active read timeout, context cancel, arbitration loss,
-	// foreign initiator, abandoned on re-bid) rather than waiting for this
-	// cap. The previous 10s default let a dead grant block external
-	// sessions for seconds.
+	// measured from the grant. Default: 10s. External sessions retain this
+	// budget for long transactions with continuing wire activity.
 	MaxOwnershipDuration time.Duration
+
+	// GatewayMaxOwnershipDuration additionally bounds gateway grants.
+	// Default: 1500ms. Failure paths release gateway ownership immediately;
+	// this is only the last-resort guard for a stuck grant (issue #1401).
+	// The shared MaxOwnershipDuration limit still applies when shorter.
+	GatewayMaxOwnershipDuration time.Duration
 
 	// IdleReleaseGrace is the grace period after bus acquisition before
 	// idle SYN can release ownership. Default: 200ms.
@@ -295,14 +293,10 @@ func (c *Config) defaults() {
 		c.ReconnectMaxDelay = 30 * time.Second
 	}
 	if c.MaxOwnershipDuration == 0 {
-		// Issue #1401: 1.5s, a duration a real eBUS exchange never reaches
-		// (the longest directed read with retransmissions stays well under
-		// 1s at 2400 baud). The guard bounds one grant, not one request:
-		// protocol.Bus re-arbitrates for every attempt, so a request timeout
-		// longer than the cap (5s B524 probes, 2s semantic default) does not
-		// need ownership to outlive it. The former 10s default was sized to
-		// the request timeouts and held dead grants for that long.
-		c.MaxOwnershipDuration = 1500 * time.Millisecond
+		c.MaxOwnershipDuration = 10 * time.Second
+	}
+	if c.GatewayMaxOwnershipDuration == 0 {
+		c.GatewayMaxOwnershipDuration = 1500 * time.Millisecond
 	}
 	if c.IdleReleaseGrace == 0 {
 		// 200ms is enough for any eBUS transaction to complete (~100ms for
@@ -1897,7 +1891,7 @@ func (m *Mux) readLoop() {
 				m.stateMu.Lock()
 				ownerID, _, hasOwner := m.arb.owner()
 				if hasOwner && !m.busOwned.IsZero() &&
-					time.Since(m.busOwned) > m.cfg.MaxOwnershipDuration {
+					time.Since(m.busOwned) > m.ownershipDurationLimit(ownerID) {
 					m.arb.releaseOwnership(ownerID)
 					m.gatewayEcho.reset()
 					if ownerID == gatewaySessionID && m.gatewayTxnActive {
@@ -2381,6 +2375,16 @@ func (m *Mux) onReceived(symbol byte, wasEscaped bool) {
 	m.onLogicalReceived(symbol, wasEscaped, true)
 }
 
+// ownershipDurationLimit keeps the gateway failure guard from shortening
+// the existing external-session budget. Both receive timeout paths use it.
+func (m *Mux) ownershipDurationLimit(ownerID uint64) time.Duration {
+	limit := m.cfg.MaxOwnershipDuration
+	if ownerID == gatewaySessionID && m.cfg.GatewayMaxOwnershipDuration < limit {
+		limit = m.cfg.GatewayMaxOwnershipDuration
+	}
+	return limit
+}
+
 // onLogicalReceived processes one logical byte. deliverToSessions is false
 // when the external sessions already received the raw wire symbol(s) that
 // produced this byte (issue #1003): sessions are then fed exclusively from
@@ -2467,7 +2471,7 @@ func (m *Mux) onLogicalReceived(symbol byte, wasEscaped bool, deliverToSessions 
 	ownershipTimedOut := false
 	var ownershipTimedOutGateway bool
 	if hasOwner && !m.busOwned.IsZero() &&
-		time.Since(m.busOwned) > m.cfg.MaxOwnershipDuration {
+		time.Since(m.busOwned) > m.ownershipDurationLimit(ownerID) {
 		m.arb.releaseOwnership(ownerID)
 		m.gatewayEcho.reset()
 		if ownerID == gatewaySessionID && m.gatewayTxnActive {

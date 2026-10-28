@@ -247,9 +247,9 @@ func TestIssue1371RestartDuringBootBackoffRecoversAndResetsSchedule(t *testing.T
 	if restarted.DesiredRevision <= waiting.DesiredRevision || restarted.NextAttempt != 0 {
 		t.Fatalf("restarted view = %+v; want a new desired revision after %d and no schedule", restarted, waiting.DesiredRevision)
 	}
-	if clock.released.Load() != 1 {
-		t.Fatalf("canceled retry waits = %d; want the one the RESTART canceled", clock.released.Load())
-	}
+	// The retry goroutine counts the canceled wait after the cancel, which is
+	// not ordered before the RUNNING of the restarted generation.
+	clock.waitReleased(t, 1, logs)
 	if len(clock.recorded()) != blockAt || logs.count(fmt.Sprintf("ebus.primary: recovery attempt %d ", blockAt)) != 0 {
 		t.Fatalf("the boot recovery went on after the RESTART: %d retries\n%s", len(clock.recorded()), issue1367RecoveryLines(logs.text()))
 	}

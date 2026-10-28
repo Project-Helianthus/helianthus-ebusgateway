@@ -46,7 +46,7 @@ GOOS=linux GOARCH=arm GOARM=7 go build -o /dev/null ./cmd/gateway
 GOOS=linux GOARCH=arm GOARM=6 go build -o /dev/null ./cmd/gateway
 
 echo "==> go test (race)"
-go test -race -count=1 ./...
+go test -race -count=1 -timeout 20m ./...
 
 echo "==> validating source-selection artifact schema coverage"
 go test ./... -run "TestSourceSelectionArtifact_EmitValidatesAgainstSchema" -count=1

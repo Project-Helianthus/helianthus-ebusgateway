@@ -12,8 +12,20 @@ package main
 // seams) against a scripted loopback ENH endpoint. Only two test seams are
 // narrowed: the mux AM27 threshold (production keeps 30 s) and the delays of
 // the native retry policy (its shape is kept: five fast attempts, then the
-// persistent phase of issue #1369). The tests of the persistent phase itself
-// are in issue1369_persistent_recovery_test.go.
+// persistent phase of issue #1369). The AM27 test keeps the production policy
+// instead and injects the manager clock and retry wait of
+// issue1369_persistent_recovery_test.go, so that the BACKOFF stays the visible
+// state for as long as the test inspects it and the order of the recovery
+// lines is fixed by construction, never by how fast the machine is. The
+// tests of the persistent phase itself are in
+// issue1369_persistent_recovery_test.go.
+//
+// The recovery lines come from two goroutines: the recovery log (loss,
+// attempts, recovered) writes under its own lock, and the manager watch
+// writes the lifecycle BACKOFF and RUNNING lines. The loss line and the
+// BACKOFF line of the first attempt are written by different goroutines, so
+// neither order is a behaviour of the runtime; a test orders a line only
+// against lines whose order the runtime fixes.
 
 import (
 	"bytes"
@@ -43,6 +55,9 @@ const (
 
 // issue1367Schedule is the schedule text of the narrowed policy.
 const issue1367Schedule = "recovery continues while desired RUNNING (5 fast attempts, then backoff from 300ms doubling to 600ms)"
+
+// issue1367ProductionSchedule is the schedule text of the production policy.
+const issue1367ProductionSchedule = "recovery continues while desired RUNNING (5 fast attempts, then backoff from 1s doubling to 5m0s)"
 
 // issue1367Endpoint is a scripted ENH endpoint. Every session answers INIT
 // and INFO (the version payload is the session index, so a recovered
@@ -317,7 +332,23 @@ func (logs *issue1367Logs) onLine(want string, fn func()) {
 	logs.mu.Unlock()
 }
 
-// requireOrdered asserts that every fragment occurs, in order.
+// waitContains polls the captured log until fragment occurs, within the
+// bound. It waits for a line that a goroutine of the runtime writes after the
+// state the test observed, without ordering it against any other line.
+func (logs *issue1367Logs) waitContains(t *testing.T, fragment string) {
+	t.Helper()
+	deadline := time.Now().Add(rctlBound)
+	for !strings.Contains(logs.text(), fragment) {
+		if time.Now().After(deadline) {
+			t.Fatalf("log lacks %q; recovery log:\n%s", fragment, issue1367RecoveryLines(logs.text()))
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// requireOrdered asserts that every fragment occurs, in order, scanning the
+// whole captured log from its start. Callers list only lines whose relative
+// order the runtime fixes.
 func (logs *issue1367Logs) requireOrdered(t *testing.T, fragments ...string) {
 	t.Helper()
 	text := logs.text()
@@ -434,7 +465,7 @@ func issue1367ObservedSince(process *rctlProcess, cursor uint64) []runtimecontro
 	return events
 }
 
-func issue1367RequireRecoveringView(t *testing.T, process *rctlProcess, logs *issue1367Logs) {
+func issue1367RequireRecoveringView(t *testing.T, process *rctlProcess, logs *issue1367Logs) runtimecontrol.DriverStatus {
 	t.Helper()
 	status := waitIssue1367Status(t, process, drivermanager.ObservedBackoff, drivermanager.ReasonRetryScheduled, logs)
 	if got, reason := portalConfigReadbackStatus(status); got != "pending" || reason != "backoff" {
@@ -446,28 +477,63 @@ func issue1367RequireRecoveringView(t *testing.T, process *rctlProcess, logs *is
 	if got := process.adapterStatus(); got != adapterStatusUnavailable {
 		t.Fatalf("adapter status during recovery = %q; want %q", got, adapterStatusUnavailable)
 	}
+	return status
 }
 
 func TestIssue1367AdapterDirectStallPastAM27RecoversThroughLoggedBackoff(t *testing.T) {
-	withIssue1367Seams(t)
+	clock := newIssue1369Clock(issue1369NoJitter)
+	withIssue1369Seams(t, clock)
 	logs := captureIssue1367Logs(t)
 	endpoint := newIssue1367Endpoint(t, true)
-	process := startIssue1367Process(t, endpoint, ebusgateway.TransportAdapterDirect)
-	process.waitObserved(drivermanager.ObservedRunning)
-	requireIssue1367Version(t, process, 1)
+	process := startIssue1369Process(t, clock, endpoint, ebusgateway.TransportAdapterDirect)
 	first := process.control.driver.Snapshot()
+	before := process.status()
 	cursor := process.control.Service().List().EventCursor
 
-	// The first reconnect attempt is refused; the endpoint comes back once
-	// that failure is logged, so the second attempt reconnects.
+	// The first reconnect attempt is refused; the endpoint is back before the
+	// second attempt dials, so the second attempt reconnects. The wait of the
+	// first retry is held, like a delay of seconds, while the recovering view
+	// is inspected: the BACKOFF stays the visible state for as long as the
+	// test needs it, and the injected clock then skips the delays instead of
+	// sleeping them.
+	const reconnectAt = 2
+	held, resume := make(chan struct{}), make(chan struct{})
+	var heldOnce, releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(resume) }) })
+	clock.setOnRetry(func(attempt int) issue1369Action {
+		switch attempt {
+		case 1:
+			heldOnce.Do(func() { close(held) })
+			<-resume
+		case reconnectAt:
+			endpoint.open()
+		}
+		return issue1369Proceed
+	})
 	endpoint.refuse()
-	logs.onLine("ebus.primary: recovery attempt 1 failed (class=dial_refused", endpoint.open)
 	endpoint.stall()
+	select {
+	case <-held:
+	case <-time.After(3 * rctlBound):
+		t.Fatalf("the AM27 recovery never scheduled its first retry; recovery log:\n%s", issue1367RecoveryLines(logs.text()))
+	}
 
-	issue1367RequireRecoveringView(t, process, logs)
+	waiting := issue1367RequireRecoveringView(t, process, logs)
 	requireIssue1367List(t, process, drivermanager.ObservedBackoff, drivermanager.ReasonRetryScheduled)
+	if retry := process.control.driver.Snapshot().Retry; waiting.NextAttempt != 1 || retry == nil || retry.Attempt != 1 || !waiting.NextAttemptUTC.Equal(retry.NotBeforeUTC) {
+		t.Fatalf("service view while recovering = %+v (manager %+v); want the first retry scheduled", waiting, retry)
+	}
+	releaseOnce.Do(func() { close(resume) })
 
 	status := waitIssue1367Status(t, process, drivermanager.ObservedRunning, drivermanager.ReasonNone, logs)
+	retries := clock.recorded()
+	if len(retries) != reconnectAt {
+		t.Fatalf("scheduled retries = %d; want %d", len(retries), reconnectAt)
+	}
+	issue1369RequireSchedule(t, retries, before.DesiredRevision, issue1369NoJitter)
+	if status.NextAttempt != 0 || !status.NextAttemptUTC.IsZero() || status.DesiredRevision != before.DesiredRevision {
+		t.Fatalf("recovered view = %+v; want no schedule and the unchanged desired revision %d (no restart)", status, before.DesiredRevision)
+	}
 	if got, reason := portalConfigReadbackStatus(status); got != "effective" || reason != "running" {
 		t.Fatalf("Portal readback after recovery = %s/%s; want effective/running", got, reason)
 	}
@@ -484,33 +550,49 @@ func TestIssue1367AdapterDirectStallPastAM27RecoversThroughLoggedBackoff(t *test
 		t.Fatalf("adapter status after recovery = %q", got)
 	}
 
+	// The lifecycle sequence is the service's committed events: the BACKOFF
+	// that the stall scheduled opens it, RUNNING closes it, and no restart or
+	// terminal state lies between.
 	events := issue1367ObservedSince(process, cursor)
-	if len(events) < 2 || events[0].ObservedState == drivermanager.ObservedRunning || events[len(events)-1].ObservedState != drivermanager.ObservedRunning {
-		t.Fatalf("service view transitions = %+v; want RUNNING left during recovery and restored", events)
+	if len(events) < 2 || events[0].ObservedState != drivermanager.ObservedBackoff || events[0].Reason != drivermanager.ReasonRetryScheduled ||
+		events[len(events)-1].ObservedState != drivermanager.ObservedRunning {
+		t.Fatalf("service view transitions = %+v; want BACKOFF/RETRY_SCHEDULED opening and RUNNING closing the recovery", events)
 	}
 	for _, event := range events {
-		if event.Epoch != events[0].Epoch || event.Generation != events[0].Generation {
-			t.Fatalf("recovery changed the lifecycle correlation: %+v", events)
+		if event.ObservedState == drivermanager.ObservedFailed || event.Epoch != events[0].Epoch || event.Generation != events[0].Generation {
+			t.Fatalf("recovery changed the lifecycle correlation or published a terminal state: %+v", events)
 		}
 	}
-	// The owner is notified inside the mux's delegation, before the mux logs
-	// "connection recovery delegated to lifecycle owner".
+
+	// The log, over its whole capture. The loss line and the BACKOFF line of
+	// the first attempt come from different goroutines (the failure report
+	// and the manager watch) and have no fixed order, so each is ordered
+	// separately against the lines that follow it by construction: the loss
+	// line (written under the recovery log's lock) before the first attempt,
+	// and each BACKOFF line (written before the service view shows it, which
+	// the held wait of its retry waits for) before its attempt. The owner is
+	// notified inside the mux's delegation, before the mux logs "connection
+	// recovery delegated to lifecycle owner".
 	logs.requireOrdered(t,
 		"triggering reconnect (AM27)",
-		fmt.Sprintf("ebus.primary: connection lost (reason=adapter_connection_lost, generation=%d); %s", first.Generation, issue1367Schedule),
-		"ebus.primary: lifecycle BACKOFF (reason=RETRY_SCHEDULED, next_attempt=1, next_attempt_at=",
+		fmt.Sprintf("ebus.primary: connection lost (reason=adapter_connection_lost, generation=%d); %s", first.Generation, issue1367ProductionSchedule),
 		"ebus.primary: recovery attempt 1 (reason=adapter_connection_lost, phase=fast)",
-		`ebus.primary: recovery attempt 1 failed (class=dial_refused, error="connect: connection refused")`,
-		"ebus.primary: recovery attempt 2 (reason=retry_after_dial_refused, phase=fast)",
+	)
+	lines := append([]string{"triggering reconnect (AM27)"}, issue1369AttemptLines(retries, 1, ebusLossAdapterConnection)...)
+	lines = append(lines,
 		fmt.Sprintf("ebus.primary: recovery attempt 2 reconnected (generation=%d); awaiting admission", recovered.Generation),
 		fmt.Sprintf("ebus.primary: recovered on attempt 2 (generation=%d)", recovered.Generation),
-		fmt.Sprintf("ebus.primary: lifecycle RUNNING (generation=%d, recovered)", recovered.Generation),
-	)
+		fmt.Sprintf("ebus.primary: lifecycle RUNNING (generation=%d, recovered)", recovered.Generation))
+	logs.requireOrdered(t, lines...)
+	if logs.count("ebus.primary: lifecycle FAILED") != 0 {
+		t.Fatalf("recovery logged a terminal state:\n%s", issue1367RecoveryLines(logs.text()))
+	}
 	issue1367RequireOneDelegation(t, logs)
 }
 
 func issue1367RequireOneDelegation(t *testing.T, logs *issue1367Logs) {
 	t.Helper()
+	logs.waitContains(t, "adaptermux: connection recovery delegated to lifecycle owner")
 	if got := logs.count("triggering reconnect (AM27)"); got != 1 {
 		t.Fatalf("AM27 triggered %d times; want once", got)
 	}
@@ -549,9 +631,12 @@ func TestIssue1367ProxyClassTransportLossRecoversThroughSameLifecycleOwner(t *te
 	if len(events) < 2 || events[0].ObservedState == drivermanager.ObservedRunning || events[len(events)-1].ObservedState != drivermanager.ObservedRunning {
 		t.Fatalf("service view transitions = %+v; want RUNNING left during recovery and restored", events)
 	}
+	// The loss line and the BACKOFF line come from different goroutines and
+	// have no fixed order: the BACKOFF line is required, not ordered against
+	// the loss line.
+	logs.requireOrdered(t, "ebus.primary: lifecycle BACKOFF (reason=RETRY_SCHEDULED, next_attempt=1, next_attempt_at=")
 	logs.requireOrdered(t,
 		fmt.Sprintf("ebus.primary: connection lost (reason=transport_closed, generation=%d); %s", first.Generation, issue1367Schedule),
-		"ebus.primary: lifecycle BACKOFF (reason=RETRY_SCHEDULED, next_attempt=1, next_attempt_at=",
 		"ebus.primary: recovery attempt 1 (reason=transport_closed, phase=fast)",
 		`ebus.primary: recovery attempt 1 failed (class=dial_refused, error="connect: connection refused")`,
 		"ebus.primary: recovery attempt 2 (reason=retry_after_dial_refused, phase=fast)",

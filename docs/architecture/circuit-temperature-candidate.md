@@ -17,7 +17,7 @@ provide semantic vocabulary and the inclusive water-temperature bounds of
 [The mapper](../../cmd/gateway/thermal_circuit_temperature_candidate.go) accepts
 supplied observations, explicit qualified codec metadata, detached previous
 records and a typed evaluation context. It performs no acquisition, registration,
-publication or legacy consumer changes. This is a local candidate port, not the
+publication or legacy consumer changes within the mapper. This is a local candidate port, not the
 common production Provider interface or live gateway integration.
 
 For PB=B5, SB=24, OP=02, operation=00, group=02, the supported ordinary circuit
@@ -102,8 +102,37 @@ copy isolation. They are offline mapping evidence, not qualification or runtime
 acceptance. Documentation acceptance requires manual source, claim, transition,
 loss, example and link review; no keyword test establishes correctness.
 
-The existing eBUS MCP envelope, namespace, GraphQL parity and legacy circuit
-fields are untouched. Later integration must supply native qualification,
+The existing eBUS MCP envelope, namespace and circuit field shape remain in place.
+The [legacy reader](../../cmd/gateway/semantic_vaillant.go) now follows the native
+RR0020 correction: ordinary circuit refresh and pseudo-circuit evidence no longer
+acquire RR0020 as a float, including startup pseudo-circuit discovery. Startup
+uses measured RR0008 alone as temperature evidence for that pseudo-circuit;
+plausible RR0020 bytes cannot establish its presence. The float reader rejects
+OP02/GG02/RR0020 before live acquisition or cache lookup, independently of instance
+and payload width. Neither
+one raw byte nor four plausible float bytes supplies a calculated temperature.
+Snapshot cloning discards retained calculated-flow values, and merging ignores
+incoming calculated-flow values, including cache-source publication. The existing
+calculated-flow field therefore remains unavailable; no new raw status field or
+status meaning is introduced. Measured RR0008 and requested RR0007 remain
+independent, including their per-field last-known-good retention.
+
+[Focused reader regressions](../../cmd/gateway/o18_circuit_rr0020_test.go) exercise
+synthetic selector neighbors, acquisition, ordinary and pseudo-circuit refresh,
+startup pseudo-circuit absence and measured-flow publication, partial merges and
+cache-source publication. This repair is a partial advance of
+[#1253](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1253),
+not a complete thermal cutover. **Proven:** the repaired reader withholds the
+contradictory temperature interpretation. **Unknown:** raw status semantics and
+physical acceptance; neither follows from these offline checks.
+
+The older calculated-flow f32 row in the public
+[legacy semantic mapping](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/architecture/b524-semantic-mapping.md)
+remains conflicting historical text. Correcting it is documentation debt for its
+docs owner; the controlling native register catalog and circuit cutover contract
+already reject that interpretation. This reader repair changes neither contract.
+
+Later integration must supply native qualification,
 approved FactKey/service and rounding/freshness policies, receipt continuity,
 and a reviewed legacy compatibility decision with executable MCP/GraphQL parity.
 HA behavior, transport, runtime composition, smoke, physical acceptance,

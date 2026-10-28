@@ -915,9 +915,10 @@ func TestM03WithdrawalIndependentOfNativeShutdown(t *testing.T) {
 	for _, blocked := range []string{"worker", "endpoint"} {
 		t.Run(blocked, func(t *testing.T) {
 			entered, release := make(chan struct{}), make(chan struct{})
-			defer close(release)
+			var o23Opens atomic.Int32
 			endpoint := &m03BlockingEndpoint{entered: entered, release: release}
 			driver := m03Driver(t, true, func(modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) {
+				o23Opens.Add(1)
 				if blocked == "endpoint" {
 					return endpoint, nil
 				}
@@ -931,10 +932,29 @@ func TestM03WithdrawalIndependentOfNativeShutdown(t *testing.T) {
 					return nil
 				}}
 			})
+			var o23Stopped, o23Replaced chan error
+			var o23CancelReplacement context.CancelFunc
+			t.Cleanup(func() {
+				if o23CancelReplacement != nil {
+					o23CancelReplacement()
+				}
+				close(release)
+				if o23Replaced != nil {
+					if err := m03Wait(t, o23Replaced, "replacement caller did not join after release"); err != nil && !errors.Is(err, context.Canceled) {
+						t.Errorf("released replacement result=%v", err)
+					}
+				}
+				if o23Stopped != nil {
+					if err := m03Wait(t, o23Stopped, "Stop caller did not join after release"); err != nil {
+						t.Errorf("released shutdown result=%v", err)
+					}
+				}
+			})
 			if _, err := driver.Start(context.Background()); err != nil {
 				t.Fatal(err)
 			}
-			old := driver.active.Load().adapter
+			o23Attempt := driver.active.Load()
+			old := o23Attempt.adapter
 			if err := old.RecordSunSpecQualificationObservation(m03Observation(t)); err != nil {
 				t.Fatal(err)
 			}
@@ -953,24 +973,45 @@ func TestM03WithdrawalIndependentOfNativeShutdown(t *testing.T) {
 			if _, ok := old.SemanticPVCurrentSingleAt(time.Now()); ok {
 				t.Error("withdrawn timed read admitted")
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-			defer cancel()
-			if err := driver.Stop(ctx); !errors.Is(err, context.DeadlineExceeded) {
-				t.Fatalf("blocked shutdown result=%v", err)
-			}
-			<-entered
+			o23Stopped = make(chan error, 1)
+			go func() { o23Stopped <- driver.Stop(context.Background()) }()
+			m03Wait(t, entered, "native shutdown did not enter its blocker")
 			m03Eventually(t, "semantic withdrawal waited for native shutdown", func() bool { return !driver.hub.Admitted(asset) })
 			retained, err := driver.hub.Inspect(asset)
 			if err != nil || !retained.Present {
 				t.Fatalf("withdrawal lost retained evidence: %v", err)
 			}
-			if driver.active.Load() == nil {
+			if driver.active.Load() != o23Attempt {
 				t.Fatal("pending shutdown released generation ownership")
 			}
-			retryCtx, retryCancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
-			defer retryCancel()
-			if _, err := driver.Replace(retryCtx); !errors.Is(err, context.DeadlineExceeded) {
-				t.Fatalf("replacement bypassed pending shutdown: %v", err)
+			select {
+			case <-o23Attempt.stopped:
+				t.Fatal("shutdown completed before native blocker release")
+			default:
+			}
+			o23RetryContext, o23Cancel := context.WithCancel(context.Background())
+			o23CancelReplacement = o23Cancel
+			o23Joined := &m03JoinContext{Context: o23RetryContext, joined: make(chan struct{})}
+			o23Replaced = make(chan error, 1)
+			go func() {
+				o23Generation, o23Err := driver.Replace(o23Joined)
+				if o23Generation != 0 {
+					o23Err = fmt.Errorf("replacement returned generation %d while shutdown blocked: %v", o23Generation, o23Err)
+				}
+				o23Replaced <- o23Err
+			}()
+			m03Wait(t, o23Joined.joined, "replacement did not reach the shutdown join")
+			o23Cancel()
+			o23Err := m03Wait(t, o23Replaced, "replacement did not honor cancellation while shutdown blocked")
+			o23Replaced = nil // The replacement caller has joined.
+			if !errors.Is(o23Err, context.Canceled) {
+				t.Fatalf("replacement bypassed pending shutdown: %v", o23Err)
+			}
+			if driver.active.Load() != o23Attempt || driver.Generation() != o23Attempt.nativeGeneration {
+				t.Fatal("replacement changed pending generation ownership")
+			}
+			if o23Opens.Load() != 1 {
+				t.Fatal("replacement opened an endpoint before shutdown completed")
 			}
 		})
 	}

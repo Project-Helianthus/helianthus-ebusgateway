@@ -311,16 +311,24 @@ func (t *activeTransport) ArbitrationSendsSource() bool {
 	return t.mux.arbitrationSendsSource()
 }
 
-// BytesAreUnescaped reports that the active path delivers already-unescaped
-// (logical) bytes to protocol.Bus. The upstream ENH/ENS transport decodes
-// wire-level escape sequences ({0xA9, 0x01} → 0xAA, {0xA9, 0x00} → 0xA9)
-// before enqueuing into activeCh, so bus.Send must NOT apply escape
-// expansion again on this path.
+// BytesAreUnescaped reports that the active path is logical in both
+// directions, which is the single contract protocol.Bus derives from
+// transport.EscapeAware:
 //
-// Without this, protocol.Bus would double-escape 0xA9/0xAA outgoing and
-// would misinterpret logical 0xAA bytes from the adapter as SYN markers.
+//   - receive: the upstream ENH/ENS transport decodes wire-level escape
+//     sequences ({0xA9, 0x01} → 0xAA, {0xA9, 0x00} → 0xA9) before the
+//     bytes reach activeCh, with WasEscaped provenance;
+//   - write: the mux encodes each logical payload 0xA9/0xAA into its raw
+//     SEND symbols and verifies every symbol (issue #1003). ENH/ENS SEND
+//     transmits one raw symbol per request; the adapter does not escape.
+//
+// The two directions are determined independently (activeReadsAreLogical,
+// activeWritesAreLogical in raw_symbols.go); write encoding is not derived
+// from the receive flag. When either direction is not logical the path
+// reports false, protocol.Bus escapes and unescapes itself, and the mux
+// passes its writes through unchanged.
 func (t *activeTransport) BytesAreUnescaped() bool {
-	return t.mux.bytesAreUnescaped()
+	return t.mux.activePathIsLogical()
 }
 
 // SignalNextWriteIsStructuralSyn implements

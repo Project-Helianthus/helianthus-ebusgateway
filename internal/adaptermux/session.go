@@ -184,6 +184,12 @@ const rawTCPDiagnosticThreshold uint32 = 16
 type sessionFrame struct {
 	kind    sessionFrameKind
 	payload byte
+	// grantGen is set on a STARTED frame queued by the mux at grant time
+	// (issue #1003): the low 32 bits of the session's grantGeneration for
+	// that grant. The writer arms the F-34/F-35 abandon watchdog for this
+	// grant once the frame reached the client. Zero means "no watchdog".
+	// A uint32 keeps the frame at 16 bytes next to enqueuedAtNano.
+	grantGen uint32
 	// enqueuedAtNano is the elapsed nanoseconds from the package-level
 	// monoAnchor at the moment the frame was enqueued on sendCh. The
 	// writeLoop computes latency as
@@ -409,6 +415,23 @@ func (s *session) deliverStarted(payload byte) {
 	}
 }
 
+// deliverStartedForGrant queues the STARTED of a grant the mux just
+// confirmed, tagged with that grant's generation so the writer can arm the
+// abandon watchdog when the frame becomes visible to the client.
+func (s *session) deliverStartedForGrant(payload byte, grantGen uint64) {
+	if s.closed.Load() {
+		return
+	}
+	// AM23: the parser reset that follows arbitration must be armed
+	// before the client can see STARTED and start sending.
+	s.parserResetNeeded.Store(true)
+	select {
+	case s.sendCh <- sessionFrame{kind: sessionFrameStarted, payload: payload, grantGen: uint32(grantGen), enqueuedAtNano: time.Since(monoAnchor).Nanoseconds()}:
+	default:
+		go s.mux.RemoveSession(s.id) // goroutine: overflow removal
+	}
+}
+
 // deliverFailed notifies the session that its START failed.
 // payload carries the initiator byte for ENH protocol fidelity.
 func (s *session) deliverFailed(payload byte) {
@@ -592,14 +615,25 @@ func (s *session) handleStart(initiator byte) {
 		select {
 		case result := <-ch:
 			// AM23: signal readLoop to reset ENH parser after arbitration
-			// completes (enh.md:128). Set unconditionally — parser state
-			// may be stale regardless of grant/fail outcome.
-			s.parserResetNeeded.Store(true)
+			// completes (enh.md:128). Set for every outcome — parser
+			// state may be stale regardless of grant/fail outcome —
+			// except a grant whose STARTED the mux already queued: that
+			// path set the flag before queueing STARTED (issue #1003),
+			// and setting it again here could reset the parser in the
+			// middle of the client's first post-STARTED SEND frame.
+			if !result.granted || !result.startedQueued {
+				s.parserResetNeeded.Store(true)
+			}
 			if s.closed.Load() {
 				return
 			}
 			if result.granted {
-				s.deliverStarted(result.initiator)
+				// Issue #1003: the mux queues the grant's STARTED at its
+				// stream position; deliver here only for a grant that
+				// was not queued by the mux.
+				if !result.startedQueued {
+					s.deliverStarted(result.initiator)
+				}
 			} else if result.cancelled {
 				// AM55 fix: client-initiated SYN cancel — the client
 				// already knows it cancelled, don't deliver spurious FAILED.
@@ -716,6 +750,12 @@ func (s *session) writeLoop() {
 		select {
 		case frame := <-s.sendCh:
 			err := s.writeFrame(frame)
+			if err == nil && frame.kind == sessionFrameStarted && frame.grantGen != 0 && s.mux != nil {
+				// Issue #1003: the grant became visible to the client
+				// only now; start its abandon deadline here, not at the
+				// upstream grant.
+				s.mux.armExternalAbandonWatchdog(s, frame.grantGen)
+			}
 			// F-10 instrumentation: measure enqueue→TCP-write latency
 			// for every frame so operators can correlate "send to fe:
 			// ERR: read timeout" events on ebusd's side with concrete
@@ -811,98 +851,80 @@ func (s *session) writeFrame(frame sessionFrame) error {
 
 	// Phase 3 Step B3.6f (frame-atomic-visibility v8 §4.5): pace
 	// the TCP egress through the per-session v8classifier.Pacer.
-	// The pacer enforces τ_wire_byte=4.17ms cadence on AVERAGE
-	// across frames — see "frame-average pacing semantics" below.
 	//
-	// SEMANTICS — frame-average pacing (Codex round-1 MUST FIX on
-	// PR #648, refined by round-2 MEDIUM #1): each session frame
-	// is written via a SINGLE conn.Write call — the writer makes
-	// NO deliberate intra-frame pacing or splitting. TCP itself
-	// is a byte stream and does NOT preserve application write
-	// boundaries for the peer's Read calls; the peer may receive
-	// the frame as 1 read or N reads depending on its own buffer
-	// management and TCP segmentation. What the pacer guarantees
-	// is that the WRITER never inserts an intra-frame τ gap that
-	// could let the peer's Read coincide with a partial ENH
-	// escape sequence (`0xA9 NN`).
+	// Issue #1003: the cadence is reserved per eBUS wire symbol, not per
+	// encoded ENH TCP byte. A RECEIVED frame carries one wire symbol
+	// whether its ENH encoding is the 1-byte short form or the 2-byte
+	// long form; STARTED and FAILED stand for the one arbitration symbol
+	// the adapter consumed. RESETTED, ERROR and INFO frames carry no wire
+	// symbol and reserve no slot. Reserving two slots for a long-form
+	// symbol (the previous byte-count rule) accumulated queue latency
+	// ahead of a later STARTED without matching any wire cadence.
 	//
-	// The cadence is enforced AT FRAME GRANULARITY:
-	//   - For an N-byte frame, the Schedule loop reserves N
-	//     byte slots. After the loop, lastScheduledEmit points at
-	//     the LAST reserved slot (frameStart + (N-1)*τ); the
-	//     NEXT frame's first Schedule call advances it to
-	//     frameStart + N*τ (Codex round-2 MEDIUM #2 precision).
-	//   - NEXT frame's first byte therefore emits no earlier
-	//     than prevFrameStart + N*τ — the wire-equivalent rate
-	//     for N bytes.
-	//   - Within a frame, the writer issues ONE Write; there is
-	//     no deliberate intra-frame sleep.
-	//
-	// This matches how the bus itself would emit a multi-byte
-	// frame — the bytes are wire-encoded back-to-back at the
-	// adapter, then arrive at the gateway's read side together
-	// (modulo TCP fragmentation jitter). Frame-average pacing
-	// is the correct trade-off: inter-frame cadence is wire-
-	// equivalent, intra-frame writes are atomic at the WRITER.
-	//
-	// Wiring contract:
-	//   1. Call Schedule(now) ONCE to get the FIRST byte's emit
-	//      time. This is what we sleep until.
-	//   2. Call Schedule(now) (len(buf)-1) more times to advance
-	//      the pacer's cadence anchor by τ per byte, so the NEXT
-	//      frame's first byte is paced from lastEmit + N×τ.
-	//   3. Sleep until emitAt with shutdown-responsive cancel via
-	//      s.done / s.mux.ctx.Done.
-	//   4. Write the whole frame in a single conn.Write.
+	// Each frame is still written with a SINGLE conn.Write (no
+	// intra-frame pacing or splitting; Codex round-1 MUST FIX on PR
+	// #648). The writer sleeps until the frame's first reserved slot;
+	// the next frame's first slot is at least one τ per reserved symbol
+	// later. Order is unchanged: the writer drains sendCh strictly FIFO.
 	//
 	// ModeOff zero-overhead contract: when m.v8 == nil OR the
-	// per-session pacer is nil (which can happen during the brief
-	// window between AddSession and ensureSessionPacer completing —
-	// though in practice they're sequential), the pacer path is
-	// fully bypassed — no Schedule call, no time.Now, no sleep.
-	// External-session active writes through mux.doSend already
-	// pace independently of this output cadence.
+	// per-session pacer is nil, the pacer path is fully bypassed — no
+	// Schedule call, no time.Now, no sleep. External-session active
+	// writes through mux.doSend pace independently of this output
+	// cadence (that is the L_rtt / BeforeActiveWrite side per v8 §1.4,
+	// not the client's TCP egress).
 	//
-	// Do NOT conflate this hook point with mux.doSend's tr.Write
-	// (that's the L_rtt-EMA / BeforeActiveWrite side per v8 §1.4,
-	// which uses BeforeActiveWrite + EchoDeadlines + RecordEcho
-	// against the adapter, NOT the client's TCP egress).
-	// Defensive nil-check on s.mux — production callers always
-	// have a mux (session is constructed via Mux.AddSession), but
-	// unit tests (e.g. TestSession_WriteFrameErrorHost) build a
-	// bare session struct without a mux to exercise the encoder
-	// path in isolation. Without this guard those tests panic on
-	// s.mux.v8.
+	// Defensive nil-check on s.mux — unit tests (e.g.
+	// TestSession_WriteFrameErrorHost) build a bare session struct
+	// without a mux to exercise the encoder path in isolation.
 	if s.mux != nil && s.mux.v8 != nil {
 		if pacer := s.mux.SessionPacer(s.id); pacer != nil {
-			now := time.Now()
-			emitAt := pacer.Schedule(now)
-			// Advance the cadence anchor for the remaining
-			// bytes in this frame. Each Schedule call increments
-			// lastScheduledEmit by τ; we discard the returned
-			// emit-times for byte indexes 1..N-1 because the
-			// frame is written in a single Write, but the anchor
-			// advance is what enforces inter-FRAME cadence on
-			// the next iteration.
-			for i := 1; i < len(buf); i++ {
-				_ = pacer.Schedule(now)
-			}
-			if delay := time.Until(emitAt); delay > 0 {
-				timer := time.NewTimer(delay)
-				select {
-				case <-timer.C:
-				case <-s.done:
-					timer.Stop()
-					return net.ErrClosed
-				case <-s.mux.ctx.Done():
-					timer.Stop()
-					return s.mux.ctx.Err()
+			if emitAt, paced := reserveSymbolSlots(pacer, time.Now(), sessionFrameSymbols(frame.kind)); paced {
+				if delay := time.Until(emitAt); delay > 0 {
+					timer := time.NewTimer(delay)
+					select {
+					case <-timer.C:
+					case <-s.done:
+						timer.Stop()
+						return net.ErrClosed
+					case <-s.mux.ctx.Done():
+						timer.Stop()
+						return s.mux.ctx.Err()
+					}
 				}
 			}
 		}
 	}
 	_, err := s.conn.Write(buf)
 	return err
+}
+
+// sessionFrameSymbols reports how many eBUS wire symbols a session frame
+// represents for output pacing (issue #1003). RECEIVED carries one observed
+// wire symbol regardless of its ENH encoding length; STARTED and FAILED
+// stand for the single arbitration symbol the adapter consumed; control
+// frames (RESETTED, ERROR_EBUS, ERROR_HOST, INFO) carry none.
+func sessionFrameSymbols(kind sessionFrameKind) int {
+	switch kind {
+	case sessionFrameReceived, sessionFrameStarted, sessionFrameFailed:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// reserveSymbolSlots reserves one pacer slot per wire symbol and returns the
+// emit time of the first one. paced is false for a frame without wire
+// symbols, which is written without consulting the pacer.
+func reserveSymbolSlots(pacer *v8classifier.Pacer, now time.Time, symbols int) (emitAt time.Time, paced bool) {
+	if symbols <= 0 {
+		return time.Time{}, false
+	}
+	emitAt = pacer.Schedule(now)
+	for i := 1; i < symbols; i++ {
+		_ = pacer.Schedule(now)
+	}
+	return emitAt, true
 }
 
 // isResetOrDisconnectError reports whether err represents a bus reset

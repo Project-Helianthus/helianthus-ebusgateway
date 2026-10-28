@@ -465,7 +465,9 @@ func (m *Mux) markActiveReadTimeout() {
 }
 
 // markActiveWriteError clears gatewayTxnActive with ReasonActiveWriteError.
-// Called from activeTransport.Write when sendLoop returns an error.
+// Called from activeTransport.Write when sendLoop returns an error. A write
+// that entered collision recovery (escape-pair echo collision) keeps its
+// transaction live for the SYN resynchronization, as in markActiveReadTimeout.
 // Acquires stateMu internally. Caller must NOT hold stateMu.
 //
 // Codex round-2 MUST FIX on PR #647: same cancel-after-unlock
@@ -478,7 +480,7 @@ func (m *Mux) markActiveReadTimeout() {
 func (m *Mux) markActiveWriteError() {
 	m.stateMu.Lock()
 	transitioned := false
-	if m.gatewayTxnActive {
+	if m.gatewayTxnActive && !m.activeTxn.firstByteSuspectArbLoss.Load() {
 		m.gatewayTxnActive = false
 		m.recordGatewayInactive(ReasonActiveWriteError)
 		transitioned = true

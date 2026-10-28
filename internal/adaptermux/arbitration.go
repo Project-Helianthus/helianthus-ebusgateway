@@ -56,6 +56,21 @@ var errStaleStartRequest = errors.New("adaptermux: pending START rejected — ex
 type arbitrator struct {
 	mu sync.Mutex
 
+	// ownershipGen advances on every ownership transition (confirm,
+	// release, forceRelease) and lifecycleEpoch on every lifecycle fence
+	// (adapter reset, reconnect, close). ownershipGen is guarded by mu, the
+	// lock commitWhileOwnershipCurrent holds across its check and its commit;
+	// lifecycleEpoch is atomic so a fence never waits behind a stalled commit
+	// write (a Close must stay able to reach the upstream close that unblocks
+	// it) (issue #1003).
+	ownershipGen   uint64
+	lifecycleEpoch atomic.Uint64
+	// ownerEpoch is the lifecycleEpoch observed when the current ownership
+	// was confirmed. Tokens carry it rather than the live epoch, so a fence
+	// that lands before the reset handler releases the old grant still ends
+	// that grant's period.
+	ownerEpoch uint64
+
 	// pendingGateway holds the gateway's pending START request, if any.
 	// Only one gateway request can be pending at a time.
 	pendingGateway *startRequest
@@ -166,7 +181,11 @@ type startResult struct {
 	granted   bool
 	cancelled bool // AM55: true when client-initiated SYN cancel — no FAILED delivery
 	initiator byte // initiator byte for STARTED/FAILED payload fidelity
-	err       error
+	// startedQueued reports that the mux already queued the granted
+	// external session's STARTED at its stream position (issue #1003);
+	// the session must not deliver a second STARTED.
+	startedQueued bool
+	err           error
 }
 
 // gatewaySessionID is the reserved session ID for the gateway's
@@ -590,6 +609,8 @@ func (a *arbitrator) drainStalePendingExternalLocked() {
 func (a *arbitrator) confirmOwnership(sessionID uint64, initiator byte) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.ownershipGen++
+	a.ownerEpoch = a.lifecycleEpoch.Load()
 	a.hasOwner = true
 	a.currentOwner = sessionID
 	a.currentInitiator = initiator
@@ -602,6 +623,7 @@ func (a *arbitrator) releaseOwnership(sessionID uint64) {
 	defer a.mu.Unlock()
 
 	if a.hasOwner && a.currentOwner == sessionID {
+		a.ownershipGen++
 		a.hasOwner = false
 		a.currentOwner = 0
 		a.currentInitiator = 0
@@ -616,11 +638,70 @@ func (a *arbitrator) releaseOwnership(sessionID uint64) {
 	}
 }
 
+// ownershipToken identifies one ownership period of one session within one
+// lifecycle epoch (issue #1003).
+type ownershipToken struct {
+	sessionID uint64
+	gen       uint64
+	epoch     uint64
+}
+
+var (
+	// errOwnershipLifecycleFenced: an adapter reset, reconnect or close
+	// fenced the ownership period the commit belonged to.
+	errOwnershipLifecycleFenced = errors.New("adaptermux: ownership period ended at a lifecycle boundary")
+	// errOwnershipChanged: ownership was released or re-granted since the
+	// token was taken.
+	errOwnershipChanged = errors.New("adaptermux: ownership period ended")
+)
+
+// currentOwnershipToken returns the token of sessionID's current ownership
+// period, or false when sessionID does not own the bus.
+func (a *arbitrator) currentOwnershipToken(sessionID uint64) (ownershipToken, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.hasOwner || a.currentOwner != sessionID {
+		return ownershipToken{}, false
+	}
+	return ownershipToken{sessionID: sessionID, gen: a.ownershipGen, epoch: a.ownerEpoch}, true
+}
+
+// commitWhileOwnershipCurrent runs commit while holding mu, only if tok still
+// identifies the current ownership period. Every ownership transition and
+// every lifecycle fence takes mu, so it is ordered deterministically against
+// the commit: either it happened first and commit does not run (the returned
+// error wraps errOwnershipLifecycleFenced or errOwnershipChanged), or it waits
+// until commit has returned. commit must not call back into the arbitrator.
+func (a *arbitrator) commitWhileOwnershipCurrent(tok ownershipToken, commit func() error) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.lifecycleEpoch.Load() != tok.epoch {
+		return errOwnershipLifecycleFenced
+	}
+	if !a.hasOwner || a.currentOwner != tok.sessionID || a.ownershipGen != tok.gen {
+		return errOwnershipChanged
+	}
+	return commit()
+}
+
+// fenceLifecycle ends every ownership period taken before it for the purpose
+// of commitWhileOwnershipCurrent. Called at adapter reset, reconnect and
+// close.
+//
+// The fence does not take mu: a commit already past its epoch check may still
+// be inside its write, and a fence that waited for it would block Close (and
+// reconnect) before they reach the upstream close that unblocks that write.
+// Any commit that checks after the fence sees the new epoch and writes nothing.
+func (a *arbitrator) fenceLifecycle() {
+	a.lifecycleEpoch.Add(1)
+}
+
 // forceRelease releases bus ownership regardless of which session
 // holds it. Used on adapter RESETTED or timeout.
 func (a *arbitrator) forceRelease() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.ownershipGen++
 	a.hasOwner = false
 	a.currentOwner = 0
 	a.currentInitiator = 0

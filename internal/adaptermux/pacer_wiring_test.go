@@ -457,9 +457,12 @@ func TestSessionPacer_Watchdog_OffMode_NoArm(t *testing.T) {
 // even if the actual sleep was removed (a real regression). The
 // load-bearing assertion is now WALL-CLOCK: the second frame's
 // first byte must not arrive at the client before
-// firstFrameStart + N*τ_wire_byte. We use a 2-byte ENH frame
-// (sessionFrameStarted) so the inter-frame gap is 2×τ ≈ 8.3ms
-// — comfortably above scheduler jitter.
+// firstFrameStart + N*τ_wire_byte, where N is the number of eBUS
+// wire symbols the first frame represents (issue #1003: cadence is
+// per wire symbol, not per encoded ENH byte). A STARTED frame is two
+// ENH bytes but one arbitration symbol, so the floor is 1×τ. The
+// per-symbol slot accounting itself is pinned deterministically by
+// TestSessionPacer_ReservesOneSlotPerWireSymbol.
 func TestSessionPacer_OutputPacer_SchedulesFrameEgress(t *testing.T) {
 	mux, _, _, cleanup := newClassifiedTestMux(t, v8classifier.ModeShadow)
 	defer cleanup()
@@ -489,10 +492,10 @@ func TestSessionPacer_OutputPacer_SchedulesFrameEgress(t *testing.T) {
 	// byte didn't arrive earlier than the wire-equivalent.
 	tStart := time.Now()
 
-	// Enqueue TWO 2-byte ENH frames back-to-back. Each frame is
-	// 2 bytes; the cadence anchor advances by 2τ per frame, so
-	// the second frame's first byte should emit no earlier than
-	// tStart + 2*TauWireByte.
+	// Enqueue TWO STARTED frames back-to-back. Each is a 2-byte ENH
+	// encoding of ONE wire symbol; the cadence anchor advances by τ
+	// per frame, so the second frame's first byte should emit no
+	// earlier than tStart + TauWireByte.
 	mux.sessions[sid].sendCh <- sessionFrame{
 		kind:    sessionFrameStarted,
 		payload: 0x31,
@@ -518,20 +521,19 @@ func TestSessionPacer_OutputPacer_SchedulesFrameEgress(t *testing.T) {
 
 	// PRIMARY ASSERTION (Codex round-2 MAJOR #2): the second
 	// frame's first byte must not have been readable at the
-	// client before tStart + 2*τ_wire_byte. A regression that
+	// client before tStart + τ_wire_byte. A regression that
 	// deletes the sleep inside writeFrame would let the second
 	// frame egress immediately after the first, and this
 	// assertion would clearly fail.
 	elapsed := tFrame2.Sub(tStart)
-	requiredFloor := 2 * v8classifier.TauWireByte
+	requiredFloor := v8classifier.TauWireByte
 	if elapsed < requiredFloor {
-		t.Errorf("frame2 arrived at +%v after tStart; want >= %v (frame1 was 2 bytes so frame2 must wait 2*τ — the sleep at writeFrame may have been bypassed)", elapsed, requiredFloor)
+		t.Errorf("frame2 arrived at +%v after tStart; want >= %v (frame1 was one wire symbol so frame2 must wait τ — the sleep at writeFrame may have been bypassed)", elapsed, requiredFloor)
 	}
 
 	// SECONDARY ASSERTION: the pacer's anchor advanced
-	// monotonically. After two 2-byte frames, lastScheduledEmit
-	// is at tStart + (2*2 - 1)*τ = tStart + 3*τ (last reserved
-	// byte slot).
+	// monotonically. After two one-symbol frames, lastScheduledEmit
+	// is at the second frame's slot.
 	emit := pacer.LastScheduledEmit()
 	if emit.IsZero() {
 		t.Fatal("LastScheduledEmit zero after two frames — Schedule was not called")

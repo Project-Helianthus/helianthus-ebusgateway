@@ -703,7 +703,13 @@ func (manager *Manager) StopWithReport(ctx context.Context, id string) (CloseRep
 		return CloseReport{DriverID: id, Class: CloseInternalError}, ErrDriverNotFound
 	}
 	manager.cancelRetry(driver)
-	manager.cancelAttempt(driver)
+	// The in-flight construction is canceled by stopLocked, after STOPPED
+	// intent is published under the same lock that captures it. Canceling it
+	// earlier, before that intent exists, lets an admission hold that returns
+	// on cancellation observe an operation that is not yet superseded and
+	// publish the held generation, which the stop then closes as an ordinary
+	// running generation instead of retiring it unpublished. No construction
+	// holds opMu, so the stop does not need the early cancel to proceed.
 	driver.opMu.Lock()
 	report := manager.stopLocked(ctx, driver)
 	driver.opMu.Unlock()

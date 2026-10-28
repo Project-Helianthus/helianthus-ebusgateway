@@ -298,29 +298,107 @@ func TestM2MGraphQLRuntime_BoundsStorageProviderContextBelowWriteDeadline(t *tes
 }
 
 func TestM2MRequestDeadlineLeavesProcessingReserveBeforeStorageProvider(t *testing.T) {
-	const timeout = 80 * time.Millisecond
-	const preProviderWork = 20 * time.Millisecond
-	const providerWork = 20 * time.Millisecond
-	providerCalled := false
-	handler, err := m2mgraphql.NewHandler(m2mgraphql.Config{AllowedAssets: map[string]struct{}{"asset:growatt-bms-a": {}}, SemanticStorageCurrent: func(ctx context.Context, _ string) (json.RawMessage, bool) {
-		providerCalled = true
-		deadline, ok := ctx.Deadline()
-		if !ok || time.Until(deadline) <= providerWork {
-			return nil, false
+	// Check context contracts without claiming an elapsed processing reserve.
+	t.Run("O14StorageResponseAndChildDeadline", func(t *testing.T) {
+		parent, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		var child context.Context
+		providerCalled := false
+		handler, err := m2mgraphql.NewHandler(m2mgraphql.Config{AllowedAssets: map[string]struct{}{"asset:storage-o14": {}}, SemanticStorageCurrent: func(ctx context.Context, _ string) (json.RawMessage, bool) {
+			providerCalled = true
+			child = ctx
+			return json.RawMessage(`{"snapshot":{},"evaluation":{},"selections":[],"projection":{}}`), ctx.Err() == nil
+		}})
+		if err != nil {
+			t.Fatal(err)
 		}
-		time.Sleep(providerWork)
-		return json.RawMessage(`{"snapshot":{},"evaluation":{},"selections":[],"projection":{}}`), ctx.Err() == nil
-	}})
-	if err != nil {
-		t.Fatal(err)
+		request := httptest.NewRequest(http.MethodPost, "/graphql/m2m/v1", strings.NewReader(`{"operationName":"SemanticStorageCurrent","query":"query SemanticStorageCurrent($request: M2MCurrentSnapshotRequest!) { semanticStorageCurrent(request: $request) { snapshot evaluation selections projection } }","variables":{"request":{"contractId":"PUBLIC_GRAPHQL_SEMANTIC_STORAGE_V1","assetRef":"asset:storage-o14"}}}`)).WithContext(parent)
+		response := httptest.NewRecorder()
+		before := time.Now()
+		newM2MRequestDeadlineHandler(handler, m2mRequestTimeout).ServeHTTP(response, request)
+		after := time.Now()
+		if !providerCalled || response.Code != http.StatusOK {
+			t.Fatalf("provider/status=%t/%d body=%s", providerCalled, response.Code, response.Body.String())
+		}
+		var got map[string]any
+		if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		want := map[string]any{"data": map[string]any{"semanticStorageCurrent": map[string]any{
+			"snapshot": map[string]any{}, "evaluation": map[string]any{}, "selections": []any{}, "projection": map[string]any{},
+		}}}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("storage response=%s; want valid storage data without errors", response.Body.String())
+		}
+		deadline, ok := child.Deadline()
+		if !ok || deadline.Before(before.Add(m2mRequestTimeout)) || deadline.After(after.Add(m2mRequestTimeout)) {
+			t.Fatalf("child deadline=%v present=%t; want request timeout anchored within ServeHTTP", deadline, ok)
+		}
+		if child.Err() != context.Canceled {
+			t.Errorf("child error after ServeHTTP=%v; want cancellation on return", child.Err())
+		}
+		if parent.Err() != nil {
+			t.Errorf("child cleanup canceled parent: %v", parent.Err())
+		}
+	})
+
+	for _, tc := range []struct {
+		name   string
+		offset time.Duration
+		want   error
+	}{
+		{name: "O14EarlierParentDeadline", offset: -time.Hour},
+		{name: "O14ExpiredParentDeadline", offset: -3 * time.Hour, want: context.DeadlineExceeded},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Future and expired deadlines vary independently of explicit cancellation.
+			deadline := time.Now().Add(2*time.Hour + tc.offset)
+			parent, cancel := context.WithDeadline(context.Background(), deadline)
+			defer cancel()
+			var child context.Context
+			var during error
+			handler := http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+				child = request.Context()
+				during = child.Err()
+			})
+			newM2MRequestDeadlineHandler(handler, 3*time.Hour).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil).WithContext(parent))
+			if child == nil {
+				t.Fatal("handler was not called")
+			}
+			if got, ok := child.Deadline(); !ok || !got.Equal(deadline) {
+				t.Errorf("child deadline=%v present=%t; want exact parent deadline %v", got, ok, deadline)
+			}
+			if during != tc.want || parent.Err() != tc.want {
+				t.Errorf("handler/parent errors=%v/%v; want %v", during, parent.Err(), tc.want)
+			}
+		})
 	}
-	preProvider := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { time.Sleep(preProviderWork); handler.ServeHTTP(w, r) })
-	request := httptest.NewRequest(http.MethodPost, "/graphql/m2m/v1", strings.NewReader(`{"operationName":"SemanticStorageCurrent","query":"query SemanticStorageCurrent($request: M2MCurrentSnapshotRequest!) { semanticStorageCurrent(request: $request) { snapshot evaluation selections projection } }","variables":{"request":{"contractId":"PUBLIC_GRAPHQL_SEMANTIC_STORAGE_V1","assetRef":"asset:growatt-bms-a"}}}`))
-	response := httptest.NewRecorder()
-	newM2MRequestDeadlineHandler(preProvider, timeout).ServeHTTP(response, request)
-	if !providerCalled || response.Code != http.StatusOK {
-		t.Fatalf("provider/status=%t/%d body=%s", providerCalled, response.Code, response.Body.String())
-	}
+
+	t.Run("O14ParentCancellationDuringHandler", func(t *testing.T) {
+		parent, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		captured := make(chan context.Context)
+		release := make(chan struct{})
+		finished := make(chan struct{})
+		var during error
+		handler := http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+			captured <- request.Context()
+			<-release
+			during = request.Context().Err()
+		})
+		go func() {
+			defer close(finished)
+			newM2MRequestDeadlineHandler(handler, m2mRequestTimeout).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil).WithContext(parent))
+		}()
+		child := <-captured
+		cancel()
+		errBeforeReturn := child.Err()
+		close(release)
+		<-finished
+		if errBeforeReturn != context.Canceled || during != context.Canceled {
+			t.Fatalf("child errors before return/in handler=%v/%v; want parent cancellation propagated", errBeforeReturn, during)
+		}
+	})
 }
 
 func TestM2MGraphQLRuntime_StalledHandshakeDoesNotBlockOtherPrincipals(t *testing.T) {

@@ -2,6 +2,30 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Exercise both checkout branches with Actions' truthiness for string/number
+# literals: numeric zero is falsy, but the string '0' must select full history.
+python3 - "$script_dir/../.github/workflows/ci.yml" <<'PY'
+import ast
+import re
+import sys
+from pathlib import Path
+
+workflow = Path(sys.argv[1]).read_text()
+expression = re.search(r"^\s+fetch-depth: \$\{\{ (.*?) \}\}$", workflow, re.M)
+assert expression is not None, "missing checkout fetch-depth expression"
+branches = re.fullmatch(
+    r"runner.environment != 'github-hosted' && ('[01]'|[01]) \|\| ('[01]'|[01])",
+    expression[1],
+)
+assert branches is not None, "unexpected checkout fetch-depth expression"
+full, shallow = (ast.literal_eval(value) for value in branches.groups())
+for environment, expected in (("self-hosted", "0"), ("github-hosted", "1")):
+    depth = (environment != "github-hosted" and full) or shallow
+    assert str(depth) == expected, f"{environment}: expected {expected}, got {depth}"
+print("lint checkout fetch-depth: 2 checks passed")
+PY
+
 test_dir="$(mktemp -d)"
 trap 'rm -rf "$test_dir"' EXIT
 export GITHUB_STEP_SUMMARY="$test_dir/summary"

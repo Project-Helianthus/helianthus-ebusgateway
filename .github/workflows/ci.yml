@@ -93,7 +93,7 @@ jobs:
           clean: true
           # Compare the complete PR change set, including renames and deletions.
           # Hosted runners keep their existing shallow checkout.
-          fetch-depth: ${{ runner.environment != 'github-hosted' && 0 || 1 }}
+          fetch-depth: ${{ runner.environment != 'github-hosted' && '0' || '1' }}
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22'

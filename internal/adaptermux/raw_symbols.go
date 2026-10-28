@@ -396,21 +396,19 @@ type errGatewayLeadEcho struct{ err error }
 func (e errGatewayLeadEcho) Error() string { return e.err.Error() }
 func (e errGatewayLeadEcho) Unwrap() error { return e.err }
 
-// enterWriteCollisionRecovery moves a gateway transaction whose escape pair
-// failed its echo verification with a bus collision into the bounded
-// collision recovery lifecycle. The transaction stays active so the two SYN
-// symbols protocol.Bus waits for are delivered, and the recovery token
-// becomes visible; Retry or Abandon from the bus then releases the grant.
-// Without this the write rollback would clear the transaction and starve the
-// SYN wait until the request context ends.
+// enterWriteCollisionRecovery ends a gateway transaction whose escape pair
+// failed its echo verification with a bus collision as an arbitration loss:
+// ownership is released at once and the two SYN symbols protocol.Bus waits
+// for before its retry stay owed to the active path (issue #1401, see
+// releaseGatewayOnArbitrationLossLocked). Without the owed window the write
+// rollback would clear the transaction and starve the SYN wait until the
+// request context ends.
 func (m *Mux) enterWriteCollisionRecovery() {
 	m.stateMu.Lock()
 	entered := false
 	if m.gatewayTxnActive && !m.activeTxn.firstByteSuspectArbLoss.Load() {
 		m.activeTxn.firstByteSuspectArbLoss.Store(true)
-		m.collisionResyncSYNs = 0
-		m.gatewayEcho.reset()
-		entered = true
+		entered = m.releaseGatewayOnArbitrationLossLocked()
 	}
 	m.stateMu.Unlock()
 	if entered {

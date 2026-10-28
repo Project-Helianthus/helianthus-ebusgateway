@@ -49,8 +49,17 @@ type Config struct {
 	// ReconnectMaxDelay is the maximum reconnection backoff. Default: 30s.
 	ReconnectMaxDelay time.Duration
 
-	// MaxOwnershipDuration is the hard limit on continuous bus ownership.
-	// Default: 10s.
+	// MaxOwnershipDuration is the hard limit on continuous bus ownership,
+	// measured from the grant. Default: 1500ms.
+	//
+	// Issue #1401: this is a last-resort guard, not the normal exit. A
+	// single eBUS exchange (request, ACK, response, ACK, SYN) completes in
+	// a few hundred milliseconds even with NACK and CRC retransmissions;
+	// gateway transactions that fail end their ownership at the failure
+	// (write error, active read timeout, context cancel, arbitration loss,
+	// foreign initiator, abandoned on re-bid) rather than waiting for this
+	// cap. The previous 10s default let a dead grant block external
+	// sessions for seconds.
 	MaxOwnershipDuration time.Duration
 
 	// IdleReleaseGrace is the grace period after bus acquisition before
@@ -286,10 +295,14 @@ func (c *Config) defaults() {
 		c.ReconnectMaxDelay = 30 * time.Second
 	}
 	if c.MaxOwnershipDuration == 0 {
-		// 10s is strictly larger than any request timeout (5s for B524
-		// probes, 2s semantic default) to prevent the ownership guard
-		// from firing before a legitimate request completes.
-		c.MaxOwnershipDuration = 10 * time.Second
+		// Issue #1401: 1.5s, a duration a real eBUS exchange never reaches
+		// (the longest directed read with retransmissions stays well under
+		// 1s at 2400 baud). The guard bounds one grant, not one request:
+		// protocol.Bus re-arbitrates for every attempt, so a request timeout
+		// longer than the cap (5s B524 probes, 2s semantic default) does not
+		// need ownership to outlive it. The former 10s default was sized to
+		// the request timeouts and held dead grants for that long.
+		c.MaxOwnershipDuration = 1500 * time.Millisecond
 	}
 	if c.IdleReleaseGrace == 0 {
 		// 200ms is enough for any eBUS transaction to complete (~100ms for
@@ -613,17 +626,26 @@ type Mux struct {
 
 	// gatewayTxnActive reports whether bus.Send is actively consuming
 	// activeCh for a gateway transaction. Separate from ownership:
-	// ownership can outlive the transaction up to IdleReleaseGrace.
-	// Only when gatewayTxnActive is true are bytes delivered to
-	// activeCh. Set in completeArbitrationGrant for the gateway,
-	// cleared when ownership is released (transaction complete,
-	// NACK, SYN timeout, or idle grace expired).
+	// after a normal end, ownership can outlive the transaction up to
+	// IdleReleaseGrace. Only when gatewayTxnActive is true are bytes
+	// delivered to activeCh (plus the owed resync SYNs below). Set by
+	// the first gateway write after completeArbitrationGrant, cleared
+	// when the transaction ends (SYN terminator, transaction complete,
+	// NACK, SYN timeout, idle grace expired). A failed transaction (write
+	// error, active read timeout, context cancel, arbitration loss,
+	// abandoned on re-bid) also releases the ownership in the same
+	// critical section (issue #1401).
 	gatewayTxnActive bool
 
-	// collisionResyncSYNs tracks only the fixed protocol.Bus recovery
-	// envelope after F-NEW-29's first-byte foreign-initiator signal. It is
-	// protected by stateMu and reset at the next grant or recovery handoff.
-	collisionResyncSYNs uint8
+	// collisionResyncOwed is the number of wire SYNs still owed to
+	// protocol.Bus after a confirmed arbitration loss released the gateway
+	// (issue #1401; F-NEW-29 first-byte foreign initiator or escape-pair
+	// echo collision). The bus waits for protocol.CollisionRetryResyncSYNCount
+	// SYNs before it re-bids, and with ownership already released no SYN
+	// would otherwise reach activeCh. Protected by stateMu; zeroed by the
+	// collision lifecycle completion, the next gateway bid or grant, reset,
+	// reconnect, context cancellation and Close.
+	collisionResyncOwed uint8
 
 	// F-24-fix (batch-23, 2026-05-17, Codex PR #634 P1 thread
 	// "Wait for idle after suppressing stale STARTED"): when the
@@ -1026,7 +1048,7 @@ func (m *Mux) Close() error {
 			m.recordGatewayInactive(ReasonContextCancel)
 		}
 		m.gatewayEcho.reset()
-		m.collisionResyncSYNs = 0
+		m.collisionResyncOwed = 0
 		m.activeTxn.firstByteSuspectArbLoss.Store(false)
 		m.stateMu.Unlock()
 		if pendingToCancel != nil {
@@ -1667,6 +1689,7 @@ func (m *Mux) reconnect() (delegated bool, err error) {
 	m.phase.reset(wirePhaseIdle)
 	m.arb.forceRelease()
 	m.gatewayEcho.reset()
+	m.collisionResyncOwed = 0
 	if m.gatewayTxnActive {
 		m.gatewayTxnActive = false
 		m.recordGatewayInactive(ReasonReconnect)
@@ -1880,6 +1903,7 @@ func (m *Mux) readLoop() {
 					if ownerID == gatewaySessionID && m.gatewayTxnActive {
 						m.gatewayTxnActive = false
 						m.recordGatewayInactive(ReasonMaxOwnership)
+						m.discardStaleActiveBytesLocked()
 						quietBusOwnerWasGateway = true
 					}
 					quietBusTimedOut = true
@@ -2449,6 +2473,7 @@ func (m *Mux) onLogicalReceived(symbol byte, wasEscaped bool, deliverToSessions 
 		if ownerID == gatewaySessionID && m.gatewayTxnActive {
 			m.gatewayTxnActive = false
 			m.recordGatewayInactive(ReasonMaxOwnership)
+			m.discardStaleActiveBytesLocked()
 			ownershipTimedOutGateway = true
 		}
 		hasOwner = false
@@ -2641,31 +2666,69 @@ func (m *Mux) onLogicalReceived(symbol byte, wasEscaped bool, deliverToSessions 
 	// after-arbitration classifier (helianthus-ebusgo bus.go:1328-1378)
 	// can raise ErrBusCollision and sendWithRetries can retry naturally.
 	//
+	// Issue #1401: the loss also releases the gateway's ownership at once
+	// (releaseGatewayOnArbitrationLossLocked) instead of holding the grant
+	// through a recovery envelope; holding it only blocked external
+	// bidders, up to MaxOwnershipDuration when no lifecycle callback ended
+	// the envelope. The stale-byte discard runs before the foreign byte is
+	// queued (phase 2, after the abandoned write's watchdog is cancelled),
+	// so protocol.Bus still reads it as the first-byte echo, and the resync
+	// SYNs the bus waits for stay owed to activeCh.
+	//
 	// Strict P11 mid-write drop remains active for ALL other mismatches:
 	// mid-frame stale bytes, non-initiator-class noise, post-first-echo wire
 	// intrusions. P11 round-2's design intent is preserved after ownership
 	// is validated by at least one echo.
-	firstByteSuspectArbLoss := false
 	cancelGatewayWatchdogFromCollision := false
-	if hadPendingEcho &&
+	foreignInitiatorReleased := false
+	foreignToActive := false
+	foreignInitiatorByte := protocol.AddressClassOf(symbol) == protocol.AddressClassMaster
+	if isGatewayOwned && m.gatewayTxnActive && hadPendingEcho &&
 		m.gatewayEcho.matchCount() == 0 &&
 		m.gatewayEcho.writeCount() == 1 &&
 		symbol != preMatchHead &&
-		protocol.AddressClassOf(symbol) == protocol.AddressClassMaster &&
+		foreignInitiatorByte &&
 		!m.activeTxn.firstByteSuspectArbLoss.Load() {
-		firstByteSuspectArbLoss = true
 		m.activeTxn.firstByteSuspectArbLoss.Store(true)
-		m.collisionResyncSYNs = 0
-		// This is the unique false-to-true recovery transition. The
-		// outstanding write can no longer receive its echo, so arrange
-		// cancellation after stateMu unlock and before the foreign byte is
-		// delivered to protocol.Bus. A later token read must stay pure: it
-		// may race a terminal decision and a new transaction generation.
-		cancelGatewayWatchdogFromCollision = true
+		// Classify while the transaction is still live: the terminal
+		// class is computed from the read prefix at release.
+		m.recordReadPrefixAndClassify(symbol)
+		// The outstanding write can no longer receive its echo: cancel the
+		// watchdog after stateMu unlock, before the byte reaches activeCh.
+		cancelGatewayWatchdogFromCollision = m.releaseGatewayOnArbitrationLossLocked()
+		foreignToActive = true
+		foreignInitiatorReleased = true
+		m.logger.Printf("adaptermux: ownership released for session %d (foreign initiator 0x%02X as first echo of txn id=%d: arbitration lost)",
+			gatewaySessionID, symbol, m.activeTxn.id)
+	} else if isGatewayOwned && !m.gatewayTxnActive &&
+		m.activeTxn.inactiveReas != ReasonNone && foreignInitiatorByte {
+		// Issue #1401: a foreign initiator byte after the gateway's
+		// transaction already ended (normally inside the IdleReleaseGrace
+		// tail) is another master's telegram on the wire. The gateway lost
+		// the bus; holding the grant until the SYN after that telegram
+		// would only block external bidders. The transaction's own reason
+		// is already recorded and its activeCh content (the terminator
+		// echo protocol.Bus may still read) is left untouched. The grant
+		// window before the first write (no reason yet) is excluded: stale
+		// pre-grant bytes must not abort a fresh grant.
+		m.releaseGatewayOwnershipLocked()
+		m.deferRegrantUntilNextSyn = true
+		foreignInitiatorReleased = true
+		m.logger.Printf("adaptermux: ownership released for session %d (foreign initiator 0x%02X after txn id=%d ended reason=%s)",
+			gatewaySessionID, symbol, m.activeTxn.id, m.activeTxn.inactiveReas)
+	}
+	if foreignInitiatorReleased {
+		m.activeTxn.foreignInitiatorReleases.Add(1)
+		// From here on the byte is third-party traffic: the passive path
+		// and the wire-phase tracker see the foreign telegram from its
+		// source byte (the tracker was reset to idle at the last
+		// gateway-owned SYN).
+		isGatewayOwned = false
+		phaseEvent = m.phase.advanceWithProvenance(symbol, false)
 	}
 
 	activeExpects := m.gatewayTxnActive
-	if activeExpects && hadPendingEcho && !firstByteSuspectArbLoss {
+	if activeExpects && hadPendingEcho {
 		// Mid-write: only the next expected echo passes.
 		activeExpects = symbol == preMatchHead
 	}
@@ -2713,6 +2776,21 @@ func (m *Mux) onLogicalReceived(symbol byte, wasEscaped bool, deliverToSessions 
 	// section: check + non-blocking send. activeCh is capacity-4096 and
 	// deliverToActive already uses a non-blocking select, so holding
 	// stateMu across the send cannot deadlock.
+	if foreignToActive {
+		// Issue #1401: the arbitration-loss release above already ended the
+		// transaction, so this bypasses the gatewayTxnActive gate on
+		// purpose. Only this goroutine produces activeCh bytes and the bus
+		// is blocked on the first echo, so nothing interleaves with the
+		// stale discard done under the earlier critical section.
+		m.stateMu.Lock()
+		select {
+		case m.activeCh <- activeEvent{kind: activeEventByte, b: symbol, wasEscaped: wasEscaped}:
+			m.activeTxn.bytesDeliveredToActive.Add(1)
+		default:
+			m.logger.Printf("adaptermux: active channel full, dropping foreign initiator byte 0x%02X", symbol)
+		}
+		m.stateMu.Unlock()
+	}
 	if activeExpects {
 		m.stateMu.Lock()
 		if m.gatewayTxnActive {
@@ -2816,6 +2894,23 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	// is true) will now proceed normally on this SYN observation or
 	// the next one.
 	m.deferRegrantUntilNextSyn = false
+
+	// Issue #1401: a confirmed arbitration loss released the gateway at
+	// once, but protocol.Bus still waits for
+	// protocol.CollisionRetryResyncSYNCount wire SYNs before it re-bids.
+	// Deliver exactly the owed number to activeCh although the gateway no
+	// longer owns the bus, so the retry is not starved until its request
+	// deadline. Surplus SYNs are not delivered; the window closes early on
+	// the collision lifecycle completion or the gateway's next bid.
+	if m.collisionResyncOwed > 0 && !m.gatewayTxnActive {
+		select {
+		case m.activeCh <- activeEvent{kind: activeEventByte, b: protocol.SymbolSyn}:
+			m.collisionResyncOwed--
+		default:
+			m.activeTxn.terminatorDropOnFullCh.Add(1)
+			m.logger.Printf("adaptermux: active channel full, dropping owed collision resync SYN")
+		}
+	}
 
 	// SYN-path diagnostics (bounded). Capture gwActiveBefore snapshot
 	// under stateMu so the ring entry matches the decision the SYN
@@ -2923,19 +3018,6 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	// recordSent/markRequestStart/flushOnSYN — it CANNOT carry over to
 	// a new transaction.
 	betweenWritesSyn := m.gatewayEcho.IsQueueJustDrained() && !hasPendingEcho
-	// F-NEW-29 recovery: the protocol bus owns a fixed SYN envelope only
-	// after the exact first-byte foreign-initiator predicate has fired. Do
-	// not generalize this exception to any ordinary P11 mismatch. Keep the
-	// recovery state alive after the two protocol-owned SYNs: surplus SYNs
-	// are suppressed until the retry handoff clears the abandoned grant.
-	collisionRecoveryActive := wasGatewayOwned && m.gatewayTxnActive &&
-		m.activeTxn.firstByteSuspectArbLoss.Load()
-	collisionResyncSYN := collisionRecoveryActive &&
-		m.collisionResyncSYNs < protocol.CollisionRetryResyncSYNCount
-	collisionResyncSurplusSYN := collisionRecoveryActive && !collisionResyncSYN
-	if collisionResyncSYN {
-		m.collisionResyncSYNs++
-	}
 
 	// batch-25 hotfix — reverted batch-24 round-6 broadening (grantSyn /
 	// interWriteSyn). Live Prometheus history showed the broader gate
@@ -2961,8 +3043,8 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	// noise. The expected-echo queue (and the inter-write sentinel)
 	// must survive so the next real echo still matches.
 	preEchoMidFrameSuppress := wasGatewayOwned && m.gatewayTxnActive &&
-		(midWriteSyn || betweenWritesSyn) && !collisionRecoveryActive
-	if !preEchoMidFrameSuppress && !collisionRecoveryActive {
+		(midWriteSyn || betweenWritesSyn)
+	if !preEchoMidFrameSuppress {
 		m.gatewayEcho.flushOnSYN()
 	}
 
@@ -3034,7 +3116,7 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	terminatorDelivered := false
 	if hasOwner && ownerID == gatewaySessionID && m.gatewayTxnActive &&
 		m.activeTxn.bytesDeliveredToActive.Load() > 0 &&
-		!preEchoMidFrameSuppress && !collisionRecoveryActive {
+		!preEchoMidFrameSuppress {
 		select {
 		case m.activeCh <- activeEvent{kind: activeEventByte, b: protocol.SymbolSyn}:
 			terminatorDelivered = true
@@ -3192,8 +3274,8 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	// mid-frame (midWriteSyn OR betweenWritesSyn) — BUT bound the
 	// betweenWritesSyn case by IdleReleaseGrace so a pathological
 	// stall doesn't pin ownership forever. midWriteSyn has its own
-	// implicit bound via bus.Send's activeChanTimeout (5s for the
-	// outer Send context); the sentinel-only case relies on grace.
+	// bound via bus.Send's activeChanTimeout, whose expiry releases the
+	// grant at once (issue #1401); the sentinel-only case relies on grace.
 	//
 	// When grace expires for the between-writes case, the existing
 	// gateway-owner release branch below clears the sentinel via
@@ -3201,15 +3283,9 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	// observation IS a legitimate idle terminator.
 	elapsedSinceGrant := time.Since(m.busOwned)
 	betweenWritesWithinGrace := betweenWritesSyn && elapsedSinceGrant <= m.cfg.IdleReleaseGrace
-	// A classified collision owns its bounded resynchronization envelope even
-	// when an external bidder is pending. In particular, F-26 must not release
-	// the old gateway grant on the first recovery SYN; the lifecycle completion
-	// performs the atomic release, and a later post-terminal SYN opens normal
-	// arbitration for whichever pending bidder policy selects.
-	suppressIdleRelease := collisionRecoveryActive ||
-		(wasGatewayOwned && m.gatewayTxnActive &&
-			m.activeTxn.bytesDeliveredToActive.Load() > 0 &&
-			(midWriteSyn || betweenWritesWithinGrace))
+	suppressIdleRelease := wasGatewayOwned && m.gatewayTxnActive &&
+		m.activeTxn.bytesDeliveredToActive.Load() > 0 &&
+		(midWriteSyn || betweenWritesWithinGrace)
 	if phaseEvent == wirePhaseEventSYNIdle && hasOwner && !suppressIdleRelease {
 		// Two thresholds:
 		//   - Gateway owner: 200 ms IdleReleaseGrace measured from
@@ -3328,9 +3404,8 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	// Counter (synSuppressedPreEcho) preserved for backward-compat with
 	// existing diag tests; semantically it now covers a superset.
 	preFirstEchoSyn := hasOwner && ownerID == gatewaySessionID &&
-		m.gatewayTxnActive && m.activeTxn.bytesDeliveredToActive.Load() == 0 &&
-		!collisionRecoveryActive
-	preEchoSuppressed := preFirstEchoSyn || preEchoMidFrameSuppress || collisionResyncSurplusSYN
+		m.gatewayTxnActive && m.activeTxn.bytesDeliveredToActive.Load() == 0
+	preEchoSuppressed := preFirstEchoSyn || preEchoMidFrameSuppress
 	if preEchoSuppressed {
 		m.activeTxn.synSuppressedPreEcho.Add(1)
 	}
@@ -3473,6 +3548,7 @@ func (m *Mux) handleReset() {
 	m.stateMu.Lock()
 	m.phase.reset(wirePhaseIdle)
 	m.gatewayEcho.reset()
+	m.collisionResyncOwed = 0
 	wasGatewayActive := m.gatewayTxnActive
 	if m.gatewayTxnActive {
 		m.gatewayTxnActive = false
@@ -3740,6 +3816,12 @@ func (m *Mux) requestStartForSession(sessionID uint64, initiator byte) <-chan st
 	// so no ABBA risk.
 	m.stateMu.Lock()
 	cancelGatewayWatchdog := false
+	if sessionID == gatewaySessionID {
+		// Issue #1401: the gateway's new bid is the end of its previous
+		// transaction. Release a grant that transaction left live or
+		// unused, and discard what it left in activeCh, before queueing.
+		cancelGatewayWatchdog = m.retirePreviousGatewayTxnLocked()
+	}
 	// F-39 (2026-05-15, Codex adversarial on PR #633):
 	// in-flight same-session+same-initiator duplicate. The pending
 	// START is a real bid for the same arbitration the new caller
@@ -4363,14 +4445,17 @@ func (m *Mux) completeArbitrationGrant(sessionID uint64, initiator byte, notify 
 	now := time.Now()
 	m.busOwned = now
 	m.lastWireActivity = now
-	// Drain activeCh BEFORE marking the transaction active so the
-	// drain count belongs to this grant (not the previous transaction).
-	// Safety net: normal flow should produce zero drains after the
-	// gatewayTxnActive-on-SYN lifecycle fix.
+	// Drain activeCh BEFORE marking the transaction active so nothing of
+	// a previous transaction reaches this one. Safety net only: since
+	// issue #1401 a failed transaction discards its leftovers when it
+	// ends and the gateway's next bid discards the rest, so the drain is
+	// expected to find nothing. Whatever it finds is counted as stale
+	// (staleActiveDiscarded) as well as in drainedOnGrant.
 	drained := 0
 	if sessionID == gatewaySessionID {
 		drained = m.drainActiveCh()
 		if drained > 0 {
+			m.activeTxn.staleActiveDiscarded.Add(uint64(drained))
 			m.logger.Printf("adaptermux: drained %d bytes from activeCh on grant", drained)
 		}
 		m.gatewayEcho.markRequestStart()
@@ -5192,11 +5277,10 @@ func (m *Mux) doSendNormalized(sessionID uint64, data byte, structural bool) err
 			return
 		}
 		m.stateMu.Lock()
-		if m.gatewayTxnActive {
-			m.gatewayTxnActive = false
-			m.recordGatewayInactive(ReasonActiveWriteError)
-		}
 		m.gatewayEcho.rollbackSent()
+		// Issue #1401: a failed gateway write also releases the grant
+		// now rather than at the next idle SYN or MaxOwnershipDuration.
+		m.releaseGatewayAfterFailureLocked(ReasonActiveWriteError)
 		m.stateMu.Unlock()
 		// Codex round-1 MUST FIX #2 on PR #647: write-error
 		// rollback must ALSO cancel the watchdog the sendLoop

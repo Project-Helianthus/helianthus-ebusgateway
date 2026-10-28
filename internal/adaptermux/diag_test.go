@@ -557,8 +557,10 @@ func TestActiveTxnDiag_AfterInactive_Counter(t *testing.T) {
 	}
 	preAfter := snap.AfterInactive
 
-	// Feed 3 non-SYN bytes during the inactive window.
-	for _, b := range []byte{0xFE, 0x10, 0xBA} {
+	// Feed 3 non-SYN, non-initiator bytes during the inactive window. An
+	// initiator-class byte here would be a foreign telegram and release the
+	// grant at once (issue #1401, covered by the release-path tests).
+	for _, b := range []byte{0xFE, 0x55, 0xBA} {
 		mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: b}
 	}
 	time.Sleep(30 * time.Millisecond)

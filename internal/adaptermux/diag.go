@@ -51,7 +51,34 @@ const (
 	ReasonActiveReadTimeout    ActiveTxnInactiveReason = "active_read_timeout"
 	ReasonContextCancel        ActiveTxnInactiveReason = "context_cancel"
 	ReasonArbitrationCollision ActiveTxnInactiveReason = "arbitration_collision"
+	// ReasonAbandonedOnRebid is recorded when protocol.Bus requests a new
+	// START while its previous transaction is still live from the mux's
+	// point of view, or while it still holds a grant it never used (issue
+	// #1401). The bus re-arbitrates only after its previous transaction
+	// returned, so that transaction ended with a failure the bus detected
+	// itself (for example an echo mismatch) without a transport-visible
+	// terminal. Ownership is released before the new bid is queued.
+	ReasonAbandonedOnRebid ActiveTxnInactiveReason = "abandoned_on_rebid"
 )
+
+// inactiveReasons lists every terminal reason in a fixed order. It indexes
+// activeTxnDiag.inactiveByReason so abnormal endings are countable by reason
+// (issue #1401).
+var inactiveReasons = [...]ActiveTxnInactiveReason{
+	ReasonTransactionDone,
+	ReasonCmdNACK,
+	ReasonSYNIdle,
+	ReasonSYNTerminator,
+	ReasonSYNTimeout,
+	ReasonMaxOwnership,
+	ReasonReset,
+	ReasonReconnect,
+	ReasonActiveWriteError,
+	ReasonActiveReadTimeout,
+	ReasonContextCancel,
+	ReasonArbitrationCollision,
+	ReasonAbandonedOnRebid,
+}
 
 // activeTxnDiag captures per-transaction diagnostic data for a gateway
 // active transaction. Protected by stateMu when mutated via the mux.
@@ -98,6 +125,24 @@ type activeTxnDiag struct {
 	// operation (activeCh has capacity 4096 and the reader drains it
 	// promptly during bus.Send). Non-zero indicates runtime backpressure.
 	terminatorDropOnFullCh atomic.Uint64
+
+	// inactiveByReason counts terminal transitions per reason across the
+	// mux lifetime, indexed like inactiveReasons (issue #1401). A rising
+	// max_ownership, syn_idle, arbitration_collision, abandoned_on_rebid
+	// or active_read_timeout count is the regression signal for abnormal
+	// gateway ownerships.
+	inactiveByReason [len(inactiveReasons)]atomic.Uint64
+	// staleActiveDiscarded counts bytes a finished or failed gateway
+	// transaction left in activeCh that were discarded instead of being
+	// carried into the next grant (issue #1401): at the failure release, at
+	// the gateway's next bid, or by the grant-time safety net (which also
+	// records its share in drainedOnGrant).
+	staleActiveDiscarded atomic.Uint64
+	// foreignInitiatorReleases counts gateway ownerships released because a
+	// foreign initiator byte was observed while session 0 held the bus
+	// (issue #1401): the first-byte arbitration loss of a live transaction,
+	// or a foreign telegram during the post-transaction ownership tail.
+	foreignInitiatorReleases atomic.Uint64
 
 	// interWriteDrainTotal counts bytes drained from activeCh in
 	// sendLoop's pre-recordSent critical section (P12). Each drained
@@ -257,6 +302,14 @@ type ActiveTxnSnapshot struct {
 	AfterInactive  uint64
 	// TerminatorDropOnFullCh mirrors activeTxnDiag.terminatorDropOnFullCh.
 	TerminatorDropOnFullCh uint64
+	// InactiveReasonCounts holds the lifetime number of gateway
+	// transactions that ended with each known reason (every reason is
+	// present, zero included). Issue #1401.
+	InactiveReasonCounts map[ActiveTxnInactiveReason]uint64
+	// StaleActiveBytesDiscarded mirrors activeTxnDiag.staleActiveDiscarded.
+	StaleActiveBytesDiscarded uint64
+	// ForeignInitiatorReleases mirrors activeTxnDiag.foreignInitiatorReleases.
+	ForeignInitiatorReleases uint64
 	// SynSuppressedPreEcho mirrors activeTxnDiag.synSuppressedPreEcho.
 	SynSuppressedPreEcho uint64
 	// SynSeenDuringGrantWindow mirrors
@@ -342,6 +395,10 @@ func (m *Mux) ActiveTxnSnapshot() ActiveTxnSnapshot {
 	copy(wp, m.activeTxn.writePrefix[:m.activeTxn.writePrefixLen])
 	rp := make([]byte, m.activeTxn.readPrefixLen)
 	copy(rp, m.activeTxn.readPrefix[:m.activeTxn.readPrefixLen])
+	byReason := make(map[ActiveTxnInactiveReason]uint64, len(inactiveReasons))
+	for i, reason := range inactiveReasons {
+		byReason[reason] = m.activeTxn.inactiveByReason[i].Load()
+	}
 	return ActiveTxnSnapshot{
 		ID:                                 m.activeTxn.id,
 		Initiator:                          m.activeTxn.initiator,
@@ -357,6 +414,9 @@ func (m *Mux) ActiveTxnSnapshot() ActiveTxnSnapshot {
 		ReadTimeoutTot:                     m.activeTxn.readTimeoutTot.Load(),
 		AfterInactive:                      m.activeTxn.afterInactive.Load(),
 		TerminatorDropOnFullCh:             m.activeTxn.terminatorDropOnFullCh.Load(),
+		InactiveReasonCounts:               byReason,
+		StaleActiveBytesDiscarded:          m.activeTxn.staleActiveDiscarded.Load(),
+		ForeignInitiatorReleases:           m.activeTxn.foreignInitiatorReleases.Load(),
 		SynSuppressedPreEcho:               m.activeTxn.synSuppressedPreEcho.Load(),
 		SynSeenDuringGrantWindow:           m.activeTxn.synSeenDuringGrantWindow.Load(),
 		SynSeenWhileInterWriteEmpty:        m.activeTxn.synSeenWhileInterWriteEmpty.Load(),
@@ -407,7 +467,7 @@ func (m *Mux) recordGatewayGrant(initiator byte, drained int) {
 	m.activeTxn.bytesRead.Store(0)
 	m.activeTxn.bytesDeliveredToActive.Store(0)
 	m.activeTxn.firstByteSuspectArbLoss.Store(false)
-	m.collisionResyncSYNs = 0
+	m.collisionResyncOwed = 0
 	m.activeTxn.drainedOnGrant = drained
 	m.activeTxn.grantsTotal.Add(1)
 	// batch-22 round-3 Attack 2: snapshot the upstream transport's
@@ -436,12 +496,96 @@ func (m *Mux) recordGatewayGrant(initiator byte, drained int) {
 	)
 }
 
-// markActiveReadTimeout clears ordinary gateway transactions with
-// ReasonActiveReadTimeout. A confirmed F-NEW-29 collision recovery is the
-// narrow exception: protocol.Bus treats ErrTimeout while waitForSyn as a
-// retryable absence of a structural SYN, so its transaction identity and
-// arbitration ownership remain live until Retry, Abandon, or another terminal
-// lifecycle boundary. Caller must NOT hold stateMu.
+// releaseGatewayAfterFailureLocked ends the live gateway transaction with an
+// abnormal reason and releases gateway bus ownership in the same stateMu
+// critical section (issue #1401). Before #1401 these failure paths only
+// cleared gatewayTxnActive and left the grant to the next idle SYN or to
+// MaxOwnershipDuration, so external bids were ignored for seconds while the
+// gateway held a bus it no longer used. Bytes the dead transaction left in
+// activeCh are discarded and counted so they never reach the next grant.
+// Returns true when a live transaction was ended; the caller must then cancel
+// the gateway echo watchdog after unlocking. Caller must hold stateMu.
+func (m *Mux) releaseGatewayAfterFailureLocked(reason ActiveTxnInactiveReason) bool {
+	if !m.gatewayTxnActive {
+		return false
+	}
+	m.gatewayTxnActive = false
+	m.recordGatewayInactive(reason)
+	m.releaseGatewayOwnershipLocked()
+	m.discardStaleActiveBytesLocked()
+	return true
+}
+
+// releaseGatewayOwnershipLocked drops gateway bus ownership, if held, together
+// with its echo expectations. Caller must hold stateMu.
+func (m *Mux) releaseGatewayOwnershipLocked() {
+	if !m.arb.isOwner(gatewaySessionID) {
+		return
+	}
+	m.arb.releaseOwnership(gatewaySessionID)
+	m.gatewayEcho.reset()
+}
+
+// discardStaleActiveBytesLocked removes the byte events still queued on
+// activeCh for a finished or failed gateway transaction and counts them
+// (issue #1401). Lifecycle (error) events are preserved. Caller must hold
+// stateMu.
+func (m *Mux) discardStaleActiveBytesLocked() {
+	if n := m.drainActiveChBytesOnly(); n > 0 {
+		m.activeTxn.staleActiveDiscarded.Add(uint64(n))
+	}
+}
+
+// releaseGatewayOnArbitrationLossLocked handles a confirmed arbitration loss
+// of the live gateway transaction (the F-NEW-29 first-byte foreign initiator,
+// or an escape-pair echo collision): the transaction ends with
+// ReasonArbitrationCollision and ownership is released at once (issue #1401)
+// instead of being held through a recovery envelope that only a
+// transport-lifecycle callback could end. protocol.Bus still waits for
+// protocol.CollisionRetryResyncSYNCount wire SYNs before it re-bids; that many
+// SYNs stay owed to activeCh (see onSYNLocked) so the retry is not starved
+// until its request deadline. Regrant waits for the next SYN because the
+// foreign telegram is still on the wire. Caller holds stateMu and must cancel
+// the gateway echo watchdog after unlocking when this returns true.
+func (m *Mux) releaseGatewayOnArbitrationLossLocked() bool {
+	if !m.releaseGatewayAfterFailureLocked(ReasonArbitrationCollision) {
+		return false
+	}
+	m.collisionResyncOwed = protocol.CollisionRetryResyncSYNCount
+	m.deferRegrantUntilNextSyn = true
+	return true
+}
+
+// retirePreviousGatewayTxnLocked runs when the gateway submits a new START.
+// protocol.Bus re-arbitrates only after its previous transaction returned, so
+// a transaction that is still live here, or a grant that was never used,
+// ended with a failure the bus detected without a transport-visible terminal
+// (for example an echo mismatch): it is ended with ReasonAbandonedOnRebid and
+// its ownership released before the new bid is queued (issue #1401). A grant
+// whose transaction already ended normally keeps the IdleReleaseGrace tail,
+// so the arbitration timing of healthy back-to-back transactions is
+// unchanged. Any post-loss resync window closes and what the finished
+// transaction left in activeCh is discarded. Returns true when a live
+// transaction was ended. Caller must hold stateMu.
+func (m *Mux) retirePreviousGatewayTxnLocked() bool {
+	transitioned := m.gatewayTxnActive
+	if transitioned ||
+		(m.arb.isOwner(gatewaySessionID) && m.activeTxn.inactiveReas == ReasonNone) {
+		m.gatewayTxnActive = false
+		m.recordGatewayInactive(ReasonAbandonedOnRebid)
+		m.releaseGatewayOwnershipLocked()
+	}
+	m.collisionResyncOwed = 0
+	m.discardStaleActiveBytesLocked()
+	return transitioned
+}
+
+// markActiveReadTimeout ends the gateway transaction with
+// ReasonActiveReadTimeout and releases gateway ownership at once (issue
+// #1401). A confirmed arbitration loss has already released the grant at
+// detection, so a timeout while protocol.Bus waits for its resynchronization
+// SYNs finds no live transaction and leaves the owed SYN window open.
+// Caller must NOT hold stateMu.
 //
 // Codex round-2 MUST FIX on PR #647: if the transition fires AND
 // V8ClassifierMode != Off, the watchdog is cancelled outside stateMu
@@ -452,22 +596,18 @@ func (m *Mux) recordGatewayGrant(initiator byte, drained int) {
 // boundary.
 func (m *Mux) markActiveReadTimeout() {
 	m.stateMu.Lock()
-	transitioned := false
-	if m.gatewayTxnActive && !m.activeTxn.firstByteSuspectArbLoss.Load() {
-		m.gatewayTxnActive = false
-		m.recordGatewayInactive(ReasonActiveReadTimeout)
-		transitioned = true
-	}
+	transitioned := m.releaseGatewayAfterFailureLocked(ReasonActiveReadTimeout)
 	m.stateMu.Unlock()
 	if transitioned {
 		m.cancelGatewayWatchdog()
 	}
 }
 
-// markActiveWriteError clears gatewayTxnActive with ReasonActiveWriteError.
+// markActiveWriteError ends the gateway transaction with
+// ReasonActiveWriteError and releases gateway ownership (issue #1401).
 // Called from activeTransport.Write when sendLoop returns an error. A write
-// that entered collision recovery (escape-pair echo collision) keeps its
-// transaction live for the SYN resynchronization, as in markActiveReadTimeout.
+// that failed with an escape-pair echo collision was already released as an
+// arbitration loss by doSend, so it finds no live transaction here.
 // Acquires stateMu internally. Caller must NOT hold stateMu.
 //
 // Codex round-2 MUST FIX on PR #647: same cancel-after-unlock
@@ -479,19 +619,16 @@ func (m *Mux) markActiveReadTimeout() {
 // is idempotent so the second invocation is a no-op).
 func (m *Mux) markActiveWriteError() {
 	m.stateMu.Lock()
-	transitioned := false
-	if m.gatewayTxnActive && !m.activeTxn.firstByteSuspectArbLoss.Load() {
-		m.gatewayTxnActive = false
-		m.recordGatewayInactive(ReasonActiveWriteError)
-		transitioned = true
-	}
+	transitioned := m.releaseGatewayAfterFailureLocked(ReasonActiveWriteError)
 	m.stateMu.Unlock()
 	if transitioned {
 		m.cancelGatewayWatchdog()
 	}
 }
 
-// markActiveContextCancel clears gatewayTxnActive with ReasonContextCancel.
+// markActiveContextCancel ends the gateway transaction with
+// ReasonContextCancel, releases gateway ownership and closes any post-loss
+// resync window, because the active consumer is gone (issue #1401).
 // Called from activeTransport Read/Write when ctx.Done() fires.
 // Acquires stateMu internally. Caller must NOT hold stateMu.
 //
@@ -500,12 +637,8 @@ func (m *Mux) markActiveWriteError() {
 // any pending echo watchdog is no longer meaningful.
 func (m *Mux) markActiveContextCancel() {
 	m.stateMu.Lock()
-	transitioned := false
-	if m.gatewayTxnActive {
-		m.gatewayTxnActive = false
-		m.recordGatewayInactive(ReasonContextCancel)
-		transitioned = true
-	}
+	transitioned := m.releaseGatewayAfterFailureLocked(ReasonContextCancel)
+	m.collisionResyncOwed = 0
 	m.stateMu.Unlock()
 	if transitioned {
 		m.cancelGatewayWatchdog()
@@ -539,13 +672,14 @@ func (m *Mux) recordGatewayInactive(reason ActiveTxnInactiveReason) {
 	if m.activeTxn.inactiveReas != ReasonNone {
 		return
 	}
-	// A collision resynchronization envelope belongs only to the live
-	// gateway transaction. Every terminal boundary clears it so stale
-	// SYNs cannot affect a later grant after reset, reconnect, context
-	// cancellation, timeout, or normal ownership release.
-	m.collisionResyncSYNs = 0
 	m.activeTxn.inactiveAt = time.Now()
 	m.activeTxn.inactiveReas = reason
+	for i, known := range inactiveReasons {
+		if known == reason {
+			m.activeTxn.inactiveByReason[i].Add(1)
+			break
+		}
+	}
 	class := m.classifyTxnLocked(reason)
 	m.activeTxn.txnClass = class
 	m.activeTxn.lastClass = class
@@ -628,8 +762,7 @@ func (m *Mux) classifyTxnLocked(reason ActiveTxnInactiveReason) TxnClass {
 		return TxnClassSuccessLike
 	}
 	// A first-byte arbitration collision is confirmed foreign traffic,
-	// not a candidate response merely because the protocol retry path
-	// subsequently consumed its SYN resynchronization envelope.
+	// not a candidate response.
 	if reason == ReasonArbitrationCollision {
 		return TxnClassNonEchoInvalidFrame
 	}
@@ -642,7 +775,8 @@ func (m *Mux) classifyTxnLocked(reason ActiveTxnInactiveReason) TxnClass {
 		reason == ReasonActiveWriteError ||
 		reason == ReasonContextCancel ||
 		reason == ReasonReset ||
-		reason == ReasonReconnect
+		reason == ReasonReconnect ||
+		reason == ReasonAbandonedOnRebid
 
 	// SuccessLike heuristic: saw non-echo response bytes and a SYN
 	// terminator after at least part of the gateway write stream was

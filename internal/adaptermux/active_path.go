@@ -7,7 +7,6 @@ import (
 	"time"
 
 	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
-	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
 )
 
@@ -50,45 +49,35 @@ var (
 	_ transport.CollisionRecoveryLifecycle = (*activeTransport)(nil)
 )
 
-// CollisionRecoveryToken exposes the current transaction identity only for an
-// exact F-NEW-29 first-byte arbitration-loss recovery.
+// CollisionRecoveryToken exposes the identity of a gateway transaction that
+// ended with a confirmed arbitration loss while its resynchronization SYN
+// window is still open. Since issue #1401 the loss itself releases ownership
+// at detection; the token only scopes the owed SYN window, so it is zero
+// once the window closed, at the next grant, and at every lifecycle boundary.
 func (t *activeTransport) CollisionRecoveryToken() uint64 {
 	t.mux.stateMu.Lock()
 	defer t.mux.stateMu.Unlock()
-	if !t.mux.gatewayTxnActive || !t.mux.activeTxn.firstByteSuspectArbLoss.Load() {
+	if t.mux.collisionResyncOwed == 0 || !t.mux.activeTxn.firstByteSuspectArbLoss.Load() {
 		return 0
 	}
 	return t.mux.activeTxn.id
 }
 
-// CompleteCollisionRecovery terminalizes a live collision exactly once. Retry
-// is accepted only after the protocol bus consumed the two owned SYN symbols;
-// Abandon may close the transaction earlier.
+// CompleteCollisionRecovery closes the resynchronization SYN window of the
+// transaction identified by token. Retry and Abandon are both terminal for the
+// window: protocol.Bus needs no further SYNs from the lost transaction, so the
+// remaining ones are not queued on activeCh where they would only be discarded
+// at the next grant. Ownership was already released when the loss was
+// detected (issue #1401); a stale token never affects a later transaction.
 func (t *activeTransport) CompleteCollisionRecovery(token uint64, decision transport.CollisionRecoveryDecision) {
-	t.mux.stateMu.Lock()
-	valid := token != 0 && token == t.mux.activeTxn.id && t.mux.gatewayTxnActive &&
-		t.mux.activeTxn.firstByteSuspectArbLoss.Load()
-	if valid && decision == transport.CollisionRecoveryRetry &&
-		t.mux.collisionResyncSYNs < protocol.CollisionRetryResyncSYNCount {
-		valid = false
-	}
-	ownerID, _, hasOwner := t.mux.arb.owner()
-	if !hasOwner || ownerID != gatewaySessionID {
-		valid = false
-	}
-	if !valid || (decision != transport.CollisionRecoveryRetry && decision != transport.CollisionRecoveryAbandon) {
-		t.mux.stateMu.Unlock()
+	if decision != transport.CollisionRecoveryRetry && decision != transport.CollisionRecoveryAbandon {
 		return
 	}
-	t.mux.arb.releaseOwnership(gatewaySessionID)
-	t.mux.gatewayTxnActive = false
-	t.mux.gatewayEcho.reset()
-	t.mux.recordGatewayInactive(ReasonArbitrationCollision)
-	t.mux.collisionResyncSYNs = 0
-	t.mux.deferRegrantUntilNextSyn = true
-	t.mux.lastWireActivity = time.Time{}
+	t.mux.stateMu.Lock()
+	if token != 0 && token == t.mux.activeTxn.id && t.mux.activeTxn.firstByteSuspectArbLoss.Load() {
+		t.mux.collisionResyncOwed = 0
+	}
 	t.mux.stateMu.Unlock()
-	t.mux.cancelGatewayWatchdog()
 }
 
 // NOTE: activeTransport intentionally does NOT implement
@@ -104,10 +93,15 @@ func (t *activeTransport) CompleteCollisionRecovery(token uint64, decision trans
 // jitter. With TimeoutRetries=0 in ebusgo, ANY ErrTimeout kills a
 // scan probe immediately.
 //
-// 2s is a safe balance: short enough to prevent deadlock (original
+// 1s is a safe balance: short enough to prevent deadlock (original
 // bug #3 where activeCh filled up), long enough that normal echo
 // delivery (~5-20ms) never triggers a false timeout.
-const activeChanTimeout = 2 * time.Second
+//
+// Issue #1401: it must stay well below the default MaxOwnershipDuration
+// (1.5s). A stalled transaction is then ended by its active read timeout,
+// which releases the grant at once, and the ownership cap stays the last
+// resort instead of the normal exit (the former 2s exceeded the new cap).
+const activeChanTimeout = 1 * time.Second
 
 // ReadByte blocks until a byte is received from the adapter or an
 // error occurs. This receives ALL bytes from the adapter (including
@@ -208,9 +202,10 @@ func (t *activeTransport) ReadEvent() (transport.StreamEvent, error) {
 // The gateway must hold bus ownership (via StartArbitration) before
 // calling Write.
 //
-// AM5: ownership release is handled by the wire phase tracker (SYN
-// boundary) or MaxOwnershipDuration timeout, not by the active path.
-// The caller (bus.Send pipeline) handles retry/abort on error.
+// AM5: ownership of a healthy transaction is released by the wire phase
+// tracker (SYN boundary). A failed write releases it here at once (issue
+// #1401, markActiveWriteError); MaxOwnershipDuration is only the last-resort
+// guard. The caller (bus.Send pipeline) handles retry/abort on error.
 //
 // Each byte goes through doSend/sendLoop which records echo expectations
 // and tracks ownership per byte. bus.sendRawWithEcho calls Write with

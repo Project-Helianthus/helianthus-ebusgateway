@@ -18,9 +18,11 @@ import (
 // TestIssue993_ProtocolBusRetriesAfterFirstForeignInitiator proves the whole
 // active path, rather than mirroring the mux predicate: the pinned protocol
 // bus receives the first foreign initiator byte through AdapterMux, classifies it
-// as collision, consumes its bounded resynchronization SYNs, suppresses one
-// surplus queued SYN, then retries a broadcast transaction exactly once and
-// completes it with real mux echoes.
+// as collision, consumes its bounded resynchronization SYNs, then retries a
+// broadcast transaction exactly once and completes it with real mux echoes.
+// Since issue #1401 the loss releases the gateway grant at detection; the
+// two resync SYNs are still owed to protocol.Bus, and the retry bid queues
+// behind the already released grant until the next SYN boundary.
 func TestIssue993_ProtocolBusRetriesAfterFirstForeignInitiator(t *testing.T) {
 	const (
 		gatewaySource    byte = 0x10
@@ -63,8 +65,7 @@ func TestIssue993_ProtocolBusRetriesAfterFirstForeignInitiator(t *testing.T) {
 			// initiator, before the expected source echo. This must reach
 			// protocol.Bus; strict P11 still drops every other mismatch.
 			mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: foreignInitiator}
-			// Queue SYN3 with the recovery envelope. It is surplus while the
-			// lifecycle decision is pending and must stay out of protocol.Bus.
+			// The two resynchronization SYNs owed to protocol.Bus.
 			for range 2 {
 				mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
 			}
@@ -104,27 +105,14 @@ func TestIssue993_ProtocolBusRetriesAfterFirstForeignInitiator(t *testing.T) {
 		result <- err
 	})
 
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		mux.stateMu.Lock()
-		ready := !mux.gatewayTxnActive && mux.deferRegrantUntilNextSyn
-		mux.stateMu.Unlock()
-		if ready {
-			break
-		}
-		time.Sleep(time.Millisecond)
-	}
-	mux.stateMu.Lock()
-	ready := !mux.gatewayTxnActive && mux.deferRegrantUntilNextSyn
-	mux.stateMu.Unlock()
-	if !ready {
-		t.Fatal("collision lifecycle did not terminalize before SYN3")
+	if !waitRetryQueuedBehindReleasedGrant(t, mux) {
+		t.Fatal("collision retry was not queued behind a released grant before SYN3")
 	}
 	if got := starts.Load(); got != 1 {
 		t.Fatalf("arbitration starts before SYN3 = %d, want 1", got)
 	}
-	// SYN4 is a new post-terminal fairness boundary; it may admit the queued
-	// retry through the ordinary arbitrator.
+	// SYN3 is a new fairness boundary; it may admit the queued retry through
+	// the ordinary arbitrator.
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
 
 	select {
@@ -141,6 +129,14 @@ func TestIssue993_ProtocolBusRetriesAfterFirstForeignInitiator(t *testing.T) {
 	}
 	if got := writes.Load(); got != 8 {
 		t.Fatalf("wire writes = %d, want 8 (one collided source + seven retry bytes)", got)
+	}
+	snap := mux.ActiveTxnSnapshot()
+	if got := snap.InactiveReasonCounts[ReasonArbitrationCollision]; got != 1 {
+		t.Fatalf("arbitration_collision endings = %d, want 1", got)
+	}
+	if snap.ForeignInitiatorReleases != 1 || snap.DrainedOnGrant != 0 || snap.StaleActiveBytesDiscarded != 0 {
+		t.Fatalf("foreign releases/drained on retry grant/stale discarded = %d/%d/%d, want 1/0/0",
+			snap.ForeignInitiatorReleases, snap.DrainedOnGrant, snap.StaleActiveBytesDiscarded)
 	}
 
 	eventsMu.Lock()
@@ -177,11 +173,13 @@ func TestIssue993_ProtocolBusRetriesAfterFirstForeignInitiator(t *testing.T) {
 	}
 }
 
-// TestIssue993_CollisionRecoverySurvivesActiveReadTimeout proves the real
+// TestIssue993_CollisionResyncSurvivesActiveReadTimeout proves the real
 // waitForSyn behavior of protocol.Bus: its bounded active-path timeout is a
-// retryable absence of a SYN, not a lifecycle terminal. The two structural
-// SYNs may arrive after that timeout and still complete exactly one recovery.
-func TestIssue993_CollisionRecoverySurvivesActiveReadTimeout(t *testing.T) {
+// retryable absence of a SYN, not a lifecycle terminal. Since issue #1401 the
+// grant is released when the loss is detected, but the owed SYN window
+// survives the timeout: the two structural SYNs may arrive after it and
+// still complete exactly one retry.
+func TestIssue993_CollisionResyncSurvivesActiveReadTimeout(t *testing.T) {
 	const gatewaySource, foreignInitiator byte = 0x10, 0xF1
 
 	mux, mock, _, cleanup := newP3TestMux(t)
@@ -230,30 +228,23 @@ func TestIssue993_CollisionRecoverySurvivesActiveReadTimeout(t *testing.T) {
 	}
 	at := mux.ActiveTransport().(*activeTransport)
 	mux.stateMu.Lock()
-	live := mux.gatewayTxnActive && mux.activeTxn.firstByteSuspectArbLoss.Load()
+	active := mux.gatewayTxnActive
 	mux.stateMu.Unlock()
-	if !live || !mux.arb.isOwner(gatewaySessionID) || at.CollisionRecoveryToken() == 0 {
-		t.Fatal("active-channel timeout tore down live collision recovery")
+	if active || mux.arb.isOwner(gatewaySessionID) {
+		t.Fatal("arbitration loss did not release the grant before the active-channel timeout")
+	}
+	if at.CollisionRecoveryToken() == 0 {
+		t.Fatal("active-channel timeout closed the owed resynchronization window")
 	}
 
 	// These are the two protocol-owned recovery symbols after the timeout.
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
-	deadline = time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		mux.stateMu.Lock()
-		terminal := !mux.gatewayTxnActive && mux.deferRegrantUntilNextSyn
-		mux.stateMu.Unlock()
-		if terminal {
-			break
-		}
-		time.Sleep(time.Millisecond)
+	if !waitRetryQueuedBehindReleasedGrant(t, mux) {
+		t.Fatal("two recovery SYNs did not let protocol.Bus queue its retry")
 	}
-	mux.stateMu.Lock()
-	terminal := !mux.gatewayTxnActive && mux.deferRegrantUntilNextSyn
-	mux.stateMu.Unlock()
-	if !terminal || mux.arb.isOwner(gatewaySessionID) {
-		t.Fatal("two recovery SYNs did not terminalize and release collision grant")
+	if got := at.CollisionRecoveryToken(); got != 0 {
+		t.Fatalf("resynchronization window still open after both owed SYNs (token %d)", got)
 	}
 	if got := starts.Load(); got != 1 {
 		t.Fatalf("starts before post-terminal SYN = %d, want 1", got)
@@ -354,8 +345,11 @@ func TestIssue993_CollisionRecoveryCancelAfterActiveReadTimeout(t *testing.T) {
 		t.Fatal("waitForSyn did not reach the active-channel timeout")
 	}
 	at := mux.ActiveTransport().(*activeTransport)
-	if at.CollisionRecoveryToken() == 0 || !mux.arb.isOwner(gatewaySessionID) {
-		t.Fatal("timeout lost live collision lifecycle before request cancellation")
+	if mux.arb.isOwner(gatewaySessionID) {
+		t.Fatal("arbitration loss kept the gateway grant until the active-channel timeout")
+	}
+	if at.CollisionRecoveryToken() == 0 {
+		t.Fatal("timeout closed the owed resynchronization window before request cancellation")
 	}
 	if pacer.WatchdogArmed() {
 		t.Fatal("collision recovery retained old watchdog across active-channel timeout")
@@ -387,15 +381,10 @@ func TestIssue993_CollisionRecoveryCancelAfterActiveReadTimeout(t *testing.T) {
 	}
 	// Send returns promptly for its caller, while the bus worker is still
 	// blocked in activeTransport.ReadByte. Its next bounded read observes the
-	// cancelled request and invokes the transaction-bound Abandon decision.
+	// cancelled request and invokes the transaction-bound Abandon decision,
+	// which closes the owed resynchronization window.
 	deadline = time.Now().Add(activeChanTimeout + time.Second)
-	for time.Now().Before(deadline) {
-		mux.stateMu.Lock()
-		terminal := !mux.gatewayTxnActive && mux.deferRegrantUntilNextSyn
-		mux.stateMu.Unlock()
-		if terminal {
-			break
-		}
+	for time.Now().Before(deadline) && at.CollisionRecoveryToken() != 0 {
 		time.Sleep(time.Millisecond)
 	}
 	mux.stateMu.Lock()
@@ -406,8 +395,8 @@ func TestIssue993_CollisionRecoveryCancelAfterActiveReadTimeout(t *testing.T) {
 		t.Fatalf("Abandon state active/deferred/gateway-owner/token/watchdog = %v/%v/%v/%d/%v, want false/true/false/0/false", active, deferred, mux.arb.isOwner(gatewaySessionID), at.CollisionRecoveryToken(), pacer.WatchdogArmed())
 	}
 
-	// Recovery's terminal latch deliberately defers the already-queued external
-	// bidder until a new normal SYN boundary.
+	// The loss release deliberately defers the already-queued external bidder
+	// until a new normal SYN boundary: the foreign telegram was on the wire.
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
 	select {
 	case granted := <-externalStart:
@@ -422,6 +411,11 @@ func TestIssue993_CollisionRecoveryCancelAfterActiveReadTimeout(t *testing.T) {
 	}
 }
 
+// TestIssue993_CollisionRecoveryLifecycleTokenGuards pins the lifecycle
+// contract after issue #1401: the loss releases the grant at detection, the
+// token only scopes the owed resynchronization SYN window, a completion with a
+// foreign token or an unknown decision is ignored, Retry closes the window,
+// and a stale token never changes a later grant.
 func TestIssue993_CollisionRecoveryLifecycleTokenGuards(t *testing.T) {
 	mux, mock, _, cleanup := newP3TestMux(t)
 	defer cleanup()
@@ -435,37 +429,39 @@ func TestIssue993_CollisionRecoveryLifecycleTokenGuards(t *testing.T) {
 	}
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0xF1}
 	expectActiveByte(t, mux, 0xF1)
+	if mux.arb.isOwner(gatewaySessionID) {
+		t.Fatal("confirmed collision retained gateway ownership")
+	}
 	token := at.CollisionRecoveryToken()
 	if token == 0 {
 		t.Fatal("confirmed collision returned zero token")
 	}
+	mux.stateMu.Lock()
+	owed, deferred := mux.collisionResyncOwed, mux.deferRegrantUntilNextSyn
+	mux.stateMu.Unlock()
+	if owed != protocol.CollisionRetryResyncSYNCount || !deferred {
+		t.Fatalf("owed SYNs/regrant deferred = %d/%v, want %d/true", owed, deferred, protocol.CollisionRetryResyncSYNCount)
+	}
+
+	at.CompleteCollisionRecovery(token+1, transport.CollisionRecoveryAbandon)
+	at.CompleteCollisionRecovery(token, transport.CollisionRecoveryDecision(0))
+	if got := at.CollisionRecoveryToken(); got != token {
+		t.Fatalf("foreign token or unknown decision changed the window: token %d, want %d", got, token)
+	}
 	at.CompleteCollisionRecovery(token, transport.CollisionRecoveryRetry)
-	if !mux.arb.isOwner(gatewaySessionID) {
-		t.Fatal("early Retry released ownership")
-	}
-	mux.stateMu.Lock()
-	mux.collisionResyncSYNs = protocol.CollisionRetryResyncSYNCount
-	mux.stateMu.Unlock()
-	at.CompleteCollisionRecovery(token, transport.CollisionRecoveryAbandon)
-	if mux.arb.isOwner(gatewaySessionID) {
-		t.Fatal("Abandon retained gateway ownership")
-	}
-	mux.stateMu.Lock()
-	deferred := mux.deferRegrantUntilNextSyn
-	mux.stateMu.Unlock()
-	if !deferred {
-		t.Fatal("Abandon did not defer normal regrant until SYN boundary")
+	if got := at.CollisionRecoveryToken(); got != 0 {
+		t.Fatalf("Retry left the resynchronization window open (token %d)", got)
 	}
 	at.CompleteCollisionRecovery(token, transport.CollisionRecoveryAbandon)
 	if got := at.CollisionRecoveryToken(); got != 0 {
-		t.Fatalf("duplicate completion left token %d", got)
+		t.Fatalf("duplicate completion reopened token %d", got)
 	}
 
-	// A post-terminal SYN clears the deferral latch. A new transaction has a
-	// different opaque identity, so completing the prior token cannot release
-	// the fresh owner.
+	// A closed window owes no SYN: the next SYN is not queued on activeCh,
+	// and it clears the regrant deferral.
 	mux.stateMu.Lock()
 	_, shouldGrant, _, cancelWatchdog := mux.onSYNLocked(wirePhaseEventSYNIdle, 0, false, time.Now())
+	deferred = mux.deferRegrantUntilNextSyn
 	mux.stateMu.Unlock()
 	if cancelWatchdog {
 		mux.cancelGatewayWatchdog()
@@ -473,6 +469,13 @@ func TestIssue993_CollisionRecoveryLifecycleTokenGuards(t *testing.T) {
 	if shouldGrant {
 		mux.tryGrantAndStart()
 	}
+	expectNoActiveByte(t, mux)
+	if deferred {
+		t.Fatal("post-loss SYN did not clear the regrant deferral")
+	}
+
+	// A new transaction has a different opaque identity, so completing the
+	// prior token cannot change the fresh owner.
 	grantGateway(t, mux, mock, 0x10)
 	if _, err := at.Write([]byte{0x10}); err != nil {
 		t.Fatalf("fresh Write = %v", err)
@@ -548,21 +551,8 @@ func TestIssue993_CollisionRecoveryIgnoresLaterForeignInitiator(t *testing.T) {
 		result <- err
 	})
 
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		mux.stateMu.Lock()
-		terminal := !mux.gatewayTxnActive && mux.deferRegrantUntilNextSyn
-		mux.stateMu.Unlock()
-		if terminal {
-			break
-		}
-		time.Sleep(time.Millisecond)
-	}
-	mux.stateMu.Lock()
-	terminal := !mux.gatewayTxnActive && mux.deferRegrantUntilNextSyn
-	mux.stateMu.Unlock()
-	if !terminal {
-		t.Fatal("collision did not terminalize before retry boundary")
+	if !waitRetryQueuedBehindReleasedGrant(t, mux) {
+		t.Fatal("collision retry was not queued behind a released grant before the retry boundary")
 	}
 	if got := starts.Load(); got != 1 {
 		t.Fatalf("starts before post-terminal SYN = %d, want 1", got)
@@ -606,13 +596,36 @@ func TestIssue993_CollisionRecoveryIgnoresLaterForeignInitiator(t *testing.T) {
 	if retries != 1 || foreignRX != 1 || synRX != 3 || success != 1 || collisionCompletion != 0 {
 		t.Fatalf("retry/foreign/SYN/success/collision = %d/%d/%d/%d/%d, want 1/1/3/1/0", retries, foreignRX, synRX, success, collisionCompletion)
 	}
+	// The later initiator arrived with no owner: it is third-party traffic,
+	// not a second loss of the same released grant.
+	if got := mux.ActiveTxnSnapshot().ForeignInitiatorReleases; got != 1 {
+		t.Fatalf("foreign initiator releases = %d, want 1", got)
+	}
 }
 
-// TestIssue993_CollisionRecoveryDefersF26ForPendingExternal proves that a
-// pending external bidder cannot consume the collision recovery boundary. The
-// recovery SYNs belong to protocol.Bus; once its re-bid has atomically dropped
-// the abandoned gateway ownership, ordinary F-26 fairness resumes.
-func TestIssue993_CollisionRecoveryDefersF26ForPendingExternal(t *testing.T) {
+// waitRetryQueuedBehindReleasedGrant waits until protocol.Bus has re-bid after
+// a collision: the loss was released (issue #1401), the gateway no longer
+// owns the bus and its retry START is pending in the arbitrator.
+func waitRetryQueuedBehindReleasedGrant(t *testing.T, mux *Mux) bool {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if mux.activeTxn.foreignInitiatorReleases.Load() > 0 &&
+			!mux.arb.isOwner(gatewaySessionID) && mux.arb.hasPending() {
+			return true
+		}
+		time.Sleep(time.Millisecond)
+	}
+	return false
+}
+
+// TestIssue1401_ArbitrationLossYieldsToPendingExternal replaces the former
+// issue #993 F-26 deferral test, whose premise issue #1401 reverses: a lost
+// arbitration no longer holds the gateway grant through the recovery
+// envelope. The pending external bidder is granted at the first SYN after
+// the loss, while protocol.Bus still receives its two owed resynchronization
+// SYNs and queues its retry behind the external owner.
+func TestIssue1401_ArbitrationLossYieldsToPendingExternal(t *testing.T) {
 	const gatewaySource, externalInitiator, foreignInitiator byte = 0x10, 0x31, 0xF1
 	mux, mock, _, cleanup := newP3TestMux(t)
 	defer cleanup()
@@ -623,14 +636,10 @@ func TestIssue993_CollisionRecoveryDefersF26ForPendingExternal(t *testing.T) {
 	externalID, closeExternal := newP3TestSession(t, mux)
 	defer closeExternal()
 
-	var gatewayStarts atomic.Uint32
-	var externalStarts atomic.Uint32
+	var gatewayStarts, externalStarts atomic.Uint32
 	mock.setRequestStartHook(func(initiator byte) {
 		switch initiator {
 		case gatewaySource:
-			if gatewayStarts.Load() == 1 && mux.arb.isOwner(gatewaySessionID) {
-				t.Error("retry START retained abandoned gateway ownership")
-			}
 			gatewayStarts.Add(1)
 		case externalInitiator:
 			externalStarts.Add(1)
@@ -685,52 +694,31 @@ func TestIssue993_CollisionRecoveryDefersF26ForPendingExternal(t *testing.T) {
 	case <-requestCtx.Done():
 		t.Fatalf("external bidder was not queued: %v", requestCtx.Err())
 	}
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		mux.stateMu.Lock()
-		terminal := !mux.gatewayTxnActive && mux.deferRegrantUntilNextSyn
-		mux.stateMu.Unlock()
-		if terminal {
-			break
-		}
-		time.Sleep(time.Millisecond)
-	}
-	if gatewayStarts.Load() != 1 || externalStarts.Load() != 0 {
-		t.Fatalf("bidder started before terminal boundary: gateway=%d external=%d", gatewayStarts.Load(), externalStarts.Load())
-	}
-	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
-	select {
-	case err := <-result:
-		if err != nil {
-			t.Fatalf("Send error = %v", err)
-		}
-	case <-requestCtx.Done():
-		t.Fatalf("Send did not complete: %v", requestCtx.Err())
-	}
-	if got := gatewayStarts.Load(); got != 2 {
-		t.Fatalf("gateway starts = %d, want one retry", got)
-	}
-
-	// The retry completed and left the bus idle. A later normal SYN is the
-	// fairness boundary that may grant the already-pending external session.
-	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
 	select {
 	case granted := <-externalStart:
 		if !granted.granted {
 			t.Fatalf("external grant = %+v, want granted", granted)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("pending external bidder was not granted after retry boundary")
+		t.Fatal("pending external bidder was not granted at the first SYN after the loss")
 	}
-	if got := externalStarts.Load(); got != 1 {
-		t.Fatalf("external starts = %d, want 1", got)
+	if gatewayStarts.Load() != 1 || externalStarts.Load() != 1 {
+		t.Fatalf("starts gateway/external = %d/%d, want 1/1", gatewayStarts.Load(), externalStarts.Load())
 	}
 	if !mux.arb.isOwner(externalID) || mux.arb.isOwner(gatewaySessionID) {
-		t.Fatal("ownership did not transfer exactly once to external bidder")
+		t.Fatal("ownership did not pass from the lost gateway grant to the external bidder")
 	}
 
+	// protocol.Bus consumed its owed SYNs although the external owns the bus,
+	// and its retry bid waits in the arbitrator rather than in waitForSyn.
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && !mux.arb.hasPending() {
+		time.Sleep(time.Millisecond)
+	}
+	if !mux.arb.hasPending() {
+		t.Fatal("gateway retry was not queued behind the external owner")
+	}
 	eventsMu.Lock()
-	defer eventsMu.Unlock()
 	var retries, syns int
 	for _, event := range events {
 		if event.Kind == protocol.BusEventRetry && event.Outcome == protocol.BusOutcomeCollision {
@@ -740,8 +728,17 @@ func TestIssue993_CollisionRecoveryDefersF26ForPendingExternal(t *testing.T) {
 			syns++
 		}
 	}
-	if retries != 1 || syns != 3 {
-		t.Fatalf("retries/SYNs = %d/%d, want 1/3 (two recovery plus retry terminator)", retries, syns)
+	eventsMu.Unlock()
+	if retries != 1 || syns != protocol.CollisionRetryResyncSYNCount {
+		t.Fatalf("retries/SYNs = %d/%d, want 1/%d (the owed resynchronization SYNs only)", retries, syns, protocol.CollisionRetryResyncSYNCount)
+	}
+	if got := gatewayStarts.Load(); got != 1 {
+		t.Fatalf("gateway starts while the external owns the bus = %d, want 1", got)
+	}
+	select {
+	case err := <-result:
+		t.Fatalf("Send returned %v while its retry was queued", err)
+	default:
 	}
 }
 
@@ -773,18 +770,17 @@ func TestIssue993_CollisionHandoffCancelsAbandonedWatchdog(t *testing.T) {
 				t.Fatal("precondition: abandoned write did not arm watchdog")
 			}
 
-			// The end-to-end foreign-byte predicate is covered above. This
-			// seam starts after that transition and isolates terminal watchdog
-			// teardown in both V8 modes.
-			mux.stateMu.Lock()
-			mux.activeTxn.firstByteSuspectArbLoss.Store(true)
-			mux.collisionResyncSYNs = protocol.CollisionRetryResyncSYNCount
-			mux.stateMu.Unlock()
-			token := mux.ActiveTransport().(*activeTransport).CollisionRecoveryToken()
-			if token == 0 {
-				t.Fatal("live collision did not expose recovery token")
+			// Issue #1401: the first-byte loss releases the grant and cancels
+			// the abandoned write's watchdog at detection, before the foreign
+			// byte becomes visible to protocol.Bus.
+			mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0xF1}
+			expectActiveByte(t, mux, 0xF1)
+			if pacer.WatchdogArmed() {
+				t.Fatal("arbitration-loss release left the abandoned write's watchdog armed")
 			}
-			mux.ActiveTransport().(*activeTransport).CompleteCollisionRecovery(token, transport.CollisionRecoveryRetry)
+			if mux.arb.isOwner(gatewaySessionID) {
+				t.Fatal("arbitration loss retained gateway ownership")
+			}
 
 			pausedRetryStart := make(chan struct{}, 1)
 			allowRetryStart := make(chan struct{})
@@ -810,13 +806,14 @@ func TestIssue993_CollisionHandoffCancelsAbandonedWatchdog(t *testing.T) {
 			senders.start(func() {
 				handoff <- mux.requestStartForSession(gatewaySessionID, gatewaySource)
 			})
-			// Retry-ready is queued behind the lifecycle boundary until SYN3.
+			// The retry is queued behind the loss's regrant deferral until the
+			// next SYN.
 			deadline = time.Now().Add(time.Second)
 			for time.Now().Before(deadline) && !mux.arb.hasPending() {
 				time.Sleep(time.Millisecond)
 			}
 			if !mux.arb.hasPending() {
-				t.Fatal("retry was not pending before SYN3")
+				t.Fatal("retry was not pending before the next SYN")
 			}
 			mux.stateMu.Lock()
 			_, shouldGrant, _, cancelWatchdog := mux.onSYNLocked(wirePhaseEventSYNIdle, 0, false, time.Now())
@@ -969,6 +966,10 @@ func TestIssue993_FirstByteExceptionLeavesP11Strict(t *testing.T) {
 	})
 }
 
+// TestIssue993_CollisionResyncStateClearsAtTerminalBoundaries proves that the
+// owed resynchronization SYN window opened by an arbitration loss (issue
+// #1401) closes at every lifecycle boundary, and that its stale token can
+// never touch a later grant.
 func TestIssue993_CollisionResyncStateClearsAtTerminalBoundaries(t *testing.T) {
 	armCollisionRecovery := func(t *testing.T, mux *Mux, mock *p3MockTransport) (*activeTransport, uint64) {
 		t.Helper()
@@ -979,9 +980,6 @@ func TestIssue993_CollisionResyncStateClearsAtTerminalBoundaries(t *testing.T) {
 		}
 		mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0xF1}
 		expectActiveByte(t, mux, 0xF1)
-		mux.stateMu.Lock()
-		mux.collisionResyncSYNs = 1
-		mux.stateMu.Unlock()
 		token := at.CollisionRecoveryToken()
 		if token == 0 {
 			t.Fatal("armed recovery returned zero token")
@@ -993,8 +991,8 @@ func TestIssue993_CollisionResyncStateClearsAtTerminalBoundaries(t *testing.T) {
 		t.Helper()
 		mux.stateMu.Lock()
 		defer mux.stateMu.Unlock()
-		if got := mux.collisionResyncSYNs; got != 0 {
-			t.Fatalf("collision resync SYN count = %d, want 0 after terminal boundary", got)
+		if got := mux.collisionResyncOwed; got != 0 {
+			t.Fatalf("owed collision resync SYNs = %d, want 0 after terminal boundary", got)
 		}
 	}
 
@@ -1037,14 +1035,11 @@ func TestIssue993_CollisionResyncStateClearsAtTerminalBoundaries(t *testing.T) {
 		assertInvalidated(t, mux, mock, at, token)
 	})
 
-	t.Run("reconnect and ownership teardown share terminal cleanup", func(t *testing.T) {
+	t.Run("gateway re-bid", func(t *testing.T) {
 		mux, mock, _, cleanup := newP3TestMux(t)
 		defer cleanup()
 		at, token := armCollisionRecovery(t, mux, mock)
-		mux.stateMu.Lock()
-		mux.gatewayTxnActive = false
-		mux.recordGatewayInactive(ReasonReconnect)
-		mux.stateMu.Unlock()
+		mux.requestStartForSession(gatewaySessionID, 0x10)
 		assertCleared(t, mux)
 		assertInvalidated(t, mux, mock, at, token)
 	})
@@ -1059,8 +1054,8 @@ func TestIssue993_CollisionResyncStateClearsAtTerminalBoundaries(t *testing.T) {
 		if got := at.CollisionRecoveryToken(); got != 0 {
 			t.Fatalf("Close retained token %d", got)
 		}
-		if got := mux.ActiveTxnSnapshot().InactiveReason; got != ReasonContextCancel {
-			t.Fatalf("Close inactive reason = %q, want %q", got, ReasonContextCancel)
+		if got := mux.ActiveTxnSnapshot().InactiveReason; got != ReasonArbitrationCollision {
+			t.Fatalf("inactive reason after loss and Close = %q, want %q (first reason wins)", got, ReasonArbitrationCollision)
 		}
 		at.CompleteCollisionRecovery(token, transport.CollisionRecoveryAbandon)
 		mux.stateMu.Lock()
@@ -1094,11 +1089,21 @@ func TestIssue993_InjectsBoundedOfflineContentionCoverage(t *testing.T) {
 		if !mux.activeTxn.firstByteSuspectArbLoss.Load() {
 			t.Fatalf("event %d: foreign initiator did not arm collision recovery", i)
 		}
+		if mux.arb.isOwner(gatewaySessionID) {
+			t.Fatalf("event %d: arbitration loss retained the gateway grant", i)
+		}
 
 		// Each iteration is an independent offline contention episode.
 		// The explicit terminal boundary mirrors a cancelled active caller;
 		// the next grant resets every per-transaction predicate.
 		mux.markActiveContextCancel()
 		mux.arb.forceRelease()
+	}
+	snap := mux.ActiveTxnSnapshot()
+	if got := snap.InactiveReasonCounts[ReasonArbitrationCollision]; got != events {
+		t.Fatalf("arbitration_collision endings = %d, want %d", got, events)
+	}
+	if snap.ForeignInitiatorReleases != events {
+		t.Fatalf("foreign initiator releases = %d, want %d", snap.ForeignInitiatorReleases, events)
 	}
 }

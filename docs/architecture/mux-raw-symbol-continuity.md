@@ -56,6 +56,8 @@ deterministic regressions in `raw_symbol_continuity_test.go`:
   of encoded ENH TCP length. STARTED, FAILED and control frames reserve none.
   More than two queued RECEIVED frames trigger a bounded snapshot flush without
   pacing sleeps; no payload is dropped and each ENH frame remains one Write.
+  Arrivals during flush writes remain outside that snapshot and are evaluated
+  against the backlog bound after it completes; at most two resume normal pacing.
   Each successful flush Write rebases cadence at completion, so the next
   ordinary symbol waits one period even after a blocked connection recovers.
   These are host egress scheduling rules, not recovered native symbol timing.

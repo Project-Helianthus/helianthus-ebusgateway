@@ -774,8 +774,12 @@ func (s *session) writeLoop() {
 		// ModeOff retains its FIFO, zero-pacer path. Snapshot only frames
 		// already available, so a producer cannot keep the writer draining.
 		if pacer := s.mux.SessionPacer(s.id); pacer != nil {
-			for n := min(len(s.sendCh), cap(s.sendCh)-len(pending)); n > 0; n-- {
-				pending = append(pending, <-s.sendCh)
+			// Freeze an active flush at its original snapshot. Later arrivals
+			// must be evaluated against the backlog bound after it completes.
+			if !s.flushBacklog {
+				for n := min(len(s.sendCh), cap(s.sendCh)-len(pending)); n > 0; n-- {
+					pending = append(pending, <-s.sendCh)
+				}
 			}
 			queuedSymbols := 0
 			for _, frame := range pending {

@@ -272,3 +272,73 @@ func TestSessionPacer_BacklogRecoveryAfterBlockedWrite(t *testing.T) {
 		t.Fatalf("ordinary frame followed blocked flush after %v; want >=%v", gap, tau)
 	}
 }
+
+// snapshotBacklogConn blocks each original snapshot write so arrivals can be
+// injected while the writer is flushing, rather than before it takes a snapshot.
+type snapshotBacklogConn struct {
+	backlogConn
+	entered chan byte
+	release chan struct{}
+}
+
+func (c *snapshotBacklogConn) Write(p []byte) (int, error) {
+	if p[0] >= 0x10 && p[0] <= 0x12 {
+		c.entered <- p[0]
+		<-c.release
+	}
+	return c.backlogConn.Write(p)
+}
+
+func TestSessionPacer_BacklogFlushFreezesSnapshot(t *testing.T) {
+	mux, _, _, cleanup := newClassifiedTestMux(t, v8classifier.ModeShadow)
+	t.Cleanup(cleanup)
+	mux.ensureSessionPacer(1)
+	const tau = 40 * time.Millisecond
+	mux.SessionPacer(1).SetTau(tau)
+	c := &snapshotBacklogConn{
+		backlogConn: backlogConn{written: make(chan struct{}, 8)},
+		entered:     make(chan byte, 3),
+		release:     make(chan struct{}),
+	}
+	s := &session{id: 1, mux: mux, conn: c, sendCh: make(chan sessionFrame, 256), done: make(chan struct{})}
+	for b := byte(0x10); b <= 0x12; b++ {
+		s.sendCh <- sessionFrame{kind: sessionFrameReceived, payload: b}
+	}
+	s.wg.Add(1)
+	go s.writeLoop()
+	t.Cleanup(func() {
+		s.closed.Store(true)
+		close(s.done)
+		close(c.release)
+		s.wg.Wait()
+	})
+	for b := byte(0x10); b <= 0x12; b++ {
+		select {
+		case got := <-c.entered:
+			if got != b {
+				t.Fatalf("blocked write=%x; want %x", got, b)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("snapshot write %x did not start", b)
+		}
+		if b < 0x12 {
+			// Two new RECEIVED frames stay below the flush threshold.
+			s.sendCh <- sessionFrame{kind: sessionFrameReceived, payload: b + 3}
+		}
+		c.release <- struct{}{}
+	}
+	writes := awaitBacklogWrites(t, &c.backlogConn, 5)
+	for i, write := range writes {
+		if !bytes.Equal(write.data, []byte{byte(0x10 + i)}) {
+			t.Fatalf("write %d=%x; want %x", i, write.data, 0x10+i)
+		}
+		if i >= 3 {
+			if gap := write.at.Sub(writes[i-1].at); gap < tau {
+				t.Fatalf("post-snapshot frame %d gap=%v; want >=%v", i, gap, tau)
+			}
+		}
+	}
+	if got := s.backlogFlushes.Load(); got != 1 {
+		t.Fatalf("flushes=%d; want 1", got)
+	}
+}

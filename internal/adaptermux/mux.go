@@ -297,7 +297,6 @@ type pendingStartState struct {
 	// responseReceived is guarded by stateMu. Once the wire response has
 	// arrived, cancellation and deadline expiry must not expect another one.
 	responseReceived bool
-	losers           []*startRequest
 	sessionID        uint64
 	initiator        byte
 	notify           chan startResult
@@ -379,6 +378,10 @@ type Mux struct {
 
 	pendingStart       *pendingStartState // in-flight START awaiting STARTED/FAILED
 	pendingStartAbsorb int                // stale adapter responses to absorb (FAILED/STARTED from cancelled requests)
+	// localLosers tracks clients supplied a source by local FAILED independently
+	// of the selected waiter, including while its physical response is absorbed.
+	// Protected by stateMu; cleared at a response or observed SYN boundary.
+	localLosers []*startRequest
 	// absorbSkipLog* rate-limits the hot tryGrantAndStart skip log while
 	// pendingStartAbsorb is acting as the stale-response barrier.
 	absorbSkipLogLastEmit        time.Time
@@ -836,6 +839,7 @@ func (m *Mux) Close() error {
 		pendingToCancel := m.pendingStart
 		m.pendingStart = nil
 		m.pendingStartAbsorb = 0
+		m.localLosers = nil
 		m.clearAbsorbSkipLogStateLocked()
 		// F-NEW-25: stop the absorb-reset debounce timer if armed.
 		// Stop() is best-effort — if the callback is already
@@ -1526,6 +1530,7 @@ func (m *Mux) reconnect() (delegated bool, err error) {
 	pendingToCancel := m.pendingStart
 	m.pendingStart = nil
 	m.pendingStartAbsorb = 0
+	m.localLosers = nil
 	m.clearAbsorbSkipLogStateLocked()
 	// F-NEW-25: stop the absorb-reset debounce timer on reconnect.
 	// reconnect explicitly drains pendingStartAbsorb here; leaving
@@ -1843,7 +1848,7 @@ func (m *Mux) readLoop() {
 				startedBidderSessionID = m.pendingStart.sessionID
 				startedBidderInitiator = m.pendingStart.initiator
 				startedBidderValid = true
-				startedLosers = m.pendingStart.losers
+				startedLosers = m.localLosers
 			}
 			m.lastWireActivity = time.Now()
 			m.stateMu.Unlock()
@@ -2032,9 +2037,9 @@ func (m *Mux) readLoop() {
 			var failedLosers []*startRequest
 			m.stateMu.Lock()
 			m.lastWireActivity = time.Now()
+			failedLosers = m.localLosers
 			if m.pendingStartAbsorb == 0 && m.pendingStart != nil {
 				activeBidderSessionID = m.pendingStart.sessionID
-				failedLosers = m.pendingStart.losers
 				hasActiveBidder = true
 				if isPhantom && m.pendingStart.sessionID == activeBidderSessionID {
 					notifyByte = m.pendingStart.initiator
@@ -2224,9 +2229,7 @@ func (m *Mux) onLogicalReceived(symbol byte, wasEscaped bool, deliverToSessions 
 	if isWireSyn {
 		// FAILED supplied the source only until this stream boundary.
 		// A later STARTED must supply it again for loser reconstruction.
-		if m.pendingStart != nil {
-			m.pendingStart.losers = nil
-		}
+		m.localLosers = nil
 		if hasOwner && ownerID == gatewaySessionID {
 			// Gateway owns bus, phase tracking skipped for data bytes.
 			// Treat SYN as idle so IdleReleaseGrace controls release.
@@ -3342,6 +3345,7 @@ func (m *Mux) handleReset() {
 	m.deferRegrantUntilNextSyn = false
 	pendingToCancel := m.pendingStart
 	m.pendingStart = nil
+	m.localLosers = nil
 	m.pendingStartAbsorb = 0 // reset clears adapter state; no stale responses will arrive
 	m.clearAbsorbSkipLogStateLocked()
 	// F-NEW-25: stop the absorb-reset debounce timer on RESETTED
@@ -3765,8 +3769,8 @@ func (m *Mux) tryGrantAndStartForBids(bids map[*startRequest]chan startResult) {
 	initiator := req.initiator
 	notify := req.notify
 
+	m.localLosers = losers
 	m.pendingStart = &pendingStartState{
-		losers:      losers,
 		sessionID:   sessionID,
 		initiator:   initiator,
 		notify:      notify,
@@ -4244,6 +4248,8 @@ func (m *Mux) armExternalAbandonWatchdog(sess *session, grantGen uint32) {
 func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 	m.logger.Printf("adaptermux: arbitration response started=%v data=0x%02X", started, data)
 	m.stateMu.Lock()
+	// readLoop snapshots these before consuming even a stale response.
+	m.localLosers = nil
 
 	// Absorb stale responses from cancelled RequestStart calls.
 	// cancelPendingStart increments pendingStartAbsorb when it clears a
@@ -5092,7 +5098,7 @@ func (m *Mux) deliverToSessions(symbol byte, currentOwner uint64, hasOwner bool,
 
 // resetLocalLoserSources inserts a synthetic session reconstruction boundary
 // when the locally selected source from FAILED did not win on the wire. An
-// intervening observed SYN already clears pendingStart.losers. This boundary
+// intervening observed SYN already clears localLosers. This boundary
 // belongs only to affected ENH sessions, never to raw or passive wire evidence.
 func (m *Mux) resetLocalLoserSources(losers []*startRequest) {
 	m.sessionsMu.Lock()

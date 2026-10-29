@@ -19,7 +19,10 @@
 // Physical adapter arbitration can still lose to an initiator outside this mux.
 // On physical loss, local losers receive a synthetic session SYN before the
 // actual winner source, unless an observed SYN already reset reconstruction.
-// This session-only boundary is never emitted as passive wire evidence.
+// The local-loser reconstruction state survives cancellation, disconnect, or
+// deadline expiry of the selected bidder until the physical response or an
+// observed SYN. This session-only boundary is never emitted as passive wire
+// evidence.
 // Gateway bids waiting for SYN expire after StartDeadline; once selected, a
 // separate StartDeadline bounds the adapter response without admission expiry
 // cancelling a deliverable wire win.

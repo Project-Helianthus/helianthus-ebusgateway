@@ -8,6 +8,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
 	"io"
 	"log"
+	"net"
 	"reflect"
 	"testing"
 	"time"
@@ -562,6 +563,70 @@ func TestT02_LocalLoserPhysicalLossReconstruction(t *testing.T) {
 					}
 				})
 			}
+		}
+	}
+}
+
+func TestT02_LocalLoserPhysicalLossAfterSelectedBidRetires(t *testing.T) {
+	for _, retire := range []string{"cancel", "disconnect", "deadline"} {
+		for _, boundary := range []string{"none", "logicalSYN", "rawSYN"} {
+			t.Run(retire+"/"+boundary, func(t *testing.T) {
+				m, tr := newT02Mux(t)
+				if retire == "deadline" {
+					m.cfg.StartDeadline = 100 * time.Millisecond
+				}
+				selected := m.requestStartForSession(1, 0x31)
+				m.requestStartForSession(2, 0x73)
+				t02SYN(m)
+				t02Failed(t, m, 2, 0x31)
+				switch retire {
+				case "cancel":
+					m.cancelPendingStart(1)
+				case "disconnect":
+					client, server := net.Pipe()
+					defer func() { _ = client.Close() }()
+					m.sessions[1].conn = server
+					m.RemoveSession(1)
+				}
+				select {
+				case result := <-selected:
+					if result.granted || (retire == "deadline" && result.err == nil) {
+						t.Fatalf("retired bid result=%+v", result)
+					}
+				case <-time.After(time.Second):
+					t.Fatal("selected bid did not retire")
+				}
+				m.stateMu.Lock()
+				pending, absorb := m.pendingStart, m.pendingStartAbsorb
+				m.stateMu.Unlock()
+				if pending != nil || absorb != 1 {
+					t.Fatalf("retired bid: pending=%v absorb=%d", pending, absorb)
+				}
+				if boundary == "rawSYN" {
+					m.onRawSymbol(protocol.SymbolSyn, transport.StreamEvent{})
+				}
+				tr.readDone = m.ctx.Done()
+				m.wg.Add(1)
+				go m.readLoop()
+				defer func() { m.cancel(); m.wg.Wait() }()
+				if boundary == "logicalSYN" {
+					tr.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+				}
+				tr.eventCh <- transport.StreamEvent{Kind: transport.StreamEventFailed, Data: 0x10}
+				tr.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x08}
+				// Exactly one boundary must precede the actual source, whether
+				// observed on the wire or synthesized for this local loser.
+				for _, want := range []byte{protocol.SymbolSyn, 0x10, 0x08} {
+					select {
+					case frame := <-m.sessions[2].sendCh:
+						if frame.kind != sessionFrameReceived || frame.payload != want {
+							t.Fatalf("reconstruction=%+v, want RECEIVED %02x", frame, want)
+						}
+					case <-time.After(time.Second):
+						t.Fatalf("missing RECEIVED %02x", want)
+					}
+				}
+			})
 		}
 	}
 }

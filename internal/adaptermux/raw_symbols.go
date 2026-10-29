@@ -91,9 +91,7 @@ func (m *Mux) onRawSymbol(symbol byte, logical transport.StreamEvent) {
 		// Raw-only SYNs also reset the external client's reconstruction,
 		// even when they complete no logical item (an interrupted pair).
 		m.stateMu.Lock()
-		if m.pendingStart != nil {
-			m.pendingStart.losers = nil
-		}
+		m.localLosers = nil
 		m.stateMu.Unlock()
 	}
 	if logical.Kind == 0 && symbol != protocol.SymbolSyn {

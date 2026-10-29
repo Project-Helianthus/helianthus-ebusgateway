@@ -125,12 +125,9 @@ func wireAdapterDirectWithConnectionLost(ctx context.Context, cfg *ebusgateway.C
 		muxCfg.DialTimeout = 5 * time.Second
 	}
 	muxCfg.BlackholeThreshold = adapterDirectBlackholeThreshold
-	// Mux read timeout controls how often the idle-timeout branch runs
-	// (tryGrantAndStart) AND how quickly activeCh receives bytes from
-	// the upstream ENH transport. 50ms matches the eBUS SYN interval so
-	// waitForSyn (which needs 2 SYNs) completes within ~100ms instead
-	// of ~400ms at 200ms, preventing scan-abort after collision retry.
-	muxCfg.ReadTimeout = 50 * time.Millisecond
+	if err := adapterMuxOptions.apply(&muxCfg); err != nil {
+		return nil, nil, rejectEBusConfig(err)
+	}
 	if muxCfg.WriteTimeout == 0 {
 		muxCfg.WriteTimeout = 5 * time.Second
 	}

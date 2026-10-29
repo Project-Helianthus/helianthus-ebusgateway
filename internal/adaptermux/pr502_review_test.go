@@ -336,8 +336,6 @@ func TestBlockingArbDeadline_NoOverlap(t *testing.T) {
 		// overlap semantics on the gateway, so disable the TTL
 		// drain (default 50 ms would reject the external pending
 		// during the test's 150 ms deadline window).
-		PendingStartTTL: 24 * time.Hour,
-		SYNInterval:     time.Hour, // disable C1 idle fast path in legacy tests
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -356,11 +354,11 @@ func TestBlockingArbDeadline_NoOverlap(t *testing.T) {
 
 	// Queue two requests: gateway + external.
 	gwCh := mux.arb.requestStart(gatewaySessionID, 0x71)
-	extCh := mux.arb.requestStart(2, 0x50)
 
 	// PR502-Fix1: tryGrantAndStart returns immediately; the blocking
 	// StartArbitration runs in an internal goroutine.
 	mux.tryGrantAndStart()
+	extCh := mux.arb.requestStart(2, 0x50)
 
 	// Wait for first StartArbitration to enter.
 	time.Sleep(50 * time.Millisecond)
@@ -397,7 +395,8 @@ func TestBlockingArbDeadline_NoOverlap(t *testing.T) {
 	// clears blockingArbActive, and calls tryGrantAndStart which
 	// dequeues request #2 and launches a second StartArbitration.
 	close(mock.gate)
-
+	time.Sleep(20 * time.Millisecond)
+	grantQueuedAtSYN(t, mux)
 	time.Sleep(150 * time.Millisecond)
 	if c := atomic.LoadInt32(&arbCount); c != 2 {
 		t.Fatalf("expected 2 StartArbitration calls after hung goroutine returns and advances queue, got %d", c)
@@ -623,10 +622,9 @@ func (b *blackholeMockTransport) Close() error                { return nil }
 //   documents the 100ms bounded-blocking trade-off. The consumer can
 //   resync on the next reset after draining stale data.
 //
-// XR_GATEWAY_PRIORITY
-//   TestArbitrator_GatewayPriority                    (arbitration_test.go)
-//   Rationale: arbitrator.tryGrant checks pendingGateway before
-//   pendingExternal. See doc comment on arbitrator type.
+// XR_ADDRESS_PRIORITY
+//   TestT02_ThreeBiddersAndRebidOrder (issue1402_priority_test.go)
+//   All sessions compete by initiator address priority at an idle SYN.
 //
 // XR_INFO_CACHE_SNAPSHOT
 //   TestPopulateInfoCache                             (info_cache_test.go)
@@ -1131,8 +1129,6 @@ func TestBlockingArbDeadline_TriggersReconnect_NoOverlap(t *testing.T) {
 		ReadTimeout:   200 * time.Millisecond,
 		StartDeadline: 120 * time.Millisecond,
 		// C1/C3 test isolation (see paired test above).
-		PendingStartTTL: 24 * time.Hour,
-		SYNInterval:     time.Hour, // disable C1 idle fast path in legacy tests
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1155,9 +1151,9 @@ func TestBlockingArbDeadline_TriggersReconnect_NoOverlap(t *testing.T) {
 	// Queue two requests: the first will hit the blocking path, the
 	// second should remain queued while the first is hung.
 	gwCh := mux.arb.requestStart(gatewaySessionID, 0x71)
-	_ = mux.arb.requestStart(2, 0x50)
 
 	mux.tryGrantAndStart()
+	_ = mux.arb.requestStart(2, 0x50)
 	time.Sleep(30 * time.Millisecond)
 
 	// Wait for deadline to fire and gateway to be notified.
@@ -1211,7 +1207,9 @@ func TestBlockingArbDeadline_TriggersReconnect_NoOverlap(t *testing.T) {
 		t.Fatal("blockingArbActive must be cleared once the hung goroutine returns")
 	}
 
-	// The queue advance launched a second StartArbitration (now that
+	grantQueuedAtSYN(t, mux)
+	time.Sleep(100 * time.Millisecond)
+	// The SYN launched a second StartArbitration (now that
 	// the flag is clear). arbCount went from 1 to 2.
 	if c := atomic.LoadInt32(&arbCount); c != 2 {
 		t.Fatalf("after hung goroutine returned, expected queue to advance (arbCount=2), got %d", c)
@@ -1378,11 +1376,11 @@ func TestCancelPendingStart_BlockingArb_TriggersReconnect_NoOverlap(t *testing.T
 	// Queue an external session START and a second queued request.
 	const extSessionID uint64 = 77
 	extCh := mux.arb.requestStart(extSessionID, 0x50)
-	_ = mux.arb.requestStart(78, 0x51)
 
 	// Kick off: tryGrantAndStart takes the external request and runs
 	// StartArbitration in a goroutine hung on gate.
 	mux.tryGrantAndStart()
+	_ = mux.arb.requestStart(78, 0x51)
 	time.Sleep(40 * time.Millisecond)
 
 	// Verify we are in the hung-blocking state.
@@ -1463,7 +1461,9 @@ func TestCancelPendingStart_BlockingArb_TriggersReconnect_NoOverlap(t *testing.T
 		t.Fatal("blockingArbActive must be cleared once the hung goroutine returns")
 	}
 
-	// Queue advanced: second arbitration launched, arbCount went 1->2.
+	grantQueuedAtSYN(t, mux)
+	time.Sleep(100 * time.Millisecond)
+	// The next SYN admits the second arbitration.
 	if c := atomic.LoadInt32(&arbCount); c != 2 {
 		t.Fatalf("after hung goroutine returned, expected queue to advance (arbCount=2), got %d", c)
 	}

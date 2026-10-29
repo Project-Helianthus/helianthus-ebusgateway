@@ -366,6 +366,9 @@ type ActiveTxnSnapshot struct {
 	// quiet bus warrants investigation.
 	AbsorbResetTotal uint64
 
+	// UndeliverableStarted counts wire wins retired after cancellation or disconnect.
+	UndeliverableStarted uint64
+
 	// Transaction-shape diagnostics (bounded).
 	WritePrefix []byte
 	ReadPrefix  []byte
@@ -426,6 +429,7 @@ func (m *Mux) ActiveTxnSnapshot() ActiveTxnSnapshot {
 		EchoQueueOverflowResets:            m.gatewayEcho.overflowResets(),
 		BytesDeliveredToActive:             m.activeTxn.bytesDeliveredToActive.Load(),
 		AbsorbResetTotal:                   m.absorbResetTotal.Load(),
+		UndeliverableStarted:               m.undeliverableStarted.Load(),
 		WritePrefix:                        wp,
 		ReadPrefix:                         rp,
 		EchoLike:                           m.activeTxn.echoLike.Load(),

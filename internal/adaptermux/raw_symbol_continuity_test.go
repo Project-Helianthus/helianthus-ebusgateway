@@ -171,17 +171,13 @@ func newRawContinuityMuxMode(t *testing.T, mode v8classifier.Mode) (*Mux, *rawUp
 	t.Helper()
 	up := newRawUpstream()
 	mux := New(Config{
-		V8ClassifierMode:         mode,
-		Protocol:                 "enh",
-		Network:                  "tcp",
-		Address:                  "127.0.0.1:0",
-		ReadTimeout:              200 * time.Millisecond,
-		PendingStartTTL:          24 * time.Hour,
-		SYNInterval:              time.Hour,
-		ExternalStartStaleness:   -1,
-		PostExternalReleaseGrace: -1,
-		ExternalSessionSYNGrace:  time.Hour,
-		Logger:                   log.New(io.Discard, "", 0),
+		V8ClassifierMode:        mode,
+		Protocol:                "enh",
+		Network:                 "tcp",
+		Address:                 "127.0.0.1:0",
+		ReadTimeout:             200 * time.Millisecond,
+		ExternalSessionSYNGrace: time.Hour,
+		Logger:                  log.New(io.Discard, "", 0),
 	})
 	rec := &abandonRecorder{armed: make(chan abandonArm, 8)}
 	mux.externalAbandonAfter = func(d time.Duration, f func()) {
@@ -215,6 +211,7 @@ func newRawContinuityMuxMode(t *testing.T, mode v8classifier.Mode) (*Mux, *rawUp
 
 // enhTestClient is the external ENH client end of a session pipe.
 type enhTestClient struct {
+	mux  *Mux
 	t    *testing.T
 	conn net.Conn
 }
@@ -235,7 +232,7 @@ func addRawClient(t *testing.T, mux *Mux) (uint64, *enhTestClient) {
 		closeOrLog(t, client, "session client")
 		sess.wg.Wait()
 	})
-	return id, &enhTestClient{t: t, conn: client}
+	return id, &enhTestClient{t: t, conn: client, mux: mux}
 }
 
 func (c *enhTestClient) request(cmd transport.ENHCommand, data byte) {
@@ -247,6 +244,10 @@ func (c *enhTestClient) request(cmd transport.ENHCommand, data byte) {
 	if _, err := c.conn.Write(seq[:]); err != nil {
 		c.t.Fatalf("client write %v 0x%02X: %v", cmd, data, err)
 	}
+	if cmd == transport.ENHReqStart && data != protocol.SymbolSyn {
+		grantQueuedAtSYN(c.t, c.mux)
+	}
+
 }
 
 // next reads one ENH response frame (short-form bytes are RECEIVED).
@@ -426,6 +427,7 @@ func TestRawContinuity_ClientWaitsForEachRawSendEcho(t *testing.T) {
 	monitor.expectReceived(wantMonitor...)
 
 	expectPassive(t, passive,
+		passiveSymbol{protocol.SymbolSyn, false},
 		passiveSymbol{source, false},
 		passiveSymbol{target, false},
 		passiveSymbol{pb, false},
@@ -446,6 +448,7 @@ func grantRawGateway(t *testing.T, mux *Mux, up *rawUpstream, initiator byte) {
 	t.Helper()
 	up.setStartHook(func(b byte) { up.started(b) })
 	ch := mux.requestStartForSession(gatewaySessionID, initiator)
+	grantQueuedAtSYN(t, mux)
 	select {
 	case r := <-ch:
 		if !r.granted {
@@ -748,13 +751,21 @@ func TestRawContinuity_ProtocolBusReservedCRC(t *testing.T) {
 
 	reqCtx, cancel := context.WithTimeout(context.Background(), rawTestBound)
 	defer cancel()
-	if _, err := bus.Send(reqCtx, protocol.Frame{
-		Source:    source,
-		Target:    protocol.AddressBroadcast,
-		Primary:   pb,
-		Secondary: sb,
-		Data:      []byte{data},
-	}); err != nil {
+	done := make(chan error, 1)
+	var senders p3TestSenders
+	defer senders.releaseAndWait(cancel)
+	senders.start(func() {
+		_, err := bus.Send(reqCtx, protocol.Frame{
+			Source:    source,
+			Target:    protocol.AddressBroadcast,
+			Primary:   pb,
+			Secondary: sb,
+			Data:      []byte{data},
+		})
+		done <- err
+	})
+	grantQueuedAtSYN(t, mux)
+	if err := <-done; err != nil {
 		t.Fatalf("Send = %v", err)
 	}
 	want := []byte{protocol.AddressBroadcast, pb, sb, 0x01, data, 0xA9, 0x00, protocol.SymbolSyn}
@@ -790,7 +801,7 @@ func TestRawContinuity_GrantVisibleBehindQueuedPassiveTraffic(t *testing.T) {
 	mux.lastWireActivity = time.Time{}
 	mux.stateMu.Unlock()
 	owner.request(transport.ENHReqStart, 0x31)
-	expectPassive(t, passive, passiveSymbol{0x31, false}, passiveSymbol{0x08, false})
+	expectPassive(t, passive, passiveSymbol{protocol.SymbolSyn, false}, passiveSymbol{0x31, false}, passiveSymbol{0x08, false})
 
 	if !mux.arb.isOwner(id) {
 		t.Fatal("session is not the bus owner after the grant")

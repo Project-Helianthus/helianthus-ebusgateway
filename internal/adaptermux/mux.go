@@ -85,34 +85,6 @@ type Config struct {
 	// gateway's own pattern.
 	ExternalSessionSYNGrace time.Duration
 
-	// SYNInterval is the expected eBUS SYN cadence on the wire (default
-	// 4576 µs at 2400 baud). Used by tryGrantAndStart to decide whether
-	// the bus is idle enough to short-circuit fairness arbitration and
-	// hand the next pending external START to its session immediately.
-	// (Proxy-bug C1 / R1.)
-	SYNInterval time.Duration
-
-	// PendingStartTTL bounds the dwell time of an external pending
-	// START in the arbitrator's pendingExternal queue. Requests whose
-	// enqueuedAt has aged past this value are dropped from the queue
-	// head and rejected with errStaleStartRequest so external clients
-	// (ebusd) can retry cleanly when they actually want the bus.
-	// (Proxy-bug C3 / R3.)
-	//
-	// Sentinels:
-	//   - 0 (the zero value): use the production default (currently
-	//     250 ms — slightly above the default ReadTimeout so an
-	//     enqueue right after a read timeout still sees its first
-	//     grant attempt before the TTL drain fires; the request will
-	//     have been kicked via requestStartForSession's idle path
-	//     well before that, so the TTL only catches genuinely stuck
-	//     entries).
-	//   - Negative: disables the drain entirely. Tests and the very
-	//     rare deployment that needs pre-C3 behavior under long
-	//     gateway contention can pass -1 (or any negative duration)
-	//     to opt out.
-	PendingStartTTL time.Duration
-
 	// IsKnownInitiatorByte is an optional predicate that classifies a
 	// FAILED arbitration data byte as a real bus initiator (true) versus
 	// a transient AND-collision artifact (false). When two real
@@ -150,90 +122,6 @@ type Config struct {
 	// If the adapter does not respond within this duration, the pending
 	// start is cleared and the session is notified of failure (AM8).
 	StartDeadline time.Duration
-
-	// PostExternalReleaseGrace is the F-28 (batch-25, iter5,
-	// 2026-05-14) "polite yield" window. When an external session
-	// releases bus ownership, the arbitrator defers gateway-only
-	// grants for this duration so ebusd's TCP-delayed next
-	// ENH_REQ_START has time to arrive and be queued before the
-	// gateway's semantic poll loop re-bids and locks the bus.
-	//
-	// Live evidence (iter5 byte trace): without this gate, the
-	// gateway re-bids within microseconds after every external
-	// release, outracing ebusd's ~10-100ms TCP roundtrip every
-	// time. The result was a 200-500ms median ebusd START → STARTED
-	// latency, which compounds across multi-register scans into
-	// the residual 1-5s tail observed post-F-27.
-	//
-	// Sentinels:
-	//   - 0 (default): use 50ms.
-	//   - Negative: disable the cooldown entirely (legacy).
-	//
-	// 50ms is approximately:
-	//   ebusd's typical TCP roundtrip (~5-15ms)
-	//   + ebusd's bus-state-machine transition (~5-20ms)
-	//   + safety margin (10-30ms)
-	// Each 50ms cooldown sacrifices ~10% of the gateway's
-	// raw poll throughput when tight ebusd activity is happening,
-	// in exchange for ebusd actually completing its scans.
-	PostExternalReleaseGrace time.Duration
-
-	// FairnessRatio controls the gateway-vs-external grant rotation
-	// when BOTH a gateway pending START and at least one external
-	// pending START coexist. The arbitrator counts contended rotations
-	// and every Nth rotation hands the grant to external FIFO instead
-	// of the gateway (the default-priority bidder). Larger values
-	// favor the gateway; smaller values favor external sessions
-	// (ebusd).
-	//
-	// F-25 (batch-22, iter2, 2026-05-14): default 2 (50/50 split).
-	// Pre-F-25 this was a hard-coded constant of 4 (75% gateway /
-	// 25% external) which produced live `arbitration won in invalid
-	// state` cascades from ebusd because gateway-poll bursts left
-	// only ~25% of bus slots for ebusd to bid into, and the resulting
-	// stale STARTED dispatches collided with ebusd's bs_recvCmd
-	// state. See DefaultFairnessRatio in arbitration.go for the full
-	// rationale and the live evidence trail (iter1-result-
-	// 20260514T145344Z.md).
-	//
-	// Sentinels:
-	//   - 0 (zero value): use DefaultFairnessRatio (2).
-	//   - Negative: clamped to DefaultFairnessRatio (defensive).
-	//   - 1: every contended rotation alternates; expected gateway
-	//     share ~50% but ebusd MAY pre-empt back-to-back if it has
-	//     a queue. Tests use 1 to force-deterministic ebusd grants.
-	FairnessRatio int
-
-	// ExternalStartStaleness bounds the wall-clock age (measured from
-	// startRequest.enqueuedAt) of an EXTERNAL-session START at the
-	// moment the adapter reports `StreamEventStarted`. If the request
-	// has been in the gateway's path (pendingExternal queue + in-flight
-	// adapter arbitration) for longer than this budget, the grant is
-	// silently aborted: the session's notify channel receives
-	// `cancelled: true` (session.go's handleStart silent-suppress per
-	// F-17 takes the no-deliver branch) and ownership is NOT confirmed.
-	// The wire-level arbitration win still happened — bus state
-	// recovers naturally via the next SYN idle burst when no SEND
-	// frame follows.
-	//
-	// Iter1 fix (F-24, batch-21, 2026-05-14): ebusd's bus state machine
-	// times out internally before the gateway's queue+arbitration
-	// pipeline can deliver ENH_RES_STARTED for tight-scan-08 sub-
-	// register reads. When the late STARTED arrives, ebusd is in
-	// bs_recvCmd / bs_skip (mid-parsing the gateway's prior poll
-	// response) and logs `arbitration won in invalid state {skip|
-	// receive command|ready}`, silently dropping the request. The
-	// staleness guard prevents the gateway from delivering a grant
-	// that ebusd has already discarded, eliminating the bus-state
-	// desync. Default: 300ms (well below ebusd's typical 1-2s
-	// arbitration-wait timeout, but above the steady-state median
-	// queue+arbitration latency of ~50-150ms).
-	//
-	// Sentinels:
-	//   - 0 (zero value): use the 300ms default.
-	//   - Negative: disable the guard entirely (legacy behavior;
-	//     useful for regression testing). Tests use -1.
-	ExternalStartStaleness time.Duration
 
 	// BlackholeThreshold is the duration of consecutive read timeouts
 	// (after the bus was previously active) before triggering a TCP
@@ -321,24 +209,6 @@ func (c *Config) defaults() {
 	if c.LatencyHistogramReportInterval == 0 {
 		c.LatencyHistogramReportInterval = 60 * time.Second
 	}
-	if c.SYNInterval == 0 {
-		// 4576 µs ≈ one SYN period at 2400 baud on a clean eBUS line.
-		// (Proxy-bug C1 / R1.)
-		c.SYNInterval = 4576 * time.Microsecond
-	}
-	if c.PendingStartTTL == 0 {
-		// Default 250 ms — slightly above the default ReadTimeout
-		// (200 ms) so a START enqueued right after a read timeout
-		// still sees a grant attempt before the TTL drain fires.
-		// requestStartForSession kicks tryGrantAndStart on every
-		// enqueue, so on an idle bus the request typically lands a
-		// grant in < 1 ms; the 250 ms window is only there for
-		// genuinely stuck requests where the kick saw no idle path
-		// (e.g. blockingArbActive, pendingStartAbsorb > 0).
-		// Negative values disable the drain. (Proxy-bug C3 / R3 +
-		// Codex P1 round 1 on PR #623.)
-		c.PendingStartTTL = 250 * time.Millisecond
-	}
 	if c.ExternalSessionSYNGrace == 0 {
 		// F-27 (batch-24, iter4, 2026-05-14): lowered from 2s to 250ms.
 		//
@@ -374,37 +244,6 @@ func (c *Config) defaults() {
 	}
 	if c.StartDeadline <= 0 {
 		c.StartDeadline = 5 * time.Second
-	}
-	if c.ExternalStartStaleness == 0 {
-		// F-24 (batch-21, 2026-05-14): 300ms default. Well below ebusd's
-		// arbitration-wait timeout (~1-2s) so legitimate grants flow
-		// through; above the steady-state queue+arbitration latency
-		// (~50-150ms median) so normal traffic is unaffected. Operators
-		// can tune via the addon options.
-		c.ExternalStartStaleness = 300 * time.Millisecond
-	}
-	if c.PostExternalReleaseGrace == 0 {
-		// F-36 (batch-32, iter13): 250ms cooldown after every external
-		// release to give ebusd's TCP-delayed next ENH_REQ_START a
-		// window to arrive and queue before the gateway re-claims the
-		// bus. This curbs the gateway's semantic poll loop from
-		// outracing ebusd's next request via the in-process scheduler.
-		//
-		// History: F-27 (250ms→2s tested but regressed; reverted),
-		// F-28/F-29 set 50→100ms, F-36 widened to 250ms — current
-		// value. F-37 attempted 500ms but regressed in measurement
-		// and was reverted to F-36's 250ms. PR #634 P2 (Codex review,
-		// 2026-05-15): comment previously claimed F-37 widened to
-		// 500ms; that change was rolled back, so 250ms (F-36) is the
-		// authoritative value.
-		c.PostExternalReleaseGrace = 250 * time.Millisecond
-	}
-	if c.FairnessRatio == 0 {
-		// F-25 (batch-22, iter2, 2026-05-14): 2 = 50/50 split under
-		// gateway+external contention. Lowered from the previous
-		// hard-coded 4 (75% gateway / 25% external) which starved
-		// ebusd of bus slots during tight-scan-08 loops.
-		c.FairnessRatio = DefaultFairnessRatio
 	}
 	if c.BlackholeThreshold <= 0 {
 		c.BlackholeThreshold = 30 * time.Second
@@ -454,6 +293,7 @@ type arbitrationRequester interface {
 // adapter but not yet confirmed via STARTED/FAILED response.
 // Protected by stateMu.
 type pendingStartState struct {
+	losers      []*startRequest
 	sessionID   uint64
 	initiator   byte
 	notify      chan startResult
@@ -461,12 +301,8 @@ type pendingStartState struct {
 	blockingArb bool        // true when using blocking StartArbitration fallback
 
 	// req is the arbitrator's startRequest pointer kept by the mux for
-	// the duration of the in-flight grant. It carries the cancelled
-	// flag the mux checks before delivering a late STARTED: if the
-	// session has re-submitted a START while this grant was in flight
-	// at the adapter, the cancelled flag is true and the delivery path
-	// converts STARTED into FAILED instead of handing the bus to a
-	// session that abandoned the grant. (Proxy-bug C4 / R4.)
+	// the duration of the in-flight grant. A cancelled wire win is retired
+	// at the next SYN and counted rather than delivered to an old waiter.
 	req *startRequest
 }
 
@@ -476,6 +312,8 @@ type pendingStartState struct {
 //   - Passive path: filtered symbol callback (third-party only)
 //   - Session management: external ENH clients (ebusd)
 type Mux struct {
+	undeliverableStarted atomic.Uint64
+
 	cfg    Config
 	logger *log.Logger
 
@@ -641,20 +479,7 @@ type Mux struct {
 	// reconnect, context cancellation and Close.
 	collisionResyncOwed uint8
 
-	// F-24-fix (batch-23, 2026-05-17, Codex PR #634 P1 thread
-	// "Wait for idle after suppressing stale STARTED"): when the
-	// F-24 stale-STARTED suppression branch fires, the external
-	// initiator has WON wire arbitration but the gateway never
-	// confirmed ownership (`arb.hasOwner` stays false). If a fresh
-	// grant fires immediately, the next initiator (gateway or
-	// another external) issues a START in the middle of the
-	// abandoned external winner's bus slot, colliding with bytes
-	// already on the wire. deferRegrantUntilNextSyn defers the
-	// follow-up `tryGrantAndStart` until the SYN handler observes
-	// the next SYN-idle boundary — proof the abandoned frame
-	// terminated. Cleared in onSYNLocked (any SYN observation
-	// satisfies the wait — SYN itself is a bus-idle marker).
-	// Protected by stateMu.
+	// A cancelled or disconnected wire winner occupies its slot until the next SYN.
 	deferRegrantUntilNextSyn bool
 
 	// activeTxn is the diagnostics snapshot for the current/last gateway
@@ -833,7 +658,6 @@ type sendRequest struct {
 func New(cfg Config) *Mux {
 	cfg.defaults()
 	arb := newArbitrator()
-	arb.setPolicy(cfg.PendingStartTTL, cfg.FairnessRatio, cfg.PostExternalReleaseGrace)
 	mux := &Mux{
 		cfg:          cfg,
 		logger:       cfg.Logger,
@@ -1026,12 +850,6 @@ func (m *Mux) Close() error {
 		if pendingToCancel != nil && pendingToCancel.deadline != nil {
 			pendingToCancel.deadline.Stop() // AM8: cancel deadline timer
 		}
-		// batch-23 round-5 (Codex P2 2026-05-17 PR #634): clear F-24
-		// stale-STARTED deferral latch on Close. Close is the strongest
-		// possible boundary — no further grants will be attempted on
-		// this mux, but clearing the flag keeps state coherent for any
-		// observer/test that inspects post-Close state and matches the
-		// invariant set by reconnect() / handleReset().
 		m.deferRegrantUntilNextSyn = false
 		// Closing is also a transaction-generation boundary. Leave no
 		// recovery token live after shutdown: a caller may still hold an
@@ -1700,16 +1518,6 @@ func (m *Mux) reconnect() (delegated bool, err error) {
 	// Clear blockingArbActive here because the transport is being replaced.
 	m.blockingArbGen++
 	m.blockingArbActive = false
-	// batch-23 round-5 (Codex P2 2026-05-17 PR #634): clear F-24
-	// stale-STARTED deferral latch on the reset boundary. The latch
-	// is set by tryGrantAndStart's F-24-fix path (~3689) and normally
-	// cleared by onSYNLocked (~2051) when the next SYN observation
-	// proves the abandoned external initiator's slot has terminated.
-	// A TCP disconnect/reconnect is stronger evidence than a SYN that
-	// the abandoned slot is gone; without this clear, a reconnect
-	// between stale-STARTED suppression and the next SYN would leave
-	// post-reconnect grants permanently blocked on a quiet/blackholed
-	// bus.
 	m.deferRegrantUntilNextSyn = false
 	pendingToCancel := m.pendingStart
 	m.pendingStart = nil
@@ -1919,12 +1727,6 @@ func (m *Mux) readLoop() {
 				// reset for external sessions on ownership timeout.
 				_ = quietBusTimedOut
 
-				// On a quiet bus no SYN or transaction-complete events
-				// reach onReceived, so tryGrantAndStart is never called.
-				// Drain pending START requests here to prevent stalls.
-				if m.arb.hasPending() {
-					m.tryGrantAndStart()
-				}
 				continue
 			}
 			if errors.Is(err, ebuserrors.ErrInvalidPayload) {
@@ -2032,21 +1834,13 @@ func (m *Mux) readLoop() {
 			var startedBidderSessionID uint64
 			var startedBidderInitiator byte
 			var startedBidderValid bool
+			var startedLosers []*startRequest
 			if m.pendingStartAbsorb == 0 && m.pendingStart != nil {
 				startedBidderSessionID = m.pendingStart.sessionID
 				startedBidderInitiator = m.pendingStart.initiator
 				startedBidderValid = true
+				startedLosers = m.pendingStart.losers
 			}
-			// The STARTED event represents a real winner byte that
-			// the adapter consumed from the wire. Bump
-			// lastWireActivity so the C1 fast path / requestStart-
-			// ForSession enqueue-kick correctly treat the wire as
-			// non-idle during the third-party transaction that is
-			// about to flow through onReceived. Without this, a new
-			// external START enqueued in the gap between this
-			// control event and the next StreamEventByte would see
-			// an old timestamp and idle-kick mid-frame. (Codex P2
-			// round 6 on PR #623.)
 			m.lastWireActivity = time.Now()
 			m.stateMu.Unlock()
 			m.handleArbitrationResponse(true, event.Data)
@@ -2103,7 +1897,7 @@ func (m *Mux) readLoop() {
 						// intentionally NOT notified (gateway-
 						// owned bytes are suppressed in
 						// onReceived too — consistent).
-						m.deliverToSessions(event.Data, gatewaySessionID, true, time.Now())
+						m.deliverWinnerByteToOtherSessions(event.Data, gatewaySessionID, startedLosers...)
 					} else {
 						// External session won — skip the winner
 						// (completeArbitrationGrant already queued
@@ -2115,7 +1909,7 @@ func (m *Mux) readLoop() {
 						// it they'd misread the next target/PB
 						// byte as the frame source. (Codex P2
 						// round 3.)
-						m.deliverWinnerByteToOtherSessions(event.Data, startedBidderSessionID)
+						m.deliverWinnerByteToOtherSessions(event.Data, startedBidderSessionID, startedLosers...)
 						// Passive observer pipeline also needs
 						// the non-gateway winner byte — the
 						// PassiveTransport / bus reconstructor
@@ -2397,31 +2191,6 @@ func (m *Mux) onLogicalReceived(symbol byte, wasEscaped bool, deliverToSessions 
 
 	ownerID, _, hasOwner := m.arb.owner()
 
-	// Track wire activity for two purposes:
-	//   1. F-10v2 (PR #621): inter-byte-gap measurement that drives
-	//      SYN-timeout / idle-release decisions for external owners.
-	//      Every non-SYN byte resets the activity clock, so a long-
-	//      running external transaction with real inter-responder
-	//      traffic does not get torn down purely because the grant
-	//      itself is old.
-	//   2. Proxy-bug C1 (PR #623): the bus-idle fast path in
-	//      tryGrant + the requestStartForSession enqueue-kick both
-	//      consult lastWireActivity to decide whether the wire is
-	//      quiescent. THIRD-PARTY passive frames must count as "wire
-	//      busy" too — otherwise the idle check fires while a non-
-	//      mux initiator is mid-transaction and the kick issues an
-	//      adapter START in the middle of passive traffic. (Codex
-	//      P2 round 5 on PR #623.)
-	//
-	// SYN markers do NOT bump the activity clock — they are the very
-	// signal we use to decide when the bus has been idle long enough
-	// for a release.
-	//
-	// F-23 (batch-19, Codex bot on PR-2): the SYN exclusion keys on
-	// the wire-side classification, not on byte value. An escape-
-	// decoded payload 0xAA (wasEscaped=true) is genuine bus traffic
-	// from a third-party frame and MUST refresh the activity clock;
-	// only a real un-escaped wire SYN counts as bus-idle.
 	if symbol != protocol.SymbolSyn || wasEscaped {
 		m.lastWireActivity = now
 	}
@@ -2871,7 +2640,6 @@ func (m *Mux) onLogicalReceived(symbol byte, wasEscaped bool, deliverToSessions 
 			}
 		}
 		m.stateMu.Unlock()
-		m.tryGrantAndStart()
 	}
 }
 
@@ -2890,13 +2658,6 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	var passiveEvents []PassiveEvent
 	var cancelGatewayWatchdog bool
 
-	// F-24-fix (Codex PR #634 P1 thread "Wait for idle after
-	// suppressing stale STARTED"): any SYN observation marks a bus-
-	// idle boundary, so the abandoned external initiator's slot has
-	// terminated. Clear the deferral flag; the post-SYN
-	// tryGrantAndStart kick fired by readLoop (when shouldTryGrant
-	// is true) will now proceed normally on this SYN observation or
-	// the next one.
 	m.deferRegrantUntilNextSyn = false
 
 	// Issue #1401: a confirmed arbitration loss released the gateway at
@@ -3561,11 +3322,6 @@ func (m *Mux) handleReset() {
 	// Bump gen forward (monotonic) — see reconnect() for rationale.
 	m.blockingArbGen++
 	m.blockingArbActive = false
-	// batch-23 round-5 (Codex P2 2026-05-17 PR #634): clear F-24
-	// stale-STARTED deferral latch on the reset boundary. See the
-	// matching comment in reconnect() for the rationale — a RESETTED
-	// boundary is stronger evidence than a SYN that the abandoned
-	// external initiator's slot is gone.
 	m.deferRegrantUntilNextSyn = false
 	pendingToCancel := m.pendingStart
 	m.pendingStart = nil
@@ -3771,32 +3527,8 @@ func (m *Mux) deliverToActive(symbol byte, countAsDelivered bool) {
 // handleArbitrationResponse. This ensures passive observers continue
 // to receive bus bytes during gateway arbitration.
 //
-// requestStartForSession submits a START request via the arbitrator
-// and additionally:
-//
-//   - Marks any in-flight grant for the SAME session as cancelled
-//     (proxy-bug C4 / R4 in-flight branch — Codex P1 round 1 on
-//     PR #623). The arbitrator's replace path inside requestStart
-//     can only flag entries that are still in pendingExternal /
-//     pendingGateway; once tryGrant has popped a request into
-//     m.pendingStart, a same-session re-submit no longer finds it
-//     in the arbitrator and the cancelled flag would otherwise stay
-//     false. Catching the in-flight case here is what makes
-//     handleArbitrationResponse's cancelled-check actually fire in
-//     production.
-//
-//   - Opportunistically kicks tryGrantAndStart if the bus is idle
-//     (proxy-bug C1 fast-path enqueue trigger — Codex P1 round 1
-//     on PR #623). The mux's primary grant rhythm is driven by SYN
-//     arrivals via readLoop; on a quiet bus that means a new START
-//     can wait up to ReadTimeout (~200 ms default) before the first
-//     grant attempt — long past the C3 PendingStartTTL window of
-//     50 ms. Kicking on enqueue lets the idle fast-path grant a
-//     submission immediately when no SYN is imminent.
-//
-// All Mux/session/active-path callers MUST route through this method
-// rather than calling m.arb.requestStart directly, so both branches
-// of the C4 cancel + the C1 enqueue-kick are guaranteed to run.
+// requestStartForSession replaces a session's bid and cancels any previous
+// in-flight request. Only a subsequent idle SYN can forward the bid.
 func (m *Mux) requestStartForSession(sessionID uint64, initiator byte) <-chan startResult {
 	managedGateHeld, admitted := m.beginManagedConnectionUse()
 	releaseManagedGate := func() {
@@ -3851,23 +3583,6 @@ func (m *Mux) requestStartForSession(sessionID uint64, initiator byte) <-chan st
 	// markInFlightCancelled — that's a real change of intent.
 	if m.pendingStart != nil && m.pendingStart.sessionID == sessionID &&
 		sessionID != gatewaySessionID && m.pendingStart.initiator == initiator {
-		// F-39-fix² (PR #634 P1 Codex review, 2026-05-17): refresh
-		// the in-flight request's enqueuedAt to "now" so the
-		// staleness drain at the response-arrival site
-		// (handleArbitrationResponse's
-		// drainStalePendingExternalLocked-style check via
-		// ExternalStartStaleness, default 300 ms) does not suppress
-		// the eventual STARTED as stale. The latest ebusd retry may
-		// be only a few ms old even though the original bid has been
-		// in-flight for >300 ms; without this refresh the gateway
-		// silently cancels the new waiter (above) AND suppresses the
-		// upstream grant, leaving the fresh retry with no ENH
-		// response on the wire. Mirrors the queued-coalesce path's
-		// `existing.enqueuedAt = a.now()` refresh in
-		// arb.requestStart (round-2 F-39-fix landed in 24bbed7).
-		if m.pendingStart.req != nil {
-			m.pendingStart.req.enqueuedAt = m.arb.now()
-		}
 		m.stateMu.Unlock()
 		ch := make(chan startResult, 1)
 		ch <- startResult{
@@ -3893,29 +3608,11 @@ func (m *Mux) requestStartForSession(sessionID uint64, initiator byte) <-chan st
 	// step 1 and step 2.
 	ch := m.arb.requestStart(sessionID, initiator)
 
-	// Step 3: opportunistic kick — only when the wire has been quiet
-	// for at least one SYN interval. The SYN-driven grant rhythm in
-	// readLoop won't fire for up to ReadTimeout (~200 ms) on a
-	// genuinely quiet bus; without this kick a START can sit
-	// unattended past the C3 PendingStartTTL window. On a busy bus
-	// the next SYN handler will pick up the grant naturally, so we
-	// don't intrude on the established arbitration cadence. The
-	// idle check mirrors the snapshot used inside tryGrantAndStart
-	// for the C1 fast path. Read the snapshot while still holding
-	// stateMu so we get a coherent view before releasing.
-	idle := m.lastWireActivity.IsZero() ||
-		time.Since(m.lastWireActivity) >= m.cfg.SYNInterval
 	m.stateMu.Unlock()
 	if cancelGatewayWatchdog {
 		m.cancelGatewayWatchdog()
 	}
-	// Release before the idle kick: tryGrantAndStart takes its own managed
-	// read admission. Keeping this R lock while a loss writer is queued would
-	// make the nested RLock self-deadlock under RWMutex writer preference.
 	releaseManagedGate()
-	if idle {
-		m.tryGrantAndStart()
-	}
 
 	return ch
 }
@@ -3996,41 +3693,40 @@ func (m *Mux) tryGrantAndStart() {
 		m.stateMu.Unlock()
 		return
 	}
-	// F-24-fix (Codex PR #634 P1 thread "Wait for idle after
-	// suppressing stale STARTED"): if F-24 just suppressed a stale
-	// external STARTED, the abandoned external initiator's bus slot
-	// has not yet terminated with a SYN. Defer regrant until the
-	// next SYN observation clears the flag in onSYNLocked.
 	if m.deferRegrantUntilNextSyn {
-		m.logger.Printf("adaptermux: tryGrantAndStart skipped — F-24 stale-STARTED suppression pending bus-idle (next SYN)")
+		m.logger.Printf("adaptermux: tryGrantAndStart skipped — undeliverable STARTED awaiting next SYN")
 		m.stateMu.Unlock()
 		return
 	}
 
-	// Bus-idle snapshot for the proxy-bug C1 (R1) fast path: the
-	// wire has been quiet for at least one SYN interval. When the
-	// fast path engages, tryGrant hands the external FIFO head over
-	// directly and skips the fairness rotation — fairness has
-	// nothing to balance when there is no real contention.
-	// lastWireActivity is bumped on every non-SYN adapter byte while
-	// ownership is held; on a fresh boot it may be zero (no traffic
-	// yet), which we treat as idle so the first external START
-	// doesn't wait a fairness quantum. tryGrant itself rejects when
-	// the bus is owned, so this snapshot does not need to consult
-	// the arbitrator's ownership state.
-	busIdle := m.lastWireActivity.IsZero() ||
-		time.Since(m.lastWireActivity) >= m.cfg.SYNInterval
-
-	req, granted := m.arb.tryGrant(busIdle)
+	req, losers := m.arb.selectAtSYN(true)
+	granted := req != nil
 	if !granted {
 		m.stateMu.Unlock()
 		return
+	}
+	for _, loser := range losers {
+		queued := false
+		if loser.sessionID != gatewaySessionID {
+			m.sessionsMu.Lock()
+			if sess := m.sessions[loser.sessionID]; sess != nil {
+				sess.parserResetNeeded.Store(true)
+				sess.deliverFailed(req.initiator)
+				queued = true
+			}
+			m.sessionsMu.Unlock()
+		}
+		if loser.sessionID == gatewaySessionID {
+			m.collisionResyncOwed = protocol.CollisionRetryResyncSYNCount
+		}
+		loser.notify <- startResult{initiator: req.initiator, failedQueued: queued}
 	}
 	sessionID := req.sessionID
 	initiator := req.initiator
 	notify := req.notify
 
 	m.pendingStart = &pendingStartState{
+		losers:      losers,
 		sessionID:   sessionID,
 		initiator:   initiator,
 		notify:      notify,
@@ -4188,23 +3884,15 @@ func (m *Mux) tryGrantAndStart() {
 				// Since the adapter never received the START, no stale
 				// response will arrive — decrement absorb counter so the
 				// next real arbitration response is not incorrectly consumed.
-				shouldAdvance := false
+
 				if m.pendingStartAbsorb > 0 {
 					m.pendingStartAbsorb--
 					if m.pendingStartAbsorb == 0 {
 						m.clearAbsorbSkipLogStateLocked()
 					}
-					shouldAdvance = m.pendingStartAbsorb == 0 && m.arb.hasPending()
 				}
 				m.stateMu.Unlock()
-				if shouldAdvance {
-					// A managed loss writer may already be waiting. Release the
-					// outer R admission before recursively advancing the queue;
-					// otherwise RWMutex writer preference blocks the nested RLock
-					// while this frame can never release its original read lock.
-					releaseManagedGate()
-					m.tryGrantAndStart()
-				}
+
 			}
 			return
 		}
@@ -4337,9 +4025,6 @@ func (m *Mux) tryGrantAndStart() {
 						}
 					}
 					m.stateMu.Unlock()
-					if isCurrentGen && m.arb.hasPending() {
-						m.tryGrantAndStart()
-					}
 				}
 				return
 			}
@@ -4364,6 +4049,8 @@ func (m *Mux) tryGrantAndStart() {
 				// completeArbitrationGrant will follow.
 				if isCurrentGen {
 					m.blockingArbActive = false
+					m.deferRegrantUntilNextSyn = true
+					m.undeliverableStarted.Add(1)
 				}
 				// Codex-R8: scope absorb + queue advance to our generation.
 				if isCurrentGen && m.pendingStartAbsorb > 0 {
@@ -4373,17 +4060,14 @@ func (m *Mux) tryGrantAndStart() {
 					}
 				}
 				m.stateMu.Unlock()
-				if isCurrentGen && m.arb.hasPending() {
-					m.tryGrantAndStart()
-				}
 				return
 			}
 			if m.pendingStart.deadline != nil {
 				m.pendingStart.deadline.Stop() // AM8: cancel deadline timer
 			}
-			m.pendingStart = nil
+			pending := m.pendingStart
 			m.stateMu.Unlock()
-			m.completeArbitrationGrant(sessionID, initiator, notify)
+			m.completeArbitrationGrant(pending)
 			// Clear blockingArbActive AFTER ownership is confirmed.
 			// Codex-R11: re-check generation under the lock at the clear
 			// site. The cached isCurrentGen could be stale if reconnect()
@@ -4415,31 +4099,52 @@ func (m *Mux) tryGrantAndStart() {
 // completeArbitrationGrant finalizes a successful arbitration grant.
 // Used by the blocking StartArbitration fallback path and by
 // handleArbitrationResponse on STARTED.
-func (m *Mux) completeArbitrationGrant(sessionID uint64, initiator byte, notify chan startResult) {
-	// Check ArbitrationSendsSource BEFORE acquiring stateMu to avoid
-	// ABBA deadlock: arbitrationSendsSource acquires connMu, and doSend
-	// acquires connMu -> stateMu. Reversing that order here (stateMu ->
-	// connMu) would deadlock.
+func (m *Mux) completeArbitrationGrant(pending *pendingStartState) {
 	sendsSource := m.arbitrationSendsSource()
-
-	// AM57+Codex-P1: set busOwned, phase, AND confirmOwnership atomically
-	// under stateMu. For external sessions, the liveness check is also
-	// done under stateMu (via sessionsMu nested inside) to prevent a
-	// race where RemoveSession deletes the session between the liveness
-	// check and confirmOwnership, leaving a dead owner in the arbitrator.
-	// Lock order: stateMu → sessionsMu → arb.mu. No path holds
-	// sessionsMu or arb.mu then acquires stateMu, so ABBA-safe.
 	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+	// Cancellation may win between the adapter response and this commit.
+	if m.pendingStart != pending {
+		m.deferRegrantUntilNextSyn = true
+		m.undeliverableStarted.Add(1)
+		return
+	}
+	m.pendingStart = nil
+	if pending.deadline != nil {
+		pending.deadline.Stop()
+	}
+	sessionID, initiator, notify := pending.sessionID, pending.initiator, pending.notify
+	reject := func() {
+		m.deferRegrantUntilNextSyn = true
+		m.undeliverableStarted.Add(1)
+		select {
+		case notify <- startResult{cancelled: true, initiator: initiator}:
+		default:
+		}
+	}
+	if pending.req != nil && pending.req.cancelled.Load() {
+		reject()
+		return
+	}
+	// Publish STARTED while the session liveness and ownership commit are
+	// protected together. The writer can only SEND after stateMu is released.
+	startedQueued := false
 	if sessionID != gatewaySessionID {
 		m.sessionsMu.Lock()
-		_, alive := m.sessions[sessionID]
-		m.sessionsMu.Unlock()
-		if !alive {
-			m.stateMu.Unlock()
-			m.logger.Printf("adaptermux: session %d disconnected during START, discarding grant", sessionID)
-			notify <- startResult{granted: false, initiator: initiator, err: errors.New("session disconnected")}
+		defer m.sessionsMu.Unlock()
+		sess := m.sessions[sessionID]
+		if sess == nil || sess.closed.Load() {
+			reject()
 			return
 		}
+		sess.bytesSentSinceGrant.Store(0)
+		sess.grantDelivered.Store(false)
+		gen := sess.grantGeneration.Add(1)
+		if !sess.deliverStartedForGrant(initiator, gen) {
+			reject()
+			return
+		}
+		startedQueued = true
 	}
 	if sendsSource {
 		m.phase.startRequestWithSource(initiator)
@@ -4447,72 +4152,15 @@ func (m *Mux) completeArbitrationGrant(sessionID uint64, initiator byte, notify 
 		m.phase.startRequest()
 	}
 	now := time.Now()
-	m.busOwned = now
-	m.lastWireActivity = now
-	// Drain activeCh BEFORE marking the transaction active so nothing of
-	// a previous transaction reaches this one. Safety net only: since
-	// issue #1401 a failed transaction discards its leftovers when it
-	// ends and the gateway's next bid discards the rest, so the drain is
-	// expected to find nothing. Whatever it finds is counted as stale
-	// (staleActiveDiscarded) as well as in drainedOnGrant.
-	drained := 0
+	m.busOwned, m.lastWireActivity = now, now
 	if sessionID == gatewaySessionID {
-		drained = m.drainActiveCh()
-		if drained > 0 {
-			m.activeTxn.staleActiveDiscarded.Add(uint64(drained))
-			m.logger.Printf("adaptermux: drained %d bytes from activeCh on grant", drained)
-		}
+		drained := m.drainActiveCh()
+		m.activeTxn.staleActiveDiscarded.Add(uint64(drained))
 		m.gatewayEcho.markRequestStart()
 		m.gatewayTxnActive = false
 		m.recordGatewayGrant(initiator, drained)
 	}
 	m.arb.confirmOwnership(sessionID, initiator)
-	m.stateMu.Unlock()
-
-	// Issue #1003 grant visibility: queue the external winner's STARTED
-	// here, synchronously, on the goroutine that observed the grant (the
-	// readLoop for the non-blocking path). STARTED therefore takes exactly
-	// its position in the session stream: after every symbol observed
-	// before the grant and before every symbol observed after it. It is
-	// never moved ahead of older queued symbols to save latency.
-	//
-	// F-34 (batch-30, iter11, 2026-05-15) external-session abandon
-	// watchdog: when ebusd is granted while its bus reconstructor is in
-	// `bs_skip` it silently drops the grant and no SEND follows. The
-	// watchdog detects that silent drop by checking bytesSentSinceGrant a
-	// short deadline after the grant became usable and force-releases.
-	// F-35 (iter12) set the deadline to 75ms. The deadline now starts when
-	// the session writer has delivered STARTED to the client rather than
-	// at the upstream grant: under queued passive traffic STARTED can wait
-	// behind older symbols, and a grant-time timer could release ownership
-	// before the client was able to send. The watchdog stays bound to its
-	// grant through grantGeneration (F-34-fix, PR #633 P1), carried in the
-	// STARTED frame. The wire-idle SYN grace (ExternalSessionSYNGrace) and
-	// MaxOwnershipDuration still measure from the grant and bound a grant
-	// whose STARTED never reaches the client.
-	//
-	// Gateway-session-0 is exempt: the gateway's own active path sends
-	// immediately after grant, so no abandon scenario exists.
-	startedQueued := false
-	if sessionID != gatewaySessionID {
-		// The enqueue happens under sessionsMu, the lock every symbol
-		// delivery to sessions takes, so on the blocking StartArbitration
-		// path (grant observed off the readLoop) STARTED is never
-		// interleaved with a symbol delivery in progress.
-		m.sessionsMu.Lock()
-		if sess := m.sessions[sessionID]; sess != nil {
-			sess.bytesSentSinceGrant.Store(0)
-			grantGen := sess.grantGeneration.Add(1)
-			sess.deliverStartedForGrant(initiator, grantGen)
-			startedQueued = true
-		}
-		m.sessionsMu.Unlock()
-	}
-
-	// F-18: per-session echo tracker removed; gateway-side
-	// markRequestStart is invoked above for the gateway path only.
-
-	// Notify requester of success.
 	notify <- startResult{granted: true, initiator: initiator, startedQueued: startedQueued}
 }
 
@@ -4547,9 +4195,6 @@ func (m *Mux) armExternalAbandonWatchdog(sess *session, grantGen uint32) {
 		m.logger.Printf("adaptermux: F-34 abandon-watchdog firing for session %d gen=%d (no SEND within %v after STARTED reached the client) — force-releasing ownership",
 			sessionID, grantGen, externalAbandonDeadline)
 		m.arb.releaseOwnership(sessionID)
-		if m.arb.hasPending() {
-			m.tryGrantAndStart()
-		}
 	})
 }
 
@@ -4571,7 +4216,10 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 		if m.pendingStartAbsorb == 0 {
 			m.clearAbsorbSkipLogStateLocked()
 		}
-		shouldAdvance := !started && m.pendingStartAbsorb == 0 && m.pendingStart == nil && m.arb.hasPending()
+		if started {
+			m.deferRegrantUntilNextSyn = true
+			m.undeliverableStarted.Add(1)
+		}
 		// F-15 follow-up (PR #626 Codex bot review on b3b7f13 + e6b96ee
 		// — P1 finding): the absorb-consume branch used to reconnect
 		// unconditionally on STARTED (`needReconnect := started`). On
@@ -4614,9 +4262,6 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 				}
 			}
 		}
-		if shouldAdvance {
-			m.tryGrantAndStart()
-		}
 		return
 	}
 
@@ -4657,12 +4302,6 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 			if pending.deadline != nil {
 				pending.deadline.Stop() // AM8: cancel deadline timer
 			}
-			// The mismatched-STARTED's `data` byte was consumed
-			// from the wire and a third-party transaction is about
-			// to flow through onReceived; bump lastWireActivity so
-			// the C1 fast path / enqueue-kick treat the wire as
-			// non-idle until the next byte event. (Codex P2 round 6
-			// on PR #623.)
 			m.lastWireActivity = time.Now()
 			m.stateMu.Unlock()
 			if cancelledInFlight {
@@ -4694,9 +4333,6 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 				}
 			}
 			// After resolving, check if more requests are pending.
-			if m.arb.hasPending() {
-				m.tryGrantAndStart()
-			}
 			return
 		}
 		// Proxy-bug C4 / R4: if the session has re-submitted a START
@@ -4733,6 +4369,8 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 			if pending.deadline != nil {
 				pending.deadline.Stop() // AM8: cancel deadline timer
 			}
+			m.deferRegrantUntilNextSyn = true
+			m.undeliverableStarted.Add(1)
 			m.stateMu.Unlock()
 			m.logger.Printf("adaptermux: suppressing STARTED for session %d — request was cancelled/replaced; absorbed (C4/R4)", pending.sessionID)
 			// F-17 follow-up (PR #626 review round-1, angry-tester
@@ -4784,81 +4422,10 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 			}:
 			default:
 			}
-			// Advance the queue if anything else is pending. The
-			// adapter is fine; eBUS arbitration is per-SYN; no
-			// transport-level action is required.
-			if m.arb.hasPending() {
-				m.tryGrantAndStart()
-			}
 			return
-		}
-		// F-24 (batch-21, 2026-05-14): external-session START staleness
-		// guard. ebusd's bus state machine has an internal arbitration-
-		// wait timeout (~1-2s); when the gateway's queue+arbitration
-		// pipeline takes longer than ebusd's timeout, ebusd silently
-		// abandons the request internally. A late ENH_RES_STARTED then
-		// arrives in ebusd's bs_recvCmd / bs_skip / bs_ready-wrong
-		// state and ebusd logs `arbitration won in invalid state` and
-		// silently drops the bid — never sending the M2S frame bytes.
-		// ebusctl reports `ERR: arbitration lost`. Live evidence
-		// (2026-05-14 17:03-17:24): 31 invalid-state events over 27
-		// minutes; tight-scan-08 success rate 13-20% vs 95% target.
-		//
-		// Suppress grants whose age exceeds ExternalStartStaleness so
-		// the gateway never delivers a STARTED that ebusd will
-		// discard. Wire-level arbitration win recovers via the next
-		// SYN-idle burst because no SEND frame follows. The session's
-		// notify is set to cancelled:true so session.go's handleStart
-		// takes the silent-suppress branch (mirroring the F-17 C4/R4
-		// path semantics). Gateway session 0 is not subject to this
-		// guard because the gateway's own send path doesn't fall
-		// through ebusd's state machine.
-		if pending.sessionID != gatewaySessionID && pending.req != nil &&
-			m.cfg.ExternalStartStaleness > 0 &&
-			time.Since(pending.req.enqueuedAt) > m.cfg.ExternalStartStaleness {
-			m.pendingStart = nil
-			if pending.deadline != nil {
-				pending.deadline.Stop()
-			}
-			age := time.Since(pending.req.enqueuedAt)
-			// F-24-fix (Codex PR #634 P1 thread "Wait for idle after
-			// suppressing stale STARTED"): defer the next grant until
-			// the SYN handler confirms a bus-idle boundary. The
-			// adapter reported a real wire-level arbitration win for
-			// this external initiator; even though we suppressed the
-			// STARTED notification, the initiator's M2S frame is (or
-			// is about to be) on the wire. arb.hasOwner is false here
-			// (we never confirmed ownership), so without this flag a
-			// concurrent gateway or external START would race the
-			// abandoned external's bus slot. The flag is consumed in
-			// onSYNLocked — any SYN observation (whether mid-frame
-			// terminator or pure idle SYN) is sufficient proof the
-			// abandoned bus slot has ended.
-			m.deferRegrantUntilNextSyn = true
-			m.stateMu.Unlock()
-			m.logger.Printf("adaptermux: suppressing stale STARTED for session %d — request age %v > budget %v (F-24); deferring regrant until next SYN",
-				pending.sessionID, age, m.cfg.ExternalStartStaleness)
-			select {
-			case pending.notify <- startResult{
-				granted:   false,
-				cancelled: true,
-				initiator: pending.initiator,
-				err:       errors.New("adaptermux: external START exceeded ExternalStartStaleness budget (F-24)"),
-			}:
-			default:
-			}
-			// NOTE: intentionally NOT calling tryGrantAndStart here.
-			// The next SYN observation in onSYNLocked clears
-			// deferRegrantUntilNextSyn and the readLoop's
-			// shouldTryGrant path picks up the grant naturally.
-			return
-		}
-		m.pendingStart = nil
-		if pending.deadline != nil {
-			pending.deadline.Stop() // AM8: cancel deadline timer
 		}
 		m.stateMu.Unlock()
-		m.completeArbitrationGrant(pending.sessionID, pending.initiator, pending.notify)
+		m.completeArbitrationGrant(pending)
 	} else {
 		// F-17 follow-up (PR #626 review round-1, angry-tester finding
 		// F-1, FAILED-half): if the in-flight request was cancelled by
@@ -4900,9 +4467,6 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 	}
 
 	// After resolving, check if more requests are pending.
-	if m.arb.hasPending() {
-		m.tryGrantAndStart()
-	}
 }
 
 // cancelPendingStart cancels an in-flight pending START if it belongs
@@ -4934,7 +4498,7 @@ func (m *Mux) cancelPendingStart(sessionID uint64) {
 		// blockingArbGen, clears blockingArbActive, and fails/re-queues
 		// arbitration safely under stateMu. The hung goroutine's late
 		// return finds a stale gen and skips state mutation. Do NOT
-		// advance the queue in-line — the reconnect path does that.
+		// admit another bid before the next SYN after reconnect.
 		wasBlocking := pending.blockingArb
 		m.stateMu.Unlock()
 		// AM8: guard the send — if another path already delivered a
@@ -4961,10 +4525,6 @@ func (m *Mux) cancelPendingStart(sessionID uint64) {
 					m.logger.Printf("adaptermux: cancelPendingStart triggered transport reconnect to unstick hung StartArbitration (session %d)", sessionID)
 				}
 			}
-		} else if m.arb.hasPending() {
-			// Non-blocking path: no hung goroutine to worry about,
-			// just advance the queue as before.
-			m.tryGrantAndStart()
 		}
 		return
 	}
@@ -5093,13 +4653,10 @@ func (m *Mux) fireAbsorbReset() {
 	// unlikely but possible if the runtime queued multiple fires)
 	// see the IsZero short-circuit and don't re-log.
 	m.pendingAbsorbResetDueAt = time.Time{}
-	shouldAdvance := m.pendingStart == nil && m.arb.hasPending()
+
 	m.stateMu.Unlock()
 
 	// F-22: NO transport-reconnect side effect.
-	if shouldAdvance {
-		m.tryGrantAndStart()
-	}
 }
 
 // clearAbsorbSkipLogStateLocked resets the rate-limit fields associated with
@@ -5499,10 +5056,16 @@ func (m *Mux) deliverToSessions(symbol byte, currentOwner uint64, hasOwner bool,
 //
 // EBUSD-VERIFICATION-2026-05-10.md F-9/F-10 follow-up; Codex P2
 // round 3 on PR #620.
-func (m *Mux) deliverWinnerByteToOtherSessions(symbol byte, exceptSessionID uint64) {
+func (m *Mux) deliverWinnerByteToOtherSessions(symbol byte, exceptSessionID uint64, losers ...*startRequest) {
 	m.sessionsMu.Lock()
 	defer m.sessionsMu.Unlock()
+sessionLoop:
 	for _, sess := range m.sessions {
+		for _, loser := range losers {
+			if loser.sessionID == sess.id {
+				continue sessionLoop
+			}
+		}
 		if sess.id == exceptSessionID {
 			continue
 		}

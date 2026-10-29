@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
 )
 
@@ -18,59 +19,29 @@ func waitIssue1068(t *testing.T, done <-chan struct{}, label string) {
 	}
 }
 
-func TestIssue1068_SessionCleanupJoinsSender(t *testing.T) {
-	for _, abort := range []bool{false, true} {
-		name := "return"
-		if abort {
-			name = "early abort"
-		}
-		t.Run(name, func(t *testing.T) {
-			mux, mock, _, cleanup := newP3TestMux(t)
-			_, closeExternal := newP3TestSession(t, mux)
-			mux.stateMu.Lock()
-			mux.lastWireActivity = time.Time{}
-			mux.stateMu.Unlock()
-			mux.arb.requestStart(gatewaySessionID, 0x10)
-
-			entered, release, sent := make(chan struct{}), make(chan struct{}), make(chan struct{})
-			var once sync.Once
-			releaseHook := func() { once.Do(func() { close(release) }) }
-			mock.setRequestStartHook(func(initiator byte) {
-				close(entered)
-				<-release
-				mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventStarted, Data: initiator}
-				close(sent)
-			})
-			// Keep cleanup safe even if a controller assertion aborts.
-			defer cleanup()
-			defer closeExternal()
-			defer releaseHook()
-			scopeDone := make(chan struct{})
-			go func() {
-				defer close(scopeDone)
-				defer cleanup()
-				defer closeExternal()
-				if abort {
-					// Fatal uses Goexit too; exercise its deferred cleanup without
-					// intentionally failing the parent test.
-					runtime.Goexit()
-				}
-			}()
-			waitIssue1068(t, entered, "session-removal START hook")
-			mock.mu.Lock()
-			closed := mock.closed
-			mock.mu.Unlock()
-			if closed {
-				t.Fatal("fixture closed its event channel while session sender was paused")
-			}
-			releaseHook()
-			waitIssue1068(t, scopeDone, "session and fixture cleanup")
-			select {
-			case <-sent:
-			default:
-				t.Fatal("session cleanup returned before its sender finished")
-			}
-		})
+func TestIssue1068_SYNAdmissionCleanupJoinsSender(t *testing.T) {
+	mux, mock, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+	entered, release, sent := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	releaseHook := func() { once.Do(func() { close(release) }) }
+	mock.setRequestStartHook(func(initiator byte) {
+		close(entered)
+		<-release
+		mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventStarted, Data: initiator}
+		close(sent)
+	})
+	mux.arb.requestStart(gatewaySessionID, 0x10)
+	var senders p3TestSenders
+	defer senders.releaseAndWait(releaseHook)
+	senders.start(func() { mux.onLogicalReceived(protocol.SymbolSyn, false, false) })
+	waitIssue1068(t, entered, "SYN admission START hook")
+	releaseHook()
+	senders.releaseAndWait(func() {})
+	select {
+	case <-sent:
+	default:
+		t.Fatal("fixture sender was not joined")
 	}
 }
 
@@ -138,6 +109,7 @@ func TestIssue1068_MuxCloseRetiresPendingSessionGrant(t *testing.T) {
 				close(ready)
 				<-release
 				closeExternal()
+				mux.onLogicalReceived(protocol.SymbolSyn, false, false)
 			})
 			waitIssue1068(t, ready, "pending grant boundary")
 			if !mux.arb.hasPending() || len(mock.getStartRequests()) != 0 {

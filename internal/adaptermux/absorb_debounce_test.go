@@ -14,14 +14,7 @@ import (
 // Reset() (debounce semantics) instead of per-arm time.AfterFunc +
 // pendingAbsorbGen generation-invalidation.
 //
-// Defense-in-depth rationale. The 2026-05-20 12:25 UTC production
-// drop in active B524 polling to 0x15 (BASV2) was investigated and
-// the root cause was a bus-physical signal-loss storm — the gateway's
-// semantic_read_breaker correctly opened (628 closed→open transitions)
-// and active polling correctly suspended; the gateway recovered on
-// its own once the bus stabilized. Live-archaeology log scan showed
-// ZERO `absorb timeout reset` events in 94k lines, meaning F-22
-// actually wasn't firing — but the gen-invalidation pattern IS
+// Defense-in-depth rationale. The generation-invalidation pattern is
 // theoretically vulnerable to a livelock when arm rate exceeds
 // 1/StartDeadline (each new arm bumps gen and invalidates its own
 // AfterFunc's gen check at fire time, so the reset never executes).
@@ -70,14 +63,12 @@ func TestAbsorbSkipLog_RateLimitedWithSuppressedSuffix(t *testing.T) {
 	logger := log.New(&logBuf, "", 0)
 
 	mux := New(Config{
-		Protocol:        "enh",
-		Network:         "tcp",
-		Address:         "127.0.0.1:0",
-		ReadTimeout:     time.Second,
-		StartDeadline:   20 * time.Second,
-		PendingStartTTL: 24 * time.Hour,
-		SYNInterval:     time.Hour,
-		Logger:          logger,
+		Protocol:      "enh",
+		Network:       "tcp",
+		Address:       "127.0.0.1:0",
+		ReadTimeout:   time.Second,
+		StartDeadline: 20 * time.Second,
+		Logger:        logger,
 	})
 
 	mock := newP3MockTransport()
@@ -158,14 +149,12 @@ func TestAbsorbSkipLog_NoCarryoverAcrossAbsorbEpisodes(t *testing.T) {
 	logger := log.New(&logBuf, "", 0)
 
 	mux := New(Config{
-		Protocol:        "enh",
-		Network:         "tcp",
-		Address:         "127.0.0.1:0",
-		ReadTimeout:     time.Second,
-		StartDeadline:   20 * time.Second,
-		PendingStartTTL: 24 * time.Hour,
-		SYNInterval:     time.Hour,
-		Logger:          logger,
+		Protocol:      "enh",
+		Network:       "tcp",
+		Address:       "127.0.0.1:0",
+		ReadTimeout:   time.Second,
+		StartDeadline: 20 * time.Second,
+		Logger:        logger,
 	})
 
 	mock := newP3MockTransport()
@@ -237,14 +226,12 @@ func TestAbsorbReset_RapidArmsStillEventuallyReset(t *testing.T) {
 	const startDeadline = 100 * time.Millisecond
 
 	mux := New(Config{
-		Protocol:        "enh",
-		Network:         "tcp",
-		Address:         "127.0.0.1:0",
-		ReadTimeout:     startDeadline,
-		StartDeadline:   startDeadline,
-		PendingStartTTL: 24 * time.Hour,
-		SYNInterval:     time.Hour,
-		Logger:          logger,
+		Protocol:      "enh",
+		Network:       "tcp",
+		Address:       "127.0.0.1:0",
+		ReadTimeout:   startDeadline,
+		StartDeadline: startDeadline,
+		Logger:        logger,
 	})
 
 	priorReset := mux.absorbResetTotal.Load()
@@ -386,14 +373,12 @@ func TestAbsorbReset_ContinuousRapidArmsDoNotLivelock(t *testing.T) {
 	const startDeadline = 100 * time.Millisecond
 
 	mux := New(Config{
-		Protocol:        "enh",
-		Network:         "tcp",
-		Address:         "127.0.0.1:0",
-		ReadTimeout:     startDeadline,
-		StartDeadline:   startDeadline,
-		PendingStartTTL: 24 * time.Hour,
-		SYNInterval:     time.Hour,
-		Logger:          logger,
+		Protocol:      "enh",
+		Network:       "tcp",
+		Address:       "127.0.0.1:0",
+		ReadTimeout:   startDeadline,
+		StartDeadline: startDeadline,
+		Logger:        logger,
 	})
 
 	priorReset := mux.absorbResetTotal.Load()
@@ -489,13 +474,11 @@ func TestAbsorbReset_SingleArmStillResets(t *testing.T) {
 	const startDeadline = 100 * time.Millisecond
 
 	mux := New(Config{
-		Protocol:        "enh",
-		Network:         "tcp",
-		Address:         "127.0.0.1:0",
-		ReadTimeout:     startDeadline,
-		StartDeadline:   startDeadline,
-		PendingStartTTL: 24 * time.Hour,
-		SYNInterval:     time.Hour,
+		Protocol:      "enh",
+		Network:       "tcp",
+		Address:       "127.0.0.1:0",
+		ReadTimeout:   startDeadline,
+		StartDeadline: startDeadline,
 	})
 
 	priorReset := mux.absorbResetTotal.Load()
@@ -542,13 +525,11 @@ func TestAbsorbReset_LegitimateDecrementBeforeTimerFire(t *testing.T) {
 	const startDeadline = 200 * time.Millisecond
 
 	mux := New(Config{
-		Protocol:        "enh",
-		Network:         "tcp",
-		Address:         "127.0.0.1:0",
-		ReadTimeout:     startDeadline,
-		StartDeadline:   startDeadline,
-		PendingStartTTL: 24 * time.Hour,
-		SYNInterval:     time.Hour,
+		Protocol:      "enh",
+		Network:       "tcp",
+		Address:       "127.0.0.1:0",
+		ReadTimeout:   startDeadline,
+		StartDeadline: startDeadline,
 	})
 
 	priorReset := mux.absorbResetTotal.Load()
@@ -608,13 +589,11 @@ func TestAbsorbReset_StaleCallbackDoesNotClearFreshArm(t *testing.T) {
 	const startDeadline = 200 * time.Millisecond
 
 	mux := New(Config{
-		Protocol:        "enh",
-		Network:         "tcp",
-		Address:         "127.0.0.1:0",
-		ReadTimeout:     startDeadline,
-		StartDeadline:   startDeadline,
-		PendingStartTTL: 24 * time.Hour,
-		SYNInterval:     time.Hour,
+		Protocol:      "enh",
+		Network:       "tcp",
+		Address:       "127.0.0.1:0",
+		ReadTimeout:   startDeadline,
+		StartDeadline: startDeadline,
 	})
 
 	priorReset := mux.absorbResetTotal.Load()
@@ -664,13 +643,11 @@ func TestAbsorbReset_LegitimateCallbackClearsWhenDueAtElapsed(t *testing.T) {
 	const startDeadline = 100 * time.Millisecond
 
 	mux := New(Config{
-		Protocol:        "enh",
-		Network:         "tcp",
-		Address:         "127.0.0.1:0",
-		ReadTimeout:     startDeadline,
-		StartDeadline:   startDeadline,
-		PendingStartTTL: 24 * time.Hour,
-		SYNInterval:     time.Hour,
+		Protocol:      "enh",
+		Network:       "tcp",
+		Address:       "127.0.0.1:0",
+		ReadTimeout:   startDeadline,
+		StartDeadline: startDeadline,
 	})
 
 	priorReset := mux.absorbResetTotal.Load()
@@ -721,13 +698,11 @@ func TestAbsorbReset_DueAtClearedOnBoundary(t *testing.T) {
 	const startDeadline = 100 * time.Millisecond
 
 	mux := New(Config{
-		Protocol:        "enh",
-		Network:         "tcp",
-		Address:         "127.0.0.1:0",
-		ReadTimeout:     startDeadline,
-		StartDeadline:   startDeadline,
-		PendingStartTTL: 24 * time.Hour,
-		SYNInterval:     time.Hour,
+		Protocol:      "enh",
+		Network:       "tcp",
+		Address:       "127.0.0.1:0",
+		ReadTimeout:   startDeadline,
+		StartDeadline: startDeadline,
 	})
 
 	mux.stateMu.Lock()

@@ -110,6 +110,8 @@ const (
 // m.gatewayEcho (the same echoTracker struct is retained), but it is
 // strictly gateway-scoped.
 type session struct {
+	grantDelivered atomic.Bool
+
 	id   uint64
 	conn net.Conn
 	mux  *Mux
@@ -350,12 +352,23 @@ func (m *Mux) RemoveSession(id uint64) {
 	m.sessionPacers.Delete(id)
 
 	if ok {
-		m.arb.removeSession(id)
+		m.releaseSessionGrant(sess)
+		m.arb.cancelStart(id)
 		m.cancelPendingStart(id)
-		m.tryGrantAndStart()
 		sess.close()
 		m.logger.Printf("adaptermux: session %d disconnected", id)
 	}
+}
+
+// releaseSessionGrant retires an unused win behind the next SYN boundary.
+func (m *Mux) releaseSessionGrant(sess *session) {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+	if m.arb.isOwner(sess.id) && !sess.grantDelivered.Load() {
+		m.deferRegrantUntilNextSyn = true
+		m.undeliverableStarted.Add(1)
+	}
+	m.arb.releaseOwnership(sess.id)
 }
 
 // close shuts down a session's goroutines and connection.
@@ -427,17 +440,19 @@ func (s *session) deliverStarted(payload byte) {
 // deliverStartedForGrant queues the STARTED of a grant the mux just
 // confirmed, tagged with that grant's generation so the writer can arm the
 // abandon watchdog when the frame becomes visible to the client.
-func (s *session) deliverStartedForGrant(payload byte, grantGen uint64) {
+func (s *session) deliverStartedForGrant(payload byte, grantGen uint64) bool {
 	if s.closed.Load() {
-		return
+		return false
 	}
 	// AM23: the parser reset that follows arbitration must be armed
 	// before the client can see STARTED and start sending.
 	s.parserResetNeeded.Store(true)
 	select {
 	case s.sendCh <- sessionFrame{kind: sessionFrameStarted, payload: payload, grantGen: uint32(grantGen), enqueuedAtNano: time.Since(monoAnchor).Nanoseconds()}:
+		return true
 	default:
 		go s.mux.RemoveSession(s.id) // goroutine: overflow removal
+		return false
 	}
 }
 
@@ -602,7 +617,7 @@ func (s *session) handleStart(initiator byte) {
 		s.mux.logger.Printf("adaptermux: session %d START 0xAA (SYN cancel)", s.id)
 		s.sawHandshake.Store(true) // F-7: SYN-cancel is still a START
 		s.mux.arb.cancelStart(s.id)
-		s.mux.arb.releaseOwnership(s.id)
+		s.mux.releaseSessionGrant(s)
 		s.mux.cancelPendingStart(s.id)
 		return
 	}
@@ -613,8 +628,7 @@ func (s *session) handleStart(initiator byte) {
 	// (EBUSD-VERIFICATION-2026-05-10.md).
 	s.mux.logger.Printf("adaptermux: session %d START 0x%02X requested (RequestStart(0x%02X) sent for session %d)", s.id, initiator, initiator, s.id)
 	s.sawHandshake.Store(true) // F-7 diagnostic: legitimate ENH client
-	// Use the Mux wrapper so the proxy-bug C4 in-flight cancel and
-	// C1 enqueue-kick fire on every external START submission.
+	// Submit this session's bid to the next idle SYN window.
 	ch := s.mux.requestStartForSession(s.id, initiator)
 
 	// Wait for arbitration result in a tracked goroutine.
@@ -652,7 +666,7 @@ func (s *session) handleStart(initiator byte) {
 				// RESETTED so the client sees the correct boundary event
 				// instead of a spurious collision (P1 fix).
 				s.deliverReset(byte(s.mux.upstreamFeatures.Load()))
-			} else {
+			} else if !result.failedQueued {
 				s.deliverFailed(result.initiator)
 			}
 		case <-s.done:
@@ -840,6 +854,7 @@ func (s *session) writeLoop() {
 		pending = pending[:len(pending)-1]
 		err := s.writeFrame(frame)
 		if err == nil && frame.kind == sessionFrameStarted && frame.grantGen != 0 && s.mux != nil {
+			s.grantDelivered.Store(true)
 			// Issue #1003: the grant became visible to the client
 			// only now; start its abandon deadline here, not at the
 			// upstream grant.

@@ -4,55 +4,10 @@ import (
 	"errors"
 	"sync"
 	"sync/atomic"
-	"time"
 )
 
-// errStaleStartRequest is delivered to the notify channel of an
-// external pending START whose enqueued-at age exceeds
-// Config.PendingStartTTL by the time tryGrant pops it. ebusd (and
-// other external clients) typically have a ~50ms local arbitration
-// deadline; delivering a STARTED past that window produces "won in
-// invalid state" errors on their side. Returning a clean failure
-// instead lets them re-request when they actually want the bus.
-//
-// Proxy-bug C3 (R3).
-var errStaleStartRequest = errors.New("adaptermux: pending START rejected — exceeded PendingStartTTL")
-
-// arbitrator manages bus ownership between the gateway (internal) and
-// external sessions (ebusd) using a two-class priority model with an
-// adaptive fairness window.
-//
-// XR_GATEWAY_PRIORITY (default behavior, no external sessions):
-//
-//	At each SYN boundary (or idle tick), tryGrant checks pendingGateway
-//	BEFORE pendingExternal. The gateway always gets first pick for bus
-//	ownership.
-//
-//	The gateway's semantic poller drives periodic register scans that
-//	must complete within their polling window; treating it as the
-//	priority class minimises poll-window jitter when no external
-//	clients are connected.
-//
-// XR_EXTERNAL_FAIRNESS_WINDOW (when ≥1 external session has a pending
-// START AND fairnessCounter has reached FairnessRatio — F-4 fix per
-// EBUSD-VERIFICATION-2026-05-10.md):
-//
-//	Every FairnessRatio'th tryGrant rotation with both classes pending,
-//	the external FIFO is serviced before pendingGateway. This bounds
-//	the worst-case external START latency to ~FairnessRatio gateway-
-//	transaction windows even when the semantic poller is continuously
-//	busy, which restores ebusd's ability to complete its initial scan
-//	(its per-START retry budget is 3× ~1.5 s = 4.5 s; the gateway's
-//	typical 200–300 ms grants comfortably fit into 1-in-4 fairness).
-//
-//	When no external sessions are pending, fairness reduces to a no-op
-//	and gateway-priority is unchanged — zero overhead in the standalone
-//	helianthus deployment.
-//
-// The arbitrator is informed by the proxy's boundary-based arbitration
-// (proxy M2) but simplified for a two-class model:
-//   - Gateway (sessionID = gatewaySessionID): priority class
-//   - External sessions: FIFO with adaptive fairness window
+// arbitrator collects bids until the mux observes an idle SYN. Every session,
+// including session 0, competes by initiator-address priority.
 type arbitrator struct {
 	mu sync.Mutex
 
@@ -76,7 +31,7 @@ type arbitrator struct {
 	pendingGateway *startRequest
 
 	// pendingExternal holds external sessions' pending START requests
-	// in FIFO order. Each session can have at most one pending request.
+	// as an unordered bid set. Each session can have at most one pending request.
 	pendingExternal []*startRequest
 
 	// hasOwner tracks whether the bus is currently owned.
@@ -89,70 +44,7 @@ type arbitrator struct {
 	// currentInitiator is the eBUS source address of the current
 	// owner's START request.
 	currentInitiator byte
-
-	// fairnessCounter tracks tryGrant rotations where BOTH gateway and
-	// external have pending requests. When it reaches FairnessRatio,
-	// the next such rotation grants to external FIFO instead of
-	// gateway, then resets. F-4 anti-starvation. Only advances when
-	// both classes have pending work — otherwise gateway-priority is
-	// unchanged and the counter holds at its current value (no-op
-	// when standalone).
-	fairnessCounter int
-
-	// nowFn is the time source the arbitrator uses for enqueuedAt
-	// timestamps and PendingStartTTL comparisons. Defaults to
-	// time.Now; tests override to run TTL drains deterministically.
-	nowFn func() time.Time
-
-	// pendingStartTTL is the maximum dwell time of an external pending
-	// START before tryGrant drops + rejects it with errStaleStartRequest.
-	// Zero disables the policy. Configured via Mux.cfg.PendingStartTTL.
-	pendingStartTTL time.Duration
-
-	// fairnessRatio is the every-Nth grant that goes to external FIFO
-	// when both gateway and ≥1 external session have pending START
-	// requests. Configured via Mux.cfg.FairnessRatio; defaults to 2.
-	// 0 maps to DefaultFairnessRatio in setPolicy().
-	fairnessRatio int
-
-	// F-28 (batch-25, iter5, 2026-05-14): post-external-release
-	// cooldown. When an external session releases bus ownership,
-	// this timestamp is set to now. While `time.Since(lastExternalReleaseAt)
-	// < postExternalGrace`, tryGrant defers gateway-only grants
-	// (returns no-grant) so the gateway's tight semantic-poll loop
-	// cannot race ebusd's TCP-delayed next START.
-	//
-	// Live evidence: byte-trace measured the race at every external
-	// session release — gateway re-bids within µs while ebusd's next
-	// ENH_REQ_START arrives 10-100ms later via TCP. Pre-F-28 the
-	// gateway nearly always wins this race, queuing ebusd behind its
-	// own next transaction and producing the 200-500ms median latency
-	// observed in iter5 (post-F-27).
-	lastExternalReleaseAt time.Time
-	postExternalGrace     time.Duration
 }
-
-// DefaultFairnessRatio is the every-Nth grant that goes to external FIFO
-// when both gateway and ≥1 external session have pending START requests.
-// Default 2 = 50/50 split under contention.
-//
-// F-25 (batch-22, iter2, 2026-05-14): lowered from 4 to 2 in response
-// to live evidence that the gateway-favoring 25%-external ratio
-// starved ebusd of bus slots during tight-scan-08 loops. Pre-F-25
-// measurements (iter1 with F-22 revert + F-21 + F-24 inert):
-//   - tight-scan success: 8-18% over 60 attempts vs 95% target
-//   - ebusd `arbitration won in invalid state`: 33 / 12 min
-//   - gateway grants: 1.6 tx/sec; ebusd won 28% of 329 START attempts.
-//
-// At ratio=2, ebusd should win ~50% of contended slots, giving its
-// bus state machine larger inter-gateway-poll windows and reducing
-// the ENH_RES_STARTED-arrives-in-bs_recvCmd collision rate.
-//
-// Tradeoff: gateway poll throughput halves under sustained external
-// contention. Acceptable: scans are bursts, steady-state polling
-// resumes when external sessions go quiet. Operator can tune via
-// Mux.cfg.FairnessRatio.
-const DefaultFairnessRatio = 2
 
 // startRequest represents a pending START arbitration request.
 type startRequest struct {
@@ -160,19 +52,13 @@ type startRequest struct {
 	initiator byte
 	notify    chan startResult // receives exactly one result
 
-	// enqueuedAt is the monotonic time the request was admitted to
-	// the arbitrator. Used by tryGrant for PendingStartTTL drop-and-
-	// reject on stale heads (proxy-bug C3 / R3).
-	enqueuedAt time.Time
-
 	// cancelled is set when a session re-submits a START for the
 	// same session ID — the old request's notify channel is already
 	// closed-out with granted=false in requestStart, but the adapter
 	// may still return STARTED/FAILED for an in-flight grant that
 	// was popped from pendingExternal before the replace. The mux
-	// checks this flag on the delivery path and converts a late
-	// STARTED into a FAILED to avoid handing the bus to a session
-	// that already gave up. (Proxy-bug C4 / R4.)
+	// checks this flag before publishing STARTED and retires a cancelled
+	// wire win at the next SYN.
 	cancelled atomic.Bool
 }
 
@@ -185,6 +71,7 @@ type startResult struct {
 	// external session's STARTED at its stream position (issue #1003);
 	// the session must not deliver a second STARTED.
 	startedQueued bool
+	failedQueued  bool
 	err           error
 }
 
@@ -193,171 +80,38 @@ type startResult struct {
 const gatewaySessionID uint64 = 0
 
 func newArbitrator() *arbitrator {
-	return &arbitrator{
-		pendingExternal: make([]*startRequest, 0, 4),
-		nowFn:           time.Now,
-	}
+	return &arbitrator{}
 }
 
-// requestStart submits a START request for the given session.
-// Returns a channel that will receive the result when arbitration
-// completes (at the next SYN boundary or immediately if bus is idle).
-//
-// If the bus is currently idle, the request may be granted immediately
-// via a call to tryGrant() by the mux loop.
+// requestStart replaces this session's bid. A repeated external address retains
+// its request identity while moving notification to the newest waiter.
 func (a *arbitrator) requestStart(sessionID uint64, initiator byte) <-chan startResult {
 	ch := make(chan startResult, 1)
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	req := &startRequest{
-		sessionID:  sessionID,
-		initiator:  initiator,
-		notify:     ch,
-		enqueuedAt: a.now(),
-	}
-
+	req := &startRequest{sessionID: sessionID, initiator: initiator, notify: ch}
 	if sessionID == gatewaySessionID {
-		// Cancel any existing gateway request. The old request is
-		// also flagged cancelled so that — if it has already been
-		// popped by tryGrant and is now in flight at the adapter —
-		// the mux's delivery path can convert a late STARTED into
-		// a FAILED instead of handing the bus to a session that
-		// abandoned the grant. (Proxy-bug C4 / R4.)
-		if a.pendingGateway != nil {
-			a.pendingGateway.cancelled.Store(true)
-			// F-17 (operator hand-off, batch-9): MUST set
-			// startResult.cancelled = true so the waiter's
-			// handleStart goroutine takes the silent-suppression
-			// branch in session.go (around line 524 — same path
-			// that AM55 SYN-cancel uses) instead of the
-			// deliverFailed(initiator) branch that produces a
-			// spurious ENHResFailed on the wire. Without this,
-			// ebusd reads the FAILED as "lost arbitration to its
-			// own initiator byte," retries within ~50 ms, and
-			// triggers the positive-feedback loop where no
-			// request ever reaches the adapter. pcap-confirmed
-			// root cause of "ebusd never lands a frame."
-			//
-			// startRequest.cancelled (struct field) is separate
-			// from startResult.cancelled (channel value):
-			//   - The struct flag is checked by the mux's late-
-			//     STARTED suppression path (C4/R4) when the
-			//     request has already been popped into
-			//     pendingStart.
-			//   - The result flag is checked by the session's
-			//     handleStart goroutine when the request is
-			//     still in pendingExternal and gets a
-			//     not-granted result.
-			// Both flags must be set on a cancellation.
-			a.pendingGateway.notify <- startResult{
-				granted:   false,
-				cancelled: true,
-				initiator: a.pendingGateway.initiator,
-			}
+		if old := a.pendingGateway; old != nil {
+			old.cancelled.Store(true)
+			old.notify <- startResult{cancelled: true, initiator: old.initiator}
 		}
 		a.pendingGateway = req
-	} else {
-		// F-39 (2026-05-15, Codex adversarial round on PR #633):
-		// when the new request has the SAME initiator as an existing
-		// queued bid from the same session, COALESCE rather than
-		// replace.
-		//
-		// Why: pcap forensics on the live HA host (4.85 s cluster
-		// captured 2026-05-15) showed 9 consecutive REQ_START 0x31
-		// frames from ebusd receiving NO ENH response within 500 ms,
-		// then sudden catch-up. Mechanism: ebusd's internal scan
-		// timeout (~150-200 ms) is shorter than the gateway's
-		// REQ_START → STARTED latency under contention. Each ebusd
-		// retry hit this branch, set existing.cancelled=true, and
-		// REMOVED the prior request from pendingExternal. The bid
-		// effectively lost its FIFO position on every retry and
-		// never reached the adapter for real arbitration — until
-		// ebusd's retries finally stopped and one slipped through.
-		//
-		// F-17 (batch-9) fixed an EARLIER cascade where the cancel
-		// path emitted ENHResFailed within 0.3 ms, causing a
-		// tight ~50 ms retry loop. F-17 substituted silent-cancel
-		// via cancelled:true, which broke the tight loop but kept
-		// the queue-position-reset that produces the wider
-		// silent-drop cluster observed in pcap.
-		//
-		// F-39 preserves the F-17 invariant (no ENHResFailed
-		// emitted on replace) AND preserves the queued bid's FIFO
-		// position. The OLD notify channel still receives
-		// cancelled:true so its handleStart goroutine exits
-		// silently — but the queued startRequest stays in place
-		// with notify retargeted to the latest caller's channel.
-		// When the adapter eventually grants the bid, the response
-		// reaches the most recent REQ_START's waiter.
-		//
-		// Different-initiator replacements still fall through to
-		// the F-17 cancel+replace path: a real change of intent
-		// from the session is a legitimate replace.
-		for i, existing := range a.pendingExternal {
-			if existing.sessionID == sessionID {
-				if existing.initiator == initiator {
-					// F-39: coalesce — keep queued bid in
-					// place, retarget notify to new caller.
-					// Do NOT set existing.cancelled — the
-					// bid is still valid; only the waiter
-					// goroutine identity changes.
-					existing.notify <- startResult{
-						granted:   false,
-						cancelled: true,
-						initiator: existing.initiator,
-					}
-					existing.notify = ch
-					// F-39-fix (PR #634 P1, Codex review):
-					// refresh enqueuedAt on coalesce so the
-					// stale-drain in tryGrant
-					// (drainStalePendingExternalLocked, gated
-					// by PendingStartTTL ~250 ms) does not
-					// kill a freshly-retried bid as stale.
-					// Without this, a same-session retry at
-					// e.g. t=240 ms inherits the original
-					// enqueuedAt and is failed at t=260 ms
-					// even though the latest ebusd request
-					// has waited only 20 ms. Pre-F-39 the
-					// replace path created a fresh
-					// enqueuedAt by allocating a new
-					// startRequest, so retries within the
-					// TTL window naturally got a clean
-					// freshness clock.
-					existing.enqueuedAt = a.now()
-					return ch
-				}
-				// Different initiator — fall back to F-17
-				// cancel+replace semantics. The session
-				// genuinely changed its bid; the old one
-				// must be retired and the new one queued.
-				existing.cancelled.Store(true)
-				// F-17 (operator hand-off, batch-9): see the
-				// gateway-path comment above. Without
-				// `cancelled: true` here, ebusd's handleStart
-				// receives a startResult{granted: false}
-				// (default cancelled=false), takes the
-				// deliverFailed branch in session.go, and
-				// emits ENHResFailed(0x31) on the wire within
-				// ~0.3 ms — far faster than the bus can
-				// possibly arbitrate (eBUS bit-time ~4 ms).
-				// ebusd reads it as "lost arbitration to my
-				// own initiator byte 0x31" and retries within
-				// ~50 ms, producing a same-session-replace
-				// that cancels the new request, and so on.
-				// Positive-feedback loop; no bid ever
-				// reaches the adapter for real arbitration.
-				existing.notify <- startResult{
-					granted:   false,
-					cancelled: true,
-					initiator: existing.initiator,
-				}
-				a.pendingExternal = append(a.pendingExternal[:i], a.pendingExternal[i+1:]...)
-				break
-			}
-		}
-		a.pendingExternal = append(a.pendingExternal, req)
+		return ch
 	}
-
+	for i, old := range a.pendingExternal {
+		if old.sessionID != sessionID {
+			continue
+		}
+		old.notify <- startResult{cancelled: true, initiator: old.initiator}
+		if old.initiator == initiator {
+			old.notify = ch
+		} else {
+			old.cancelled.Store(true)
+			a.pendingExternal[i] = req
+		}
+		return ch
+	}
+	a.pendingExternal = append(a.pendingExternal, req)
 	return ch
 }
 
@@ -366,7 +120,7 @@ func (a *arbitrator) requestStart(sessionID uint64, initiator byte) <-chan start
 // from pendingExternal/pendingGateway and is in flight at the adapter.
 // The pendingStartState that the mux holds carries the *startRequest;
 // flagging cancelled here is what handleArbitrationResponse checks to
-// short-circuit a late STARTED into a FAILED. Returns the previous
+// retire a cancelled wire win at the next SYN. Returns the previous
 // value of the flag so the caller can detect double-cancels.
 // (Proxy-bug C4 / R4.)
 func (a *arbitrator) markInFlightCancelled(req *startRequest) bool {
@@ -374,44 +128,6 @@ func (a *arbitrator) markInFlightCancelled(req *startRequest) bool {
 		return false
 	}
 	return req.cancelled.Swap(true)
-}
-
-// now returns the arbitrator's clock. Indirected for tests that need
-// deterministic PendingStartTTL drains.
-func (a *arbitrator) now() time.Time {
-	if a.nowFn == nil {
-		return time.Now()
-	}
-	return a.nowFn()
-}
-
-// setPolicy injects per-cycle policy fields the mux derives from
-// Config. Called once on mux construction.
-//
-// F-25 (batch-22, iter2): accepts fairnessRatio.
-// F-28 (batch-25, iter5): accepts postExternalGrace.
-//
-// Zero/negative sentinels:
-//   - fairnessRatio: 0 or negative → DefaultFairnessRatio (2)
-//   - fairnessRatio: 1 → clamped to DefaultFairnessRatio (2). PR #633
-//     P2 (Codex review, line 427, 2026-05-15): with ratio=1 the
-//     fairnessCounter rotation degenerates to "external every grant"
-//     which starves the gateway entirely whenever an external session
-//     keeps a non-empty queue. Operators who configure ratio=1 expect
-//     the documented "alternating / 50-50 behavior" — that's what
-//     ratio=2 actually delivers (G,E,G,E,...). Clamp ratio=1 to the
-//     default so operator intent matches code reality.
-//   - postExternalGrace: 0 → use mux-default (50ms); negative → disable
-//     the cooldown entirely
-func (a *arbitrator) setPolicy(pendingStartTTL time.Duration, fairnessRatio int, postExternalGrace time.Duration) {
-	a.mu.Lock()
-	a.pendingStartTTL = pendingStartTTL
-	if fairnessRatio <= 1 {
-		fairnessRatio = DefaultFairnessRatio
-	}
-	a.fairnessRatio = fairnessRatio
-	a.postExternalGrace = postExternalGrace
-	a.mu.Unlock()
 }
 
 // cancelStart cancels a pending START request for the given session.
@@ -453,154 +169,57 @@ func (a *arbitrator) cancelStart(sessionID uint64) bool {
 	return false
 }
 
-// tryGrant attempts to select the highest-priority pending request
-// for bus ownership. Called at SYN boundaries and when the bus becomes
-// idle.
-//
-// busIdle is the caller's snapshot of "the wire has been quiet for at
-// least one SYN interval AND the arbitrator does not believe it has
-// granted ownership yet." On an idle bus the fairness rotation is
-// counter-productive — there is no real contention to balance, so
-// holding an external pending START in the queue until a fairness
-// quantum elapses only wastes wall-clock that ebusd's local
-// arbitration deadline counts against the gateway. When busIdle is
-// true, external is pending, and the gateway is NOT pending, this
-// function grants the external FIFO head immediately and does NOT
-// advance the fairness counter. If both classes are pending, the
-// situation is real mux contention even if the wire is currently
-// between frames; F-25 fairness must still rotate the grant or a
-// continuous external scanner can hold the gateway near zero until it
-// stops. (Proxy-bug C1 / R1, bounded by F-25.)
-//
-// Ownership is NOT set here — the caller MUST call confirmOwnership
-// after the adapter's StartArbitration succeeds (Codex P1 #3060199707:
-// defer ownership until adapter START confirms). The caller MUST also
-// send a startResult on the notify channel after success or failure.
-//
-// Returns (nil, false) if no requests are pending or the bus is
-// already owned.
-func (a *arbitrator) tryGrant(busIdle bool) (req *startRequest, granted bool) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	if a.hasOwner {
-		return nil, false
+// tryGrant selects one bidder at an idle SYN and resolves every other bid.
+// The low nibble decides priority first; a smaller high nibble breaks ties.
+// Equal addresses use the session ID for deterministic local selection.
+// The caller confirms ownership only after the adapter reports STARTED.
+func (a *arbitrator) tryGrant(busIdle bool) (*startRequest, bool) {
+	winner, losers := a.selectAtSYN(busIdle)
+	for _, req := range losers {
+		req.notify <- startResult{initiator: winner.initiator}
 	}
-
-	// Drain stale entries from the head of pendingExternal:
-	// requests whose enqueuedAt has aged past PendingStartTTL get a
-	// clean failure with errStaleStartRequest. ebusd's local
-	// arbitration deadline is ~50 ms; delivering a STARTED past that
-	// window produces "won in invalid state" errors on its side.
-	// (Proxy-bug C3 / R3.) Drain ALWAYS before any grant decision so
-	// stale heads can't claim grants the gateway might otherwise
-	// have served.
-	a.drainStalePendingExternalLocked()
-
-	gatewayPending := a.pendingGateway != nil
-	externalPending := len(a.pendingExternal) > 0
-
-	// Bus-idle fast path: grant external immediately and skip the
-	// fairness rotation entirely only when gateway is not also
-	// bidding. The bus is wide open and no gateway contender exists,
-	// so there is no fairness decision to make. When gatewayPending is
-	// true, this is a contended mux decision and must fall through to
-	// the normal F-25 rotation. (Proxy-bug C1 / R1 bounded by F-25.)
-	if busIdle && externalPending && !gatewayPending {
-		ext := a.pendingExternal[0]
-		a.pendingExternal = a.pendingExternal[1:]
-		return ext, true
-	}
-
-	// F-4 fairness window: when BOTH classes are pending AND the
-	// fairness counter has reached the ratio, prefer external FIFO
-	// this rotation. Reset the counter and fall through to the
-	// external-FIFO branch below. When only one class is pending the
-	// counter doesn't advance — gateway-priority is unchanged in the
-	// no-external-clients case.
-	preferExternalThisGrant := false
-	if gatewayPending && externalPending {
-		a.fairnessCounter++
-		ratio := a.fairnessRatio
-		if ratio <= 0 {
-			ratio = DefaultFairnessRatio
-		}
-		if a.fairnessCounter >= ratio {
-			a.fairnessCounter = 0
-			preferExternalThisGrant = true
-		}
-	}
-
-	if gatewayPending && !preferExternalThisGrant {
-		// F-28 (batch-25, iter5, 2026-05-14): post-external-release
-		// cooldown. If an external session released bus ownership
-		// within `postExternalGrace` of now, defer the gateway grant
-		// so ebusd's TCP-delayed next ENH_REQ_START has a window to
-		// arrive and be queued before the gateway re-claims the bus.
-		// Without this, the gateway's semantic poll loop (which can
-		// submit a new RequestStart within microseconds of release
-		// via the in-process scheduler) outraces ebusd's next TCP
-		// request and locks ebusd into a serialized-behind-gateway
-		// queue, producing the 200-500ms median pre-F-28 latency.
-		//
-		// The check is intentionally inside tryGrant — caller
-		// (tryGrantAndStart) is invoked on every SYN observation, so
-		// a no-grant return causes a quick (~4.5ms) retry. After
-		// postExternalGrace elapses, the gateway grant fires
-		// normally. Net effect: a brief "polite yield" window after
-		// every ebusd transaction.
-		if a.postExternalGrace > 0 && !a.lastExternalReleaseAt.IsZero() &&
-			a.now().Sub(a.lastExternalReleaseAt) < a.postExternalGrace {
-			return nil, false
-		}
-		gw := a.pendingGateway
-		a.pendingGateway = nil
-		return gw, true
-	}
-
-	// External FIFO: grant to first external request. Reached when
-	// (a) gateway has no pending request, or (b) fairness window
-	// rotated this grant to external.
-	if externalPending {
-		ext := a.pendingExternal[0]
-		a.pendingExternal = a.pendingExternal[1:]
-		return ext, true
-	}
-
-	return nil, false
+	return winner, winner != nil
 }
 
-// drainStalePendingExternalLocked rejects any external pending START
-// whose enqueuedAt is older than pendingStartTTL. Each stale entry's
-// notify channel receives granted=false with errStaleStartRequest so
-// the client (ebusd) can retry cleanly when it actually wants the bus
-// again. (Proxy-bug C3 / R3.) Must be called with a.mu held.
-func (a *arbitrator) drainStalePendingExternalLocked() {
-	if a.pendingStartTTL <= 0 || len(a.pendingExternal) == 0 {
-		return
+func (a *arbitrator) selectAtSYN(busIdle bool) (*startRequest, []*startRequest) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.hasOwner || !busIdle {
+		return nil, nil
 	}
-	now := a.now()
-	keep := a.pendingExternal[:0]
+	winner := a.pendingGateway
 	for _, req := range a.pendingExternal {
-		if now.Sub(req.enqueuedAt) > a.pendingStartTTL {
-			req.cancelled.Store(true)
-			// Best-effort notify — buffer is 1, but a session that
-			// has already drained the channel (replaced this
-			// request meanwhile) would have left it empty, so the
-			// send succeeds. Use non-blocking send for safety.
-			select {
-			case req.notify <- startResult{granted: false, initiator: req.initiator, err: errStaleStartRequest}:
-			default:
-			}
-			continue
+		if winner == nil || higherPriority(req, winner) {
+			winner = req
 		}
-		keep = append(keep, req)
 	}
-	// In-place rebuild to preserve capacity.
-	for i := len(keep); i < len(a.pendingExternal); i++ {
-		a.pendingExternal[i] = nil
+	if winner == nil {
+		return nil, nil
 	}
-	a.pendingExternal = keep
+	var losers []*startRequest
+	lose := func(req *startRequest) {
+		if req != nil && req != winner {
+			losers = append(losers, req)
+		}
+	}
+	lose(a.pendingGateway)
+	for _, req := range a.pendingExternal {
+		lose(req)
+	}
+	a.pendingGateway = nil
+	clear(a.pendingExternal)
+	a.pendingExternal = a.pendingExternal[:0]
+	return winner, losers
+}
+
+func higherPriority(a, b *startRequest) bool {
+	if a.initiator&0x0f != b.initiator&0x0f {
+		return a.initiator&0x0f < b.initiator&0x0f
+	}
+	if a.initiator != b.initiator {
+		return a.initiator>>4 < b.initiator>>4
+	}
+	return a.sessionID < b.sessionID
 }
 
 // confirmOwnership sets bus ownership after the adapter's
@@ -627,14 +246,6 @@ func (a *arbitrator) releaseOwnership(sessionID uint64) {
 		a.hasOwner = false
 		a.currentOwner = 0
 		a.currentInitiator = 0
-		// F-28 (batch-25, iter5): when an EXTERNAL session releases
-		// ownership, start the post-external-release cooldown so the
-		// gateway's semantic poll loop can't race ebusd's TCP-delayed
-		// next START. Gateway-session-0 releases do NOT trigger the
-		// cooldown (no race exists for gateway-after-gateway).
-		if sessionID != gatewaySessionID {
-			a.lastExternalReleaseAt = a.now()
-		}
 	}
 }
 

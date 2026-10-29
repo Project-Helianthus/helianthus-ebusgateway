@@ -3,6 +3,8 @@ package adaptermux
 import (
 	"bytes"
 	"context"
+	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
+	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
 	"log"
 	"net"
 	"strings"
@@ -30,12 +32,6 @@ func TestRequestStartForSession_MarksInFlightCancelledOnResubmit(t *testing.T) {
 		Network:     "tcp",
 		Address:     "127.0.0.1:0",
 		ReadTimeout: 200 * time.Millisecond,
-		// Long SYNInterval so the wrapper's idle-kick does NOT
-		// auto-grant the second request — we want to observe the
-		// in-flight cancel flag set on the FIRST request via the
-		// wrapper, independent of subsequent grants.
-		SYNInterval:     time.Hour,
-		PendingStartTTL: 24 * time.Hour,
 	})
 
 	// Stage 1: enqueue request A, then simulate it having been popped
@@ -75,17 +71,7 @@ func TestRequestStartForSession_MarksInFlightCancelledOnResubmit(t *testing.T) {
 	}
 }
 
-// TestRequestStartForSession_IdleKickDispatchesImmediately pins the
-// Codex P1 round 1 (third finding) on PR #623: when the wire has
-// been quiet for at least one SYN interval, requestStartForSession
-// must kick tryGrantAndStart on enqueue so an external request does
-// not sit in pendingExternal until the next ReadTimeout-driven SYN
-// poll wakes up — long past the C3 PendingStartTTL window.
-//
-// We assert by observing the kick effect: under no other pending
-// state and busIdle=true, the enqueue must clear pendingExternal
-// (because tryGrant pops it on the kick) and set m.pendingStart.
-func TestRequestStartForSession_IdleKickDispatchesImmediately(t *testing.T) {
+func TestRequestStartForSession_IdleWaitsForSYN(t *testing.T) {
 	mock := newP3MockTransport()
 
 	mux := New(Config{
@@ -93,10 +79,6 @@ func TestRequestStartForSession_IdleKickDispatchesImmediately(t *testing.T) {
 		Network:     "tcp",
 		Address:     "127.0.0.1:0",
 		ReadTimeout: 200 * time.Millisecond,
-		// Short SYNInterval so the idle check yields true with
-		// lastWireActivity sufficiently old.
-		SYNInterval:     time.Microsecond,
-		PendingStartTTL: 24 * time.Hour,
 	})
 
 	ctx, mockCancel := newCtxRequestStartTest()
@@ -115,8 +97,11 @@ func TestRequestStartForSession_IdleKickDispatchesImmediately(t *testing.T) {
 		mux.wg.Wait()
 	}()
 
-	// Leave lastWireActivity at zero so the idle check fires.
 	_ = mux.requestStartForSession(1, 0x31)
+	if len(mock.getStartRequests()) != 0 {
+		t.Fatal("START dispatched before SYN")
+	}
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
 
 	// Allow the kick goroutine path inside tryGrantAndStart to run.
 	// The blocking adapter mock's RequestStart records but doesn't
@@ -130,7 +115,7 @@ func TestRequestStartForSession_IdleKickDispatchesImmediately(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	if atomic.LoadInt32(getStartReqCount(mock)) == 0 {
-		t.Fatal("idle-kick did NOT dispatch RequestStart to the adapter (Codex P1 round 1 regression)")
+		t.Fatal("SYN did not dispatch RequestStart to the adapter")
 	}
 }
 
@@ -152,12 +137,10 @@ func TestRequestStartForSession_IdleKickDispatchesImmediately(t *testing.T) {
 //     practice on the live bus.
 func TestHandleArbitrationResponse_CancelledStartedAbsorbsWithoutReconnect(t *testing.T) {
 	mux := New(Config{
-		Protocol:        "enh",
-		Network:         "tcp",
-		Address:         "127.0.0.1:0",
-		ReadTimeout:     200 * time.Millisecond,
-		SYNInterval:     time.Hour,
-		PendingStartTTL: 24 * time.Hour,
+		Protocol:    "enh",
+		Network:     "tcp",
+		Address:     "127.0.0.1:0",
+		ReadTimeout: 200 * time.Millisecond,
 	})
 
 	// Install a fake conn whose Close-counter we can assert on.
@@ -215,13 +198,11 @@ func TestHandleArbitrationResponse_CancelledStartedAbsorbsWithoutReconnect(t *te
 func TestCancelledStartedLog_DoesNotMentionReconnect(t *testing.T) {
 	var buf cancelledStartedLogBuffer
 	mux := New(Config{
-		Protocol:        "enh",
-		Network:         "tcp",
-		Address:         "127.0.0.1:0",
-		ReadTimeout:     200 * time.Millisecond,
-		SYNInterval:     time.Hour,
-		PendingStartTTL: 24 * time.Hour,
-		Logger:          log.New(&buf, "", 0),
+		Protocol:    "enh",
+		Network:     "tcp",
+		Address:     "127.0.0.1:0",
+		ReadTimeout: 200 * time.Millisecond,
+		Logger:      log.New(&buf, "", 0),
 	})
 
 	// Same setup as the test above.

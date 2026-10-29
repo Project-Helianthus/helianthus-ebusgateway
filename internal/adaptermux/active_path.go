@@ -271,9 +271,7 @@ func (t *activeTransport) Close() error {
 // disconnect — pending START requests do not hang for the duration of
 // the reconnection backoff.
 func (t *activeTransport) StartArbitration(initiator byte) error {
-	// Use the Mux wrapper so the proxy-bug C4 in-flight cancel + C1
-	// enqueue-kick fire on every gateway START submission, same as
-	// for external sessions.
+	// Submit the gateway bid to the same next-SYN window as external bids.
 	ch := t.mux.requestStartForSession(gatewaySessionID, initiator)
 
 	select {
@@ -282,7 +280,7 @@ func (t *activeTransport) StartArbitration(initiator byte) error {
 			if result.err != nil {
 				return result.err
 			}
-			return errors.New("adaptermux: START not granted")
+			return fmt.Errorf("adaptermux: arbitration lost to 0x%02X: %w", result.initiator, ebuserrors.ErrBusCollision)
 		}
 		return nil
 	case <-t.mux.ctx.Done():

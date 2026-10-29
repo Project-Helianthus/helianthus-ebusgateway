@@ -488,3 +488,98 @@ func TestT02_LocalLoserNeedsSourceAfterPreGrantSYN(t *testing.T) {
 		}
 	}
 }
+
+func TestT02_GatewayAdmissionDeadlineWithoutSYN(t *testing.T) {
+	m, tr := newT02Mux(t)
+	m.cfg.StartDeadline = 20 * time.Millisecond
+	done := make(chan error, 1)
+	go func() { done <- m.ActiveTransport().(*activeTransport).StartArbitration(0x7f) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ebuserrors.ErrTimeout) {
+			t.Fatalf("admission error=%v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("gateway admission blocked without SYN")
+	}
+	if m.arb.hasPending() {
+		t.Fatal("expired gateway bid remained queued")
+	}
+	t02SYN(m)
+	if got := tr.getStartRequests(); len(got) != 0 {
+		t.Fatalf("expired bid forwarded: %x", got)
+	}
+	// The serialized worker can now proceed to a new bid.
+	next := m.requestStartForSession(0, 0x31)
+	t02SYN(m)
+	m.handleArbitrationResponse(true, 0x31)
+	t02Result(t, next, 0x31, true)
+}
+
+func TestT02_GatewayAdmissionDeadlinePreservesSelectedWin(t *testing.T) {
+	m, _ := newT02Mux(t)
+	m.cfg.StartDeadline = 40 * time.Millisecond
+	ch := m.requestStartForSession(0, 0x31)
+	// Exercise the admission callback after selection without scheduling races.
+	t02SYN(m)
+	m.expireGatewayAdmission(ch)
+	m.handleArbitrationResponse(true, 0x31)
+	t02Result(t, ch, 0x31, true)
+}
+
+func TestT02_LocalLoserPhysicalLossReconstruction(t *testing.T) {
+	for _, winner := range []uint64{0, 1} {
+		for _, started := range []bool{false, true} {
+			for _, preGrantSYN := range []bool{false, true} {
+				t.Run(fmt.Sprintf("winner%d/started%v/syn%v", winner, started, preGrantSYN), func(t *testing.T) {
+					m, tr := newT02Mux(t)
+					m.requestStartForSession(winner, 0x31)
+					m.requestStartForSession(2, 0x73)
+					t02SYN(m)
+					t02Failed(t, m, 2, 0x31)
+					tr.readDone = m.ctx.Done()
+					m.wg.Add(1)
+					go m.readLoop()
+					defer func() { m.cancel(); m.wg.Wait() }()
+					if preGrantSYN {
+						tr.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+					}
+					kind := transport.StreamEventFailed
+					if started {
+						kind = transport.StreamEventStarted
+					}
+					tr.eventCh <- transport.StreamEvent{Kind: kind, Data: 0x10}
+					tr.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x08}
+					for _, want := range []byte{protocol.SymbolSyn, 0x10, 0x08} {
+						select {
+						case frame := <-m.sessions[2].sendCh:
+							if frame.kind != sessionFrameReceived || frame.payload != want {
+								t.Fatalf("reconstruction=%+v, want RECEIVED %02x", frame, want)
+							}
+						case <-time.After(time.Second):
+							t.Fatalf("missing RECEIVED %02x", want)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestT02_GatewayAdmissionExpiryDoesNotCancelReplacement(t *testing.T) {
+	m, _ := newT02Mux(t)
+	old := m.requestStartForSession(0, 0x7f)
+	newest := m.requestStartForSession(0, 0x31)
+	m.expireGatewayAdmission(old)
+	if result := <-old; !result.cancelled {
+		t.Fatalf("old bid=%+v", result)
+	}
+	select {
+	case result := <-newest:
+		t.Fatalf("old admission expiry resolved replacement: %+v", result)
+	default:
+	}
+	t02SYN(m)
+	m.handleArbitrationResponse(true, 0x31)
+	t02Result(t, newest, 0x31, true)
+}

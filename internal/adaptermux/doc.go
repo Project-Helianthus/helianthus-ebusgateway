@@ -13,7 +13,13 @@
 // does not repeat those resets. Local FAILED supplies the winner's source only
 // until the next observed SYN. After that boundary, STARTED synthesizes the
 // source again for losing sessions so their passive frame remains complete.
-// Physical adapter arbitration can still lose to a initiator outside this mux.
+// Physical adapter arbitration can still lose to an initiator outside this mux.
+// On physical loss, local losers receive a synthetic session SYN before the
+// actual winner source, unless an observed SYN already reset reconstruction.
+// This session-only boundary is never emitted as passive wire evidence.
+// Gateway bids waiting for SYN expire after StartDeadline; once selected, a
+// separate StartDeadline bounds the adapter response without admission expiry
+// cancelling a deliverable wire win.
 // A read timeout or ownership release alone never opens a new arbitration window.
 //
 // The gateway's initiator address is its priority control. Its default 0x7f is in

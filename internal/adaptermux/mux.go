@@ -117,7 +117,8 @@ type Config struct {
 	// side-observation in EBUSD-VERIFICATION-2026-05-11-batch3.md).
 	LatencyHistogramReportInterval time.Duration
 
-	// StartDeadline is the maximum time to wait for the adapter to
+	// StartDeadline also bounds gateway admission while waiting for SYN.
+	// Once selected, it is the maximum time to wait for the adapter to
 	// respond with STARTED/FAILED after a START request. Default: 5s.
 	// If the adapter does not respond within this duration, the pending
 	// start is cleared and the session is notified of failure (AM8).
@@ -1926,6 +1927,7 @@ func (m *Mux) readLoop() {
 						})
 					}
 				} else {
+					m.resetLocalLoserSources(startedLosers)
 					// Mismatched STARTED (AM56): the wire byte
 					// belongs to some third party, not the bidder.
 					// handleArbitrationResponse has already failed
@@ -2024,10 +2026,12 @@ func (m *Mux) readLoop() {
 			notifyByte := event.Data
 			var activeBidderSessionID uint64
 			var hasActiveBidder bool
+			var failedLosers []*startRequest
 			m.stateMu.Lock()
 			m.lastWireActivity = time.Now()
 			if m.pendingStartAbsorb == 0 && m.pendingStart != nil {
 				activeBidderSessionID = m.pendingStart.sessionID
+				failedLosers = m.pendingStart.losers
 				hasActiveBidder = true
 				if isPhantom && m.pendingStart.sessionID == activeBidderSessionID {
 					notifyByte = m.pendingStart.initiator
@@ -2055,6 +2059,7 @@ func (m *Mux) readLoop() {
 			//     the byte on the non-bidder sessions to keep their
 			//     bus state synced. (Codex P2 round 3 on PR #620.)
 			if !isPhantom {
+				m.resetLocalLoserSources(failedLosers)
 				switch {
 				case !hasActiveBidder:
 					m.deliverToSessions(event.Data, 0, false, time.Now())
@@ -3612,6 +3617,11 @@ func (m *Mux) requestStartForSession(sessionID uint64, initiator byte) <-chan st
 	// is also gated on stateMu, so it cannot interleave between
 	// step 1 and step 2.
 	ch := m.arb.requestStart(sessionID, initiator)
+	if sessionID == gatewaySessionID {
+		// Bound admission only. Once selected at SYN, the physical START has
+		// its own deadline and must remain deliverable even after this timer.
+		time.AfterFunc(m.cfg.StartDeadline, func() { m.expireGatewayAdmission(ch) })
+	}
 
 	m.stateMu.Unlock()
 	if cancelGatewayWatchdog {
@@ -3620,6 +3630,20 @@ func (m *Mux) requestStartForSession(sessionID uint64, initiator byte) <-chan st
 	releaseManagedGate()
 
 	return ch
+}
+
+// expireGatewayAdmission resolves only the queued bid identified by notify.
+// selectAtSYN and replacement use the same lock, so expiry cannot cancel a
+// selected wire bid or a newer gateway request.
+func (m *Mux) expireGatewayAdmission(notify <-chan startResult) {
+	m.arb.mu.Lock()
+	defer m.arb.mu.Unlock()
+	req := m.arb.pendingGateway
+	if req == nil || req.notify != notify {
+		return
+	}
+	m.arb.pendingGateway = nil
+	req.notify <- startResult{initiator: req.initiator, err: fmt.Errorf("adaptermux: gateway admission: %w", ebuserrors.ErrTimeout)}
 }
 
 // Guard: only one pending START at a time. If pendingStart is non-nil,
@@ -5045,6 +5069,20 @@ func (m *Mux) deliverToSessions(symbol byte, currentOwner uint64, hasOwner bool,
 
 	for _, sess := range m.sessions {
 		sess.deliverReceived(symbol)
+	}
+}
+
+// resetLocalLoserSources inserts a synthetic session reconstruction boundary
+// when the locally selected source from FAILED did not win on the wire. An
+// intervening observed SYN already clears pendingStart.losers. This boundary
+// belongs only to affected ENH sessions, never to raw or passive wire evidence.
+func (m *Mux) resetLocalLoserSources(losers []*startRequest) {
+	m.sessionsMu.Lock()
+	defer m.sessionsMu.Unlock()
+	for _, loser := range losers {
+		if sess := m.sessions[loser.sessionID]; sess != nil {
+			sess.deliverReceived(protocol.SymbolSyn)
+		}
 	}
 }
 

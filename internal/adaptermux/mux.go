@@ -1817,8 +1817,9 @@ func (m *Mux) readLoop() {
 		// completed, if any, is then processed below for phase tracking,
 		// passive reconstruction and the gateway active path, without a
 		// second session delivery.
+		var bids map[*startRequest]chan startResult
 		if item.hasRaw {
-			m.onRawSymbol(item.rawSymbol, event)
+			bids = m.onRawSymbol(item.rawSymbol, event)
 		}
 		deliverLogicalToSessions := !item.hasRaw
 
@@ -2118,16 +2119,16 @@ func (m *Mux) readLoop() {
 			// WasEscaped flag through onReceived so adapter-direct
 			// passive consumers see the same provenance the raw-TCP
 			// passive observers get via their local escape decoder.
-			m.onLogicalReceived(event.Byte, event.WasEscaped, deliverLogicalToSessions)
+			m.onLogicalReceivedForBids(event.Byte, event.WasEscaped, deliverLogicalToSessions, bids)
 		case transport.StreamEventWireSyn:
 			// F-38-fix (PR #155 P1, 2026-05-15): pre-grant SYN passive
 			// marker emitted by enh_transport during awaitingStart.
 			// Identical downstream effect to a wire SYN byte (route to
 			// onReceived as 0xAA with wasEscaped=false), but the new
 			// kind keeps the active sender's ReadByte queue clean.
-			m.onLogicalReceived(event.Byte, false, deliverLogicalToSessions)
+			m.onLogicalReceivedForBids(event.Byte, false, deliverLogicalToSessions, bids)
 		default:
-			m.onLogicalReceived(event.Byte, event.WasEscaped, deliverLogicalToSessions)
+			m.onLogicalReceivedForBids(event.Byte, event.WasEscaped, deliverLogicalToSessions, bids)
 		}
 	}
 }
@@ -2216,6 +2217,12 @@ func (m *Mux) ownershipDurationLimit(ownerID uint64) time.Duration {
 // produced this byte (issue #1003): sessions are then fed exclusively from
 // the raw view and must not see a second, logical RECEIVED.
 func (m *Mux) onLogicalReceived(symbol byte, wasEscaped bool, deliverToSessions bool) {
+	m.onLogicalReceivedForBids(symbol, wasEscaped, deliverToSessions, nil)
+}
+
+// onLogicalReceivedForBids retains the eligibility boundary frozen before raw
+// SYN delivery. Logical-only input takes its snapshot under the state lock below.
+func (m *Mux) onLogicalReceivedForBids(symbol byte, wasEscaped bool, deliverToSessions bool, bids map[*startRequest]chan startResult) {
 	now := time.Now()
 
 	// --- Phase 1: state update under stateMu ---
@@ -2325,8 +2332,7 @@ func (m *Mux) onLogicalReceived(symbol byte, wasEscaped bool, deliverToSessions 
 			// and the next real echo byte completes the handshake normally.
 			activeExpects = false
 		}
-		var bids map[*startRequest]chan startResult
-		if shouldTryGrant {
+		if shouldTryGrant && bids == nil {
 			bids = m.arb.snapshotBids()
 		}
 		m.stateMu.Unlock()

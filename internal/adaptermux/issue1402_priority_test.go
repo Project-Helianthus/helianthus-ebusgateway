@@ -873,3 +873,53 @@ func TestT02_LocalLoserSuppressedPhantomResetsSource(t *testing.T) {
 		}
 	}
 }
+
+func TestT02_RawSYNFreezesPreSYNBidBeforeClientResponse(t *testing.T) {
+	for _, kind := range []transport.StreamEventKind{transport.StreamEventByte, transport.StreamEventWireSyn} {
+		t.Run(fmt.Sprint(kind), func(t *testing.T) {
+			m, tr := newT02Mux(t)
+			winner := m.requestStartForSession(1, 0x73)
+			loser := m.requestStartForSession(3, 0x7f)
+			event := transport.StreamEvent{Kind: kind, Byte: protocol.SymbolSyn}
+
+			// Split the raw readLoop dispatch at the client-visible boundary:
+			// a higher-priority client responds after RECEIVED(SYN), before
+			// the paired logical item is processed. Eligibility must already
+			// be frozen, rather than first captured by logical processing.
+			bids := m.onRawSymbol(protocol.SymbolSyn, event)
+			for _, id := range []uint64{1, 2, 3} {
+				select {
+				case frame := <-m.sessions[id].sendCh:
+					if frame.kind != sessionFrameReceived || frame.payload != protocol.SymbolSyn {
+						t.Fatalf("session %d raw SYN=%+v", id, frame)
+					}
+				default:
+					t.Fatalf("session %d did not receive raw SYN", id)
+				}
+			}
+			late := m.requestStartForSession(2, 0x31)
+			m.onLogicalReceivedForBids(event.Byte, event.WasEscaped, false, bids)
+
+			if got := tr.getStartRequests(); !reflect.DeepEqual(got, []byte{0x73}) {
+				t.Fatalf("raw SYN window STARTs=%x, want 73", got)
+			}
+			t02Result(t, loser, 0x73, false)
+			t02Failed(t, m, 3, 0x73)
+			select {
+			case result := <-late:
+				t.Fatalf("post-SYN bid resolved in prior window: %+v", result)
+			default:
+			}
+			m.handleArbitrationResponse(true, 0x73)
+			t02Result(t, winner, 0x73, true)
+			m.arb.releaseOwnership(1)
+			bids = m.onRawSymbol(protocol.SymbolSyn, event)
+			m.onLogicalReceivedForBids(event.Byte, event.WasEscaped, false, bids)
+			if got := tr.getStartRequests(); !reflect.DeepEqual(got, []byte{0x73, 0x31}) {
+				t.Fatalf("next raw SYN STARTs=%x, want 7331", got)
+			}
+			m.handleArbitrationResponse(true, 0x31)
+			t02Result(t, late, 0x31, true)
+		})
+	}
+}

@@ -459,8 +459,8 @@ func TestSessionPacer_Watchdog_OffMode_NoArm(t *testing.T) {
 // first byte must not arrive at the client before
 // firstFrameStart + N*τ_wire_byte, where N is the number of eBUS
 // wire symbols the first frame represents (issue #1003: cadence is
-// per wire symbol, not per encoded ENH byte). A STARTED frame is two
-// ENH bytes but one arbitration symbol, so the floor is 1×τ. The
+// per wire symbol, not per encoded ENH byte). A long-form RECEIVED frame is two
+// ENH bytes but one observed wire symbol, so the floor is 1×τ. The
 // per-symbol slot accounting itself is pinned deterministically by
 // TestSessionPacer_ReservesOneSlotPerWireSymbol.
 func TestSessionPacer_OutputPacer_SchedulesFrameEgress(t *testing.T) {
@@ -492,17 +492,17 @@ func TestSessionPacer_OutputPacer_SchedulesFrameEgress(t *testing.T) {
 	// byte didn't arrive earlier than the wire-equivalent.
 	tStart := time.Now()
 
-	// Enqueue TWO STARTED frames back-to-back. Each is a 2-byte ENH
+	// Enqueue TWO RECEIVED frames back-to-back. Each is a 2-byte ENH
 	// encoding of ONE wire symbol; the cadence anchor advances by τ
 	// per frame, so the second frame's first byte should emit no
 	// earlier than tStart + TauWireByte.
 	mux.sessions[sid].sendCh <- sessionFrame{
-		kind:    sessionFrameStarted,
-		payload: 0x31,
+		kind:    sessionFrameReceived,
+		payload: 0xB1,
 	}
 	mux.sessions[sid].sendCh <- sessionFrame{
-		kind:    sessionFrameStarted,
-		payload: 0x32,
+		kind:    sessionFrameReceived,
+		payload: 0xB2,
 	}
 
 	// Read the first frame (2 bytes) and timestamp its arrival.

@@ -362,6 +362,28 @@ func (p *Pacer) Schedule(now time.Time) time.Time {
 	return emitAt
 }
 
+// NextOutput previews the next output slot without reserving it. A caller
+// can wait interruptibly, then use Schedule when it is ready to emit.
+func (p *Pacer) NextOutput(now time.Time) time.Time {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.scheduledInitialized {
+		if next := p.lastScheduledEmit.Add(p.tau); next.After(now) {
+			return next
+		}
+	}
+	return now
+}
+
+// ResumeOutput rebases output cadence after a backlog flush. Active-write
+// timing, echo samples and watchdog state are unchanged.
+func (p *Pacer) ResumeOutput(now time.Time) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.lastScheduledEmit = now
+	p.scheduledInitialized = true
+}
+
 // LastScheduledEmit returns the most recent Schedule output.
 // Returns zero time if Schedule has never been called. Safe to
 // call from any goroutine.

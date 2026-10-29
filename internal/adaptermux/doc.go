@@ -8,6 +8,9 @@
 // local tie break; deployments should assign distinct initiator addresses. Session
 // 0 has no special priority. Every losing bidder receives FAILED with the
 // selected winner's address in that SYN interval and must submit a new bid.
+// Only waiters present while processing that SYN are eligible; bids submitted
+// during subsequent callbacks wait for the next boundary. Replacement withdraws
+// the old waiter and admits the new waiter in the next window.
 // A session's first SEND waits for the grant's ownership commit. The mux arms
 // parser resets before publishing STARTED or local FAILED; the result waiter
 // does not repeat those resets. Local FAILED supplies the winner's source only
@@ -29,6 +32,8 @@
 // STARTED responses always reach their session. A wire win abandoned through
 // cancellation or disconnect is held until the next SYN and counted by
 // ActiveTxnSnapshot.UndeliverableStarted; upstream reconnection is unnecessary.
+// Once STARTED has been consumed, cancellation never arms a stale-response
+// barrier; the next SYN releases the abandoned win for queued bids.
 //
 // The gateway flags --adapter-mux-idle-release-grace (200ms) and
 // --adapter-mux-max-ownership-duration (10s) configure the retained ownership

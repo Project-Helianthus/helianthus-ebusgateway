@@ -294,12 +294,15 @@ type arbitrationRequester interface {
 // adapter but not yet confirmed via STARTED/FAILED response.
 // Protected by stateMu.
 type pendingStartState struct {
-	losers      []*startRequest
-	sessionID   uint64
-	initiator   byte
-	notify      chan startResult
-	deadline    *time.Timer // AM8: fires if adapter doesn't respond before cfg.StartDeadline
-	blockingArb bool        // true when using blocking StartArbitration fallback
+	// responseReceived is guarded by stateMu. Once the wire response has
+	// arrived, cancellation and deadline expiry must not expect another one.
+	responseReceived bool
+	losers           []*startRequest
+	sessionID        uint64
+	initiator        byte
+	notify           chan startResult
+	deadline         *time.Timer // AM8: fires if adapter doesn't respond before cfg.StartDeadline
+	blockingArb      bool        // true when using blocking StartArbitration fallback
 
 	// req is the arbitrator's startRequest pointer kept by the mux for
 	// the duration of the in-flight grant. A cancelled wire win is retired
@@ -2300,6 +2303,10 @@ func (m *Mux) onLogicalReceived(symbol byte, wasEscaped bool, deliverToSessions 
 			// and the next real echo byte completes the handshake normally.
 			activeExpects = false
 		}
+		var bids map[*startRequest]chan startResult
+		if shouldTryGrant {
+			bids = m.arb.snapshotBids()
+		}
 		m.stateMu.Unlock()
 
 		// F-18: per-session echo trackers removed; nothing to reset
@@ -2354,7 +2361,7 @@ func (m *Mux) onLogicalReceived(symbol byte, wasEscaped bool, deliverToSessions 
 			m.deliverSYNToSessions(now)
 		}
 		if shouldTryGrant {
-			m.tryGrantAndStart()
+			m.tryGrantAndStartForBids(bids)
 		}
 		return
 	}
@@ -3650,6 +3657,10 @@ func (m *Mux) expireGatewayAdmission(notify <-chan startResult) {
 // this method is a no-op — the next tryGrantAndStart will fire after
 // the current one resolves.
 func (m *Mux) tryGrantAndStart() {
+	m.tryGrantAndStartForBids(nil)
+}
+
+func (m *Mux) tryGrantAndStartForBids(bids map[*startRequest]chan startResult) {
 	managedGateHeld, admitted := m.beginManagedConnectionUse()
 	if !admitted {
 		return
@@ -3728,7 +3739,7 @@ func (m *Mux) tryGrantAndStart() {
 		return
 	}
 
-	req, losers := m.arb.selectAtSYN(true)
+	req, losers := m.arb.selectBidsAtSYN(true, bids)
 	granted := req != nil
 	if !granted {
 		m.stateMu.Unlock()
@@ -3766,7 +3777,7 @@ func (m *Mux) tryGrantAndStart() {
 	// if the adapter never responds with STARTED/FAILED.
 	m.pendingStart.deadline = time.AfterFunc(m.cfg.StartDeadline, func() {
 		m.stateMu.Lock()
-		if m.pendingStart != nil && m.pendingStart.notify == notify {
+		if m.pendingStart != nil && m.pendingStart.notify == notify && !m.pendingStart.responseReceived {
 			pending := m.pendingStart
 			m.pendingStart = nil
 			m.armPendingStartAbsorbLocked("deadline")
@@ -4095,6 +4106,7 @@ func (m *Mux) tryGrantAndStart() {
 				m.pendingStart.deadline.Stop() // AM8: cancel deadline timer
 			}
 			pending := m.pendingStart
+			pending.responseReceived = true
 			m.stateMu.Unlock()
 			m.completeArbitrationGrant(pending)
 			// Clear blockingArbActive AFTER ownership is confirmed.
@@ -4453,6 +4465,10 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 			}
 			return
 		}
+		pending.responseReceived = true
+		if pending.deadline != nil {
+			pending.deadline.Stop()
+		}
 		m.stateMu.Unlock()
 		m.completeArbitrationGrant(pending)
 	} else {
@@ -4509,10 +4525,12 @@ func (m *Mux) cancelPendingStart(sessionID uint64) {
 		if pending.deadline != nil {
 			pending.deadline.Stop() // AM8: cancel deadline timer
 		}
-		// The adapter will still send STARTED or FAILED for the cancelled
-		// RequestStart. Increment absorb counter so handleArbitrationResponse
-		// discards that stale response instead of failing a newer request.
-		m.armPendingStartAbsorbLocked("cancel")
+		// Expect a stale response only if the adapter has not responded yet.
+		// STARTED may already have been consumed before ownership commits;
+		// in that case the next SYN is the only remaining regrant barrier.
+		if !pending.responseReceived {
+			m.armPendingStartAbsorbLocked("cancel")
+		}
 		// Codex PR #502 P1 (v2 — mirror C2 reconnect pattern): if the
 		// cancelled pending was on the blocking StartArbitration path,
 		// the goroutine may still be hung in the transport call.
@@ -4528,7 +4546,7 @@ func (m *Mux) cancelPendingStart(sessionID uint64) {
 		// arbitration safely under stateMu. The hung goroutine's late
 		// return finds a stale gen and skips state mutation. Do NOT
 		// admit another bid before the next SYN after reconnect.
-		wasBlocking := pending.blockingArb
+		wasBlocking := pending.blockingArb && !pending.responseReceived
 		m.stateMu.Unlock()
 		// AM8: guard the send — if another path already delivered a
 		// result for this notify channel, skip to avoid blocking.

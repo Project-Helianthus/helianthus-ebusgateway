@@ -583,3 +583,126 @@ func TestT02_GatewayAdmissionExpiryDoesNotCancelReplacement(t *testing.T) {
 	m.handleArbitrationResponse(true, 0x31)
 	t02Result(t, newest, 0x31, true)
 }
+
+// t02CommitTransport pauses at the real transport capability check between
+// receiving STARTED and taking stateMu for the ownership commit.
+type t02CommitTransport struct {
+	*p3MockTransport
+	beforeCommit func()
+}
+
+func (tr *t02CommitTransport) ArbitrationSendsSource() bool {
+	if tr.beforeCommit != nil {
+		tr.beforeCommit()
+	}
+	return false
+}
+
+func TestT02_CancelAfterResponseBeforeCommit(t *testing.T) {
+	for _, id := range []uint64{0, 1} {
+		t.Run(fmt.Sprintf("session%d", id), func(t *testing.T) {
+			m, tr := newT02Mux(t)
+			commitTr := &t02CommitTransport{p3MockTransport: tr}
+			m.upstream = commitTr
+			ch := m.requestStartForSession(id, 0x31)
+			t02SYN(m)
+			commitTr.beforeCommit = func() { m.cancelPendingStart(id) }
+			m.handleArbitrationResponse(true, 0x31)
+			commitTr.beforeCommit = nil
+			if result := <-ch; result.granted || !result.cancelled {
+				t.Fatalf("cancelled bid result=%+v", result)
+			}
+			if got := m.ActiveTxnSnapshot().UndeliverableStarted; got != 1 {
+				t.Fatalf("undeliverable=%d", got)
+			}
+			if _, _, owned := m.arb.owner(); owned {
+				t.Fatal("cancelled bid owns the bus")
+			}
+			m.requestStartForSession(2, 0x71)
+			if len(tr.getStartRequests()) != 1 {
+				t.Fatal("new bid dispatched before next SYN")
+			}
+			t02SYN(m)
+			if got := tr.getStartRequests(); !reflect.DeepEqual(got, []byte{0x31, 0x71}) {
+				t.Fatalf("next SYN STARTs=%x, want 3171", got)
+			}
+			m.stateMu.Lock()
+			absorb := m.pendingStartAbsorb
+			m.stateMu.Unlock()
+			if absorb != 0 {
+				t.Fatalf("already consumed STARTED left absorb=%d", absorb)
+			}
+		})
+	}
+}
+
+func TestT02_PostSYNBidWaitsForNextWindow(t *testing.T) {
+	for _, lateID := range []uint64{0, 2} {
+		t.Run(fmt.Sprintf("lateSession%d", lateID), func(t *testing.T) {
+			m, tr := newT02Mux(t)
+			winner := m.requestStartForSession(1, 0x73)
+			loser := m.requestStartForSession(3, 0x7f)
+			var late <-chan startResult
+			m.SetPassiveCallback(func(ev PassiveEvent) {
+				if ev.Kind == PassiveEventSymbol && ev.Symbol == protocol.SymbolSyn && late == nil {
+					late = m.requestStartForSession(lateID, 0x31)
+				}
+			})
+			t02SYN(m)
+			if late == nil {
+				t.Fatal("SYN callback did not submit late bid")
+			}
+			if got := tr.getStartRequests(); !reflect.DeepEqual(got, []byte{0x73}) {
+				t.Fatalf("completed window STARTs=%x, want 73", got)
+			}
+			t02Result(t, loser, 0x73, false)
+			t02Failed(t, m, 3, 0x73)
+			select {
+			case result := <-late:
+				t.Fatalf("late bid resolved in completed window: %+v", result)
+			default:
+			}
+			m.handleArbitrationResponse(true, 0x73)
+			t02Result(t, winner, 0x73, true)
+			m.arb.releaseOwnership(1)
+			t02SYN(m)
+			if got := tr.getStartRequests(); !reflect.DeepEqual(got, []byte{0x73, 0x31}) {
+				t.Fatalf("next window STARTs=%x, want 7331", got)
+			}
+			m.handleArbitrationResponse(true, 0x31)
+			t02Result(t, late, 0x31, true)
+		})
+	}
+}
+
+func TestT02_PostSYNReplacementWaitsForNextWindow(t *testing.T) {
+	for _, address := range []byte{0x31, 0x71} {
+		t.Run(fmt.Sprintf("replacement%02x", address), func(t *testing.T) {
+			m, tr := newT02Mux(t)
+			old := m.requestStartForSession(1, 0x31)
+			winner := m.requestStartForSession(2, 0x73)
+			var replacement <-chan startResult
+			m.SetPassiveCallback(func(ev PassiveEvent) {
+				if ev.Kind == PassiveEventSymbol && ev.Symbol == protocol.SymbolSyn && replacement == nil {
+					replacement = m.requestStartForSession(1, address)
+				}
+			})
+			t02SYN(m)
+			if replacement == nil {
+				t.Fatal("SYN callback did not replace bid")
+			}
+			if result := <-old; !result.cancelled {
+				t.Fatalf("replaced bid=%+v", result)
+			}
+			if got := tr.getStartRequests(); !reflect.DeepEqual(got, []byte{0x73}) {
+				t.Fatalf("completed window STARTs=%x, want 73", got)
+			}
+			m.handleArbitrationResponse(true, 0x73)
+			t02Result(t, winner, 0x73, true)
+			m.arb.releaseOwnership(2)
+			t02SYN(m)
+			m.handleArbitrationResponse(true, address)
+			t02Result(t, replacement, address, true)
+		})
+	}
+}

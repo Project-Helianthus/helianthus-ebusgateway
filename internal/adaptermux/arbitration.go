@@ -181,15 +181,43 @@ func (a *arbitrator) tryGrant(busIdle bool) (*startRequest, bool) {
 	return winner, winner != nil
 }
 
+// snapshotBids identifies the waiters admitted before the SYN state lock is
+// released. Including notify distinguishes a same-address re-bid that coalesces
+// onto the same request after the boundary.
+func (a *arbitrator) snapshotBids() map[*startRequest]chan startResult {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	bids := make(map[*startRequest]chan startResult, len(a.pendingExternal)+1)
+	if a.pendingGateway != nil {
+		bids[a.pendingGateway] = a.pendingGateway.notify
+	}
+	for _, req := range a.pendingExternal {
+		bids[req] = req.notify
+	}
+	return bids
+}
+
 func (a *arbitrator) selectAtSYN(busIdle bool) (*startRequest, []*startRequest) {
+	return a.selectBidsAtSYN(busIdle, nil)
+}
+
+// A nil snapshot admits all current bids; a non-nil snapshot excludes waiters
+// submitted after the observed SYN, retaining them for the next boundary.
+func (a *arbitrator) selectBidsAtSYN(busIdle bool, bids map[*startRequest]chan startResult) (*startRequest, []*startRequest) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.hasOwner || !busIdle {
 		return nil, nil
 	}
-	winner := a.pendingGateway
+	eligible := func(req *startRequest) bool {
+		return req != nil && (bids == nil || bids[req] == req.notify)
+	}
+	var winner *startRequest
+	if eligible(a.pendingGateway) {
+		winner = a.pendingGateway
+	}
 	for _, req := range a.pendingExternal {
-		if winner == nil || higherPriority(req, winner) {
+		if eligible(req) && (winner == nil || higherPriority(req, winner)) {
 			winner = req
 		}
 	}
@@ -198,7 +226,7 @@ func (a *arbitrator) selectAtSYN(busIdle bool) (*startRequest, []*startRequest) 
 	}
 	var losers []*startRequest
 	lose := func(req *startRequest) {
-		if req != nil && req != winner {
+		if eligible(req) && req != winner {
 			losers = append(losers, req)
 		}
 	}
@@ -206,9 +234,17 @@ func (a *arbitrator) selectAtSYN(busIdle bool) (*startRequest, []*startRequest) 
 	for _, req := range a.pendingExternal {
 		lose(req)
 	}
-	a.pendingGateway = nil
-	clear(a.pendingExternal)
-	a.pendingExternal = a.pendingExternal[:0]
+	if eligible(a.pendingGateway) {
+		a.pendingGateway = nil
+	}
+	remaining := a.pendingExternal[:0]
+	for _, req := range a.pendingExternal {
+		if !eligible(req) {
+			remaining = append(remaining, req)
+		}
+	}
+	clear(a.pendingExternal[len(remaining):])
+	a.pendingExternal = remaining
 	return winner, losers
 }
 

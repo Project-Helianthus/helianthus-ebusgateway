@@ -3,11 +3,13 @@
 The adopted target is explicitly selected with `Project161(snapshot, evaluation)`.
 `Manifest161()` identifies `matter.data-model` version `1.6.1`, mapping revision
 `1`, under `helianthus.gateway.matter-projection/v1`. `CanonicalJSON161` checks
-that the document, model revisions and complete report manifest agree.
+that the document, model revisions and complete report manifest agree, that
+current values are canonical decimal integers within the signed target limits,
+and that attribute presence agrees with the transformed current report row.
 
 The companion [1.6.1 adoption contract](https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/main/api/v1/targets/matter-1.6.1-v1.md)
 and [full ledger](https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/main/api/v1/targets/matter-1.6.1-v1.json)
-are the public contract. AA02 must merge before or with this implementation.
+are the public contract and must be published before or with this implementation.
 The inspected model uses Electrical Sensor `0x0510` revision 1, Power Topology
 `0x009C` revision 1, and Electrical Power Measurement `0x0090` revision 3.
 These are distinct from the historical 1.7 Sensor/Topology revision 2 identities.

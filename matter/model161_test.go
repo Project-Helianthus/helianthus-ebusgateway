@@ -127,6 +127,52 @@ func TestAA03TargetAgreement(t *testing.T) {
 	}
 }
 
+func TestAA03CanonicalValueAndReportAgreement(t *testing.T) {
+	for _, value := range []string{"not-a-number", "", "1.5", "1e3", " 1", "+1", "01", "-0", "4611686018427387905", "-4611686018427387905"} {
+		t.Run("invalid value "+value, func(t *testing.T) {
+			r := aa03Positive(t, aa03Fixture(t))
+			r.Document.Attributes[0].Value.Milliampere = value
+			if raw, err := CanonicalJSON161(r); err == nil || raw != nil {
+				t.Fatalf("accepted invalid milliamperes %q", value)
+			}
+		})
+	}
+	for _, value := range []string{"-4611686018427387904", "4611686018427387904", "0", "-1"} {
+		t.Run("valid value "+value, func(t *testing.T) {
+			r := aa03Positive(t, aa03Fixture(t))
+			r.Document.Attributes[0].Value.Milliampere = value
+			if _, err := CanonicalJSON161(r); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	t.Run("transformed row without attribute", func(t *testing.T) {
+		r := aa03Positive(t, aa03Fixture(t))
+		r.Document.Attributes = []TargetAttribute{}
+		if err := r.Report.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		if raw, err := CanonicalJSON161(r); err == nil || raw != nil {
+			t.Fatal("accepted transformed row without attribute")
+		}
+	})
+	t.Run("attribute without transformed row", func(t *testing.T) {
+		positive := aa03Positive(t, aa03Fixture(t))
+		f := newMatterFixture(t, []semreg.FactCandidate{})
+		r, err := Project161(f.snapshot, f.evaluation)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Document.Attributes = positive.Document.Attributes
+		if err := r.Report.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		if raw, err := CanonicalJSON161(r); err == nil || raw != nil {
+			t.Fatal("accepted attribute without transformed row")
+		}
+	})
+}
+
 func TestAA03EvaluationJoins(t *testing.T) {
 	cases := map[string]func(*semreg.EvaluationView){
 		"snapshot": func(v *semreg.EvaluationView) {

@@ -76,7 +76,8 @@ func Project161(snapshot semreg.Snapshot, evaluation semreg.EvaluationView) (Res
 	return detached, nil
 }
 
-// CanonicalJSON161 refuses historical identities and document/manifest drift.
+// CanonicalJSON161 refuses historical identities, invalid current values and
+// disagreement between the document and its accounting report.
 func CanonicalJSON161(result Result161) ([]byte, error) {
 	d := result.Document
 	if d.Contract != Contract || d.TargetID != TargetID || d.TargetVersion != TargetVersion161 || d.MappingRevision != MappingRevision161 || d.Model != model161() || !reflect.DeepEqual(result.Report.Manifest, Manifest161()) {
@@ -88,8 +89,25 @@ func CanonicalJSON161(result Result161) ([]byte, error) {
 	if d.Attributes == nil || len(d.Attributes) > 1 {
 		return nil, errInput
 	}
+	currentMapped := false
+	for _, row := range result.Report.Dispositions {
+		if row.Kind == projection.ItemFact && row.ItemID == "evse.ac.current" {
+			currentMapped = row.Outcome == projection.ProjectionTransformed
+		}
+	}
+	if currentMapped != (len(d.Attributes) == 1) {
+		return nil, errInput
+	}
 	for _, attribute := range d.Attributes {
 		if attribute.Element != (TargetElement{DeviceType: 0x0510, Cluster: 0x0090, Kind: ElementAttribute, ElementID: 0x0005}) {
+			return nil, errInput
+		}
+		// Interpret the stored integer as amperes scaled by 10^-3 so the
+		// projector's exact conversion and signed target limits apply here too.
+		ma, err := amperesToMilliampere(semreg.Value{Kind: semreg.ValueQuantity, Quantity: &semreg.Quantity{
+			Number: semreg.Decimal{Coefficient: attribute.Value.Milliampere, Exponent10: -3}, Unit: "unit.ampere",
+		}})
+		if err != nil || ma != attribute.Value.Milliampere {
 			return nil, errInput
 		}
 	}

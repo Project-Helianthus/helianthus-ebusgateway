@@ -364,9 +364,11 @@ func (m *Mux) RemoveSession(id uint64) {
 func (m *Mux) releaseSessionGrant(sess *session) {
 	m.stateMu.Lock()
 	defer m.stateMu.Unlock()
-	if m.arb.isOwner(sess.id) && !sess.grantDelivered.Load() {
-		m.deferRegrantUntilNextSyn = true
-		m.undeliverableStarted.Add(1)
+	if m.arb.isOwner(sess.id) {
+		m.fenceArbitrationUntilSYNLocked()
+		if !sess.grantDelivered.Load() {
+			m.undeliverableStarted.Add(1)
+		}
 	}
 	m.arb.releaseOwnership(sess.id)
 }

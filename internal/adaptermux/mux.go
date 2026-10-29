@@ -297,6 +297,7 @@ type pendingStartState struct {
 	// responseReceived is guarded by stateMu. Once the wire response has
 	// arrived, cancellation and deadline expiry must not expect another one.
 	responseReceived bool
+	lifecycleEpoch   uint64 // selection cannot survive reset, reconnect, or close
 	sessionID        uint64
 	initiator        byte
 	notify           chan startResult
@@ -491,6 +492,8 @@ type Mux struct {
 
 	// A cancelled or disconnected wire winner occupies its slot until the next SYN.
 	deferRegrantUntilNextSyn bool
+	arbitrationRecovery      arbitrationRecovery // requested under stateMu, applied only by readLoop
+	retiredSelection         bool                // recognizes late results after the absorb budget and SYN fence end
 
 	// activeTxn is the diagnostics snapshot for the current/last gateway
 	// transaction. Updated under stateMu. Exposed via ActiveTxnSnapshot()
@@ -862,6 +865,8 @@ func (m *Mux) Close() error {
 			pendingToCancel.deadline.Stop() // AM8: cancel deadline timer
 		}
 		m.deferRegrantUntilNextSyn = false
+		m.arbitrationRecovery = arbitrationRecoveryReset
+		m.retiredSelection = false
 		// Closing is also a transaction-generation boundary. Leave no
 		// recovery token live after shutdown: a caller may still hold an
 		// activeTransport reference, but it must not be able to terminalize
@@ -1530,6 +1535,8 @@ func (m *Mux) reconnect() (delegated bool, err error) {
 	m.blockingArbGen++
 	m.blockingArbActive = false
 	m.deferRegrantUntilNextSyn = false
+	m.arbitrationRecovery = arbitrationRecoveryReset
+	m.retiredSelection = false
 	pendingToCancel := m.pendingStart
 	m.pendingStart = nil
 	m.pendingStartAbsorb = 0
@@ -1789,6 +1796,7 @@ func (m *Mux) readLoop() {
 		// consistently. A raw-only item (no logical item) is not
 		// classified.
 		event := item.event
+		m.reconcileArbitrationClassifier(event)
 		// Issue #1003: the gateway escape-pair verifier sees every
 		// observed raw symbol in true wire order, before any session-view
 		// filtering below. The v8 AA-injection filter only shapes what
@@ -1847,6 +1855,7 @@ func (m *Mux) readLoop() {
 			var startedBidderSessionID uint64
 			var startedBidderInitiator byte
 			var startedBidderValid bool
+			startedEpoch := m.arb.lifecycleEpoch.Load()
 			startedLosers := m.localLosers
 			startedLoserSource := m.localLoserSource
 			if m.pendingStartAbsorb == 0 && m.pendingStart != nil {
@@ -1857,6 +1866,9 @@ func (m *Mux) readLoop() {
 			m.lastWireActivity = time.Now()
 			m.stateMu.Unlock()
 			m.handleArbitrationResponse(true, event.Data)
+			if startedEpoch != m.arb.lifecycleEpoch.Load() {
+				continue
+			}
 			if !startedBidderValid && len(startedLosers) > 0 && event.Data != startedLoserSource {
 				// A retired bidder has no waiter to notify, but local losers
 				// still reconstruct from its advertised source. Replace that
@@ -2054,6 +2066,7 @@ func (m *Mux) readLoop() {
 			var failedLosers []*startRequest
 			m.stateMu.Lock()
 			m.lastWireActivity = time.Now()
+			failedEpoch := m.arb.lifecycleEpoch.Load()
 			failedLosers = m.localLosers
 			if m.pendingStartAbsorb == 0 && m.pendingStart != nil {
 				activeBidderSessionID = m.pendingStart.sessionID
@@ -2065,6 +2078,9 @@ func (m *Mux) readLoop() {
 			m.stateMu.Unlock()
 
 			m.handleArbitrationResponse(false, notifyByte)
+			if failedEpoch != m.arb.lifecycleEpoch.Load() {
+				continue
+			}
 
 			// Synthesize the winner byte:
 			//   - No active bidder (absorbed-stale OR no pending):
@@ -2704,6 +2720,9 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	var cancelGatewayWatchdog bool
 
 	m.deferRegrantUntilNextSyn = false
+	if m.arbitrationRecovery == arbitrationRecoveryAtSYN {
+		m.arbitrationRecovery = arbitrationRecoveryNone
+	}
 
 	// Issue #1401: a confirmed arbitration loss released the gateway at
 	// once, but protocol.Bus still waits for
@@ -3368,6 +3387,8 @@ func (m *Mux) handleReset() {
 	m.blockingArbGen++
 	m.blockingArbActive = false
 	m.deferRegrantUntilNextSyn = false
+	m.arbitrationRecovery = arbitrationRecoveryReset
+	m.retiredSelection = false
 	pendingToCancel := m.pendingStart
 	m.pendingStart = nil
 	m.localLosers = nil
@@ -3794,14 +3815,16 @@ func (m *Mux) tryGrantAndStartForBids(bids map[*startRequest]chan startResult) {
 	initiator := req.initiator
 	notify := req.notify
 
+	m.retiredSelection = false
 	m.localLosers = losers
 	m.localLoserSource = initiator
 	m.pendingStart = &pendingStartState{
-		sessionID:   sessionID,
-		initiator:   initiator,
-		notify:      notify,
-		blockingArb: isBlockingPath,
-		req:         req,
+		lifecycleEpoch: m.arb.lifecycleEpoch.Load(),
+		sessionID:      sessionID,
+		initiator:      initiator,
+		notify:         notify,
+		blockingArb:    isBlockingPath,
+		req:            req,
 	}
 	// AM8: start a deadline timer so pendingStart cannot block indefinitely
 	// if the adapter never responds with STARTED/FAILED.
@@ -3810,6 +3833,7 @@ func (m *Mux) tryGrantAndStartForBids(bids map[*startRequest]chan startResult) {
 		if m.pendingStart != nil && m.pendingStart.notify == notify && !m.pendingStart.responseReceived {
 			pending := m.pendingStart
 			m.pendingStart = nil
+			m.fenceArbitrationUntilSYNLocked()
 			m.armPendingStartAbsorbLocked("deadline")
 			// F-15 (operator hand-off, batch-9/11): gate the reconnect by
 			// transport type, mirroring `cancelPendingStart`'s existing
@@ -3959,6 +3983,13 @@ func (m *Mux) tryGrantAndStartForBids(bids map[*startRequest]chan startResult) {
 					m.pendingStartAbsorb--
 					if m.pendingStartAbsorb == 0 {
 						m.clearAbsorbSkipLogStateLocked()
+					}
+				}
+				if m.pendingStartAbsorb == 0 {
+					m.retiredSelection = false
+					m.deferRegrantUntilNextSyn = false
+					if m.arbitrationRecovery == arbitrationRecoveryAtSYN {
+						m.arbitrationRecovery = arbitrationRecoveryNone
 					}
 				}
 				m.stateMu.Unlock()
@@ -4119,7 +4150,7 @@ func (m *Mux) tryGrantAndStartForBids(bids map[*startRequest]chan startResult) {
 				// completeArbitrationGrant will follow.
 				if isCurrentGen {
 					m.blockingArbActive = false
-					m.deferRegrantUntilNextSyn = true
+					m.fenceArbitrationUntilSYNLocked()
 					m.undeliverableStarted.Add(1)
 				}
 				// Codex-R8: scope absorb + queue advance to our generation.
@@ -4161,6 +4192,7 @@ func (m *Mux) tryGrantAndStartForBids(bids map[*startRequest]chan startResult) {
 				m.pendingStart.deadline.Stop() // AM8: cancel deadline timer
 			}
 			m.pendingStart = nil
+			m.fenceArbitrationUntilSYNLocked()
 		}
 		m.stateMu.Unlock()
 		notify <- startResult{granted: false, initiator: initiator, err: errors.New("adaptermux: transport does not support arbitration")}
@@ -4174,9 +4206,14 @@ func (m *Mux) completeArbitrationGrant(pending *pendingStartState) {
 	sendsSource := m.arbitrationSendsSource()
 	m.stateMu.Lock()
 	defer m.stateMu.Unlock()
+	// A lifecycle boundary retires the result itself; a late commit must
+	// neither resurrect its fence nor publish observations in the new stream.
+	if pending.lifecycleEpoch != m.arb.lifecycleEpoch.Load() {
+		return
+	}
 	// Cancellation may win between the adapter response and this commit.
 	if m.pendingStart != pending {
-		m.deferRegrantUntilNextSyn = true
+		m.fenceArbitrationUntilSYNLocked()
 		m.undeliverableStarted.Add(1)
 		return
 	}
@@ -4186,7 +4223,7 @@ func (m *Mux) completeArbitrationGrant(pending *pendingStartState) {
 	}
 	sessionID, initiator, notify := pending.sessionID, pending.initiator, pending.notify
 	reject := func() {
-		m.deferRegrantUntilNextSyn = true
+		m.fenceArbitrationUntilSYNLocked()
 		m.undeliverableStarted.Add(1)
 		select {
 		case notify <- startResult{cancelled: true, initiator: initiator}:
@@ -4285,12 +4322,12 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 	// initiator matching impossible) would incorrectly fail a newer
 	// pending request.
 	if m.pendingStartAbsorb > 0 {
+		m.fenceArbitrationUntilSYNLocked()
 		m.pendingStartAbsorb--
 		if m.pendingStartAbsorb == 0 {
 			m.clearAbsorbSkipLogStateLocked()
 		}
 		if started {
-			m.deferRegrantUntilNextSyn = true
 			m.undeliverableStarted.Add(1)
 		}
 		// F-15 follow-up (PR #626 Codex bot review on b3b7f13 + e6b96ee
@@ -4340,6 +4377,12 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 
 	pending := m.pendingStart
 	if pending == nil {
+		if m.retiredSelection {
+			m.fenceArbitrationUntilSYNLocked()
+			if started {
+				m.undeliverableStarted.Add(1)
+			}
+		}
 		m.stateMu.Unlock()
 		m.logger.Printf("adaptermux: stale arbitration response (no pending START)")
 		return
@@ -4371,6 +4414,7 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 			// path. Suppress silently with cancelled=true.
 			cancelledInFlight := pending.req != nil && pending.req.cancelled.Load()
 			m.pendingStart = nil
+			m.fenceArbitrationUntilSYNLocked()
 			m.armPendingStartAbsorbLocked("started-mismatch")
 			if pending.deadline != nil {
 				pending.deadline.Stop() // AM8: cancel deadline timer
@@ -4442,7 +4486,7 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 			if pending.deadline != nil {
 				pending.deadline.Stop() // AM8: cancel deadline timer
 			}
-			m.deferRegrantUntilNextSyn = true
+			m.fenceArbitrationUntilSYNLocked()
 			m.undeliverableStarted.Add(1)
 			m.stateMu.Unlock()
 			m.logger.Printf("adaptermux: suppressing STARTED for session %d — request was cancelled/replaced; absorbed (C4/R4)", pending.sessionID)
@@ -4517,6 +4561,7 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 		// its own fresh notify channel and the queue advances below.
 		cancelledInFlight := pending.req != nil && pending.req.cancelled.Load()
 		m.pendingStart = nil
+		m.fenceArbitrationUntilSYNLocked()
 		if pending.deadline != nil {
 			pending.deadline.Stop() // AM8: cancel deadline timer
 		}
@@ -4554,6 +4599,7 @@ func (m *Mux) cancelPendingStart(sessionID uint64) {
 	if m.pendingStart != nil && m.pendingStart.sessionID == sessionID {
 		pending := m.pendingStart
 		m.pendingStart = nil
+		m.fenceArbitrationUntilSYNLocked()
 		if pending.deadline != nil {
 			pending.deadline.Stop() // AM8: cancel deadline timer
 		}

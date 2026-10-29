@@ -28,6 +28,39 @@
 // cancelling a deliverable wire win.
 // A read timeout or ownership release alone never opens a new arbitration window.
 //
+// Arbitration lifecycle (see arbitration_recovery.go and the table-driven
+// TestT02_ArbitrationExitStateMachine):
+//
+//   - Idle -> selected -> wire arbitration: freeze bid eligibility before raw
+//     SYN delivery, capture local losers, publish their FAILED-with-winner,
+//     and send one native START. Only this selected waiter may be resolved.
+//   - Wire result -> attribution -> ownership: a matching STARTED commits
+//     only for a live waiter/session in the same upstream lifecycle epoch.
+//   - Cancel/replacement/expiry before the result: retire the waiter, retain
+//     loser reconstruction and absorb the outstanding result. No cancelled
+//     waiter receives STARTED or FAILED. A definite START-send failure ends
+//     this uncertainty without waiting for a response that cannot arrive.
+//   - Cancel after STARTED, undeliverable commit, mismatch, foreign FAILED,
+//     or phantom FAILED: fence admission until a logical structural SYN.
+//     A mismatched result still leaves the selected result to absorb. Retired
+//     selection identity survives absorb timeout and SYN until the next selection
+//     or lifecycle boundary, so still-later results also recover at SYN.
+//     Local losers receive their reconstruction SYN and actual source when
+//     needed; a suppressed phantom still resets their advertised source.
+//   - Fence -> idle: before the classifier can filter that SYN, reset its
+//     abandoned header and the legacy phase tracker. Process and deliver the
+//     SYN normally, then clear the fence. Raw-only AA and escaped payload AA
+//     never clear it. Absorb and blocking-call barriers remain independent.
+//   - Reset/disconnect/close: retire selection, loser state, absorb budget,
+//     timers and fences. Request classifier reset on its read-loop producer
+//     before processing the next stream item. A result from an older lifecycle
+//     cannot restore ownership, restore the fence, or synthesize a source.
+//
+// Recovery resets are local state changes, never fabricated wire RESETTED
+// observations. Ordinary AA-injection filtering for unrelated passive traffic
+// is unchanged. Once the outstanding response is consumed, the recovery SYN
+// clears the fence and a new bid can enter at the following SYN.
+//
 // The gateway's initiator address is its priority control. Its default 0x7f is in
 // the lowest priority class: a continuously bidding higher-priority scanner can
 // legitimately starve the gateway. This is standard address-priority behavior.

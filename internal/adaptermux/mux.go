@@ -382,6 +382,9 @@ type Mux struct {
 	// of the selected waiter, including while its physical response is absorbed.
 	// Protected by stateMu; cleared at a response or observed SYN boundary.
 	localLosers []*startRequest
+	// localLoserSource is the selected source advertised to localLosers.
+	// It remains valid while that set survives, even after the bidder retires.
+	localLoserSource byte
 	// absorbSkipLog* rate-limits the hot tryGrantAndStart skip log while
 	// pendingStartAbsorb is acting as the stale-response barrier.
 	absorbSkipLogLastEmit        time.Time
@@ -1837,22 +1840,35 @@ func (m *Mux) readLoop() {
 			// sessions. Codex P2 round 4 on PR #620.
 			//
 			// pendingStartAbsorb > 0 means the response is for a
-			// cancelled bid — bus state is already torn down, no
-			// synthesis needed regardless of bidder identity.
+			// cancelled bid. Local loser reconstruction is snapshotted
+			// independently because it can outlive that bidder.
 			m.stateMu.Lock()
 			var startedBidderSessionID uint64
 			var startedBidderInitiator byte
 			var startedBidderValid bool
-			var startedLosers []*startRequest
+			startedLosers := m.localLosers
+			startedLoserSource := m.localLoserSource
 			if m.pendingStartAbsorb == 0 && m.pendingStart != nil {
 				startedBidderSessionID = m.pendingStart.sessionID
 				startedBidderInitiator = m.pendingStart.initiator
 				startedBidderValid = true
-				startedLosers = m.localLosers
 			}
 			m.lastWireActivity = time.Now()
 			m.stateMu.Unlock()
 			m.handleArbitrationResponse(true, event.Data)
+			if !startedBidderValid && len(startedLosers) > 0 && event.Data != startedLoserSource {
+				// A retired bidder has no waiter to notify, but local losers
+				// still reconstruct from its advertised source. Replace that
+				// source at a session-only boundary with the actual wire winner.
+				m.resetLocalLoserSources(startedLosers)
+				m.sessionsMu.Lock()
+				for _, loser := range startedLosers {
+					if sess := m.sessions[loser.sessionID]; sess != nil {
+						sess.deliverReceived(event.Data)
+					}
+				}
+				m.sessionsMu.Unlock()
+			}
 			// Synthesize the arbitration-winner byte as a passive
 			// observation for external sessions ONLY when the gateway
 			// is the winner. The wire DID carry this byte (e.g. 0x7F)
@@ -3770,6 +3786,7 @@ func (m *Mux) tryGrantAndStartForBids(bids map[*startRequest]chan startResult) {
 	notify := req.notify
 
 	m.localLosers = losers
+	m.localLoserSource = initiator
 	m.pendingStart = &pendingStartState{
 		sessionID:   sessionID,
 		initiator:   initiator,

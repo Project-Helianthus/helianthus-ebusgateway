@@ -771,3 +771,61 @@ func TestT02_PostSYNReplacementWaitsForNextWindow(t *testing.T) {
 		})
 	}
 }
+
+func TestT02_LocalLoserMismatchedSTARTEDAfterSelectedBidRetires(t *testing.T) {
+	for _, retire := range []string{"cancel", "deadline"} {
+		for _, selectedID := range []uint64{0, 1} {
+			t.Run(fmt.Sprintf("%s/session%d", retire, selectedID), func(t *testing.T) {
+				m, tr := newT02Mux(t)
+				if retire == "deadline" {
+					m.cfg.StartDeadline = 100 * time.Millisecond
+				}
+				selected := m.requestStartForSession(selectedID, 0x31)
+				m.requestStartForSession(2, 0x73)
+				m.requestStartForSession(3, 0x7f)
+				t02SYN(m)
+				for _, id := range []uint64{2, 3} {
+					t02Failed(t, m, id, 0x31)
+				}
+				if retire == "cancel" {
+					m.cancelPendingStart(selectedID)
+				}
+				select {
+				case result := <-selected:
+					if result.granted || (retire == "cancel" && !result.cancelled) || (retire == "deadline" && result.err == nil) {
+						t.Fatalf("retired bid result=%+v", result)
+					}
+				case <-time.After(time.Second):
+					t.Fatal("selected bid did not retire")
+				}
+				tr.readDone = m.ctx.Done()
+				m.wg.Add(1)
+				go m.readLoop()
+				defer func() { m.cancel(); m.wg.Wait() }()
+				tr.eventCh <- transport.StreamEvent{Kind: transport.StreamEventStarted, Data: 0x10}
+				tr.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x08}
+				for _, id := range []uint64{2, 3} {
+					for _, want := range []byte{protocol.SymbolSyn, 0x10, 0x08} {
+						select {
+						case frame := <-m.sessions[id].sendCh:
+							if frame.kind != sessionFrameReceived || frame.payload != want {
+								t.Fatalf("session %d reconstruction=%+v, want RECEIVED %02x", id, frame, want)
+							}
+						case <-time.After(time.Second):
+							t.Fatalf("session %d missing RECEIVED %02x", id, want)
+						}
+					}
+				}
+				m.stateMu.Lock()
+				remainingLosers := len(m.localLosers)
+				m.stateMu.Unlock()
+				if remainingLosers != 0 {
+					t.Fatal("attributed STARTED retained loser reconstruction state")
+				}
+				if _, _, owned := m.arb.owner(); owned {
+					t.Fatal("retired bid acquired ownership")
+				}
+			})
+		}
+	}
+}

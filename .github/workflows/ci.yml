@@ -91,6 +91,9 @@ jobs:
         with:
           persist-credentials: false
           clean: true
+          # Compare the complete PR change set, including renames and deletions.
+          # Hosted runners keep their existing shallow checkout.
+          fetch-depth: ${{ runner.environment != 'github-hosted' && '0' || '1' }}
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
@@ -98,8 +101,46 @@ jobs:
           # setup-go cache over it only adds tar conflicts and minutes.
           # Hosted runners start empty and keep the cache.
           cache: ${{ runner.environment == 'github-hosted' }}
+      - name: Test lint flake guard
+        if: runner.environment != 'github-hosted'
+        run: |
+          rm -f "$RUNNER_TEMP/lint-findings.txt"
+          bash scripts/lint_flake_guard_test.sh
+      - name: Prepare isolated self-hosted lint cache
+        if: runner.environment != 'github-hosted'
+        run: |
+          # skip-cache disables action caching, not the linter's local cache.
+          lint_cache=$(mktemp -d "$RUNNER_TEMP/golangci-lint.XXXXXX")
+          echo "GOLANGCI_LINT_CACHE=$lint_cache" >> "$GITHUB_ENV"
       - uses: golangci/golangci-lint-action@v8
+        id: lint
         with:
           # Keep in sync with GOLANGCI_LINT_EXPECTED_VERSION in scripts/ci_local.sh.
           version: v2.11.4
-          args: --timeout=5m
+          # Shared restored caches can lose staticcheck's noreturn facts on
+          # persistent runners. Hosted runners retain the action cache.
+          skip-cache: ${{ runner.environment != 'github-hosted' }}
+          # Allow cold runs ten minutes. Save self-hosted diagnostics without
+          # source snippets or issue caps so the guard sees every finding.
+          args: >-
+            --timeout=10m
+            ${{ runner.environment != 'github-hosted' && format('--output.text.path="{0}/lint-findings.txt" --output.text.colors=false --output.text.print-issued-lines=false --max-same-issues=0 --max-issues-per-linter=0', runner.temp) || '' }}
+      - name: Identify self-hosted staticcheck runner flake
+        if: ${{ failure() && steps.lint.outcome == 'failure' && runner.environment != 'github-hosted' }}
+        env:
+          LINT_LOG: ${{ runner.temp }}/lint-findings.txt
+          CHANGED_FILES: ${{ runner.temp }}/lint-changed-files
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # Keep every diagnostic visible even when flake classification rejects it.
+          cat "$LINT_LOG"
+          if [ "$EVENT_NAME" = pull_request ]; then
+            git diff --no-renames --name-only -z "$PR_BASE...$PR_HEAD" > "$CHANGED_FILES"
+            bash scripts/lint_flake_guard.sh "$LINT_LOG" pr "$CHANGED_FILES"
+          else
+            bash scripts/lint_flake_guard.sh "$LINT_LOG" push
+          fi
+          # The lint step remains failed: this warning requests triage/rerun,
+          # never suppression, success, or an automatic retry loop.

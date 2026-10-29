@@ -3,6 +3,7 @@ package adaptermux
 import (
 	"context"
 	"errors"
+	"fmt"
 	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
 	"io"
@@ -351,4 +352,139 @@ func TestT02_BidIdentityFields(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestT02_FirstSENDWaitsForGrantCommit(t *testing.T) {
+	m, _ := newT02Mux(t)
+	sess := m.sessions[1]
+	// Pause at the commit boundary after STARTED is published. The client
+	// may issue SEND immediately, while completeArbitrationGrant still
+	// holds stateMu and has not yet confirmed ownership.
+	m.stateMu.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			m.stateMu.Unlock()
+		}
+	}()
+	if !sess.deliverStartedForGrant(0x31, 1) {
+		t.Fatal("STARTED was not queued")
+	}
+	if frame := <-sess.sendCh; frame.kind != sessionFrameStarted {
+		t.Fatalf("grant frame=%+v", frame)
+	}
+	done := make(chan struct{})
+	go func() { sess.handleSend(0x08); close(done) }()
+	select {
+	case frame := <-sess.sendCh:
+		t.Fatalf("first SEND rejected before ownership commit: %+v", frame)
+	case <-time.After(30 * time.Millisecond):
+	}
+	m.arb.confirmOwnership(1, 0x31)
+	m.stateMu.Unlock()
+	locked = false
+	select {
+	case req := <-m.activeSendCh:
+		if req.sessionID != 1 || req.data != 0x08 {
+			t.Fatalf("first SEND=%+v", req)
+		}
+		req.result <- nil
+	case <-time.After(time.Second):
+		t.Fatal("first SEND did not reach the active path")
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("SEND did not complete")
+	}
+}
+
+func TestT02_LocalFAILEDWaiterPreservesSplitRebid(t *testing.T) {
+	m, _ := newT02Mux(t)
+	sess := m.sessions[2]
+	sess.handleStart(0x73)
+	m.requestStartForSession(1, 0x31)
+	// Retain the result so the waiter cannot run until the first half of
+	// the client's re-bid has arrived. The mux normally queues FAILED
+	// before notifying this waiter.
+	m.arb.mu.Lock()
+	var loser *startRequest
+	for _, req := range m.arb.pendingExternal {
+		if req.sessionID == sess.id {
+			loser = req
+		}
+	}
+	m.arb.mu.Unlock()
+	if loser == nil {
+		t.Fatal("loser bid missing")
+	}
+	resultCh := loser.notify
+	loser.notify = make(chan startResult, 1)
+	t02SYN(m)
+	t02Failed(t, m, sess.id, 0x31)
+	result := <-loser.notify
+
+	var parser transport.ENHParser
+	rebid := transport.EncodeENH(transport.ENHReqStart, 0x73)
+	if !sess.parserResetNeeded.CompareAndSwap(true, false) {
+		t.Fatal("FAILED did not arm its parser reset")
+	}
+	parser.Reset()
+	if msgs, err := parser.Parse(rebid[:1]); err != nil || len(msgs) != 0 {
+		t.Fatalf("split START prefix: messages=%v err=%v", msgs, err)
+	}
+	resultCh <- result
+	sess.wg.Wait() // the delayed handleStart waiter has now finished
+	if sess.parserResetNeeded.Load() {
+		t.Fatal("FAILED waiter re-armed reset in the middle of a split re-bid")
+	}
+	msgs, err := parser.Parse(rebid[1:])
+	if err != nil || len(msgs) != 1 || msgs[0].Command != transport.ENHReqStart || msgs[0].Data != 0x73 {
+		t.Fatalf("split re-bid lost: messages=%v err=%v", msgs, err)
+	}
+	sess.handleMessage(msgs[0])
+	m.handleArbitrationResponse(true, 0x31)
+	m.arb.releaseOwnership(1)
+	t02SYN(m)
+	m.handleArbitrationResponse(true, 0x73)
+	sess.wg.Wait()
+	if !m.arb.isOwner(sess.id) {
+		t.Fatal("split re-bid did not win its next SYN window")
+	}
+}
+
+func TestT02_LocalLoserNeedsSourceAfterPreGrantSYN(t *testing.T) {
+	for _, winner := range []uint64{0, 1} {
+		for _, rawOnly := range []bool{false, true} {
+			t.Run(fmt.Sprintf("winner%d/rawOnly%v", winner, rawOnly), func(t *testing.T) {
+				m, tr := newT02Mux(t)
+				m.requestStartForSession(winner, 0x31)
+				m.requestStartForSession(2, 0x73)
+				t02SYN(m)
+				t02Failed(t, m, 2, 0x31)
+				tr.readDone = m.ctx.Done()
+				m.wg.Add(1)
+				go m.readLoop()
+				defer func() { m.cancel(); m.wg.Wait() }()
+				if rawOnly {
+					// An absorbed SYN still appears in the raw session view.
+					m.onRawSymbol(protocol.SymbolSyn, transport.StreamEvent{})
+				} else {
+					tr.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+				}
+				tr.eventCh <- transport.StreamEvent{Kind: transport.StreamEventStarted, Data: 0x31}
+				tr.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x08}
+				for _, want := range []byte{protocol.SymbolSyn, 0x31, 0x08} {
+					select {
+					case frame := <-m.sessions[2].sendCh:
+						if frame.kind != sessionFrameReceived || frame.payload != want {
+							t.Fatalf("loser reconstruction=%+v, want RECEIVED %02x", frame, want)
+						}
+					case <-time.After(time.Second):
+						t.Fatalf("missing RECEIVED %02x", want)
+					}
+				}
+			})
+		}
+	}
 }

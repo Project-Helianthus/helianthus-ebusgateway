@@ -530,7 +530,13 @@ func (s *session) handleMessage(msg transport.ENHMessage) {
 
 // handleSend processes a SEND command from the client.
 func (s *session) handleSend(data byte) {
-	if !s.mux.arb.isOwner(s.id) {
+	// STARTED can already be visible while completeArbitrationGrant holds
+	// stateMu. Wait for that commit before checking ownership, and release
+	// the lock before any potentially blocking send or transport operation.
+	s.mux.stateMu.Lock()
+	isOwner := s.mux.arb.isOwner(s.id)
+	s.mux.stateMu.Unlock()
+	if !isOwner {
 		// Session is not bus owner — host-side error, not bus error.
 		// F-6 observability: log so operators can correlate orphan
 		// SEND attempts with missing/lost STARTs
@@ -640,11 +646,11 @@ func (s *session) handleStart(initiator byte) {
 			// AM23: signal readLoop to reset ENH parser after arbitration
 			// completes (enh.md:128). Set for every outcome — parser
 			// state may be stale regardless of grant/fail outcome —
-			// except a grant whose STARTED the mux already queued: that
-			// path set the flag before queueing STARTED (issue #1003),
-			// and setting it again here could reset the parser in the
-			// middle of the client's first post-STARTED SEND frame.
-			if !result.granted || !result.startedQueued {
+			// except an outcome the mux already queued: those paths
+			// armed the reset before publishing STARTED or FAILED.
+			// Re-arming here could discard a split SEND or re-bid
+			// that the client began after seeing the control frame.
+			if !result.startedQueued && !result.failedQueued {
 				s.parserResetNeeded.Store(true)
 			}
 			if s.closed.Load() {

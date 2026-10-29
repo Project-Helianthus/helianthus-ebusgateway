@@ -87,6 +87,15 @@ func upstreamSuppliesRawSymbols(tr transport.RawTransport) bool {
 // session's STARTED. The gateway escape-pair verifier is fed earlier, from
 // every observed symbol, by readLoop itself.
 func (m *Mux) onRawSymbol(symbol byte, logical transport.StreamEvent) {
+	if symbol == protocol.SymbolSyn {
+		// Raw-only SYNs also reset the external client's reconstruction,
+		// even when they complete no logical item (an interrupted pair).
+		m.stateMu.Lock()
+		if m.pendingStart != nil {
+			m.pendingStart.losers = nil
+		}
+		m.stateMu.Unlock()
+	}
 	if logical.Kind == 0 && symbol != protocol.SymbolSyn {
 		// A raw-only non-SYN symbol (typically an escape lead) is wire
 		// activity even though no logical byte completed yet. A raw-only

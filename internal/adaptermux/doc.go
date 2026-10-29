@@ -8,6 +8,11 @@
 // local tie break; deployments should assign distinct initiator addresses. Session
 // 0 has no special priority. Every losing bidder receives FAILED with the
 // selected winner's address in that SYN interval and must submit a new bid.
+// A session's first SEND waits for the grant's ownership commit. The mux arms
+// parser resets before publishing STARTED or local FAILED; the result waiter
+// does not repeat those resets. Local FAILED supplies the winner's source only
+// until the next observed SYN. After that boundary, STARTED synthesizes the
+// source again for losing sessions so their passive frame remains complete.
 // Physical adapter arbitration can still lose to a initiator outside this mux.
 // A read timeout or ownership release alone never opens a new arbitration window.
 //

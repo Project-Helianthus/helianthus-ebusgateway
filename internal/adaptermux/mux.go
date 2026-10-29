@@ -2214,6 +2214,11 @@ func (m *Mux) onLogicalReceived(symbol byte, wasEscaped bool, deliverToSessions 
 	isWireSyn := symbol == protocol.SymbolSyn && !wasEscaped
 	var phaseEvent wirePhaseEvent
 	if isWireSyn {
+		// FAILED supplied the source only until this stream boundary.
+		// A later STARTED must supply it again for loser reconstruction.
+		if m.pendingStart != nil {
+			m.pendingStart.losers = nil
+		}
 		if hasOwner && ownerID == gatewaySessionID {
 			// Gateway owns bus, phase tracking skipped for data bytes.
 			// Treat SYN as idle so IdleReleaseGrace controls release.

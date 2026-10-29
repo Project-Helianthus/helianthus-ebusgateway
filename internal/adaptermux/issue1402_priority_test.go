@@ -829,3 +829,47 @@ func TestT02_LocalLoserMismatchedSTARTEDAfterSelectedBidRetires(t *testing.T) {
 		}
 	}
 }
+
+func TestT02_LocalLoserSuppressedPhantomResetsSource(t *testing.T) {
+	for _, selectedID := range []uint64{0, 1} {
+		for _, cancelSelected := range []bool{false, true} {
+			t.Run(fmt.Sprintf("session%d/cancel%v", selectedID, cancelSelected), func(t *testing.T) {
+				m, tr := newT02Mux(t)
+				// Match the default phantom filter: suppress the collision
+				// artifact while allowing the subsequent real wire source.
+				m.cfg.IsKnownInitiatorByte = func(b byte) bool { return b != 0x71 }
+				m.requestStartForSession(selectedID, 0x7f)
+				m.requestStartForSession(2, 0xef)
+				m.requestStartForSession(3, 0xff)
+				t02SYN(m)
+				for _, id := range []uint64{2, 3} {
+					t02Failed(t, m, id, 0x7f)
+				}
+				if cancelSelected {
+					m.cancelPendingStart(selectedID)
+				}
+				tr.readDone = m.ctx.Done()
+				m.wg.Add(1)
+				go m.readLoop()
+				defer func() { m.cancel(); m.wg.Wait() }()
+				tr.eventCh <- transport.StreamEvent{Kind: transport.StreamEventFailed, Data: 0x71}
+				tr.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0xf1}
+				tr.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x08}
+				for _, id := range []uint64{2, 3} {
+					// FAILED advertised a false source. Reset it even though
+					// the phantom itself must remain suppressed.
+					for _, want := range []byte{protocol.SymbolSyn, 0xf1, 0x08} {
+						select {
+						case frame := <-m.sessions[id].sendCh:
+							if frame.kind != sessionFrameReceived || frame.payload != want {
+								t.Fatalf("session %d reconstruction=%+v, want RECEIVED %02x", id, frame, want)
+							}
+						case <-time.After(time.Second):
+							t.Fatalf("session %d missing RECEIVED %02x", id, want)
+						}
+					}
+				}
+			})
+		}
+	}
+}

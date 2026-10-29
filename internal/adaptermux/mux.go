@@ -2082,8 +2082,11 @@ func (m *Mux) readLoop() {
 			//     RECEIVED(winner)). Multi-monitor deployments need
 			//     the byte on the non-bidder sessions to keep their
 			//     bus state synced. (Codex P2 round 3 on PR #620.)
+			// Local FAILED advertised a source even if the physical result
+			// is a suppressed phantom. Reset affected clients before the
+			// next wire byte so they can reconstruct the actual source.
+			m.resetLocalLoserSources(failedLosers)
 			if !isPhantom {
-				m.resetLocalLoserSources(failedLosers)
 				switch {
 				case !hasActiveBidder:
 					m.deliverToSessions(event.Data, 0, false, time.Now())

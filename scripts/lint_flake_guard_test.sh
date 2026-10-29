@@ -26,6 +26,45 @@ for environment, expected in (("self-hosted", "0"), ("github-hosted", "1")):
 print("lint checkout fetch-depth: 2 checks passed")
 PY
 
+# Execute cache preparation twice to verify fresh directories even when the
+# runner already has a persistent linter cache.
+python3 - "$script_dir/../.github/workflows/ci.yml" <<'PYCACHE'
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+workflow = Path(sys.argv[1]).read_text()
+step = workflow.split("      - name: Prepare isolated self-hosted lint cache\n", 1)[1]
+step = step.split("      - uses:", 1)[0]
+assert "if: runner.environment != 'github-hosted'" in step
+run = step.split("        run: |\n", 1)[1]
+run = "\n".join(line[10:] for line in run.splitlines())
+runner_temp = Path(tempfile.mkdtemp())
+env_file = runner_temp / "env"
+previous_cache = runner_temp / "persistent-cache"
+previous_cache.mkdir()
+(previous_cache / "sentinel").write_text("existing cache")
+caches = []
+for _ in range(2):
+    subprocess.run(
+        ["bash", "-eo", "pipefail", "-c", run],
+        env={**os.environ, "RUNNER_TEMP": str(runner_temp),
+             "GITHUB_ENV": str(env_file), "GOLANGCI_LINT_CACHE": str(previous_cache)},
+        check=True,
+    )
+    key, value = env_file.read_text().splitlines()[-1].split("=", 1)
+    assert key == "GOLANGCI_LINT_CACHE"
+    cache = Path(value)
+    assert cache.is_absolute() and cache.parent == runner_temp
+    assert cache.is_dir() and not list(cache.iterdir())
+    caches.append(cache)
+assert caches[0] != caches[1]
+assert (previous_cache / "sentinel").read_text() == "existing cache"
+print("lint cache isolation: 2 checks passed")
+PYCACHE
+
 test_dir="$(mktemp -d)"
 trap 'rm -rf "$test_dir"' EXIT
 export GITHUB_STEP_SUMMARY="$test_dir/summary"

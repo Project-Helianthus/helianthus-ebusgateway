@@ -106,6 +106,12 @@ jobs:
         run: |
           rm -f "$RUNNER_TEMP/lint-findings.txt"
           bash scripts/lint_flake_guard_test.sh
+      - name: Prepare isolated self-hosted lint cache
+        if: runner.environment != 'github-hosted'
+        run: |
+          # skip-cache disables action caching, not the linter's local cache.
+          lint_cache=$(mktemp -d "$RUNNER_TEMP/golangci-lint.XXXXXX")
+          echo "GOLANGCI_LINT_CACHE=$lint_cache" >> "$GITHUB_ENV"
       - uses: golangci/golangci-lint-action@v8
         id: lint
         with:

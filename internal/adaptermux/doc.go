@@ -23,6 +23,11 @@
 // deadline expiry of the selected bidder until the physical response or an
 // observed SYN. This session-only boundary is never emitted as passive wire
 // evidence.
+// A foreign STARTED still supplies its actual source once to every monitor and
+// the passive stream after the selected waiter retires, even after SYN clears
+// the local-loser list or the absorb budget expires. Only a session actually
+// notified with FAILED-with-winner is omitted from source synthesis; a silently
+// cancelled/replaced waiter receives the source as an observer instead.
 // Gateway bids waiting for SYN expire after StartDeadline; once selected, a
 // separate StartDeadline bounds the adapter response without admission expiry
 // cancelling a deliverable wire win.
@@ -47,6 +52,8 @@
 //     or lifecycle boundary, so still-later results also recover at SYN.
 //     Local losers receive their reconstruction SYN and actual source when
 //     needed; a suppressed phantom still resets their advertised source.
+//     Phantom suppression applies to session source synthesis; the native
+//     FAILED byte remains visible as passive evidence, as before.
 //   - Fence -> idle: before the classifier can filter that SYN, reset its
 //     abandoned header and the legacy phase tracker. Process and deliver the
 //     SYN normally, then clear the fence. Raw-only AA and escaped payload AA

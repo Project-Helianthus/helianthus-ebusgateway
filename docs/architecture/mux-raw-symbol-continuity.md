@@ -97,8 +97,8 @@ FAILED with the selected address and must re-bid in another window.
 | Cancel, replacement or expiry before STARTED/FAILED | Retire the waiter silently on cancellation; expiry reports its deadline failure. Keep local losers until a physical result or observed SYN. Absorb the outstanding response before admitting another physical START. |
 | Cancellation after STARTED or undeliverable ownership commit | Suppress the abandoned grant, count the undeliverable win, and fence admission until the next logical structural SYN. Do not expect another response to an already-consumed STARTED. Cancellation of a confirmed external grant also retires ownership behind this boundary. |
 | Late STARTED for the retired address | Absorb it without granting the retired waiter. Retain the fence until SYN. Keep a retired-selection marker until the next selection or lifecycle boundary, so a result after absorb timeout also recovers at SYN. |
-| Late/mismatched STARTED for another address | Attribute the actual source to affected local losers after a session reconstruction SYN. A mismatch against a live selected bid fails that bid and still absorbs its eventual result. |
-| FAILED with a foreign winner | Resolve the selected waiter with that winner unless cancelled, and reset local losers before delivering the actual source. |
+| Late/mismatched STARTED for another address | Reset affected local losers with a session-only SYN, then supply the actual source once to every session without a winner-bearing result and to passive observers. Retiring the waiter, clearing the loser list at SYN, or timing out the absorb budget does not remove this source obligation. A mismatch against a live selected bid fails that bid and still absorbs its eventual result. |
+| FAILED with a foreign winner | Resolve the selected waiter with that winner unless cancelled, and reset local losers before delivering the actual source. Skip source synthesis for the selected session only when attribution actually sent it FAILED-with-winner; cancelled/replaced waiters receive the source as observers. |
 | Phantom FAILED | Apply the existing phantom suppression. Reset affected local losers even though the phantom source is withheld. Never grant ownership from FAILED. |
 | Fenced -> idle | Before the classifier can discard the recovery SYN as an injected AA inside an abandoned header, reset classifier tracking and the legacy wire-phase tracker. Deliver/process the SYN, clear the fence, and retain any independent outstanding-response or blocking-call barrier. |
 | Definite START-send failure | No wire result remains to attribute; remove the corresponding absorb budget and cancellation fence. Preserve the existing retry behavior. |
@@ -114,6 +114,11 @@ read loop with off, shadow and enforce classifiers, logical and raw receive
 paths, both logical SYN event kinds, and gateway/external selected bids. It
 checks each session's ordered result/source frames, both trackers after idle
 SYN, cleared fence/losers, and fresh admission and STARTED at the following SYN.
+Every result row includes an independent monitor and ordered passive-event
+assertions. Retirement rows cover results before/after an observed SYN and
+after absorb timeout; explicit interleavings cancel or replace the bidder
+between the routing snapshot and response attribution. Phantom rows retain the
+native passive FAILED evidence while withholding the phantom session source.
 The table also retains the raw-SYN eligibility ordering regression. These are
 offline fixtures; physical transport timing remains unqualified.
 

@@ -384,7 +384,8 @@ type Mux struct {
 	// Protected by stateMu; cleared at a response or observed SYN boundary.
 	localLosers []*startRequest
 	// localLoserSource is the selected source advertised to localLosers.
-	// It remains valid while that set survives, even after the bidder retires.
+	// It also identifies a retired selection after SYN clears that set,
+	// until another selection or lifecycle boundary retires its identity.
 	localLoserSource byte
 	// absorbSkipLog* rate-limits the hot tryGrantAndStart skip log while
 	// pendingStartAbsorb is acting as the stale-response barrier.
@@ -1857,7 +1858,8 @@ func (m *Mux) readLoop() {
 			var startedBidderValid bool
 			startedEpoch := m.arb.lifecycleEpoch.Load()
 			startedLosers := m.localLosers
-			startedLoserSource := m.localLoserSource
+			startedSelectedSource := m.localLoserSource
+			startedRetiredSelection := m.retiredSelection
 			if m.pendingStartAbsorb == 0 && m.pendingStart != nil {
 				startedBidderSessionID = m.pendingStart.sessionID
 				startedBidderInitiator = m.pendingStart.initiator
@@ -1865,22 +1867,23 @@ func (m *Mux) readLoop() {
 			}
 			m.lastWireActivity = time.Now()
 			m.stateMu.Unlock()
-			m.handleArbitrationResponse(true, event.Data)
+			bidderFailed := m.handleArbitrationResponse(true, event.Data)
 			if startedEpoch != m.arb.lifecycleEpoch.Load() {
 				continue
 			}
-			if !startedBidderValid && len(startedLosers) > 0 && event.Data != startedLoserSource {
-				// A retired bidder has no waiter to notify, but local losers
-				// still reconstruct from its advertised source. Replace that
-				// source at a session-only boundary with the actual wire winner.
+			if !startedBidderValid && startedRetiredSelection && event.Data != startedSelectedSource {
+				// A retired bidder has no result frame conveying the foreign
+				// source. Reset local losers that still hold the advertised
+				// source, then deliver the actual source once to every session
+				// and passive observer. An intervening SYN clears the loser
+				// list, but does not remove this wire-observation obligation.
 				m.resetLocalLoserSources(startedLosers)
-				m.sessionsMu.Lock()
-				for _, loser := range startedLosers {
-					if sess := m.sessions[loser.sessionID]; sess != nil {
-						sess.deliverReceived(event.Data)
-					}
-				}
-				m.sessionsMu.Unlock()
+				m.deliverToSessions(event.Data, 0, false, time.Now())
+				m.emitPassive(PassiveEvent{
+					Kind:       PassiveEventSymbol,
+					Symbol:     event.Data,
+					ObservedAt: time.Now(),
+				})
 			}
 			// Synthesize the arbitration-winner byte as a passive
 			// observation for external sessions ONLY when the gateway
@@ -1974,11 +1977,10 @@ func (m *Mux) readLoop() {
 					// non-bidder sessions and passive observers so
 					// their bus state stays synced with physical
 					// reality. (Codex P2 round 6 on PR #620.)
-					if startedBidderSessionID == gatewaySessionID {
+					if startedBidderSessionID == gatewaySessionID || !bidderFailed {
 						// Gateway was bidder but lost to a third
-						// party — every external session needs
-						// the byte (gateway has no session in
-						// m.sessions; no echo suppression needed).
+						// party, or cancellation suppressed FAILED:
+						// no session result conveys the actual source.
 						m.deliverToSessions(event.Data, 0, false, time.Now())
 					} else {
 						// External session was bidder but lost.
@@ -2062,7 +2064,6 @@ func (m *Mux) readLoop() {
 			// bump and the snapshot.
 			notifyByte := event.Data
 			var activeBidderSessionID uint64
-			var hasActiveBidder bool
 			var failedLosers []*startRequest
 			m.stateMu.Lock()
 			m.lastWireActivity = time.Now()
@@ -2070,20 +2071,19 @@ func (m *Mux) readLoop() {
 			failedLosers = m.localLosers
 			if m.pendingStartAbsorb == 0 && m.pendingStart != nil {
 				activeBidderSessionID = m.pendingStart.sessionID
-				hasActiveBidder = true
 				if isPhantom && m.pendingStart.sessionID == activeBidderSessionID {
 					notifyByte = m.pendingStart.initiator
 				}
 			}
 			m.stateMu.Unlock()
 
-			m.handleArbitrationResponse(false, notifyByte)
+			bidderFailed := m.handleArbitrationResponse(false, notifyByte)
 			if failedEpoch != m.arb.lifecycleEpoch.Load() {
 				continue
 			}
 
 			// Synthesize the winner byte:
-			//   - No active bidder (absorbed-stale OR no pending):
+			//   - No notified bidder (retired, replaced, or no pending):
 			//     deliver to all external sessions. The wire byte
 			//     was consumed; the rest of the third-party frame
 			//     will continue through onReceived. Without this,
@@ -2105,7 +2105,7 @@ func (m *Mux) readLoop() {
 			m.resetLocalLoserSources(failedLosers)
 			if !isPhantom {
 				switch {
-				case !hasActiveBidder:
+				case !bidderFailed:
 					m.deliverToSessions(event.Data, 0, false, time.Now())
 				case activeBidderSessionID == gatewaySessionID:
 					m.deliverToSessions(event.Data, 0, false, time.Now())
@@ -4308,7 +4308,11 @@ func (m *Mux) armExternalAbandonWatchdog(sess *session, grantGen uint32) {
 
 // handleArbitrationResponse processes a STARTED or FAILED event from
 // the adapter, resolving the pending START registered by tryGrantAndStart.
-func (m *Mux) handleArbitrationResponse(started bool, data byte) {
+// It reports whether a non-cancelled failure carrying the winner was sent to
+// the selected waiter. Source routing must skip that session only when this
+// result actually conveys the source; a pre-handler snapshot can be cancelled
+// or replaced before attribution and must then receive the source as an observer.
+func (m *Mux) handleArbitrationResponse(started bool, data byte) bool {
 	m.logger.Printf("adaptermux: arbitration response started=%v data=0x%02X", started, data)
 	m.stateMu.Lock()
 	// readLoop snapshots these before consuming even a stale response.
@@ -4372,7 +4376,7 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 				}
 			}
 		}
-		return
+		return false
 	}
 
 	pending := m.pendingStart
@@ -4385,7 +4389,7 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 		}
 		m.stateMu.Unlock()
 		m.logger.Printf("adaptermux: stale arbitration response (no pending START)")
-		return
+		return false
 	}
 
 	if started {
@@ -4450,7 +4454,7 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 				}
 			}
 			// After resolving, check if more requests are pending.
-			return
+			return !cancelledInFlight
 		}
 		// Proxy-bug C4 / R4: if the session has re-submitted a START
 		// for this session while THIS grant was in flight at the
@@ -4539,7 +4543,7 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 			}:
 			default:
 			}
-			return
+			return false
 		}
 		pending.responseReceived = true
 		if pending.deadline != nil {
@@ -4586,9 +4590,11 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 				err:       fmt.Errorf("adaptermux: arbitration lost to 0x%02X: %w", data, ebuserrors.ErrBusCollision),
 			}
 		}
+		return !cancelledInFlight
 	}
 
 	// After resolving, check if more requests are pending.
+	return false
 }
 
 // cancelPendingStart cancels an in-flight pending START if it belongs

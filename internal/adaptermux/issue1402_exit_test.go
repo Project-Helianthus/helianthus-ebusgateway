@@ -1,9 +1,11 @@
 package adaptermux
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"reflect"
 	"testing"
 	"time"
@@ -63,6 +65,20 @@ func (tr *t02RawExitTransport) ReadEventWithRawSymbol() (transport.StreamEvent, 
 	return item.event, item.rawSymbol, item.hasRaw, err
 }
 
+// The logger seam pauses after readLoop snapshots attribution, before the
+// response handler takes stateMu. It lets cancellation/replacement win that
+// exact interleaving without adding a production hook or timing sleeps.
+type t02ExitLogWriter struct{ beforeResponse func() }
+
+func (w *t02ExitLogWriter) Write(p []byte) (int, error) {
+	if w.beforeResponse != nil && bytes.Contains(p, []byte("adaptermux: arbitration response ")) {
+		fn := w.beforeResponse
+		w.beforeResponse = nil
+		fn()
+	}
+	return len(p), nil
+}
+
 type t02ExitCase struct {
 	name     string
 	retire   string
@@ -70,6 +86,7 @@ type t02ExitCase struct {
 	address  byte
 	phantom  bool
 	boundary bool
+	timeout  bool
 
 	run func(*testing.T)
 }
@@ -81,18 +98,35 @@ func TestT02_ArbitrationExitStateMachine(t *testing.T) {
 		{name: "cancel_after_STARTED", retire: "commit", result: transport.StreamEventStarted, address: 0x7f},
 		{name: "replace_before_STARTED", retire: "replace", result: transport.StreamEventStarted, address: 0x7f},
 		{name: "expiry_before_STARTED", retire: "deadline", result: transport.StreamEventStarted, address: 0x7f},
+		{name: "expired_STARTED_selected_after_SYN", retire: "deadline", result: transport.StreamEventStarted, address: 0x7f, boundary: true},
+		{name: "expired_STARTED_selected_after_absorb_timeout", retire: "deadline", timeout: true, result: transport.StreamEventStarted, address: 0x7f, boundary: true},
 		{name: "late_STARTED_selected", retire: "cancel", result: transport.StreamEventStarted, address: 0x7f, boundary: true},
-		{name: "late_STARTED_after_absorb_timeout", retire: "cancel_timeout", result: transport.StreamEventStarted, address: 0x7f, boundary: true},
+		{name: "late_STARTED_after_absorb_timeout", retire: "cancel", timeout: true, result: transport.StreamEventStarted, address: 0x7f, boundary: true},
 		{name: "late_STARTED_other", retire: "cancel", result: transport.StreamEventStarted, address: 0x10},
 		{name: "expired_STARTED_other", retire: "deadline", result: transport.StreamEventStarted, address: 0x10},
+		{name: "late_STARTED_other_after_SYN", retire: "cancel", result: transport.StreamEventStarted, address: 0x10, boundary: true},
+		{name: "expired_STARTED_other_after_SYN", retire: "deadline", result: transport.StreamEventStarted, address: 0x10, boundary: true},
+		{name: "late_STARTED_other_after_absorb_timeout", retire: "cancel", timeout: true, result: transport.StreamEventStarted, address: 0x10},
+		{name: "late_STARTED_other_after_absorb_timeout_and_SYN", retire: "cancel", timeout: true, result: transport.StreamEventStarted, address: 0x10, boundary: true},
+		{name: "expired_STARTED_other_after_absorb_timeout", retire: "deadline", timeout: true, result: transport.StreamEventStarted, address: 0x10, boundary: true},
+		{name: "cancel_during_mismatched_STARTED", retire: "cancel_response", result: transport.StreamEventStarted, address: 0x10},
+		{name: "replace_during_mismatched_STARTED", retire: "replace_response", result: transport.StreamEventStarted, address: 0x10},
 		{name: "mismatched_STARTED", result: transport.StreamEventStarted, address: 0x10},
 		{name: "replaced_mismatched_STARTED", retire: "replace", result: transport.StreamEventStarted, address: 0x10},
 		{name: "phantom_FAILED", result: transport.StreamEventFailed, address: 0x71, phantom: true},
 		{name: "cancelled_phantom_FAILED", retire: "cancel", result: transport.StreamEventFailed, address: 0x71, phantom: true},
+		{name: "expired_phantom_FAILED", retire: "deadline", result: transport.StreamEventFailed, address: 0x71, phantom: true},
+		{name: "replaced_phantom_FAILED", retire: "replace", result: transport.StreamEventFailed, address: 0x71, phantom: true},
+		{name: "cancelled_phantom_FAILED_after_SYN", retire: "cancel", result: transport.StreamEventFailed, address: 0x71, phantom: true, boundary: true},
+		{name: "expired_phantom_FAILED_after_SYN", retire: "deadline", result: transport.StreamEventFailed, address: 0x71, phantom: true, boundary: true},
 		{name: "FAILED_foreign_winner", result: transport.StreamEventFailed, address: 0x10},
 		{name: "cancelled_FAILED_foreign", retire: "cancel", result: transport.StreamEventFailed, address: 0x10},
 		{name: "expired_FAILED_foreign", retire: "deadline", result: transport.StreamEventFailed, address: 0x10},
 		{name: "replaced_FAILED_foreign", retire: "replace", result: transport.StreamEventFailed, address: 0x10},
+		{name: "cancelled_FAILED_foreign_after_SYN", retire: "cancel", result: transport.StreamEventFailed, address: 0x10, boundary: true},
+		{name: "expired_FAILED_foreign_after_SYN", retire: "deadline", result: transport.StreamEventFailed, address: 0x10, boundary: true},
+		{name: "cancel_during_FAILED_foreign", retire: "cancel_response", result: transport.StreamEventFailed, address: 0x10},
+		{name: "replace_during_FAILED_foreign", retire: "replace_response", result: transport.StreamEventFailed, address: 0x10},
 		{name: "reset_after_STARTED_before_commit", retire: "reset_commit", result: transport.StreamEventStarted, address: 0x7f},
 		{name: "reset_during_arbitration", retire: "reset"},
 		{name: "disconnect_during_arbitration", retire: "disconnect"},
@@ -124,9 +158,26 @@ func TestT02_ArbitrationExitStateMachine(t *testing.T) {
 
 func t02CheckArbitrationExit(t *testing.T, tc t02ExitCase, mode v8classifier.Mode, raw bool, synKind transport.StreamEventKind, selectedID uint64) {
 	m, mock := newT02Mux(t)
+	// An independent monitor is needed even when session 1 is selected:
+	// sessions 2 and 3 already learned a source from local FAILED.
+	m.sessions[4] = &session{id: 4, mux: m, sendCh: make(chan sessionFrame, 64), done: make(chan struct{})}
+	type observation struct {
+		kind PassiveEventKind
+		b    byte
+		esc  bool
+	}
+	var passive []observation
+	recordPassive := func(ev PassiveEvent) {
+		passive = append(passive, observation{ev.Kind, ev.Symbol, ev.WasEscaped})
+	}
+	m.SetPassiveCallback(recordPassive)
+	wantPassive := []observation{{kind: PassiveEventSymbol, b: protocol.SymbolSyn}}
+	wantSymbol := func(b byte) { wantPassive = append(wantPassive, observation{kind: PassiveEventSymbol, b: b}) }
+	logWriter := &t02ExitLogWriter{}
+	m.logger = log.New(logWriter, "", 0)
 	m.v8 = v8classifier.New(mode)
 	m.cfg.StartDeadline = 10 * time.Second
-	if tc.retire == "deadline" || tc.retire == "cancel_timeout" {
+	if tc.retire == "deadline" || tc.timeout {
 		m.cfg.StartDeadline = 30 * time.Millisecond
 	}
 	m.cfg.IsKnownInitiatorByte = func(b byte) bool { return b != 0x71 }
@@ -194,30 +245,19 @@ func t02CheckArbitrationExit(t *testing.T, tc t02ExitCase, mode v8classifier.Mod
 		payload byte
 	}
 	r := func(b byte) frame { return frame{sessionFrameReceived, b} }
-	want := map[uint64][]frame{1: {r(protocol.SymbolSyn)}, 2: {r(protocol.SymbolSyn), {sessionFrameFailed, 0x7f}}, 3: {r(protocol.SymbolSyn), {sessionFrameFailed, 0x7f}}}
+	want := map[uint64][]frame{1: {r(protocol.SymbolSyn)}, 2: {r(protocol.SymbolSyn), {sessionFrameFailed, 0x7f}}, 3: {r(protocol.SymbolSyn), {sessionFrameFailed, 0x7f}}, 4: {r(protocol.SymbolSyn)}}
 	all := func(f frame) {
 		for id := range want {
 			want[id] = append(want[id], f)
 		}
 	}
 	switch tc.retire {
-	case "cancel", "cancel_timeout":
+	case "cancel":
 		m.cancelPendingStart(selectedID)
-		if tc.retire == "cancel_timeout" {
-			deadline := time.Now().Add(time.Second)
-			for {
-				m.stateMu.Lock()
-				absorbing := m.pendingStartAbsorb > 0
-				m.stateMu.Unlock()
-				if !absorbing {
-					break
-				}
-				if time.Now().After(deadline) {
-					t.Fatal("absorb timeout did not retire the stale-response budget")
-				}
-				time.Sleep(time.Millisecond)
-			}
-		}
+	case "cancel_response":
+		logWriter.beforeResponse = func() { m.cancelPendingStart(selectedID) }
+	case "replace_response":
+		logWriter.beforeResponse = func() { m.requestStartForSession(selectedID, 0x13) }
 	case "replace":
 		m.requestStartForSession(selectedID, 0x13)
 	case "reset_commit":
@@ -239,20 +279,38 @@ func t02CheckArbitrationExit(t *testing.T, tc t02ExitCase, mode v8classifier.Mod
 			t.Fatal("bid did not expire")
 		}
 	}
+	if tc.timeout {
+		deadline := time.Now().Add(time.Second)
+		for {
+			m.stateMu.Lock()
+			absorbing := m.pendingStartAbsorb > 0
+			m.stateMu.Unlock()
+			if !absorbing {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("absorb timeout did not retire the stale-response budget")
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
 	if tc.boundary {
 		send(syn)
 		all(r(protocol.SymbolSyn))
+		wantSymbol(protocol.SymbolSyn)
 	}
 	switch tc.retire {
 	case "reset", "disconnect":
 		if tc.retire == "reset" {
 			send(transport.StreamEvent{Kind: transport.StreamEventReset})
 			all(frame{sessionFrameResetted, 0})
+			wantPassive = append(wantPassive, observation{kind: PassiveEventReset})
 		} else {
 			// Cancel the retry delay at the disconnect boundary: exercise
 			// callback-free teardown and replace only the in-memory stream.
 			cancel := m.cancel
 			m.SetPassiveCallback(func(ev PassiveEvent) {
+				recordPassive(ev)
 				if ev.Kind == PassiveEventDisconnected {
 					cancel()
 				}
@@ -266,7 +324,8 @@ func t02CheckArbitrationExit(t *testing.T, tc t02ExitCase, mode v8classifier.Mod
 			if selectedID != gatewaySessionID {
 				waitSelected()
 			}
-			m.SetPassiveCallback(nil)
+			wantPassive = append(wantPassive, observation{kind: PassiveEventDisconnected})
+			m.SetPassiveCallback(recordPassive)
 			m.ctx, m.cancel = context.WithCancel(context.Background())
 			install()
 			start()
@@ -275,6 +334,7 @@ func t02CheckArbitrationExit(t *testing.T, tc t02ExitCase, mode v8classifier.Mod
 		send(transport.StreamEvent{Kind: tc.result, Data: tc.address})
 		tr.beforeCommit = nil
 		all(frame{sessionFrameResetted, 0})
+		wantPassive = append(wantPassive, observation{kind: PassiveEventReset})
 	default:
 		send(transport.StreamEvent{Kind: tc.result, Data: tc.address})
 		tr.beforeCommit = nil
@@ -318,37 +378,43 @@ func t02CheckArbitrationExit(t *testing.T, tc t02ExitCase, mode v8classifier.Mod
 		}
 		if tc.result == transport.StreamEventFailed && !tc.phantom {
 			for id := range want {
-				if (tc.retire == "cancel" || tc.retire == "deadline") || id != selectedID {
+				if tc.retire != "" || id != selectedID {
 					want[id] = append(want[id], r(tc.address))
 				}
 			}
 		} else if tc.result == transport.StreamEventStarted && tc.address != 0x7f {
 			for id := range want {
-				if (tc.retire == "" || tc.retire == "replace") && id == selectedID {
+				if tc.retire == "" && id == selectedID {
 					continue
-				}
-				if tc.retire == "cancel" || tc.retire == "deadline" {
-					if id == 1 {
-						continue
-					}
 				}
 				want[id] = append(want[id], r(tc.address))
 			}
-		} else if tc.result == transport.StreamEventStarted && !tc.boundary && (tc.retire == "replace" || tc.retire == "commit") {
-			// The selected session is suppressed; monitors retain QQ
-			// already conveyed to local losers by FAILED.
-			if selectedID == 0 {
-				want[1] = append(want[1], r(0x7f))
+		} else if tc.result == transport.StreamEventStarted && (tc.retire == "replace" || tc.retire == "commit" || tc.retire == "owned") {
+			// A matching STARTED seen with the waiter still pending supplies
+			// QQ to monitors. Local losers already have QQ until a wire SYN.
+			for id := range want {
+				if id != selectedID && (tc.boundary || (id != 2 && id != 3)) {
+					want[id] = append(want[id], r(0x7f))
+				}
 			}
+		}
+		// STARTED for a foreign address and every FAILED carries native
+		// source evidence. Session-only loser SYNs must never enter this
+		// stream, and a retired bidder must not hide the actual source.
+		if tc.result == transport.StreamEventFailed || tc.address != 0x7f ||
+			(selectedID != gatewaySessionID && (tc.retire == "owned" || tc.retire == "commit" || tc.retire == "replace")) {
+			wantSymbol(tc.address)
 		}
 		// Preserve the earlier reconstruction checks: the phantom is
 		// suppressed, but the next real source and target still flow.
 		if tc.phantom {
 			send(transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0xf1})
 			all(r(0xf1))
+			wantSymbol(0xf1)
 		}
 		send(transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x08})
 		all(r(0x08))
+		wantSymbol(0x08)
 	}
 	if selectedID != gatewaySessionID && (tc.retire == "reset" || tc.retire == "reset_commit" || tc.retire == "disconnect") {
 		waitSelected()
@@ -361,22 +427,35 @@ func t02CheckArbitrationExit(t *testing.T, tc t02ExitCase, mode v8classifier.Mod
 	m.stateMu.Unlock()
 	if absorb > 0 {
 		send(transport.StreamEvent{Kind: transport.StreamEventFailed, Data: 0x71})
+		wantSymbol(0x71)
 	}
-	if tc.retire == "replace" {
+	if tc.retire == "replace" || tc.retire == "replace_response" {
 		m.arb.cancelStart(selectedID)
+	}
+	m.stateMu.Lock()
+	pending, fencedBeforeSYN := m.pendingStart != nil, m.deferRegrantUntilNextSyn
+	m.stateMu.Unlock()
+	_, _, owned := m.arb.owner()
+	lifecycleReset := tc.retire == "reset" || tc.retire == "reset_commit" || tc.retire == "disconnect"
+	if pending || owned || fencedBeforeSYN == lifecycleReset {
+		t.Fatalf("after abort: pending=%v owner=%v fence=%v lifecycleReset=%v", pending, owned, fencedBeforeSYN, lifecycleReset)
 	}
 	// No new bid exists at this boundary. It must clear recovery
 	// in both trackers; the following SYN admits a fresh bid.
 	send(syn)
 	all(r(protocol.SymbolSyn))
+	wantSymbol(protocol.SymbolSyn)
+	if !reflect.DeepEqual(passive, wantPassive) {
+		t.Fatalf("passive observations=%v want %v", passive, wantPassive)
+	}
 	if state := m.v8.FSMInternalState(); state != telegram_fsm.StateIdle {
 		t.Fatalf("classifier after idle SYN=%v", state)
 	}
 	m.stateMu.Lock()
-	fenced, losersLeft, absorbLeft, phase := m.deferRegrantUntilNextSyn, len(m.localLosers), m.pendingStartAbsorb, m.phase.phase
+	fenced, losersLeft, absorbLeft, phase, recovery := m.deferRegrantUntilNextSyn, len(m.localLosers), m.pendingStartAbsorb, m.phase.phase, m.arbitrationRecovery
 	m.stateMu.Unlock()
-	if fenced || losersLeft != 0 || absorbLeft != 0 || phase != wirePhaseIdle {
-		t.Fatalf("idle SYN: fence=%v losers=%d absorb=%d phase=%v", fenced, losersLeft, absorbLeft, phase)
+	if fenced || losersLeft != 0 || absorbLeft != 0 || phase != wirePhaseIdle || recovery != arbitrationRecoveryNone {
+		t.Fatalf("idle SYN: fence=%v losers=%d absorb=%d phase=%v recovery=%v", fenced, losersLeft, absorbLeft, phase, recovery)
 	}
 	for id, expected := range want {
 		var got []frame
@@ -398,7 +477,12 @@ func t02CheckArbitrationExit(t *testing.T, tc t02ExitCase, mode v8classifier.Mod
 	}
 	send(transport.StreamEvent{Kind: transport.StreamEventStarted, Data: 0x31})
 	t02Result(t, next, 0x31, true)
-	for id, expected := range map[uint64][]frame{1: {r(protocol.SymbolSyn), {sessionFrameStarted, 0x31}}, 2: {r(protocol.SymbolSyn), r(0x31)}, 3: {r(protocol.SymbolSyn), r(0x31)}} {
+	wantSymbol(protocol.SymbolSyn)
+	wantSymbol(0x31)
+	if !reflect.DeepEqual(passive, wantPassive) {
+		t.Fatalf("next grant passive observations=%v want %v", passive, wantPassive)
+	}
+	for id, expected := range map[uint64][]frame{1: {r(protocol.SymbolSyn), {sessionFrameStarted, 0x31}}, 2: {r(protocol.SymbolSyn), r(0x31)}, 3: {r(protocol.SymbolSyn), r(0x31)}, 4: {r(protocol.SymbolSyn), r(0x31)}} {
 		var got []frame
 		for len(m.sessions[id].sendCh) > 0 {
 			f := <-m.sessions[id].sendCh

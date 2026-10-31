@@ -537,6 +537,9 @@ func (s *session) handleSend(data byte) {
 	// the lock before any potentially blocking send or transport operation.
 	s.mux.stateMu.Lock()
 	isOwner := s.mux.arb.isOwner(s.id)
+	if isOwner {
+		s.mux.phase.markOwnerWrite()
+	}
 	s.mux.stateMu.Unlock()
 	if !isOwner {
 		// Session is not bus owner — host-side error, not bus error.

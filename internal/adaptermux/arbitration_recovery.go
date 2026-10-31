@@ -32,6 +32,12 @@ import (
 // fence then ends at the telegram's own terminator, or at a second consecutive
 // AA for a telegram the winner abandoned, since idle repeats SYN and an injected
 // AA is followed by telegram bytes.
+//
+// The same holds when the telegram is the granted owner's own: if the owner
+// cancels or disconnects after writing its request, the wire-phase tracker
+// still follows the response, so the first SYN of an AtSYN fence is judged like
+// a foreign winner's. Lifecycle resets (reset, reconnect, close) end the stream
+// itself and always reset.
 type arbitrationRecovery uint8
 
 const (
@@ -76,6 +82,14 @@ func (m *Mux) reconcileArbitrationClassifier(event transport.StreamEvent) {
 	isSYN := event.Kind == transport.StreamEventWireSyn ||
 		(event.Kind == transport.StreamEventByte && event.Byte == protocol.SymbolSyn && !event.WasEscaped)
 	m.stateMu.Lock()
+	// A fence can be raised by any path that ends an ownership, including
+	// one whose telegram is still arriving (an owner that wrote its request
+	// and then cancelled or disconnected). The first SYN is then ambiguous
+	// like a foreign winner's: it is either the telegram's terminator or an
+	// injected AA inside it, so it follows the same recovery.
+	if m.arbitrationRecovery == arbitrationRecoveryAtSYN && isSYN && m.phase.telegramLive() {
+		m.arbitrationRecovery = arbitrationRecoveryForeign
+	}
 	reset := m.arbitrationRecovery == arbitrationRecoveryReset ||
 		(m.arbitrationRecovery == arbitrationRecoveryAtSYN && isSYN)
 	switch m.arbitrationRecovery {

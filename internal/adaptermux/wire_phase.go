@@ -81,6 +81,11 @@ type wirePhaseTracker struct {
 
 	// Response phase counter.
 	responseBytesRemain int // countdown: LEN + 1 (data + CRC)
+
+	// ownerWrote is set when the granted external owner has had a request
+	// byte accepted since the grant. Only then are the bytes the tracker
+	// follows known to be that owner's telegram rather than stray traffic.
+	ownerWrote bool
 }
 
 // reset clears all tracking state and sets the phase.
@@ -93,6 +98,29 @@ func (t *wirePhaseTracker) reset(phase wirePhase) {
 	t.responseBytesRemain = 0
 	t.cmdRetried = false
 	t.responseRetried = false
+	t.ownerWrote = false
+}
+
+// markOwnerWrite records that the granted owner had a request byte accepted.
+func (t *wirePhaseTracker) markOwnerWrite() { t.ownerWrote = true }
+
+// telegramLive reports whether the owner's own telegram is on the wire: the
+// owner wrote since its grant and the tracker is past the request source or
+// waiting on a later field. A grant that wrote nothing, the idle phase and the
+// deferred terminal SYN are not live. The tracker keeps following the response
+// after the owner has been released, so this holds for a departed owner too.
+func (t *wirePhaseTracker) telegramLive() bool {
+	if !t.ownerWrote {
+		return false
+	}
+	switch t.phase {
+	case wirePhaseCollectRequest:
+		return t.requestBytesSeen > 1
+	case wirePhaseWaitCmdAck, wirePhaseWaitResponseLen, wirePhaseWaitResponseBody, wirePhaseWaitResponseAck:
+		return true
+	default:
+		return false
+	}
 }
 
 // wirePhaseEvent describes what happened after advancing the tracker.

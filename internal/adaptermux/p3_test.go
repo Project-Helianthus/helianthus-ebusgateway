@@ -178,28 +178,16 @@ func (t *p3MockTransport) getStartRequests() []byte {
 	return result
 }
 
-// newP3TestMux creates a Mux with a p3MockTransport injected, fully
-// started with readLoop and sendLoop goroutines running.
-//
-// IMPORTANT: the helper marks the bus as RECENTLY-ACTIVE
-// (lastWireActivity = now) so that tests defaulting to "no wire
-// traffic" still take the contended-bus arbitration path. This
-// preserves the pre-C1 gateway-priority semantics that most legacy
-// p3 tests pin. Tests that want to exercise the C1 bus-idle fast
-// path should call mux.markBusIdleForTest() (or set
-// lastWireActivity to a time older than cfg.SYNInterval) explicitly.
 func newP3TestMux(t *testing.T) (*Mux, *p3MockTransport, context.CancelFunc, func()) {
 	t.Helper()
 
 	mock := newP3MockTransport()
 
 	mux := New(Config{
-		Protocol:        "enh",
-		Network:         "tcp",
-		Address:         "127.0.0.1:0",
-		ReadTimeout:     200 * time.Millisecond,
-		PendingStartTTL: 24 * time.Hour, // disable C3 TTL drain in legacy tests
-		SYNInterval:     time.Hour,      // disable C1 idle fast path in legacy tests
+		Protocol:    "enh",
+		Network:     "tcp",
+		Address:     "127.0.0.1:0",
+		ReadTimeout: 200 * time.Millisecond,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -548,7 +536,6 @@ func TestRemoveSession_UnblocksNextRequest(t *testing.T) {
 
 	// Queue START requests for both sessions.
 	mux.arb.requestStart(idA, 0x55)
-	mux.arb.requestStart(idB, 0x66)
 
 	// Feed SYN to trigger tryGrantAndStart — grants A first.
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
@@ -561,6 +548,8 @@ func TestRemoveSession_UnblocksNextRequest(t *testing.T) {
 	if !hasPending {
 		t.Fatal("expected pendingStart for session A")
 	}
+
+	mux.arb.requestStart(idB, 0x66)
 
 	// Disconnect A while its START is pending at the adapter.
 	mux.RemoveSession(idA)
@@ -582,6 +571,8 @@ func TestRemoveSession_UnblocksNextRequest(t *testing.T) {
 
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventFailed, Data: 0x10}
 	time.Sleep(50 * time.Millisecond)
+
+	grantQueuedAtSYN(t, mux)
 
 	// pendingStart should now be for session B — the stale response was
 	// absorbed and tryGrantAndStart picked up B's queued request.
@@ -619,7 +610,11 @@ func TestPendingStartAbsorbTimeoutUnblocksQueue(t *testing.T) {
 		absorb := mux.pendingStartAbsorb
 		hasPending := mux.pendingStart != nil && mux.pendingStart.sessionID == id
 		mux.stateMu.Unlock()
-		if absorb == 0 && hasPending {
+		if absorb == 0 {
+			if hasPending {
+				t.Fatal("timeout forwarded START without SYN")
+			}
+			grantQueuedAtSYN(t, mux)
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -736,12 +731,10 @@ func TestCancelPendingStart_DuringRequestStart(t *testing.T) {
 	}
 
 	mux := New(Config{
-		Protocol:        "enh",
-		Network:         "tcp",
-		Address:         "127.0.0.1:0",
-		ReadTimeout:     200 * time.Millisecond,
-		PendingStartTTL: 24 * time.Hour, // disable C3 TTL drain in legacy tests
-		SYNInterval:     time.Hour,      // disable C1 idle fast path in legacy tests
+		Protocol:    "enh",
+		Network:     "tcp",
+		Address:     "127.0.0.1:0",
+		ReadTimeout: 200 * time.Millisecond,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -872,10 +865,19 @@ func TestOnlyOnePendingStart(t *testing.T) {
 		t.Fatal("timeout waiting for gateway START result")
 	}
 
-	// handleArbitrationResponse should have called tryGrantAndStart
-	// for the remaining external request. Feed a SYN to release
-	// ownership first (bus is now owned by gateway).
+	select {
+	case loser := <-ch2:
+		if loser.granted || loser.initiator != 0x31 {
+			t.Fatalf("loser=%+v", loser)
+		}
+	default:
+		t.Fatal("loser did not receive FAILED")
+	}
+	if mux.arb.hasPending() {
+		t.Fatal("loser retained in queue")
+	}
 	mux.arb.releaseOwnership(gatewaySessionID)
+	ch2 = mux.arb.requestStart(id, 0x42)
 
 	// Feed SYN to trigger the next grant attempt.
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
@@ -1080,12 +1082,10 @@ func TestP3_Close_ClearsPendingStart(t *testing.T) {
 	mock := newP3MockTransport()
 
 	mux := New(Config{
-		Protocol:        "enh",
-		Network:         "tcp",
-		Address:         "127.0.0.1:0",
-		ReadTimeout:     200 * time.Millisecond,
-		PendingStartTTL: 24 * time.Hour, // disable C3 TTL drain in legacy tests
-		SYNInterval:     time.Hour,      // disable C1 idle fast path in legacy tests
+		Protocol:    "enh",
+		Network:     "tcp",
+		Address:     "127.0.0.1:0",
+		ReadTimeout: 200 * time.Millisecond,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1139,12 +1139,10 @@ func TestP3_FallbackStartArbitration(t *testing.T) {
 	}
 
 	mux := New(Config{
-		Protocol:        "enh",
-		Network:         "tcp",
-		Address:         "127.0.0.1:0",
-		ReadTimeout:     200 * time.Millisecond,
-		PendingStartTTL: 24 * time.Hour, // disable C3 TTL drain in legacy tests
-		SYNInterval:     time.Hour,      // disable C1 idle fast path in legacy tests
+		Protocol:    "enh",
+		Network:     "tcp",
+		Address:     "127.0.0.1:0",
+		ReadTimeout: 200 * time.Millisecond,
 	})
 	mux.ctx, mux.cancel = ctx, cancel
 
@@ -1253,12 +1251,10 @@ func TestRequestStartFailAfterCancel_NoDoubleSend(t *testing.T) {
 	}
 
 	mux := New(Config{
-		Protocol:        "enh",
-		Network:         "tcp",
-		Address:         "127.0.0.1:0",
-		ReadTimeout:     200 * time.Millisecond,
-		PendingStartTTL: 24 * time.Hour, // disable C3 TTL drain in legacy tests
-		SYNInterval:     time.Hour,      // disable C1 idle fast path in legacy tests
+		Protocol:    "enh",
+		Network:     "tcp",
+		Address:     "127.0.0.1:0",
+		ReadTimeout: 200 * time.Millisecond,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1354,12 +1350,10 @@ func TestAbsorbDecrementOnRequestStartFailAfterCancel(t *testing.T) {
 	}
 
 	mux := New(Config{
-		Protocol:        "enh",
-		Network:         "tcp",
-		Address:         "127.0.0.1:0",
-		ReadTimeout:     200 * time.Millisecond,
-		PendingStartTTL: 24 * time.Hour, // disable C3 TTL drain in legacy tests
-		SYNInterval:     time.Hour,      // disable C1 idle fast path in legacy tests
+		Protocol:    "enh",
+		Network:     "tcp",
+		Address:     "127.0.0.1:0",
+		ReadTimeout: 200 * time.Millisecond,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1649,6 +1643,8 @@ func TestHandleArbitrationResponse_StaleFailedIgnored(t *testing.T) {
 		// Good — stale FAILED was absorbed.
 	}
 
+	grantQueuedAtSYN(t, mux)
+
 	// B should now have been started.
 	mux.stateMu.Lock()
 	hasPending = mux.pendingStart != nil
@@ -1812,12 +1808,10 @@ func TestConcurrentTryGrantAndStart(t *testing.T) {
 	}
 
 	mux := New(Config{
-		Protocol:        "enh",
-		Network:         "tcp",
-		Address:         "127.0.0.1:0",
-		ReadTimeout:     200 * time.Millisecond,
-		PendingStartTTL: 24 * time.Hour, // disable C3 TTL drain in legacy tests
-		SYNInterval:     time.Hour,      // disable C1 idle fast path in legacy tests
+		Protocol:    "enh",
+		Network:     "tcp",
+		Address:     "127.0.0.1:0",
+		ReadTimeout: 200 * time.Millisecond,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1887,8 +1881,8 @@ func TestConcurrentTryGrantAndStart(t *testing.T) {
 	}
 
 	// The other request must still be in the arbiter queue (not lost).
-	if !mux.arb.hasPending() {
-		t.Fatal("second request must still be pending in arbiter")
+	if mux.arb.hasPending() {
+		t.Fatal("losing request must leave the pending set")
 	}
 
 	// Verify the pending session got dequeued correctly.
@@ -1903,9 +1897,11 @@ func TestConcurrentTryGrantAndStart(t *testing.T) {
 	}
 	select {
 	case r := <-otherCh:
-		t.Fatalf("other request's channel should not have received yet, got %+v", r)
+		if r.granted || r.initiator != pending.initiator {
+			t.Fatalf("loser=%+v", r)
+		}
 	default:
-		// Good — still waiting.
+		t.Fatal("concurrent loser did not receive winner")
 	}
 }
 
@@ -1952,12 +1948,10 @@ func TestBlockingFallbackSuccessAfterCancel_NoDoubleSend(t *testing.T) {
 	}
 
 	mux := New(Config{
-		Protocol:        "enh",
-		Network:         "tcp",
-		Address:         "127.0.0.1:0",
-		ReadTimeout:     200 * time.Millisecond,
-		PendingStartTTL: 24 * time.Hour, // disable C3 TTL drain in legacy tests
-		SYNInterval:     time.Hour,      // disable C1 idle fast path in legacy tests
+		Protocol:    "enh",
+		Network:     "tcp",
+		Address:     "127.0.0.1:0",
+		ReadTimeout: 200 * time.Millisecond,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -2049,12 +2043,10 @@ func TestBlockingFallbackErrorAfterCancel_NoDoubleSend(t *testing.T) {
 	}
 
 	mux := New(Config{
-		Protocol:        "enh",
-		Network:         "tcp",
-		Address:         "127.0.0.1:0",
-		ReadTimeout:     200 * time.Millisecond,
-		PendingStartTTL: 24 * time.Hour, // disable C3 TTL drain in legacy tests
-		SYNInterval:     time.Hour,      // disable C1 idle fast path in legacy tests
+		Protocol:    "enh",
+		Network:     "tcp",
+		Address:     "127.0.0.1:0",
+		ReadTimeout: 200 * time.Millisecond,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())

@@ -83,6 +83,45 @@ escape encoding is expected from the adapter;
 bounded-backpressure loss reporting, native timing, the close/replacement
 race (F01/J21) and independent review remain outside this slice.
 
+## SYN-aligned arbitration lifecycle (issue #1402)
+
+The mux freezes eligible bids before delivering the raw SYN to clients. It
+selects one address by low-nibble priority, then high nibble, with session ID
+as the local tie break. Session 0 has no special priority. Local losers receive
+FAILED with the selected address and must re-bid in another window.
+
+| State or edge | Result attribution and recovery |
+| --- | --- |
+| Idle -> selected -> wire arbitration | Capture the selected waiter and local losers before native START. Keep one physical arbitration in flight. |
+| Matching STARTED -> ownership | Commit only to the live selected waiter/session in the same upstream lifecycle epoch. Queue external STARTED at its stream position. |
+| Cancel, replacement or expiry before STARTED/FAILED | Retire the waiter silently on cancellation; expiry reports its deadline failure. Keep local losers until a physical result or observed SYN. Absorb the outstanding response before admitting another physical START. |
+| Cancellation after STARTED or undeliverable ownership commit | Suppress the abandoned grant, count the undeliverable win, and fence admission until the next logical structural SYN. Do not expect another response to an already-consumed STARTED. Cancellation of a confirmed external grant also retires ownership behind this boundary. |
+| Late STARTED for the retired address | Absorb it without granting the retired waiter. Retain the fence until SYN. Keep a retired-selection marker until the next selection or lifecycle boundary, so a result after absorb timeout also recovers at SYN. |
+| Late/mismatched STARTED for another address | Reset affected local losers with a session-only SYN, then supply the actual source once to every session without a winner-bearing result and to passive observers. Retiring the waiter, clearing the loser list at SYN, or timing out the absorb budget does not remove this source obligation. A mismatch against a live selected bid fails that bid and still absorbs its eventual result. |
+| FAILED with a foreign winner | Resolve the selected waiter with that winner unless cancelled, and reset local losers before delivering the actual source. Skip source synthesis for the selected session only when attribution actually sent it FAILED-with-winner; cancelled/replaced waiters receive the source as observers. |
+| Phantom FAILED | Apply the existing phantom suppression. Reset affected local losers even though the phantom source is withheld. Never grant ownership from FAILED. |
+| Fenced -> idle | Before the classifier can discard the recovery SYN as an injected AA inside an abandoned header, reset classifier tracking and the legacy wire-phase tracker. Deliver/process the SYN, clear the fence, and retain any independent outstanding-response or blocking-call barrier. |
+| Definite START-send failure | No wire result remains to attribute; remove the corresponding absorb budget and cancellation fence. Preserve the existing retry behavior. |
+| Reset, disconnect or close | Clear selection, local losers, absorb budget, timers and the SYN fence. Apply classifier reset on the read-loop producer before another stream item. An old-lifecycle result cannot restore a fence, ownership or a synthesized source. |
+
+Only a logical structural SYN completes arbitration recovery. Raw-only AA and
+escaped payload AA do not open a window. Recovery changes local tracking; it
+does not fabricate transport-reset observations or passive wire evidence.
+Unsolicited passive observations retain ordinary AA-injection filtering.
+
+`TestT02_ArbitrationExitStateMachine` covers the abort edges through the real
+read loop with off, shadow and enforce classifiers, logical and raw receive
+paths, both logical SYN event kinds, and gateway/external selected bids. It
+checks each session's ordered result/source frames, both trackers after idle
+SYN, cleared fence/losers, and fresh admission and STARTED at the following SYN.
+Every result row includes an independent monitor and ordered passive-event
+assertions. Retirement rows cover results before/after an observed SYN and
+after absorb timeout; explicit interleavings cancel or replace the bidder
+between the routing snapshot and response attribution. Phantom rows retain the
+native passive FAILED evidence while withholding the phantom session source.
+The table also retains the raw-SYN eligibility ordering regression. These are
+offline fixtures; physical transport timing remains unqualified.
+
 ## Authority and evidence
 
 This page specifies a gateway boundary, not new native eBUS meaning. Native

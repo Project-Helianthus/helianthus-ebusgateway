@@ -41,8 +41,6 @@ func newClassifiedTestMux(t *testing.T, mode v8classifier.Mode) (*Mux, *p3MockTr
 		Network:          "tcp",
 		Address:          "127.0.0.1:0",
 		ReadTimeout:      200 * time.Millisecond,
-		PendingStartTTL:  24 * time.Hour,
-		SYNInterval:      time.Hour,
 		V8ClassifierMode: mode,
 	})
 

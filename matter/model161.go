@@ -92,6 +92,12 @@ func CanonicalJSON161(result Result161) ([]byte, error) {
 	currentMapped := false
 	for _, row := range result.Report.Dispositions {
 		if row.Kind == projection.ItemFact && row.ItemID == "evse.ac.current" {
+			// The ampere-to-milliampere mapping is always a transformation, so an
+			// exact outcome contradicts the projector whether or not an attribute
+			// accompanies it.
+			if row.Outcome == projection.ProjectionExact {
+				return nil, errInput
+			}
 			currentMapped = row.Outcome == projection.ProjectionTransformed
 		}
 	}

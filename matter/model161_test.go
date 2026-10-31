@@ -171,6 +171,30 @@ func TestAA03CanonicalValueAndReportAgreement(t *testing.T) {
 			t.Fatal("accepted attribute without transformed row")
 		}
 	})
+	for name, keepAttribute := range map[string]bool{"exact row without attribute": false, "exact row with attribute": true} {
+		t.Run(name, func(t *testing.T) {
+			r := aa03Positive(t, aa03Fixture(t))
+			found := false
+			for i := range r.Report.Dispositions {
+				row := &r.Report.Dispositions[i]
+				if row.Kind == projection.ItemFact && row.ItemID == "evse.ac.current" {
+					row.Outcome, row.Loss, row.Reason, found = projection.ProjectionExact, []projection.LossDetail{}, nil, true
+				}
+			}
+			if !found {
+				t.Fatal("current disposition missing")
+			}
+			if !keepAttribute {
+				r.Document.Attributes = []TargetAttribute{}
+			}
+			if err := r.Report.Validate(); err != nil {
+				t.Fatalf("mutated report must stay structurally valid: %v", err)
+			}
+			if raw, err := CanonicalJSON161(r); err == nil || raw != nil {
+				t.Fatalf("accepted %s", name)
+			}
+		})
+	}
 }
 
 func TestAA03EvaluationJoins(t *testing.T) {

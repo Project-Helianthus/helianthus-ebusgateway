@@ -1,30 +1,46 @@
-# Matter 1.7 SemReg projection
+# Matter SemReg projection
 
-This package implements `helianthus.gateway.matter-projection/v1`: a pure,
-deterministic projection from a supplied SemReg snapshot and evaluation to a
-detached `matter.data-model` document and the SemReg projection report.
+The adopted target is explicitly selected with `Project161(snapshot, evaluation)`.
+`Manifest161()` identifies `matter.data-model` version `1.6.1`, mapping revision
+`1`, under `helianthus.gateway.matter-projection/v1`. `CanonicalJSON161` checks
+that the document, model revisions and complete report manifest agree, that
+current values are canonical decimal integers within the signed target limits,
+and that attribute presence agrees with the transformed current report row.
 
-It pins `connectedhomeip` Matter data model `1.7-draft-ballot-0.9` at
-`29b4768a513cf566011ab8cd60df1bc495204953` (spec source
-`214e40c9d51cfe89050eae68ca5b76238fcfa332`) and mapping revision `1`.
-The manifest exactly uses SemReg `089ed6ae9004cfba8aff27f1e54d579aeccc0b4c`
-metadata for EVSE 1.0.0, infrastructure 1.0.0, PV 1.0.0, storage 1.1.0, and
-thermal 1.0.0.
+The companion [1.6.1 adoption contract](https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/main/api/v1/targets/matter-1.6.1-v1.md)
+and [full ledger](https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/main/api/v1/targets/matter-1.6.1-v1.json)
+are the public contract and must be published before or with this implementation.
+The inspected model uses Electrical Sensor `0x0510` revision 1, Power Topology
+`0x009C` revision 1, and Electrical Power Measurement `0x0090` revision 3.
+These are distinct from the historical 1.7 Sensor/Topology revision 2 identities.
+Proven model-source inspection is separate from runtime qualification; full
+standards equivalence and physical behavior remain Unknown.
 
-The accepted mapping contract is pinned to
-`helianthus-docs-semantic@30f5e5c79ac6da3a7c7c10c990599906d1dfd0cb`,
-`api/v1/targets/matter-1.7-ballot-0.9-v1.json`, SHA-256
-`5ae81d5e0971d25ead08f982fdf31caf47ada4838d0ee6f2b3e719d11a6df39c`.
+Both entry points share the existing snapshot/evaluation correspondence,
+source qualification and exact conversion policy. The only positive mapping is
+observed, qualified, promoted, valid, fresh and available `evse.ac.current` from
+one eligible phase-qualified source. Amperes become integral milliamperes at
+Electrical Power Measurement `ActiveCurrent` attribute `0x0005` only when exact
+and within the signed target limits. Fractional milliamperes, ambiguous sources
+and invalid inputs refuse the whole payload. Phase and endpoint identity are
+explicit irreversible loss. Source evidence remains in the supplied SemReg
+snapshot and report source keys; the projector does not mutate or retain it.
 
-The sole positive v1 mapping is observed, qualified, promoted, fresh and
-available `evse.ac.current`: amperes become milliamperes at Electrical Sensor
-device type `0x0510`, Electrical Power Measurement cluster `0x0090`,
-`ActiveCurrent` attribute `0x0005`. Endpoint and phase identity are explicit,
-irreversible loss. Every other field, capability, and operation has an explicit
-non-positive ledger disposition. Services have no SemReg projection item kind.
+The complete ledger covers every field, capability and operation from EVSE
+1.0.0, infrastructure 1.0.0, PV 1.0.0, storage 1.1.0 and thermal 1.0.0. All
+other rows remain Unknown with explicit non-positive dispositions. Services have
+no SemReg projection item kind. `Project161` builds a new accounting report using
+the 1.6.1 manifest and the shared full ledger, alongside its 1.6.1 document.
 
-This is not Matter runtime composition. It has no Matter SDK dependency and
-creates no Matter node, endpoint allocation, commissioning, fabric, transport,
-subscription, I/O, access control, authority decision, intent, route, command
-dispatch, command result, or retained state. It makes no certification,
-conformance, live-device, or physical-result claim.
+`Project`, `Manifest` and `CanonicalJSON` retain the historical 1.7 draft target.
+The HTTP feed in [feedv1](feedv1/contract.go) still consumes that historical API;
+calling the new entry point does not cut it over. Historical model/source pins,
+feed files and existing golden snapshots are unchanged. Default feed activation
+and module/model pin migration require the separate owner migration and complete
+accepted target evidence. Nothing is stable before Helianthus 1.0.
+
+This package is pure projection. It allocates no endpoints and has no SDK,
+commissioning, fabric, transport, subscription, command dispatch or I/O. Offline
+synthetic evidence does not establish go-fabric execution, hosted builds,
+Linux arm64, Pi performance, latency, conformance, certification or physical
+qualification. Those remain Unknown here.

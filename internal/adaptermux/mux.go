@@ -3689,17 +3689,22 @@ func (m *Mux) requestStartForSession(sessionID uint64, initiator byte) <-chan st
 	return ch
 }
 
-// expireGatewayAdmission resolves only the queued bid identified by notify.
-// selectAtSYN and replacement use the same lock, so expiry cannot cancel a
-// selected wire bid or a newer gateway request.
+// expireGatewayAdmission resolves only the queued or deferred-loser bid
+// identified by notify. selectAtSYN and replacement use the same lock, so
+// expiry cannot cancel a selected wire bid or a newer gateway request.
 func (m *Mux) expireGatewayAdmission(notify <-chan startResult) {
 	m.arb.mu.Lock()
 	defer m.arb.mu.Unlock()
-	req := m.arb.pendingGateway
-	if req == nil || req.notify != notify {
+	var req *startRequest
+	if pending := m.arb.pendingGateway; pending != nil && pending.notify == notify {
+		req = pending
+		m.arb.pendingGateway = nil
+	} else if loser := m.arb.deferredGatewayLoser; loser != nil && loser.notify == notify {
+		req = loser
+		m.arb.deferredGatewayLoser = nil
+	} else {
 		return
 	}
-	m.arb.pendingGateway = nil
 	req.notify <- startResult{initiator: req.initiator, err: fmt.Errorf("adaptermux: gateway admission: %w", ebuserrors.ErrTimeout)}
 }
 
@@ -3825,16 +3830,19 @@ func (m *Mux) tryGrantAndStartForBids(bids map[*startRequest]chan startResult) {
 		if startErr != nil {
 			m.undoLocalLosses(losers)
 		}
-		if gatewayLoser == nil {
-			return
+		m.stateMu.Lock()
+		owned := m.arb.takeDeferredGatewayLoser(gatewayLoser)
+		if owned && startErr == nil {
+			m.collisionResyncOwed = protocol.CollisionRetryResyncSYNCount
+		}
+		m.stateMu.Unlock()
+		if !owned {
+			return // expiry, reset, disconnect or close already resolved it
 		}
 		if startErr != nil {
 			gatewayLoser.notify <- startResult{initiator: gatewayLoser.initiator, err: startErr}
 			return
 		}
-		m.stateMu.Lock()
-		m.collisionResyncOwed = protocol.CollisionRetryResyncSYNCount
-		m.stateMu.Unlock()
 		gatewayLoser.notify <- startResult{initiator: initiator}
 	}
 
@@ -3908,6 +3916,10 @@ func (m *Mux) tryGrantAndStartForBids(bids map[*startRequest]chan startResult) {
 			cancelledInFlight := pending.req != nil && pending.req.cancelled.Load()
 			m.stateMu.Unlock()
 			m.logger.Printf("adaptermux: pendingStart deadline expired for session %d (AM8, wasBlocking=%v, cancelledInFlight=%v)", pending.sessionID, wasBlocking, cancelledInFlight)
+			// The hung START may never return, so its deferred loser ends here.
+			if m.arb.takeDeferredGatewayLoser(gatewayLoser) {
+				gatewayLoser.notify <- startResult{initiator: gatewayLoser.initiator, err: fmt.Errorf("adaptermux: START deadline expired: %w", ebuserrors.ErrTimeout)}
+			}
 			// AM8: guard the send — if another path already delivered a
 			// result, the channel is full and this send would block forever.
 			var result startResult

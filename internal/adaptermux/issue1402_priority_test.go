@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -904,4 +905,199 @@ func TestT02_StartArbitrationAcceptedPublishesGatewayLoss(t *testing.T) {
 		t.Fatalf("owed SYNs=%d", owed)
 	}
 	m.wg.Wait()
+}
+
+// t02HungStart selects 0x31 over the gateway on a transport whose START hangs
+// with no connection to close. finish releases the START with err and joins it.
+func t02HungStart(t *testing.T, m *Mux, requester bool) (gateway <-chan startResult, finish func(error)) {
+	t.Helper()
+	gate := make(chan struct{})
+	var setErr func(error)
+	if requester {
+		tr := &failingStartTransport{p3MockTransport: newP3MockTransport(), startGate: gate}
+		m.upstream, setErr = tr, func(err error) { tr.startErr = err }
+	} else {
+		tr := &gatedBlockingStartTransport{readCh: make(chan byte, 1), startGate: gate}
+		m.upstream, setErr = tr, func(err error) { tr.startErr = err }
+	}
+	gateway = m.requestStartForSession(gatewaySessionID, 0x7f)
+	m.requestStartForSession(1, 0x31)
+	synDone := make(chan struct{})
+	go func() { t02SYN(m); close(synDone) }()
+	deadline := time.Now().Add(time.Second)
+	for {
+		m.stateMu.Lock()
+		pending := m.pendingStart != nil
+		m.stateMu.Unlock()
+		if pending {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("selection did not reach the transport")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	var once sync.Once
+	finish = func(err error) {
+		once.Do(func() {
+			setErr(err)
+			close(gate)
+			<-synDone
+			m.wg.Wait()
+		})
+	}
+	t.Cleanup(func() { finish(nil) })
+	return gateway, finish
+}
+
+func t02CheckHungGatewayLoser(t *testing.T, startDeadline time.Duration, resolve func(t *testing.T, m *Mux, finish func(error)) func(), want func(error) bool) {
+	t.Helper()
+	for _, requester := range []bool{false, true} {
+		for _, lateErr := range []error{nil, errors.New("late transport error")} {
+			t.Run(fmt.Sprintf("requester%v/lateErr%v", requester, lateErr != nil), func(t *testing.T) {
+				m, _ := newT02Mux(t)
+				m.cfg.StartDeadline = startDeadline
+				gateway, finish := t02HungStart(t, m, requester)
+				joinResolver := resolve(t, m, finish)
+				select {
+				case got := <-gateway:
+					if got.granted || !want(got.err) {
+						t.Fatalf("gateway result=%+v", got)
+					}
+				case <-time.After(2 * time.Second):
+					t.Fatal("gateway loser hung with the selected START")
+				}
+				finish(lateErr)
+				joinResolver()
+				select {
+				case got := <-gateway:
+					t.Fatalf("gateway resolved twice: %+v", got)
+				default:
+				}
+				m.stateMu.Lock()
+				owed := m.collisionResyncOwed
+				m.stateMu.Unlock()
+				if owed != 0 {
+					t.Fatalf("late START armed resync after resolution: owed=%d", owed)
+				}
+			})
+		}
+	}
+}
+
+func t02IsTimeout(err error) bool { return errors.Is(err, ebuserrors.ErrTimeout) }
+
+func TestT02_HungStartGatewayLoserResolvedByDeadline(t *testing.T) {
+	noop := func(*testing.T, *Mux, func(error)) func() { return func() {} }
+	t02CheckHungGatewayLoser(t, 30*time.Millisecond, noop, t02IsTimeout)
+}
+
+func TestT02_HungStartGatewayLoserResolvedByAM8(t *testing.T) {
+	// The bid's own admission timer is far away, so only AM8 can resolve it.
+	for _, requester := range []bool{false, true} {
+		t.Run(fmt.Sprintf("requester%v", requester), func(t *testing.T) {
+			m, _ := newT02Mux(t)
+			m.cfg.StartDeadline = time.Hour
+			gate := make(chan struct{})
+			if requester {
+				m.upstream = &failingStartTransport{p3MockTransport: newP3MockTransport(), startGate: gate}
+			} else {
+				m.upstream = &gatedBlockingStartTransport{readCh: make(chan byte, 1), startGate: gate}
+			}
+			defer close(gate)
+			gateway := m.requestStartForSession(gatewaySessionID, 0x7f)
+			m.requestStartForSession(1, 0x31)
+			m.cfg.StartDeadline = 20 * time.Millisecond
+			go t02SYN(m)
+			select {
+			case got := <-gateway:
+				if !t02IsTimeout(got.err) {
+					t.Fatalf("gateway result=%+v", got)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("AM8 did not resolve the gateway loser")
+			}
+		})
+	}
+}
+
+func TestT02_HungStartGatewayLoserResolvedAfterSelectedCancel(t *testing.T) {
+	// Cancelling the selected bid stops AM8; admission expiry still bounds the loser.
+	t02CheckHungGatewayLoser(t, 50*time.Millisecond, func(_ *testing.T, m *Mux, _ func(error)) func() {
+		m.cancelPendingStart(1)
+		return func() {}
+	}, t02IsTimeout)
+}
+
+func TestT02_HungStartGatewayLoserResolvedByReset(t *testing.T) {
+	t02CheckHungGatewayLoser(t, time.Hour, func(_ *testing.T, m *Mux, _ func(error)) func() {
+		m.handleReset()
+		return func() {}
+	}, func(err error) bool { return errors.Is(err, ebuserrors.ErrAdapterReset) })
+}
+
+func TestT02_HungStartGatewayLoserResolvedByDisconnect(t *testing.T) {
+	t02CheckHungGatewayLoser(t, time.Hour, func(_ *testing.T, m *Mux, _ func(error)) func() {
+		done := make(chan struct{})
+		go func() { _, _ = m.reconnect(); close(done) }()
+		return func() { m.cancel(); <-done }
+	}, func(err error) bool { return err != nil && isResetOrDisconnectError(err) })
+}
+
+func TestT02_HungStartGatewayLoserResolvedByClose(t *testing.T) {
+	t02CheckHungGatewayLoser(t, time.Hour, func(_ *testing.T, m *Mux, _ func(error)) func() {
+		m.sessions = map[uint64]*session{}
+		done := make(chan struct{})
+		go func() { _ = m.Close(); close(done) }()
+		return func() { <-done }
+	}, func(err error) bool { return err != nil && isResetOrDisconnectError(err) })
+}
+
+func TestT02_HungStartGatewayLoserResolvedOnceAgainstSettle(t *testing.T) {
+	for i := range 50 {
+		m, _ := newT02Mux(t)
+		gateway, finish := t02HungStart(t, m, i%2 == 0)
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); m.handleReset() }()
+		go func() { defer wg.Done(); finish(nil) }()
+		wg.Wait()
+		select {
+		case <-gateway:
+		case <-time.After(time.Second):
+			t.Fatal("gateway loser unresolved")
+		}
+		select {
+		case got := <-gateway:
+			t.Fatalf("gateway resolved twice: %+v", got)
+		default:
+		}
+	}
+}
+
+func TestT02_HungStartGatewayLoserResolvedByCancelOrReplacement(t *testing.T) {
+	for name, retire := range map[string]func(*Mux){
+		"cancel":      func(m *Mux) { m.arb.cancelStart(gatewaySessionID) },
+		"replacement": func(m *Mux) { m.requestStartForSession(gatewaySessionID, 0x7f) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			m, _ := newT02Mux(t)
+			gateway, finish := t02HungStart(t, m, false)
+			retire(m)
+			select {
+			case got := <-gateway:
+				if got.granted || !got.cancelled {
+					t.Fatalf("gateway result=%+v", got)
+				}
+			default:
+				t.Fatal("retired gateway loser was not resolved")
+			}
+			finish(nil)
+			select {
+			case got := <-gateway:
+				t.Fatalf("gateway resolved twice: %+v", got)
+			default:
+			}
+		})
+	}
 }

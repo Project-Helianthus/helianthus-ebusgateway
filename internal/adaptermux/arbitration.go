@@ -30,6 +30,12 @@ type arbitrator struct {
 	// Only one gateway request can be pending at a time.
 	pendingGateway *startRequest
 
+	// deferredGatewayLoser holds a gateway bid that lost local selection
+	// while the selected START is outstanding. It stays subject to the same
+	// expiry, replacement, cancellation and lifecycle failure as
+	// pendingGateway; whichever path removes it sends its one result.
+	deferredGatewayLoser *startRequest
+
 	// pendingExternal holds external sessions' pending START requests
 	// as an unordered bid set. Each session can have at most one pending request.
 	pendingExternal []*startRequest
@@ -95,6 +101,11 @@ func (a *arbitrator) requestStart(sessionID uint64, initiator byte) <-chan start
 			old.cancelled.Store(true)
 			old.notify <- startResult{cancelled: true, initiator: old.initiator}
 		}
+		if old := a.deferredGatewayLoser; old != nil {
+			a.deferredGatewayLoser = nil
+			old.cancelled.Store(true)
+			old.notify <- startResult{cancelled: true, initiator: old.initiator}
+		}
 		a.pendingGateway = req
 		return ch
 	}
@@ -155,6 +166,12 @@ func (a *arbitrator) cancelStart(sessionID uint64) bool {
 			a.pendingGateway = nil
 			return true
 		}
+		if old := a.deferredGatewayLoser; old != nil {
+			a.deferredGatewayLoser = nil
+			old.cancelled.Store(true)
+			old.notify <- startResult{granted: false, cancelled: true, initiator: old.initiator}
+			return true
+		}
 		return false
 	}
 
@@ -176,6 +193,7 @@ func (a *arbitrator) cancelStart(sessionID uint64) bool {
 func (a *arbitrator) tryGrant(busIdle bool) (*startRequest, bool) {
 	winner, losers := a.selectAtSYN(busIdle)
 	for _, req := range losers {
+		a.takeDeferredGatewayLoser(req)
 		req.notify <- startResult{initiator: winner.initiator}
 	}
 	return winner, winner != nil
@@ -228,6 +246,9 @@ func (a *arbitrator) selectBidsAtSYN(busIdle bool, bids map[*startRequest]chan s
 	lose := func(req *startRequest) {
 		if eligible(req) && req != winner {
 			losers = append(losers, req)
+			if req.sessionID == gatewaySessionID {
+				a.deferredGatewayLoser = req
+			}
 		}
 	}
 	lose(a.pendingGateway)
@@ -246,6 +267,18 @@ func (a *arbitrator) selectBidsAtSYN(busIdle bool, bids map[*startRequest]chan s
 	clear(a.pendingExternal[len(remaining):])
 	a.pendingExternal = remaining
 	return winner, losers
+}
+
+// takeDeferredGatewayLoser removes req from deferred tracking. It reports true
+// when the caller now owns sending req's one result.
+func (a *arbitrator) takeDeferredGatewayLoser(req *startRequest) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if req == nil || a.deferredGatewayLoser != req {
+		return false
+	}
+	a.deferredGatewayLoser = nil
+	return true
 }
 
 func higherPriority(a, b *startRequest) bool {
@@ -420,6 +453,10 @@ func (a *arbitrator) failAllPending(err error) {
 	if a.pendingGateway != nil {
 		a.pendingGateway.notify <- startResult{granted: false, initiator: a.pendingGateway.initiator, err: err}
 		a.pendingGateway = nil
+	}
+	if a.deferredGatewayLoser != nil {
+		a.deferredGatewayLoser.notify <- startResult{granted: false, initiator: a.deferredGatewayLoser.initiator, err: err}
+		a.deferredGatewayLoser = nil
 	}
 
 	for _, req := range a.pendingExternal {

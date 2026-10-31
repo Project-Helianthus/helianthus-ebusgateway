@@ -30,7 +30,8 @@
 // cancelled/replaced waiter receives the source as an observer instead.
 // Gateway bids waiting for SYN expire after StartDeadline; once selected, a
 // separate StartDeadline bounds the adapter response without admission expiry
-// cancelling a deliverable wire win.
+// cancelling a deliverable wire win. A gateway local loser waits for that START
+// outcome, bounded by admission expiry, the START deadline and lifecycle failure.
 // A read timeout or ownership release alone never opens a new arbitration window.
 //
 // Arbitration lifecycle (see arbitration_recovery.go and the table-driven

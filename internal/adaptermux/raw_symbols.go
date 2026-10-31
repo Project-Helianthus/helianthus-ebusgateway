@@ -85,8 +85,23 @@ func upstreamSuppliesRawSymbols(tr transport.RawTransport) bool {
 // on the readLoop goroutine, so session delivery keeps exact upstream order
 // relative to every other item the readLoop delivers, including a granted
 // session's STARTED. The gateway escape-pair verifier is fed earlier, from
-// every observed symbol, by readLoop itself.
-func (m *Mux) onRawSymbol(symbol byte, logical transport.StreamEvent) {
+// every observed symbol, by readLoop itself. For a paired wire SYN it returns
+// the bid snapshot to retain through subsequent logical processing.
+func (m *Mux) onRawSymbol(symbol byte, logical transport.StreamEvent) map[*startRequest]chan startResult {
+	var bids map[*startRequest]chan startResult
+	if symbol == protocol.SymbolSyn {
+		// Raw-only SYNs also reset the external client's reconstruction,
+		// even when they complete no logical item (an interrupted pair).
+		m.stateMu.Lock()
+		m.localLosers = nil
+		// Freeze this window before any client can respond to the raw SYN.
+		// Raw-only SYNs have no logical arbitration consequence.
+		if logical.Kind == transport.StreamEventWireSyn ||
+			(logical.Kind == transport.StreamEventByte && logical.Byte == protocol.SymbolSyn && !logical.WasEscaped) {
+			bids = m.arb.snapshotBids()
+		}
+		m.stateMu.Unlock()
+	}
 	if logical.Kind == 0 && symbol != protocol.SymbolSyn {
 		// A raw-only non-SYN symbol (typically an escape lead) is wire
 		// activity even though no logical byte completed yet. A raw-only
@@ -97,6 +112,7 @@ func (m *Mux) onRawSymbol(symbol byte, logical transport.StreamEvent) {
 		m.stateMu.Unlock()
 	}
 	m.deliverRawToSessions(symbol)
+	return bids
 }
 
 // deliverRawToSessions delivers one observed wire symbol to every external

@@ -39,13 +39,11 @@ func TestAbsorbLateStarted_NonBlockingPath_DoesNotReconnect(t *testing.T) {
 	mock := newP3MockTransport()
 
 	mux := New(Config{
-		Protocol:        "enh",
-		Network:         "tcp",
-		Address:         "127.0.0.1:0",
-		ReadTimeout:     200 * time.Millisecond,
-		StartDeadline:   150 * time.Millisecond,
-		PendingStartTTL: 24 * time.Hour,
-		SYNInterval:     time.Hour,
+		Protocol:      "enh",
+		Network:       "tcp",
+		Address:       "127.0.0.1:0",
+		ReadTimeout:   200 * time.Millisecond,
+		StartDeadline: 150 * time.Millisecond,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())

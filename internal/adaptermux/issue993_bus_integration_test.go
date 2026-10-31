@@ -104,6 +104,7 @@ func TestIssue993_ProtocolBusRetriesAfterFirstForeignInitiator(t *testing.T) {
 		})
 		result <- err
 	})
+	grantQueuedAtSYN(t, mux)
 
 	if !waitRetryQueuedBehindReleasedGrant(t, mux) {
 		t.Fatal("collision retry was not queued behind a released grant before SYN3")
@@ -111,7 +112,7 @@ func TestIssue993_ProtocolBusRetriesAfterFirstForeignInitiator(t *testing.T) {
 	if got := starts.Load(); got != 1 {
 		t.Fatalf("arbitration starts before SYN3 = %d, want 1", got)
 	}
-	// SYN3 is a new fairness boundary; it may admit the queued retry through
+	// SYN3 is a new arbitration boundary; it may admit the queued retry through
 	// the ordinary arbitrator.
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
 
@@ -218,6 +219,7 @@ func TestIssue993_CollisionResyncSurvivesActiveReadTimeout(t *testing.T) {
 		_, err := bus.Send(requestCtx, protocol.Frame{Source: gatewaySource, Target: protocol.AddressBroadcast, Primary: 0xB5, Secondary: 0x16})
 		result <- err
 	})
+	grantQueuedAtSYN(t, mux)
 
 	deadline := time.Now().Add(activeChanTimeout + time.Second)
 	for time.Now().Before(deadline) && mux.activeTxn.readTimeoutTot.Load() == 0 {
@@ -288,10 +290,7 @@ func TestIssue993_CollisionRecoveryCancelAfterActiveReadTimeout(t *testing.T) {
 
 	mux, mock, _, cleanup := newClassifiedTestMux(t, v8classifier.ModeShadow)
 	defer cleanup()
-	// Keep the queued external request fresh across the worker's second bounded
-	// active-channel wait; F-24 staleness is a separate policy from this
-	// transaction-bound cancellation proof.
-	mux.cfg.ExternalStartStaleness = 3 * activeChanTimeout
+
 	pacer := mux.SessionPacer(gatewaySessionID)
 	if pacer == nil {
 		t.Fatal("shadow classifier did not create gateway pacer")
@@ -336,6 +335,7 @@ func TestIssue993_CollisionRecoveryCancelAfterActiveReadTimeout(t *testing.T) {
 		_, err := bus.Send(requestCtx, protocol.Frame{Source: gatewaySource, Target: protocol.AddressBroadcast, Primary: 0xB5, Secondary: 0x16})
 		result <- err
 	})
+	grantQueuedAtSYN(t, mux)
 
 	deadline := time.Now().Add(activeChanTimeout + time.Second)
 	for time.Now().Before(deadline) && mux.activeTxn.readTimeoutTot.Load() == 0 {
@@ -363,8 +363,6 @@ func TestIssue993_CollisionRecoveryCancelAfterActiveReadTimeout(t *testing.T) {
 			}
 		}
 	}
-	// Queue the external bidder after the real no-SYN gap, so its normal F-24
-	// freshness budget does not expire while protocol.Bus is still waiting.
 	externalStart := mux.arb.requestStart(externalID, externalInitiator)
 	if gatewayStarts.Load() != 1 || externalStarts.Load() != 0 {
 		t.Fatalf("bidder started before cancellation boundary: gateway=%d external=%d", gatewayStarts.Load(), externalStarts.Load())
@@ -407,7 +405,7 @@ func TestIssue993_CollisionRecoveryCancelAfterActiveReadTimeout(t *testing.T) {
 		t.Fatal("external bidder did not proceed at post-Abandon SYN boundary")
 	}
 	if externalStarts.Load() != 1 || !mux.arb.isOwner(externalID) {
-		t.Fatal("ordinary fairness did not grant pending external bidder once")
+		t.Fatal("address priority did not grant pending external bidder once")
 	}
 }
 
@@ -550,6 +548,7 @@ func TestIssue993_CollisionRecoveryIgnoresLaterForeignInitiator(t *testing.T) {
 		_, err := bus.Send(requestCtx, protocol.Frame{Source: gatewaySource, Target: protocol.AddressBroadcast, Primary: 0xB5, Secondary: 0x16})
 		result <- err
 	})
+	grantQueuedAtSYN(t, mux)
 
 	if !waitRetryQueuedBehindReleasedGrant(t, mux) {
 		t.Fatal("collision retry was not queued behind a released grant before the retry boundary")
@@ -687,6 +686,7 @@ func TestIssue1401_ArbitrationLossYieldsToPendingExternal(t *testing.T) {
 		_, err := bus.Send(requestCtx, protocol.Frame{Source: gatewaySource, Target: protocol.AddressBroadcast, Primary: 0xB5, Secondary: 0x16})
 		result <- err
 	})
+	grantQueuedAtSYN(t, mux)
 
 	var externalStart <-chan startResult
 	select {

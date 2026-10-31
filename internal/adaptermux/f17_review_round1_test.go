@@ -37,12 +37,10 @@ import (
 // ENHResFailed on the wire.
 func TestHandleArbitrationResponse_InFlightCancelled_STARTED_SuppressedSilently(t *testing.T) {
 	mux := New(Config{
-		Protocol:        "enh",
-		Network:         "tcp",
-		Address:         "127.0.0.1:0",
-		ReadTimeout:     200 * time.Millisecond,
-		SYNInterval:     time.Hour,
-		PendingStartTTL: 24 * time.Hour,
+		Protocol:    "enh",
+		Network:     "tcp",
+		Address:     "127.0.0.1:0",
+		ReadTimeout: 200 * time.Millisecond,
 	})
 
 	// Stage 1: simulate request popped into m.pendingStart.
@@ -94,12 +92,10 @@ func TestHandleArbitrationResponse_InFlightCancelled_STARTED_SuppressedSilently(
 // that has already moved on — same retry-loop class as F-17.
 func TestHandleArbitrationResponse_InFlightCancelled_FAILED_SuppressedSilently(t *testing.T) {
 	mux := New(Config{
-		Protocol:        "enh",
-		Network:         "tcp",
-		Address:         "127.0.0.1:0",
-		ReadTimeout:     200 * time.Millisecond,
-		SYNInterval:     time.Hour,
-		PendingStartTTL: 24 * time.Hour,
+		Protocol:    "enh",
+		Network:     "tcp",
+		Address:     "127.0.0.1:0",
+		ReadTimeout: 200 * time.Millisecond,
 	})
 
 	// Setup identical to STARTED-half.
@@ -147,13 +143,11 @@ func TestHandleArbitrationResponse_InFlightCancelled_FAILED_SuppressedSilently(t
 func TestHandleArbitrationResponse_InFlightCancelled_FAILED_LogMarksSuppression(t *testing.T) {
 	var buf cancelledStartedLogBuffer
 	mux := New(Config{
-		Protocol:        "enh",
-		Network:         "tcp",
-		Address:         "127.0.0.1:0",
-		ReadTimeout:     200 * time.Millisecond,
-		SYNInterval:     time.Hour,
-		PendingStartTTL: 24 * time.Hour,
-		Logger:          log.New(&buf, "", 0),
+		Protocol:    "enh",
+		Network:     "tcp",
+		Address:     "127.0.0.1:0",
+		ReadTimeout: 200 * time.Millisecond,
+		Logger:      log.New(&buf, "", 0),
 	})
 
 	_ = mux.arb.requestStart(1, 0x31)
@@ -180,7 +174,6 @@ func TestHandleArbitrationResponse_InFlightCancelled_FAILED_LogMarksSuppression(
 // cancelled=true so handleStart silent-returns.
 func TestArbitrator_CancelStart_ExternalSession_SetsCancelledFlag(t *testing.T) {
 	arb := newArbitrator()
-	arb.setPolicy(24*time.Hour, 0, 0)
 
 	ch := arb.requestStart(1, 0x31)
 	if !arb.cancelStart(1) {
@@ -207,7 +200,6 @@ func TestArbitrator_CancelStart_ExternalSession_SetsCancelledFlag(t *testing.T) 
 // for the gateway-session path. Same contract as the external path.
 func TestArbitrator_CancelStart_GatewaySession_SetsCancelledFlag(t *testing.T) {
 	arb := newArbitrator()
-	arb.setPolicy(24*time.Hour, 0, 0)
 
 	ch := arb.requestStart(gatewaySessionID, 0x71)
 	if !arb.cancelStart(gatewaySessionID) {
@@ -245,13 +237,11 @@ func TestArbitrator_CancelStart_GatewaySession_SetsCancelledFlag(t *testing.T) {
 func TestHandleArbitrationResponse_InFlightCancelled_AM56Mismatch_SuppressedSilently(t *testing.T) {
 	var buf cancelledStartedLogBuffer
 	mux := New(Config{
-		Protocol:        "enh",
-		Network:         "tcp",
-		Address:         "127.0.0.1:0",
-		ReadTimeout:     200 * time.Millisecond,
-		SYNInterval:     time.Hour,
-		PendingStartTTL: 24 * time.Hour,
-		Logger:          log.New(&buf, "", 0),
+		Protocol:    "enh",
+		Network:     "tcp",
+		Address:     "127.0.0.1:0",
+		ReadTimeout: 200 * time.Millisecond,
+		Logger:      log.New(&buf, "", 0),
 	})
 
 	chA := mux.arb.requestStart(1, 0x31)
@@ -310,7 +300,6 @@ func TestHandleArbitrationResponse_InFlightCancelled_AM56Mismatch_SuppressedSile
 // late-STARTED suppression path), so cancelStart must set both flags.
 func TestArbitrator_CancelStart_AlsoSetsStructFlag(t *testing.T) {
 	arb := newArbitrator()
-	arb.setPolicy(24*time.Hour, 0, 0)
 
 	_ = arb.requestStart(1, 0x31)
 	arb.mu.Lock()

@@ -89,7 +89,10 @@ func CanonicalJSON161(result Result161) ([]byte, error) {
 	if d.Attributes == nil || len(d.Attributes) > 1 {
 		return nil, errInput
 	}
-	_, ledger := Ledger()
+	requestedLedger, ledger := Ledger()
+	if !reflect.DeepEqual(result.Report.Requested, requestedLedger) || len(result.Report.Dispositions) != len(ledger) {
+		return nil, errInput
+	}
 	expected := make(map[projection.RequestedItem]projection.ProjectionDisposition, len(ledger))
 	for _, row := range ledger {
 		expected[projection.RequestedItem{Kind: row.Kind, ItemID: row.ItemID}] = row
@@ -105,14 +108,21 @@ func CanonicalJSON161(result Result161) ([]byte, error) {
 			}
 			continue
 		}
-		{
-			// The ampere-to-milliampere mapping is always a transformation, so an
-			// exact outcome contradicts the projector whether or not an attribute
-			// accompanies it.
-			if row.Outcome == projection.ProjectionExact {
+		switch row.Outcome {
+		case projection.ProjectionTransformed:
+			// The ampere-to-milliampere mapping is always a transformation; it
+			// must carry its single source and irreversible unit loss.
+			if !currentTransformedRow(row) {
 				return nil, errInput
 			}
-			currentMapped = row.Outcome == projection.ProjectionTransformed
+			currentMapped = true
+		case projection.ProjectionUnknown:
+			if !reflect.DeepEqual(row, expected[projection.RequestedItem{Kind: row.Kind, ItemID: row.ItemID}]) {
+				return nil, errInput
+			}
+		default:
+			// An exact outcome contradicts the projector, with or without an attribute.
+			return nil, errInput
 		}
 	}
 	if currentMapped != (len(d.Attributes) == 1) {
@@ -132,4 +142,20 @@ func CanonicalJSON161(result Result161) ([]byte, error) {
 		}
 	}
 	return json.Marshal(result)
+}
+
+func currentTransformedRow(row projection.ProjectionDisposition) bool {
+	if row.Reason == nil || *row.Reason != "matter.phase_endpoint_identity_loss.v1" || len(row.SourceKeys) != 1 {
+		return false
+	}
+	key := row.SourceKeys[0]
+	if key.PackID != "helianthus.pack.evse" || key.PackVersion != "1.0.0" || key.FactID != "evse.ac.current" {
+		return false
+	}
+	return reflect.DeepEqual(row.Loss, []projection.LossDetail{{
+		Kind:        projection.LossUnit,
+		SourceItems: []semreg.DefinitionID{"evse.ac.current"},
+		Description: "amperes are represented as integral milliamperes only when exact and representable",
+		Reversible:  false,
+	}})
 }

@@ -376,3 +376,42 @@ func TestAA03EmptyAndPhaseControls(t *testing.T) {
 		})
 	}
 }
+
+func TestAA03ReportAccountingAndCurrentMetadata(t *testing.T) {
+	current := func(r *Result161) *projection.ProjectionDisposition {
+		for i := range r.Report.Dispositions {
+			if r.Report.Dispositions[i].ItemID == "evse.ac.current" && r.Report.Dispositions[i].Kind == projection.ItemFact {
+				return &r.Report.Dispositions[i]
+			}
+		}
+		t.Fatal("current disposition missing")
+		return nil
+	}
+	cases := map[string]func(*Result161){
+		"paired omission": func(r *Result161) {
+			last := len(r.Report.Requested) - 1
+			r.Report.Requested = r.Report.Requested[:last]
+			r.Report.Dispositions = r.Report.Dispositions[:last]
+		},
+		"empty source keys": func(r *Result161) { current(r).SourceKeys = []semreg.FactKey{} },
+		"no reason":         func(r *Result161) { current(r).Reason = nil },
+		"reversible loss":   func(r *Result161) { current(r).Loss[0].Reversible = true },
+		"wrong reason": func(r *Result161) {
+			reason := semreg.DefinitionID("matter.unmapped.v1")
+			current(r).Reason = &reason
+		},
+		"foreign source": func(r *Result161) { current(r).SourceKeys[0].FactID = "evse.ac.voltage" },
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			r := aa03Positive(t, aa03Fixture(t))
+			mutate(&r)
+			if raw, err := CanonicalJSON161(r); err == nil || raw != nil {
+				t.Fatalf("accepted %s", name)
+			}
+		})
+	}
+	if _, err := CanonicalJSON161(aa03Positive(t, aa03Fixture(t))); err != nil {
+		t.Fatal(err)
+	}
+}

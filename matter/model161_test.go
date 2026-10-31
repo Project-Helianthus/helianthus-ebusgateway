@@ -415,3 +415,45 @@ func TestAA03ReportAccountingAndCurrentMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestAA03EmptyProjectionCurrentRowMustBeLedgerRow(t *testing.T) {
+	empty := func() Result161 {
+		f := newMatterFixture(t, []semreg.FactCandidate{})
+		r, err := Project161(f.snapshot, f.evaluation)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	current := func(r *Result161) *projection.ProjectionDisposition {
+		for i := range r.Report.Dispositions {
+			if r.Report.Dispositions[i].ItemID == "evse.ac.current" && r.Report.Dispositions[i].Kind == projection.ItemFact {
+				return &r.Report.Dispositions[i]
+			}
+		}
+		t.Fatal("current disposition missing")
+		return nil
+	}
+	if _, err := CanonicalJSON161(empty()); err != nil {
+		t.Fatalf("empty projection control: %v", err)
+	}
+	cases := map[string]func(*projection.ProjectionDisposition){
+		"unsupported instead of unknown": func(d *projection.ProjectionDisposition) { d.Outcome = projection.ProjectionUnsupported },
+		"unknown with altered reason": func(d *projection.ProjectionDisposition) {
+			reason := semreg.DefinitionID("matter.altered.v1")
+			d.Reason = &reason
+		},
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			r := empty()
+			mutate(current(&r))
+			if err := r.Report.Validate(); err != nil {
+				t.Fatalf("variant must stay structurally valid: %v", err)
+			}
+			if raw, err := CanonicalJSON161(r); err == nil || raw != nil {
+				t.Fatalf("accepted %s", name)
+			}
+		})
+	}
+}

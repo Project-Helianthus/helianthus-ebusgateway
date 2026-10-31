@@ -1,68 +1,52 @@
 # Runtime driver/provider and north-south contract v1
 
-Status: proposed software 0.7 contract. This document specifies a subsequent
-implementation; the current binary does not expose the lifecycle service or a
-universal manager for every protocol family.
+Status: pre-1.0 contract mirror with partial implementation for G5
+([#1032](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1032)).
+The gateway exposes an internal desired-state service and five ordinary MCP
+lifecycle tools over the shared production registry: the lifecycle-only
+`ebus.primary`, eeBUS, Growatt and configured Modbus TCP drivers, including
+registered disabled descriptors.
+This is not a universal public provider SPI or acceptance of every scenario
+below, and does not close #1032. No namespace is stable before Helianthus 1.0.
 
-Implementation status (issue
-[#1024](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1024)):
-the gateway-internal semantic publication hub (`internal/semhub`) implements
-the publication side of sections 4 to 8 for in-process publishers: stable
-asset and source identities with per-incarnation binding, service and
-capability identities; source epochs admitted before a provider opens, with
-distinct epoch and driver-generation identities; one transactional
-publication path over the SemReg publication kernel with the kernel's own
-replay and error identifiers; ordered, bounded event fan-out; and the
-generation fence, epoch retirement, activation and reprojection rules of the
-withdrawal sequence. The hub is runtime composition, not a public API, and
-persists nothing: epochs are journalled in memory only. The hub itself
-serves no public tool or lifecycle projection. Issue
-[#1157](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1157)
-adds the durable control storage seam in `internal/runtimestate` (section 5,
-S3 durable control store) without a production caller, live reconciliation or
-endpoint I/O. Issue
-[#1112](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1112)
-adds unused, opt-in export/restore hooks for a future service-owned recovery
-path. Existing production publishers do not enable them and retain their
-in-memory-only recovery boundary. Issue
-[#1131](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1131)
-adds the asset-free hub-native successor admission (`Hub.AdmitSuccessor`,
-section 7, hub-native epoch succession) that a future lifecycle service uses
-for an explicit RESTART or a START after a completed STOP. No service, eBUS or
-production caller uses it yet. Issue
-[#1183](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1183)
-adds the internal desired-state service in `internal/runtimecontrol` (section
-5, S1/D3 desired-state service) over that storage seam, with an injected
-lifecycle executor and recovery adapter. As added there it had no production
-registration, no MCP surface and no endpoint I/O; issues #1222 and #1227 below
-supply the registration and the MCP surface, and no authentication applies
-(D4). Issue
-[#1188](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1188)
-adds the service write-ahead recorder for service-routed managed writers
-(section 5, S3.7 to S3.9 service write-ahead recovery): two durable steps
-around every managed hub call, restoration before admission with exact-byte
-gap resolution, and compaction only at a verified restore point. It is
-exercised with a synthetic two-asset publisher only; no production publisher
-is migrated, no eBUS shell is wired and direct publishers keep their
-memory-only recovery boundary. Issue
-[#1190](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1190)
-adds the S4 DriverManager hooks (admission hold, classified close) and the
-lifecycle-only `ebus.primary` bridge in `cmd/gateway` (section 7, S4
-manager-to-hub bridge). Issue
-[#1193](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1193)
-adds the generation-owned post-start task runner. Issue
-[#1222](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1222)
-installs them into process startup (section 7, S4/S6/S7 shell integration):
-`ebus.primary` is the only production registration, the durable control
-service is the single owner of eBUS startup, post-start eBUS work runs as
-generation-owned tasks and adapter status follows native admission. A5 is
-therefore implemented as an internal service for `ebus.primary` only; it is
-not a universal provider SPI. Issue
-[#1227](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1227)
-exposes that service through five ordinary MCP tools,
-`helianthus.runtime.list`, `get`, `start`, `stop` and `restart` (section 5,
-S2/D4 ordinary MCP lifecycle tools), as thin delegates with no authorization
-before 0.9 (D4).
+The merged public
+[runtime driver lifecycle contract](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/architecture/runtime-driver-lifecycle.md)
+is the normative G5 registration/lifecycle companion. Its final D1/D3/D4/D5
+rules supersede revision 9's experimental/operator-boundary proposal:
+START and STOP are idempotent by desired state, RESTART executes, and there
+are no client-visible receipts, idempotency keys or per-principal key spaces.
+MCP may start and stop drivers directly; G5 has no kernel operator boundary,
+principal or authority check and no authorization before 0.9. Later roadmap
+work is 0.11. D1 creates new epochs on process start, RESTART and START after
+STOP; D5 remains service-side write-ahead persistence with gateway-owned hub
+export/restore hooks. Native invocation safety retains its own owner.
+
+Current implementation includes the G4 publication hub (`internal/semhub`),
+typed registration, the durable control store (`internal/runtimestate`), the
+internal desired-state service and write-ahead recorder
+(`internal/runtimecontrol`), the manager-to-hub bridge, generation-owned tasks
+and production shell composition (`cmd/gateway`). The hub alone persists
+nothing. Direct publishers keep their in-memory recovery boundary; the
+`ebus.primary` registration declares no managed semantic assets; this does
+not establish the asset or acceptance scope of the managed sidecars.
+The five ordinary host tools are `helianthus.runtime.list`,
+`helianthus.runtime.get`, `helianthus.runtime.start`, `helianthus.runtime.stop`
+and `helianthus.runtime.restart` (`mcp/runtime_control.go`). They are distinct
+from the superseded experimental tools and are not driver-contributed hooks.
+There is no lifecycle GraphQL API; existing daemon/adapter MCP and GraphQL
+status parity remains required.
+
+The ledger in section 13 reconciles current source and existing tests,
+including the accepted P06 checkpoint validation, P09 store progression,
+P10 decision hold/correlation, P11 restore and P13 pending-work changes.
+Those test references are inspected evidence, not newly passed test runs.
+P14 bounds observation publication but does not deliver source/native
+identity propagation: `Service.corr` still does not populate `SourceID`,
+and durable source/native-generation mapping remains undelivered. Owner
+review of the final S0–S7/CTL/LIFE matrix and production residuals remains,
+including [#1263](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1263)
+and [#1296](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1296).
+J17 is merged; no J17 fence hold remains.
 
 A fence or retirement batch uses the caller's `ObservedAt` and monotonic point
 as its publication instant. The requesting family supplies them on the same
@@ -2328,8 +2312,9 @@ Composition order (before any eBUS endpoint, before the HTTP shell):
    `FAILED`, and no placeholder is installed.
 2. The bridge binds its DriverManager hooks to the existing manager before
    anything can start it. Then the descriptor is validated, frozen and
-   registered as the only production registration (southbound, enabled,
-   lifecycle-only, one source, no hooks).
+   registered in the shared production registry (southbound, lifecycle-only,
+   one source, no hooks), alongside the managed sidecar descriptors.
+   The accepted configured selection determines its enabled disposition.
 3. The configured drivers are registered in the durable store: the one-time
    seed when no control state exists and an instance GUID is persisted, a
    mark-only registration otherwise. A failed load disposition (corrupt,
@@ -3122,6 +3107,54 @@ The service tests prove the rows against the durable store; the ordinary MCP
 adapter (section 5, S2/D4) is proven equivalent to the service for every
 refusal code and for the no-op, conflict and lost-RESTART rows, without
 adding any receipt, key or authority row.
+
+### G5 current acceptance ledger
+
+The normative row definitions remain in this section and the merged
+[docs-ebus lifecycle page](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/architecture/runtime-driver-lifecycle.md)
+(S0/A1, S1/D3, S2/D4, S3/D2/D3, S4/A3/A4, S5, S6, S7 and amended CTL vectors).
+**Delivered** means the bounded implementation and named test source exist;
+**partial** identifies a delivered subset with remaining obligations;
+**unverified** means acceptance has not been established here; **remaining**
+names deferred work. Every row's execution, committed-change review and full
+CI are unverified by this documentation reconciliation. No physical result
+is inferred. Proven/Hypothesis/Unknown evidence grades remain separate from
+qualification, freshness and physical acceptance.
+
+| Slice / vectors | Delivered source and existing test evidence (inspection only) | Partial / remaining acceptance |
+|---|---|---|
+| S0; CTL-01/02 registration | [internal/runtimecontrol/registry.go](../../internal/runtimecontrol/registry.go), `provider.go`; `registry_test.go` covers validation before effects, detached frozen descriptors, ordering, distinct identity types and unrelated fixture families | Delivered internal seam and production registration through [cmd/gateway/managed_sidecar_composition.go](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/managed_sidecar_composition.go): `ebus.primary`, eeBUS, Growatt and configured Modbus TCP descriptors, including disabled entries. The universal public provider SPI remains undelivered; registration alone does not establish acceptance of every contributed hook. |
+| S1; CTL-03–11 | [internal/runtimecontrol/service.go](../../internal/runtimecontrol/service.go), `reconcile.go`, `service_test.go`; P10 in `decision_edges_test.go` covers failed-commit hold balancing, adopted publication ownership, resolver acceptance order and recovered cleanup correlation | Delivered desired-state control under final D3. Source/native-generation propagation and owner acceptance of the complete concurrency matrix remain; no receipt/key/authority acceptance rows apply. |
+| S2; CTL-01–19 adapter obligations | [mcp/runtime_control.go](../../mcp/runtime_control.go), `runtime_control_test.go`, `runtime_control_characterization_test.go` delegate the ordinary five tools to the service, with closed decoding and deterministic envelopes | Delivered ordinary MCP adapter over the shared production registry, including managed sidecars; complete current-source CTL matrix acceptance remains unverified. No experimental namespace or lifecycle GraphQL graduation is claimed. |
+| S3; CTL-12–19 | [internal/runtimestate/runtime_control.go](../../internal/runtimestate/runtime_control.go), `runtime_control_test.go` cover reset fencing, issued-revision mark, serialization/readback, bootstrap and disabled state. P09 tests cover requested-kind allocation, monotonic work progression, valid correlation progression and preservation of the reserved slot | Delivered durable storage safeguards; clearing the final slot still relies on the service to settle terminal obligations. Full production recovery acceptance remains unverified. |
+| S3.7–S3.9; LIFE-06/19/21/23/24/26–30 recovery aspects | [internal/runtimecontrol/recovery.go](../../internal/runtimecontrol/recovery.go), `recovery_test.go`; P11 in `recovery_restore_edges_test.go` covers retained-intent clock highs, scoped install refusal, reprojection failure and empty restore without replay. P06 in [internal/semhub/restore.go](../../internal/semhub/restore.go), `restore_test.go` validates fence/control coverage, exact prior admission, declaration/published ownership, succession ordinals and historical control re-export | Delivered synthetic recorder/checkpoint safeguards. Reprojection failure keeps reads closed without inventing a driver restore failure. Direct publishers are not migrated; shared-asset and full production D5 restoration remain partial/unverified. |
+| S4; LIFE-01–10/25/26/31/32 asset-free subset | [cmd/gateway/ebus_control_runtime.go](../../cmd/gateway/ebus_control_runtime.go), `ebus_control_runtime_test.go`, with service tests for failure isolation, implement admission, classified close, independent obligations and successor reservation for the lifecycle-only source | Delivered bounded bridge, not semantic-asset activation or family qualification. Durable source/native mapping and production residual acceptance remain. |
+| S5 | Registry hook refusals in [internal/runtimecontrol/registry_test.go](../../internal/runtimecontrol/registry_test.go); [cmd/gateway/managed_sidecar_composition_test.go](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/managed_sidecar_composition_test.go) covers shared registry/service/MCP listing, disabled and desired-stopped selection, sidecar STOP/RESTART, failure isolation, replacement drain and no duplicate eager starts | Managed sidecar composition is delivered. Complete S5/DM-HOOKS acceptance for each registered family remains to be established; typed registration and these bounded fixtures do not establish universal lifecycle coverage. |
+| S6; LIFE-02 and status parity | [cmd/gateway/gateway_run_setup.go](../../cmd/gateway/gateway_run_setup.go), `runtime_control_test.go`, `runtime_control_characterization_test.go`; [mcp/runtime_control_characterization_test.go](../../mcp/runtime_control_characterization_test.go) covers shell/status and payload behavior | Delivered shell integration and cached status surfaces. Full current-source parity/CI and production failure acceptance remain unverified; retained identity cannot grant admission. |
+| S7; task drain and retained evidence | [cmd/gateway/ebus_generation_tasks.go](../../cmd/gateway/ebus_generation_tasks.go), `ebus_generation_tasks_test.go`; P13 tracks active invocations after their parent task returns, reports pending names and requires fencing, the exclusive gate and zero active work before join. MCP characterization covers retained evidence across STOP | Delivered pending-work/join semantics; process-scoped evidence keeps identity, provenance, age and partial last-known-good fields. Store/observer relocation remains #1021/DM-RAW; no #1020 or native wire acceptance closure. |
+| P14 observation seam; LIFE-08/09 | [internal/runtimecontrol/native.go](../../internal/runtimecontrol/native.go), `service.go`, `executor_observations_test.go` reject superseded epoch/generation publication and signal a resynchronization gap for superseded deferred events | Partial: `reconcile.go`'s `corr` omits `SourceID`; these guards do not prove full source identity or durable native-generation mapping. Those mappings remain undelivered. |
+| LIFE-11–13 | `internal/semhub` generation fencing and retained history, with checkpoint tests in `restore_test.go` | Hub/kernel evidence is distinct from end-to-end production acceptance; current complete vector execution remains unverified here. |
+| LIFE-14–24/27–30 semantic-asset paths, including LIFE-22 | Synthetic hub/recorder tests cover parts of staging, replay, ordering and cleanup; the lifecycle-only eBUS source has no assets to exercise them | Partial, not satisfied by an empty barrier. Registered managed families must still establish applicable staged-asset, per-asset cursor, shared-asset isolation and production restoration acceptance. |
+
+Production startup calls `prepareManagedSidecars` in
+[cmd/gateway/gateway_run_lifecycle.go](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/gateway_run_lifecycle.go)
+before composing the desired-state service and its five ordinary MCP tools.
+Acceptance must therefore include the registered managed families, including
+disabled descriptors: deterministic list/get, configured eligibility, durable
+desired state and recovery, STOP/RESTART and drain, failure isolation, and each
+family's applicable publication/restore and contributed-hook obligations.
+The asset-free eBUS bridge evidence above cannot discharge those obligations.
+
+The open acceptance ledger retains
+[#1263](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1263)
+and [#1296](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1296),
+source/native-generation propagation, the owner-reviewed final matrix and
+production residuals. Their closure is not established by this mirror.
+Full independent committed-change review, full repository CI and applicable
+transport/passive acceptance remain unverified. This ledger changes no native
+protocol meaning, decoder, admission rule, retained evidence or qualification.
+
+### Normative scenario definitions
 
 | ID | Scenario | Expected result |
 |---|---|---|

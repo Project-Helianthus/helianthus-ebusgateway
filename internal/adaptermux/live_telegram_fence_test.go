@@ -84,6 +84,21 @@ func t02LiveTelegramFixture(t *testing.T, raw, wrote bool) (m *Mux, mock *p3Mock
 	return m, mock, plain, func() []byte { return seen }
 }
 
+// t02RequireResponsePhase asserts that both trackers are inside the responder
+// response data, so a following AA is an injection into response bytes.
+func t02RequireResponsePhase(t *testing.T, m *Mux) {
+	t.Helper()
+	m.stateMu.Lock()
+	phase, live := m.phase.phase, m.phase.telegramLive()
+	m.stateMu.Unlock()
+	if phase != wirePhaseWaitResponseBody || !live {
+		t.Fatalf("wire phase=%v live=%v, want response body", phase, live)
+	}
+	if state := m.v8.FSMInternalState(); state != telegram_fsm.StateSlaveData {
+		t.Fatalf("classifier=%v, want responder data", state)
+	}
+}
+
 // An external owner that already wrote its request leaves a telegram on the
 // wire when it goes away. Whichever way its ownership ends, the response that
 // is still arriving stays subject to the mid-telegram AA filter.
@@ -116,8 +131,10 @@ func TestT02_LiveTelegramSurvivesOwnerRelease(t *testing.T) {
 			}
 			t.Run(name, func(t *testing.T) {
 				m, mock, plain, passive := t02LiveTelegramFixture(t, raw, true)
-				// Request: QQ ZZ PB SB NN D CRC, then ACK and the slave's NN.
-				plain(0x31, 0x08, 0xb5, 0x04, 0x01, 0x55, 0x66, 0x00, 0x02)
+				// STARTED already supplied QQ (0x31) to both trackers. Wire bytes
+				// are ZZ PB SB NN D CRC, then ACK and the responder's NN.
+				plain(0x08, 0xb5, 0x04, 0x01, 0x55, 0x66, 0x00, 0x02)
+				t02RequireResponsePhase(t, m)
 				m.requestStartForSession(2, 0x03)
 				tc.end(m)
 				if tc.name == "cancel" || tc.name == "disconnect" {
@@ -163,7 +180,13 @@ func TestT02_LiveTelegramSurvivesOwnerRelease(t *testing.T) {
 // consecutive AA is genuine and releases the fence and the waiting bid.
 func TestT02_LiveTelegramAbandonedByOwnerReleasesAtIdle(t *testing.T) {
 	m, mock, plain, _ := t02LiveTelegramFixture(t, false, true)
-	plain(0x31, 0x08, 0xb5, 0x04, 0x01, 0x55, 0x66)
+	plain(0x08, 0xb5, 0x04, 0x01, 0x55, 0x66)
+	m.stateMu.Lock()
+	phase := m.phase.phase
+	m.stateMu.Unlock()
+	if phase != wirePhaseWaitCmdAck {
+		t.Fatalf("wire phase=%v, want command ACK wait", phase)
+	}
 	m.requestStartForSession(2, 0x03)
 	m.sessions[1].handleStart(protocol.SymbolSyn)
 	before := mock.getStartRequests()

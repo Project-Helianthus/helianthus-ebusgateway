@@ -89,9 +89,23 @@ func CanonicalJSON161(result Result161) ([]byte, error) {
 	if d.Attributes == nil || len(d.Attributes) > 1 {
 		return nil, errInput
 	}
+	_, ledger := Ledger()
+	expected := make(map[projection.RequestedItem]projection.ProjectionDisposition, len(ledger))
+	for _, row := range ledger {
+		expected[projection.RequestedItem{Kind: row.Kind, ItemID: row.ItemID}] = row
+	}
 	currentMapped := false
 	for _, row := range result.Report.Dispositions {
-		if row.Kind == projection.ItemFact && row.ItemID == "evse.ac.current" {
+		if row.Kind != projection.ItemFact || row.ItemID != "evse.ac.current" {
+			// The current row is the contract's sole positive mapping; every
+			// other row must equal its unmapped ledger entry.
+			want, ok := expected[projection.RequestedItem{Kind: row.Kind, ItemID: row.ItemID}]
+			if !ok || !reflect.DeepEqual(row, want) {
+				return nil, errInput
+			}
+			continue
+		}
+		{
 			// The ampere-to-milliampere mapping is always a transformation, so an
 			// exact outcome contradicts the projector whether or not an attribute
 			// accompanies it.

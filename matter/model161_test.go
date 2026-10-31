@@ -171,6 +171,32 @@ func TestAA03CanonicalValueAndReportAgreement(t *testing.T) {
 			t.Fatal("accepted attribute without transformed row")
 		}
 	})
+	t.Run("unmapped row claimed exact", func(t *testing.T) {
+		r := aa03Positive(t, aa03Fixture(t))
+		changed := false
+		for i := range r.Report.Dispositions {
+			row := &r.Report.Dispositions[i]
+			if row.Kind != projection.ItemFact || row.ItemID == "evse.ac.current" || row.Outcome != projection.ProjectionUnknown {
+				continue
+			}
+			for _, cur := range r.Report.Dispositions {
+				if cur.ItemID == "evse.ac.current" {
+					row.SourceKeys = cur.SourceKeys
+				}
+			}
+			row.Outcome, row.Loss, row.Reason, changed = projection.ProjectionExact, []projection.LossDetail{}, nil, true
+			break
+		}
+		if !changed {
+			t.Fatal("no unmapped row")
+		}
+		if err := r.Report.Validate(); err != nil {
+			t.Fatalf("variant must stay structurally valid: %v", err)
+		}
+		if raw, err := CanonicalJSON161(r); err == nil || raw != nil {
+			t.Fatal("accepted positive outcome for unmapped row")
+		}
+	})
 	for name, keepAttribute := range map[string]bool{"exact row without attribute": false, "exact row with attribute": true} {
 		t.Run(name, func(t *testing.T) {
 			r := aa03Positive(t, aa03Fixture(t))

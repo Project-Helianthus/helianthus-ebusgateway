@@ -5,6 +5,7 @@ import (
 	"reflect"
 
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
+	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/packs/evse"
 	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/projection"
 )
 
@@ -150,6 +151,12 @@ func currentTransformedRow(row projection.ProjectionDisposition) bool {
 	}
 	key := row.SourceKeys[0]
 	if key.PackID != "helianthus.pack.evse" || key.PackVersion != "1.0.0" || key.FactID != "evse.ac.current" {
+		return false
+	}
+	// The row retains the key but not the value, so a zero-ampere value makes the
+	// pack validator the projector uses judge only the key's dimensions.
+	zero := semreg.Value{Kind: semreg.ValueQuantity, Quantity: &semreg.Quantity{Number: semreg.Decimal{Coefficient: "0"}, Unit: "unit.ampere"}}
+	if evse.New().ValidateFact(key, &zero) != nil {
 		return false
 	}
 	return reflect.DeepEqual(row.Loss, []projection.LossDetail{{

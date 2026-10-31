@@ -416,6 +416,50 @@ func TestAA03ReportAccountingAndCurrentMetadata(t *testing.T) {
 	}
 }
 
+// Each variant stays structurally valid, so only the pack's dimension rule for
+// evse.ac.current can refuse it, matching what Project161 does on the source fact.
+func TestAA03CurrentRowSourceDimensions(t *testing.T) {
+	phaseText, otherText := "l1", "l2"
+	flag := true
+	phase := semreg.Dimension{ID: "evse.dimension.phase", Value: semreg.Value{Kind: semreg.ValueText, Text: &phaseText}}
+	connector := semreg.Dimension{ID: "evse.dimension.connector", Value: semreg.Value{Kind: semreg.ValueText, Text: &otherText}}
+	withDimensions := func(t *testing.T, dimensions []semreg.Dimension) Result161 {
+		t.Helper()
+		r := aa03Positive(t, aa03Fixture(t))
+		for i := range r.Report.Dispositions {
+			if row := &r.Report.Dispositions[i]; row.Kind == projection.ItemFact && row.ItemID == "evse.ac.current" {
+				row.SourceKeys[0].Dimensions = dimensions
+				return r
+			}
+		}
+		t.Fatal("current disposition missing")
+		return r
+	}
+	t.Run("other phase control", func(t *testing.T) {
+		r := withDimensions(t, []semreg.Dimension{{ID: phase.ID, Value: semreg.Value{Kind: semreg.ValueText, Text: &otherText}}})
+		if _, err := CanonicalJSON161(r); err != nil {
+			t.Fatal(err)
+		}
+	})
+	cases := map[string][]semreg.Dimension{
+		"wrong id":   {{ID: connector.ID, Value: phase.Value}},
+		"wrong kind": {{ID: phase.ID, Value: semreg.Value{Kind: semreg.ValueBoolean, Boolean: &flag}}},
+		"missing":    {},
+		"extra":      {connector, phase},
+	}
+	for name, dimensions := range cases {
+		t.Run(name, func(t *testing.T) {
+			r := withDimensions(t, dimensions)
+			if err := r.Report.Validate(); err != nil {
+				t.Fatalf("variant must stay structurally valid: %v", err)
+			}
+			if raw, err := CanonicalJSON161(r); err == nil || raw != nil {
+				t.Fatalf("accepted %s", name)
+			}
+		})
+	}
+}
+
 func TestAA03EmptyProjectionCurrentRowMustBeLedgerRow(t *testing.T) {
 	empty := func() Result161 {
 		f := newMatterFixture(t, []semreg.FactCandidate{})

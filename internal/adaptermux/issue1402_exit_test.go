@@ -440,6 +440,18 @@ func t02CheckArbitrationExit(t *testing.T, tc t02ExitCase, mode v8classifier.Mod
 	if pending || owned || fencedBeforeSYN == lifecycleReset {
 		t.Fatalf("after abort: pending=%v owner=%v fence=%v lifecycleReset=%v", pending, owned, fencedBeforeSYN, lifecycleReset)
 	}
+	// In enforce mode a real foreign winner's telegram stays filtered:
+	// this first AA after its bytes reaches nobody and keeps the fence.
+	// Idle repeats SYN, so the next one is the recovery boundary.
+	if mode == v8classifier.ModeEnforce && !lifecycleReset && !tc.phantom && tc.address != 0x7f {
+		send(syn)
+		m.stateMu.Lock()
+		stillFenced := m.deferRegrantUntilNextSyn
+		m.stateMu.Unlock()
+		if !stillFenced {
+			t.Fatal("first AA after a foreign winner released the fence")
+		}
+	}
 	// No new bid exists at this boundary. It must clear recovery
 	// in both trackers; the following SYN admits a fresh bid.
 	send(syn)
@@ -542,4 +554,184 @@ func t02RawSYNFreezesPreSYNBidBeforeClientResponse(t *testing.T) {
 			t02Result(t, late, 0x31, true)
 		})
 	}
+}
+
+// t02ForeignTelegramFixture drives the real readLoop in enforce mode through a
+// selection that ended with a response naming a foreign winner.
+func t02ForeignTelegramFixture(t *testing.T, raw bool, response transport.StreamEventKind, retire string) (m *Mux, mock *p3MockTransport, send func(transport.StreamEvent), passive func() []byte) {
+	t.Helper()
+	m, mock = newT02Mux(t)
+	var seen []byte
+	m.SetPassiveCallback(func(ev PassiveEvent) { seen = append(seen, ev.Symbol) })
+	m.logger = log.New(io.Discard, "", 0)
+	m.v8 = v8classifier.New(v8classifier.ModeEnforce)
+	m.cfg.IsKnownInitiatorByte = func(b byte) bool { return b != 0x71 }
+	tr := &t02ExitTransport{p3MockTransport: mock, steps: make(chan t02ExitStep)}
+	mock.readDone = m.ctx.Done()
+	m.upstream = tr
+	if raw {
+		m.upstream = &t02RawExitTransport{tr}
+	}
+	m.wg.Add(1)
+	go m.readLoop()
+	t.Cleanup(func() { m.cancel(); m.wg.Wait() })
+	send = func(ev transport.StreamEvent) {
+		t.Helper()
+		step := t02ExitStep{item: upstreamItem{event: ev}, processed: make(chan struct{})}
+		if raw && (ev.Kind == transport.StreamEventByte || ev.Kind == transport.StreamEventWireSyn) {
+			step.item.hasRaw, step.item.rawSymbol = true, ev.Byte
+		}
+		select {
+		case tr.steps <- step:
+		case <-time.After(time.Second):
+			t.Fatal("readLoop not reading")
+		}
+		select {
+		case <-step.processed:
+		case <-time.After(time.Second):
+			t.Fatal("readLoop did not finish dispatch")
+		}
+	}
+	m.requestStartForSession(1, 0x7f)
+	send(transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn})
+	switch retire {
+	case "cancel":
+		m.cancelPendingStart(1)
+	case "absorbTimeout":
+		m.cancelPendingStart(1)
+		m.stateMu.Lock()
+		m.pendingStartAbsorb = 0
+		m.stateMu.Unlock()
+	}
+	send(transport.StreamEvent{Kind: response, Data: 0x10})
+	for len(m.sessions[3].sendCh) > 0 {
+		<-m.sessions[3].sendCh
+	}
+	seen = nil
+	return m, mock, send, func() []byte { return seen }
+}
+
+func TestT02_ForeignWinnerTelegramKeepsAAFilter(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		response transport.StreamEventKind
+		retire   string
+	}{
+		{"FAILED_pending", transport.StreamEventFailed, ""},
+		{"FAILED_cancelled", transport.StreamEventFailed, "cancel"},
+		{"FAILED_absorbTimeout", transport.StreamEventFailed, "absorbTimeout"},
+		{"STARTED_mismatch", transport.StreamEventStarted, ""},
+		{"STARTED_cancelled", transport.StreamEventStarted, "cancel"},
+		{"STARTED_absorbTimeout", transport.StreamEventStarted, "absorbTimeout"},
+	} {
+		for _, raw := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/raw%v", tc.name, raw), func(t *testing.T) {
+				m, mock, send, passive := t02ForeignTelegramFixture(t, raw, tc.response, tc.retire)
+				plain := func(bs ...byte) {
+					t.Helper()
+					for _, b := range bs {
+						send(transport.StreamEvent{Kind: transport.StreamEventByte, Byte: b})
+					}
+				}
+				next := m.requestStartForSession(2, 0x31)
+				plain(0x08, 0xb5) // ZZ PB of the winner's header
+				// The injected AA inside the header must reach nobody and must
+				// not open an arbitration window for the waiting bid.
+				plain(protocol.SymbolSyn)
+				if got := passive(); !reflect.DeepEqual(got, []byte{0x08, 0xb5}) {
+					t.Errorf("passive=%x, injected AA reached observers", got)
+				}
+				for len(m.sessions[3].sendCh) > 0 {
+					if f := <-m.sessions[3].sendCh; f.payload == protocol.SymbolSyn {
+						t.Errorf("session observed injected AA: %+v", f)
+					}
+				}
+				if got := mock.getStartRequests(); !reflect.DeepEqual(got, []byte{0x7f}) {
+					t.Fatalf("injected AA admitted START: %x", got)
+				}
+				// The rest of the telegram is still tracked as the same telegram.
+				plain(0x04, 0x01, 0x55, 0x66, 0x00, 0x01, 0x22, 0x33, 0x00)
+				if got := mock.getStartRequests(); !reflect.DeepEqual(got, []byte{0x7f}) {
+					t.Fatalf("telegram body admitted START: %x", got)
+				}
+				// Its real terminator is a genuine idle SYN: recovery releases.
+				plain(protocol.SymbolSyn)
+				if state := m.v8.FSMInternalState(); state != telegram_fsm.StateIdle {
+					t.Fatalf("classifier after terminator=%v", state)
+				}
+				m.stateMu.Lock()
+				fenced, recovery := m.deferRegrantUntilNextSyn, m.arbitrationRecovery
+				m.stateMu.Unlock()
+				if fenced || recovery != arbitrationRecoveryNone {
+					t.Fatalf("after terminator: fence=%v recovery=%v", fenced, recovery)
+				}
+				// A mismatched STARTED leaves its own physical result outstanding.
+				m.stateMu.Lock()
+				absorb := m.pendingStartAbsorb
+				m.stateMu.Unlock()
+				if absorb > 0 {
+					send(transport.StreamEvent{Kind: transport.StreamEventFailed, Data: 0x71})
+					plain(protocol.SymbolSyn)
+				}
+				plain(protocol.SymbolSyn)
+				if got := mock.getStartRequests(); !reflect.DeepEqual(got, []byte{0x7f, 0x31}) {
+					t.Fatalf("recovered STARTs=%x", got)
+				}
+				_ = next
+			})
+		}
+	}
+}
+
+// An abandoned foreign telegram must not strand the fence: consecutive AAs are
+// idle, while a phantom FAILED or the selected address has no telegram to protect.
+func TestT02_ForeignRecoveryReleasesAtGenuineIdle(t *testing.T) {
+	t.Run("abandoned_telegram", func(t *testing.T) {
+		m, mock, send, passive := t02ForeignTelegramFixture(t, false, transport.StreamEventFailed, "")
+		syn := transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+		m.requestStartForSession(2, 0x31)
+		send(transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x08})
+		send(syn)
+		if got := mock.getStartRequests(); !reflect.DeepEqual(got, []byte{0x7f}) {
+			t.Fatalf("first AA admitted START: %x", got)
+		}
+		send(syn)
+		if got := passive(); !reflect.DeepEqual(got, []byte{0x08, protocol.SymbolSyn}) {
+			t.Fatalf("passive=%x", got)
+		}
+		if state := m.v8.FSMInternalState(); state != telegram_fsm.StateIdle {
+			t.Fatalf("classifier=%v", state)
+		}
+		if got := mock.getStartRequests(); !reflect.DeepEqual(got, []byte{0x7f, 0x31}) {
+			t.Fatalf("idle STARTs=%x", got)
+		}
+	})
+	t.Run("telegram_byte_between_AAs_keeps_filtering", func(t *testing.T) {
+		m, mock, send, _ := t02ForeignTelegramFixture(t, false, transport.StreamEventFailed, "")
+		syn := transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+		m.requestStartForSession(2, 0x31)
+		send(syn)
+		send(transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x08})
+		send(syn)
+		if got := mock.getStartRequests(); !reflect.DeepEqual(got, []byte{0x7f}) {
+			t.Fatalf("separated AAs admitted START: %x", got)
+		}
+	})
+	t.Run("aborted_classifier_recovers_at_first_SYN", func(t *testing.T) {
+		m, mock, send, _ := t02ForeignTelegramFixture(t, false, transport.StreamEventFailed, "")
+		m.requestStartForSession(2, 0x31)
+		for _, b := range []byte{0x08, 0xb5, 0x04, 0x20} { // NN > 16 aborts
+			send(transport.StreamEvent{Kind: transport.StreamEventByte, Byte: b})
+		}
+		if state := m.v8.FSMInternalState(); state != telegram_fsm.StateAborted {
+			t.Fatalf("classifier=%v, want aborted", state)
+		}
+		send(transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn})
+		if state := m.v8.FSMInternalState(); state != telegram_fsm.StateIdle {
+			t.Fatalf("classifier=%v", state)
+		}
+		if got := mock.getStartRequests(); !reflect.DeepEqual(got, []byte{0x7f, 0x31}) {
+			t.Fatalf("STARTs=%x", got)
+		}
+	})
 }

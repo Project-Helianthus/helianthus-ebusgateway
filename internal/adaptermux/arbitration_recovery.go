@@ -1,7 +1,9 @@
 package adaptermux
 
 import (
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux/v8classifier"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
+	"github.com/Project-Helianthus/helianthus-ebusgo/protocol/telegram_fsm"
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
 )
 
@@ -24,20 +26,46 @@ import (
 // Raw-only AA and escaped payload AA cannot complete this transition. A retired
 // selection remains recognizable until the next selection or lifecycle boundary,
 // so a response arriving even after absorb timeout cannot strand the classifier.
+//
+// A response naming a real foreign winner is different: that winner's telegram
+// follows, and in enforce mode an AA inside it stays subject to the filter. The
+// fence then ends at the telegram's own terminator, or at a second consecutive
+// AA for a telegram the winner abandoned, since idle repeats SYN and an injected
+// AA is followed by telegram bytes.
 type arbitrationRecovery uint8
 
 const (
 	arbitrationRecoveryNone arbitrationRecovery = iota
 	arbitrationRecoveryAtSYN
 	arbitrationRecoveryReset
+	arbitrationRecoveryForeign        // winner's telegram expected; no AA seen
+	arbitrationRecoveryForeignAfterAA // the previous item was an unescaped AA
 )
 
 func (m *Mux) fenceArbitrationUntilSYNLocked() {
 	m.retiredSelection = true
 	m.deferRegrantUntilNextSyn = true
-	if m.arbitrationRecovery != arbitrationRecoveryReset {
+	if m.arbitrationRecovery == arbitrationRecoveryNone {
 		m.arbitrationRecovery = arbitrationRecoveryAtSYN
 	}
+}
+
+// expectForeignTelegram upgrades a fence set by the response just consumed when
+// that response named a real foreign winner. A retired win of the selected
+// address and a phantom FAILED have no telegram to protect, and only enforce
+// mode filters, so those keep recovering at the next SYN. readLoop only.
+func (m *Mux) expectForeignTelegram(winner byte) {
+	if m.v8 == nil || m.v8.Mode() != v8classifier.ModeEnforce {
+		return
+	}
+	if m.cfg.IsKnownInitiatorByte != nil && !m.cfg.IsKnownInitiatorByte(winner) {
+		return
+	}
+	m.stateMu.Lock()
+	if m.arbitrationRecovery == arbitrationRecoveryAtSYN && winner != m.localLoserSource {
+		m.arbitrationRecovery = arbitrationRecoveryForeign
+	}
+	m.stateMu.Unlock()
 }
 
 // reconcileArbitrationClassifier runs only on readLoop, before Observe and
@@ -50,6 +78,17 @@ func (m *Mux) reconcileArbitrationClassifier(event transport.StreamEvent) {
 	m.stateMu.Lock()
 	reset := m.arbitrationRecovery == arbitrationRecoveryReset ||
 		(m.arbitrationRecovery == arbitrationRecoveryAtSYN && isSYN)
+	switch m.arbitrationRecovery {
+	case arbitrationRecoveryForeign, arbitrationRecoveryForeignAfterAA:
+		// An aborted classifier filters nothing and only a reset revives it.
+		reset = isSYN && (m.arbitrationRecovery == arbitrationRecoveryForeignAfterAA ||
+			m.v8.FSMInternalState() == telegram_fsm.StateAborted)
+		if isSYN {
+			m.arbitrationRecovery = arbitrationRecoveryForeignAfterAA
+		} else {
+			m.arbitrationRecovery = arbitrationRecoveryForeign
+		}
+	}
 	if reset {
 		m.phase.reset(wirePhaseIdle)
 		m.arbitrationRecovery = arbitrationRecoveryNone

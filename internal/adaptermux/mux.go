@@ -1868,6 +1868,7 @@ func (m *Mux) readLoop() {
 			m.lastWireActivity = time.Now()
 			m.stateMu.Unlock()
 			bidderFailed := m.handleArbitrationResponse(true, event.Data)
+			m.expectForeignTelegram(event.Data)
 			if startedEpoch != m.arb.lifecycleEpoch.Load() {
 				continue
 			}
@@ -2078,6 +2079,7 @@ func (m *Mux) readLoop() {
 			m.stateMu.Unlock()
 
 			bidderFailed := m.handleArbitrationResponse(false, notifyByte)
+			m.expectForeignTelegram(event.Data)
 			if failedEpoch != m.arb.lifecycleEpoch.Load() {
 				continue
 			}
@@ -2720,7 +2722,7 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	var cancelGatewayWatchdog bool
 
 	m.deferRegrantUntilNextSyn = false
-	if m.arbitrationRecovery == arbitrationRecoveryAtSYN {
+	if m.arbitrationRecovery != arbitrationRecoveryReset {
 		m.arbitrationRecovery = arbitrationRecoveryNone
 	}
 

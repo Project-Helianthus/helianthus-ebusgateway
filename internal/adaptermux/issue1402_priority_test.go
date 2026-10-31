@@ -771,3 +771,137 @@ func TestT02_PostSYNReplacementWaitsForNextWindow(t *testing.T) {
 		})
 	}
 }
+
+// t02CheckStartFailure selects 0x31 over a local loser and the gateway while
+// the transport holds the START, then releases it with startErr.
+func t02CheckStartFailure(t *testing.T, m *Mux, release func(), startErr error, cancelSelected bool) {
+	t.Helper()
+	selected := m.requestStartForSession(1, 0x31)
+	gateway := m.requestStartForSession(gatewaySessionID, 0x7f)
+	m.requestStartForSession(2, 0x73)
+	synDone := make(chan struct{})
+	go func() { t02SYN(m); close(synDone) }()
+	deadline := time.Now().Add(time.Second)
+	for {
+		m.stateMu.Lock()
+		pending := m.pendingStart != nil
+		m.stateMu.Unlock()
+		if pending {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("selection did not reach the transport")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t02Failed(t, m, 2, 0x31)
+	select {
+	case got := <-gateway:
+		t.Fatalf("gateway resolved before the START outcome: %+v", got)
+	default:
+	}
+	if cancelSelected {
+		m.cancelPendingStart(1)
+	}
+	release()
+	select {
+	case got := <-gateway:
+		if !errors.Is(got.err, startErr) || errors.Is(got.err, ebuserrors.ErrBusCollision) {
+			t.Fatalf("gateway result=%+v, want the transport error", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("gateway loser was not resolved")
+	}
+	select {
+	case got := <-selected:
+		if got.granted || (!cancelSelected && !errors.Is(got.err, startErr)) {
+			t.Fatalf("selected result=%+v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("selected bid was not failed")
+	}
+	<-synDone
+	m.wg.Wait() // the blocking START goroutine has finished its error path
+	select {
+	case frame := <-m.sessions[2].sendCh:
+		if frame.kind != sessionFrameReceived || frame.payload != protocol.SymbolSyn {
+			t.Fatalf("loser boundary=%+v", frame)
+		}
+	default:
+		t.Fatal("loser kept a source that never reached the wire")
+	}
+	m.stateMu.Lock()
+	owed, losersLeft := m.collisionResyncOwed, len(m.localLosers)
+	m.stateMu.Unlock()
+	if owed != 0 || losersLeft != 0 {
+		t.Fatalf("owed SYNs/local losers = %d/%d, want 0/0", owed, losersLeft)
+	}
+	t02SYN(m)
+	select {
+	case ev := <-m.activeCh:
+		t.Fatalf("gateway received an unneeded resync event: %+v", ev)
+	default:
+	}
+	select {
+	case frame := <-m.sessions[2].sendCh:
+		t.Fatalf("second loser boundary: %+v", frame)
+	default:
+	}
+}
+
+var t02StartFailures = []struct {
+	name   string
+	err    error
+	cancel bool
+}{
+	{"writeError", errors.New("adapter write error"), false},
+	{"adapterReset", fmt.Errorf("adaptermux: %w", ebuserrors.ErrAdapterReset), false},
+	{"selectedCancelled", errors.New("adapter write error"), true},
+}
+
+func TestT02_RequestStartFailureUndoesLocalLosses(t *testing.T) {
+	for _, tc := range t02StartFailures {
+		t.Run(tc.name, func(t *testing.T) {
+			m, _ := newT02Mux(t)
+			tr := &failingStartTransport{p3MockTransport: newP3MockTransport(), startGate: make(chan struct{}), startErr: tc.err}
+			m.upstream = tr
+			t02CheckStartFailure(t, m, func() { close(tr.startGate) }, tc.err, tc.cancel)
+		})
+	}
+}
+
+func TestT02_StartArbitrationFailureUndoesLocalLosses(t *testing.T) {
+	for _, tc := range t02StartFailures {
+		t.Run(tc.name, func(t *testing.T) {
+			m, _ := newT02Mux(t)
+			tr := &gatedBlockingStartTransport{readCh: make(chan byte, 1), startGate: make(chan struct{}), startErr: tc.err}
+			m.upstream = tr
+			t02CheckStartFailure(t, m, func() { close(tr.startGate) }, tc.err, tc.cancel)
+		})
+	}
+}
+
+func TestT02_StartArbitrationAcceptedPublishesGatewayLoss(t *testing.T) {
+	m, _ := newT02Mux(t)
+	tr := &gatedBlockingStartTransport{readCh: make(chan byte, 1), startGate: make(chan struct{})}
+	m.upstream = tr
+	gateway := m.requestStartForSession(gatewaySessionID, 0x7f)
+	m.requestStartForSession(1, 0x31)
+	t02SYN(m)
+	close(tr.startGate)
+	select {
+	case got := <-gateway:
+		if got.granted || got.err != nil || got.initiator != 0x31 {
+			t.Fatalf("gateway result=%+v, want loss to 0x31", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("gateway loser was not resolved")
+	}
+	m.stateMu.Lock()
+	owed := m.collisionResyncOwed
+	m.stateMu.Unlock()
+	if owed != protocol.CollisionRetryResyncSYNCount {
+		t.Fatalf("owed SYNs=%d", owed)
+	}
+	m.wg.Wait()
+}

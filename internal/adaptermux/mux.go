@@ -3795,25 +3795,48 @@ func (m *Mux) tryGrantAndStartForBids(bids map[*startRequest]chan startResult) {
 		m.stateMu.Unlock()
 		return
 	}
+	// An external loser's FAILED must precede the next wire byte, so it is
+	// published now and undone if the START never reaches the adapter. A
+	// collision told to protocol.Bus cannot be undone (it would wait for SYNs
+	// that nobody owes it), so the gateway's loss waits for the START outcome.
+	var gatewayLoser *startRequest
 	for _, loser := range losers {
-		queued := false
-		if loser.sessionID != gatewaySessionID {
-			m.sessionsMu.Lock()
-			if sess := m.sessions[loser.sessionID]; sess != nil {
-				sess.parserResetNeeded.Store(true)
-				sess.deliverFailed(req.initiator)
-				queued = true
-			}
-			m.sessionsMu.Unlock()
-		}
 		if loser.sessionID == gatewaySessionID {
-			m.collisionResyncOwed = protocol.CollisionRetryResyncSYNCount
+			gatewayLoser = loser
+			continue
 		}
+		queued := false
+		m.sessionsMu.Lock()
+		if sess := m.sessions[loser.sessionID]; sess != nil {
+			sess.parserResetNeeded.Store(true)
+			sess.deliverFailed(req.initiator)
+			queued = true
+		}
+		m.sessionsMu.Unlock()
 		loser.notify <- startResult{initiator: req.initiator, failedQueued: queued}
 	}
 	sessionID := req.sessionID
 	initiator := req.initiator
 	notify := req.notify
+	// settleLocalLosses runs once per selection, when the transport call that
+	// carries the START has returned. A nil startErr means the source reached
+	// the adapter and the local losses stand.
+	settleLocalLosses := func(startErr error) {
+		if startErr != nil {
+			m.undoLocalLosses(losers)
+		}
+		if gatewayLoser == nil {
+			return
+		}
+		if startErr != nil {
+			gatewayLoser.notify <- startResult{initiator: gatewayLoser.initiator, err: startErr}
+			return
+		}
+		m.stateMu.Lock()
+		m.collisionResyncOwed = protocol.CollisionRetryResyncSYNCount
+		m.stateMu.Unlock()
+		gatewayLoser.notify <- startResult{initiator: initiator}
+	}
 
 	m.retiredSelection = false
 	m.localLosers = losers
@@ -3936,6 +3959,7 @@ func (m *Mux) tryGrantAndStartForBids(bids map[*startRequest]chan startResult) {
 		m.logger.Printf("adaptermux: RequestStart(0x%02X) sent for session %d", initiator, sessionID)
 		if err := requester.RequestStart(initiator); err != nil {
 			m.logger.Printf("adaptermux: RequestStart failed for session %d: %v", sessionID, err)
+			settleLocalLosses(err)
 			// P1 fix: only send failure if we still own the pending slot.
 			// cancelPendingStart (session disconnect / cancel on another
 			// goroutine) may have already cleared m.pendingStart and sent
@@ -3997,6 +4021,7 @@ func (m *Mux) tryGrantAndStartForBids(bids map[*startRequest]chan startResult) {
 			}
 			return
 		}
+		settleLocalLosses(nil)
 	} else if starter, ok := tr.(interface {
 		StartArbitration(byte) error
 	}); ok {
@@ -4036,6 +4061,7 @@ func (m *Mux) tryGrantAndStartForBids(bids map[*startRequest]chan startResult) {
 		m.closeMu.Lock()
 		if m.closing.Load() {
 			m.closeMu.Unlock()
+			settleLocalLosses(errors.New("adaptermux: closed"))
 			m.stateMu.Lock()
 			if m.pendingStart != nil && m.pendingStart.notify == notify {
 				if m.pendingStart.deadline != nil {
@@ -4074,6 +4100,7 @@ func (m *Mux) tryGrantAndStartForBids(bids map[*startRequest]chan startResult) {
 			if startErr != nil {
 				err := startErr
 				m.logger.Printf("adaptermux: START arbitration failed for session %d: %v", sessionID, err)
+				settleLocalLosses(err)
 				// P1 fix (#3063005909): only send failure if we still own
 				// the pending slot.  cancelPendingStart may have cleared
 				// m.pendingStart and already sent a failure on notify while
@@ -4129,6 +4156,7 @@ func (m *Mux) tryGrantAndStartForBids(bids map[*startRequest]chan startResult) {
 				}
 				return
 			}
+			settleLocalLosses(nil)
 			// Blocking path: adapter already confirmed — handle inline.
 			// P1 fix (#3063005909): verify ownership before completing.
 			// cancelPendingStart may have run while StartArbitration was
@@ -4186,6 +4214,7 @@ func (m *Mux) tryGrantAndStartForBids(bids map[*startRequest]chan startResult) {
 		return
 	} else {
 		m.logger.Printf("adaptermux: transport does not support arbitration")
+		settleLocalLosses(errors.New("adaptermux: transport does not support arbitration"))
 		m.stateMu.Lock()
 		if m.pendingStart != nil && m.pendingStart.notify == notify {
 			if m.pendingStart.deadline != nil {
@@ -5185,6 +5214,22 @@ func (m *Mux) resetLocalLoserSources(losers []*startRequest) {
 		if sess := m.sessions[loser.sessionID]; sess != nil {
 			sess.deliverReceived(protocol.SymbolSyn)
 		}
+	}
+}
+
+// undoLocalLosses retracts the source advertised by local FAILED when its START
+// never reached the adapter. A SYN or RESETTED seen since publication already
+// cleared localLosers and gave these sessions their boundary, and a later
+// selection owns any list it installed, so only the same list is reset here.
+func (m *Mux) undoLocalLosses(losers []*startRequest) {
+	m.stateMu.Lock()
+	current := len(losers) > 0 && len(m.localLosers) > 0 && m.localLosers[0] == losers[0]
+	if current {
+		m.localLosers = nil
+	}
+	m.stateMu.Unlock()
+	if current {
+		m.resetLocalLoserSources(losers)
 	}
 }
 

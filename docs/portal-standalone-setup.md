@@ -81,8 +81,14 @@ fields fresh or erase their last-known evidence.
 
 ## Recover without resetting accepted state
 
-- For `revision_conflict`, reload saved choices, review the newer record and
-  reapply the intended edit. Do not force an old revision or reset its counter.
+- For `revision_conflict` from a stale browser edit, reload saved choices,
+  review the newer record and reapply the intended edit. Do not force an old
+  revision or reset its counter. If the conflict persists after a reload, the
+  record file was replaced outside the Portal: the gateway latches that error,
+  keeps the previous record as historical state and repeats the conflict on every
+  reload. Reloading cannot clear it; have the host operator perform controlled
+  local repair of the record and restart the gateway, then read configuration
+  back.
 - For `unsupported_selection`, choose a provisioned option; for
   `listener_conflict` or `invalid_binding`, have the host operator repair
   bindings. The rejected edit is not applied. The Portal retains input on an

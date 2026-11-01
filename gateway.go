@@ -7,6 +7,8 @@ import (
 	"log"
 	"net"
 	"net/url"
+	"os"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,6 +20,11 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 	"github.com/Project-Helianthus/helianthus-ebusreg/router"
 )
+
+// TransportNetworkSerial is the TransportConfig.Network value of a serial
+// adapter device; Address then carries the device path. It matches
+// adaptermux.NetworkSerial.
+const TransportNetworkSerial = "serial"
 
 type Gateway struct {
 	Transport transport.RawTransport
@@ -186,9 +193,16 @@ func normalizeTransportConfig(config TransportConfig) (TransportConfig, error) {
 	config.Network = strings.ToLower(strings.TrimSpace(config.Network))
 	config.Address = strings.TrimSpace(config.Address)
 
-	if !strings.Contains(config.Address, "://") {
+	if !strings.Contains(config.Address, "://") && !isSerialEndpointForm(config.Address) {
 		if config.Protocol == "" {
 			config.Protocol = TransportENH
+		}
+		serial, isSerial, err := normalizeSerialDeviceConfig(config)
+		if err != nil {
+			return TransportConfig{}, fmt.Errorf("invalid gateway transport endpoint: %w: %w", ebuserrors.ErrInvalidPayload, err)
+		}
+		if isSerial {
+			return serial, nil
 		}
 		if isAdapterDirectTransportProtocol(config.Protocol) &&
 			(config.Network == "" || (config.Network == "unix" && strings.Contains(config.Address, ":"))) {
@@ -205,6 +219,71 @@ func normalizeTransportConfig(config TransportConfig) (TransportConfig, error) {
 	config.Network = network
 	config.Address = address
 	return config, nil
+}
+
+// normalizeSerialDeviceConfig resolves a bare device path, or an explicit serial
+// network, to the adapter-direct path. Only the embedded adapter mux owns a
+// serial device, and only the enhanced protocols run over one.
+func normalizeSerialDeviceConfig(config TransportConfig) (TransportConfig, bool, error) {
+	explicit := config.Network == TransportNetworkSerial
+	if !explicit && ((config.Network != "" && config.Network != "unix") || !isSerialDevicePath(config.Address)) {
+		return config, false, nil
+	}
+	protocol, ok := serialAdapterDirectProtocol(config.Protocol)
+	if !ok {
+		if explicit {
+			return config, false, fmt.Errorf("protocol %q cannot use a serial device", config.Protocol)
+		}
+		return config, false, nil
+	}
+	if !path.IsAbs(config.Address) {
+		return config, false, fmt.Errorf("serial device path %q is not absolute", config.Address)
+	}
+	config.Protocol = protocol
+	config.Network = TransportNetworkSerial
+	return config, true, nil
+}
+
+func serialAdapterDirectProtocol(protocol TransportProtocol) (TransportProtocol, bool) {
+	switch protocol {
+	case TransportENH, TransportAdapterDirect:
+		return TransportAdapterDirect, true
+	case TransportENS, transportAdapterDirectENS:
+		return transportAdapterDirectENS, true
+	default:
+		return "", false
+	}
+}
+
+// isSerialEndpointForm recognizes the path-only URI form, such as
+// ens:/dev/ttyUSB0. A host:port address cannot match: it has no slash.
+func isSerialEndpointForm(address string) bool {
+	scheme, rest, ok := strings.Cut(address, ":")
+	return ok && isSerialCapableScheme(strings.ToLower(scheme)) && isSerialDevicePath(rest)
+}
+
+func isSerialCapableScheme(scheme string) bool {
+	switch scheme {
+	case "enh", "ens", "adapter-direct", "adapter-direct-ens":
+		return true
+	default:
+		return false
+	}
+}
+
+// isSerialDevicePath distinguishes a serial device from a Unix socket: any path
+// under /dev/ qualifies even while its device is unplugged, any other path only
+// while it resolves to a character device.
+func isSerialDevicePath(devicePath string) bool {
+	if !path.IsAbs(devicePath) {
+		return false
+	}
+	devicePath = path.Clean(devicePath)
+	if strings.HasPrefix(devicePath, "/dev/") {
+		return true
+	}
+	info, err := os.Stat(devicePath)
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }
 
 func isAdapterDirectTransportProtocol(protocol TransportProtocol) bool {
@@ -311,7 +390,8 @@ func parseTransportEndpoint(endpoint string, fallbackProtocol TransportProtocol)
 		protocol = TransportENH
 	case "ens":
 		// ebusd semantics: ENS is an ENH variant (serial speed selector).
-		// For TCP/UDP endpoints, ENS behaves as ENH.
+		// On serial, ens and enh differ by speed (see the serial device
+		// branch below); on TCP/UDP endpoints they are equivalent.
 		protocol = TransportENH
 	case "udp-plain":
 		protocol = TransportUDPPlain
@@ -344,6 +424,16 @@ func parseTransportEndpoint(endpoint string, fallbackProtocol TransportProtocol)
 	case parsed.Path != "" && parsed.Path != "/":
 		network = "unix"
 		address = strings.TrimSpace(parsed.Path)
+		if isSerialCapableScheme(scheme) && isSerialDevicePath(address) {
+			if parsed.RawQuery != "" || parsed.Fragment != "" {
+				return "", "", "", fmt.Errorf("gateway transport endpoint %q has a query or fragment on a serial device path", endpoint)
+			}
+			network = TransportNetworkSerial
+			protocol = TransportAdapterDirect
+			if scheme == "ens" || scheme == "adapter-direct-ens" {
+				protocol = transportAdapterDirectENS
+			}
+		}
 	default:
 		return "", "", "", fmt.Errorf("gateway transport endpoint %q missing host or unix path", endpoint)
 	}

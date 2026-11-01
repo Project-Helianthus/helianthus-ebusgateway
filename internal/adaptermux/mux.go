@@ -33,7 +33,8 @@ type Config struct {
 	// Protocol is "enh" or "ens".
 	Protocol string
 
-	// Network and Address specify the adapter endpoint (e.g., "tcp", "boiler.local:9999").
+	// Network and Address specify the adapter endpoint (e.g., "tcp",
+	// "boiler.local:9999", or NetworkSerial and an absolute device path).
 	Network string
 	Address string
 
@@ -1081,15 +1082,31 @@ func (m *Mux) ManagedConnectionReady() bool {
 	return ready
 }
 
-// connect dials the adapter and performs the INIT handshake.
+// openUpstreamConn opens the serial device or dials the network endpoint.
+func (m *Mux) openUpstreamConn() (net.Conn, error) {
+	if m.cfg.Network == NetworkSerial {
+		conn, err := openSerialConn(m.cfg.Address, m.cfg.Protocol)
+		if err != nil {
+			return nil, fmt.Errorf("open serial %s: %w", m.cfg.Address, err)
+		}
+		return conn, nil
+	}
+	dialer := net.Dialer{Timeout: m.cfg.DialTimeout}
+	conn, err := dialer.DialContext(m.ctx, m.cfg.Network, m.cfg.Address)
+	if err != nil {
+		return nil, fmt.Errorf("dial %s/%s: %w", m.cfg.Network, m.cfg.Address, err)
+	}
+	return conn, nil
+}
+
+// connect opens the adapter connection and performs the INIT handshake.
 func (m *Mux) connect() error {
 	m.connMu.Lock()
 	defer m.connMu.Unlock()
 
-	dialer := net.Dialer{Timeout: m.cfg.DialTimeout}
-	conn, err := dialer.DialContext(m.ctx, m.cfg.Network, m.cfg.Address)
+	conn, err := m.openUpstreamConn()
 	if err != nil {
-		return fmt.Errorf("dial %s/%s: %w", m.cfg.Network, m.cfg.Address, err)
+		return err
 	}
 
 	// Set TCP options (log failures instead of discarding).

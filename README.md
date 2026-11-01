@@ -199,15 +199,46 @@ go run ./cmd/gateway -address ens://127.0.0.1:19002 -http-addr :8080
 go run ./cmd/gateway -address ebusd-tcp://127.0.0.1:9999 -http-addr :8080
 go run ./cmd/gateway -address udp-plain://203.0.113.10:9999 -http-addr :8080
 go run ./cmd/gateway -address tcp-plain://203.0.113.10:9999 -http-addr :8080
+go run ./cmd/gateway -address ens:/dev/ttyUSB0 -http-addr :8080
+go run ./cmd/gateway -address enh:/dev/ttyUSB0 -http-addr :8080
 ```
+
+### Serial adapter devices
+
+An absolute device path selects the adapter-direct path: the embedded adapter
+mux opens the device instead of dialing, and external ENH clients keep connecting
+to the mux as with a network adapter. The scheme selects the speed, because on
+serial `ens` and `enh` differ by speed only; on TCP and UDP they are equivalent.
+
+| Endpoint | Protocol | Speed |
+|---|---|---|
+| `ens:/dev/ttyUSB0`, `ens:///dev/ttyUSB0`, `adapter-direct-ens:///dev/ttyUSB0` | ENS | 115200 Baud |
+| `enh:/dev/ttyUSB0`, `enh:///dev/ttyUSB0`, `adapter-direct:///dev/ttyUSB0` | ENH | 9600 Baud |
+
+Prefer the stable link of a USB serial adapter, which survives a replug and a
+change of the enumeration order:
+
+```bash
+go run ./cmd/gateway -address ens:/dev/serial/by-id/<device-id> -http-addr :8080
+```
+
+The port is configured as raw 8N1 without flow control and opened with exclusive
+access, so a second program cannot share it. An unplugged device is an ordinary
+disconnect: the mux reopens the same path with its reconnect backoff.
+
+A path counts as a serial device when it lies under `/dev/` or, elsewhere, when
+it resolves to a character device. Any other path stays a Unix socket. The bare
+form `-transport ens -address /dev/ttyUSB0` is equivalent to the URI form, and
+`-network serial` forces the classification for a path outside `/dev/` that does
+not exist yet. Serial devices are supported on Linux and macOS.
 
 ## Gateway Flag Cheat Sheet
 
 | Flag | Default | Notes |
 |---|---|---|
 | `-transport` | `enh` | `enh`, `ens`, `ebusd-tcp`, `udp-plain`, `tcp-plain` |
-| `-network` | `unix` | `unix`, `tcp`, or `udp` |
-| `-address` | `/var/run/ebusd/ebusd.socket` | socket path, `host:port`, or endpoint URI |
+| `-network` | `unix` | `unix`, `tcp`, `udp`, or `serial` |
+| `-address` | `/var/run/ebusd/ebusd.socket` | socket path, serial device path, `host:port`, or endpoint URI |
 | `-http-addr` | `:8080` | empty disables HTTP server |
 | `-graphql-path` | `/graphql` | query/mutation endpoint |
 | `-subscription-path` | `/graphql/subscriptions` | WebSocket/SSE subscriptions |

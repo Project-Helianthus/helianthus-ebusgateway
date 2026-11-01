@@ -238,10 +238,14 @@ type gatewayLeadWait struct {
 	// very next raw symbol decides the pair. Read and written only by the
 	// readLoop goroutine (observeGatewayLeadEcho).
 	leadSeen bool
-	// suffixState orders the suffix commit against the readLoop: a symbol that
-	// resolves the wait before the commit claims it (state 0 -> 2) was observed
-	// before the suffix existed on the wire, so the commit withholds the suffix
-	// and the symbol cannot be taken for the suffix's echo.
+	// mu makes the resolution of the wait and the suffix commit one ordered
+	// step each. The readLoop resolves the wait (unpublish, suffixState,
+	// result) under mu; the commit claims the write and performs tr.Write
+	// under mu. A symbol that resolves the wait first (state 0 -> 2) was
+	// observed before the suffix existed on the wire, so the commit withholds
+	// the suffix; a symbol resolved after the claim waits for the write to
+	// return, so it cannot be taken for the echo of a suffix not yet emitted.
+	mu          sync.Mutex
 	suffixState atomic.Int32
 }
 
@@ -315,15 +319,21 @@ func (m *Mux) observeGatewayLeadEcho(symbol byte, logical transport.StreamEvent)
 			close(w.leadEchoed)
 			return
 		}
-		if m.gatewayLeadWait.CompareAndSwap(w, nil) {
-			early := w.suffixState.CompareAndSwap(suffixPending, suffixRefuted)
-			w.result <- gatewayLeadOutcome{observed: symbol, early: early}
-		}
+		m.resolveGatewayLeadWait(w, symbol, false)
 		return
 	}
+	m.resolveGatewayLeadWait(w, symbol, true)
+}
+
+// resolveGatewayLeadWait decides the wait with symbol, atomically with respect
+// to the suffix commit: it unpublishes the wait, marks a symbol seen before
+// the commit claimed the write as refuting, and publishes the outcome.
+func (m *Mux) resolveGatewayLeadWait(w *gatewayLeadWait, symbol byte, suffixStep bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	if m.gatewayLeadWait.CompareAndSwap(w, nil) {
 		early := w.suffixState.CompareAndSwap(suffixPending, suffixRefuted)
-		w.result <- gatewayLeadOutcome{observed: symbol, suffixStep: true, early: early}
+		w.result <- gatewayLeadOutcome{observed: symbol, suffixStep: suffixStep, early: early}
 	}
 }
 
@@ -488,12 +498,19 @@ func (m *Mux) writeSymbols(tr transport.RawTransport, symbols []byte) error {
 	var writeErr error
 	var refuted *gatewayLeadOutcome
 	commitErr := m.arb.commitWhileOwnershipCurrent(tok, func() error {
-		if wait != nil && !wait.suffixState.CompareAndSwap(suffixPending, suffixCommitted) {
-			// A symbol decided the pair after the pacing returned: the
-			// suffix is not transmitted and its outcome fails the write.
-			out := <-wait.result
-			refuted = &out
-			return nil
+		if wait != nil {
+			// Held across the claim and the write: the readLoop cannot
+			// resolve the wait in between, so a symbol is either before the
+			// claim (suffix withheld) or after the write returned.
+			wait.mu.Lock()
+			defer wait.mu.Unlock()
+			if !wait.suffixState.CompareAndSwap(suffixPending, suffixCommitted) {
+				// A symbol decided the pair after the pacing returned: the
+				// suffix is not transmitted and its outcome fails the write.
+				out := <-wait.result
+				refuted = &out
+				return nil
+			}
 		}
 		_, writeErr = tr.Write([]byte{suffix})
 		return writeErr

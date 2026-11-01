@@ -688,3 +688,29 @@ func TestEscapePair_SymbolBetweenPacingAndCommitWithholdsTheSuffix(t *testing.T)
 		})
 	}
 }
+
+// Kills: the readLoop unpublishing the wait and being preempted before it
+// marks the pair decided, while the writer commits and transmits the suffix and
+// an earlier symbol equal to the suffix is accepted as its echo.
+func TestEscapePair_ResolutionInFlightWithholdsTheSuffix(t *testing.T) {
+	mux, up, _ := newRawContinuityMux(t)
+	grantRawGateway(t, mux, up, 0x10)
+	mux.gatewaySuffixCommitHook = func() {
+		w := mux.gatewayLeadWait.Load()
+		w.mu.Lock()
+		mux.gatewayLeadWait.CompareAndSwap(w, nil)
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			early := w.suffixState.CompareAndSwap(suffixPending, suffixRefuted)
+			w.result <- gatewayLeadOutcome{observed: 0x00, suffixStep: true, early: early}
+			w.mu.Unlock()
+		}()
+	}
+	before := len(up.written())
+	if _, err := mux.ActiveTransport().Write([]byte{protocol.SymbolEscape}); err == nil {
+		t.Fatal("Write succeeded; want the pair failed")
+	}
+	if got := up.written()[before:]; !equalBytes(got, []byte{protocol.SymbolEscape}) {
+		t.Fatalf("wire = %x; want the lead only, the suffix withheld", got)
+	}
+}

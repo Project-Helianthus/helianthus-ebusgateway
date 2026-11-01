@@ -440,9 +440,6 @@ func (h *Host) start(ctx context.Context) error {
 	if latest.Generations != request.Generations {
 		return h.unavailable(ReasonGenerationMismatch)
 	}
-	if ctx.Err() != nil {
-		return h.unavailable(ReasonCancelled)
-	}
 	return h.launch(ctx, request, class)
 }
 
@@ -525,6 +522,13 @@ func (h *Host) launch(ctx context.Context, request Request, class BindingClass) 
 	lifecycle, cancel := context.WithCancel(context.Background())
 	g := &generation{class: class, ctx: lifecycle, cancel: cancel, drained: make(chan struct{})}
 	h.mu.Lock()
+	// Stop cancels the start context under h.mu, so this check cannot race a
+	// Stop that found no generation to fence.
+	if ctx.Err() != nil {
+		h.mu.Unlock()
+		cancel()
+		return h.unavailable(ReasonCancelled)
+	}
 	h.epoch++
 	g.stamp = Stamp{Selection: request.Selection, Generations: request.Generations, Epoch: h.epoch, Token: request.Token}
 	h.current = g

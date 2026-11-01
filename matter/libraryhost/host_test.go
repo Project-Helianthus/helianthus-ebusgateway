@@ -1207,6 +1207,41 @@ func TestAA17PartialConstructionWithHungCloseQuarantinesWithinBudget(t *testing.
 
 // Catches: a Stop that times out on the operation lock leaves a start in
 // flight unfenced, so a binding launches after shutdown returned.
+// Catches: launch installing a generation and calling the factory after an
+// expired-budget Stop ran between the last capture and generation installation.
+func TestAA17StopBeforeGenerationInstallNeverConstructs(t *testing.T) {
+	rig := aa17NewRig()
+	var host *Host
+	rig.captureHook = func(context.Context) error {
+		rig.mu.Lock()
+		second := rig.captures == 2
+		rig.mu.Unlock()
+		if second {
+			expired, cancel := context.WithCancel(context.Background())
+			cancel()
+			if err := host.Stop(expired); !errors.Is(err, context.Canceled) {
+				t.Errorf("stop err=%v", err)
+			}
+		}
+		return nil
+	}
+	host = New(rig.config())
+	aa17RequireReason(t, host.Start(context.Background()), ReasonCancelled)
+	if _, _, _, news, _ := rig.counts(); news != 0 {
+		t.Fatalf("binding constructed after stop: news=%d", news)
+	}
+	aa17RequireReleased(t, host)
+	rig.mu.Lock()
+	rig.captureHook = nil
+	rig.mu.Unlock()
+	if err := host.Start(context.Background()); err != nil {
+		t.Fatalf("later start: %v", err)
+	}
+	if err := host.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAA17StopFencesAStartHoldingTheOperationLock(t *testing.T) {
 	rig := aa17NewRig()
 	entered, release := make(chan struct{}), make(chan struct{})

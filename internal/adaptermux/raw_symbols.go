@@ -5,6 +5,7 @@ import (
 	"expvar"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
@@ -237,10 +238,22 @@ type gatewayLeadWait struct {
 	// very next raw symbol decides the pair. Read and written only by the
 	// readLoop goroutine (observeGatewayLeadEcho).
 	leadSeen bool
+	// suffixState orders the suffix commit against the readLoop: a symbol that
+	// resolves the wait before the commit claims it (state 0 -> 2) was observed
+	// before the suffix existed on the wire, so the commit withholds the suffix
+	// and the symbol cannot be taken for the suffix's echo.
+	suffixState atomic.Int32
 }
+
+const (
+	suffixPending   int32 = 0
+	suffixCommitted int32 = 1 // the commit claimed the write
+	suffixRefuted   int32 = 2 // a symbol decided the pair before the commit
+)
 
 type gatewayLeadOutcome struct {
 	observed   byte
+	early      bool  // observed before the suffix commit claimed the write
 	suffixStep bool  // observed answered the suffix (else the lead)
 	err        error // non-nil when a lifecycle boundary retired the wait
 }
@@ -303,12 +316,14 @@ func (m *Mux) observeGatewayLeadEcho(symbol byte, logical transport.StreamEvent)
 			return
 		}
 		if m.gatewayLeadWait.CompareAndSwap(w, nil) {
-			w.result <- gatewayLeadOutcome{observed: symbol}
+			early := w.suffixState.CompareAndSwap(suffixPending, suffixRefuted)
+			w.result <- gatewayLeadOutcome{observed: symbol, early: early}
 		}
 		return
 	}
 	if m.gatewayLeadWait.CompareAndSwap(w, nil) {
-		w.result <- gatewayLeadOutcome{observed: symbol, suffixStep: true}
+		early := w.suffixState.CompareAndSwap(suffixPending, suffixRefuted)
+		w.result <- gatewayLeadOutcome{observed: symbol, suffixStep: true, early: early}
 	}
 }
 
@@ -333,14 +348,14 @@ func (m *Mux) paceGatewaySuffix(w *gatewayLeadWait) error {
 	case <-leadEchoed:
 	case <-timer.C:
 	case out := <-result:
-		return m.gatewayPairFailure(w, out, false)
+		return m.gatewayPairFailure(w, out)
 	case <-m.ctx.Done():
 		m.dropGatewayLeadWait(w)
 		return fmt.Errorf("adaptermux: %w", m.ctx.Err())
 	}
 	select {
 	case out := <-result:
-		return m.gatewayPairFailure(w, out, false)
+		return m.gatewayPairFailure(w, out)
 	default:
 	}
 	return nil
@@ -354,7 +369,7 @@ func (m *Mux) awaitGatewayLeadEcho(w *gatewayLeadWait) error {
 	defer timer.Stop()
 	select {
 	case out := <-w.result:
-		return m.gatewayPairFailure(w, out, true)
+		return m.gatewayPairFailure(w, out)
 	case <-timer.C:
 		m.dropGatewayLeadWait(w)
 		e := &gatewayEscapeEchoError{step: gatewayEscapeStepLead, lead: w.lead, written: w.lead, cause: ebuserrors.ErrTimeout}
@@ -374,7 +389,7 @@ func (m *Mux) awaitGatewayLeadEcho(w *gatewayLeadWait) error {
 // gatewayPairFailure turns a resolved wait into the write's error, nil when the
 // suffix was written and its echo followed the lead's. A verification failure
 // is recorded; a wait retired by a lifecycle boundary is not one.
-func (m *Mux) gatewayPairFailure(w *gatewayLeadWait, out gatewayLeadOutcome, suffixWritten bool) error {
+func (m *Mux) gatewayPairFailure(w *gatewayLeadWait, out gatewayLeadOutcome) error {
 	if out.err != nil {
 		return out.err
 	}
@@ -386,6 +401,7 @@ func (m *Mux) gatewayPairFailure(w *gatewayLeadWait, out gatewayLeadOutcome, suf
 		echoObserved: true,
 		cause:        ebuserrors.ErrBusCollision,
 	}
+	suffixWritten := !out.early
 	if out.suffixStep {
 		if suffixWritten && out.observed == w.suffix {
 			return nil
@@ -470,10 +486,21 @@ func (m *Mux) writeSymbols(tr transport.RawTransport, symbols []byte) error {
 		hook()
 	}
 	var writeErr error
+	var refuted *gatewayLeadOutcome
 	commitErr := m.arb.commitWhileOwnershipCurrent(tok, func() error {
+		if wait != nil && !wait.suffixState.CompareAndSwap(suffixPending, suffixCommitted) {
+			// A symbol decided the pair after the pacing returned: the
+			// suffix is not transmitted and its outcome fails the write.
+			out := <-wait.result
+			refuted = &out
+			return nil
+		}
 		_, writeErr = tr.Write([]byte{suffix})
 		return writeErr
 	})
+	if commitErr == nil && refuted != nil {
+		return errGatewayLeadEcho{err: m.gatewayPairFailure(wait, *refuted)}
+	}
 	if commitErr != nil {
 		if wait != nil {
 			m.dropGatewayLeadWait(wait)

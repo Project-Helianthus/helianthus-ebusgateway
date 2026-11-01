@@ -32,9 +32,13 @@ deterministic regressions in `raw_symbol_continuity_test.go`:
   immediately after it must be the suffix, and the pair is then verified
   through the escaped logical echo. A mismatched lead or a malformed suffix
   fails the write as a collision; a later well-formed pair never
-  acknowledges it. The pair's two SEND requests go out back to back,
-  because waiting a round trip for the lead's echo could exceed the upstream
-  decoder's 32 ms escape-pending cap and split a correct pair. Lead and
+  acknowledges it. The pair's two SEND requests are paced: the suffix is
+  written when the lead's raw echo is observed or after a bound of three wire
+  symbols, whichever comes first, because an adapter transmits one SEND at a
+  time and an unbounded wait for the echo could exceed the upstream
+  decoder's 32 ms escape-pending cap and split a correct pair. A symbol that
+  decides the pair before the suffix is committed fails it and the suffix is
+  not transmitted. Lead and
   suffix are each committed under the arbitrator lock, which every ownership
   transition takes, after checking the reset, reconnect or close fence: a
   commit that checks after a boundary sends nothing and the write fails

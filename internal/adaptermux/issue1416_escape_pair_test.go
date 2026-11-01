@@ -657,3 +657,34 @@ func TestEscapePair_FailureLogIsRateLimitedAndCountsAreNot(t *testing.T) {
 		t.Fatalf("SuffixFailures = %d; want 4", got)
 	}
 }
+
+// Kills: a symbol that arrives after the pacing returned but before the suffix
+// commit being taken for the suffix's echo, or the suffix still being
+// transmitted for a pair that is already decided.
+func TestEscapePair_SymbolBetweenPacingAndCommitWithholdsTheSuffix(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		observed []byte
+	}{
+		{"equal to the suffix", []byte{protocol.SymbolEscape, 0x00}},
+		{"wrong lead", []byte{0x55}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			mux, up, _ := newRawContinuityMux(t)
+			grantRawGateway(t, mux, up, 0x10)
+			mux.gatewaySuffixCommitHook = func() {
+				for _, b := range test.observed {
+					mux.observeGatewayLeadEcho(b, transport.StreamEvent{})
+				}
+			}
+			before := len(up.written())
+			_, err := mux.ActiveTransport().Write([]byte{protocol.SymbolEscape})
+			if err == nil {
+				t.Fatal("Write succeeded; want the pair failed")
+			}
+			if got := up.written()[before:]; !equalBytes(got, []byte{protocol.SymbolEscape}) {
+				t.Fatalf("wire = %x; want the lead only, the suffix withheld", got)
+			}
+		})
+	}
+}

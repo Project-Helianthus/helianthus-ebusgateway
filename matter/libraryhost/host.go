@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/matter"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
@@ -185,7 +186,13 @@ type Config struct {
 	Qualifier Qualifier
 	Snapshots SnapshotPort
 	NewToken  func() (string, error)
+	// CleanupBudget bounds the teardown of a binding built under a start that
+	// was cancelled; zero selects DefaultCleanupBudget.
+	CleanupBudget time.Duration
 }
+
+// DefaultCleanupBudget is the teardown allowance after a cancelled start.
+const DefaultCleanupBudget = 10 * time.Second
 
 // State is the host's contract state.
 type State string
@@ -485,8 +492,15 @@ func (h *Host) launch(ctx context.Context, request Request, class BindingClass) 
 		h.mu.Lock()
 		g.binding = binding
 		h.mu.Unlock()
-		// The cancelled context cannot carry the teardown; the binding's own Close bounds it.
-		if teardownErr := h.teardown(context.WithoutCancel(ctx), g); teardownErr != nil {
+		// The cancelled context cannot carry the teardown: use a finite budget and
+		// quarantine on expiry so Start never hangs under the lifecycle lock.
+		budget := h.cfg.CleanupBudget
+		if budget <= 0 {
+			budget = DefaultCleanupBudget
+		}
+		cleanup, release := context.WithTimeout(context.WithoutCancel(ctx), budget)
+		defer release()
+		if teardownErr := h.teardown(cleanup, g); teardownErr != nil {
 			return teardownErr
 		}
 		return h.unavailable(ReasonCancelled)

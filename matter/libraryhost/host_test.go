@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/matter"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
@@ -944,7 +945,7 @@ func aa17DisallowedImports(t *testing.T, source any) []string {
 		t.Fatal(err)
 	}
 	allowed := map[string]bool{
-		"context": true, "crypto/rand": true, "encoding/hex": true, "errors": true, "fmt": true, "sync": true,
+		"context": true, "crypto/rand": true, "encoding/hex": true, "errors": true, "fmt": true, "sync": true, "time": true,
 		"github.com/Project-Helianthus/helianthus-ebusgateway/matter": true,
 		"github.com/Project-Helianthus/helianthus-semreg/semreg/v1":   true,
 	}
@@ -1137,5 +1138,29 @@ func TestAA17TokenReplayAcrossLifecyclesIsRefused(t *testing.T) {
 	aa17RequireReason(t, host.Start(ctx), ReasonTokenReused)
 	if _, _, _, news, _ := rig.counts(); news != 2 {
 		t.Fatalf("news=%d", news)
+	}
+}
+
+func TestAA17CancelledStartWithHungCloseQuarantinesWithinBudget(t *testing.T) {
+	rig := aa17NewRig()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rig.onNew = func(*Session) { cancel() }
+	rig.closeHook = func(c context.Context) error {
+		<-c.Done()
+		return c.Err()
+	}
+	cfg := rig.config()
+	cfg.CleanupBudget = 20 * time.Millisecond
+	host := New(cfg)
+	err := host.Start(ctx)
+	if !errors.Is(err, ErrQuiesce) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err=%v", err)
+	}
+	if status := host.Status(); status.State != StateQuarantined || status.Resources != 1 {
+		t.Fatalf("status=%+v", status)
+	}
+	if err := host.Start(context.Background()); !errors.Is(err, ErrQuarantined) {
+		t.Fatalf("restart err=%v", err)
 	}
 }

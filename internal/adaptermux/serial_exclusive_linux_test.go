@@ -13,7 +13,7 @@ import (
 // also holds for a privileged test user, whom the kernel lets through.
 func TestOpenSerialConn_ExclusiveOpenIsRefusedByTheKernel(t *testing.T) {
 	pair := ptytest.Open(t)
-	conn := openSerialForTest(t, pair.SlavePath, "ens")
+	conn := openSerialForTest(t, pair.DevicePath, "ens")
 
 	raw, err := conn.(*serialConn).serialPort.(*os.File).SyscallConn()
 	if err != nil {
@@ -36,7 +36,7 @@ func TestOpenSerialConn_ExclusiveOpenIsRefusedByTheKernel(t *testing.T) {
 	if os.Geteuid() == 0 {
 		return
 	}
-	second, err := openSerialConn(pair.SlavePath, "ens")
+	second, err := openSerialConn(pair.DevicePath, "ens")
 	if err == nil {
 		_ = second.Close()
 		t.Fatal("second open succeeded while the device is held")

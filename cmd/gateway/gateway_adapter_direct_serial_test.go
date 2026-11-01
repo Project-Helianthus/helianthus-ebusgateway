@@ -47,7 +47,7 @@ func TestWireAdapterDirect_SerialFormsReachTheMux(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			pair := ptytest.Open(t)
 			adapter := ptytest.ServeAdapter(pair)
-			cfg := ebusgateway.Config{TransportConfig: test.config(pair.SlavePath)}
+			cfg := ebusgateway.Config{TransportConfig: test.config(pair.DevicePath)}
 			if got := ebusgateway.EBusDriverTransportProtocol(cfg.TransportConfig); got != ebusgateway.TransportAdapterDirect {
 				t.Fatalf("driver protocol = %q, want adapter-direct", got)
 			}
@@ -63,7 +63,7 @@ func TestWireAdapterDirect_SerialFormsReachTheMux(t *testing.T) {
 			if got := pair.Baud(t); got != test.baud {
 				t.Fatalf("speed = %d, want %d", got, test.baud)
 			}
-			if cfg.TransportConfig.Network != ebusgateway.TransportNetworkSerial || cfg.TransportConfig.Address != pair.SlavePath {
+			if cfg.TransportConfig.Network != ebusgateway.TransportNetworkSerial || cfg.TransportConfig.Address != pair.DevicePath {
 				t.Fatalf("normalized tuple %q %q", cfg.TransportConfig.Network, cfg.TransportConfig.Address)
 			}
 		})

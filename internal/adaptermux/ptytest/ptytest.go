@@ -16,11 +16,11 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// Pair is one pseudo-terminal: the test plays the adapter on the master side,
-// the code under test opens SlavePath.
+// Pair is one pseudo-terminal: the test plays the adapter on the peer side,
+// the code under test opens DevicePath.
 type Pair struct {
-	Master    *os.File
-	SlavePath string
+	Peer       *os.File
+	DevicePath string
 
 	closeOnce sync.Once
 	done      chan struct{}
@@ -34,38 +34,38 @@ func Open(t testing.TB) *Pair {
 	if err != nil {
 		t.Fatalf("open /dev/ptmx: %v", err)
 	}
-	path, err := unlockSlave(fd)
+	path, err := unlockDevice(fd)
 	if err != nil {
 		_ = unix.Close(fd)
 		t.Fatalf("unlock pty: %v", err)
 	}
-	pair := &Pair{Master: os.NewFile(uintptr(fd), "/dev/ptmx"), SlavePath: path, done: make(chan struct{})}
+	pair := &Pair{Peer: os.NewFile(uintptr(fd), "/dev/ptmx"), DevicePath: path, done: make(chan struct{})}
 	t.Cleanup(pair.Close)
 	return pair
 }
 
-// Close closes the master side, which makes the device vanish for whoever
-// holds the slave side: reads end with EOF or EIO.
+// Close closes the peer side, which makes the device vanish for whoever
+// holds the device side: reads end with EOF or EIO.
 func (p *Pair) Close() {
 	p.closeOnce.Do(func() {
 		close(p.done)
-		_ = p.Master.Close()
+		_ = p.Peer.Close()
 	})
 }
 
-// Termios returns the slave's settings as seen through the master.
+// Termios returns the device's settings as seen through the peer.
 func (p *Pair) Termios(t testing.TB) *unix.Termios {
 	t.Helper()
-	raw, err := p.Master.SyscallConn()
+	raw, err := p.Peer.SyscallConn()
 	if err != nil {
-		t.Fatalf("master syscall conn: %v", err)
+		t.Fatalf("peer syscall conn: %v", err)
 	}
 	var termios *unix.Termios
 	var ioctlErr error
 	if err := raw.Control(func(fd uintptr) {
 		termios, ioctlErr = unix.IoctlGetTermios(int(fd), getTermiosRequest)
 	}); err != nil {
-		t.Fatalf("master control: %v", err)
+		t.Fatalf("peer control: %v", err)
 	}
 	if ioctlErr != nil {
 		t.Fatalf("read termios: %v", ioctlErr)
@@ -73,17 +73,17 @@ func (p *Pair) Termios(t testing.TB) *unix.Termios {
 	return termios
 }
 
-// WriteMaster writes bytes the code under test will read from the device.
-func (p *Pair) WriteMaster(t testing.TB, data []byte) {
+// WritePeer writes bytes the code under test will read from the device.
+func (p *Pair) WritePeer(t testing.TB, data []byte) {
 	t.Helper()
-	if err := p.writeMaster(data); err != nil {
-		t.Fatalf("write master: %v", err)
+	if err := p.writePeer(data); err != nil {
+		t.Fatalf("write peer: %v", err)
 	}
 }
 
-func (p *Pair) writeMaster(data []byte) error {
+func (p *Pair) writePeer(data []byte) error {
 	for len(data) > 0 {
-		n, err := p.Master.Write(data)
+		n, err := p.Peer.Write(data)
 		data = data[n:]
 		if err != nil && !errors.Is(err, syscall.EAGAIN) {
 			return err
@@ -99,30 +99,30 @@ func (p *Pair) writeMaster(data []byte) error {
 	return nil
 }
 
-// ReadMaster reads exactly n bytes the code under test wrote to the device,
+// ReadPeer reads exactly n bytes the code under test wrote to the device,
 // failing the test once timeout elapses.
-func (p *Pair) ReadMaster(t testing.TB, n int, timeout time.Duration) []byte {
+func (p *Pair) ReadPeer(t testing.TB, n int, timeout time.Duration) []byte {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	out := make([]byte, 0, n)
 	buf := make([]byte, n)
 	for len(out) < n {
 		if time.Now().After(deadline) {
-			t.Fatalf("read master: got %x, want %d bytes", out, n)
+			t.Fatalf("read peer: got %x, want %d bytes", out, n)
 		}
-		got, err := p.readMaster(buf[:n-len(out)])
+		got, err := p.readPeer(buf[:n-len(out)])
 		out = append(out, buf[:got]...)
 		if err != nil {
-			t.Fatalf("read master: %v", err)
+			t.Fatalf("read peer: %v", err)
 		}
 	}
 	return out
 }
 
-// readMaster returns (0, nil) when no data is pending within a short wait.
-func (p *Pair) readMaster(buf []byte) (int, error) {
-	_ = p.Master.SetReadDeadline(time.Now().Add(5 * time.Millisecond))
-	n, err := p.Master.Read(buf)
+// readPeer returns (0, nil) when no data is pending within a short wait.
+func (p *Pair) readPeer(buf []byte) (int, error) {
+	_ = p.Peer.SetReadDeadline(time.Now().Add(5 * time.Millisecond))
+	n, err := p.Peer.Read(buf)
 	switch {
 	case err == nil:
 		return n, nil
@@ -136,7 +136,7 @@ func (p *Pair) readMaster(buf []byte) (int, error) {
 	}
 }
 
-// Adapter answers the ENH handshake on the master side of a pair.
+// Adapter answers the ENH handshake on the peer side of a pair.
 type Adapter struct {
 	inits chan struct{}
 }
@@ -154,7 +154,7 @@ func ServeAdapter(pair *Pair) *Adapter {
 				return
 			default:
 			}
-			n, err := pair.readMaster(buf)
+			n, err := pair.readPeer(buf)
 			if err != nil {
 				return
 			}
@@ -166,14 +166,14 @@ func ServeAdapter(pair *Pair) *Adapter {
 				switch message.Command {
 				case transport.ENHReqInit:
 					reply := transport.EncodeENH(transport.ENHResResetted, message.Data)
-					_ = pair.writeMaster(reply[:])
+					_ = pair.writePeer(reply[:])
 					select {
 					case adapter.inits <- struct{}{}:
 					default:
 					}
 				case transport.ENHReqInfo:
 					reply := transport.EncodeENH(transport.ENHResInfo, 0)
-					_ = pair.writeMaster(reply[:])
+					_ = pair.writePeer(reply[:])
 				}
 			}
 		}

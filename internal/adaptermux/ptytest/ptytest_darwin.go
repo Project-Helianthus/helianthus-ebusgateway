@@ -10,7 +10,7 @@ import (
 
 const getTermiosRequest = unix.TIOCGETA
 
-func unlockSlave(fd int) (string, error) {
+func unlockDevice(fd int) (string, error) {
 	if err := unix.IoctlSetInt(fd, unix.TIOCPTYGRANT, 0); err != nil {
 		return "", err
 	}
@@ -25,7 +25,7 @@ func unlockSlave(fd int) (string, error) {
 	return string(name[:bytes.IndexByte(name, 0)]), nil
 }
 
-// Baud returns the speed configured on the slave side.
+// Baud returns the speed configured on the device side.
 func (p *Pair) Baud(t testing.TB) uint32 {
 	t.Helper()
 	termios := p.Termios(t)

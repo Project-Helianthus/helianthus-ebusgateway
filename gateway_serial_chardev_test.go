@@ -21,7 +21,7 @@ func TestNormalizeTransportConfig_ClassifiesByFileTypeOutsideDev(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	pair := ptytest.Open(t)
 	link := filepath.Join(dir, "adapter")
-	if err := os.Symlink(pair.SlavePath, link); err != nil {
+	if err := os.Symlink(pair.DevicePath, link); err != nil {
 		t.Fatal(err)
 	}
 	socket := filepath.Join(dir, "sock")

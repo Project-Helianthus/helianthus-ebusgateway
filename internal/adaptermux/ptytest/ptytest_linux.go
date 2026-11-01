@@ -9,7 +9,7 @@ import (
 
 const getTermiosRequest = unix.TCGETS
 
-func unlockSlave(fd int) (string, error) {
+func unlockDevice(fd int) (string, error) {
 	if err := unix.IoctlSetPointerInt(fd, unix.TIOCSPTLCK, 0); err != nil {
 		return "", err
 	}
@@ -20,7 +20,7 @@ func unlockSlave(fd int) (string, error) {
 	return fmt.Sprintf("/dev/pts/%d", number), nil
 }
 
-// Baud returns the speed configured on the slave side.
+// Baud returns the speed configured on the device side.
 func (p *Pair) Baud(t testing.TB) uint32 {
 	t.Helper()
 	switch speed := p.Termios(t).Cflag & unix.CBAUD; speed {

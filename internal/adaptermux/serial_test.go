@@ -69,7 +69,7 @@ func forEachSerialPort(t *testing.T, run func(t *testing.T, pair *ptytest.Pair, 
 	} {
 		t.Run(name, func(t *testing.T) {
 			pair := ptytest.Open(t)
-			run(t, pair, open(t, pair.SlavePath, "ens"))
+			run(t, pair, open(t, pair.DevicePath, "ens"))
 		})
 	}
 }
@@ -82,7 +82,7 @@ func TestOpenSerialConn_SpeedFollowsProtocol(t *testing.T) {
 	}{{"ens", 115200}, {"enh", 9600}, {"", 9600}} {
 		t.Run("protocol="+test.protocol, func(t *testing.T) {
 			pair := ptytest.Open(t)
-			openSerialForTest(t, pair.SlavePath, test.protocol)
+			openSerialForTest(t, pair.DevicePath, test.protocol)
 			if got := pair.Baud(t); got != test.want {
 				t.Fatalf("speed = %d, want %d", got, test.want)
 			}
@@ -92,7 +92,7 @@ func TestOpenSerialConn_SpeedFollowsProtocol(t *testing.T) {
 
 func TestOpenSerialConn_RawMode8N1WithoutFlowControl(t *testing.T) {
 	pair := ptytest.Open(t)
-	openSerialForTest(t, pair.SlavePath, "ens")
+	openSerialForTest(t, pair.DevicePath, "ens")
 	termios := pair.Termios(t)
 
 	if termios.Cflag&unix.CSIZE != unix.CS8 {
@@ -121,17 +121,17 @@ func TestOpenSerialConn_RawMode8N1WithoutFlowControl(t *testing.T) {
 
 func TestOpenSerialConn_DiscardsPendingInput(t *testing.T) {
 	pair := ptytest.Open(t)
-	// The slave stays open across the master write so the line discipline
+	// The device stays open across the peer write so the line discipline
 	// holds the stale bytes when the code under test opens the device.
-	holder, err := unix.Open(pair.SlavePath, unix.O_RDWR|unix.O_NOCTTY|unix.O_NONBLOCK, 0)
+	holder, err := unix.Open(pair.DevicePath, unix.O_RDWR|unix.O_NOCTTY|unix.O_NONBLOCK, 0)
 	if err != nil {
-		t.Fatalf("open slave: %v", err)
+		t.Fatalf("open device: %v", err)
 	}
 	defer func() { _ = unix.Close(holder) }()
-	pair.WriteMaster(t, []byte("stale\n"))
+	pair.WritePeer(t, []byte("stale\n"))
 
-	conn := openSerialForTest(t, pair.SlavePath, "ens")
-	pair.WriteMaster(t, []byte{0x42})
+	conn := openSerialForTest(t, pair.DevicePath, "ens")
+	pair.WritePeer(t, []byte{0x42})
 
 	if err := conn.SetReadDeadline(time.Now().Add(serialTestGuard)); err != nil {
 		t.Fatal(err)
@@ -158,7 +158,7 @@ func TestOpenSerialConn_RequestsExclusiveAccess(t *testing.T) {
 		calls++
 		return original(fd)
 	}
-	openSerialForTest(t, pair.SlavePath, "ens")
+	openSerialForTest(t, pair.DevicePath, "ens")
 	if calls != 1 {
 		t.Fatalf("exclusive access requested %d times, want 1", calls)
 	}
@@ -173,7 +173,7 @@ func TestOpenSerialConn_RefusedExclusiveAccessFailsAndReleasesDescriptor(t *test
 		refused = fd
 		return unix.EBUSY
 	}
-	if conn, err := openSerialConn(pair.SlavePath, "ens"); !errors.Is(err, unix.EBUSY) {
+	if conn, err := openSerialConn(pair.DevicePath, "ens"); !errors.Is(err, unix.EBUSY) {
 		if conn != nil {
 			_ = conn.Close()
 		}
@@ -197,7 +197,7 @@ func TestOpenSerialConn_RejectsWhatIsNotAnAdapterDevice(t *testing.T) {
 		"absent device":    {filepath.Join(t.TempDir(), "absent"), "ens", unix.ENOENT},
 		"regular file":     {regular, "ens", unix.ENOTTY},
 		"relative path":    {"dev/ttyUSB0", "ens", nil},
-		"unknown protocol": {pair.SlavePath, "tcp-plain", nil},
+		"unknown protocol": {pair.DevicePath, "tcp-plain", nil},
 	} {
 		t.Run(name, func(t *testing.T) {
 			conn, err := openSerialConn(test.path, test.protocol)
@@ -225,7 +225,7 @@ func TestSerialConn_ENSFramingPassesThrough(t *testing.T) {
 			frame := transport.EncodeENH(transport.ENHResReceived, byte(symbol))
 			wire = append(wire, frame[:]...)
 		}
-		pair.WriteMaster(t, wire)
+		pair.WritePeer(t, wire)
 
 		// The raw view, because the logical view folds the eBUS escape sequence.
 		got := make([]byte, 0, len(want))
@@ -257,8 +257,8 @@ func TestSerialConn_WritePassesThroughUnchanged(t *testing.T) {
 		if _, err := tr.Write(payload); err != nil {
 			t.Fatalf("write: %v", err)
 		}
-		if got := pair.ReadMaster(t, len(want), serialTestGuard); !bytes.Equal(got, want) {
-			t.Fatalf("master read %x, want %x", got, want)
+		if got := pair.ReadPeer(t, len(want), serialTestGuard); !bytes.Equal(got, want) {
+			t.Fatalf("peer read %x, want %x", got, want)
 		}
 	})
 }
@@ -278,7 +278,7 @@ func TestSerialConn_ReadDeadlineExpiresAndLaterDataStillArrives(t *testing.T) {
 			t.Fatalf("%v is not a net timeout", err)
 		}
 
-		pair.WriteMaster(t, []byte{0x5a})
+		pair.WritePeer(t, []byte{0x5a})
 		if err := conn.SetReadDeadline(time.Now().Add(serialTestGuard)); err != nil {
 			t.Fatal(err)
 		}
@@ -359,9 +359,9 @@ func TestSerialConn_CloseEndsAPendingRead(t *testing.T) {
 
 func TestSerialConn_Addresses(t *testing.T) {
 	pair := ptytest.Open(t)
-	conn := openSerialForTest(t, pair.SlavePath, "enh")
+	conn := openSerialForTest(t, pair.DevicePath, "enh")
 	for _, addr := range []net.Addr{conn.LocalAddr(), conn.RemoteAddr()} {
-		if addr.Network() != NetworkSerial || addr.String() != pair.SlavePath {
+		if addr.Network() != NetworkSerial || addr.String() != pair.DevicePath {
 			t.Fatalf("addr = %s/%s", addr.Network(), addr.String())
 		}
 	}

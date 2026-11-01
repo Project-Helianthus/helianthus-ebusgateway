@@ -73,7 +73,7 @@ func TestMuxSerial_StartOpensDeviceAtTheProtocolSpeed(t *testing.T) {
 		t.Run(test.protocol, func(t *testing.T) {
 			pair := ptytest.Open(t)
 			adapter := ptytest.ServeAdapter(pair)
-			mux := newSerialTestMux(test.protocol, pair.SlavePath, nil)
+			mux := newSerialTestMux(test.protocol, pair.DevicePath, nil)
 			if err := mux.Start(context.Background()); err != nil {
 				t.Fatalf("start: %v", err)
 			}
@@ -107,7 +107,7 @@ func TestMuxSerial_StartReportsAnAbsentDevice(t *testing.T) {
 func TestMuxSerial_ReopensThePathAfterTheDeviceWentAway(t *testing.T) {
 	link := filepath.Join(t.TempDir(), "adapter")
 	first := ptytest.Open(t)
-	if err := os.Symlink(first.SlavePath, link); err != nil {
+	if err := os.Symlink(first.DevicePath, link); err != nil {
 		t.Fatal(err)
 	}
 	firstAdapter := ptytest.ServeAdapter(first)
@@ -122,8 +122,8 @@ func TestMuxSerial_ReopensThePathAfterTheDeviceWentAway(t *testing.T) {
 	// Allocated while the first pair lives, so the replacement device node
 	// differs: only following the configured path can find it.
 	second := ptytest.Open(t)
-	if second.SlavePath == first.SlavePath {
-		t.Fatalf("both pairs use %s", first.SlavePath)
+	if second.DevicePath == first.DevicePath {
+		t.Fatalf("both pairs use %s", first.DevicePath)
 	}
 
 	if err := os.Remove(link); err != nil {
@@ -143,7 +143,7 @@ func TestMuxSerial_ReopensThePathAfterTheDeviceWentAway(t *testing.T) {
 	}
 
 	secondAdapter := ptytest.ServeAdapter(second)
-	if err := os.Symlink(second.SlavePath, link); err != nil {
+	if err := os.Symlink(second.DevicePath, link); err != nil {
 		t.Fatal(err)
 	}
 	secondAdapter.WaitInit(t, serialTestGuard)

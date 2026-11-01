@@ -54,6 +54,85 @@ func TestTeslaGen3EVSESemanticPublicationMapsConfiguredAndAllocated(t *testing.T
 	}
 }
 
+func TestTeslaGen3EVSEEvidenceTimezoneEachLifecycleField(t *testing.T) {
+	source := teslaGen3EVSECurrentLimitV1FixtureSource(t)
+	base := time.Unix(1_800_000_000, 123).UTC()
+	evidence := TeslaGen3EVSESemanticEvidence{
+		ObservationID: "observation:timezone-fields", Sequence: 7,
+		ObservedAt: base, EvaluatedAt: base.Add(3 * time.Second),
+		PersistentObservedAt: base.Add(-time.Second), ProvisionalObservedAt: base.Add(time.Second),
+		MonotonicNS: 2_000_000_000, EvaluatedMonotonicNS: 5_000_000_000,
+		PersistentMonotonicNS: 1_000_000_000, ProvisionalMonotonicNS: 3_000_000_000,
+	}
+	records := func(e TeslaGen3EVSESemanticEvidence) teslaGen3EVSEPublicationEvidence {
+		return teslaGen3EVSEPublicationEvidence{
+			Persistent:  teslaGen3EVSEPersistentRecord(source.Persistent, e),
+			Provisional: teslaGen3EVSEProvisionalRecord(source.Provisional, e),
+		}
+	}
+	kind := semreg.DefinitionID("native.tesla.wc3.current_limit")
+	want := records(evidence)
+	// Reconstruct the pre-normalization UTC record bytes, without a digest pin.
+	legacy := want
+	legacy.Persistent.Lifecycle = evidence
+	provisional := *want.Provisional
+	provisional.Lifecycle = evidence
+	legacy.Provisional = &provisional
+	encoded, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantRef := evseDigestEvidence(kind, string(encoded))
+	if got := evseEvidence(kind, want); got != wantRef {
+		t.Fatal("UTC lifecycle bytes changed")
+	}
+	for _, field := range []string{"ObservedAt", "EvaluatedAt", "PersistentObservedAt", "ProvisionalObservedAt"} {
+		t.Run(field, func(t *testing.T) {
+			for _, loc := range []*time.Location{time.Local, time.FixedZone("positive", 19800), time.FixedZone("negative", -25200)} {
+				changed := evidence
+				value := reflect.ValueOf(&changed).Elem().FieldByName(field)
+				at := value.Interface().(time.Time)
+				value.Set(reflect.ValueOf(at.In(loc)))
+				before := changed
+				if got := evseEvidence(kind, records(changed)); got != wantRef {
+					t.Errorf("%s offset changed evidence digest", loc)
+				}
+				if changed != before {
+					t.Fatal("digest construction mutated caller lifecycle")
+				}
+				value.Set(reflect.ValueOf(at.Add(time.Nanosecond)))
+				if evseEvidence(kind, records(changed)) == wantRef {
+					t.Fatal("changed instant was lost from evidence")
+				}
+			}
+		})
+	}
+	for _, field := range []string{"ObservationID", "Sequence", "MonotonicNS", "EvaluatedMonotonicNS", "PersistentMonotonicNS", "ProvisionalMonotonicNS"} {
+		t.Run(field, func(t *testing.T) {
+			changed := evidence
+			value := reflect.ValueOf(&changed).Elem().FieldByName(field)
+			switch value.Kind() {
+			case reflect.String:
+				value.SetString(value.String() + ":changed")
+			case reflect.Uint64:
+				value.SetUint(value.Uint() + 1)
+			case reflect.Int64:
+				value.SetInt(value.Int() + 1)
+			default:
+				t.Fatalf("unhandled lifecycle field %s", field)
+			}
+			before := changed
+			got := records(changed)
+			if got.Persistent.Lifecycle != changed || got.Provisional.Lifecycle != changed || changed != before {
+				t.Fatal("digest normalization changed identity or monotonic coordinates")
+			}
+			if evseEvidence(kind, got) == wantRef {
+				t.Fatal("changed lifecycle field was lost from evidence")
+			}
+		})
+	}
+}
+
 func TestTeslaGen3EVSESemanticPublicationWithholdsOnlyAllocated(t *testing.T) {
 	p, err := newTestTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
 	if err != nil {

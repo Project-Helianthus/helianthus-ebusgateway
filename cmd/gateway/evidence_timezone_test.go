@@ -6,10 +6,11 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
 	"reflect"
 	"testing"
 	"time"
+
+	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
 )
 
 func TestGrowattEvidenceTimezoneDigests(t *testing.T) {
@@ -98,6 +99,7 @@ func TestGrowattEvidenceTimezoneDigests(t *testing.T) {
 		at   time.Time
 	}{
 		{"UTC", base},
+		{"local", base.Local()},
 		{"positive", base.In(time.FixedZone("positive", 5*3600+1800))},
 		{"negative", base.In(time.FixedZone("negative", -7*3600))},
 	} {

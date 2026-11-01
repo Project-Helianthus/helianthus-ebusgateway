@@ -369,6 +369,15 @@ func (h *Host) start(ctx context.Context) error {
 	if ctx.Err() != nil {
 		return h.unavailable(ReasonCancelled)
 	}
+	// Qualification can outlast a source, binding or driver change: fence the
+	// generations again immediately before anything is allocated.
+	latest, err := h.cfg.Snapshots.Capture(ctx)
+	if err != nil {
+		return h.unavailable(ReasonSnapshotFailed)
+	}
+	if latest.Generations != request.Generations {
+		return h.unavailable(ReasonGenerationMismatch)
+	}
 	return h.launch(ctx, request, class)
 }
 
@@ -457,6 +466,12 @@ func (h *Host) launch(ctx context.Context, request Request, class BindingClass) 
 
 	binding, err := h.cfg.Factory.New(ctx, &Session{host: h, gen: g})
 	if err != nil || binding == nil {
+		if binding != nil {
+			// A partially constructed binding still owns resources: teardown closes it.
+			h.mu.Lock()
+			g.binding = binding
+			h.mu.Unlock()
+		}
 		if teardownErr := h.teardown(ctx, g); teardownErr != nil {
 			return teardownErr
 		}

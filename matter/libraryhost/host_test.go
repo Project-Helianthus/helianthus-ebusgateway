@@ -41,6 +41,7 @@ type aa17Rig struct {
 	news          int
 	newErr        error
 	newNil        bool
+	newPartial    bool
 	onNew         func(*Session)
 	sessions      []*Session
 	closes        int
@@ -97,10 +98,13 @@ func (r *aa17Rig) New(_ context.Context, session *Session) (Binding, error) {
 	r.mu.Lock()
 	r.news++
 	r.sessions = append(r.sessions, session)
-	onNew, err, returnNil := r.onNew, r.newErr, r.newNil
+	onNew, err, returnNil, partial := r.onNew, r.newErr, r.newNil, r.newPartial
 	r.mu.Unlock()
 	if onNew != nil {
 		onNew(session)
+	}
+	if partial && err != nil {
+		return r, err
 	}
 	if err != nil || returnNil {
 		return nil, err
@@ -1025,4 +1029,50 @@ func aa17InstallProjection(t *testing.T, rig *aa17Rig) {
 		t.Fatal(err)
 	}
 	rig.capture = Capture{Snapshot: snapshot, Evaluation: evaluation}
+}
+
+func TestAA17GenerationChangeDuringQualificationIsFenced(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*Generations)
+	}{
+		{"source", func(g *Generations) { g.Source++ }},
+		{"binding", func(g *Generations) { g.Binding++ }},
+		{"native-driver", func(g *Generations) { g.NativeDriver++ }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := aa17NewRig()
+			rig.mutateRows = func(rows []Row) []Row {
+				rig.generations = aa17Generations
+				tc.mutate(&rig.generations)
+				return rows
+			}
+			host := New(rig.config())
+			aa17RequireReason(t, host.Start(context.Background()), ReasonGenerationMismatch)
+			if _, _, _, news, _ := rig.counts(); news != 0 {
+				t.Fatalf("factory constructed %d times after a generation change", news)
+			}
+			aa17RequireReleased(t, host)
+		})
+	}
+}
+
+func TestAA17PartialConstructionIsClosedAndDrained(t *testing.T) {
+	rig := aa17NewRig()
+	rig.newErr = errors.New("synthetic partial construction")
+	rig.newPartial = true
+	host := New(rig.config())
+	aa17RequireReason(t, host.Start(context.Background()), ReasonFactoryFailed)
+	if _, _, _, news, closes := rig.counts(); news != 1 || closes != 1 {
+		t.Fatalf("news=%d closes=%d, want 1 and 1", news, closes)
+	}
+	aa17RequireReleased(t, host)
+	rig.newErr = nil
+	rig.newPartial = false
+	if err := host.Start(context.Background()); err != nil {
+		t.Fatalf("restart after released partial construction: %v", err)
+	}
+	if err := host.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 }

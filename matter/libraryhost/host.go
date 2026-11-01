@@ -386,12 +386,13 @@ func (h *Host) start(ctx context.Context) error {
 	h.mu.Lock()
 	g := h.current
 	state := h.state
+	fenced := g != nil && g.fenced
 	h.mu.Unlock()
 	if g != nil {
 		if state == StateQuarantined {
 			return ErrQuarantined
 		}
-		if g.fenced {
+		if fenced {
 			// A stop fenced this generation and its teardown has not finished.
 			return &UnavailableError{Reason: ReasonCancelled}
 		}
@@ -546,11 +547,11 @@ func (h *Host) launch(ctx context.Context, request Request, class BindingClass) 
 		}
 		return h.unavailable(ReasonFactoryFailed)
 	}
-	if ctx.Err() != nil {
-		// The start was cancelled while the factory ran: do not publish a running binding.
-		h.mu.Lock()
-		g.binding = binding
+	h.mu.Lock()
+	g.binding = binding
+	if ctx.Err() != nil || g.fenced {
 		h.mu.Unlock()
+		// The start was cancelled or fenced while the factory ran: do not publish a running binding.
 		// The cancelled context cannot carry the teardown: use a finite budget and
 		// quarantine on expiry so Start never hangs under the lifecycle lock.
 		budget := h.cfg.CleanupBudget
@@ -564,8 +565,6 @@ func (h *Host) launch(ctx context.Context, request Request, class BindingClass) 
 		}
 		return h.unavailable(ReasonCancelled)
 	}
-	h.mu.Lock()
-	g.binding = binding
 	h.state = StateRunning
 	h.mu.Unlock()
 	return nil
@@ -609,8 +608,10 @@ func (h *Host) teardown(ctx context.Context, g *generation) error {
 		}
 	}
 	if g.binding != nil {
+		startedHere := false
 		for done := false; !done; {
 			if g.closing == nil {
+				startedHere = true
 				closing := make(chan closeResult, 1)
 				g.closing = closing
 				binding := g.binding
@@ -620,7 +621,7 @@ func (h *Host) teardown(ctx context.Context, g *generation) error {
 			case res := <-g.closing:
 				g.closing = nil
 				if res.err != nil {
-					if res.ctx.Err() != nil && ctx.Err() == nil && res.ctx != ctx {
+					if res.ctx.Err() != nil && ctx.Err() == nil && !startedHere {
 						// The error came from an expired earlier budget: retry Close
 						// under the current one instead of quarantining again.
 						continue

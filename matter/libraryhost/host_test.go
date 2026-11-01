@@ -27,6 +27,7 @@ var (
 
 // aa17Rig counts every port call, so zero-allocation claims read a real count.
 type aa17Rig struct {
+	host          *Host
 	mu            sync.Mutex
 	generations   Generations
 	captureErr    error
@@ -1317,6 +1318,92 @@ func TestAA17ExpiredStopStillFencesTheRunningGeneration(t *testing.T) {
 	// A later Stop with a live budget completes the same teardown.
 	if err := host.Stop(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+	aa17RequireReleased(t, host)
+}
+
+// Catches: a Stop that fences and exhausts its budget while the factory runs
+// is overwritten by StateRunning, and Start reports success with an owned binding.
+func TestAA17StopFencingDuringConstructionIsNotOverwrittenByRunning(t *testing.T) {
+	rig := aa17NewRig()
+	expired, cancel := context.WithCancel(context.Background())
+	cancel()
+	var stopErr error
+	rig.onNew = func(*Session) { stopErr = rig.host.Stop(expired) }
+	host := New(rig.config())
+	rig.host = host
+	aa17RequireReason(t, host.Start(context.Background()), ReasonCancelled)
+	if !errors.Is(stopErr, context.Canceled) {
+		t.Fatalf("stop err=%v", stopErr)
+	}
+	if status := host.Status(); status.State == StateRunning || status.Resources != 0 || status.OwnedWork != 0 {
+		t.Fatalf("status=%+v", status)
+	}
+	if _, _, _, news, closes := rig.counts(); news != 1 || closes != 1 {
+		t.Fatalf("news=%d closes=%d", news, closes)
+	}
+}
+
+// Catches: Start reading the generation fence outside the state lock while
+// Stop writes it (reported by the race detector).
+func TestAA17ConcurrentStartAndStopShareTheFenceUnderTheLock(t *testing.T) {
+	rig := aa17NewRig()
+	host := New(rig.config())
+	if err := host.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(2)
+		go func() { defer wg.Done(); _ = host.Start(context.Background()) }()
+		go func() { defer wg.Done(); _ = host.Stop(context.Background()) }()
+	}
+	wg.Wait()
+	if err := host.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	aa17RequireReleased(t, host)
+}
+
+type aa17SliceContext struct {
+	context.Context
+	tag []int
+}
+
+// Catches: comparing context interface values, which panics for a
+// non-comparable dynamic type once a buffered close error is retried.
+func TestAA17StopRetryAcceptsNonComparableContexts(t *testing.T) {
+	rig := aa17NewRig()
+	returned := make(chan struct{})
+	var mu sync.Mutex
+	calls := 0
+	rig.closeHook = func(ctx context.Context) error {
+		mu.Lock()
+		calls++
+		first := calls == 1
+		mu.Unlock()
+		if !first {
+			return nil
+		}
+		<-ctx.Done()
+		defer close(returned)
+		return ctx.Err()
+	}
+	host := New(rig.config())
+	if err := host.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	base, cancel := context.WithCancel(context.Background())
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- host.Stop(aa17SliceContext{Context: base, tag: []int{1}}) }()
+	aa17WaitState(host, StateStopping)
+	cancel()
+	if err := <-stopDone; !errors.Is(err, ErrQuiesce) {
+		t.Fatalf("first stop err=%v", err)
+	}
+	<-returned
+	if err := host.Stop(aa17SliceContext{Context: context.Background(), tag: []int{2}}); err != nil {
+		t.Fatalf("follow-up stop: %v", err)
 	}
 	aa17RequireReleased(t, host)
 }

@@ -229,7 +229,13 @@ type generation struct {
 	drained chan struct{}
 	done    bool
 	binding Binding
-	closing chan error
+	closing chan closeResult
+}
+
+// closeResult carries one Close attempt and the context that bounded it.
+type closeResult struct {
+	err error
+	ctx context.Context
 }
 
 // Host fences one binding generation at a time. Start, Stop and Restart are
@@ -245,6 +251,11 @@ type Host struct {
 	issued  map[string]struct{}
 	current *generation
 	stale   uint64
+
+	// stopGen counts Stop calls; cancelStart aborts the start in flight. Both
+	// let Stop fence a start that holds the operation lock.
+	stopGen     uint64
+	cancelStart context.CancelFunc
 }
 
 // New touches no port.
@@ -285,16 +296,49 @@ func (h *Host) Status() Status {
 // Start launches when every row passes. It is desired-state idempotent, a
 // disabled host returns nil, and a missed row returns an UnavailableError.
 func (h *Host) Start(ctx context.Context) error {
+	entry := h.stopGeneration()
 	if err := h.acquire(ctx); err != nil {
 		return err
 	}
 	defer h.release()
-	return h.start(ctx)
+	return h.fencedStart(ctx, entry)
+}
+
+func (h *Host) stopGeneration() uint64 {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.stopGen
+}
+
+// fencedStart runs start under a context that Stop cancels. A Stop issued
+// after entry, even one that timed out waiting for the lock, cancels it.
+func (h *Host) fencedStart(ctx context.Context, entry uint64) error {
+	startCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	h.mu.Lock()
+	if h.stopGen != entry {
+		h.mu.Unlock()
+		return &UnavailableError{Reason: ReasonCancelled}
+	}
+	h.cancelStart = cancel
+	h.mu.Unlock()
+	defer func() {
+		h.mu.Lock()
+		h.cancelStart = nil
+		h.mu.Unlock()
+	}()
+	return h.start(startCtx)
 }
 
 // Stop fences, drains and releases within the context's budget. It is
 // idempotent, and after ErrQuiesce a further call resumes the same teardown.
 func (h *Host) Stop(ctx context.Context) error {
+	h.mu.Lock()
+	h.stopGen++
+	if h.cancelStart != nil {
+		h.cancelStart()
+	}
+	h.mu.Unlock()
 	if err := h.acquire(ctx); err != nil {
 		return err
 	}
@@ -311,6 +355,7 @@ func (h *Host) Stop(ctx context.Context) error {
 // Restart always executes: a fresh epoch and token are re-qualified, and no
 // start is attempted until the previous generation has been released.
 func (h *Host) Restart(ctx context.Context) error {
+	entry := h.stopGeneration()
 	if err := h.acquire(ctx); err != nil {
 		return err
 	}
@@ -323,7 +368,7 @@ func (h *Host) Restart(ctx context.Context) error {
 			return err
 		}
 	}
-	return h.start(ctx)
+	return h.fencedStart(ctx, entry)
 }
 
 func (h *Host) start(ctx context.Context) error {
@@ -552,20 +597,28 @@ func (h *Host) teardown(ctx context.Context, g *generation) error {
 		}
 	}
 	if g.binding != nil {
-		if g.closing == nil {
-			closing := make(chan error, 1)
-			g.closing = closing
-			binding := g.binding
-			go func() { closing <- binding.Close(ctx) }()
-		}
-		select {
-		case err := <-g.closing:
-			g.closing = nil
-			if err != nil {
-				return h.quarantine(err)
+		for done := false; !done; {
+			if g.closing == nil {
+				closing := make(chan closeResult, 1)
+				g.closing = closing
+				binding := g.binding
+				go func() { closing <- closeResult{err: binding.Close(ctx), ctx: ctx} }()
 			}
-		case <-ctx.Done():
-			return h.quarantine(ctx.Err())
+			select {
+			case res := <-g.closing:
+				g.closing = nil
+				if res.err != nil {
+					if res.ctx.Err() != nil && ctx.Err() == nil && res.ctx != ctx {
+						// The error came from an expired earlier budget: retry Close
+						// under the current one instead of quarantining again.
+						continue
+					}
+					return h.quarantine(res.err)
+				}
+				done = true
+			case <-ctx.Done():
+				return h.quarantine(ctx.Err())
+			}
 		}
 	}
 	h.mu.Lock()

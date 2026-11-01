@@ -1203,3 +1203,84 @@ func TestAA17PartialConstructionWithHungCloseQuarantinesWithinBudget(t *testing.
 		t.Fatalf("status=%+v", status)
 	}
 }
+
+// Catches: a Stop that times out on the operation lock leaves a start in
+// flight unfenced, so a binding launches after shutdown returned.
+func TestAA17StopFencesAStartHoldingTheOperationLock(t *testing.T) {
+	rig := aa17NewRig()
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	rig.captureHook = func(context.Context) error {
+		once.Do(func() { close(entered) })
+		<-release
+		return nil
+	}
+	host := New(rig.config())
+	startDone := make(chan error, 1)
+	go func() { startDone <- host.Start(context.Background()) }()
+	<-entered
+	expired, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := host.Stop(expired); !errors.Is(err, context.Canceled) {
+		t.Fatalf("stop err=%v", err)
+	}
+	close(release)
+	aa17RequireReason(t, <-startDone, ReasonCancelled)
+	if _, _, _, news, _ := rig.counts(); news != 0 {
+		t.Fatalf("binding launched after stop: news=%d", news)
+	}
+	aa17RequireReleased(t, host)
+	// Positive control: a start entered after the stop is not fenced.
+	rig.mu.Lock()
+	rig.captureHook = nil
+	rig.mu.Unlock()
+	if err := host.Start(context.Background()); err != nil {
+		t.Fatalf("later start: %v", err)
+	}
+	if err := host.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Catches: a buffered error from an expired Close attempt is taken as the
+// result of the follow-up Stop, which then quarantines without calling Close.
+func TestAA17StopRetriesCloseAfterAnExpiredAttempt(t *testing.T) {
+	rig := aa17NewRig()
+	returned := make(chan struct{})
+	var mu sync.Mutex
+	calls := 0
+	rig.closeHook = func(ctx context.Context) error {
+		mu.Lock()
+		calls++
+		first := calls == 1
+		mu.Unlock()
+		if !first {
+			return nil
+		}
+		<-ctx.Done()
+		defer close(returned)
+		return ctx.Err()
+	}
+	host := New(rig.config())
+	if err := host.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	first, cancel := context.WithCancel(context.Background())
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- host.Stop(first) }()
+	aa17WaitState(host, StateStopping)
+	cancel()
+	if err := <-stopDone; !errors.Is(err, ErrQuiesce) {
+		t.Fatalf("first stop err=%v", err)
+	}
+	<-returned
+	if err := host.Stop(context.Background()); err != nil {
+		t.Fatalf("follow-up stop: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if calls < 2 {
+		t.Fatalf("Close not retried under the current budget: calls=%d", calls)
+	}
+	aa17RequireReleased(t, host)
+}

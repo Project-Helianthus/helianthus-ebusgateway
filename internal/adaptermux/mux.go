@@ -518,6 +518,10 @@ type Mux struct {
 	// retired at reset/reconnect/close. See raw_symbols.go.
 	gatewayLeadWait atomic.Pointer[gatewayLeadWait]
 
+	// gatewayEscapeDiag counts failed escape-pair verifications and rate-limits
+	// their log line (issue #1416). See raw_symbols.go.
+	gatewayEscapeDiag gatewayEscapeEchoDiag
+
 	// gatewaySuffixCommitHook, when set, runs after a gateway escape lead
 	// was written and before its suffix commit. Test-only seam for
 	// interleaving a lifecycle boundary at the commit point; nil in

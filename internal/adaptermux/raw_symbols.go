@@ -2,12 +2,17 @@ package adaptermux
 
 import (
 	"errors"
+	"expvar"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
+
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux/v8classifier"
 )
 
 // Raw-symbol continuity at the mux upstream boundary (issue #1003, contract
@@ -196,6 +201,27 @@ func gatewaySendSymbols(data byte, structural bool) []byte {
 // active-path read bound protocol.Bus applies to every echo.
 const gatewayLeadEchoTimeout = activeChanTimeout
 
+// gatewaySuffixPaceBound is the longest the gateway write path holds an escape
+// suffix back while it waits for the lead's raw echo (issue #1416). The adapter
+// transmits one SEND at a time, so the suffix must not reach it before the lead
+// left it; the lead's echo proves that, and the bound takes over on a link
+// whose round trip is too long to wait for that proof.
+//
+// The upstream decoder abandons a lead whose suffix is observed more than
+// transport.EscapePendingTimeout (32 ms of host time) after it. With a constant
+// link latency the suffix's echo follows the lead's by the time the suffix was
+// held back, so that gap is the smaller of this bound and the round trip plus
+// one wire symbol, whatever the round trip is. At three wire symbols (12.5 ms)
+// the bound leaves 19.5 ms of the cap for link jitter and host scheduling, and
+// two wire symbols between the lead's end of transmission and a suffix sent on
+// expiry. Waiting longer, up to the read-timeout scale, would split a correct
+// pair on any link with a round trip near the cap.
+const gatewaySuffixPaceBound = 3 * v8classifier.TauWireByte
+
+// gatewayEscapeEchoLogInterval rate-limits the verification failure log line.
+// Every failure is counted; the line reports how many it stands for.
+const gatewayEscapeEchoLogInterval = 30 * time.Second
+
 // gatewayLeadWait is the single outstanding raw-echo expectation for the
 // escape pair of a gateway write: the lead's echo, then the suffix's echo as
 // the symbol immediately following it. It is published through
@@ -205,14 +231,33 @@ type gatewayLeadWait struct {
 	lead   byte
 	suffix byte
 	result chan gatewayLeadOutcome // capacity 1, resolved at most once
+	// leadEchoed is closed when the lead's echo was observed, which is what
+	// releases the suffix write.
+	leadEchoed chan struct{}
 	// leadSeen is set when the lead's echo was observed; from then on the
 	// very next raw symbol decides the pair. Read and written only by the
 	// readLoop goroutine (observeGatewayLeadEcho).
 	leadSeen bool
+	// mu makes the resolution of the wait and the suffix commit one ordered
+	// step each. The readLoop resolves the wait (unpublish, suffixState,
+	// result) under mu; the commit claims the write and performs tr.Write
+	// under mu. A symbol that resolves the wait first (state 0 -> 2) was
+	// observed before the suffix existed on the wire, so the commit withholds
+	// the suffix; a symbol resolved after the claim waits for the write to
+	// return, so it cannot be taken for the echo of a suffix not yet emitted.
+	mu          sync.Mutex
+	suffixState atomic.Int32
 }
+
+const (
+	suffixPending   int32 = 0
+	suffixCommitted int32 = 1 // the commit claimed the write
+	suffixRefuted   int32 = 2 // a symbol decided the pair before the commit
+)
 
 type gatewayLeadOutcome struct {
 	observed   byte
+	early      bool  // observed before the suffix commit claimed the write
 	suffixStep bool  // observed answered the suffix (else the lead)
 	err        error // non-nil when a lifecycle boundary retired the wait
 }
@@ -222,7 +267,12 @@ type gatewayLeadOutcome struct {
 // observed before the expectation exists. Gateway writes are serialized by
 // sendLoop, so at most one wait is outstanding.
 func (m *Mux) armGatewayLeadWait(lead, suffix byte) *gatewayLeadWait {
-	w := &gatewayLeadWait{lead: lead, suffix: suffix, result: make(chan gatewayLeadOutcome, 1)}
+	w := &gatewayLeadWait{
+		lead:       lead,
+		suffix:     suffix,
+		result:     make(chan gatewayLeadOutcome, 1),
+		leadEchoed: make(chan struct{}),
+	}
 	m.gatewayLeadWait.Store(w)
 	return w
 }
@@ -266,16 +316,59 @@ func (m *Mux) observeGatewayLeadEcho(symbol byte, logical transport.StreamEvent)
 		}
 		if symbol == w.lead {
 			w.leadSeen = true
+			close(w.leadEchoed)
 			return
 		}
-		if m.gatewayLeadWait.CompareAndSwap(w, nil) {
-			w.result <- gatewayLeadOutcome{observed: symbol}
-		}
+		m.resolveGatewayLeadWait(w, symbol, false)
 		return
 	}
+	m.resolveGatewayLeadWait(w, symbol, true)
+}
+
+// resolveGatewayLeadWait decides the wait with symbol, atomically with respect
+// to the suffix commit: it unpublishes the wait, marks a symbol seen before
+// the commit claimed the write as refuting, and publishes the outcome.
+func (m *Mux) resolveGatewayLeadWait(w *gatewayLeadWait, symbol byte, suffixStep bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	if m.gatewayLeadWait.CompareAndSwap(w, nil) {
-		w.result <- gatewayLeadOutcome{observed: symbol, suffixStep: true}
+		early := w.suffixState.CompareAndSwap(suffixPending, suffixRefuted)
+		w.result <- gatewayLeadOutcome{observed: symbol, suffixStep: suffixStep, early: early}
 	}
+}
+
+// paceGatewaySuffix holds the suffix of a gateway escape pair back until the
+// lead's raw echo was observed, for at most gatewaySuffixPaceBound. An expired
+// bound is not a failure: the echoes still decide the pair after the suffix was
+// written. A nil wait (an upstream without the raw view) has only the bound.
+//
+// A symbol that already decided the pair fails it here, so the suffix of a pair
+// that lost the bus never reaches the wire. That includes a symbol equal to the
+// suffix: it was observed before the suffix was written, so it is not its echo.
+func (m *Mux) paceGatewaySuffix(w *gatewayLeadWait) error {
+	var leadEchoed <-chan struct{}
+	var result <-chan gatewayLeadOutcome
+	if w != nil {
+		leadEchoed = w.leadEchoed
+		result = w.result
+	}
+	timer := time.NewTimer(gatewaySuffixPaceBound)
+	defer timer.Stop()
+	select {
+	case <-leadEchoed:
+	case <-timer.C:
+	case out := <-result:
+		return m.gatewayPairFailure(w, out)
+	case <-m.ctx.Done():
+		m.dropGatewayLeadWait(w)
+		return fmt.Errorf("adaptermux: %w", m.ctx.Err())
+	}
+	select {
+	case out := <-result:
+		return m.gatewayPairFailure(w, out)
+	default:
+	}
+	return nil
 }
 
 // awaitGatewayLeadEcho waits until the raw echoes of the escape pair the
@@ -286,25 +379,47 @@ func (m *Mux) awaitGatewayLeadEcho(w *gatewayLeadWait) error {
 	defer timer.Stop()
 	select {
 	case out := <-w.result:
-		if out.err != nil {
-			return out.err
-		}
-		if !out.suffixStep {
-			return fmt.Errorf("adaptermux: escape lead echo mismatch (wrote 0x%02X, observed 0x%02X): %w",
-				w.lead, out.observed, ebuserrors.ErrBusCollision)
-		}
-		if out.observed != w.suffix {
-			return fmt.Errorf("adaptermux: escape suffix echo mismatch (wrote 0x%02X 0x%02X, observed 0x%02X 0x%02X): %w",
-				w.lead, w.suffix, w.lead, out.observed, ebuserrors.ErrBusCollision)
-		}
-		return nil
+		return m.gatewayPairFailure(w, out)
 	case <-timer.C:
 		m.dropGatewayLeadWait(w)
-		return fmt.Errorf("adaptermux: escape pair 0x%02X 0x%02X echo not observed: %w", w.lead, w.suffix, ebuserrors.ErrTimeout)
+		e := &gatewayEscapeEchoError{step: gatewayEscapeStepLead, lead: w.lead, written: w.lead, cause: ebuserrors.ErrTimeout}
+		select {
+		case <-w.leadEchoed:
+			e.step, e.written = gatewayEscapeStepSuffix, w.suffix
+		default:
+		}
+		m.recordGatewayEscapeEchoFailure(e, time.Now())
+		return e
 	case <-m.ctx.Done():
 		m.dropGatewayLeadWait(w)
 		return fmt.Errorf("adaptermux: %w", m.ctx.Err())
 	}
+}
+
+// gatewayPairFailure turns a resolved wait into the write's error, nil when the
+// suffix was written and its echo followed the lead's. A verification failure
+// is recorded; a wait retired by a lifecycle boundary is not one.
+func (m *Mux) gatewayPairFailure(w *gatewayLeadWait, out gatewayLeadOutcome) error {
+	if out.err != nil {
+		return out.err
+	}
+	e := &gatewayEscapeEchoError{
+		step:         gatewayEscapeStepLead,
+		lead:         w.lead,
+		written:      w.lead,
+		observed:     out.observed,
+		echoObserved: true,
+		cause:        ebuserrors.ErrBusCollision,
+	}
+	suffixWritten := !out.early
+	if out.suffixStep {
+		if suffixWritten && out.observed == w.suffix {
+			return nil
+		}
+		e.step, e.written, e.beforeWrite = gatewayEscapeStepSuffix, w.suffix, !suffixWritten
+	}
+	m.recordGatewayEscapeEchoFailure(e, time.Now())
+	return e
 }
 
 // dropGatewayLeadWait clears w if it is still the outstanding wait.
@@ -317,12 +432,11 @@ func (m *Mux) dropGatewayLeadWait(w *gatewayLeadWait) {
 // gateway byte that needs no escaping) is verified by the existing echo
 // paths.
 //
-// An escape pair is sent as two SEND requests back to back, with no host
-// round trip between them. The upstream decoder abandons a pending lead
-// after its escape-pending cap (32 ms of host time, frame-atomic-visibility
-// v8 §1.3); waiting for the lead's echo before sending the suffix would let
-// an adapter round trip near that cap split a correct pair into a dropped
-// lead and a plain suffix.
+// An escape pair is sent as two SEND requests, the suffix after the lead's raw
+// echo or after gatewaySuffixPaceBound, whichever comes first (issue #1416). An
+// adapter transmits one SEND at a time, so a suffix sent back to back with its
+// lead never completes the pair; the bound keeps the pair inside the upstream
+// decoder's escape-pending cap on a link with a long round trip.
 //
 // The suffix belongs to the ownership period the lead was sent in. It is
 // written inside arbitrator.commitWhileOwnershipCurrent, which holds the
@@ -375,14 +489,35 @@ func (m *Mux) writeSymbols(tr transport.RawTransport, symbols []byte) error {
 			return leadErr
 		}
 	}
+	if err := m.paceGatewaySuffix(wait); err != nil {
+		return errGatewayLeadEcho{err: err}
+	}
 	if hook := m.gatewaySuffixCommitHook; hook != nil {
 		hook()
 	}
 	var writeErr error
+	var refuted *gatewayLeadOutcome
 	commitErr := m.arb.commitWhileOwnershipCurrent(tok, func() error {
+		if wait != nil {
+			// Held across the claim and the write: the readLoop cannot
+			// resolve the wait in between, so a symbol is either before the
+			// claim (suffix withheld) or after the write returned.
+			wait.mu.Lock()
+			defer wait.mu.Unlock()
+			if !wait.suffixState.CompareAndSwap(suffixPending, suffixCommitted) {
+				// A symbol decided the pair after the pacing returned: the
+				// suffix is not transmitted and its outcome fails the write.
+				out := <-wait.result
+				refuted = &out
+				return nil
+			}
+		}
 		_, writeErr = tr.Write([]byte{suffix})
 		return writeErr
 	})
+	if commitErr == nil && refuted != nil {
+		return errGatewayLeadEcho{err: m.gatewayPairFailure(wait, *refuted)}
+	}
 	if commitErr != nil {
 		if wait != nil {
 			m.dropGatewayLeadWait(wait)
@@ -402,6 +537,113 @@ func (m *Mux) writeSymbols(tr transport.RawTransport, symbols []byte) error {
 		}
 	}
 	return nil
+}
+
+// gatewayEscapeStep names the symbol of an escape pair a verification failed on.
+type gatewayEscapeStep string
+
+const (
+	gatewayEscapeStepLead   gatewayEscapeStep = "lead"
+	gatewayEscapeStepSuffix gatewayEscapeStep = "suffix"
+)
+
+// gatewayEscapeEchoError is a failed echo verification of a gateway escape pair.
+// Its cause keeps the class protocol.Bus acts on: ErrBusCollision for a wrong
+// symbol, ErrTimeout when the echo was never observed.
+type gatewayEscapeEchoError struct {
+	step    gatewayEscapeStep
+	lead    byte
+	written byte // the symbol of the failed step
+	// observed is valid when echoObserved is set.
+	observed     byte
+	echoObserved bool
+	// beforeWrite marks a symbol observed before the suffix was written.
+	beforeWrite bool
+	cause       error
+}
+
+func (e *gatewayEscapeEchoError) Error() string {
+	switch {
+	case !e.echoObserved:
+		return fmt.Sprintf("adaptermux: escape %s echo 0x%02X not observed: %v", e.step, e.written, e.cause)
+	case e.step == gatewayEscapeStepLead:
+		return fmt.Sprintf("adaptermux: escape lead echo mismatch (wrote 0x%02X, observed 0x%02X): %v", e.written, e.observed, e.cause)
+	case e.beforeWrite:
+		return fmt.Sprintf("adaptermux: escape suffix echo mismatch (0x%02X 0x%02X observed before writing suffix 0x%02X): %v", e.lead, e.observed, e.written, e.cause)
+	default:
+		return fmt.Sprintf("adaptermux: escape suffix echo mismatch (wrote 0x%02X 0x%02X, observed 0x%02X 0x%02X): %v", e.lead, e.written, e.lead, e.observed, e.cause)
+	}
+}
+
+func (e *gatewayEscapeEchoError) Unwrap() error { return e.cause }
+
+// adaptermuxGatewayEscapeEchoFailuresTotal counts verification failures by step
+// and observed symbol (at most two steps times 257 keys).
+var adaptermuxGatewayEscapeEchoFailuresTotal = expvar.NewMap("adaptermux_gateway_escape_echo_failures_total")
+
+// GatewayEscapeEchoSnapshot is the mux's view of failed gateway escape-pair
+// verifications since it started.
+type GatewayEscapeEchoSnapshot struct {
+	LeadFailures   uint64
+	SuffixFailures uint64
+	// The fields below describe the latest failure; LastStep is empty before
+	// the first one and LastObserved is valid when LastEchoObserved is set.
+	LastStep         string
+	LastWritten      byte
+	LastObserved     byte
+	LastEchoObserved bool
+}
+
+// gatewayEscapeEchoDiag holds the snapshot and the log rate limit.
+type gatewayEscapeEchoDiag struct {
+	mu         sync.Mutex
+	snapshot   GatewayEscapeEchoSnapshot
+	lastLogAt  time.Time
+	suppressed uint64
+}
+
+// GatewayEscapeEchoSnapshot returns the escape-pair verification counters.
+func (m *Mux) GatewayEscapeEchoSnapshot() GatewayEscapeEchoSnapshot {
+	m.gatewayEscapeDiag.mu.Lock()
+	defer m.gatewayEscapeDiag.mu.Unlock()
+	return m.gatewayEscapeDiag.snapshot
+}
+
+// recordGatewayEscapeEchoFailure counts one verification failure and logs it,
+// at most once per gatewayEscapeEchoLogInterval.
+func (m *Mux) recordGatewayEscapeEchoFailure(e *gatewayEscapeEchoError, now time.Time) {
+	key := string(e.step) + "_no_echo"
+	observed := "none"
+	if e.echoObserved {
+		key = fmt.Sprintf("%s_observed_0x%02X", e.step, e.observed)
+		observed = fmt.Sprintf("0x%02X", e.observed)
+	}
+	adaptermuxGatewayEscapeEchoFailuresTotal.Add(key, 1)
+
+	d := &m.gatewayEscapeDiag
+	d.mu.Lock()
+	if e.step == gatewayEscapeStepLead {
+		d.snapshot.LeadFailures++
+	} else {
+		d.snapshot.SuffixFailures++
+	}
+	d.snapshot.LastStep = string(e.step)
+	d.snapshot.LastWritten = e.written
+	d.snapshot.LastObserved = e.observed
+	d.snapshot.LastEchoObserved = e.echoObserved
+	emit := d.lastLogAt.IsZero() || now.Sub(d.lastLogAt) >= gatewayEscapeEchoLogInterval
+	var suppressed uint64
+	if emit {
+		d.lastLogAt = now
+		suppressed, d.suppressed = d.suppressed, 0
+	} else {
+		d.suppressed++
+	}
+	d.mu.Unlock()
+	if emit {
+		m.logger.Printf("adaptermux: gateway escape echo verification failed: step=%s written=0x%02X observed=%s class=%v suppressed=%d",
+			e.step, e.written, observed, e.cause, suppressed)
+	}
 }
 
 // errGatewayLeadEcho marks a failed escape-lead verification so doSend can

@@ -1284,3 +1284,39 @@ func TestAA17StopRetriesCloseAfterAnExpiredAttempt(t *testing.T) {
 	}
 	aa17RequireReleased(t, host)
 }
+
+// Catches: a Stop whose context is already expired loses the race for the
+// operation lock without fencing the running generation, so callbacks stay
+// admissible and a later Start reports success after shutdown failed.
+func TestAA17ExpiredStopStillFencesTheRunningGeneration(t *testing.T) {
+	rig := aa17NewRig()
+	host := New(rig.config())
+	if err := host.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	session := rig.session(0)
+	stamp := session.Stamp()
+	// Positive control: the callback is admitted while running.
+	if err := session.Deliver(stamp, func(context.Context) error { return nil }); err != nil {
+		t.Fatalf("control: %v", err)
+	}
+	expired, cancel := context.WithCancel(context.Background())
+	cancel()
+	// Hold the operation lock so the expired Stop cannot win it.
+	if err := host.acquire(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.Stop(expired); !errors.Is(err, context.Canceled) {
+		t.Fatalf("stop err=%v", err)
+	}
+	host.release()
+	if err := session.Deliver(stamp, func(context.Context) error { t.Error("admitted after stop"); return nil }); !errors.Is(err, ErrStaleCallback) {
+		t.Fatalf("deliver err=%v", err)
+	}
+	aa17RequireReason(t, host.Start(context.Background()), ReasonCancelled)
+	// A later Stop with a live budget completes the same teardown.
+	if err := host.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	aa17RequireReleased(t, host)
+}

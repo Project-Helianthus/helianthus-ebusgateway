@@ -338,6 +338,14 @@ func (h *Host) Stop(ctx context.Context) error {
 	if h.cancelStart != nil {
 		h.cancelStart()
 	}
+	// Fence the running generation before waiting for the operation lock, so an
+	// expired budget cannot leave callbacks admissible.
+	if g := h.current; g != nil {
+		g.fenced = true
+		g.cancel()
+		h.state = StateStopping
+		h.finishDrainLocked(g)
+	}
 	h.mu.Unlock()
 	if err := h.acquire(ctx); err != nil {
 		return err
@@ -382,6 +390,10 @@ func (h *Host) start(ctx context.Context) error {
 	if g != nil {
 		if state == StateQuarantined {
 			return ErrQuarantined
+		}
+		if g.fenced {
+			// A stop fenced this generation and its teardown has not finished.
+			return &UnavailableError{Reason: ReasonCancelled}
 		}
 		return nil
 	}

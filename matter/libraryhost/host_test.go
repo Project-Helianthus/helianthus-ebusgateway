@@ -1076,3 +1076,66 @@ func TestAA17PartialConstructionIsClosedAndDrained(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestAA17CancelOnSecondCaptureNeverConstructs(t *testing.T) {
+	rig := aa17NewRig()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rig.captureHook = func(context.Context) error {
+		rig.mu.Lock()
+		second := rig.captures == 2
+		rig.mu.Unlock()
+		if second {
+			cancel()
+		}
+		return nil
+	}
+	host := New(rig.config())
+	aa17RequireReason(t, host.Start(ctx), ReasonCancelled)
+	if _, _, _, news, _ := rig.counts(); news != 0 {
+		t.Fatalf("news=%d", news)
+	}
+	if status := host.Status(); status.State == StateRunning || status.Resources != 0 {
+		t.Fatalf("status=%+v", status)
+	}
+}
+
+func TestAA17CancelDuringConstructionIsNotPublishedAsRunning(t *testing.T) {
+	rig := aa17NewRig()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rig.onNew = func(*Session) { cancel() }
+	host := New(rig.config())
+	aa17RequireReason(t, host.Start(ctx), ReasonCancelled)
+	if _, _, _, news, closes := rig.counts(); news != 1 || closes != 1 {
+		t.Fatalf("news=%d closes=%d", news, closes)
+	}
+	status := host.Status()
+	if status.State == StateRunning || status.Resources != 0 || status.OwnedWork != 0 {
+		t.Fatalf("status=%+v", status)
+	}
+}
+
+func TestAA17TokenReplayAcrossLifecyclesIsRefused(t *testing.T) {
+	rig := aa17NewRig()
+	sequence := []string{"A", "B", "A"}
+	rig.tokenOverride = func() (string, error) {
+		token := sequence[0]
+		sequence = sequence[1:]
+		return token, nil
+	}
+	host := New(rig.config())
+	ctx := context.Background()
+	for i := 0; i < 2; i++ {
+		if err := host.Start(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err := host.Stop(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	aa17RequireReason(t, host.Start(ctx), ReasonTokenReused)
+	if _, _, _, news, _ := rig.counts(); news != 2 {
+		t.Fatalf("news=%d", news)
+	}
+}

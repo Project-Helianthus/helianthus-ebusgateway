@@ -231,13 +231,13 @@ type Host struct {
 	cfg Config
 	ops chan struct{}
 
-	mu        sync.Mutex
-	state     State
-	reason    Reason
-	epoch     uint64
-	lastToken string
-	current   *generation
-	stale     uint64
+	mu      sync.Mutex
+	state   State
+	reason  Reason
+	epoch   uint64
+	issued  map[string]struct{}
+	current *generation
+	stale   uint64
 }
 
 // New touches no port.
@@ -366,9 +366,6 @@ func (h *Host) start(ctx context.Context) error {
 	if reason := checkOrigin(rows, class); reason != "" {
 		return h.unavailable(reason)
 	}
-	if ctx.Err() != nil {
-		return h.unavailable(ReasonCancelled)
-	}
 	// Qualification can outlast a source, binding or driver change: fence the
 	// generations again immediately before anything is allocated.
 	latest, err := h.cfg.Snapshots.Capture(ctx)
@@ -377,6 +374,9 @@ func (h *Host) start(ctx context.Context) error {
 	}
 	if latest.Generations != request.Generations {
 		return h.unavailable(ReasonGenerationMismatch)
+	}
+	if ctx.Err() != nil {
+		return h.unavailable(ReasonCancelled)
 	}
 	return h.launch(ctx, request, class)
 }
@@ -392,10 +392,13 @@ func (h *Host) nextToken() (string, Reason) {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if token == h.lastToken {
+	if _, reused := h.issued[token]; reused {
 		return "", ReasonTokenReused
 	}
-	h.lastToken = token
+	if h.issued == nil {
+		h.issued = make(map[string]struct{})
+	}
+	h.issued[token] = struct{}{}
 	return token, ""
 }
 
@@ -476,6 +479,17 @@ func (h *Host) launch(ctx context.Context, request Request, class BindingClass) 
 			return teardownErr
 		}
 		return h.unavailable(ReasonFactoryFailed)
+	}
+	if ctx.Err() != nil {
+		// The start was cancelled while the factory ran: do not publish a running binding.
+		h.mu.Lock()
+		g.binding = binding
+		h.mu.Unlock()
+		// The cancelled context cannot carry the teardown; the binding's own Close bounds it.
+		if teardownErr := h.teardown(context.WithoutCancel(ctx), g); teardownErr != nil {
+			return teardownErr
+		}
+		return h.unavailable(ReasonCancelled)
 	}
 	h.mu.Lock()
 	g.binding = binding

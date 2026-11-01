@@ -1164,3 +1164,42 @@ func TestAA17CancelledStartWithHungCloseQuarantinesWithinBudget(t *testing.T) {
 		t.Fatalf("restart err=%v", err)
 	}
 }
+
+func TestAA17PartialConstructionUnderCancelledStartGetsFreshCleanupBudget(t *testing.T) {
+	rig := aa17NewRig()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rig.newErr = errors.New("synthetic partial construction")
+	rig.newPartial = true
+	rig.onNew = func(*Session) { cancel() }
+	rig.closeHook = func(c context.Context) error { return c.Err() }
+	host := New(rig.config())
+	aa17RequireReason(t, host.Start(ctx), ReasonFactoryFailed)
+	if _, _, _, news, closes := rig.counts(); news != 1 || closes != 1 {
+		t.Fatalf("news=%d closes=%d, want 1 and 1", news, closes)
+	}
+	aa17RequireReleased(t, host)
+}
+
+func TestAA17PartialConstructionWithHungCloseQuarantinesWithinBudget(t *testing.T) {
+	rig := aa17NewRig()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rig.newErr = errors.New("synthetic partial construction")
+	rig.newPartial = true
+	rig.onNew = func(*Session) { cancel() }
+	rig.closeHook = func(c context.Context) error {
+		<-c.Done()
+		return c.Err()
+	}
+	cfg := rig.config()
+	cfg.CleanupBudget = 20 * time.Millisecond
+	host := New(cfg)
+	err := host.Start(ctx)
+	if !errors.Is(err, ErrQuiesce) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err=%v", err)
+	}
+	if status := host.Status(); status.State != StateQuarantined || status.Resources != 1 {
+		t.Fatalf("status=%+v", status)
+	}
+}

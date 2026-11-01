@@ -482,7 +482,9 @@ func (h *Host) launch(ctx context.Context, request Request, class BindingClass) 
 			g.binding = binding
 			h.mu.Unlock()
 		}
-		if teardownErr := h.teardown(ctx, g); teardownErr != nil {
+		cleanup, release := h.cleanupContext(ctx)
+		defer release()
+		if teardownErr := h.teardown(cleanup, g); teardownErr != nil {
 			return teardownErr
 		}
 		return h.unavailable(ReasonFactoryFailed)
@@ -510,6 +512,16 @@ func (h *Host) launch(ctx context.Context, request Request, class BindingClass) 
 	h.state = StateRunning
 	h.mu.Unlock()
 	return nil
+}
+
+// cleanupContext gives a start-time teardown its own finite budget, independent
+// of a start context that may already be cancelled or expired.
+func (h *Host) cleanupContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	budget := h.cfg.CleanupBudget
+	if budget <= 0 {
+		budget = DefaultCleanupBudget
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), budget)
 }
 
 func (h *Host) unavailable(reason Reason) error {

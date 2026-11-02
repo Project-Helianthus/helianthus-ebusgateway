@@ -85,6 +85,21 @@ type BusObservabilityStore struct {
 	// (preserves alert backward-compat). Surfaced as the new
 	// `ebus_active_echo_mismatch_subclass_total` Prometheus metric.
 	echoMismatchSubclasses map[echoMismatchSubclassKey]uint64
+	// escapePairAttributed is how many mux escape-pair verification
+	// failures were already matched to an echo_mismatch event.
+	escapePairAttributed uint64
+	// escapePairGeneration identifies the driver generation whose counts
+	// escapePairAttributed refers to.
+	escapePairGeneration uint64
+	// lastByteEchoMismatchAt is when the latest echo_mismatch event
+	// carrying an observed byte was recorded; zero when none is
+	// pending. A byte-less event right after it is the protocol
+	// layer's outcome re-emit of the same observation.
+	lastByteEchoMismatchAt time.Time
+	// lastEchoMismatchRequest is the request carried by that event, when
+	// it had one; a re-emit carrying a different request is not a repeat.
+	lastEchoMismatchRequest    protocol.Frame
+	lastEchoMismatchHasRequest bool
 
 	recent      []BusMessageRecord
 	recentStart int
@@ -113,6 +128,8 @@ type BusObservabilityStore struct {
 	// emits the batch-21 forensic counters
 	// (ebus_adaptermux_syn_seen_*) alongside the rest of the surface.
 	adaptermuxDiagProvider func() AdaptermuxDiagSnapshot
+	// escapePairFailureProvider returns the mux escape-pair failure counts.
+	escapePairFailureProvider func() (lead, suffix, generation uint64)
 
 	// v8RolloutProvider returns the latest snapshot of the v8 frame-
 	// atomic-visibility rollout counters: round-9 legacy-fallback
@@ -537,8 +554,38 @@ func (store *BusObservabilityStore) OnBusEvent(event protocol.BusEvent) error {
 		return nil
 	}
 
+	var escapePairTotal, escapePairGeneration uint64
+	escapePairKnown := false
+	if event.Kind == protocol.BusEventTimeout ||
+		(event.Kind == protocol.BusEventEchoMismatch && !echoMismatchByteObserved(event)) {
+		store.mu.Lock()
+		provider := store.escapePairFailureProvider
+		store.mu.Unlock()
+		if provider != nil {
+			lead, suffix, generation := provider()
+			escapePairTotal = lead + suffix
+			escapePairGeneration = generation
+			escapePairKnown = true
+		}
+	}
+
 	store.mu.Lock()
 	defer store.mu.Unlock()
+
+	if event.Kind != protocol.BusEventEchoMismatch {
+		store.lastByteEchoMismatchAt = time.Time{}
+	}
+
+	if escapePairKnown {
+		store.syncEscapePairGenerationLocked(escapePairTotal, escapePairGeneration)
+	}
+
+	// A no-echo escape-pair failure surfaces as a timeout event, never as
+	// an echo mismatch; settle it here so a later unrelated byte-less
+	// mismatch does not consume it.
+	if event.Kind == protocol.BusEventTimeout && escapePairKnown {
+		store.escapePairAttributed = escapePairTotal
+	}
 
 	mutated := false
 	switch event.Kind {
@@ -546,7 +593,7 @@ func (store *BusObservabilityStore) OnBusEvent(event protocol.BusEvent) error {
 		store.recordActiveFrameLocked(event)
 		mutated = true
 	case protocol.BusEventTimeout, protocol.BusEventNACK, protocol.BusEventCRCMismatch, protocol.BusEventEchoMismatch:
-		store.recordActiveErrorLocked(event)
+		store.recordActiveErrorLocked(event, escapePairTotal, escapePairKnown)
 		mutated = true
 	case protocol.BusEventRetry:
 		if event.Outcome == protocol.BusOutcomeCollision {
@@ -1069,6 +1116,26 @@ type AdaptermuxDiagSnapshot struct {
 	// ebus_active_echo_mismatch_subclass_total{subclass="pre_echo_syn_raw"}
 	// drops.
 	SynSuppressedBetweenWrites uint64
+	// InactiveReasonCounts is the lifetime number of gateway
+	// transactions per ending reason (bounded reason set, zero
+	// included). Published as
+	// ebus_adaptermux_transaction_endings_total{reason}.
+	InactiveReasonCounts map[string]uint64
+	// StaleActiveBytesDiscarded counts bytes a finished or failed
+	// gateway transaction left behind that were discarded instead of
+	// carried into the next grant.
+	StaleActiveBytesDiscarded uint64
+	// InterWriteDrainTotal counts stale bytes drained between two
+	// writes of one gateway transaction.
+	InterWriteDrainTotal uint64
+	// ForeignInitiatorReleases counts gateway ownerships released
+	// because a foreign initiator byte was observed.
+	ForeignInitiatorReleases uint64
+	// EscapePairLeadFailures and EscapePairSuffixFailures count failed
+	// echo verifications of a gateway escape pair, by the symbol of the
+	// pair the verification failed on.
+	EscapePairLeadFailures   uint64
+	EscapePairSuffixFailures uint64
 }
 
 // SetAdaptermuxDiagProvider registers a snapshot provider callback for
@@ -1349,7 +1416,7 @@ func (store *BusObservabilityStore) RenderPrometheus() string {
 	// metric (not a label dimension on ebus_errors_total) so that
 	// existing alerts filtering on class=echo_mismatch keep working
 	// without per-series fan-out.
-	writer.writeHelp("ebus_active_echo_mismatch_subclass_total", "Active-scope echo_mismatch event count broken down by inferred subclass (byte-value-based + EchoWasEscaped discriminator for 0xAA; approximate for non-0xAA bytes): pre_echo_syn_raw (read 0xAA with WasEscaped=false — REAL wire SYN intrusion; mux SYN-suppression leak class) [batch-23 round-4 2026-05-17], pre_echo_syn_escaped_data (read 0xAA with WasEscaped=true — escape-decoded 0xAA payload from a third-party frame; wire-level contention class, Attack 10) [batch-23 round-4 2026-05-17], post_grant_collision_initiator (third-party initiator's SOF on the wire), post_grant_collision_target (third-party mid-frame target/broadcast byte), post_grant_ack (stale 0x00 from previous txn buffer), post_grant_nack (stale 0xFF), post_grant_reserved (mid-escape sequence), bit_flip (fallback; EMI/wire corruption). NOTE: the pre-batch-23 `pre_echo_syn` label is RETIRED — operators querying that legacy label after deploy see no data; sum `pre_echo_syn_raw` + `pre_echo_syn_escaped_data` to recover pre-batch-23 semantics.")
+	writer.writeHelp("ebus_active_echo_mismatch_subclass_total", "Active-scope echo_mismatch event count broken down by inferred subclass (byte-value-based + EchoWasEscaped discriminator for 0xAA; approximate for non-0xAA bytes): pre_echo_syn_raw (read 0xAA with WasEscaped=false — REAL wire SYN intrusion; mux SYN-suppression leak class) [batch-23 round-4 2026-05-17], pre_echo_syn_escaped_data (read 0xAA with WasEscaped=true — escape-decoded 0xAA payload from a third-party frame; wire-level contention class, Attack 10) [batch-23 round-4 2026-05-17], post_grant_collision_initiator (third-party initiator's SOF on the wire), post_grant_collision_target (third-party mid-frame target/broadcast byte), post_grant_ack (stale 0x00 from previous txn buffer), post_grant_nack (stale 0xFF), post_grant_reserved (mid-escape sequence), bit_flip (fallback; EMI/wire corruption), escape_pair_verify (a gateway escape-pair echo verification failed in the adapter mux; no byte is attributed), byte_unknown (the event carries no observed byte; never labelled post_grant_ack). NOTE: the pre-batch-23 `pre_echo_syn` label is RETIRED — operators querying that legacy label after deploy see no data; sum `pre_echo_syn_raw` + `pre_echo_syn_escaped_data` to recover pre-batch-23 semantics.")
 	writer.writeType("ebus_active_echo_mismatch_subclass_total", "counter")
 	for _, item := range sortedEchoMismatchSubclassSeries(echoMismatchSubclasses) {
 		writer.writeCounterSample("ebus_active_echo_mismatch_subclass_total", float64(item.Value), labelMap(
@@ -1393,6 +1460,45 @@ func (store *BusObservabilityStore) RenderPrometheus() string {
 		writer.writeType("ebus_adaptermux_syn_seen_after_transport_window_expired_total", "counter")
 		writer.writeCounterSample("ebus_adaptermux_syn_seen_after_transport_window_expired_total",
 			float64(adaptermuxDiag.SynSeenAfterTransportWindowExpired), nil)
+
+		writer.writeHelp("ebus_adaptermux_escape_pair_verify_failures_total",
+			"Failed echo verifications of a gateway escape pair (logical 0xA9 or 0xAA written as two wire symbols), by the symbol of the pair that failed: lead or suffix. A failure that ends with a wrong echoed symbol is also counted once in ebus_errors_total{class=\"echo_mismatch\"} with subclass escape_pair_verify; a failure that ends with no echo at all arrives as a timeout and is counted only here, not in the echo_mismatch class.")
+		writer.writeType("ebus_adaptermux_escape_pair_verify_failures_total", "counter")
+		writer.writeCounterSample("ebus_adaptermux_escape_pair_verify_failures_total",
+			float64(adaptermuxDiag.EscapePairLeadFailures), labelMap("step", "lead"))
+		writer.writeCounterSample("ebus_adaptermux_escape_pair_verify_failures_total",
+			float64(adaptermuxDiag.EscapePairSuffixFailures), labelMap("step", "suffix"))
+
+		writer.writeHelp("ebus_adaptermux_transaction_endings_total",
+			"Gateway-owned adapter transactions by ending reason (bounded reason set). A rising max_ownership, syn_idle, arbitration_collision, abandoned_on_rebid or active_read_timeout count signals abnormal gateway ownerships.")
+		writer.writeType("ebus_adaptermux_transaction_endings_total", "counter")
+		endingReasons := make([]string, 0, len(adaptermuxDiag.InactiveReasonCounts))
+		for reason := range adaptermuxDiag.InactiveReasonCounts {
+			endingReasons = append(endingReasons, reason)
+		}
+		sort.Strings(endingReasons)
+		for _, reason := range endingReasons {
+			writer.writeCounterSample("ebus_adaptermux_transaction_endings_total",
+				float64(adaptermuxDiag.InactiveReasonCounts[reason]), labelMap("reason", reason))
+		}
+
+		writer.writeHelp("ebus_adaptermux_stale_active_bytes_discarded_total",
+			"Bytes a finished or failed gateway transaction left behind that were discarded instead of being carried into the next grant.")
+		writer.writeType("ebus_adaptermux_stale_active_bytes_discarded_total", "counter")
+		writer.writeCounterSample("ebus_adaptermux_stale_active_bytes_discarded_total",
+			float64(adaptermuxDiag.StaleActiveBytesDiscarded), nil)
+
+		writer.writeHelp("ebus_adaptermux_inter_write_drained_bytes_total",
+			"Stale bytes drained between two writes of one gateway transaction.")
+		writer.writeType("ebus_adaptermux_inter_write_drained_bytes_total", "counter")
+		writer.writeCounterSample("ebus_adaptermux_inter_write_drained_bytes_total",
+			float64(adaptermuxDiag.InterWriteDrainTotal), nil)
+
+		writer.writeHelp("ebus_adaptermux_foreign_initiator_releases_total",
+			"Gateway ownerships released because a foreign initiator byte was observed while the gateway held the bus.")
+		writer.writeType("ebus_adaptermux_foreign_initiator_releases_total", "counter")
+		writer.writeCounterSample("ebus_adaptermux_foreign_initiator_releases_total",
+			float64(adaptermuxDiag.ForeignInitiatorReleases), nil)
 	}
 
 	// v8 frame-atomic-visibility rollout counters — wired via
@@ -1772,30 +1878,28 @@ func (store *BusObservabilityStore) recordActiveFrameLocked(event protocol.BusEv
 	})
 }
 
-func (store *BusObservabilityStore) recordActiveErrorLocked(event protocol.BusEvent) {
+func (store *BusObservabilityStore) recordActiveErrorLocked(event protocol.BusEvent, escapePairTotal uint64, escapePairKnown bool) {
 	class, phase := classifyActiveError(event)
 	if class == "" {
 		return
 	}
-	store.incrementErrorLocked(errorSeriesKey{
-		Scope: "active",
-		Class: class,
-		Phase: phase,
-	})
+	counted := true
+	subclass := ""
 	if event.Kind == protocol.BusEventEchoMismatch {
-		// P10 — parallel echo_mismatch subclass counter for operator
-		// observability. Stored in a separate map so the existing
-		// `ebus_errors_total{class="echo_mismatch"}` time series is
-		// not split (Codex P10 review pass 1 MAJOR FINDING_1).
-		// batch-23 round-4 (2026-05-17): pass EchoWasEscaped so the
-		// classifier can split `pre_echo_syn` into `pre_echo_syn_raw`
-		// vs `pre_echo_syn_escaped_data` per the Attack 10 hypothesis.
-		// Field is populated upstream by sendRawWithEcho's escape-
-		// aware guards in protocol/bus.go ~1054.
-		subclass := classifyEchoMismatchSubclass(event.Byte, event.EchoWasEscaped)
-		store.echoMismatchSubclasses[echoMismatchSubclassKey{Subclass: subclass}]++
+		counted, subclass = store.attributeEchoMismatchLocked(event, escapePairTotal, escapePairKnown)
 	}
-	if !event.HasRequest {
+	if counted {
+		store.incrementErrorLocked(errorSeriesKey{
+			Scope: "active",
+			Class: class,
+			Phase: phase,
+		})
+		if subclass != "" {
+			store.echoMismatchSubclasses[echoMismatchSubclassKey{Subclass: subclass}]++
+		}
+	}
+	if !counted || !event.HasRequest {
+		// A suppressed re-emit is the same attempt already booked.
 		return
 	}
 	family := classifyFamily(event.Request)
@@ -2447,6 +2551,102 @@ func classifyActiveError(event protocol.BusEvent) (string, string) {
 	default:
 		return "", ""
 	}
+}
+
+// echoMismatchReemitWindow bounds how long after an echo_mismatch event
+// with an observed byte a byte-less one is read as its outcome re-emit.
+const echoMismatchReemitWindow = 250 * time.Millisecond
+
+const (
+	echoMismatchSubclassByteUnknown = "byte_unknown"
+	echoMismatchSubclassEscapePair  = "escape_pair_verify"
+)
+
+// echoMismatchByteObserved reports whether the event carries the byte
+// that was read in place of the expected echo. The event has no
+// provenance flag yet. Events that carry the protocol's echo-mismatch
+// outcome marker (every event the protocol layer emits, including its
+// outcome re-emit) report a zero byte as not observed; an event without
+// that marker carries its byte literally, so a real zero byte stays
+// post_grant_ack. This is the single place to switch once the bus event
+// reports provenance.
+func echoMismatchByteObserved(event protocol.BusEvent) bool {
+	return event.Byte != 0 || event.Outcome != protocol.BusOutcomeEchoMismatch
+}
+
+// attributeEchoMismatchLocked decides whether an echo_mismatch event is a
+// new observation and which subclass it belongs to.
+func (store *BusObservabilityStore) attributeEchoMismatchLocked(event protocol.BusEvent, escapePairTotal uint64, escapePairKnown bool) (bool, string) {
+	now := store.now()
+	if echoMismatchByteObserved(event) {
+		store.armEchoMismatchReemitLocked(event, now)
+		return true, classifyEchoMismatchSubclass(event.Byte, event.EchoWasEscaped)
+	}
+	if escapePairTotal > store.escapePairAttributed {
+		store.escapePairAttributed++
+		store.lastByteEchoMismatchAt = time.Time{}
+		return true, echoMismatchSubclassEscapePair
+	}
+	if !store.lastByteEchoMismatchAt.IsZero() && now.Sub(store.lastByteEchoMismatchAt) <= echoMismatchReemitWindow &&
+		(!event.HasRequest || !store.lastEchoMismatchHasRequest || framesEqual(event.Request, store.lastEchoMismatchRequest)) {
+		store.lastByteEchoMismatchAt = time.Time{}
+		return false, ""
+	}
+	// Counted as unknown: its own outcome re-emit may follow.
+	store.armEchoMismatchReemitLocked(event, now)
+	return true, echoMismatchSubclassByteUnknown
+}
+
+func (store *BusObservabilityStore) armEchoMismatchReemitLocked(event protocol.BusEvent, now time.Time) {
+	store.lastByteEchoMismatchAt = now
+	store.lastEchoMismatchRequest = event.Request
+	store.lastEchoMismatchHasRequest = event.HasRequest
+}
+
+func framesEqual(a, b protocol.Frame) bool {
+	return a.Source == b.Source && a.Target == b.Target && a.Primary == b.Primary &&
+		a.Secondary == b.Secondary && a.FrameType == b.FrameType && bytes.Equal(a.Data, b.Data)
+}
+
+// syncEscapePairGenerationLocked drops the attribution count when the
+// failure counts come from a different driver generation, so a replacement
+// whose first failure reports the same total as its predecessor's last one
+// is still recognised as new. A strict decrease within one generation is
+// still read as a counter reset. Only a real provider snapshot can show
+// either.
+func (store *BusObservabilityStore) syncEscapePairGenerationLocked(total, generation uint64) {
+	if generation != store.escapePairGeneration {
+		store.escapePairGeneration = generation
+		store.escapePairAttributed = 0
+		return
+	}
+	if total < store.escapePairAttributed {
+		store.escapePairAttributed = 0
+	}
+}
+
+// SetEscapePairFailureProvider registers the source of the mux's lifetime
+// escape-pair verification failure counts (lead, suffix). Nil is a no-op.
+func (store *BusObservabilityStore) SetEscapePairFailureProvider(provider func() (lead, suffix uint64)) {
+	if provider == nil {
+		return
+	}
+	store.SetEscapePairFailureGenerationProvider(func() (uint64, uint64, uint64) {
+		lead, suffix := provider()
+		return lead, suffix, 0
+	})
+}
+
+// SetEscapePairFailureGenerationProvider registers the source of the
+// current driver generation's escape-pair failure counts (lead, suffix)
+// together with an identifier that changes whenever the generation does.
+func (store *BusObservabilityStore) SetEscapePairFailureGenerationProvider(provider func() (lead, suffix, generation uint64)) {
+	if store == nil {
+		return
+	}
+	store.mu.Lock()
+	store.escapePairFailureProvider = provider
+	store.mu.Unlock()
 }
 
 // classifyEchoMismatchSubclass returns a sub-type label for an

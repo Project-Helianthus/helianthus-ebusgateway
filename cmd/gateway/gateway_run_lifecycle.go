@@ -13,6 +13,7 @@ import (
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux/v8classifier"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/releasecheck"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimecontrol"
@@ -277,14 +278,36 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 	// ebus_adaptermux_syn_seen_* metrics are simply absent).
 	if snap, ok := adapterClassifier.(adaptermuxDiagSnapshotter); ok {
 		busObservability.SetAdaptermuxDiagProvider(func() ebusgateway.AdaptermuxDiagSnapshot {
-			s := snap.ActiveTxnSnapshot()
+			var s adaptermux.ActiveTxnSnapshot
+			if cumulative, ok := adapterClassifier.(interface {
+				CumulativeActiveTxnSnapshot() adaptermux.ActiveTxnSnapshot
+			}); ok {
+				s = cumulative.CumulativeActiveTxnSnapshot()
+			} else {
+				s = snap.ActiveTxnSnapshot()
+			}
 			return ebusgateway.AdaptermuxDiagSnapshot{
 				SynSuppressedPreEcho:               s.SynSuppressedPreEcho,
 				SynSeenDuringGrantWindow:           s.SynSeenDuringGrantWindow,
 				SynSeenWhileInterWriteEmpty:        s.SynSeenWhileInterWriteEmpty,
 				SynSeenAfterTransportWindowExpired: s.SynSeenAfterTransportWindowExpired,
 				SynSuppressedBetweenWrites:         s.SynSuppressedBetweenWrites,
+				InactiveReasonCounts:               inactiveReasonCounts(s.InactiveReasonCounts),
+				StaleActiveBytesDiscarded:          s.StaleActiveBytesDiscarded,
+				InterWriteDrainTotal:               s.InterWriteDrainTotal,
+				ForeignInitiatorReleases:           s.ForeignInitiatorReleases,
+				EscapePairLeadFailures:             s.EscapePairLeadFailures,
+				EscapePairSuffixFailures:           s.EscapePairSuffixFailures,
 			}
+		})
+		busObservability.SetEscapePairFailureGenerationProvider(func() (uint64, uint64, uint64) {
+			if live, ok := adapterClassifier.(interface {
+				LiveEscapePairFailures() (lead, suffix, generation uint64)
+			}); ok {
+				return live.LiveEscapePairFailures()
+			}
+			s := snap.ActiveTxnSnapshot()
+			return s.EscapePairLeadFailures, s.EscapePairSuffixFailures, 0
 		})
 	}
 
@@ -1379,4 +1402,12 @@ func publishManagedTransportRetirement(store *ebusgateway.BusObservabilityStore,
 		// revision supersedes every status published during its lifetime.
 		store.SetTransportRuntimeStatus(eebusRuntimeTransportStatus(eebusRuntimeLifecycleSnapshot{State: eebusLifecycleStopped, Revision: ^uint64(0)}))
 	}
+}
+
+func inactiveReasonCounts(counts map[adaptermux.ActiveTxnInactiveReason]uint64) map[string]uint64 {
+	out := make(map[string]uint64, len(counts))
+	for reason, count := range counts {
+		out[string(reason)] = count
+	}
+	return out
 }

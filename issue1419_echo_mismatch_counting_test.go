@@ -176,6 +176,20 @@ func TestEchoMismatchEscapePairFailureGetsOwnSubclass(t *testing.T) {
 	metricLine(t, store, subclassSeries("post_grant_ack"), "0")
 }
 
+// Kills: a byte-bearing mismatch resetting the escape-pair attribution so its
+// byte-less re-emit is counted again as escape_pair_verify.
+func TestEchoMismatchMixedSequenceAfterEscapePairCountsOnce(t *testing.T) {
+	t.Parallel()
+	store, _ := echoMismatchTestStore()
+	var lead uint64 = 1
+	store.SetEscapePairFailureProvider(func() (uint64, uint64) { return lead, 0 })
+	_ = store.OnBusEvent(echoMismatchEvent(0, false))
+	_ = store.OnBusEvent(echoMismatchEvent(0x42, false))
+	_ = store.OnBusEvent(echoMismatchEvent(0, false))
+	metricLine(t, store, echoMismatchErrorSeries, "2")
+	metricLine(t, store, subclassSeries("escape_pair_verify"), "1")
+}
+
 // Kills: swapped or dropped diagnostics, a step label that is not lead or
 // suffix, and address- or serial-bearing labels.
 func TestAdaptermuxDiagnosticsExported(t *testing.T) {

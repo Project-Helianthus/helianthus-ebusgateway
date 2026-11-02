@@ -552,6 +552,7 @@ func (store *BusObservabilityStore) OnBusEvent(event protocol.BusEvent) error {
 	}
 
 	var escapePairTotal uint64
+	escapePairKnown := false
 	if event.Kind == protocol.BusEventEchoMismatch && !echoMismatchByteObserved(event) {
 		store.mu.Lock()
 		provider := store.escapePairFailureProvider
@@ -559,6 +560,7 @@ func (store *BusObservabilityStore) OnBusEvent(event protocol.BusEvent) error {
 		if provider != nil {
 			lead, suffix := provider()
 			escapePairTotal = lead + suffix
+			escapePairKnown = true
 		}
 	}
 
@@ -575,7 +577,7 @@ func (store *BusObservabilityStore) OnBusEvent(event protocol.BusEvent) error {
 		store.recordActiveFrameLocked(event)
 		mutated = true
 	case protocol.BusEventTimeout, protocol.BusEventNACK, protocol.BusEventCRCMismatch, protocol.BusEventEchoMismatch:
-		store.recordActiveErrorLocked(event, escapePairTotal)
+		store.recordActiveErrorLocked(event, escapePairTotal, escapePairKnown)
 		mutated = true
 	case protocol.BusEventRetry:
 		if event.Outcome == protocol.BusOutcomeCollision {
@@ -1860,7 +1862,7 @@ func (store *BusObservabilityStore) recordActiveFrameLocked(event protocol.BusEv
 	})
 }
 
-func (store *BusObservabilityStore) recordActiveErrorLocked(event protocol.BusEvent, escapePairTotal uint64) {
+func (store *BusObservabilityStore) recordActiveErrorLocked(event protocol.BusEvent, escapePairTotal uint64, escapePairKnown bool) {
 	class, phase := classifyActiveError(event)
 	if class == "" {
 		return
@@ -1868,7 +1870,7 @@ func (store *BusObservabilityStore) recordActiveErrorLocked(event protocol.BusEv
 	counted := true
 	subclass := ""
 	if event.Kind == protocol.BusEventEchoMismatch {
-		counted, subclass = store.attributeEchoMismatchLocked(event, escapePairTotal)
+		counted, subclass = store.attributeEchoMismatchLocked(event, escapePairTotal, escapePairKnown)
 	}
 	if counted {
 		store.incrementErrorLocked(errorSeriesKey{
@@ -2557,11 +2559,12 @@ func echoMismatchByteObserved(event protocol.BusEvent) bool {
 
 // attributeEchoMismatchLocked decides whether an echo_mismatch event is a
 // new observation and which subclass it belongs to.
-func (store *BusObservabilityStore) attributeEchoMismatchLocked(event protocol.BusEvent, escapePairTotal uint64) (bool, string) {
+func (store *BusObservabilityStore) attributeEchoMismatchLocked(event protocol.BusEvent, escapePairTotal uint64, escapePairKnown bool) (bool, string) {
 	now := store.now()
 	// A driver replacement restarts the mux counters; do not carry the
 	// previous generation's attribution count into the new one.
-	if escapePairTotal < store.escapePairAttributed {
+	// Only a real provider snapshot can show a counter reset.
+	if escapePairKnown && escapePairTotal < store.escapePairAttributed {
 		store.escapePairAttributed = 0
 	}
 	if echoMismatchByteObserved(event) {

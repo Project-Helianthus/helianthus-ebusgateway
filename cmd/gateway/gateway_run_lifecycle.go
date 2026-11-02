@@ -13,6 +13,7 @@ import (
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux/v8classifier"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/releasecheck"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimecontrol"
@@ -284,7 +285,17 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 				SynSeenWhileInterWriteEmpty:        s.SynSeenWhileInterWriteEmpty,
 				SynSeenAfterTransportWindowExpired: s.SynSeenAfterTransportWindowExpired,
 				SynSuppressedBetweenWrites:         s.SynSuppressedBetweenWrites,
+				InactiveReasonCounts:               inactiveReasonCounts(s.InactiveReasonCounts),
+				StaleActiveBytesDiscarded:          s.StaleActiveBytesDiscarded,
+				InterWriteDrainTotal:               s.InterWriteDrainTotal,
+				ForeignInitiatorReleases:           s.ForeignInitiatorReleases,
+				EscapePairLeadFailures:             s.EscapePairLeadFailures,
+				EscapePairSuffixFailures:           s.EscapePairSuffixFailures,
 			}
+		})
+		busObservability.SetEscapePairFailureProvider(func() (uint64, uint64) {
+			s := snap.ActiveTxnSnapshot()
+			return s.EscapePairLeadFailures, s.EscapePairSuffixFailures
 		})
 	}
 
@@ -1379,4 +1390,12 @@ func publishManagedTransportRetirement(store *ebusgateway.BusObservabilityStore,
 		// revision supersedes every status published during its lifetime.
 		store.SetTransportRuntimeStatus(eebusRuntimeTransportStatus(eebusRuntimeLifecycleSnapshot{State: eebusLifecycleStopped, Revision: ^uint64(0)}))
 	}
+}
+
+func inactiveReasonCounts(counts map[adaptermux.ActiveTxnInactiveReason]uint64) map[string]uint64 {
+	out := make(map[string]uint64, len(counts))
+	for reason, count := range counts {
+		out[string(reason)] = count
+	}
+	return out
 }

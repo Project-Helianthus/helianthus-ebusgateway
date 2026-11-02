@@ -344,6 +344,10 @@ type ActiveTxnSnapshot struct {
 	// section. Non-zero is normal; persistent zero indicates the
 	// upstream pipeline is fully drained between writes.
 	InterWriteDrainTotal uint64
+	// EscapePairLeadFailures and EscapePairSuffixFailures mirror the
+	// failed gateway escape-pair echo verifications by failing step.
+	EscapePairLeadFailures   uint64
+	EscapePairSuffixFailures uint64
 	// EchoQueueOverflowResets mirrors gatewayEcho.totalOverflowResets
 	// (P10.2.1). Non-zero indicates the gateway-write loop produced
 	// more than 256 unacknowledged writes, triggering a queue reset.
@@ -402,6 +406,7 @@ func (m *Mux) ActiveTxnSnapshot() ActiveTxnSnapshot {
 	for i, reason := range inactiveReasons {
 		byReason[reason] = m.activeTxn.inactiveByReason[i].Load()
 	}
+	escapeEcho := m.GatewayEscapeEchoSnapshot()
 	return ActiveTxnSnapshot{
 		ID:                                 m.activeTxn.id,
 		Initiator:                          m.activeTxn.initiator,
@@ -426,6 +431,8 @@ func (m *Mux) ActiveTxnSnapshot() ActiveTxnSnapshot {
 		SynSeenAfterTransportWindowExpired: m.activeTxn.synSeenAfterTransportWindowExpired.Load(),
 		SynSuppressedBetweenWrites:         m.activeTxn.synSuppressedBetweenWrites.Load(),
 		InterWriteDrainTotal:               m.activeTxn.interWriteDrainTotal.Load(),
+		EscapePairLeadFailures:             escapeEcho.LeadFailures,
+		EscapePairSuffixFailures:           escapeEcho.SuffixFailures,
 		EchoQueueOverflowResets:            m.gatewayEcho.overflowResets(),
 		BytesDeliveredToActive:             m.activeTxn.bytesDeliveredToActive.Load(),
 		AbsorbResetTotal:                   m.absorbResetTotal.Load(),

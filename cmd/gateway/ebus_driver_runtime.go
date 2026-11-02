@@ -1247,8 +1247,22 @@ func (counter *ebusV8CumulativeCounter) diagSnapshot(current adaptermux.ActiveTx
 	if counter == nil {
 		return current, 0
 	}
+	return counter.diagSnapshotAt(current, counter.currentGeneration())
+}
+
+// diagSnapshotAt folds a live snapshot that was read while the counter was
+// in generation readAt. If a retirement landed since, the live snapshot
+// belongs to a generation already folded into diagRetired, so it is dropped
+// instead of being summed a second time; the next read sees the new one.
+func (counter *ebusV8CumulativeCounter) diagSnapshotAt(current adaptermux.ActiveTxnSnapshot, readAt uint64) (adaptermux.ActiveTxnSnapshot, uint64) {
+	if counter == nil {
+		return current, 0
+	}
 	counter.mu.Lock()
 	defer counter.mu.Unlock()
+	if counter.generation != readAt {
+		current = adaptermux.ActiveTxnSnapshot{}
+	}
 	total := counter.diagRetired.plus(muxDiagTotalsOf(current)).raiseTo(counter.diagFloor)
 	counter.diagFloor = total
 	current.InactiveReasonCounts = total.endings
@@ -1278,8 +1292,17 @@ func (counter *ebusV8CumulativeCounter) total(current *v8classifier.Classifier) 
 	if counter == nil {
 		return current.ShadowWouldHaveDroppedTotal()
 	}
-	currentTotal := current.ShadowWouldHaveDroppedTotal()
+	readAt := counter.currentGeneration()
+	return counter.totalAt(current.ShadowWouldHaveDroppedTotal(), readAt)
+}
+
+// totalAt folds a live total read in generation readAt; a total read before
+// a retirement that has since folded it is dropped, never added twice.
+func (counter *ebusV8CumulativeCounter) totalAt(currentTotal, readAt uint64) uint64 {
 	counter.mu.Lock()
+	if counter.generation != readAt {
+		currentTotal = 0
+	}
 	total := counter.retired + currentTotal
 	if total > counter.floor {
 		counter.floor = total
@@ -1346,7 +1369,11 @@ func (classifier *ebusStableClassifier) ActiveTxnSnapshot() (snapshot adaptermux
 // totals folded into process-owned cumulative state, so they never decrease
 // across a driver replacement or while no generation is admitted.
 func (classifier *ebusStableClassifier) CumulativeActiveTxnSnapshot() adaptermux.ActiveTxnSnapshot {
-	snapshot, _ := classifier.counter.diagSnapshot(classifier.ActiveTxnSnapshot())
+	if classifier.counter == nil {
+		return classifier.ActiveTxnSnapshot()
+	}
+	readAt := classifier.counter.currentGeneration()
+	snapshot, _ := classifier.counter.diagSnapshotAt(classifier.ActiveTxnSnapshot(), readAt)
 	return snapshot
 }
 
@@ -1374,6 +1401,9 @@ func (classifier *ebusStableClassifier) LiveEscapePairFailures() (lead, suffix, 
 }
 
 func (counter *ebusV8CumulativeCounter) currentGeneration() uint64 {
+	if counter == nil {
+		return 0
+	}
 	counter.mu.Lock()
 	defer counter.mu.Unlock()
 	return counter.generation
@@ -1404,9 +1434,10 @@ func (classifier *ebusStableClassifier) V8ShadowWouldHaveDroppedTotal() uint64 {
 	}
 	var total uint64
 	resolved := false
+	readAt := classifier.counter.currentGeneration()
 	classifier.withClassifier(func(current activeTxnClassifier) {
 		resolved = true
-		total = classifier.counter.total(v8ClassifierFor(current))
+		total = classifier.counter.totalAt(v8ClassifierFor(current).ShadowWouldHaveDroppedTotal(), readAt)
 	})
 	if !resolved {
 		return classifier.counter.total(nil)

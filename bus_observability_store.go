@@ -1462,7 +1462,7 @@ func (store *BusObservabilityStore) RenderPrometheus() string {
 			float64(adaptermuxDiag.SynSeenAfterTransportWindowExpired), nil)
 
 		writer.writeHelp("ebus_adaptermux_escape_pair_verify_failures_total",
-			"Failed echo verifications of a gateway escape pair (logical 0xA9 or 0xAA written as two wire symbols), by the symbol of the pair that failed: lead or suffix. Each failure is also counted once in ebus_errors_total{class=\"echo_mismatch\"} with ebus_active_echo_mismatch_subclass_total{subclass=\"escape_pair_verify\"}.")
+			"Failed echo verifications of a gateway escape pair (logical 0xA9 or 0xAA written as two wire symbols), by the symbol of the pair that failed: lead or suffix. A failure that ends with a wrong echoed symbol is also counted once in ebus_errors_total{class=\"echo_mismatch\"} with subclass escape_pair_verify; a failure that ends with no echo at all arrives as a timeout and is counted only here, not in the echo_mismatch class.")
 		writer.writeType("ebus_adaptermux_escape_pair_verify_failures_total", "counter")
 		writer.writeCounterSample("ebus_adaptermux_escape_pair_verify_failures_total",
 			float64(adaptermuxDiag.EscapePairLeadFailures), labelMap("step", "lead"))

@@ -246,3 +246,20 @@ func TestEchoMismatchTimeoutSettlesEscapePairFailure(t *testing.T) {
 	metricLine(t, store, subclassSeries("byte_unknown"), "1")
 	metricLine(t, store, subclassSeries("escape_pair_verify"), "0")
 }
+
+// Kills: reading a replacement whose first failure reports the same total as
+// its predecessor's last one as an already-attributed failure, which
+// downgrades it to byte_unknown.
+func TestEchoMismatchEqualTotalsAcrossGenerationAreClassifiedByGeneration(t *testing.T) {
+	t.Parallel()
+	store, now := echoMismatchTestStore()
+	var lead, generation uint64 = 1, 1
+	store.SetEscapePairFailureGenerationProvider(func() (uint64, uint64, uint64) { return lead, 0, generation })
+	_ = store.OnBusEvent(echoMismatchEvent(0, false))
+	// The replacement's first failure reports the same total.
+	generation = 2
+	*now = now.Add(time.Second)
+	_ = store.OnBusEvent(echoMismatchEvent(0, false))
+	metricLine(t, store, subclassSeries("escape_pair_verify"), "2")
+	metricLine(t, store, subclassSeries("byte_unknown"), "0")
+}

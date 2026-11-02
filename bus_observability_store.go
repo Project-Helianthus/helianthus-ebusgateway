@@ -88,6 +88,9 @@ type BusObservabilityStore struct {
 	// escapePairAttributed is how many mux escape-pair verification
 	// failures were already matched to an echo_mismatch event.
 	escapePairAttributed uint64
+	// escapePairGeneration identifies the driver generation whose counts
+	// escapePairAttributed refers to.
+	escapePairGeneration uint64
 	// lastByteEchoMismatchAt is when the latest echo_mismatch event
 	// carrying an observed byte was recorded; zero when none is
 	// pending. A byte-less event right after it is the protocol
@@ -126,7 +129,7 @@ type BusObservabilityStore struct {
 	// (ebus_adaptermux_syn_seen_*) alongside the rest of the surface.
 	adaptermuxDiagProvider func() AdaptermuxDiagSnapshot
 	// escapePairFailureProvider returns the mux escape-pair failure counts.
-	escapePairFailureProvider func() (lead, suffix uint64)
+	escapePairFailureProvider func() (lead, suffix, generation uint64)
 
 	// v8RolloutProvider returns the latest snapshot of the v8 frame-
 	// atomic-visibility rollout counters: round-9 legacy-fallback
@@ -551,7 +554,7 @@ func (store *BusObservabilityStore) OnBusEvent(event protocol.BusEvent) error {
 		return nil
 	}
 
-	var escapePairTotal uint64
+	var escapePairTotal, escapePairGeneration uint64
 	escapePairKnown := false
 	if event.Kind == protocol.BusEventTimeout ||
 		(event.Kind == protocol.BusEventEchoMismatch && !echoMismatchByteObserved(event)) {
@@ -559,8 +562,9 @@ func (store *BusObservabilityStore) OnBusEvent(event protocol.BusEvent) error {
 		provider := store.escapePairFailureProvider
 		store.mu.Unlock()
 		if provider != nil {
-			lead, suffix := provider()
+			lead, suffix, generation := provider()
 			escapePairTotal = lead + suffix
+			escapePairGeneration = generation
 			escapePairKnown = true
 		}
 	}
@@ -570,6 +574,10 @@ func (store *BusObservabilityStore) OnBusEvent(event protocol.BusEvent) error {
 
 	if event.Kind != protocol.BusEventEchoMismatch {
 		store.lastByteEchoMismatchAt = time.Time{}
+	}
+
+	if escapePairKnown {
+		store.syncEscapePairGenerationLocked(escapePairTotal, escapePairGeneration)
 	}
 
 	// A no-echo escape-pair failure surfaces as a timeout event, never as
@@ -2570,12 +2578,6 @@ func echoMismatchByteObserved(event protocol.BusEvent) bool {
 // new observation and which subclass it belongs to.
 func (store *BusObservabilityStore) attributeEchoMismatchLocked(event protocol.BusEvent, escapePairTotal uint64, escapePairKnown bool) (bool, string) {
 	now := store.now()
-	// A driver replacement restarts the mux counters; do not carry the
-	// previous generation's attribution count into the new one.
-	// Only a real provider snapshot can show a counter reset.
-	if escapePairKnown && escapePairTotal < store.escapePairAttributed {
-		store.escapePairAttributed = 0
-	}
 	if echoMismatchByteObserved(event) {
 		store.armEchoMismatchReemitLocked(event, now)
 		return true, classifyEchoMismatchSubclass(event.Byte, event.EchoWasEscaped)
@@ -2606,9 +2608,39 @@ func framesEqual(a, b protocol.Frame) bool {
 		a.Secondary == b.Secondary && a.FrameType == b.FrameType && bytes.Equal(a.Data, b.Data)
 }
 
+// syncEscapePairGenerationLocked drops the attribution count when the
+// failure counts come from a different driver generation, so a replacement
+// whose first failure reports the same total as its predecessor's last one
+// is still recognised as new. A strict decrease within one generation is
+// still read as a counter reset. Only a real provider snapshot can show
+// either.
+func (store *BusObservabilityStore) syncEscapePairGenerationLocked(total, generation uint64) {
+	if generation != store.escapePairGeneration {
+		store.escapePairGeneration = generation
+		store.escapePairAttributed = 0
+		return
+	}
+	if total < store.escapePairAttributed {
+		store.escapePairAttributed = 0
+	}
+}
+
 // SetEscapePairFailureProvider registers the source of the mux's lifetime
 // escape-pair verification failure counts (lead, suffix). Nil is a no-op.
 func (store *BusObservabilityStore) SetEscapePairFailureProvider(provider func() (lead, suffix uint64)) {
+	if provider == nil {
+		return
+	}
+	store.SetEscapePairFailureGenerationProvider(func() (uint64, uint64, uint64) {
+		lead, suffix := provider()
+		return lead, suffix, 0
+	})
+}
+
+// SetEscapePairFailureGenerationProvider registers the source of the
+// current driver generation's escape-pair failure counts (lead, suffix)
+// together with an identifier that changes whenever the generation does.
+func (store *BusObservabilityStore) SetEscapePairFailureGenerationProvider(provider func() (lead, suffix, generation uint64)) {
 	if store == nil {
 		return
 	}

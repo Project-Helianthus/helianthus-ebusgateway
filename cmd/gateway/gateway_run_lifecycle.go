@@ -278,7 +278,14 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 	// ebus_adaptermux_syn_seen_* metrics are simply absent).
 	if snap, ok := adapterClassifier.(adaptermuxDiagSnapshotter); ok {
 		busObservability.SetAdaptermuxDiagProvider(func() ebusgateway.AdaptermuxDiagSnapshot {
-			s := snap.ActiveTxnSnapshot()
+			var s adaptermux.ActiveTxnSnapshot
+			if cumulative, ok := adapterClassifier.(interface {
+				CumulativeActiveTxnSnapshot() adaptermux.ActiveTxnSnapshot
+			}); ok {
+				s = cumulative.CumulativeActiveTxnSnapshot()
+			} else {
+				s = snap.ActiveTxnSnapshot()
+			}
 			return ebusgateway.AdaptermuxDiagSnapshot{
 				SynSuppressedPreEcho:               s.SynSuppressedPreEcho,
 				SynSeenDuringGrantWindow:           s.SynSeenDuringGrantWindow,
@@ -293,9 +300,14 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 				EscapePairSuffixFailures:           s.EscapePairSuffixFailures,
 			}
 		})
-		busObservability.SetEscapePairFailureProvider(func() (uint64, uint64) {
+		busObservability.SetEscapePairFailureGenerationProvider(func() (uint64, uint64, uint64) {
+			if live, ok := adapterClassifier.(interface {
+				LiveEscapePairFailures() (lead, suffix, generation uint64)
+			}); ok {
+				return live.LiveEscapePairFailures()
+			}
 			s := snap.ActiveTxnSnapshot()
-			return s.EscapePairLeadFailures, s.EscapePairSuffixFailures
+			return s.EscapePairLeadFailures, s.EscapePairSuffixFailures, 0
 		})
 	}
 

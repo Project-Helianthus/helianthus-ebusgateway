@@ -1,0 +1,508 @@
+package matrix
+
+import (
+	"bufio"
+	"context"
+	"errors"
+	"io"
+	"net"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
+	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
+)
+
+func TestClassifyTelegramAllowlist(t *testing.T) {
+	t.Parallel()
+
+	allowed := []struct {
+		name     string
+		telegram GuardTelegram
+		want     RequestType
+	}{
+		{"identification", GuardTelegram{Target: 0x08, Primary: 0x07, Secondary: 0x04}, RequestIdentification},
+		{"b509 read 0D", GuardTelegram{Target: 0x08, Primary: 0xB5, Secondary: 0x09, Data: []byte{0x0D, 0x01, 0x00}}, RequestB509Read},
+		{"b509 read 29", GuardTelegram{Target: 0x08, Primary: 0xB5, Secondary: 0x09, Data: []byte{0x29, 0x01, 0x00}}, RequestB509Read},
+		{"b524 read 02", GuardTelegram{Target: 0x15, Primary: 0xB5, Secondary: 0x24, Data: []byte{0x02, 0x00, 0x03, 0x00, 0x16, 0x00}}, RequestB524Read},
+		{"b524 read 06", GuardTelegram{Target: 0x15, Primary: 0xB5, Secondary: 0x24, Data: []byte{0x06, 0x00, 0x03, 0x00, 0x16, 0x00}}, RequestB524Read},
+		{"b524 read 03", GuardTelegram{Target: 0x15, Primary: 0xB5, Secondary: 0x24, Data: []byte{0x03, 0x00}}, RequestB524Read},
+		{"b555 read A3", GuardTelegram{Target: 0x15, Primary: 0xB5, Secondary: 0x55, Data: []byte{0xA3, 0x00}}, RequestB555Read},
+		{"b555 read A5", GuardTelegram{Target: 0x15, Primary: 0xB5, Secondary: 0x55, Data: []byte{0xA5}}, RequestB555Read},
+	}
+	for _, tc := range allowed {
+		got, err := ClassifyTelegram(tc.telegram)
+		if err != nil || got != tc.want {
+			t.Fatalf("%s: ClassifyTelegram = %q, %v; want %q", tc.name, got, err, tc.want)
+		}
+	}
+
+	refused := []struct {
+		name     string
+		telegram GuardTelegram
+	}{
+		{"identification with data", GuardTelegram{Target: 0x08, Primary: 0x07, Secondary: 0x04, Data: []byte{0x00}}},
+		{"b509 write 0E", GuardTelegram{Target: 0x08, Primary: 0xB5, Secondary: 0x09, Data: []byte{0x0E, 0x01, 0x00, 0x05}}},
+		{"b524 write 02 01", GuardTelegram{Target: 0x15, Primary: 0xB5, Secondary: 0x24, Data: []byte{0x02, 0x01, 0x03, 0x00, 0x16, 0x00, 0x01}}},
+		{"b524 write 06 01", GuardTelegram{Target: 0x15, Primary: 0xB5, Secondary: 0x24, Data: []byte{0x06, 0x01, 0x03, 0x00, 0x16, 0x00, 0x01}}},
+		{"b524 opcode only", GuardTelegram{Target: 0x15, Primary: 0xB5, Secondary: 0x24, Data: []byte{0x02}}},
+		{"b555 write A6", GuardTelegram{Target: 0x15, Primary: 0xB5, Secondary: 0x55, Data: []byte{0xA6, 0x00}}},
+		{"b509 empty", GuardTelegram{Target: 0x08, Primary: 0xB5, Secondary: 0x09}},
+		{"other service", GuardTelegram{Target: 0x08, Primary: 0xB5, Secondary: 0x10, Data: []byte{0x00}}},
+		{"standard non-identification", GuardTelegram{Target: 0x08, Primary: 0x07, Secondary: 0x00}},
+		{"broadcast target", GuardTelegram{Target: protocol.AddressBroadcast, Primary: 0x07, Secondary: 0x04}},
+		{"SYN target", GuardTelegram{Target: protocol.SymbolSyn, Primary: 0x07, Secondary: 0x04}},
+		{"escape target", GuardTelegram{Target: protocol.SymbolEscape, Primary: 0x07, Secondary: 0x04}},
+		{"initiator target", GuardTelegram{Target: 0x10, Primary: 0x07, Secondary: 0x04}},
+		{"oversized data", GuardTelegram{Target: 0x15, Primary: 0xB5, Secondary: 0x24, Data: append([]byte{0x02, 0x00}, make([]byte, 15)...)}},
+	}
+	for _, tc := range refused {
+		if got, err := ClassifyTelegram(tc.telegram); !errors.Is(err, ErrWriteGuardRefused) {
+			t.Fatalf("%s: ClassifyTelegram = %q, %v; want a refusal", tc.name, got, err)
+		}
+	}
+}
+
+func TestCheckEbusdCommandAllowlist(t *testing.T) {
+	t.Parallel()
+
+	for _, command := range []string{
+		"state",
+		"info",
+		"scan 08",
+		"scan 0x08",
+		"hex 08070400",
+		"hex -s f7 15b52406020003001600",
+		"HEX 08B509030D0100",
+	} {
+		if err := CheckEbusdCommand(command); err != nil {
+			t.Fatalf("CheckEbusdCommand(%q) = %v; want admitted", command, err)
+		}
+	}
+	for _, command := range []string{
+		"",
+		"write -c bai HwcTempDesired 50",
+		"read HwcTempDesired",
+		"find",
+		"listen",
+		"quit",
+		"scan",
+		"scan full",
+		"scan fe",
+		"state now",
+		"hex 08b509040e010005",       // B509 write
+		"hex 15b524070201030016001",  // odd hex
+		"hex 15b5240702010300160001", // B524 write
+		"hex 15b5240502000300",       // NN does not match
+		"hex fe070400",               // broadcast
+		"hex -s 08 08070400",         // source is not an initiator
+		"hex -s f7",                  // no telegram
+		"hex -n 08070400",            // unknown option
+		"state\nwrite x y 1",
+		"info\r",
+	} {
+		if err := CheckEbusdCommand(command); !errors.Is(err, ErrWriteGuardRefused) {
+			t.Fatalf("CheckEbusdCommand(%q) = %v; want a refusal", command, err)
+		}
+	}
+}
+
+// recordingConn counts every byte written; reads block until closed.
+type recordingConn struct {
+	net.Conn
+	mu      sync.Mutex
+	written []byte
+}
+
+func (conn *recordingConn) Write(data []byte) (int, error) {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	conn.written = append(conn.written, data...)
+	return len(data), nil
+}
+
+func (conn *recordingConn) Read([]byte) (int, error)         { return 0, io.EOF }
+func (conn *recordingConn) SetReadDeadline(time.Time) error  { return nil }
+func (conn *recordingConn) SetWriteDeadline(time.Time) error { return nil }
+
+func (conn *recordingConn) bytesWritten() int {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	return len(conn.written)
+}
+
+func TestSyntheticContenderRefusesWriteClassBeforeTheWire(t *testing.T) {
+	t.Parallel()
+
+	writes := []GuardTelegram{
+		{Target: 0x08, Primary: 0xB5, Secondary: 0x09, Data: []byte{0x0E, 0x01, 0x00, 0x05}},
+		{Target: 0x15, Primary: 0xB5, Secondary: 0x24, Data: []byte{0x02, 0x01, 0x03, 0x00, 0x16, 0x00, 0x01}},
+		{Target: protocol.AddressBroadcast, Primary: 0x07, Secondary: 0x04},
+	}
+	for _, write := range writes {
+		conn := &recordingConn{}
+		// The write-class telegram comes after an allowlisted one: the whole
+		// workload is refused before INIT.
+		telegrams := []GuardTelegram{{Target: 0x08, Primary: 0x07, Secondary: 0x04}, write}
+		result, err := RunSyntheticContender(context.Background(), conn, ContenderConfig{Source: 0xF7, Telegrams: telegrams})
+		if !errors.Is(err, ErrWriteGuardRefused) {
+			t.Fatalf("telegram %+v: err = %v; want a refusal", write, err)
+		}
+		if !result.RefusedBeforeWrite || result.Completed != 0 || len(result.RequestTypes) != 0 {
+			t.Fatalf("telegram %+v: result = %+v", write, result)
+		}
+		if conn.bytesWritten() != 0 {
+			t.Fatalf("telegram %+v: %d bytes reached the connection", write, conn.bytesWritten())
+		}
+	}
+
+	conn := &recordingConn{}
+	if _, err := RunSyntheticContender(context.Background(), conn, ContenderConfig{Source: 0x08, Telegrams: IdentificationWorkload(0x15, 1)}); !errors.Is(err, ErrWriteGuardRefused) {
+		t.Fatalf("non-initiator source err = %v; want a refusal", err)
+	}
+	if _, err := RunSyntheticContender(context.Background(), conn, ContenderConfig{Source: 0xF7}); !errors.Is(err, ErrWriteGuardRefused) {
+		t.Fatalf("empty workload err = %v; want a refusal", err)
+	}
+	if conn.bytesWritten() != 0 {
+		t.Fatalf("%d bytes reached the connection", conn.bytesWritten())
+	}
+}
+
+// fakeENHPeer is the adapter side of an ENH session: it answers INIT, grants
+// or refuses arbitration, echoes every SEND, and answers each complete
+// initiator telegram with ACK and a target response.
+type fakeENHPeer struct {
+	failFirstStart bool
+	response       []byte
+
+	mu        sync.Mutex
+	telegrams [][]byte // logical QQ ZZ PB SB NN DB.. CRC
+}
+
+func (peer *fakeENHPeer) observed() [][]byte {
+	peer.mu.Lock()
+	defer peer.mu.Unlock()
+	return append([][]byte(nil), peer.telegrams...)
+}
+
+func unescapeSymbols(symbols []byte) ([]byte, bool) {
+	logical := make([]byte, 0, len(symbols))
+	for index := 0; index < len(symbols); index++ {
+		if symbols[index] != protocol.SymbolEscape {
+			logical = append(logical, symbols[index])
+			continue
+		}
+		if index+1 >= len(symbols) {
+			return logical, false
+		}
+		index++
+		if symbols[index] == 0x00 {
+			logical = append(logical, protocol.SymbolEscape)
+		} else {
+			logical = append(logical, protocol.SymbolSyn)
+		}
+	}
+	return logical, true
+}
+
+func (peer *fakeENHPeer) serve(conn net.Conn) {
+	defer func() { _ = conn.Close() }()
+	const (
+		idle = iota
+		master
+		awaitAck
+		awaitSyn
+	)
+	write := func(command transport.ENHCommand, data byte) bool {
+		frame := transport.EncodeENH(command, data)
+		_, err := conn.Write(frame[:])
+		return err == nil
+	}
+	var parser transport.ENHParser
+	buffer := make([]byte, 64)
+	state := idle
+	failed := false
+	var source byte
+	var wire []byte
+	for {
+		count, err := conn.Read(buffer)
+		if err != nil {
+			return
+		}
+		messages, err := parser.Parse(buffer[:count])
+		if err != nil {
+			return
+		}
+		for _, message := range messages {
+			switch message.Command {
+			case transport.ENHReqInit:
+				write(transport.ENHResResetted, message.Data)
+			case transport.ENHReqStart:
+				if peer.failFirstStart && !failed {
+					failed = true
+					write(transport.ENHResFailed, 0x10)
+					continue
+				}
+				source, wire, state = message.Data, nil, master
+				write(transport.ENHResStarted, message.Data)
+			case transport.ENHReqSend:
+				if !write(transport.ENHResReceived, message.Data) {
+					return
+				}
+				switch state {
+				case master:
+					wire = append(wire, message.Data)
+					logical, whole := unescapeSymbols(wire)
+					if !whole || len(logical) < 4 || len(logical) != 4+int(logical[3])+1 {
+						continue
+					}
+					peer.mu.Lock()
+					peer.telegrams = append(peer.telegrams, append([]byte{source}, logical...))
+					peer.mu.Unlock()
+					write(transport.ENHResReceived, protocol.SymbolAck)
+					response := append([]byte{byte(len(peer.response))}, peer.response...)
+					response = append(response, protocol.CRC(response))
+					for _, symbol := range escapeSymbols(response) {
+						write(transport.ENHResReceived, symbol)
+					}
+					state = awaitAck
+				case awaitAck:
+					state = awaitSyn
+				case awaitSyn:
+					state = idle
+				}
+			}
+		}
+	}
+}
+
+func TestSyntheticContenderEmitsOnlyAllowlistedTelegrams(t *testing.T) {
+	t.Parallel()
+
+	client, server := net.Pipe()
+	// The response carries both reserved bytes so the escape decoding runs.
+	peer := &fakeENHPeer{failFirstStart: true, response: []byte{0xB5, protocol.SymbolEscape, protocol.SymbolSyn, 0x01}}
+	go peer.serve(server)
+	defer func() { _ = client.Close() }()
+
+	telegrams := []GuardTelegram{
+		{Target: 0x15, Primary: 0x07, Secondary: 0x04},
+		{Target: 0x15, Primary: 0xB5, Secondary: 0x24, Data: []byte{0x02, 0x00, 0x03, 0x00, 0xA9, 0x00}},
+		{Target: 0x08, Primary: 0xB5, Secondary: 0x09, Data: []byte{0x0D, 0xAA, 0x00}},
+	}
+	result, err := RunSyntheticContender(context.Background(), client, ContenderConfig{
+		Source:      0xF7,
+		Telegrams:   telegrams,
+		StepTimeout: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("RunSyntheticContender error = %v (result %+v)", err, result)
+	}
+	if result.Completed != 3 || result.ArbitrationFailed != 1 {
+		t.Fatalf("result = %+v; want 3 completed, 1 lost arbitration", result)
+	}
+
+	observed := peer.observed()
+	if len(observed) != len(telegrams) {
+		t.Fatalf("peer observed %d telegrams; want %d", len(observed), len(telegrams))
+	}
+	for index, logical := range observed {
+		if logical[0] != 0xF7 {
+			t.Fatalf("telegram %d source = 0x%02X", index, logical[0])
+		}
+		crcIndex := len(logical) - 1
+		if protocol.CRC(logical[:crcIndex]) != logical[crcIndex] {
+			t.Fatalf("telegram %d CRC mismatch: % X", index, logical)
+		}
+		onWire := GuardTelegram{Target: logical[1], Primary: logical[2], Secondary: logical[3], Data: logical[5:crcIndex]}
+		if _, err := ClassifyTelegram(onWire); err != nil {
+			t.Fatalf("telegram %d on the wire is not allowlisted: %v", index, err)
+		}
+		if onWire.Target != telegrams[index].Target || string(onWire.Data) != string(telegrams[index].Data) {
+			t.Fatalf("telegram %d on the wire = %+v; want %+v", index, onWire, telegrams[index])
+		}
+	}
+}
+
+// fakeEbusd answers every command line with one line and a blank line, and
+// records what it received.
+type fakeEbusd struct {
+	mu    sync.Mutex
+	lines []string
+	dials int
+}
+
+func (server *fakeEbusd) received() []string {
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	return append([]string(nil), server.lines...)
+}
+
+func (server *fakeEbusd) dial(context.Context, string) (net.Conn, error) {
+	server.mu.Lock()
+	server.dials++
+	server.mu.Unlock()
+	client, peer := net.Pipe()
+	go server.serve(peer)
+	return client, nil
+}
+
+func (server *fakeEbusd) dialCount() int {
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	return server.dials
+}
+
+func (server *fakeEbusd) serve(conn net.Conn) {
+	defer func() { _ = conn.Close() }()
+	reader := bufio.NewReader(conn)
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return
+		}
+		command := strings.TrimRight(line, "\r\n")
+		server.mu.Lock()
+		server.lines = append(server.lines, command)
+		server.mu.Unlock()
+		if _, err := io.WriteString(conn, "done "+strings.Fields(command)[0]+"\n\n"); err != nil {
+			return
+		}
+	}
+}
+
+func TestEbusdWorkloadEmitsOnlyAllowlistedCommands(t *testing.T) {
+	t.Parallel()
+
+	server := &fakeEbusd{}
+	conn, _ := server.dial(context.Background(), "")
+	defer func() { _ = conn.Close() }()
+	commands := EbusdIdentificationCommands(0x15)
+	result, err := RunEbusdWorkload(context.Background(), conn, commands, 2*time.Second)
+	if err != nil {
+		t.Fatalf("RunEbusdWorkload error = %v", err)
+	}
+	if result.Answered != 3 || result.ErrAnswers != 0 {
+		t.Fatalf("result = %+v", result)
+	}
+	received := server.received()
+	if strings.Join(received, "|") != "state|scan 15|hex 15070400" {
+		t.Fatalf("ebusd received %q", received)
+	}
+	for _, line := range received {
+		if err := CheckEbusdCommand(line); err != nil {
+			t.Fatalf("ebusd received a non-allowlisted command %q: %v", line, err)
+		}
+	}
+}
+
+func TestEbusdWorkloadRefusesWriteBeforeTheWire(t *testing.T) {
+	t.Parallel()
+
+	for _, write := range []string{"write -c bai HwcTempDesired 50", "hex 08b509040e010005", "hex 15b5240702010300160001"} {
+		conn := &recordingConn{}
+		commands := append(EbusdIdentificationCommands(0x15), write)
+		result, err := RunEbusdWorkload(context.Background(), conn, commands, time.Second)
+		if !errors.Is(err, ErrWriteGuardRefused) || !result.RefusedBeforeWrite {
+			t.Fatalf("%q: result %+v err %v; want a refusal", write, result, err)
+		}
+		if conn.bytesWritten() != 0 {
+			t.Fatalf("%q: %d bytes reached ebusd", write, conn.bytesWritten())
+		}
+	}
+}
+
+func TestEbusdWorkloadReportsErrAnswers(t *testing.T) {
+	t.Parallel()
+
+	client, peer := net.Pipe()
+	defer func() { _ = client.Close() }()
+	go func() {
+		defer func() { _ = peer.Close() }()
+		reader := bufio.NewReader(peer)
+		for {
+			if _, err := reader.ReadString('\n'); err != nil {
+				return
+			}
+			if _, err := io.WriteString(peer, "ERR: no signal\n\n"); err != nil {
+				return
+			}
+		}
+	}()
+	result, err := RunEbusdWorkload(context.Background(), client, []string{"state"}, 2*time.Second)
+	if err == nil || result.ErrAnswers != 1 {
+		t.Fatalf("result %+v err %v; want one ERR answer", result, err)
+	}
+}
+
+func TestGuardedRelayRefusesWriteAndNeverDialsForIt(t *testing.T) {
+	t.Parallel()
+
+	server := &fakeEbusd{}
+	client, relaySide := net.Pipe()
+	stats := &GuardedRelayStats{}
+	done := make(chan error, 1)
+	go func() {
+		done <- ServeGuardedEbusdRelay(context.Background(), relaySide, func(ctx context.Context) (net.Conn, error) {
+			return server.dial(ctx, "")
+		}, stats)
+	}()
+
+	reader := bufio.NewReader(client)
+	exchange := func(command string) []string {
+		t.Helper()
+		if _, err := io.WriteString(client, command+"\n"); err != nil {
+			t.Fatalf("write %q: %v", command, err)
+		}
+		lines, err := readEbusdAnswer(reader)
+		if err != nil {
+			t.Fatalf("answer to %q: %v", command, err)
+		}
+		return lines
+	}
+
+	for _, write := range []string{"hex -s f7 08b509040e010005", "write -c bai HwcTempDesired 50"} {
+		lines := exchange(write)
+		if len(lines) != 1 || !strings.HasPrefix(lines[0], "ERR: refused by matrix write guard") {
+			t.Fatalf("answer to %q = %q", write, lines)
+		}
+	}
+	if server.dialCount() != 0 {
+		t.Fatalf("the relay dialed ebusd for refused commands only")
+	}
+	if lines := exchange("hex -s f7 08070400"); len(lines) != 1 || lines[0] != "done hex" {
+		t.Fatalf("admitted answer = %q", lines)
+	}
+	_ = client.Close()
+	if err := <-done; err != nil {
+		t.Fatalf("relay error = %v", err)
+	}
+
+	if got := server.received(); strings.Join(got, "|") != "hex -s f7 08070400" {
+		t.Fatalf("ebusd received %q; want only the admitted identification", got)
+	}
+	forwarded, refused, refusals := stats.Snapshot()
+	if forwarded != 1 || refused != 2 || len(refusals) != 2 {
+		t.Fatalf("stats = %d forwarded, %d refused %q", forwarded, refused, refusals)
+	}
+}
+
+func TestExplorerScanArgsAreReadOnlyScan(t *testing.T) {
+	t.Parallel()
+
+	args := explorerScanArgs("127.0.0.1", "4711", 0xF7)
+	if args[0] != "scan" {
+		t.Fatalf("explorer subcommand = %q; want scan", args[0])
+	}
+	joined := strings.Join(args, " ")
+	for _, forbidden := range []string{"write", "--execute", "b524", "b509"} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("explorer args %q contain %q", joined, forbidden)
+		}
+	}
+	if !strings.Contains(joined, "--transport tcp --host 127.0.0.1 --port 4711") {
+		t.Fatalf("explorer args %q do not point at the guarded relay", joined)
+	}
+}

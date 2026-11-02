@@ -38,6 +38,8 @@ type TopologyCase struct {
 	UsesEbusd        bool         `json:"uses_ebusd"`
 	EbusdViaProxy    bool         `json:"ebusd_via_proxy"`
 	PassiveMode      string       `json:"passive_mode,omitempty"`
+	// AdapterMux is set only on adaptermux-v2 cases.
+	AdapterMux *AdapterMuxCell `json:"adapter_mux,omitempty"`
 }
 
 const (
@@ -183,6 +185,8 @@ func CasesForSuite(suite string) ([]TopologyCase, error) {
 		return GenerateTopologyCases(), nil
 	case SuitePassive:
 		return GeneratePassiveSmokeCases(), nil
+	case SuiteAdapterMuxV2:
+		return GenerateAdapterMuxV2Cases(""), nil
 	default:
 		return nil, fmt.Errorf("unsupported matrix suite %q", suite)
 	}
@@ -194,6 +198,8 @@ func normalizeSuite(suite string) string {
 		return SuiteFullMatrix
 	case SuitePassive:
 		return SuitePassive
+	case SuiteAdapterMuxV2:
+		return SuiteAdapterMuxV2
 	default:
 		return suite
 	}

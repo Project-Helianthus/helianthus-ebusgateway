@@ -213,3 +213,36 @@ func TestAdaptermuxDiagnosticsExported(t *testing.T) {
 	metricLine(t, store, `ebus_adaptermux_escape_pair_verify_failures_total{step="lead"}`, "16")
 	metricLine(t, store, `ebus_adaptermux_escape_pair_verify_failures_total{step="suffix"}`, "17")
 }
+
+// Kills: a suppressed byte-less re-emit still booking the attempt in the
+// frame and byte series, and a no-echo escape-pair failure (surfaced as a
+// timeout event) being consumed by a later unrelated byte-less mismatch.
+func TestEchoMismatchReemitSkipsFrameBookkeeping(t *testing.T) {
+	t.Parallel()
+	store, _ := echoMismatchTestStore()
+	req := protocol.Frame{Source: 0x10, Target: 0x15, Primary: 0xB5, Secondary: 0x09, Data: []byte{1}}
+	first := echoMismatchEvent(0x42, false)
+	first.HasRequest, first.Request = true, req
+	again := echoMismatchEvent(0, false)
+	again.HasRequest, again.Request = true, req
+	_ = store.OnBusEvent(first)
+	before := store.RenderPrometheus()
+	_ = store.OnBusEvent(again)
+	if after := store.RenderPrometheus(); after != before {
+		t.Errorf("suppressed re-emit changed the metrics:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+func TestEchoMismatchTimeoutSettlesEscapePairFailure(t *testing.T) {
+	t.Parallel()
+	store, now := echoMismatchTestStore()
+	var lead uint64
+	store.SetEscapePairFailureProvider(func() (uint64, uint64) { return lead, 0 })
+	lead = 1
+	_ = store.OnBusEvent(protocol.BusEvent{Kind: protocol.BusEventTimeout, Outcome: protocol.BusOutcomeTimeout})
+	*now = now.Add(time.Second)
+	_ = store.OnBusEvent(echoMismatchEvent(0, false))
+	metricLine(t, store, echoMismatchErrorSeries, "1")
+	metricLine(t, store, subclassSeries("byte_unknown"), "1")
+	metricLine(t, store, subclassSeries("escape_pair_verify"), "0")
+}

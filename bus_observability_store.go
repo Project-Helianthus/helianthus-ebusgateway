@@ -553,7 +553,8 @@ func (store *BusObservabilityStore) OnBusEvent(event protocol.BusEvent) error {
 
 	var escapePairTotal uint64
 	escapePairKnown := false
-	if event.Kind == protocol.BusEventEchoMismatch && !echoMismatchByteObserved(event) {
+	if event.Kind == protocol.BusEventTimeout ||
+		(event.Kind == protocol.BusEventEchoMismatch && !echoMismatchByteObserved(event)) {
 		store.mu.Lock()
 		provider := store.escapePairFailureProvider
 		store.mu.Unlock()
@@ -569,6 +570,13 @@ func (store *BusObservabilityStore) OnBusEvent(event protocol.BusEvent) error {
 
 	if event.Kind != protocol.BusEventEchoMismatch {
 		store.lastByteEchoMismatchAt = time.Time{}
+	}
+
+	// A no-echo escape-pair failure surfaces as a timeout event, never as
+	// an echo mismatch; settle it here so a later unrelated byte-less
+	// mismatch does not consume it.
+	if event.Kind == protocol.BusEventTimeout && escapePairKnown {
+		store.escapePairAttributed = escapePairTotal
 	}
 
 	mutated := false
@@ -1882,7 +1890,8 @@ func (store *BusObservabilityStore) recordActiveErrorLocked(event protocol.BusEv
 			store.echoMismatchSubclasses[echoMismatchSubclassKey{Subclass: subclass}]++
 		}
 	}
-	if !event.HasRequest {
+	if !counted || !event.HasRequest {
+		// A suppressed re-emit is the same attempt already booked.
 		return
 	}
 	family := classifyFamily(event.Request)

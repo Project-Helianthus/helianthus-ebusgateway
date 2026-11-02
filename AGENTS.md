@@ -56,9 +56,13 @@ private network, Home Assistant instance, or physical bus.
 - Existing eBUS MCP namespaces are compatibility surfaces, not a universal
   delivery rule for other protocol families.
 
-### eBUS MCP v1 compatibility and invoke safety
+### eBUS MCP compatibility (pre-1.0) and invoke safety
 
-Existing `ebus.v1.*` tools are stable consumer contracts:
+Until 1.0, `ebus.v1.*` and every other MCP namespace are pre-stable; the
+version in the name is historical, not a stability promise. This namespace
+compatibility status is separate from per-tool maturity classifications such as
+`core_stable` and `experimental`. A `core_stable` classification supports
+GraphQL graduation but does not promise namespace stability before 1.0:
 
 - Every tool returns the top-level `meta`, `data`, and `error` envelope. `meta`
   contains `contract`, `consistency`, `data_timestamp`, and deterministic
@@ -66,11 +70,10 @@ Existing `ebus.v1.*` tools are stable consumer contracts:
 - Keep list ordering and snapshot hashes deterministic for identical inputs and
   state. Every tool schema and output has a golden snapshot. Update and review
   those goldens whenever an intentional compatible output change occurs.
-- A breaking schema or behavior change requires a new major namespace; changing
-  existing goldens does not by itself make a breaking `ebus.v1.*` change
-  compatible.
-- Keep experimental surfaces outside stable consumer dependencies until their
-  contract, determinism, and golden coverage are ready for promotion.
+- An intentional schema or behavior change before 1.0 updates its goldens and
+  its documentation companion and states the change in the pull request. It
+  needs no new namespace.
+- The major-namespace and experimental-namespace rules are decided after 1.0.
 
 `ebus.v1.rpc.invoke` is an eBUS compatibility and safety surface:
 
@@ -88,17 +91,16 @@ Existing `ebus.v1.*` tools are stable consumer contracts:
 For eBUS capabilities, MCP remains the discovery and stabilization surface. A
 capability may graduate to GraphQL only when:
 
-1. it exists as a core stable `ebus.v1.*` MCP capability rather than only under
-   an experimental namespace;
+1. it exists as an `ebus.v1.*` MCP capability classified as `core_stable`;
 2. its determinism, contract, classification, and golden-snapshot tests are
    green; and
 3. executable MCP-to-GraphQL parity coverage for that capability is green.
 
 Parity drift between an existing eBUS MCP contract and its GraphQL exposure is a
 CI failure. Home Assistant, Portal, and other consumers adopt the capability only
-after GraphQL parity and stability are established. These are eBUS compatibility
-rules for the current gateway; they do not impose MCP-first delivery on other
-protocol families.
+after the graduation checks above are green. Graduation before 1.0 does not
+imply a stability promise. These are eBUS compatibility rules for the current
+gateway; they do not impose MCP-first delivery on other protocol families.
 
 ### eBUS heat-source modeling boundary
 

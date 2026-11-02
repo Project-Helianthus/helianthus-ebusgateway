@@ -19,6 +19,7 @@ var (
 	ErrStopTimeout       = errors.New("driver stop timed out")
 	ErrSafetyQuarantined = errors.New("driver safety quarantined")
 	ErrManagerClosed     = errors.New("driver manager is shutting down")
+	ErrHooksBound        = errors.New("driver lifecycle hooks already bound")
 )
 
 const defaultLateRetireTimeout = 2 * time.Second
@@ -83,9 +84,25 @@ type Reason struct {
 func (reason Reason) String() string { return string(reason.Code) }
 
 type RetrySnapshot struct {
-	Eligible        bool
+	Eligible bool
+	// BudgetRemaining counts the fast attempts left, the scheduled one
+	// included. It is zero in the persistent phase.
 	BudgetRemaining int
 	NotBeforeUTC    time.Time
+	// Attempt is the ordinal, from one, of the scheduled retry within the
+	// current failure series; every earlier retry of the series failed. A
+	// success, an explicit Start or Replace and a new reported failure open
+	// a new series.
+	Attempt int
+	// Persistent reports that the driver's policy continues this series
+	// past the fast budget while the driver is desired RUNNING: only a
+	// non-retryable failure, a safety quarantine or an explicit Stop ends it.
+	Persistent bool
+	// LastFailure describes the failure that scheduled this retry, as its
+	// driver's classifier reported it. It is display material only: it takes
+	// no part in the schedule or in any retry decision, and it is the zero
+	// value when the classifier supplied none.
+	LastFailure FailureDetail
 }
 
 // Correlation fences callbacks from both stale generations and superseded
@@ -113,6 +130,54 @@ type Snapshot struct {
 
 type Failure struct {
 	Reason Reason
+	// Detail optionally describes the failure for display. Only a retryable
+	// failure that schedules a retry carries it into the snapshot.
+	Detail FailureDetail
+}
+
+// FailureClass is the closed, protocol-neutral kind of a failed attempt or of a
+// lost connection.
+type FailureClass string
+
+const (
+	// FailureDialFailed: the transport connection could not be established.
+	FailureDialFailed FailureClass = "DIAL_FAILED"
+	// FailureTimeout: the attempt, or an established transport, exceeded its
+	// time limit.
+	FailureTimeout FailureClass = "TIMEOUT"
+	// FailureTransportClosed: an established transport was closed or lost.
+	FailureTransportClosed FailureClass = "TRANSPORT_CLOSED"
+	// FailureOther: any other retryable failure.
+	FailureOther FailureClass = "OTHER"
+)
+
+// Valid reports whether the class is one of the closed set.
+func (class FailureClass) Valid() bool {
+	switch class {
+	case FailureDialFailed, FailureTimeout, FailureTransportClosed, FailureOther:
+		return true
+	}
+	return false
+}
+
+// FailureDetail is what a driver's classifier says about one failure: its
+// class and a short cause text from which the driver has already removed every
+// address. The manager stores the cause verbatim and never interprets it; a
+// class outside the closed set is stored as FailureOther, and a detail with
+// neither class nor cause stays the zero value.
+type FailureDetail struct {
+	Class FailureClass
+	Cause string
+}
+
+func (detail FailureDetail) normalized() FailureDetail {
+	if detail.Class == "" && detail.Cause == "" {
+		return FailureDetail{}
+	}
+	if !detail.Class.Valid() {
+		detail.Class = FailureOther
+	}
+	return detail
 }
 
 type RetryPolicy struct {
@@ -122,6 +187,23 @@ type RetryPolicy struct {
 	// JitterRatio is the symmetric jitter bound around each exponential
 	// delay. Zero selects the default 20%; a negative value disables jitter.
 	JitterRatio float64
+	// Persistent continues a retryable failure series once the Budget fast
+	// attempts are spent. The zero value keeps the bounded behavior: the
+	// series ends FAILED/RETRY_EXHAUSTED.
+	Persistent PersistentRetry
+}
+
+// PersistentRetry is the phase that follows the fast attempts of a retry
+// series while the driver is desired RUNNING. Its delays restart at
+// InitialDelay and double up to MaxDelay, with the policy's JitterRatio; a
+// delay is always clamped to [InitialDelay, MaxDelay]. Only a retryable
+// failure continues the series, so a non-retryable failure (configuration
+// rejected, a stale or foreign identity), a safety quarantine and an
+// explicit Stop still end it. Start and Replace reset the schedule.
+type PersistentRetry struct {
+	Enabled      bool
+	InitialDelay time.Duration
+	MaxDelay     time.Duration
 }
 
 // Runtime is the protocol-neutral lifecycle boundary implemented by adapters.
@@ -174,6 +256,104 @@ type correlationActivator interface {
 	ActivateCorrelation(Correlation)
 }
 
+// CloseClass is the native close evidence of one manager withdrawal. Only
+// the proven classes are close proof; a nil Stop result is classified, never
+// trusted on its own.
+type CloseClass string
+
+const (
+	// CloseNotRequired means nothing was open: the driver was already stopped
+	// or disabled and no construction was still in flight.
+	CloseNotRequired CloseClass = "NOT_REQUIRED"
+	// CloseProven means the runtime drained and proved the close.
+	CloseProven CloseClass = "PROVEN"
+	// CloseProvenAfterDrainTimeout means the bounded drain expired but the
+	// close was subsequently confirmed. It is restartable.
+	CloseProvenAfterDrainTimeout CloseClass = "PROVEN_AFTER_DRAIN_TIMEOUT"
+	// CloseUnconfirmed means the close could not be proven. The driver is
+	// safety quarantined and replacement is blocked.
+	CloseUnconfirmed CloseClass = "UNCONFIRMED"
+	// CloseInternalError means the runtime failed without a classified close.
+	// It is never close proof.
+	CloseInternalError CloseClass = "INTERNAL_ERROR"
+)
+
+// Proven reports whether the class is native close proof.
+func (class CloseClass) Proven() bool {
+	switch class {
+	case CloseNotRequired, CloseProven, CloseProvenAfterDrainTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
+// ClassifyClose maps one Runtime.Stop result to its close class. Quarantine
+// dominates: a runtime that reports safety quarantine never proves a close,
+// whatever Stop returned.
+func ClassifyClose(err error, quarantined bool) CloseClass {
+	switch {
+	case quarantined || errors.Is(err, ErrSafetyQuarantined):
+		return CloseUnconfirmed
+	case err == nil:
+		return CloseProven
+	case errors.Is(err, ErrStopTimeout):
+		return CloseProvenAfterDrainTimeout
+	default:
+		return CloseInternalError
+	}
+}
+
+// CloseReport is the classified result of one manager withdrawal of a
+// driver. Generation is the last admitted native generation the withdrawal
+// covered (zero when none was admitted) and Operation is the manager
+// operation that performed it.
+type CloseReport struct {
+	DriverID   string
+	Class      CloseClass
+	Generation uint64
+	Operation  uint64
+	Observed   ObservedState
+	Reason     Reason
+}
+
+// AdmissionHold describes one constructed native generation whose admission
+// is held closed: observed state is still STARTING and no effective
+// capability is published while the hold runs.
+type AdmissionHold struct {
+	DriverID string
+	// Correlation is the held native generation and the manager operation
+	// that constructed it.
+	Correlation Correlation
+	// Previous is the last native generation the manager admitted, or zero.
+	Previous uint64
+	// Replacement reports a Runtime.Replace construction.
+	Replacement bool
+	// Retry reports a manager-owned retry attempt (scheduled by the manager
+	// after a failed attempt or a reported failure), not an explicit call.
+	Retry bool
+}
+
+// LifecycleHooks are optional manager hooks bound by a lifecycle bridge.
+// Both run with every manager lock released, so they may perform hub work,
+// persistence or other bounded blocking work. They must not call Start,
+// Replace, Stop, StopWithReport or Shutdown of the same manager; snapshot and
+// watch reads are allowed.
+type LifecycleHooks struct {
+	// HoldAdmission runs after a provider generation was constructed and
+	// before RUNNING and its effective capabilities publish. A nil result lets
+	// the manager publish both together in one state transition, provided
+	// the operation is still current. An error retires the held generation
+	// on an independent bounded deadline and fails the attempt through the
+	// driver's ordinary classification and retry policy. The context ends
+	// when the attempt is canceled.
+	HoldAdmission func(context.Context, AdmissionHold) error
+	// Closed receives the classified close of every manager withdrawal that
+	// called Runtime.Stop or found nothing to close: explicit stops, a
+	// superseded late admission and a failed admission hold.
+	Closed func(CloseReport)
+}
+
 type DriverConfig struct {
 	ID            string
 	Enabled       bool
@@ -181,12 +361,17 @@ type DriverConfig struct {
 	Capabilities  []Capability
 	ClassifyError func(error) Failure
 	Retry         RetryPolicy
+	Hooks         LifecycleHooks
 }
 
 type Config struct {
-	Drivers           []DriverConfig
-	Now               func() time.Time
-	RetryJitter       func(time.Duration) time.Duration
+	Drivers     []DriverConfig
+	Now         func() time.Time
+	RetryJitter func(time.Duration) time.Duration
+	// RetryWait waits out the delay of one scheduled retry and reports
+	// whether the retry is due; it returns false once ctx ends. Nil selects a
+	// timer. Tests inject it to drive a retry schedule without real time.
+	RetryWait         func(ctx context.Context, delay time.Duration) bool
 	LateRetireTimeout time.Duration
 }
 
@@ -195,6 +380,7 @@ type Manager struct {
 	cancel context.CancelFunc
 	now    func() time.Time
 	jitter func(time.Duration) time.Duration
+	wait   func(context.Context, time.Duration) bool
 	// lateRetireTimeout bounds cleanup of a provider that completed admission
 	// after its manager operation had already been superseded.
 	lateRetireTimeout time.Duration
@@ -212,24 +398,30 @@ type managedDriver struct {
 	opMu sync.Mutex
 	mu   sync.RWMutex
 
-	desired           DesiredState
-	observed          ObservedState
-	reason            Reason
-	retry             *RetrySnapshot
-	generation        uint64
-	revision          uint64
-	attempt           uint64
-	effective         []Capability
-	quarantined       bool
-	changedAt         time.Time
-	operationSeq      uint64
-	activeOperation   uint64
-	retryRemaining    int
+	desired         DesiredState
+	observed        ObservedState
+	reason          Reason
+	retry           *RetrySnapshot
+	generation      uint64
+	revision        uint64
+	attempt         uint64
+	effective       []Capability
+	quarantined     bool
+	changedAt       time.Time
+	operationSeq    uint64
+	activeOperation uint64
+	retryRemaining  int
+	// retrySeries counts the retries scheduled in the current failure
+	// series; it resets together with retryRemaining.
+	retrySeries       int
 	retryToken        uint64
 	retryCancel       context.CancelFunc
 	retryNeedsReplace bool
 	needsReplace      bool
 	activeAttempt     *attemptControl
+	hooks             LifecycleHooks
+	hooksBound        bool
+	changed           chan struct{}
 }
 
 type attemptControl struct {
@@ -245,6 +437,10 @@ func New(cfg Config) (*Manager, error) {
 	if jitter == nil {
 		jitter = defaultRetryJitter
 	}
+	wait := cfg.RetryWait
+	if wait == nil {
+		wait = defaultRetryWait
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	lateRetireTimeout := cfg.LateRetireTimeout
 	if lateRetireTimeout <= 0 {
@@ -255,6 +451,7 @@ func New(cfg Config) (*Manager, error) {
 		cancel:            cancel,
 		now:               now,
 		jitter:            jitter,
+		wait:              wait,
 		lateRetireTimeout: lateRetireTimeout,
 		drivers:           make(map[string]*managedDriver, len(cfg.Drivers)),
 	}
@@ -275,6 +472,9 @@ func New(cfg Config) (*Manager, error) {
 			revision:       1,
 			changedAt:      now(),
 			retryRemaining: driverCfg.Retry.Budget,
+			hooks:          driverCfg.Hooks,
+			hooksBound:     driverCfg.Hooks.HoldAdmission != nil || driverCfg.Hooks.Closed != nil,
+			changed:        make(chan struct{}),
 		}
 		if driverCfg.Enabled {
 			driver.desired = DesiredRunning
@@ -298,6 +498,43 @@ func (manager *Manager) Snapshot(id string) (Snapshot, bool) {
 	driver.mu.RLock()
 	defer driver.mu.RUnlock()
 	return driver.snapshotLocked(), true
+}
+
+// BindHooks binds the lifecycle hooks of one driver once. It lets a
+// lifecycle bridge attach to a manager composed elsewhere; a second binding,
+// or a binding over hooks given in DriverConfig, is refused.
+func (manager *Manager) BindHooks(id string, hooks LifecycleHooks) error {
+	driver := manager.drivers[id]
+	if driver == nil {
+		return ErrDriverNotFound
+	}
+	driver.mu.Lock()
+	defer driver.mu.Unlock()
+	if driver.hooksBound {
+		return ErrHooksBound
+	}
+	driver.hooks = hooks
+	driver.hooksBound = true
+	return nil
+}
+
+// Watch returns the current snapshot of one driver together with a channel
+// that is closed at the driver's next observed transition. It never blocks
+// on a lifecycle operation.
+func (manager *Manager) Watch(id string) (Snapshot, <-chan struct{}, bool) {
+	driver := manager.drivers[id]
+	if driver == nil {
+		return Snapshot{}, nil, false
+	}
+	driver.mu.RLock()
+	defer driver.mu.RUnlock()
+	return driver.snapshotLocked(), driver.changed, true
+}
+
+func (driver *managedDriver) currentHooks() LifecycleHooks {
+	driver.mu.RLock()
+	defer driver.mu.RUnlock()
+	return driver.hooks
 }
 
 func (driver *managedDriver) snapshotLocked() Snapshot {
@@ -387,7 +624,7 @@ func (manager *Manager) start(ctx context.Context, id string, async bool) error 
 		return ErrUnavailable
 	}
 	driver.desired = DesiredRunning
-	driver.retryRemaining = driver.cfg.Retry.Budget
+	driver.resetRetryLocked()
 	operation := driver.nextOperationLocked()
 	replace := driver.needsReplace
 	manager.transitionLocked(driver, ObservedStarting, Reason{Code: ReasonStartRequested}, nil, nil)
@@ -401,11 +638,11 @@ func (manager *Manager) start(ctx context.Context, id string, async bool) error 
 		}
 		go func() {
 			defer manager.wg.Done()
-			manager.startAttempt(manager.ctx, driver, operation, replace)
+			manager.startAttempt(manager.ctx, driver, operation, replace, false)
 		}()
 		return nil
 	}
-	manager.startAttempt(ctx, driver, operation, replace)
+	manager.startAttempt(ctx, driver, operation, replace, false)
 	return nil
 }
 
@@ -440,49 +677,85 @@ func (manager *Manager) Replace(ctx context.Context, id string) error {
 		return ErrUnavailable
 	}
 	driver.desired = DesiredRunning
-	driver.retryRemaining = driver.cfg.Retry.Budget
+	driver.resetRetryLocked()
 	operation := driver.nextOperationLocked()
 	manager.fenceWithdrawalLocked(driver)
 	manager.transitionLocked(driver, ObservedStopping, Reason{Code: ReasonStopRequested}, nil, nil)
 	driver.attempt++
 	driver.mu.Unlock()
 	driver.opMu.Unlock()
-	manager.startAttempt(ctx, driver, operation, true)
+	manager.startAttempt(ctx, driver, operation, true, false)
 	return nil
 }
 
 func (manager *Manager) Stop(ctx context.Context, id string) error {
-	driver := manager.drivers[id]
-	if driver == nil {
-		return ErrDriverNotFound
-	}
-	manager.cancelRetry(driver)
-	manager.cancelAttempt(driver)
-	driver.opMu.Lock()
-	defer driver.opMu.Unlock()
-	return manager.stopLocked(ctx, driver)
+	_, err := manager.StopWithReport(ctx, id)
+	return err
 }
 
-func (manager *Manager) stopLocked(ctx context.Context, driver *managedDriver) error {
+// StopWithReport is Stop that also returns the classified native close. The
+// manager state transition is identical to Stop; the report is the evidence
+// a lifecycle bridge uses instead of trusting a nil Stop result. The Closed
+// hook receives the same report after every manager lock is released.
+func (manager *Manager) StopWithReport(ctx context.Context, id string) (CloseReport, error) {
+	driver := manager.drivers[id]
+	if driver == nil {
+		return CloseReport{DriverID: id, Class: CloseInternalError}, ErrDriverNotFound
+	}
+	manager.cancelRetry(driver)
+	// The in-flight construction is canceled by stopLocked, after STOPPED
+	// intent is published under the same lock that captures it. Canceling it
+	// earlier, before that intent exists, lets an admission hold that returns
+	// on cancellation observe an operation that is not yet superseded and
+	// publish the held generation, which the stop then closes as an ordinary
+	// running generation instead of retiring it unpublished. No construction
+	// holds opMu, so the stop does not need the early cancel to proceed.
+	driver.opMu.Lock()
+	report := manager.stopLocked(ctx, driver)
+	driver.opMu.Unlock()
+	if closed := driver.currentHooks().Closed; closed != nil {
+		closed(report)
+	}
+	return report, nil
+}
+
+func (manager *Manager) stopLocked(ctx context.Context, driver *managedDriver) CloseReport {
 	manager.cancelRetry(driver)
 	driver.mu.Lock()
 	attempt := driver.activeAttempt
+	report := CloseReport{DriverID: driver.cfg.ID, Generation: driver.generation}
+	finish := func(class CloseClass) CloseReport {
+		report.Class = class
+		report.Observed = driver.observed
+		report.Reason = driver.reason
+		return report
+	}
 	if driver.quarantined {
 		if driver.desired != DesiredStopped {
 			driver.desired = DesiredStopped
 			manager.transitionLocked(driver, ObservedFailed, Reason{Code: ReasonCloseUnconfirmed}, nil, nil)
 		}
+		report = finish(CloseUnconfirmed)
 		driver.mu.Unlock()
 		cancelAttemptControl(attempt)
-		return nil
+		return report
 	}
 	driver.desired = DesiredStopped
 	if driver.observed == ObservedStopped || driver.observed == ObservedDisabled {
+		// Nothing is admitted. A construction that is still in flight may yet
+		// admit late; until it retires (or quarantines) nothing is proven.
+		class := CloseNotRequired
+		if driver.runtimeQuarantined() {
+			class = CloseUnconfirmed
+		} else if attempt != nil {
+			class = CloseInternalError
+		}
+		report = finish(class)
 		driver.mu.Unlock()
 		cancelAttemptControl(attempt)
-		return nil
+		return report
 	}
-	driver.nextOperationLocked()
+	report.Operation = driver.nextOperationLocked()
 	manager.fenceWithdrawalLocked(driver)
 	manager.transitionLocked(driver, ObservedStopping, Reason{Code: ReasonStopRequested}, nil, nil)
 	driver.mu.Unlock()
@@ -498,6 +771,11 @@ func (manager *Manager) stopLocked(ctx context.Context, driver *managedDriver) e
 	driver.mu.Lock()
 	defer driver.mu.Unlock()
 	driver.activeOperation = 0
+	// The observed transition keeps its characterized precedence (a nil
+	// error is STOPPED). The report class is computed independently and lets
+	// runtime quarantine dominate, so a nil Stop result alone is never taken
+	// as proof by a caller of StopWithReport.
+	class := ClassifyClose(err, driver.runtimeQuarantined())
 	switch {
 	case err == nil:
 		driver.needsReplace = false
@@ -511,7 +789,7 @@ func (manager *Manager) stopLocked(ctx context.Context, driver *managedDriver) e
 	default:
 		manager.transitionLocked(driver, ObservedFailed, Reason{Code: ReasonInternalError}, nil, nil)
 	}
-	return nil
+	return finish(class)
 }
 
 func cancelAttemptControl(attempt *attemptControl) {
@@ -520,7 +798,7 @@ func cancelAttemptControl(attempt *attemptControl) {
 	}
 }
 
-func (manager *Manager) startAttempt(ctx context.Context, driver *managedDriver, operation uint64, replace bool) {
+func (manager *Manager) startAttempt(ctx context.Context, driver *managedDriver, operation uint64, replace, retry bool) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -562,10 +840,68 @@ func (manager *Manager) startAttempt(ctx context.Context, driver *managedDriver,
 		// A runtime that ignored cancellation may have admitted after STOPPED
 		// intent was published. Retire that stale completion immediately; it is
 		// never published as an effective manager generation.
-		manager.retireSupersededAdmission(driver)
+		manager.retireSupersededAdmission(driver, generation, operation)
 		return
 	}
+	if err == nil && !superseded {
+		if hold := driver.currentHooks().HoldAdmission; hold != nil {
+			// The constructed generation stays unadmitted: observed is STARTING
+			// and no effective capability is published, so Invoke refuses it.
+			// The hook runs with no manager lock held.
+			holdErr := hold(attemptCtx, AdmissionHold{
+				DriverID:    driver.cfg.ID,
+				Correlation: Correlation{Generation: generation, Operation: operation},
+				Previous:    currentGeneration,
+				Replacement: replace,
+				Retry:       retry,
+			})
+			driver.mu.RLock()
+			superseded = manager.closed.Load() || driver.activeOperation != operation || driver.desired != DesiredRunning
+			driver.mu.RUnlock()
+			if superseded {
+				manager.retireSupersededAdmission(driver, generation, operation)
+				return
+			}
+			if holdErr != nil {
+				manager.retireHeldAdmission(driver, control, operation, generation, holdErr)
+				return
+			}
+		}
+	}
 	manager.finishAttempt(driver, control, operation, generation, err, replace)
+}
+
+// retireHeldAdmission retires a constructed generation whose admission hold
+// failed. The generation was never published. Its close runs on the
+// independent late-retirement deadline; an unproven close quarantines the
+// driver. A proven close fails the attempt with the hold error through the
+// ordinary classification, so any retry stays manager-owned and constructs
+// afresh (nothing remains open to replace).
+func (manager *Manager) retireHeldAdmission(driver *managedDriver, control *attemptControl, operation, generation uint64, holdErr error) {
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), manager.lateRetireTimeout)
+	err := driver.cfg.Runtime.Stop(cleanupCtx)
+	cancel()
+	class := ClassifyClose(err, driver.runtimeQuarantined())
+	report := CloseReport{DriverID: driver.cfg.ID, Class: class, Generation: generation, Operation: operation}
+	if !class.Proven() {
+		driver.mu.Lock()
+		if driver.activeAttempt == control {
+			driver.activeAttempt = nil
+		}
+		driver.quarantined = true
+		driver.activeOperation = 0
+		manager.transitionLocked(driver, ObservedFailed, Reason{Code: ReasonCloseUnconfirmed}, nil, nil)
+		report.Observed, report.Reason = driver.observed, driver.reason
+		driver.mu.Unlock()
+	} else {
+		manager.finishAttempt(driver, control, operation, 0, holdErr, false)
+		driver.mu.RLock()
+		report.Observed, report.Reason = driver.observed, driver.reason
+		driver.mu.RUnlock()
+	}
+	if closed := driver.currentHooks().Closed; closed != nil {
+		closed(report)
+	}
 }
 
 func (manager *Manager) fenceWithdrawalLocked(driver *managedDriver) {
@@ -581,19 +917,28 @@ func (manager *Manager) fenceWithdrawalLocked(driver *managedDriver) {
 // admission after its manager operation was canceled. The cleanup deadline is
 // independent of the canceled caller and every unproven close is promoted to
 // process-epoch quarantine; a stale provider is never silently abandoned.
-func (manager *Manager) retireSupersededAdmission(driver *managedDriver) {
+func (manager *Manager) retireSupersededAdmission(driver *managedDriver, generation, operation uint64) {
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), manager.lateRetireTimeout)
 	err := driver.cfg.Runtime.Stop(cleanupCtx)
 	cancel()
-	if err == nil && !driver.runtimeQuarantined() {
-		return
+	quarantined := driver.runtimeQuarantined()
+	report := CloseReport{DriverID: driver.cfg.ID, Class: CloseProven, Generation: generation, Operation: operation}
+	if err != nil || quarantined {
+		// Every unproven close of a stale provider, a drain timeout included,
+		// is promoted to quarantine here: nothing else observes it later.
+		report.Class = CloseUnconfirmed
+		driver.mu.Lock()
+		driver.quarantined = true
+		driver.activeOperation = 0
+		manager.transitionLocked(driver, ObservedFailed, Reason{Code: ReasonCloseUnconfirmed}, nil, nil)
+		driver.mu.Unlock()
 	}
-
-	driver.mu.Lock()
-	driver.quarantined = true
-	driver.activeOperation = 0
-	manager.transitionLocked(driver, ObservedFailed, Reason{Code: ReasonCloseUnconfirmed}, nil, nil)
-	driver.mu.Unlock()
+	driver.mu.RLock()
+	report.Observed, report.Reason = driver.observed, driver.reason
+	driver.mu.RUnlock()
+	if closed := driver.currentHooks().Closed; closed != nil {
+		closed(report)
+	}
 }
 
 func (manager *Manager) finishAttempt(driver *managedDriver, control *attemptControl, operation, generation uint64, err error, replace bool) {
@@ -624,7 +969,7 @@ func (manager *Manager) finishAttempt(driver *managedDriver, control *attemptCon
 		driver.attempt = 1
 		driver.quarantined = false
 		driver.needsReplace = false
-		driver.retryRemaining = driver.cfg.Retry.Budget
+		driver.resetRetryLocked()
 		driver.activeOperation = 0
 		bindCorrelation = Correlation{Generation: generation}
 		if activator, ok := driver.cfg.Runtime.(correlationActivator); ok {
@@ -646,8 +991,8 @@ func (manager *Manager) finishAttempt(driver *managedDriver, control *attemptCon
 	if replace {
 		driver.needsReplace = true
 	}
-	if failure.Reason.Retryable && driver.retryRemaining > 0 {
-		manager.scheduleRetryLocked(driver, operation, replace)
+	if failure.Reason.Retryable && driver.retryContinuesLocked() {
+		manager.scheduleRetryLocked(driver, operation, replace, failure.Detail)
 		return
 	}
 	if failure.Reason.Retryable {
@@ -657,11 +1002,45 @@ func (manager *Manager) finishAttempt(driver *managedDriver, control *attemptCon
 	manager.transitionLocked(driver, ObservedFailed, failure.Reason, nil, nil)
 }
 
-func (manager *Manager) scheduleRetryLocked(driver *managedDriver, operation uint64, replace bool) {
-	delay := retryDelay(driver.cfg.Retry, driver.cfg.Retry.Budget-driver.retryRemaining, manager.jitter)
-	retry := &RetrySnapshot{Eligible: true, BudgetRemaining: driver.retryRemaining, NotBeforeUTC: manager.now().Add(delay)}
+// resetRetryLocked opens a new failure series: the full fast budget and the
+// persistent schedule from its first delay.
+func (driver *managedDriver) resetRetryLocked() {
+	driver.retryRemaining = driver.cfg.Retry.Budget
+	driver.retrySeries = 0
+}
+
+// retryContinuesLocked reports whether a retryable failure schedules another
+// retry: while fast attempts remain, and afterwards only under a persistent
+// policy.
+func (driver *managedDriver) retryContinuesLocked() bool {
+	return driver.retryRemaining > 0 || driver.cfg.Retry.Persistent.Enabled
+}
+
+// nextRetryDelay picks the delay of the next retry of the series: the fast
+// schedule while budget remains, then the persistent schedule, which
+// restarts at its own initial delay. It consumes one fast attempt.
+func (manager *Manager) nextRetryDelay(driver *managedDriver) time.Duration {
+	policy := driver.cfg.Retry
+	if driver.retryRemaining > 0 {
+		index := policy.Budget - driver.retryRemaining
+		driver.retryRemaining--
+		return retryDelay(policy, index, manager.jitter)
+	}
+	index := driver.retrySeries - policy.Budget
+	if index < 0 {
+		index = 0
+	}
+	persistent := RetryPolicy{InitialDelay: policy.Persistent.InitialDelay, MaxDelay: policy.Persistent.MaxDelay, JitterRatio: policy.JitterRatio}
+	return retryDelay(persistent, index, manager.jitter)
+}
+
+func (manager *Manager) scheduleRetryLocked(driver *managedDriver, operation uint64, replace bool, detail FailureDetail) {
+	remaining := driver.retryRemaining
+	delay := manager.nextRetryDelay(driver)
+	driver.retrySeries++
+	retry := &RetrySnapshot{Eligible: true, BudgetRemaining: remaining, NotBeforeUTC: manager.now().Add(delay), Attempt: driver.retrySeries,
+		Persistent: driver.cfg.Retry.Persistent.Enabled, LastFailure: detail.normalized()}
 	manager.transitionLocked(driver, ObservedBackoff, Reason{Code: ReasonRetryScheduled, Retryable: true}, retry, nil)
-	driver.retryRemaining--
 	driver.retryToken++
 	token := driver.retryToken
 	driver.retryNeedsReplace = replace
@@ -677,12 +1056,8 @@ func (manager *Manager) scheduleRetryLocked(driver *managedDriver, operation uin
 
 func (manager *Manager) runRetry(ctx context.Context, driver *managedDriver, operation, token uint64, delay time.Duration) {
 	defer manager.wg.Done()
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
+	if !manager.wait(ctx, delay) {
 		return
-	case <-timer.C:
 	}
 
 	driver.opMu.Lock()
@@ -698,7 +1073,7 @@ func (manager *Manager) runRetry(ctx context.Context, driver *managedDriver, ope
 	driver.attempt++
 	driver.mu.Unlock()
 	driver.opMu.Unlock()
-	manager.startAttempt(ctx, driver, operation, replace)
+	manager.startAttempt(ctx, driver, operation, replace, true)
 }
 
 func (manager *Manager) beginTask() bool {
@@ -744,6 +1119,8 @@ func (manager *Manager) transitionLocked(driver *managedDriver, observed Observe
 	driver.effective = normalizeCapabilities(effective)
 	driver.revision++
 	driver.changedAt = manager.now()
+	close(driver.changed)
+	driver.changed = make(chan struct{})
 }
 
 func (manager *Manager) classify(driver *managedDriver, err error) Failure {
@@ -800,10 +1177,10 @@ func (manager *Manager) ReportFailure(id string, correlation Correlation, failur
 	// later Runtime.Replace/Stop owner's responsibility.
 	manager.fenceWithdrawalLocked(driver)
 	driver.needsReplace = true
-	driver.retryRemaining = driver.cfg.Retry.Budget
+	driver.resetRetryLocked()
 	if failure.Reason.Retryable {
-		if driver.retryRemaining > 0 {
-			manager.scheduleRetryLocked(driver, operation, true)
+		if driver.retryContinuesLocked() {
+			manager.scheduleRetryLocked(driver, operation, true, failure.Detail)
 			return true
 		}
 		failure.Reason = Reason{Code: ReasonRetryExhausted}
@@ -860,8 +1237,11 @@ func (manager *Manager) Shutdown(ctx context.Context) error {
 		manager.cancelRetry(driver)
 		manager.cancelAttempt(driver)
 		driver.opMu.Lock()
-		_ = manager.stopLocked(ctx, driver)
+		report := manager.stopLocked(ctx, driver)
 		driver.opMu.Unlock()
+		if closed := driver.currentHooks().Closed; closed != nil {
+			closed(report)
+		}
 	}
 	done := make(chan struct{})
 	go func() {
@@ -892,6 +1272,14 @@ func normalizeRetryPolicy(policy RetryPolicy) RetryPolicy {
 		policy.JitterRatio = 0
 	} else if policy.JitterRatio > 0.5 {
 		policy.JitterRatio = 0.5
+	}
+	if policy.Persistent.Enabled {
+		if policy.Persistent.InitialDelay <= 0 {
+			policy.Persistent.InitialDelay = time.Second
+		}
+		if policy.Persistent.MaxDelay < policy.Persistent.InitialDelay {
+			policy.Persistent.MaxDelay = policy.Persistent.InitialDelay
+		}
 	}
 	return policy
 }
@@ -926,6 +1314,17 @@ func retryDelay(policy RetryPolicy, index int, jitter func(time.Duration) time.D
 		return policy.MaxDelay
 	}
 	return delay
+}
+
+func defaultRetryWait(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 func defaultRetryJitter(limit time.Duration) time.Duration {

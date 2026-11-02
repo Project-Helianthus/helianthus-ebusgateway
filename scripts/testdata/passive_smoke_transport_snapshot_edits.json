@@ -1,0 +1,22 @@
+[
+  {
+    "before": "\t// never take the store lock across a driver or publication lock.\n\tsemanticMetricsProvider func(time.Time) []SemanticMetricsDomain\n\n",
+    "after": "\t// never take the store lock across a driver or publication lock.\n\tsemanticMetricsProvider func(time.Time) []SemanticMetricsDomain\n\n\t// transportRuntimeStatus is a two-entry, Gateway-owned lifecycle snapshot.\n\t// It is updated by composition/lifecycle transitions and is deliberately\n\t// rendered without calling into Modbus or eeBUS native runtime APIs.\n\ttransportRuntimeStatus map[TransportRuntimeProtocol]TransportRuntimeStatus\n\n"
+  },
+  {
+    "before": "\tcfg = applyDefaults(cfg)\n\tnow := time.Now()\n\tstore := &BusObservabilityStore{\n\t\tcfg:                    cfg,\n\t\tnow:                    time.Now,\n\t\ttransportClass:         string(canonicalTransportProtocol(cfg.TransportConfig.Protocol)),\n\t\tactiveTimingQuality:    timingQualityForActive(cfg),\n\t\tpassiveTimingQuality:   timingQualityForPassive(cfg),\n",
+    "after": "\tcfg = applyDefaults(cfg)\n\tnow := time.Now()\n\tstore := &BusObservabilityStore{\n\t\tcfg: cfg,\n\t\tnow: time.Now,\n\t\ttransportRuntimeStatus: map[TransportRuntimeProtocol]TransportRuntimeStatus{\n\t\t\tTransportRuntimeProtocolModbusTCP: defaultTransportRuntimeStatus(TransportRuntimeProtocolModbusTCP),\n\t\t\tTransportRuntimeProtocolEEBus:     defaultTransportRuntimeStatus(TransportRuntimeProtocolEEBus),\n\t\t},\n\t\ttransportClass:         string(canonicalTransportProtocol(cfg.TransportConfig.Protocol)),\n\t\tactiveTimingQuality:    timingQualityForActive(cfg),\n\t\tpassiveTimingQuality:   timingQualityForPassive(cfg),\n"
+  },
+  {
+    "before": "\tstore.mu.Unlock()\n}\n\nfunc (store *BusObservabilityStore) RenderPrometheus() string {\n\tif store == nil {\n\t\treturn \"\"\n",
+    "after": "\tstore.mu.Unlock()\n}\n\n// SetTransportRuntimeStatus records one finite lifecycle result for the\n// Modbus TCP or eeBUS runtime. Callers invoke this at lifecycle transitions;\n// RenderPrometheus only copies the stored value and never reaches a runtime.\nfunc (store *BusObservabilityStore) SetTransportRuntimeStatus(status TransportRuntimeStatus) {\n\tif store == nil {\n\t\treturn\n\t}\n\tstatus = normalizeTransportRuntimeStatus(status)\n\tif status.Protocol == \"\" {\n\t\treturn\n\t}\n\tstore.mu.Lock()\n\tif store.transportRuntimeStatus == nil {\n\t\tstore.transportRuntimeStatus = map[TransportRuntimeProtocol]TransportRuntimeStatus{}\n\t}\n\tif current, ok := store.transportRuntimeStatus[status.Protocol]; ok &&\n\t\tstatus.Protocol == TransportRuntimeProtocolEEBus && status.Revision < current.Revision {\n\t\tstore.mu.Unlock()\n\t\treturn\n\t}\n\tstore.transportRuntimeStatus[status.Protocol] = status\n\tstore.mu.Unlock()\n}\n\nfunc (store *BusObservabilityStore) RenderPrometheus() string {\n\tif store == nil {\n\t\treturn \"\"\n"
+  },
+  {
+    "before": "\tadaptermuxDiagProvider := store.adaptermuxDiagProvider\n\tv8RolloutProvider := store.v8RolloutProvider\n\tsemanticMetricsProvider := store.semanticMetricsProvider\n\tstore.mu.Unlock()\n\n\t// batch-21 diagnostic counters \u2014 snapshot OUTSIDE store.mu (the\n",
+    "after": "\tadaptermuxDiagProvider := store.adaptermuxDiagProvider\n\tv8RolloutProvider := store.v8RolloutProvider\n\tsemanticMetricsProvider := store.semanticMetricsProvider\n\ttransportRuntimeStatus := make(map[TransportRuntimeProtocol]TransportRuntimeStatus, len(store.transportRuntimeStatus))\n\tfor protocol, status := range store.transportRuntimeStatus {\n\t\ttransportRuntimeStatus[protocol] = status\n\t}\n\tstore.mu.Unlock()\n\n\t// batch-21 diagnostic counters \u2014 snapshot OUTSIDE store.mu (the\n"
+  },
+  {
+    "before": "\tif haveSemanticMetricsProvider {\n\t\twriteSemanticMetrics(writer, semanticDomains, now)\n\t}\n\n\twriter.writeHelp(\"ebus_observability_transport_info\", \"Observe-first transport metadata.\")\n\twriter.writeType(\"ebus_observability_transport_info\", \"gauge\")\n",
+    "after": "\tif haveSemanticMetricsProvider {\n\t\twriteSemanticMetrics(writer, semanticDomains, now)\n\t}\n\twriteTransportRuntimeMetrics(writer, transportRuntimeStatus)\n\n\twriter.writeHelp(\"ebus_observability_transport_info\", \"Observe-first transport metadata.\")\n\twriter.writeType(\"ebus_observability_transport_info\", \"gauge\")\n"
+  }
+]

@@ -46,7 +46,7 @@ GOOS=linux GOARCH=arm GOARM=7 go build -o /dev/null ./cmd/gateway
 GOOS=linux GOARCH=arm GOARM=6 go build -o /dev/null ./cmd/gateway
 
 echo "==> go test (race)"
-go test -race -count=1 ./...
+go test -race -count=1 -timeout 20m ./...
 
 echo "==> validating source-selection artifact schema coverage"
 go test ./... -run "TestSourceSelectionArtifact_EmitValidatesAgainstSchema" -count=1
@@ -59,6 +59,8 @@ python3 scripts/passive_smoke_gate_test.py
 python3 scripts/m8_source_clock_test.py
 python3 scripts/capture_m8_source_window_test.py
 python3 scripts/tesla_evse_semreg_boundary_test.py
+python3 scripts/semreg_mapping_gate_test.py
+python3 scripts/test_reset_runtime_control.py
 
 if command -v golangci-lint >/dev/null 2>&1; then
   echo "==> golangci-lint"

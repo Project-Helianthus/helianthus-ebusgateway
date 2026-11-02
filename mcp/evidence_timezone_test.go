@@ -49,6 +49,7 @@ func TestTeslaEvidenceTimezoneDigests(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		// Serialized records own their bytes independently of source payload slices.
 		if !reflect.DeepEqual(evidence, before) || !bytes.Equal(sourceBefore, sourceAfter) {
 			t.Fatal("publication changed caller-owned input")
 		}

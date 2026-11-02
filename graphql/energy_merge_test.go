@@ -2,6 +2,7 @@ package graphql
 
 import (
 	"expvar"
+	"reflect"
 	"testing"
 	"time"
 
@@ -711,4 +712,186 @@ func readExpvarMapValue(value *expvar.Map, key string) int64 {
 		}
 	})
 	return out
+}
+
+// Exercise the same store across two month boundaries and New Year.
+func TestEnergyMerge_ObsoleteWindowsRollover(t *testing.T) {
+	store := newEnergyMergeStore()
+	for _, ref := range []time.Time{
+		time.Date(2026, 11, 30, 12, 0, 0, 0, time.UTC),
+		time.Date(2026, 12, 31, 12, 0, 0, 0, time.UTC),
+		time.Date(2027, 1, 31, 12, 0, 0, 0, time.UTC),
+	} {
+		for _, channel := range []string{"gas", "electricity", "solar"} {
+			for _, usage := range []string{"hot_water", "climate"} {
+				for _, period := range []string{"month", "year"} {
+					for i, label := range []string{"previous", "current"} {
+						key := energyWindowKey(channel, usage, period, label, ref)
+						source := EnergySourceBroadcast
+						if period == "month" {
+							source = EnergySourceRegister
+						}
+						if !store.Apply(key, float64(i+10), source, ref) {
+							t.Fatalf("Apply(%+v) rejected", key)
+						}
+					}
+				}
+			}
+		}
+		if got := len(store.points); got != 24 {
+			t.Fatalf("at %v: retained %d points, want 24", ref, got)
+		}
+		for key := range store.points {
+			if _, ok := energySlotFor(key, ref); !ok {
+				t.Fatalf("obsolete point retained at %v: %+v", ref, key)
+			}
+		}
+		snapshot := store.SnapshotWithContext(ref, "")
+		for _, channel := range []EnergyChannel{snapshot.Gas, snapshot.Electric, snapshot.Solar} {
+			for _, series := range []EnergySeries{channel.DHW, channel.Climate} {
+				if !reflect.DeepEqual(series.Monthly, []float64{10, 11}) || !reflect.DeepEqual(series.Yearly, []float64{10, 11}) {
+					t.Fatalf("projection changed at %v: %+v", ref, series)
+				}
+			}
+		}
+		revision := store.Revision()
+		for range 3 {
+			if got := store.SnapshotWithContext(ref, ""); !reflect.DeepEqual(got, snapshot) {
+				t.Fatal("repeated snapshot changed projection")
+			}
+		}
+		if store.Revision() != revision || len(store.points) != 24 {
+			t.Fatal("snapshot mutated retained state")
+		}
+	}
+}
+
+func TestEnergyMerge_ObsoleteWindowsLateArrivalsAndPrecedence(t *testing.T) {
+	ref := time.Date(2027, 1, 15, 12, 0, 0, 0, time.UTC)
+	for _, period := range []string{"month", "year"} {
+		t.Run(period, func(t *testing.T) {
+			store := newEnergyMergeStore()
+			current := energyWindowKey("gas", "heating", period, "current", ref)
+			previous := energyWindowKey("gas", "climate", period, "previous", ref)
+			if !store.Apply(current, 20, EnergySourceRegister, ref) || !store.Apply(previous, 10, EnergySourceBroadcast, ref) {
+				t.Fatal("current and late previous windows must be accepted independently")
+			}
+			if !store.Apply(previous, 12, EnergySourceBroadcast, ref.Add(time.Second)) {
+				t.Fatal("late previous update must update its own key")
+			}
+			if !store.Apply(previous, 15, EnergySourceRegister, ref.Add(-time.Second)) {
+				t.Fatal("older register must override previous broadcast")
+			}
+			if store.Apply(previous, 99, EnergySourceBroadcast, ref.Add(2*time.Second)) {
+				t.Fatal("broadcast must not override retained register")
+			}
+			obsolete := previous
+			if period == "month" {
+				obsolete.Month-- // November of the preceding year.
+			} else {
+				obsolete.Year--
+			}
+			revision := store.Revision()
+			for _, source := range []EnergyDataSource{EnergySourceBroadcast, EnergySourceRegister} {
+				if store.Apply(obsolete, 99, source, ref.Add(3*time.Second)) {
+					t.Fatal("obsolete late arrival must not resurrect a pruned window")
+				}
+			}
+			current.Usage = "climate"
+			if store.Revision() != revision || len(store.points) != 2 || store.points[current].Value != 20 || store.points[previous].Value != 15 {
+				t.Fatal("late arrival changed retained windows or revision")
+			}
+		})
+	}
+}
+
+func TestEnergyMerge_ObsoleteWindowsClockRollback(t *testing.T) {
+	future := time.Date(2027, 1, 15, 12, 0, 0, 0, time.UTC)
+	rollback := time.Date(2026, 12, 15, 12, 0, 0, 0, time.UTC)
+	for _, period := range []string{"month", "year"} {
+		t.Run(period, func(t *testing.T) {
+			store := newEnergyMergeStore()
+			futureKey := energyWindowKey("gas", "climate", period, "current", future)
+			if !store.Apply(futureKey, 20, EnergySourceRegister, future) {
+				t.Fatal("initial write rejected")
+			}
+			for i, label := range []string{"previous", "current"} {
+				key := energyWindowKey("gas", "climate", period, label, rollback)
+				if !store.Apply(key, float64(i+10), EnergySourceBroadcast, rollback) {
+					t.Fatal("rollback window rejected")
+				}
+			}
+			if len(store.points) != 3 || store.points[futureKey].Value != 20 {
+				t.Fatal("rollback deleted a future projectable point")
+			}
+			before := store.SnapshotWithContext(rollback, "")
+			after := store.SnapshotWithContext(future, "")
+			if period == "month" {
+				if !reflect.DeepEqual(before.Gas.Climate.Monthly, []float64{10, 11}) || !reflect.DeepEqual(after.Gas.Climate.Monthly, []float64{11, 20}) {
+					t.Fatal("rollback/catch-up month projection lost retained data")
+				}
+			} else if !reflect.DeepEqual(before.Gas.Climate.Yearly, []float64{10, 11}) || !reflect.DeepEqual(after.Gas.Climate.Yearly, []float64{11, 20}) {
+				t.Fatal("rollback/catch-up year projection lost retained data")
+			}
+			// A rejected source downgrade must not prune unrelated stored history.
+			if store.Apply(futureKey, 99, EnergySourceBroadcast, future.Add(time.Second)) || len(store.points) != 3 {
+				t.Fatal("rejected write changed retention")
+			}
+			if !store.Apply(futureKey, 21, EnergySourceRegister, future.Add(time.Second)) || len(store.points) != 2 {
+				t.Fatal("accepted catch-up write must prune the obsolete rollback window")
+			}
+		})
+	}
+}
+
+func TestEnergyMerge_ObsoleteWindowsSelectorIsolationAndDayBehavior(t *testing.T) {
+	for _, period := range []string{"month", "year"} {
+		t.Run(period, func(t *testing.T) {
+			otherPeriod := "year"
+			if period == "year" {
+				otherPeriod = "month"
+			}
+			oldRef := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+			ref := oldRef.AddDate(1, 2, 0)
+			store := newEnergyMergeStore()
+			var preserved []energyMergeKey
+			for _, key := range []energyMergeKey{
+				energyWindowKey("electricity", "climate", period, "current", oldRef),
+				energyWindowKey("gas", "hot_water", period, "current", oldRef),
+				energyWindowKey("gas", "climate", otherPeriod, "previous", oldRef),
+				energyWindowKey("gas", "climate", "day", "", oldRef),
+				energyLifetimeKey("gas", "climate"),
+			} {
+				if !store.Apply(key, 7, EnergySourceRegister, oldRef) {
+					t.Fatal("setup write rejected")
+				}
+				preserved = append(preserved, key)
+			}
+			obsolete := energyWindowKey("gas", "climate", period, "current", oldRef)
+			store.Apply(obsolete, 8, EnergySourceRegister, oldRef)
+			current := energyWindowKey("gas", "heating", period, "current", ref)
+			if !store.Apply(current, 9, EnergySourceRegister, ref) {
+				t.Fatal("rollover write rejected")
+			}
+			if _, exists := store.points[obsolete]; exists {
+				t.Fatal("canonicalized same-selector obsolete window retained")
+			}
+			for _, key := range preserved {
+				if store.points[key].Value != 7 {
+					t.Fatalf("other selector/day/lifetime changed: %+v", key)
+				}
+			}
+			newDay := energyWindowKey("gas", "climate", "day", "", ref)
+			if !store.Apply(newDay, 10, EnergySourceRegister, ref) {
+				t.Fatal("new day rejected")
+			}
+			oldDay := energyWindowKey("gas", "climate", "day", "", oldRef)
+			if _, exists := store.points[oldDay]; exists {
+				t.Fatal("existing older-day pruning regressed")
+			}
+			if got := store.SnapshotWithContext(ref, "").Gas.Climate.Today; got != 10 {
+				t.Fatalf("today = %v, want 10", got)
+			}
+		})
+	}
 }

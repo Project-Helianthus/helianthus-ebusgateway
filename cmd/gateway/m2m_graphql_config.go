@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"flag"
+	"log"
 	"sort"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
@@ -19,19 +20,23 @@ func bindM2MGraphQLFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 	if fs == nil || cfg == nil {
 		return
 	}
+	warned := false
+	retired := func(string) error {
+		if !warned {
+			log.Print("M2M client-certificate flags are deprecated and ignored")
+			warned = true
+		}
+		return nil
+	}
+	fs.Func("m2m-graphql-client-ca", "deprecated: ignored", retired)
+	fs.Func("m2m-graphql-denied-principals", "deprecated: ignored", retired)
 	fs.StringVar(&cfg.M2MGraphQL.ListenAddr, "m2m-graphql-listen", cfg.M2MGraphQL.ListenAddr, "dedicated M2M API TLS listen address")
 	fs.StringVar(&cfg.M2MGraphQL.ServerName, "m2m-graphql-server-name", cfg.M2MGraphQL.ServerName, "dedicated M2M API server certificate identity")
-	fs.StringVar(&cfg.M2MGraphQL.ClientCAFile, "m2m-graphql-client-ca", cfg.M2MGraphQL.ClientCAFile, "client CA file for the dedicated M2M API listener")
 	fs.StringVar(&cfg.M2MGraphQL.ServerCertFile, "m2m-graphql-server-cert", cfg.M2MGraphQL.ServerCertFile, "server certificate file for the dedicated M2M API listener")
 	fs.StringVar(&cfg.M2MGraphQL.ServerKeyFile, "m2m-graphql-server-key", cfg.M2MGraphQL.ServerKeyFile, "server private-key file for the dedicated M2M API listener")
 	fs.Func("m2m-graphql-allowed-assets", "comma-separated opaque asset allowlist", func(value string) error {
 		cfg.M2MGraphQL.AllowedAssets = normalizeEEBusList(value, false)
 		sort.Strings(cfg.M2MGraphQL.AllowedAssets)
-		return nil
-	})
-	fs.Func("m2m-graphql-denied-principals", "comma-separated SHA-256 client certificate fingerprints", func(value string) error {
-		cfg.M2MGraphQL.DeniedPrincipalFingerprints = normalizeEEBusList(value, true)
-		sort.Strings(cfg.M2MGraphQL.DeniedPrincipalFingerprints)
 		return nil
 	})
 	fs.BoolVar(&cfg.PortalPV.SemanticEnabled, "portal-pv-semantic-enabled", cfg.PortalPV.SemanticEnabled, "enable Portal PV semantic BFF")

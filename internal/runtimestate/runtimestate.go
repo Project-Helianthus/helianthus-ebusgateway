@@ -1,12 +1,15 @@
 // Package runtimestate is the gateway-owned loader/persister for
 // /data/runtime_state.json. Plan: runtime-state-w19-26.locked. v1 namespaces:
-// meta + ebus.{self, known_bus_members[]}. See docs-ebus
-// architecture/runtime-state.md for the normative schema and contract.
+// meta + ebus.{self, known_bus_members[]}, plus the independently versioned
+// runtime_control namespace (runtime_control.go). See docs-ebus
+// architecture/runtime-state.md and architecture/runtime-driver-lifecycle.md
+// for the normative schema and contract.
 package runtimestate
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand"
@@ -14,7 +17,13 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
+
+// ErrStatePersistBlocked reports that persistence is withheld so that bytes
+// which could not be read, quarantined or exclusively locked are never overwritten.
+var ErrStatePersistBlocked = errors.New("runtime_state: persistence blocked")
 
 // SchemaVersion is the file-format version this package targets.
 const SchemaVersion = 1
@@ -73,6 +82,10 @@ type State struct {
 	// from disk. It is intentionally private: this gateway neither interprets
 	// nor permits callers to promote their fields into meta or ebus ownership.
 	opaqueNamespaces map[string]json.RawMessage
+	// control is the committed runtime_control namespace. It is private and
+	// changes only through a durable control transaction; generic writes
+	// re-emit the committed value and never publish staged control state.
+	control *controlNamespace
 }
 
 // Meta holds the meta namespace.
@@ -194,6 +207,12 @@ type Options struct {
 	// (M3 implementation falls back to os.Rename / os.Remove). Tests inject
 	// mocks here to exercise EXDEV / EINVAL / ENOSYS failure paths per AD13.
 	FsHooks FilesystemHooks
+	// Now is the wall clock used for written_at and quarantine names.
+	// Defaults to time.Now; tests fix it for byte-stable serialization.
+	Now func() time.Time
+	// ControlWaitBound bounds the wait at the namespace-wide control
+	// serialization point. Defaults to DefaultControlWaitBound.
+	ControlWaitBound time.Duration
 }
 
 // Manager coordinates loading, eager persistence, periodic writes, and shutdown
@@ -205,11 +224,22 @@ type Manager struct {
 	state    *State
 	dirty    bool
 	writeGen uint64 // bumped on every mutation; used by flushIfDirty to detect concurrent updates
-	writeMu  sync.Mutex
+	// writeSem is the sole-writer lock (capacity 1). Every persist, including
+	// each durable control transaction, holds it; it is also the
+	// namespace-wide control serialization point, acquired with a bounded
+	// wait by control decisions.
+	writeSem chan struct{}
 	stopCh   chan struct{}
 	doneCh   chan struct{}
 	started  bool
 	stopped  bool
+
+	// Guarded by mu.
+	controlStatus    ControlLoadStatus
+	controlConfigs   map[string]ControlDriverConfig
+	controlAmbiguous *controlNamespace
+	persistBlocked   error
+	lockFile         *os.File
 }
 
 // New constructs a Manager. The Manager is not started until Start is called.
@@ -229,17 +259,146 @@ func New(opts Options) *Manager {
 	if opts.Path == "" {
 		opts.Path = "/data/runtime_state.json"
 	}
+	if opts.Now == nil {
+		opts.Now = time.Now
+	}
+	if opts.ControlWaitBound <= 0 {
+		opts.ControlWaitBound = DefaultControlWaitBound
+	}
 	hooks := opts.FsHooks
 	if hooks == nil {
 		hooks = DefaultFilesystemHooks{}
 	}
 	return &Manager{
-		opts:   opts,
-		hooks:  hooks,
-		state:  &State{SchemaVersion: SchemaVersion},
-		stopCh: make(chan struct{}),
-		doneCh: make(chan struct{}),
+		opts:          opts,
+		hooks:         hooks,
+		state:         &State{SchemaVersion: SchemaVersion},
+		writeSem:      make(chan struct{}, 1),
+		stopCh:        make(chan struct{}),
+		doneCh:        make(chan struct{}),
+		controlStatus: ControlLoadStatus{Disposition: ControlLoadMissing},
 	}
+}
+
+func (m *Manager) now() time.Time { return m.opts.Now() }
+
+// acquireWrite takes the sole-writer lock without a bound (generic writes).
+func (m *Manager) acquireWrite() { m.writeSem <- struct{}{} }
+
+func (m *Manager) releaseWrite() { <-m.writeSem }
+
+// acquireWriteCtx takes the sole-writer lock or returns the context error.
+func (m *Manager) acquireWriteCtx(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case m.writeSem <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// acquireWriteBounded waits for the serialization point at most
+// ControlWaitBound and never beyond the deadline. deadlineHit reports that
+// the deadline (or the context) ended the wait.
+func (m *Manager) acquireWriteBounded(ctx context.Context, deadline time.Time) (acquired, deadlineHit bool) {
+	select {
+	case m.writeSem <- struct{}{}:
+		return true, false
+	default:
+	}
+	wait := m.opts.ControlWaitBound
+	untilDeadline := time.Until(deadline)
+	boundIsDeadline := untilDeadline <= wait
+	if boundIsDeadline {
+		wait = untilDeadline
+	}
+	if wait <= 0 {
+		return false, true
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case m.writeSem <- struct{}{}:
+		return true, false
+	case <-ctx.Done():
+		return false, true
+	case <-timer.C:
+		return false, boundIsDeadline || !time.Now().Before(deadline)
+	}
+}
+
+// acquireStoreLock takes the exclusive cross-process store lock on the
+// "<path>.lock" sidecar, shared with the offline runtime-control reset.
+// Every acquisition failure blocks persistence. flock is supplied by the
+// caller so tests can exercise non-contention failures deterministically.
+func (m *Manager) acquireStoreLock(flock func(int, int) error) error {
+	m.mu.Lock()
+	held := m.lockFile != nil
+	m.mu.Unlock()
+	if held {
+		return nil
+	}
+	f, err := os.OpenFile(m.opts.Path+".lock", os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return fmt.Errorf("open store lock: %w", err)
+	}
+	if err := flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("acquire store lock: %w", err)
+	}
+	m.mu.Lock()
+	m.lockFile = f
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *Manager) releaseStoreLock() {
+	m.mu.Lock()
+	f := m.lockFile
+	m.lockFile = nil
+	m.mu.Unlock()
+	if f != nil {
+		_ = unix.Flock(int(f.Fd()), unix.LOCK_UN)
+		_ = f.Close()
+	}
+}
+
+func (m *Manager) setControlLoad(status ControlLoadDisposition, detail string, block error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.controlStatus = ControlLoadStatus{Disposition: status, Detail: detail}
+	m.controlAmbiguous = nil
+	m.persistBlocked = block
+}
+
+// missingControlDisposition distinguishes a genuinely missing namespace from
+// one whose quarantine copy exists.
+func (m *Manager) missingControlDisposition() (ControlLoadDisposition, string, error) {
+	present, err := controlQuarantineCopies(m.opts.Path)
+	if err != nil {
+		return ControlLoadUnreadable, "quarantine material cannot be enumerated", fmt.Errorf("%w: %v", ErrStatePersistBlocked, err)
+	}
+	if present {
+		return ControlLoadMissingWithMaterial, "namespace missing while a quarantine copy exists", nil
+	}
+	return ControlLoadMissing, "", nil
+}
+
+// quarantinePath returns a non-existing "<path>.corrupt-<ISO8601>" name so an
+// existing quarantine copy is never replaced.
+func (m *Manager) quarantinePath() string {
+	base := fmt.Sprintf("%s%s%s", m.opts.Path, corruptQuarantineInfix, m.now().UTC().Format("20060102T150405Z"))
+	candidate := base
+	for i := 2; i < 1000; i++ {
+		if _, err := os.Lstat(candidate); os.IsNotExist(err) {
+			return candidate
+		}
+		candidate = fmt.Sprintf("%s-%d", base, i)
+	}
+	return candidate
 }
 
 // Load reads the runtime state file. Returns the parsed State, or an empty
@@ -247,16 +406,29 @@ func New(opts Options) *Manager {
 // "<path>.corrupt-<ISO8601>" and a warning is logged. Per-plugin
 // schema_version mismatch results in that namespace being dropped from the
 // in-memory load (AD12). Never returns a panic; never blocks startup.
+//
+// The runtime_control namespace is the one exception to the cache rules: its
+// load disposition (ControlLoad) keeps missing, corrupt, unreadable,
+// unsupported and locked distinct. A file that cannot be read, or whose
+// corrupt quarantine rename fails, blocks persistence so its bytes are never
+// overwritten by a fresh base.
 func (m *Manager) Load(ctx context.Context) (*State, error) {
+	if err := m.acquireStoreLock(unix.Flock); err != nil {
+		m.loadWithoutStoreLock(err)
+		return m.State(), nil
+	}
 	data, err := os.ReadFile(m.opts.Path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			m.opts.Logger.Info("runtime_state: file absent, starting empty", "path", m.opts.Path)
+			disposition, detail, block := m.missingControlDisposition()
+			m.setControlLoad(disposition, detail, block)
 			m.replaceState(&State{SchemaVersion: SchemaVersion})
 			return m.State(), nil
 		}
 		// Permission denied / IO error: log + start empty (never block startup per AD11).
 		m.opts.Logger.Warn("runtime_state: read failed, starting empty", "path", m.opts.Path, "error", err)
+		m.setControlLoad(ControlLoadUnreadable, "state file unreadable", fmt.Errorf("%w: state file unreadable: %v", ErrStatePersistBlocked, err))
 		m.replaceState(&State{SchemaVersion: SchemaVersion})
 		return m.State(), nil
 	}
@@ -264,12 +436,15 @@ func (m *Manager) Load(ctx context.Context) (*State, error) {
 	state, namespaceWarnings, err := unmarshalState(data)
 	if err != nil {
 		// Corrupt or schema mismatch: quarantine and start empty per AD11.
-		quarantine := fmt.Sprintf("%s.corrupt-%s", m.opts.Path, time.Now().UTC().Format("20060102T150405Z"))
+		quarantine := m.quarantinePath()
+		var block error
 		if rerr := m.hooks.Rename(m.opts.Path, quarantine); rerr != nil {
 			m.opts.Logger.Warn("runtime_state: corrupt-quarantine rename failed", "from", m.opts.Path, "to", quarantine, "error", rerr)
+			block = fmt.Errorf("%w: corrupt file could not be quarantined: %v", ErrStatePersistBlocked, rerr)
 		} else {
 			m.opts.Logger.Warn("runtime_state: corrupt file quarantined", "from", m.opts.Path, "to", quarantine, "parse_error", err)
 		}
+		m.setControlLoad(ControlLoadCorrupt, "state file corrupt", block)
 		m.replaceState(&State{SchemaVersion: SchemaVersion})
 		return m.State(), nil
 	}
@@ -281,8 +456,59 @@ func (m *Manager) Load(ctx context.Context) (*State, error) {
 		)
 	}
 
+	if state.control == nil {
+		disposition, detail, block := m.missingControlDisposition()
+		m.setControlLoad(disposition, detail, block)
+	} else {
+		if state.control.status != ControlLoadLoaded {
+			m.opts.Logger.Warn("runtime_state: runtime_control failed closed; bytes preserved",
+				"disposition", string(state.control.status), "detail", state.control.detail)
+		}
+		m.setControlLoad(state.control.status, state.control.detail, nil)
+	}
 	m.replaceState(state)
 	return m.State(), nil
+}
+
+// loadWithoutStoreLock is the load path when the store lock cannot be
+// acquired (another process holds it, or the sidecar cannot be opened or
+// locked). Control fails closed as LOCKED and persistence is blocked for the
+// rest of the process, so nothing is admitted, written or seeded. The readable
+// file is still decoded read-only: the GUID, the eBUS cache, opaque namespaces
+// and the last-known-good control namespace stay available to the shell and to
+// ControlSnapshot/ControlDriver. Without the lock the file is never renamed, so
+// a corrupt file is neither quarantined nor overwritten.
+func (m *Manager) loadWithoutStoreLock(lockErr error) {
+	detail := "store lock unavailable: " + lockErr.Error()
+	state := &State{SchemaVersion: SchemaVersion}
+	data, err := os.ReadFile(m.opts.Path)
+	switch {
+	case err == nil:
+		parsed, namespaceWarnings, perr := unmarshalState(data)
+		if perr != nil {
+			detail += "; state file corrupt (not quarantined without the lock)"
+			break
+		}
+		for _, warning := range namespaceWarnings {
+			m.opts.Logger.Warn("runtime_state: ignored unsupported namespace schema version",
+				"namespace", warning.namespace,
+				"observed_version", warning.observed,
+				"expected_version", warning.expected,
+			)
+		}
+		if parsed.control != nil && parsed.control.status != ControlLoadLoaded {
+			detail += "; runtime_control " + string(parsed.control.status) + ": " + parsed.control.detail
+		}
+		state = parsed
+	case os.IsNotExist(err):
+		detail += "; state file absent"
+	default:
+		detail += "; state file unreadable"
+	}
+	m.opts.Logger.Warn("runtime_state: store lock unavailable; control LOCKED and persistence withheld; readable state loaded read-only",
+		"path", m.opts.Path, "error", lockErr, "detail", detail)
+	m.setControlLoad(ControlLoadLocked, detail, fmt.Errorf("%w: store lock unavailable: %v", ErrStatePersistBlocked, lockErr))
+	m.replaceState(state)
 }
 
 // EagerPersistInstanceGUID writes a minimum-valid file containing
@@ -295,7 +521,7 @@ func (m *Manager) EagerPersistInstanceGUID(ctx context.Context, guid string, sou
 	}
 	m.state.SchemaVersion = SchemaVersion
 	m.state.Meta.InstanceGUID = guid
-	m.state.Meta.WrittenAt = time.Now().UTC()
+	m.state.Meta.WrittenAt = m.now().UTC()
 	m.state.Meta.GatewayBuild = m.opts.GatewayBuild
 	m.state.Meta.AddonVersion = m.opts.AddonVersion
 	// Pre-mark dirty so that if persistFlush fails (ENOSPC / fsync_temp /
@@ -326,7 +552,10 @@ func (m *Manager) Start(ctx context.Context) error {
 }
 
 // Stop flushes any pending writes and shuts down the persister goroutines.
-// Idempotent.
+// It waits for in-flight writers before releasing the store lock and closes
+// write admission; a canceled context skips the final flush and returns the
+// context error, and the lock is then released as soon as the in-flight
+// writer finishes. Idempotent.
 func (m *Manager) Stop(ctx context.Context) error {
 	m.mu.Lock()
 	if m.stopped {
@@ -337,19 +566,79 @@ func (m *Manager) Stop(ctx context.Context) error {
 	started := m.started
 	m.mu.Unlock()
 
+	var stopErr error
 	if started {
 		close(m.stopCh)
 		select {
 		case <-m.doneCh:
 		case <-ctx.Done():
-			return ctx.Err()
+			stopErr = ctx.Err()
 		case <-time.After(5 * time.Second):
 			// Don't deadlock; ticker will exit on next iteration.
 		}
 	}
-	// Final flush of any dirty state.
-	m.flushIfDirty()
-	return nil
+	// The caller's context is checked before any flush, whether or not the
+	// ticker was started (startup-error cleanup stops a loaded manager).
+	if stopErr == nil {
+		stopErr = ctx.Err()
+	}
+	// Final flush of any dirty state. The writer slot is taken with the stop
+	// context, so a blocked writer can never hold Stop past its deadline.
+	// Durable control intent is never changed by shutdown.
+	if stopErr == nil {
+		if err := m.acquireWriteCtx(ctx); err != nil {
+			stopErr = err
+		} else {
+			m.mu.Lock()
+			dirty := m.dirty && m.state != nil
+			m.mu.Unlock()
+			if dirty {
+				_ = m.persistFlushLocked()
+			}
+			m.closeWritesAndReleaseStoreLock()
+			return nil
+		}
+	}
+	// The store lock is released on every exit path, but only after every
+	// in-flight writer (a control transaction or a ticker flush) has finished
+	// its rename and write admission is closed; otherwise a reset or another
+	// manager could take the lock before the old rename lands.
+	select {
+	case m.writeSem <- struct{}{}:
+		m.closeWritesAndReleaseStoreLock()
+		return stopErr
+	default:
+	}
+	if err := m.acquireWriteCtx(ctx); err != nil {
+		// The caller stops waiting; the release still happens as soon as
+		// the in-flight writer finishes.
+		go func() {
+			m.acquireWrite()
+			m.closeWritesAndReleaseStoreLock()
+		}()
+		if stopErr == nil {
+			stopErr = err
+		}
+		return stopErr
+	}
+	m.closeWritesAndReleaseStoreLock()
+	return stopErr
+}
+
+// errManagerStopped blocks every write after Stop has released the store lock.
+var errManagerStopped = fmt.Errorf("%w: manager stopped", ErrStatePersistBlocked)
+
+// closeWritesAndReleaseStoreLock runs with writeSem held: it blocks later
+// persistence and control transactions, releases the store lock and then
+// releases writeSem.
+func (m *Manager) closeWritesAndReleaseStoreLock() {
+	defer m.releaseWrite()
+	m.mu.Lock()
+	if m.persistBlocked == nil {
+		m.persistBlocked = errManagerStopped
+	}
+	m.mu.Unlock()
+	m.releaseStoreLock()
 }
 
 // State returns a defensive snapshot of the current in-memory state.
@@ -535,6 +824,7 @@ func cloneState(s *State) *State {
 		return nil
 	}
 	cp := *s
+	cp.control = s.control.clone()
 	if s.EBus != nil {
 		ebusCopy := *s.EBus
 		if s.EBus.Self != nil {
@@ -581,35 +871,50 @@ func (m *Manager) flushIfDirty() {
 	_ = m.persistFlush()
 }
 
-// persistFlush serializes snapshot + write under writeMu so two overlapping
+// persistFlush serializes snapshot + write under writeSem so two overlapping
 // persisters cannot land their renames out of snapshot order (Codex R5 —
 // previously the snapshot was captured BEFORE writeMu.Lock(), which let an
 // older snapshot's rename land after a newer snapshot's rename, silently
 // reverting on-disk state to a stale generation).
 //
 // Sequence:
-//  1. writeMu.Lock — exclude other persisters.
+//  1. acquire writeSem — exclude other persisters and control transactions.
 //  2. mu.Lock — snapshot fresh state + record writeGen.
 //  3. mu.Unlock — release in-memory mutex while we hit disk.
 //  4. atomicWrite(snap) — temp+rename per AD13.
 //  5. mu.Lock — clear dirty IFF writeGen unchanged (no concurrent mutation).
-//  6. mu.Unlock + writeMu.Unlock.
+//  6. mu.Unlock + release writeSem.
 func (m *Manager) persistFlush() error {
-	m.writeMu.Lock()
-	defer m.writeMu.Unlock()
+	m.acquireWrite()
+	defer m.releaseWrite()
+	return m.persistFlushLocked()
+}
 
+// persistFlushLocked is persistFlush for a caller already holding writeSem.
+func (m *Manager) persistFlushLocked() error {
 	m.mu.Lock()
+	if m.persistBlocked != nil {
+		err := m.persistBlocked
+		m.mu.Unlock()
+		return err
+	}
+	if m.controlAmbiguous != nil {
+		// Generic writes are deferred while a control transaction awaits
+		// readback, so the on-disk control bytes do not change under it.
+		m.mu.Unlock()
+		return ErrControlReadbackPending
+	}
 	if m.state == nil {
 		m.dirty = false
 		m.mu.Unlock()
 		return nil
 	}
-	m.state.Meta.WrittenAt = time.Now().UTC()
+	m.state.Meta.WrittenAt = m.now().UTC()
 	snap := cloneState(m.state)
 	genAtSnapshot := m.writeGen
 	m.mu.Unlock()
 
-	if err := m.atomicWrite(snap); err != nil {
+	if _, err := m.atomicWrite(snap, false); err != nil {
 		m.opts.Logger.Warn("runtime_state: persist failed; keeping dirty for retry", "error", err)
 		return err
 	}
@@ -654,13 +959,19 @@ func (m *Manager) tickerLoop() {
 }
 
 // atomicWrite executes the AD13 atomic temp+rename sequence for the given
-// snapshot. Caller MUST hold m.writeMu (see persistFlush) so concurrent
-// persisters cannot interleave their renames out of snapshot order.
-func (m *Manager) atomicWrite(snap *State) error {
+// snapshot. Caller MUST hold writeSem (see persistFlush and commitControl) so
+// concurrent persisters cannot interleave their renames out of snapshot order.
+// renamed reports whether the rename (the commit point) succeeded.
+//
+// For a generic write the parent-directory fsync is best-effort. For a
+// control transaction (control=true) it is required: any directory fsync
+// error after a successful rename is returned with renamed=true (ambiguous
+// persistence), and no tolerated-error list applies.
+func (m *Manager) atomicWrite(snap *State, control bool) (renamed bool, err error) {
 	data, err := marshalState(snap)
 	if err != nil {
 		m.opts.Metrics.OnWrite("marshal")
-		return err
+		return false, err
 	}
 
 	dir := filepath.Dir(m.opts.Path)
@@ -671,14 +982,14 @@ func (m *Manager) atomicWrite(snap *State) error {
 	if err := m.hooks.WriteFile(tempPath, data, 0o644); err != nil {
 		m.opts.Metrics.OnWrite("write")
 		_ = m.hooks.Unlink(tempPath) // best-effort cleanup
-		return err
+		return false, err
 	}
 
 	// Stage 2: FsyncFile — REQUIRED.
 	if err := m.hooks.FsyncFile(tempPath); err != nil {
 		m.opts.Metrics.OnWrite("fsync_temp")
 		_ = m.hooks.Unlink(tempPath)
-		return err
+		return false, err
 	}
 
 	// Stage 3: Rename temp → final. EXDEV is a precondition violation
@@ -687,28 +998,32 @@ func (m *Manager) atomicWrite(snap *State) error {
 		if isExdev(err) {
 			m.opts.Metrics.OnWrite("rename_exdev")
 			_ = m.hooks.Unlink(tempPath)
-			return err
+			return false, err
 		}
 		m.opts.Metrics.OnWrite("rename")
 		_ = m.hooks.Unlink(tempPath)
-		return err
+		return false, err
 	}
 
-	// Stage 4: FsyncDir — BEST-EFFORT. Per the MetricsHook contract, OnWrite
-	// is called exactly ONCE per persist attempt with a single reason label
-	// (Codex R4 P2 — emitting both parent_fsync_unsupported AND ok would
-	// double-count successful writes on platforms where directory fsync is
-	// unsupported).
+	// Stage 4: FsyncDir — BEST-EFFORT for generic writes, REQUIRED for
+	// control transactions. Per the MetricsHook contract, OnWrite is called
+	// exactly ONCE per persist attempt with a single reason label (Codex R4
+	// P2 — emitting both parent_fsync_unsupported AND ok would double-count
+	// successful writes on platforms where directory fsync is unsupported).
 	if err := m.hooks.FsyncDir(dir); err != nil {
+		if control {
+			m.opts.Metrics.OnWrite("fsync_dir")
+			return true, err
+		}
 		if isParentFsyncSwallowed(err) {
 			m.opts.Metrics.OnWrite("parent_fsync_unsupported")
 		} else {
 			m.opts.Metrics.OnWrite("fsync_dir")
 			// Don't undo the rename — file is on disk; just record metric.
 		}
-		return nil
+		return true, nil
 	}
 
 	m.opts.Metrics.OnWrite("ok")
-	return nil
+	return true, nil
 }

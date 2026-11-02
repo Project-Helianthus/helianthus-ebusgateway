@@ -5,20 +5,6 @@ import (
 	"time"
 )
 
-// F-39 (2026-05-15): same-session + same-initiator coalescing.
-//
-// Pcap forensics on the live HA host captured a 4.85 s cluster where
-// ebusd issued 24 REQ_START 0x31 frames and only 15 received an ENH
-// response within 500 ms — 9 were silently canceled by the F-17
-// cancel+replace path, which RESET the queued bid's FIFO position on
-// every retry and prevented it from reaching the adapter for real
-// arbitration.
-//
-// F-39 keeps the queued startRequest in place when the new submission
-// is for the same session AND same initiator, retargeting only the
-// notify channel. Different-initiator submissions still fall back to
-// F-17's cancel+replace semantics.
-
 // TestF39_QueuedSameInitiator_CoalesceNoReplace verifies that a same-
 // session same-initiator duplicate does NOT remove the existing queue
 // entry. The queue length stays at 1; existing.cancelled stays false;
@@ -54,7 +40,7 @@ func TestF39_QueuedSameInitiator_CoalesceNoReplace(t *testing.T) {
 		t.Fatalf("after coalesced duplicate: pendingExternal len = %d; want 1 (no replace)", got)
 	}
 	if arb.pendingExternal[0] != originalReq {
-		t.Fatal("coalesce changed the underlying startRequest pointer; bid lost its FIFO position")
+		t.Fatal("coalesce changed the underlying startRequest pointer; bid identity changed")
 	}
 	if arb.pendingExternal[0].cancelled.Load() {
 		t.Fatal("coalesce wrongly set existing.cancelled — the bid is still valid, only the waiter changed")
@@ -201,50 +187,6 @@ func TestF39_QueuedSameInitiator_NewCallerEventuallyGetsGrant(t *testing.T) {
 		}
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("new caller did not receive grant result; F-39 notify-retarget broken")
-	}
-}
-
-// TestF39Fix_CoalesceRefreshesEnqueuedAt verifies the PR #634 P1 fix:
-// a same-session+same-initiator coalesce updates the existing
-// startRequest's enqueuedAt to "now", so drainStalePendingExternalLocked
-// does NOT prune a freshly-retried bid as stale. Without this fix, a
-// retry that arrives near the end of the PendingStartTTL window
-// inherits the original enqueuedAt and is killed by the stale-drain on
-// the next tryGrant.
-func TestF39Fix_CoalesceRefreshesEnqueuedAt(t *testing.T) {
-	arb := newArbitrator()
-
-	// Make `now` controllable so we can simulate the retry-late-in-TTL
-	// scenario deterministically.
-	current := time.Unix(1_700_000_000, 0)
-	arb.nowFn = func() time.Time { return current }
-
-	ch1 := arb.requestStart(1, 0x31)
-	go func() { <-ch1 }() // drain old cancel
-	time.Sleep(2 * time.Millisecond)
-
-	arb.mu.Lock()
-	originalEnqueuedAt := arb.pendingExternal[0].enqueuedAt
-	arb.mu.Unlock()
-
-	// Advance the clock substantially (close to PendingStartTTL).
-	current = current.Add(240 * time.Millisecond)
-
-	_ = arb.requestStart(1, 0x31)
-
-	arb.mu.Lock()
-	defer arb.mu.Unlock()
-
-	if got := len(arb.pendingExternal); got != 1 {
-		t.Fatalf("after coalesce: pendingExternal len=%d; want 1", got)
-	}
-	got := arb.pendingExternal[0].enqueuedAt
-	if !got.After(originalEnqueuedAt) {
-		t.Fatalf("F-39-fix: enqueuedAt was NOT refreshed on coalesce (got %v, original %v); stale-drain will kill the freshly-retried bid",
-			got, originalEnqueuedAt)
-	}
-	if !got.Equal(current) {
-		t.Fatalf("F-39-fix: enqueuedAt should equal current now() after coalesce: got %v want %v", got, current)
 	}
 }
 

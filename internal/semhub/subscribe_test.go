@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strconv"
 	"sync"
 	"testing"
@@ -134,54 +133,232 @@ func TestBlockedSubscriberReceivesOneCoalescedOverflow(t *testing.T) {
 }
 
 func TestCommitLatencyIsBoundedWithAPermanentlyBlockedSubscriber(t *testing.T) {
-	hub, err := newHub(Options{}, 16)
+	const queueLimit = 16
+	hub, err := newHub(Options{}, queueLimit)
 	if err != nil {
 		t.Fatal(err)
 	}
 	publishers := startPublishers(t, hub, 3, 1)
+	control, err := newHub(Options{}, queueLimit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	controlPublishers := startPublishers(t, control, 3, 1)
 	blocked := hub.Subscribe()
-	defer blocked.Close()
-	var mu sync.Mutex
-	durations := []time.Duration{}
-	var group sync.WaitGroup
-	for _, p := range publishers {
-		group.Add(1)
-		go func(p publisher) {
-			defer group.Done()
-			for at := int64(1); at <= 100; at++ {
-				tx, err := hub.Begin(p.handle, p.asset)
+
+	// The consumer cannot call Next until all commits and their observable
+	// effects have been proven. Time is only a diagnostic for a hung test.
+	const watchdog = 5 * time.Minute
+	watchdogCtx, stopWatchdog := context.WithTimeout(context.Background(), watchdog)
+	defer stopWatchdog()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	type commits struct {
+		blocked int
+		control int
+	}
+	results := make([]commits, len(publishers))
+	commitsProven := make(chan struct{})
+	subscriberReleased := make(chan struct{})
+	cleanupRequested := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseSubscriber := func() {
+		select {
+		case <-commitsProven:
+		default:
+			t.Error("subscriber released before commit completion was proven")
+		}
+		releaseOnce.Do(func() { close(subscriberReleased) })
+	}
+	consumerDone := make(chan struct{})
+	events := make(chan Event, queueLimit+1)
+	go func() {
+		defer close(consumerDone)
+		<-subscriberReleased
+		select {
+		case <-commitsProven:
+		case <-cleanupRequested:
+		default:
+			t.Error("consumer admitted before commit completion was proven")
+		}
+		for {
+			event, err := blocked.Next(ctx)
+			if err != nil {
+				return
+			}
+			// Retain the overflow and surviving queue for assertions; keep
+			// draining during failure cleanup to unblock regressed producers.
+			select {
+			case events <- event:
+			default:
+			}
+		}
+	}()
+	ready := make(chan struct{}, len(publishers))
+	start := make(chan struct{})
+	stop := make(chan struct{})
+	done := make(chan struct{}, len(publishers))
+	for index, p := range publishers {
+		go func() {
+			defer func() { done <- struct{}{} }()
+			ready <- struct{}{}
+			<-start
+			commit := func(h *Hub, p publisher, at int64, count *int) bool {
+				tx, err := h.Begin(p.handle, p.asset)
 				if err != nil {
 					t.Error(err)
-					return
+					return false
 				}
 				batch := testBatch(t, tx, p.family, at, at)
 				if _, _, err := tx.Apply(batch, testMono(at)); err != nil {
 					t.Error(err)
 					tx.Abort()
-					return
+					return false
 				}
-				started := time.Now()
 				_, err = tx.Commit(nil)
-				elapsed := time.Since(started)
 				if err != nil {
 					t.Error(err)
+					return false
+				}
+				(*count)++
+				return true
+			}
+			for at := int64(1); at <= 100; at++ {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				// Exercise the same bounded workload with and without fan-out.
+				if at%2 == 0 {
+					if !commit(control, controlPublishers[index], at, &results[index].control) {
+						return
+					}
+				}
+				if !commit(hub, p, at, &results[index].blocked) {
 					return
 				}
-				mu.Lock()
-				durations = append(durations, elapsed)
-				mu.Unlock()
+				if at%2 != 0 {
+					if !commit(control, controlPublishers[index], at, &results[index].control) {
+						return
+					}
+				}
 			}
-		}(p)
+		}()
 	}
-	group.Wait()
-	sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
-	p99 := durations[len(durations)*99/100]
-	bound := 5 * time.Millisecond
-	if raceEnabled {
-		bound *= 10
+	completed := 0
+	defer func() {
+		close(stop)
+		close(cleanupRequested)
+		releaseOnce.Do(func() { close(subscriberReleased) })
+		// A queue-space regression may hold the bus lock, so drain before
+		// Close, and join producers before canceling the consumer.
+		cleanup := time.NewTimer(30 * time.Second)
+		defer cleanup.Stop()
+	joinProducers:
+		for completed < len(publishers) {
+			select {
+			case <-done:
+				completed++
+			case <-cleanup.C:
+				t.Error("cleanup watchdog expired; producers did not join after subscriber release")
+				break joinProducers
+			}
+		}
+		cleanup.Stop()
+		cancel()
+		consumerCleanup := time.NewTimer(30 * time.Second)
+		defer consumerCleanup.Stop()
+		select {
+		case <-consumerDone:
+			if completed == len(publishers) {
+				blocked.Close()
+			}
+		case <-consumerCleanup.C:
+			t.Error("cleanup watchdog expired; consumer did not join after cancellation")
+		}
+	}()
+	// Always open the producer barrier, including an early readiness failure.
+	defer func() {
+		select {
+		case <-start:
+		default:
+			close(start)
+		}
+	}()
+	for range publishers {
+		select {
+		case <-ready:
+		case <-watchdogCtx.Done():
+			t.Fatal("hang watchdog expired waiting for producer readiness")
+		}
 	}
-	if len(durations) != 300 || p99 >= bound {
-		t.Fatalf("commits=%d p99=%s bound=%s", len(durations), p99, bound)
+	close(start)
+	for completed < len(publishers) {
+		select {
+		case <-done:
+			completed++
+		case <-watchdogCtx.Done():
+			t.Fatal("hang watchdog expired waiting for commits with subscriber held")
+		}
+	}
+
+	select {
+	case <-subscriberReleased:
+		t.Fatal("subscriber was released before all commit barriers completed")
+	default:
+	}
+	committed, controlCommitted := 0, 0
+	for _, result := range results {
+		if result.blocked != 100 || result.control != 100 {
+			t.Fatalf("worker commits=%d control commits=%d, want 100 each", result.blocked, result.control)
+		}
+		committed += result.blocked
+		controlCommitted += result.control
+	}
+	if committed != 300 || controlCommitted != 300 {
+		t.Fatalf("commits=%d control commits=%d, want 300 each before subscriber release", committed, controlCommitted)
+	}
+	blocked.mu.Lock()
+	queued, dropped := len(blocked.queue), blocked.dropped
+	closed := blocked.closed
+	blocked.mu.Unlock()
+	if closed || queued != queueLimit || dropped != uint64(300-queueLimit) {
+		t.Fatalf("undrained closed=%t queue=%d dropped=%d, want false, %d and %d", closed, queued, dropped, queueLimit, 300-queueLimit)
+	}
+	for index, p := range publishers {
+		for _, target := range []struct {
+			hub       *Hub
+			publisher publisher
+		}{{hub, p}, {control, controlPublishers[index]}} {
+			next, err := target.hub.NextSequence(target.publisher.asset, semreg.SourceID("source:"+p.family), semreg.SourceEpochID("epoch:"+p.family), 1)
+			if err != nil || next != "101" {
+				t.Fatalf("next sequence=%s err=%v, want 101 before subscriber release", next, err)
+			}
+		}
+	}
+	close(commitsProven)
+	releaseSubscriber()
+	latest := hub.Cursor().Seq
+	nextEvent := func() Event {
+		t.Helper()
+		select {
+		case event := <-events:
+			return event
+		case <-watchdogCtx.Done():
+			t.Fatal("hang watchdog expired waiting for released subscriber")
+			return Event{}
+		}
+	}
+	overflow := nextEvent()
+	if overflow.Kind != EventOverflow || overflow.Dropped != 284 || overflow.ResumeSeq != latest-15 {
+		t.Fatalf("overflow=%+v", overflow)
+	}
+	for want := latest - 15; want <= latest; want++ {
+		event := nextEvent()
+		if event.Kind != EventPublished || event.HubSeq != want {
+			t.Fatalf("event=%+v, want published HubSeq %d", event, want)
+		}
 	}
 }
 

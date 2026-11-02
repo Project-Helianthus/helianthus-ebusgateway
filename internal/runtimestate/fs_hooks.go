@@ -63,12 +63,5 @@ func isParentFsyncSwallowed(err error) bool {
 
 // isExdev reports whether err carries syscall.EXDEV (cross-device link).
 func isExdev(err error) bool {
-	if err == nil {
-		return false
-	}
-	var perr *os.PathError
-	if errors.As(err, &perr) {
-		err = perr.Err
-	}
-	return err == syscall.EXDEV
+	return errors.Is(err, syscall.EXDEV)
 }

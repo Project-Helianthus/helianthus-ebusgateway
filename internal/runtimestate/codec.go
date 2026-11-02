@@ -19,9 +19,10 @@ import (
 // fileDTO is the on-disk JSON shape (v1). DTOs are kept separate from the
 // public types so we can evolve the wire format without churning callers.
 type fileDTO struct {
-	SchemaVersion int      `json:"schema_version"`
-	Meta          metaDTO  `json:"meta"`
-	EBus          *ebusDTO `json:"ebus,omitempty"`
+	SchemaVersion  int             `json:"schema_version"`
+	Meta           metaDTO         `json:"meta"`
+	EBus           *ebusDTO        `json:"ebus,omitempty"`
+	RuntimeControl json.RawMessage `json:"runtime_control,omitempty"`
 }
 
 type metaDTO struct {
@@ -188,6 +189,15 @@ func dtoToState(dto fileDTO) (*State, error) {
 // order (struct-driven). Adds a trailing newline so editors don't fight us.
 func marshalState(s *State) ([]byte, error) {
 	dto := stateToDTO(s)
+	// The runtime_control namespace is encoded by its own codec. A namespace
+	// that failed to load is re-emitted verbatim so it round-trips.
+	if s.control != nil {
+		raw, err := s.control.encode()
+		if err != nil {
+			return nil, err
+		}
+		dto.RuntimeControl = raw
+	}
 	// Preserve the historical byte-for-byte current-v1 encoding when no
 	// future namespace was loaded. This keeps existing deterministic output
 	// and its snapshots stable.
@@ -220,8 +230,11 @@ func marshalState(s *State) ([]byte, error) {
 		}
 		root["ebus"] = ebus
 	}
+	if dto.RuntimeControl != nil {
+		root[ControlNamespaceName] = append(json.RawMessage(nil), dto.RuntimeControl...)
+	}
 	for name, raw := range s.opaqueNamespaces {
-		if name == "schema_version" || name == "meta" || name == "ebus" {
+		if name == "schema_version" || name == "meta" || name == "ebus" || name == ControlNamespaceName {
 			continue
 		}
 		root[name] = append(json.RawMessage(nil), raw...)
@@ -269,6 +282,12 @@ func unmarshalState(data []byte) (*State, []namespaceVersionWarning, error) {
 	}
 	state.opaqueNamespaces = make(map[string]json.RawMessage)
 	for name, raw := range rawNamespaces {
+		if name == ControlNamespaceName {
+			// Never dropped and never read as missing: an unsupported or
+			// malformed value is preserved verbatim and fails control closed.
+			state.control = decodeControlNamespace(raw)
+			continue
+		}
 		if name == "schema_version" || name == "meta" || name == "ebus" {
 			continue
 		}

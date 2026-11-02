@@ -8,6 +8,8 @@ const PORTAL_CATALOG_MAX_ACTIONS = 64;
 const PORTAL_CATALOG_MAX_QUARANTINES = 64;
 const PORTAL_CATALOG_MAX_TEXT = 512;
 const PORTAL_CATALOG_MAX_NODES = 512;
+const PORTAL_SEMANTIC_MAX_NODES = 512;
+const PORTAL_SEMANTIC_MAX_BYTES = 4 * 1024 * 1024;
 const PORTAL_CATALOG_MAX_EVIDENCE_PAGE_ROWS = 128;
 const PORTAL_CATALOG_MAX_QUALITY_CANDIDATES = 8;
 const PORTAL_CATALOG_TIMEOUT_MS = 5000;
@@ -72,13 +74,13 @@ function catalogResourceKey(row, resourceID) {
 function validCatalogSource(source) {
   return hasCatalogStrings(source, ["asset_id", "snapshot_id", "evaluation_digest"]) &&
     hasRequiredCatalogStrings(source, ["revision", "binding_id", "source_epoch"]) &&
-    Number.isInteger(source.driver_generation) && source.driver_generation >= 0 &&
+    typeof source.driver_generation === "string" && /^(0|[1-9][0-9]*)$/.test(source.driver_generation) &&
     isPlainRecord(source.snapshot) && isPlainRecord(source.evaluation) &&
     Array.isArray(source.selections) && isPlainRecord(source.projection);
 }
 
 function validatePortalCatalog(catalog) {
-  if (!hasCatalogStrings(catalog, ["contract", "catalog_revision", "catalog_digest", "evaluation_instant", "authorization_scope"]) ||
+  if (!hasCatalogStrings(catalog, ["contract", "catalog_revision", "catalog_digest", "evaluation_instant"]) ||
       catalog.contract !== PORTAL_CATALOG_CONTRACT ||
       !/^[a-f0-9]{64}$/.test(catalog.catalog_revision) || !/^[a-f0-9]{64}$/.test(catalog.catalog_digest) ||
       !Array.isArray(catalog.domains) || catalog.domains.length !== PORTAL_CATALOG_PACK_VERSIONS.size ||
@@ -410,7 +412,6 @@ function portalCatalogMetadataSummaries(catalog) {
     `Catalog revision: ${catalogBrief(catalog.catalog_revision, 96)}`,
     `Catalog digest: ${catalogBrief(catalog.catalog_digest, 96)}`,
     `Catalog evaluation instant: ${catalogBrief(catalog.evaluation_instant, 240)}`,
-    `Catalog authorization scope: ${catalogBrief(catalog.authorization_scope, 240)}`,
   ];
 }
 
@@ -834,6 +835,21 @@ function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
+// configRecoveryText shows the recovery schedule a driver in backoff reports:
+// when its next attempt is due, which attempt that is, and the last failure. It
+// is empty for a driver without a valid schedule.
+function configRecoveryText(recovery) {
+  const attempt = recovery?.attempt;
+  const due = recovery?.next_attempt_at;
+  if (!Number.isInteger(attempt) || attempt < 1 || typeof due !== "string" || due === "") return "";
+  const failureClass = recovery.last_failure_class;
+  const cause = recovery.last_failure_cause;
+  const failure = typeof failureClass === "string" && failureClass !== ""
+    ? `; Last failure: ${escapeHtml(failureClass)}${typeof cause === "string" && cause !== "" ? ` (${escapeHtml(cause)})` : ""}`
+    : "";
+  return `; Next attempt: ${escapeHtml(due)} (attempt ${attempt})${failure}`;
+}
+
 function formatFixed(value, digits = 1) {
   const number = Number(value);
   if (!Number.isFinite(number)) {
@@ -878,19 +894,219 @@ function formatYesNo(value) {
   return "n/a";
 }
 
-function formatSemanticTemperature(value) {
-  return value == null ? "unavailable" : formatTemperature(value);
+// Typed shared-read selection uses aliases to restore public SemReg member names.
+const PORTAL_SEMANTIC_QUERY = `query PortalSemanticContributions($assetIds: [ID!]!) { semanticSnapshot(assetIds: $assetIds) { assets { ...ReadAssetSnapshotRead } } }
+fragment ReadAssetSnapshotRead on AssetSnapshotRead { asset_id: assetId snapshot { ...ReadSemanticSnapshot } evaluation { ...ReadSemanticEvaluationView } projection { ...ReadSemanticProjectionReport } selections { ...ReadSemanticSelection } unavailable_reason: unavailableReason }
+fragment ReadSemanticSnapshot on SemanticSnapshot { contract snapshot_id: snapshotId asset_id: assetId revisions { ...ReadSemanticRevisionVector } evaluated_at: evaluatedAt { ...ReadSemanticTimePoint } evaluate_monotonic: evaluateMonotonic { ...ReadSemanticMonotonicPoint } sources { ...ReadSemanticSourceDescriptor } bindings { ...ReadSemanticNativeBinding } identity_links: identityLinks { ...ReadSemanticIdentityLink } facts { ...ReadSemanticFactEnvelope } retained_observations: retainedObservations { ...ReadSemanticRetainedObservationRecord } services { ...ReadSemanticServiceInstance } capabilities { ...ReadSemanticCapabilityInstance } fences { ...ReadSemanticGenerationFence } cursors { ...ReadSemanticPublicationCursor } }
+fragment ReadSemanticRevisionVector on SemanticRevisionVector { semantic identity facts services capabilities }
+fragment ReadSemanticTimePoint on SemanticTimePoint { unix_nanoseconds: unixNanoseconds clock_id: clockId uncertainty_ns: uncertaintyNs }
+fragment ReadSemanticMonotonicPoint on SemanticMonotonicPoint { clock_epoch_id: clockEpochId nanoseconds }
+fragment ReadSemanticSourceDescriptor on SemanticSourceDescriptor { source_id: sourceId source_epoch_id: sourceEpochId protocol_id: protocolId profile_id: profileId profile_version: profileVersion registry_evidence: registryEvidence { ...ReadSemanticEvidenceRef } started_at: startedAt { ...ReadSemanticTimePoint } state revision }
+fragment ReadSemanticEvidenceRef on SemanticEvidenceRef { owner kind digest contract access redaction }
+fragment ReadSemanticNativeBinding on SemanticNativeBinding { binding_id: bindingId asset_id: assetId source_id: sourceId source_epoch_id: sourceEpochId driver_generation: driverGeneration native_resource: nativeResource { ...ReadSemanticEvidenceRef } state revision }
+fragment ReadSemanticIdentityLink on SemanticIdentityLink { asset_id: assetId binding_id: bindingId state basis { ...ReadSemanticEvidenceRef } revision }
+fragment ReadSemanticFactEnvelope on SemanticFactEnvelope { asset_id: assetId key { ...ReadSemanticFactKey } candidates { ...ReadSemanticFactCandidate } conflicts { ...ReadSemanticConflict } revision }
+fragment ReadSemanticFactKey on SemanticFactKey { pack_id: packId pack_version: packVersion fact_id: factId dimensions { ...ReadSemanticDimension } }
+fragment ReadSemanticDimension on SemanticDimension { id value { ...ReadSemanticValue } }
+fragment ReadSemanticValue on SemanticValue { kind quantity { ...ReadSemanticQuantity } boolean text symbol { ...ReadSemanticSymbol } symbols { ...ReadSemanticSymbol } time { ...ReadSemanticTimePoint } }
+fragment ReadSemanticQuantity on SemanticQuantity { number { ...ReadSemanticDecimal } unit }
+fragment ReadSemanticDecimal on SemanticDecimal { coefficient exponent10 }
+fragment ReadSemanticSymbol on SemanticSymbol { namespace token known }
+fragment ReadSemanticFactCandidate on SemanticFactCandidate { candidate_id: candidateId key { ...ReadSemanticFactKey } value { ...ReadSemanticValue } quality { ...ReadSemanticQuality } times { ...ReadSemanticTimes } freshness_policy: freshnessPolicy { ...ReadSemanticFreshnessPolicy } binding_id: bindingId source_epoch_id: sourceEpochId driver_generation: driverGeneration origin { ...ReadSemanticOriginRef } causal { ...ReadSemanticCausalContext } evidence { ...ReadSemanticEvidenceRef } derivation { ...ReadSemanticDerivation } revision }
+fragment ReadSemanticQuality on SemanticQuality { assertion qualification promotion validity availability freshness reasons }
+fragment ReadSemanticTimes on SemanticTimes { phenomenon_at: phenomenonAt { ...ReadSemanticTimePoint } source_at: sourceAt { ...ReadSemanticTimePoint } received_at: receivedAt { ...ReadSemanticTimePoint } receipt_monotonic: receiptMonotonic { ...ReadSemanticMonotonicPoint } evaluated_at: evaluatedAt { ...ReadSemanticTimePoint } evaluate_monotonic: evaluateMonotonic { ...ReadSemanticMonotonicPoint } }
+fragment ReadSemanticFreshnessPolicy on SemanticFreshnessPolicy { policy_id: policyId version fresh_for_ns: freshForNs retain_for_ns: retainForNs max_wall_uncertainty_ns: maxWallUncertaintyNs }
+fragment ReadSemanticOriginRef on SemanticOriginRef { origin_id: originId kind source_id: sourceId source_epoch_id: sourceEpochId binding_id: bindingId evidence { ...ReadSemanticEvidenceRef } }
+fragment ReadSemanticCausalContext on SemanticCausalContext { origin { ...ReadSemanticOriginRef } correlation_id: correlationId parent_correlation_id: parentCorrelationId hop_count: hopCount max_hops: maxHops first_seen_at: firstSeenAt { ...ReadSemanticTimePoint } expires_at: expiresAt { ...ReadSemanticTimePoint } path }
+fragment ReadSemanticDerivation on SemanticDerivation { algorithm version inputs { ...ReadSemanticDerivationInput } evidence { ...ReadSemanticEvidenceRef } }
+fragment ReadSemanticDerivationInput on SemanticDerivationInput { candidate_id: candidateId candidate_revision: candidateRevision source_paths: sourcePaths { ...ReadSemanticSourcePathRef } }
+fragment ReadSemanticSourcePathRef on SemanticSourcePathRef { binding_id: bindingId source_id: sourceId source_epoch_id: sourceEpochId driver_generation: driverGeneration }
+fragment ReadSemanticConflict on SemanticConflict { conflict_id: conflictId kind candidates evidence { ...ReadSemanticEvidenceRef } state }
+fragment ReadSemanticRetainedObservationRecord on SemanticRetainedObservationRecord { contract candidate { ...ReadSemanticFactCandidate } removal }
+fragment ReadSemanticServiceInstance on SemanticServiceInstance { instance_id: instanceId asset_id: assetId definition { ...ReadSemanticDefinitionRef } binding_id: bindingId source_epoch_id: sourceEpochId driver_generation: driverGeneration qualification availability revision }
+fragment ReadSemanticDefinitionRef on SemanticDefinitionRef { pack { ...ReadSemanticPackRef } id version }
+fragment ReadSemanticPackRef on SemanticPackRef { id version }
+fragment ReadSemanticCapabilityInstance on SemanticCapabilityInstance { instance_id: instanceId asset_id: assetId service_instance: serviceInstance definition { ...ReadSemanticDefinitionRef } binding_id: bindingId source_epoch_id: sourceEpochId driver_generation: driverGeneration qualification availability constraints { ...ReadSemanticTypedField } activation_evidence: activationEvidence { ...ReadSemanticEvidenceRef } revision }
+fragment ReadSemanticTypedField on SemanticTypedField { id value { ...ReadSemanticValue } }
+fragment ReadSemanticGenerationFence on SemanticGenerationFence { source_id: sourceId source_epoch_id: sourceEpochId driver_generation: driverGeneration reason evidence { ...ReadSemanticEvidenceRef } revision }
+fragment ReadSemanticPublicationCursor on SemanticPublicationCursor { source_id: sourceId source_epoch_id: sourceEpochId driver_generation: driverGeneration last_sequence: lastSequence last_batch_digest: lastBatchDigest fenced }
+fragment ReadSemanticEvaluationView on SemanticEvaluationView { contract snapshot_id: snapshotId revisions { ...ReadSemanticRevisionVector } context { ...ReadSemanticEvaluationContext } facts { ...ReadSemanticEvaluatedFact } retained_observations: retainedObservations { ...ReadSemanticEvaluatedRetainedObservation } evaluation_digest: evaluationDigest }
+fragment ReadSemanticEvaluationContext on SemanticEvaluationContext { evaluated_at: evaluatedAt { ...ReadSemanticTimePoint } evaluate_monotonic: evaluateMonotonic { ...ReadSemanticMonotonicPoint } }
+fragment ReadSemanticEvaluatedFact on SemanticEvaluatedFact { candidate_id: candidateId candidate_revision: candidateRevision freshness effective_availability: effectiveAvailability }
+fragment ReadSemanticEvaluatedRetainedObservation on SemanticEvaluatedRetainedObservation { observation { ...ReadSemanticRetainedObservationRecord } freshness }
+fragment ReadSemanticProjectionReport on SemanticProjectionReport { contract manifest { ...ReadSemanticProjectionManifest } snapshot_id: snapshotId revisions { ...ReadSemanticRevisionVector } requested { ...ReadSemanticRequestedItem } dispositions { ...ReadSemanticProjectionDisposition } causal { ...ReadSemanticCausalContext } }
+fragment ReadSemanticProjectionManifest on SemanticProjectionManifest { target_id: targetId target_version: targetVersion kernel_version: kernelVersion pack_versions: packVersions { ...ReadSemanticPackRef } mapping_revision: mappingRevision }
+fragment ReadSemanticRequestedItem on SemanticRequestedItem { item_id: itemId kind }
+fragment ReadSemanticProjectionDisposition on SemanticProjectionDisposition { kind item_id: itemId outcome source_keys: sourceKeys { ...ReadSemanticFactKey } loss { ...ReadSemanticLossDetail } reason }
+fragment ReadSemanticLossDetail on SemanticLossDetail { kind source_items: sourceItems description reversible }
+fragment ReadSemanticSelection on SemanticSelection { contract snapshot_id: snapshotId revisions { ...ReadSemanticRevisionVector } evaluation_digest: evaluationDigest context { ...ReadSemanticEvaluationContext } key { ...ReadSemanticFactKey } policy_id: policyId policy_version: policyVersion selected_candidate: selectedCandidate candidate_revision: candidateRevision presentation_only: presentationOnly }`;
+
+function semanticEndpoint(value) {
+  return typeof value === "string" && /^\/(?!\/)/.test(value) &&
+    !/[\\%?#\s]/.test(value) && !value.split("/").some((part) => part === "." || part === "..") && !value.includes("//");
 }
 
-function formatSemanticToggle(value) {
-  return value == null ? "unavailable" : formatToggle(value);
+// Bootstrap endpoints are host-composed, already external same-origin paths
+// (served prefix included). Use them verbatim; an absent or malformed value
+// leaves the feature unavailable instead of falling back to a root path that a
+// path-prefix proxy such as Home Assistant Ingress cannot route.
+function bootstrapEndpoint(value) {
+  return semanticEndpoint(value) ? value : "";
 }
 
-function formatSemanticText(value) {
-  if (value == null) {
-    return "unavailable";
+function semanticKey(value) {
+  if (Array.isArray(value)) return `[${value.map(semanticKey).join(",")}]`;
+  if (isPlainRecord(value)) return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${semanticKey(value[key])}`).join(",")}}`;
+  return JSON.stringify(value);
+}
+
+function semanticSourceMatches(resource, asset) {
+  const source = resource.source, snapshot = asset?.snapshot;
+  const revisions = ["semantic", "identity", "facts", "services", "capabilities"];
+  if (!snapshot || asset.asset_id !== source.asset_id || snapshot.asset_id !== source.asset_id ||
+      snapshot.snapshot_id !== source.snapshot_id || !revisions.every((key) =>
+        typeof snapshot.revisions?.[key] === "string" && snapshot.revisions[key] === source.snapshot.revisions?.[key])) return false;
+  if (![asset.evaluation, asset.projection, ...asset.selections].every((record) =>
+    record?.snapshot_id === snapshot.snapshot_id && semanticKey(record.revisions) === semanticKey(snapshot.revisions))) return false;
+  if (!asset.selections.every((selection) => selection.evaluation_digest === asset.evaluation.evaluation_digest)) return false;
+  return snapshot.bindings?.some((binding) => binding.asset_id === asset.asset_id && binding.state === "current" &&
+    binding.binding_id === source.binding_id && binding.source_epoch_id === source.source_epoch &&
+    typeof binding.driver_generation === "string" && binding.driver_generation === source.driver_generation);
+}
+
+function formatContributionValue(value) {
+  if (!value) return "unknown";
+  switch (value.kind) {
+    case "boolean": return typeof value.boolean === "boolean" ? String(value.boolean) : "unknown";
+    case "text": return typeof value.text === "string" ? (value.text === "" ? "<empty>" : value.text) : "unknown";
+    case "quantity": {
+      const number = value.quantity?.number;
+      // Keep the exact decimal coefficient and exponent; never pass through Number.
+      return number && /^-?\d+$/.test(number.coefficient) && Number.isInteger(number.exponent10)
+        ? `${number.coefficient}e${number.exponent10} ${value.quantity.unit}` : "unknown";
+    }
+    case "symbol": return value.symbol ? `${value.symbol.namespace}:${value.symbol.token} (known=${value.symbol.known})` : "unknown";
+    case "symbols": return Array.isArray(value.symbols) ? value.symbols.map((symbol) => `${symbol.namespace}:${symbol.token} (known=${symbol.known})`).join(", ") : "unknown";
+    case "time": return value.time ? `${value.time.unix_nanoseconds} (${value.time.clock_id})` : "unknown";
+    default: return "unknown";
   }
-  return value === "" ? "<empty>" : String(value);
+}
+
+function semanticContributionCards(catalog, assets) {
+  if (!Array.isArray(catalog.descriptors) || catalog.descriptors.length > PORTAL_CATALOG_MAX_CONTRIBUTIONS) throw new Error("invalid descriptors");
+  const descriptors = new Map();
+  for (const descriptor of catalog.descriptors) {
+    const key = catalogContributionKey(descriptor);
+    if (descriptors.has(key) || descriptor.descriptor_version !== "helianthus.gateway.portal-descriptor/v1" ||
+        !catalog.contributions.some((row) => catalogContributionKey(row) === key && row.digest === descriptor.digest) ||
+        ![descriptor.groups, descriptor.fields, descriptor.views, descriptor.diagnostics].every(Array.isArray)) throw new Error("invalid descriptor identity");
+    descriptors.set(key, descriptor);
+  }
+  const byAsset = new Map(assets.map((asset) => [asset.asset_id, asset]));
+  const order = (a, b) => a.order - b.order || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  const cards = [];
+  let nodes = 0;
+  const reserveNodes = (count) => {
+    nodes += count;
+    if (nodes > PORTAL_SEMANTIC_MAX_NODES) throw new Error("semantic render node budget exceeded");
+  };
+  for (const resource of catalog.resources) {
+    const descriptor = descriptors.get(catalogContributionKey(resource));
+    if (!descriptor) throw new Error("missing admitted descriptor");
+    const asset = byAsset.get(resource.source.asset_id);
+    const identity = `${descriptor.driver_id}/${descriptor.manifest_id}@${descriptor.manifest_version}`;
+    // Plan the entire expansion before formatting values or constructing HTML.
+    reserveNodes(3); // Card, heading and heading text.
+    const rows = [];
+    const addRow = (render) => {
+      reserveNodes(2); // Paragraph and text, including empty rows conservatively.
+      rows.push(render);
+    };
+    if (asset.unavailable_reason) addRow(() => `unavailable: ${asset.unavailable_reason}`);
+    else {
+      const groups = descriptor.groups.filter((group) => group.resource_context === resource.id).sort(order);
+      const views = groups.flatMap((group) => descriptor.views.filter((view) => view.group === group.id).sort(order));
+      for (const view of views) {
+        if (!["summary", "field_table", "state_strip"].includes(view.renderer)) {
+          addRow(() => "unsupported contribution view");
+          continue;
+        }
+        addRow(() => view.label?.default || view.id);
+        for (const field of descriptor.fields.filter((field) => view.field_ids.includes(field.id) &&
+          field.ref.pack.id === resource.domain && field.service_ref?.pack.id === resource.domain &&
+          field.capability_ref?.pack.id === resource.domain && field.service_ref.id === resource.service_id &&
+          field.capability_ref.id === resource.capability_id).sort(order)) {
+          const prefix = field.label?.default || field.id;
+          const facts = asset.snapshot.facts.filter((fact) => fact.key.pack_id === field.ref.pack.id && fact.key.pack_version === field.ref.pack.version && fact.key.fact_id === field.ref.id);
+          if (!facts.length) {
+            addRow(() => `${prefix}: unknown`);
+            const dispositions = asset.projection.dispositions.filter((entry) => entry.kind === "fact" && entry.item_id === field.ref.id &&
+              (!entry.source_keys.length || entry.source_keys.some((key) => key.pack_id === field.ref.pack.id && key.pack_version === field.ref.pack.version && key.fact_id === field.ref.id)));
+            for (const disposition of dispositions) addRow(() => `Projection: ${disposition.outcome}; reason=${disposition.reason || "none"}; loss=${semanticKey(disposition.loss)}`);
+            if (!dispositions.length) addRow(() => "Projection: unknown");
+          }
+          for (const fact of facts) {
+            const key = semanticKey(fact.key);
+            const selections = asset.selections.filter((selection) => semanticKey(selection.key) === key);
+            const candidates = fact.candidates.filter((candidate) => candidate.binding_id === resource.source.binding_id &&
+              candidate.source_epoch_id === resource.source.source_epoch && candidate.driver_generation === resource.source.driver_generation);
+            const distinctPolicies = new Set(selections.map((selection) => semanticKey([selection.policy_id, selection.policy_version]))).size === selections.length;
+            // Distinct policies may agree on one candidate; disagreement stays withheld.
+            const selected = selections.length ? candidates.filter((candidate) => selections.every((selection) =>
+              candidate.candidate_id === selection.selected_candidate && candidate.revision === selection.candidate_revision)) : candidates;
+            const candidate = distinctPolicies && selected.length === 1 && semanticKey(selected[0].key) === key ? selected[0] : null;
+            const evaluation = candidate && asset.evaluation.facts.find((entry) => entry.candidate_id === candidate.candidate_id && entry.candidate_revision === candidate.revision);
+            const dispositions = asset.projection.dispositions.filter((entry) => entry.kind === "fact" && entry.item_id === field.ref.id && entry.source_keys.some((source) => semanticKey(source) === key));
+            // A fact-level projection may be exact because of an eligible sibling;
+            // a presentation selection cannot promote its own audit-only candidate.
+            const eligible = candidate?.quality?.qualification === "qualified" && candidate.quality.promotion === "promoted" && ["good", "suspect"].includes(candidate.quality.validity);
+            const readable = eligible && dispositions.length === 1 && ["exact", "transformed"].includes(dispositions[0].outcome) && evaluation && ["available", "degraded"].includes(evaluation.effective_availability) && ["fresh", "stale"].includes(evaluation.freshness);
+            addRow(() => `${prefix}: ${readable ? formatContributionValue(candidate?.value) : "withheld"}; key=${key}; freshness=${evaluation?.freshness || "unknown"}; availability=${evaluation?.effective_availability || "unknown"}${evaluation?.freshness === "stale" ? "; historical" : ""}`);
+            if (candidate) {
+              addRow(() => `Quality: ${semanticKey(candidate.quality)}; candidate=${candidate.candidate_id}; revision=${candidate.revision}`);
+              const { binding_id, source_epoch_id, driver_generation, origin, causal, times, derivation } = candidate;
+              addRow(() => `Provenance: ${semanticKey({ binding_id, source_epoch_id, driver_generation, origin, causal, times, derivation })}`);
+              addRow(() => `Evidence: ${semanticKey(candidate.evidence || [])}`);
+            }
+            addRow(() => `Conflicts: ${semanticKey(fact.conflicts || [])}`);
+            for (const disposition of dispositions) addRow(() => `Projection: ${disposition.outcome}; reason=${disposition.reason || "none"}; loss=${semanticKey(disposition.loss)}`);
+            if (!dispositions.length) addRow(() => "Projection: unknown");
+          }
+        }
+        for (const diagnostic of [...descriptor.diagnostics].filter((row) => view.diagnostic_ids.includes(row.id)).sort(order)) addRow(() => `Diagnostic: ${diagnostic.label.default}; kind=${diagnostic.kind}; member=${diagnostic.member_id}`);
+      }
+      if (asset.snapshot.retained_observations?.length) addRow(() => "Retained observations are historical; inspect the native evidence and catalog details.");
+    }
+    cards.push({ identity, resourceID: resource.id, rows });
+  }
+  // Bound the complete UTF-8 HTML, including escaping, before allocating each
+  // escaped row. Stop formatting immediately on overflow; never publish a prefix.
+  const html = [], encoder = new TextEncoder();
+  let bytes = 0;
+  const append = (value, escape = false) => {
+    const text = String(value);
+    if (text.length > PORTAL_SEMANTIC_MAX_BYTES - bytes) throw new Error("semantic render byte budget exceeded");
+    let size = encoder.encode(text).byteLength;
+    if (escape) {
+      const expansion = { "&": 4, "<": 3, ">": 3, '"': 5, "'": 4 };
+      for (const [character] of text.matchAll(/[&<>"']/g)) size += expansion[character];
+    }
+    bytes += size;
+    if (bytes > PORTAL_SEMANTIC_MAX_BYTES) throw new Error("semantic render byte budget exceeded");
+    html.push(escape ? escapeHtml(text) : text);
+  };
+  for (const { identity, resourceID, rows } of cards) {
+    append('<li class="portal-catalog-resource"><strong>');
+    append(`${identity} — ${resourceID}`, true);
+    append("</strong>");
+    for (const render of rows) {
+      append("<p>");
+      append(render(), true);
+      append("</p>");
+    }
+    append("</li>");
+  }
+  return html.join("") || "<li>No admitted semantic contributions.</li>";
 }
 
 function formatInteger(value) {
@@ -993,6 +1209,9 @@ class PortalShell extends HTMLElement {
   }
 
   disconnectedCallback() {
+    this._configAbort?.abort();
+    this._configRequest = (this._configRequest || 0) + 1;
+    this._configBusy = false;
     this.endBootstrapLifecycle();
 	this._invalidateVaillantB503CapabilityRequests();
 	this._stopVaillantB503LiveMonitorSessionPolling();
@@ -1051,6 +1270,7 @@ class PortalShell extends HTMLElement {
   }
 
   beginBootstrapLifecycle() {
+    this._portalRead = undefined;
     if (this.bootstrapLifecycleAbort) {
       this.bootstrapLifecycleAbort.abort();
     }
@@ -1100,6 +1320,18 @@ class PortalShell extends HTMLElement {
   }
 
   bindEvents() {
+    this.renderConfiguration();
+    this.querySelector('[data-role="config-form"]')?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      void this.requestConfiguration(true);
+    });
+    this.querySelector('[data-role="config-reload"]')?.addEventListener("click", () => {
+      void this.requestConfiguration(false);
+    });
+    this.querySelector('[data-role="semantic-refresh"]')?.addEventListener("click", () => {
+      const list = this.querySelector('[data-role="semantic-list"]');
+      if (list) void this.loadSemanticPreview(list);
+    });
     const toggle = this.querySelector('[data-role="theme-toggle"]');
     const search = this.querySelector('[data-role="search-input"]');
     const correlation = this.querySelector('[data-role="timeline-correlation"]');
@@ -1378,6 +1610,9 @@ class PortalShell extends HTMLElement {
 	  this.clearEEBusSPINETree();
 	}
     this._activeSectionTarget = targetID;
+    if (targetID === "section-configuration" && !this._configView && !this._configBusy) {
+      void this.requestConfiguration(false);
+    }
 
     const sectionMap = {
       "section-registry": ["section-registry"],
@@ -1401,7 +1636,9 @@ class PortalShell extends HTMLElement {
       section.style.display = visible.has(id) ? "" : "none";
     });
     this.querySelectorAll("[data-nav-target]").forEach((btn) => {
-      btn.classList.toggle("active", btn.getAttribute("data-nav-target") === targetID);
+      const active = btn.getAttribute("data-nav-target") === targetID;
+      btn.classList.toggle("active", active);
+      btn.setAttribute("aria-current", active ? "page" : "false");
     });
     // First time the L7 Catalog section is activated, kick off the
     // services list fetch so the panel isn't empty. Subsequent clicks
@@ -1436,6 +1673,93 @@ class PortalShell extends HTMLElement {
 	if (targetID === "section-eebus" && this._capabilityEEBusAdmin) {
 	  void this.refreshEEBusStatus();
 	}
+  }
+
+  configurationOptions(record = this._configDraft) {
+    if (!record) return [];
+    return [
+      ...record.drivers.map((driver, index) => ({ label: `Driver ${driver.driver_id}`, value: driver.enabled, state: this._configView?.state?.drivers?.find((row) => row.driver_id === driver.driver_id), set: (value) => { record.drivers[index].enabled = value; } })),
+      ...["graphql", "mcp"].map((key) => ({ label: `${key === "graphql" ? "GraphQL" : "MCP"} sharing`, value: record.sharing[key], state: this._configView?.state?.sharing?.[key], set: (value) => { record.sharing[key] = value; } })),
+      { label: "Adapter proxy", value: record.adapter_proxy, state: this._configView?.state?.adapter_proxy, set: (value) => { record.adapter_proxy = value; } },
+      { label: "Matter output binding", value: record.output_bindings.matter, state: this._configView?.state?.output_bindings?.matter, set: (value) => { record.output_bindings.matter = value; } },
+    ];
+  }
+
+  renderConfiguration() {
+    const fields = this.querySelector('[data-role="config-fields"]');
+    if (!fields) return;
+    fields.innerHTML = this.configurationOptions().map((option, index) => {
+      const state = option.state;
+      const unavailable = this._configView?.historical || !state || state.status === "withheld" || state.status === "error" || state.reason === "evidence_unavailable";
+      const effective = unavailable ? "Unavailable" : state.effective === true ? "Enabled" : state.effective === false ? "Disabled" : "Unknown";
+      return `<p><label><input type="checkbox" data-config-index="${index}" ${option.value ? "checked" : ""} ${this._configBusy ? "disabled" : ""}> ${escapeHtml(option.label)} desired selection</label><br><span>Saved desired: ${state?.desired === true ? "Selected" : state?.desired === false ? "Unselected" : "Unknown"}; Effective: ${effective}; Status: ${escapeHtml(state?.status || "unknown")}; Reason: ${escapeHtml(state?.reason || "unavailable")}${configRecoveryText(state?.recovery)}</span></p>`;
+    }).join("");
+    fields.querySelectorAll("[data-config-index]").forEach((input) => {
+      input.addEventListener("change", () => {
+        this.configurationOptions()[Number(input.getAttribute("data-config-index"))]?.set(input.checked);
+      });
+    });
+    const save = this.querySelector('[data-role="config-save"]');
+    const reload = this.querySelector('[data-role="config-reload"]');
+    if (save) save.disabled = this._configBusy || !this._configDraft;
+    if (reload) reload.disabled = this._configBusy;
+  }
+
+  async requestConfiguration(save) {
+    if (this._configBusy || (save && !this._configDraft)) return false;
+    const request = (this._configRequest || 0) + 1;
+    this._configRequest = request;
+    const controller = new AbortController();
+    this._configAbort = controller;
+    this._configBusy = true;
+    const notice = this.querySelector('[data-role="config-notice"]');
+    if (notice) notice.textContent = save ? "Saving desired choices; effective state awaits API readback." : "Loading saved configuration.";
+    this.renderConfiguration();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    try {
+      const response = await fetch("api/v1/config", {
+        method: save ? "PUT" : "GET", signal: controller.signal,
+        ...(save ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(this._configDraft) } : {}),
+      });
+      const view = await response.json();
+      if (request !== this._configRequest) return false;
+      if (controller.signal.aborted) throw new Error("request timed out");
+      let problem;
+      if (!response.ok || view.error) {
+        const code = typeof view.error?.code === "string" ? view.error.code : "request_failed";
+        const step = typeof view.error?.next_step === "string" ? view.error.next_step : "retry or reload saved choices";
+        problem = new Error(`${code}: ${step}`);
+        if (view.historical !== true) throw problem;
+      }
+      const record = view.desired;
+      if (!record || record.format !== "helianthus.portal-config/v1" || typeof record.revision !== "string" ||
+          !Array.isArray(record.drivers) || record.drivers.some((row) => typeof row.driver_id !== "string" || typeof row.enabled !== "boolean") ||
+          typeof record.sharing?.graphql !== "boolean" || typeof record.sharing?.mcp !== "boolean" ||
+          typeof record.adapter_proxy !== "boolean" || typeof record.output_bindings?.matter !== "boolean") {
+        throw new Error("Configuration readback unavailable");
+      }
+      this._configView = view;
+      // Only the closed desired record is sent back; host binding evidence is never browser input.
+      // Historical readback refreshes saved choices without discarding rejected edits.
+      if (!view.historical || !this._configDraft) this._configDraft = { format: record.format, revision: record.revision,
+        drivers: record.drivers.map(({ driver_id, enabled }) => ({ driver_id, enabled })),
+        sharing: { graphql: record.sharing.graphql, mcp: record.sharing.mcp },
+        adapter_proxy: record.adapter_proxy, output_bindings: { matter: record.output_bindings.matter } };
+      if (problem) throw problem;
+      if (view.historical) throw new Error("Configuration readback unavailable");
+      if (notice) notice.textContent = save ? "Desired choices saved. Effective state is reported separately by the API." : "Saved choices loaded. Selections express desired configuration only.";
+      return true;
+    } catch (error) {
+      if (request === this._configRequest && this._configView) this._configView = { ...this._configView, historical: true };
+      if (request === this._configRequest && notice) notice.textContent = `Configuration problem: ${controller.signal.aborted ? "request timed out" : error.message}. Your input is retained. Reload saved choices to discard edits.`;
+      return false;
+    } finally {
+      clearTimeout(timer);
+      if (request === this._configRequest) {
+        this._configBusy = false;
+        this.renderConfiguration();
+      }
+    }
   }
 
   async loadStatus(lifecycleToken = this.bootstrapLifecycleToken, lifecycleAbort = this.bootstrapLifecycleAbort) {
@@ -1473,15 +1797,13 @@ class PortalShell extends HTMLElement {
         statusEl.textContent = `Gateway ${health.status} (${gatewayVersion})`;
       }
       const capabilities = bootstrap.capabilities || {};
-      const gqlEndpoint = bootstrap && bootstrap.endpoints && typeof bootstrap.endpoints.graphql === "string"
-        ? bootstrap.endpoints.graphql
-        : "/graphql";
+      const gqlEndpoint = bootstrapEndpoint(bootstrap?.endpoints?.graphql);
       this._graphqlEndpoint = gqlEndpoint;
-	  this._portalCatalogEndpoint = typeof bootstrap?.endpoints?.portal_catalog === "string"
-	    ? bootstrap.endpoints.portal_catalog
-	    : "";
+      this._semanticGraphqlEndpoint = gqlEndpoint;
+      this._portalRead = bootstrap.portal_read;
+	  this._portalCatalogEndpoint = bootstrapEndpoint(bootstrap?.endpoints?.portal_catalog);
 	  this._eebusAdminPath = capabilities.eebus_admin && typeof bootstrap.endpoints?.eebus_admin === "string"
-	    ? bootstrap.endpoints.eebus_admin.replace(/\/$/, "")
+	    ? bootstrapEndpoint(bootstrap.endpoints.eebus_admin.replace(/\/$/, ""))
 	    : "";
 	  this.applyCapabilityState(capabilities);
 	  this.setNavState("portal-catalog", Boolean(this._portalCatalogEndpoint));
@@ -1510,7 +1832,8 @@ class PortalShell extends HTMLElement {
       if (capabilities.registry && listEl) {
         await this.loadRegistryPreview(listEl, lifecycleToken, lifecycleAbort);
       }
-      if (capabilities.semantic && semanticEl) {
+      this.setNavState("semantic", Boolean(this._portalCatalogEndpoint) || capabilities.semantic_pv);
+      if (semanticEl) {
         await this.loadSemanticPreview(semanticEl, lifecycleToken, lifecycleAbort);
       }
       if (busObservabilityEl) {
@@ -1735,6 +2058,7 @@ class PortalShell extends HTMLElement {
       const button = append(parent, "button", label, "button portal-catalog-page");
       if (!button) return null;
       button.setAttribute("type", "button");
+      button.setAttribute("data-catalog-control", label);
       button.disabled = disabled;
       button.addEventListener?.("click", handler);
       return button;
@@ -1827,7 +2151,15 @@ class PortalShell extends HTMLElement {
       }
     }
     if (nodes > PORTAL_CATALOG_MAX_NODES) return false;
+    const focused = document.activeElement;
+    const restoreFocus = focused && body.contains?.(focused);
+    const control = restoreFocus ? focused.getAttribute("data-catalog-control") : null;
     body.replaceChildren(root);
+    if (restoreFocus) {
+      const replacement = control ? body.querySelector(`[data-catalog-control="${control}"]`) : null;
+      const target = replacement && !replacement.disabled ? replacement : this.querySelector('[data-role="portal-catalog-refresh"]');
+      target?.focus();
+    }
     return true;
   }
 
@@ -1846,12 +2178,14 @@ class PortalShell extends HTMLElement {
       this._renderPortalCatalogUnavailable(body, message);
     };
     if (typeof endpoint !== "string" || endpoint.length === 0 || !body) {
+      body?.setAttribute("aria-busy", "false");
       showFailure("Catalog unavailable. No admitted catalog is currently available.");
       return false;
     }
     this._portalCatalogRequestAbort?.abort();
     const requestAbort = beginPortalCatalogRequestAbort(lifecycleAbort);
     this._portalCatalogRequestAbort = requestAbort;
+    body.setAttribute("aria-busy", "true");
     try {
       const response = await fetch(endpoint, {
         method: "POST",
@@ -1878,7 +2212,10 @@ class PortalShell extends HTMLElement {
       return false;
     } finally {
       requestAbort.cleanup();
-      if (this._portalCatalogRequestAbort === requestAbort) this._portalCatalogRequestAbort = undefined;
+      if (this._portalCatalogRequestAbort === requestAbort) {
+        this._portalCatalogRequestAbort = undefined;
+        body.setAttribute("aria-busy", "false");
+      }
     }
   }
 
@@ -2577,124 +2914,79 @@ class PortalShell extends HTMLElement {
   }
 
   async loadSemanticPreview(listEl, lifecycleToken = this.bootstrapLifecycleToken, lifecycleAbort = this.bootstrapLifecycleAbort) {
-    const isActive = () => this.isActiveBootstrapLifecycle(lifecycleToken, lifecycleAbort);
+    const generation = (this._semanticRequestGeneration || 0) + 1;
+    this._semanticRequestGeneration = generation;
+    const isActive = () => this.isActiveBootstrapLifecycle(lifecycleToken, lifecycleAbort) && this._semanticRequestGeneration === generation;
+    const notice = this.querySelector('[data-role="semantic-notice"]');
+    const announce = (text) => { if (notice) notice.textContent = text; };
+    this._semanticRequestAbort?.abort();
+    const request = beginPortalCatalogRequestAbort(lifecycleAbort);
+    this._semanticRequestAbort = request;
+    listEl.setAttribute?.("aria-busy", "true");
+    announce(`Loading semantic contributions.${this._semanticHasValid ? " Showing historical last valid contributions." : ""} Live updates unavailable; use Refresh.`);
+    let conflict = false;
     try {
-      const response = await fetch("api/v1/semantic/snapshot");
-      const payload = await response.json();
-      if (!isActive()) {
-        return false;
-      }
-      const zones = Array.isArray(payload.zones) ? payload.zones : [];
-      const circuits = Array.isArray(payload.circuits) ? payload.circuits : [];
-      const radioDevices = Array.isArray(payload.radio_devices) ? payload.radio_devices : [];
-      const cylinders = Array.isArray(payload.cylinders) ? payload.cylinders : [];
-      const dhw = payload.dhw;
-      const rows = [];
-      rows.push(`<li><strong>Zones detected:</strong> ${zones.length}</li>`);
-      if (zones.length === 0) {
-        rows.push("<li>No semantic zones available.</li>");
-      } else {
-        zones.forEach((zone) => {
-          const state = zone.state || {};
-          const config = zone.config || {};
-          const name = escapeHtml(zone.name || zone.id || "zone");
-          const mode = escapeHtml(formatSemanticText(config.operating_mode));
-          const preset = escapeHtml(config.preset || "n/a");
-          const current = formatSemanticTemperature(state.current_temp_c);
-          const target = formatSemanticTemperature(config.target_temp_c);
-          const demand = formatPercent(state.heating_demand_pct);
-          const hvacAction = escapeHtml(state.hvac_action || "n/a");
-          const circuitType = escapeHtml(config.circuit_type || "n/a");
-          const changeable = escapeHtml(formatSemanticToggle(config.operation_mode_changeable));
-          const source = escapeHtml(formatSemanticText(config.source_label));
-          rows.push(
-            `<li><strong>${name}</strong> <span class="muted-inline">mode=${mode} mode_changeable=${changeable} source=${source} preset=${preset} current=${escapeHtml(current)} target=${escapeHtml(target)} demand=${escapeHtml(demand)} hvac=${hvacAction} circuit=${circuitType}</span></li>`,
-          );
+      const unavailable = this._portalRead?.unavailable_operations;
+      if (!Array.isArray(unavailable) || this._portalRead.snapshot_operation !== "semanticSnapshot" ||
+          unavailable.includes("semanticSnapshot") || unavailable.includes("PortalCatalogV1") ||
+          !semanticEndpoint(this._portalCatalogEndpoint) || !semanticEndpoint(this._semanticGraphqlEndpoint)) throw new Error("operation unavailable");
+      const read = async (endpoint, body) => {
+        const response = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: request.controller.signal });
+        if (!response.ok) throw new Error("read failed");
+        const payload = await response.json();
+        if (payload.errors) {
+          conflict = conflict || (Array.isArray(payload.errors) && payload.errors.some((error) =>
+            ["CONFLICT", "RESOURCE_EXHAUSTED"].includes(error?.extensions?.code)));
+          throw new Error("GraphQL read failed");
+        }
+        if (new TextEncoder().encode(JSON.stringify(payload)).length > 4 * 1024 * 1024) { conflict = true; throw new Error("read limit"); }
+        return payload.data;
+      };
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const catalog = (await read(this._portalCatalogEndpoint, { operationName: "PortalCatalogV1", variables: {} }))?.portalCatalogV1;
+        if (!isActive()) return false;
+        if (!validatePortalCatalog(catalog)) throw new Error("invalid catalog");
+        const ids = [...new Set(catalog.resources.map((resource) => resource.source.asset_id))];
+        if (ids.length > 32) { conflict = true; throw new Error("asset bound"); }
+        const assets = ids.length ? (await read(this._semanticGraphqlEndpoint, { operationName: "PortalSemanticContributions", query: PORTAL_SEMANTIC_QUERY, variables: { assetIds: ids } }))?.semanticSnapshot?.assets : [];
+        if (!isActive()) return false;
+        if (!Array.isArray(assets) || assets.length !== ids.length || new Set(assets.map((asset) => asset?.asset_id)).size !== ids.length || assets.some((asset) => !ids.includes(asset?.asset_id) || !Array.isArray(asset.selections))) throw new Error("invalid shared read");
+        for (const asset of assets) {
+          if (asset.unavailable_reason) {
+            if (!["asset_unknown", "snapshot_unavailable", "source_unavailable", "publication_withheld"].some((reason) => asset.unavailable_reason === `semantic.read.reason.${reason}`) ||
+                asset.snapshot != null || asset.evaluation != null || asset.projection != null || asset.selections.length) throw new Error("invalid unavailable asset");
+          } else if (!Array.isArray(asset.snapshot?.facts) || !Array.isArray(asset.evaluation?.facts) || !Array.isArray(asset.projection?.dispositions)) throw new Error("incomplete shared read");
+        }
+        const mismatch = catalog.resources.some((resource) => {
+          const asset = assets.find((asset) => asset.asset_id === resource.source.asset_id);
+          return !asset.unavailable_reason && !semanticSourceMatches(resource, asset);
         });
+        if (mismatch) {
+          announce(`Inconsistent semantic source; refreshing.${this._semanticHasValid ? " Showing historical last valid contributions." : ""}`);
+          continue;
+        }
+        const cards = semanticContributionCards(catalog, assets);
+        listEl.innerHTML = cards;
+        this._semanticHasValid = true;
+        announce("Semantic contributions loaded. Live updates unavailable; use Refresh.");
+        return true;
       }
-      if (dhw) {
-        const dhwState = dhw.state || {};
-        const dhwConfig = dhw.config || {};
-        const dhwPreset = dhwConfig.preset ? ` preset=${escapeHtml(dhwConfig.preset)}` : "";
-        const dhwDemand = dhwState.heating_demand_pct != null
-          ? ` demand=${escapeHtml(formatPercent(dhwState.heating_demand_pct))}`
-          : "";
-        const specialFunction = dhwState.special_function
-          ? ` special=${escapeHtml(dhwState.special_function)}`
-          : "";
-        rows.push(`<li><strong>DHW</strong> <span class="muted-inline">mode=${escapeHtml(formatSemanticText(dhwConfig.operating_mode))} mode_changeable=${escapeHtml(formatSemanticToggle(dhwConfig.operation_mode_changeable))} current=${escapeHtml(formatSemanticTemperature(dhwState.current_temp_c))} target=${escapeHtml(formatSemanticTemperature(dhwConfig.target_temp_c))} overrun=${escapeHtml(formatSemanticToggle(dhwState.overrun_active))}${dhwPreset}${dhwDemand}${specialFunction}</span></li>`);
+      conflict = true;
+      throw new Error("generation conflict");
+    } catch {
+      if (!isActive()) return false;
+      if (conflict) this._semanticHasValid = false;
+      const message = conflict ? "Semantic generation conflict or read limit. Values withheld." : request.timedOut ? "Semantic refresh timed out." : "Semantic refresh failed or unavailable.";
+      announce(`${message}${this._semanticHasValid ? " Showing historical last valid contributions." : ""}`);
+      if (!this._semanticHasValid || conflict) listEl.innerHTML = `<li>${escapeHtml(message)}</li>`;
+      return false;
+    } finally {
+      request.cleanup();
+      if (this._semanticRequestAbort === request) {
+        this._semanticRequestAbort = undefined;
+        listEl.setAttribute?.("aria-busy", "false");
       }
-      if (payload.boiler_status) {
-        const boilerState = payload.boiler_status.state || {};
-        const boilerConfig = payload.boiler_status.config || {};
-        const boilerPressure = formatFixed(boilerState.water_pressure_bar, 2);
-        rows.push(
-          `<li><strong>Boiler</strong> <span class="muted-inline">flow=${escapeHtml(formatTemperature(boilerState.flow_temperature_c))} return=${escapeHtml(formatTemperature(boilerState.return_temperature_c))} pressure=${escapeHtml(boilerPressure === "n/a" ? boilerPressure : `${boilerPressure}bar`)} flame=${escapeHtml(formatToggle(boilerState.flame_active))} dhw_mode=${escapeHtml(boilerConfig.dhw_operating_mode || "n/a")}</span></li>`,
-        );
-      }
-      if (payload.system) {
-        const systemState = payload.system.state || {};
-        const systemConfig = payload.system.config || {};
-        const systemPressure = formatFixed(systemState.system_water_pressure, 2);
-        rows.push(
-          `<li><strong>System</strong> <span class="muted-inline">brand=${escapeHtml(formatSemanticText(payload.system.gateway_brand))} vendor=${escapeHtml(formatSemanticText(payload.system.gateway_vendor))} flow=${escapeHtml(formatTemperature(systemState.system_flow_temperature))} pressure=${escapeHtml(systemPressure === "n/a" ? systemPressure : `${systemPressure}bar`)} outdoor=${escapeHtml(formatSemanticTemperature(systemState.outdoor_temperature))} maintenance=${escapeHtml(formatYesNo(systemState.maintenance_due))} adaptive=${escapeHtml(formatYesNo(systemConfig.adaptive_heating_curve))}</span></li>`,
-        );
-      }
-      if (payload.fm5_semantic_mode) {
-        const degradedReason = payload.fm5_semantic_degraded_reason || "none";
-        const evidenceRevision = payload.fm5_semantic_evidence_revision || "unavailable";
-        rows.push(`<li><strong>FM5</strong> <span class="muted-inline">mode=${escapeHtml(payload.fm5_semantic_mode)} reason=${escapeHtml(degradedReason)} revision=${escapeHtml(evidenceRevision)}</span></li>`);
-      }
-      if (payload.solar) {
-        const solar = payload.solar || {};
-        rows.push(
-          `<li><strong>Solar</strong> <span class="muted-inline">collector=${escapeHtml(formatTemperature(solar.collector_temperature_c))} return=${escapeHtml(formatTemperature(solar.return_temperature_c))} pump=${escapeHtml(formatToggle(solar.pump_active))} yield=${escapeHtml(formatFixed(solar.current_yield, 2))}</span></li>`,
-        );
-      }
-      if (payload.energy_totals) {
-        const et = payload.energy_totals;
-        rows.push(
-          `<li><strong>Energy (gas)</strong> <span class="muted-inline">today climate=${escapeHtml(formatFixed(et.gas?.climate?.today, 2))} dhw=${escapeHtml(formatFixed(et.gas?.dhw?.today, 2))} yearly climate=[${escapeHtml(formatSeriesYearly(et.gas?.climate?.yearly))}] dhw=[${escapeHtml(formatSeriesYearly(et.gas?.dhw?.yearly))}] monthly climate=[${escapeHtml(formatSeriesYearly(et.gas?.climate?.monthly))}] dhw=[${escapeHtml(formatSeriesYearly(et.gas?.dhw?.monthly))}] meta climate(${escapeHtml(formatEnergyMeta(et.gas?.climate?.today_meta))}) dhw(${escapeHtml(formatEnergyMeta(et.gas?.dhw?.today_meta))})</span></li>`,
-        );
-        rows.push(
-          `<li><strong>Energy (electric)</strong> <span class="muted-inline">today climate=${escapeHtml(formatFixed(et.electric?.climate?.today, 2))} dhw=${escapeHtml(formatFixed(et.electric?.dhw?.today, 2))} yearly climate=[${escapeHtml(formatSeriesYearly(et.electric?.climate?.yearly))}] dhw=[${escapeHtml(formatSeriesYearly(et.electric?.dhw?.yearly))}] monthly climate=[${escapeHtml(formatSeriesYearly(et.electric?.climate?.monthly))}] dhw=[${escapeHtml(formatSeriesYearly(et.electric?.dhw?.monthly))}] meta climate(${escapeHtml(formatEnergyMeta(et.electric?.climate?.today_meta))}) dhw(${escapeHtml(formatEnergyMeta(et.electric?.dhw?.today_meta))})</span></li>`,
-        );
-        rows.push(
-          `<li><strong>Energy (solar)</strong> <span class="muted-inline">today climate=${escapeHtml(formatFixed(et.solar?.climate?.today, 2))} dhw=${escapeHtml(formatFixed(et.solar?.dhw?.today, 2))} yearly climate=[${escapeHtml(formatSeriesYearly(et.solar?.climate?.yearly))}] dhw=[${escapeHtml(formatSeriesYearly(et.solar?.dhw?.yearly))}] monthly climate=[${escapeHtml(formatSeriesYearly(et.solar?.climate?.monthly))}] dhw=[${escapeHtml(formatSeriesYearly(et.solar?.dhw?.monthly))}] meta climate(${escapeHtml(formatEnergyMeta(et.solar?.climate?.today_meta))}) dhw(${escapeHtml(formatEnergyMeta(et.solar?.dhw?.today_meta))})</span></li>`,
-        );
-      }
-      if (circuits.length > 0) {
-        circuits.forEach((circuit) => {
-          const state = circuit.state || {};
-          const config = circuit.config || {};
-          rows.push(
-            `<li><strong>Circuit ${escapeHtml(formatInteger(circuit.index))}</strong> <span class="muted-inline">type=${escapeHtml(circuit.circuit_type || "n/a")} mixer=${escapeHtml(formatYesNo(circuit.has_mixer))} flow=${escapeHtml(formatTemperature(state.flow_temperature_c))} setpoint=${escapeHtml(formatTemperature(state.flow_setpoint_c))} pump=${escapeHtml(formatToggle(state.pump_active))} curve=${escapeHtml(formatFixed(config.heating_curve, 2))}</span></li>`,
-          );
-        });
-      }
-      if (radioDevices.length > 0) {
-        radioDevices.forEach((device) => {
-          rows.push(
-            `<li><strong>Radio ${escapeHtml(device.device_model || `group-${formatInteger(device.group)}-${formatInteger(device.instance)}`)}</strong> <span class="muted-inline">slot=${escapeHtml(device.slot_mode || "n/a")} connected=${escapeHtml(formatYesNo(device.device_connected))} zone=${escapeHtml(formatInteger(device.zone_assignment))} temp=${escapeHtml(formatTemperature(device.room_temperature_c))} humidity=${escapeHtml(formatPercent(device.room_humidity_pct))}</span></li>`,
-          );
-        });
-      }
-      if (cylinders.length > 0) {
-        cylinders.forEach((cylinder) => {
-          rows.push(
-            `<li><strong>Cylinder ${escapeHtml(formatInteger(cylinder.index))}</strong> <span class="muted-inline">temp=${escapeHtml(formatTemperature(cylinder.temperature_c))} max=${escapeHtml(formatTemperature(cylinder.max_setpoint_c))} hysteresis=${escapeHtml(formatTemperature(cylinder.charge_hysteresis_c))} offset=${escapeHtml(formatTemperature(cylinder.charge_offset_c))}</span></li>`,
-          );
-        });
-      }
-      listEl.innerHTML = rows.join("");
-    } catch (err) {
-      if (!isActive()) {
-        return false;
-      }
-      listEl.innerHTML = "<li>Semantic preview unavailable.</li>";
-      console.error("semantic preview failed", err);
     }
-    return true;
   }
 
   async refreshAdapterInfo() {
@@ -3969,6 +4261,8 @@ class PortalShell extends HTMLElement {
   }
 
   render() {
+    const semanticCards = this._semanticHasValid
+      ? this.querySelector('[data-role="semantic-list"]')?.innerHTML : undefined;
     // render() replaces the Portal DOM. A prior catalog is no longer visible,
     // so a failed bootstrap after reattach must not claim it is still shown.
     this._portalCatalogHasValid = false;
@@ -4001,10 +4295,21 @@ class PortalShell extends HTMLElement {
             <button data-role="nav-l7-catalog" data-nav-target="section-l7-catalog" disabled><span class="nav-bullet"></span> L7 Catalog</button>
             <button data-role="nav-vaillant-b503" data-nav-target="section-vaillant-b503" disabled><span class="nav-bullet"></span> Vaillant B503</button>
 			<button data-role="nav-eebus" data-nav-target="section-eebus" disabled><span class="nav-bullet"></span> eeBUS</button>
+            <button data-role="nav-configuration" data-nav-target="section-configuration"><span class="nav-bullet"></span> Configuration</button>
           </aside>
           <main class="main">
             <h1>Portal Overview</h1>
             <p class="hero">Explore registry, semantic state, projection topology and evidence workflows from one gateway-native surface.</p>
+            <section id="section-configuration" class="registry-preview">
+              <h2>Configuration</h2>
+              <p>Passive observation and cache are always-on facilities. Availability still requires native evidence and admission.</p>
+              <p data-role="config-notice" role="alert" aria-live="assertive" aria-atomic="true">Load configuration to view saved choices.</p>
+              <form data-role="config-form">
+                <fieldset data-role="config-fields" aria-label="Desired configuration choices"></fieldset>
+                <button class="button" type="submit" data-role="config-save" disabled>Save desired choices</button>
+                <button class="button" type="button" data-role="config-reload">Reload saved choices (discard edits)</button>
+              </form>
+            </section>
             <section id="section-registry" class="registry-preview">
               <h2>Registry Preview</h2>
               <ul data-role="registry-list">
@@ -4013,7 +4318,9 @@ class PortalShell extends HTMLElement {
             </section>
             <section id="section-semantic" class="registry-preview">
               <h2>Semantic Preview</h2>
-              <ul data-role="semantic-list">
+              <button type="button" data-role="semantic-refresh">Refresh Contributions</button>
+              <p data-role="semantic-notice" role="status" aria-live="polite" aria-atomic="true">Loading semantic contributions.</p>
+              <ul data-role="semantic-list" role="status" aria-live="polite" aria-atomic="true" aria-busy="false">
                 <li>Loading semantic snapshot...</li>
               </ul>
               <div data-role="pv-panel" hidden>
@@ -4357,6 +4664,11 @@ class PortalShell extends HTMLElement {
         </div>
       </div>
     `;
+    if (semanticCards !== undefined) {
+      this.querySelector('[data-role="semantic-list"]').innerHTML = semanticCards;
+      this.querySelector('[data-role="semantic-notice"]').textContent =
+        "Showing historical last valid contributions. Refresh pending.";
+    }
   }
 
   // ---------------------------------------------------------------------
@@ -4601,7 +4913,8 @@ class PortalShell extends HTMLElement {
   // ---------------------------------------------------------------------
 
   async _gqlRequest(query, variables, options) {
-    const endpoint = this._graphqlEndpoint || "/graphql";
+    const endpoint = bootstrapEndpoint(this._graphqlEndpoint);
+    if (!endpoint) throw new Error("GraphQL endpoint unavailable");
     const body = JSON.stringify({ query, variables: variables || {} });
     const request = {
       method: "POST",

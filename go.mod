@@ -3,12 +3,12 @@ module github.com/Project-Helianthus/helianthus-ebusgateway
 go 1.22.0
 
 require (
-	github.com/Project-Helianthus/helianthus-ebusgo v0.5.1-0.20260921041247-2ebba9fb05fe
-	github.com/Project-Helianthus/helianthus-ebusreg v0.0.0-20261014092418-2342a8d80c2b
+	github.com/Project-Helianthus/helianthus-ebusgo v0.5.1-0.20261027131913-af6c5843b1e3
+	github.com/Project-Helianthus/helianthus-ebusreg v0.0.0-20261016182529-f90a3e330da7
 	github.com/Project-Helianthus/helianthus-eebusreg v0.1.36
-	github.com/Project-Helianthus/helianthus-modbus v0.3.1-0.20261014112527-df5bdc80771c
-	github.com/Project-Helianthus/helianthus-modbusreg v0.6.8-0.20261014144202-2bfecd2f7408
-	github.com/Project-Helianthus/helianthus-semreg v0.0.0-20260911082644-089ed6ae9004
+	github.com/Project-Helianthus/helianthus-modbus v0.3.1-0.20261016201245-8407c5250771
+	github.com/Project-Helianthus/helianthus-modbusreg v0.6.8-0.20261025102717-d4a92a1d2613
+	github.com/Project-Helianthus/helianthus-semreg v0.0.0-20261024114030-40eb069a9e59
 	github.com/grandcat/zeroconf v1.0.0
 	github.com/graphql-go/graphql v0.8.1
 	github.com/graphql-go/handler v0.2.4

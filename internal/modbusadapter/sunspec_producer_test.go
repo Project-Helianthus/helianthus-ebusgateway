@@ -458,9 +458,18 @@ func TestSunSpecProducerReturnsNoGoForAdmittedCapabilityWithFlavorMismatch(t *te
 	if err != nil {
 		t.Fatalf("Qualify(live float chain): %v", err)
 	}
+	// This chain is unobserved for flavors 1.0.0 and 1.1.0 (chain mismatch) and
+	// carries the firmware of neither flavor 1.2.0's tuple, so the flavors
+	// reject for different reasons and the shared FlavorReason stays empty; the
+	// per-flavor evaluations carry the detail.
 	if result.Outcome != SunSpecQualificationNoGo ||
 		result.CapabilityReason != modbusreg.SunSpecCapabilityReasonAdmitted ||
-		result.FlavorReason != modbusreg.SunSpecFroniusFlavorReasonChainMismatch ||
+		result.FlavorReason != "" ||
+		!reflect.DeepEqual(result.FlavorEvaluations, []SunSpecFlavorEvaluation{
+			{FlavorID: modbusreg.SunSpecFroniusObservedFlavorID, Reason: modbusreg.SunSpecFroniusFlavorReasonChainMismatch},
+			{FlavorID: modbusreg.SunSpecFroniusObservedFlavorV11ID, Reason: modbusreg.SunSpecFroniusFlavorReasonChainMismatch},
+			{FlavorID: modbusreg.SunSpecFroniusObservedFlavorV12ID, Reason: modbusreg.SunSpecFroniusFlavorReasonFirmwareMismatch},
+		}) ||
 		result.ObservationCount != 0 || result.SampleID != "" {
 		t.Fatalf("flavor-mismatch result = %#v; want closed NO_GO without observation", result)
 	}

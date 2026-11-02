@@ -48,18 +48,7 @@ func newGatewayModbusMCPProvider(adapter *modbusadapter.Adapter) mcp.ModbusV1Pro
 // so a disabled (*growattBMSRS485ProductionProvider)(nil) is checked before it
 // can become a non-nil optional-provider interface.
 func newGatewayModbusMCPProviderWithGrowatt(adapter *modbusadapter.Adapter, growatt *growattBMSRS485ProductionProvider) mcp.ModbusV1Provider {
-	if adapter == nil && growatt == nil {
-		return nil
-	}
-	core := &gatewayModbusMCPProvider{now: time.Now}
-	if adapter != nil {
-		core.adapter = adapter
-		core.portalPV = adapter
-	}
-	if growatt == nil {
-		return core
-	}
-	return gatewayGrowattBMSMCPProvider{gatewayModbusMCPProvider: core, growatt: growatt, storage: growatt}
+	return composeModbusProviders(&gatewayModbusMCPProvider{now: time.Now}, modbusProviderOwners{tcp: adapter, growatt: growatt})
 }
 
 // gatewayModbusRuntimeProvider composes independent native owners without
@@ -72,15 +61,7 @@ type gatewayModbusRuntimeProvider struct {
 }
 
 func newGatewayModbusMCPProviderWithRuntimes(adapter *modbusadapter.Adapter, growatt *growattBMSRS485ProductionProvider, tesla *teslaHSCRetainedOwner) mcp.ModbusV1Provider {
-	if tesla == nil {
-		return newGatewayModbusMCPProviderWithGrowatt(adapter, growatt)
-	}
-	core := &gatewayModbusMCPProvider{now: time.Now}
-	if adapter != nil {
-		core.adapter = adapter
-		core.portalPV = adapter
-	}
-	return &gatewayModbusRuntimeProvider{gatewayModbusMCPProvider: core, growatt: growatt, tesla: tesla}
+	return composeModbusProviders(&gatewayModbusMCPProvider{now: time.Now}, modbusProviderOwners{tcp: adapter, growatt: growatt, tesla: tesla})
 }
 
 func (provider *gatewayModbusRuntimeProvider) GrowattBMSRS485V202(ctx context.Context) (mcp.GrowattBMSRS485V202Observation, error) {
@@ -119,14 +100,7 @@ func (provider *gatewayModbusRuntimeProvider) ModbusV1OptionalToolAvailable(tool
 	if provider == nil {
 		return false
 	}
-	switch tool {
-	case mcp.TeslaGen3EVSECurrentLimitV1GetTool, mcp.SemanticV1EVSECurrentGetTool:
-		return provider.tesla != nil
-	case mcp.GrowattBMSRS485V202StatusGetTool, mcp.SemanticV1GrowattStorageCurrentGetTool:
-		return provider.growatt != nil
-	default:
-		return false
-	}
+	return modbusProviderOptionalToolAvailable(tool, modbusProviderOwners{growatt: provider.growatt, tesla: provider.tesla})
 }
 
 type gatewayGrowattBMSMCPProvider struct {

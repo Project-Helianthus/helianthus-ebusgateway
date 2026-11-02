@@ -18,20 +18,6 @@ import (
 // separately capped at 64 KiB by Intent.Validate.
 const maxJSONBody = 1024 * 1024
 
-type principalKey struct{}
-
-// WithPrincipal records the already-authenticated M2M principal. A listener
-// adapter must add it only after its mTLS authentication succeeds.
-func WithPrincipal(ctx context.Context, principal string) context.Context {
-	return context.WithValue(ctx, principalKey{}, principal)
-}
-
-// Principal returns the verified M2M principal carried by a listener adapter.
-func Principal(ctx context.Context) (string, bool) {
-	value, ok := ctx.Value(principalKey{}).(string)
-	return value, ok && publicID(value)
-}
-
 type Options struct {
 	// InstanceID must be unique for every process lifetime. Reusing it makes a
 	// lost replay window indistinguishable from a valid cursor.
@@ -109,10 +95,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 		}
 		if !isJSON(request.Header.Get("Content-Type")) {
 			writeError(w, http.StatusUnsupportedMediaType, "content_type_required")
-			return
-		}
-		if _, ok := Principal(request.Context()); !ok {
-			writeError(w, http.StatusUnauthorized, "principal_required")
 			return
 		}
 		var intent Intent
@@ -236,6 +218,13 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write(raw)
+}
+
+// WriteUnavailable answers a request the listener refuses before it reaches
+// the feed (for example a spent per-host request budget) with the feed's own
+// unavailable error, so the response stays inside the published schema.
+func WriteUnavailable(w http.ResponseWriter) {
+	writeError(w, http.StatusServiceUnavailable, "unavailable")
 }
 func writeError(w http.ResponseWriter, status int, code string) {
 	writeJSON(w, status, errorResponse{Contract: Contract, Error: code})

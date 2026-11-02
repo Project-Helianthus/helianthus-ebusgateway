@@ -18,12 +18,47 @@ import (
 const primaryEBusDriverID = "ebus.primary"
 
 const (
-	defaultEBusDriverDrainTimeout = 2 * time.Second
-	defaultEBusRetryBudget        = 5
-	defaultEBusRetryInitialDelay  = time.Second
-	defaultEBusRetryMaxDelay      = 30 * time.Second
-	defaultEBusRetryJitterRatio   = 0.2
+	defaultEBusDriverDrainTimeout     = 2 * time.Second
+	defaultEBusRetryBudget            = 5
+	defaultEBusRetryInitialDelay      = time.Second
+	defaultEBusRetryMaxDelay          = 30 * time.Second
+	defaultEBusRetryJitterRatio       = 0.2
+	defaultEBusPersistentInitialDelay = time.Second
+	defaultEBusPersistentMaxDelay     = 5 * time.Minute
 )
+
+// ebusDriverRetryPolicy is the native recovery policy of ebus.primary. Five
+// fast attempts come first, the first after one second and each further
+// delay doubled up to thirty seconds. While the driver is desired RUNNING,
+// the series then continues without end: the delay restarts at one second
+// and doubles up to five minutes. Every delay carries 20% jitter and stays
+// within its phase's bounds. Only a retryable failure (a dial failure, a
+// timeout, a transport close, a failed INIT handshake) continues the series;
+// a failure that retrying cannot heal ends it FAILED with its own reason.
+// Tests narrow the delays through this seam; production never reassigns it.
+var ebusDriverRetryPolicy = drivermanager.RetryPolicy{
+	Budget:       defaultEBusRetryBudget,
+	InitialDelay: defaultEBusRetryInitialDelay,
+	MaxDelay:     defaultEBusRetryMaxDelay,
+	JitterRatio:  defaultEBusRetryJitterRatio,
+	Persistent: drivermanager.PersistentRetry{
+		Enabled:      true,
+		InitialDelay: defaultEBusPersistentInitialDelay,
+		MaxDelay:     defaultEBusPersistentMaxDelay,
+	},
+}
+
+// ebusRetryClock is the clock, jitter source and retry wait of the
+// ebus.primary DriverManager. The zero value keeps DriverManager's defaults.
+type ebusRetryClock struct {
+	now    func() time.Time
+	jitter func(time.Duration) time.Duration
+	wait   func(context.Context, time.Duration) bool
+}
+
+// ebusDriverRetryClock is a test-only seam that drives the retry schedule
+// deterministically; production never sets it.
+var ebusDriverRetryClock ebusRetryClock
 
 type ebusDriverController struct {
 	manager         *drivermanager.Manager
@@ -35,17 +70,13 @@ type ebusDriverController struct {
 	proxyConfigured bool
 }
 
-func newEBusDriverController(cfg ebusgateway.Config) (*ebusDriverController, error) {
+func newEBusDriverController(cfg ebusgateway.Config, sidecars ...drivermanager.DriverConfig) (*ebusDriverController, error) {
 	protocol := configuredEBusDriverProtocol(cfg)
 	needsPassive := cfg.BroadcastListen && (protocol == ebusgateway.TransportAdapterDirect || shouldStartPassiveObserveFirst(cfg))
 	running := make(chan drivermanager.Correlation, 1)
 	v8Counter := &ebusV8CumulativeCounter{}
-	runtimeSeam := transport.NewDriverRuntime(
-		newEBusDriverFactory(cfg, protocol, needsPassive, v8Counter),
-		transport.DriverRuntimeConfig{DrainTimeout: defaultEBusDriverDrainTimeout},
-	)
-	runtime := &ebusDriverRuntime{runtime: runtimeSeam, running: running}
-	manager, err := drivermanager.New(drivermanager.Config{Drivers: []drivermanager.DriverConfig{{
+	runtime := newEBusDriverRuntime(cfg, protocol, needsPassive, v8Counter, running)
+	manager, err := drivermanager.New(drivermanager.Config{Drivers: append([]drivermanager.DriverConfig{{
 		ID:      primaryEBusDriverID,
 		Enabled: true,
 		Runtime: runtime,
@@ -57,18 +88,34 @@ func newEBusDriverController(cfg ebusgateway.Config) (*ebusDriverController, err
 			drivermanager.CapabilityWrite,
 		},
 		ClassifyError: classifyEBusDriverError,
-		Retry: drivermanager.RetryPolicy{
-			Budget:       defaultEBusRetryBudget,
-			InitialDelay: defaultEBusRetryInitialDelay,
-			MaxDelay:     defaultEBusRetryMaxDelay,
-			JitterRatio:  defaultEBusRetryJitterRatio,
-		},
-	}}})
+		Retry:         ebusDriverRetryPolicy,
+	}}, sidecars...),
+		Now:         ebusDriverRetryClock.now,
+		RetryJitter: ebusDriverRetryClock.jitter,
+		RetryWait:   ebusDriverRetryClock.wait,
+	})
 	if err != nil {
 		return nil, err
 	}
+	runtime.recovery.budget = ebusDriverRetryPolicy.Budget
+	runtime.recovery.persistent = ebusDriverRetryPolicy.Persistent
+	runtime.desiredRunning = func() bool {
+		snapshot, ok := manager.Snapshot(primaryEBusDriverID)
+		return ok && snapshot.DesiredState == drivermanager.DesiredRunning
+	}
 	reporter := func(correlation drivermanager.Correlation, rawErr error) {
-		manager.ReportFailure(primaryEBusDriverID, correlation, classifyEBusDriverError(rawErr))
+		// The loss is recorded under the recovery log's lock together with
+		// its acceptance, so the first replacement attempt always logs the
+		// loss as its reason. A stale or repeated report is not logged.
+		reason := ebusConnectionLossReason(rawErr)
+		runtime.recovery.reportLoss(correlation.Generation, reason, func() bool {
+			failure := classifyEBusDriverError(rawErr)
+			if failure.Reason.Retryable {
+				// The recovery view names the closed trigger of the loss.
+				failure.Detail = ebusLossDetail(reason)
+			}
+			return manager.ReportFailure(primaryEBusDriverID, correlation, failure)
+		})
 	}
 	runtime.reporter = reporter
 	controller := &ebusDriverController{
@@ -94,6 +141,17 @@ func newEBusDriverController(cfg ebusgateway.Config) (*ebusDriverController, err
 	return controller, nil
 }
 
+// newEBusDriverRuntime builds the DriverManager runtime of ebus.primary. It
+// constructs no endpoint: the native factory runs only when DriverManager
+// starts a generation.
+func newEBusDriverRuntime(cfg ebusgateway.Config, protocol ebusgateway.TransportProtocol, needsPassive bool, v8Counter *ebusV8CumulativeCounter, running chan<- drivermanager.Correlation) *ebusDriverRuntime {
+	runtimeSeam := transport.NewDriverRuntime(
+		newEBusDriverFactory(cfg, protocol, needsPassive, v8Counter),
+		transport.DriverRuntimeConfig{DrainTimeout: defaultEBusDriverDrainTimeout},
+	)
+	return &ebusDriverRuntime{runtime: runtimeSeam, running: running}
+}
+
 func configuredEBusDriverProtocol(cfg ebusgateway.Config) ebusgateway.TransportProtocol {
 	if cfg.Transport != nil {
 		if _, ok := cfg.Transport.(transport.EscapeAware); !ok {
@@ -117,8 +175,24 @@ func newEBusDriverFactory(cfg ebusgateway.Config, protocol ebusgateway.Transport
 		if cfg.Transport != nil && !injectedUsed.CompareAndSwap(false, true) {
 			return nil, transport.ErrDriverUnavailable
 		}
-		active, activeClose, err := ebusgateway.OpenEBusDriverTransport(ctx, cfg)
+		normalized, err := validateEBusDriverTransport(cfg)
 		if err != nil {
+			return nil, rejectEBusConfig(err)
+		}
+		generationCfg := cfg
+		connected := observeEBusDial(&generationCfg.TransportConfig)
+		active, activeClose, err := ebusgateway.OpenEBusDriverTransport(ctx, generationCfg)
+		if err != nil {
+			if cfg.Transport != nil {
+				// The injected resource is consumed even when INIT fails;
+				// this factory cannot construct a replacement for a retry.
+				return nil, errors.Join(err, transport.ErrDriverUnavailable)
+			}
+			// After a successful dial of an ENH or ENS endpoint only the INIT
+			// handshake can fail: the configuration passed validation.
+			if connected.Load() && (normalized.Protocol == ebusgateway.TransportENH || normalized.Protocol == ebusgateway.TransportENS) {
+				err = ebusProxyHandshakeFailure(err)
+			}
 			return nil, err
 		}
 		if active == nil {
@@ -163,7 +237,7 @@ func buildManagedAdapterDirectGeneration(factoryCtx context.Context, cfg ebusgat
 	adapterCtx, adapterCancel := context.WithCancel(factoryCtx)
 	generationCfg := cfg
 	health := &ebusGenerationHealth{}
-	closer, classifier, err := wireAdapterDirectWithConnectionLost(adapterCtx, &generationCfg, health.connectionLost)
+	closer, classifier, err := wireAdapterDirectWithConnectionLost(adapterCtx, &generationCfg, health.connectionLostBecause)
 	if err != nil {
 		adapterCancel()
 		return nil, err
@@ -205,14 +279,28 @@ func buildManagedAdapterDirectGeneration(factoryCtx context.Context, cfg ebusgat
 	return managed, nil
 }
 
+// classifyEBusDriverError separates the failures that retrying cannot heal
+// from the rest. Non-retryable, so terminal under the persistent policy, are
+// only conditions that are provably local: a configuration that local
+// validation rejected before any dial (CONFIG_INVALID), an unavailable or
+// stale runtime (an explicit stop or restart superseded the attempt), a
+// consumed one-shot injected transport, and a
+// lifecycle identity mismatch (the hub source no longer carries the epoch and
+// generation the bridge holds). Everything else is a retryable dependency
+// loss: a dial failure, a timeout, a closed transport, and every answer of
+// the peer, a failed or unconfirmed INIT handshake and a malformed payload
+// included. A peer's answer is never evidence of a local configuration error.
 func classifyEBusDriverError(err error) drivermanager.Failure {
+	var rejection *ebusConfigRejection
 	switch {
+	case errors.As(err, &rejection):
+		return drivermanager.Failure{Reason: drivermanager.Reason{Code: drivermanager.ReasonConfigInvalid}}
 	case errors.Is(err, drivermanager.ErrUnavailable), errors.Is(err, transport.ErrDriverUnavailable):
 		return drivermanager.Failure{Reason: drivermanager.Reason{Code: drivermanager.ReasonProviderUnavailable}}
-	case errors.Is(err, ebuserrors.ErrInvalidPayload):
-		return drivermanager.Failure{Reason: drivermanager.Reason{Code: drivermanager.ReasonConfigInvalid}}
+	case errors.Is(err, errEBusControlHubNotLive):
+		return drivermanager.Failure{Reason: drivermanager.Reason{Code: drivermanager.ReasonInternalError}}
 	default:
-		return drivermanager.Failure{Reason: drivermanager.Reason{Code: drivermanager.ReasonDependencyUnavailable, Retryable: true}}
+		return drivermanager.Failure{Reason: drivermanager.Reason{Code: drivermanager.ReasonDependencyUnavailable, Retryable: true}, Detail: ebusFailureDetail(err)}
 	}
 }
 
@@ -347,6 +435,15 @@ type ebusDriverRuntime struct {
 	reporter ebusFailureReporter
 	running  chan<- drivermanager.Correlation
 	current  atomic.Pointer[managedEBusGeneration]
+	// recovery logs the manager-owned recovery after a reported connection
+	// loss: the loss, every replacement attempt with its reason and outcome
+	// (error class and cause), and the admitted recovered generation; and
+	// every failed start attempt outside such a series.
+	recovery ebusRecoveryLog
+	// desiredRunning reports whether the manager still wants ebus.primary
+	// RUNNING; it separates a manager-internal retirement from an explicit
+	// stop. Unset means every Stop is explicit.
+	desiredRunning func() bool
 
 	// lifecycleMu orders activation and withdrawal for the private B503
 	// observer. Observer callbacks are bounded local FSM mutations: they must
@@ -419,11 +516,46 @@ func (runtime *ebusDriverRuntime) Start(ctx context.Context) (uint64, error) {
 	if runtime == nil || runtime.runtime == nil {
 		return 0, drivermanager.ErrUnavailable
 	}
+	// A fresh start (process start, START, RESTART) is not a recovery; its
+	// failures are logged as start attempts. A retryable failure under the
+	// persistent policy opens a recovery series, as a connection loss does:
+	// DriverManager keeps retrying while the driver is desired RUNNING. The
+	// manager-owned retries of that series, and a retry after a refused
+	// admission, arrive here while the series is open: each is the series'
+	// next attempt.
+	attempt := 0
+	if runtime.recovery.continuing() {
+		attempt = runtime.recovery.attemptStarted()
+	} else {
+		runtime.recovery.freshStart()
+	}
 	generation, err := runtime.runtime.Start(ctx)
+	switch {
+	case attempt != 0:
+		runtime.recovery.attemptFinished(attempt, generation, err)
+	case err != nil && runtime.startFailureRecovers(err):
+		runtime.recovery.startRecovering(err)
+	default:
+		runtime.recovery.startFinished(err)
+	}
 	if err == nil {
 		runtime.captureGeneration(generation)
 	}
 	return generation, mapEBusLifecycleError(err)
+}
+
+// startFailureRecovers reports whether DriverManager follows a failed fresh
+// start with a persistent recovery series: the failure is retryable (a dial
+// failure, a timeout, a transport close, a failed INIT handshake), nothing is
+// quarantined, the policy is persistent and the driver is still desired
+// RUNNING. Otherwise the failure ends the start with its own reason.
+func (runtime *ebusDriverRuntime) startFailureRecovers(err error) bool {
+	mapped := mapEBusLifecycleError(err)
+	if !runtime.recovery.persistent.Enabled || runtime.desiredRunning == nil || !runtime.desiredRunning() ||
+		errors.Is(mapped, drivermanager.ErrSafetyQuarantined) || runtime.SafetyQuarantined() {
+		return false
+	}
+	return classifyEBusDriverError(mapped).Reason.Retryable
 }
 
 func (runtime *ebusDriverRuntime) Replace(ctx context.Context) (uint64, error) {
@@ -432,7 +564,9 @@ func (runtime *ebusDriverRuntime) Replace(ctx context.Context) (uint64, error) {
 	}
 	runtime.FenceWithdrawal()
 	runtime.current.Store(nil)
+	attempt := runtime.recovery.attemptStarted()
 	generation, err := runtime.runtime.Replace(ctx)
+	runtime.recovery.attemptFinished(attempt, generation, err)
 	if err == nil {
 		runtime.captureGeneration(generation)
 	}
@@ -445,6 +579,12 @@ func (runtime *ebusDriverRuntime) Stop(ctx context.Context) error {
 	}
 	runtime.FenceWithdrawal()
 	runtime.current.Store(nil)
+	// Only an explicit stop ends the series. The manager also calls Stop to
+	// retire a constructed generation whose admission was refused while it
+	// still wants RUNNING; recovery goes on through that retirement.
+	if runtime.desiredRunning == nil || !runtime.desiredRunning() {
+		runtime.recovery.reset()
+	}
 	return mapEBusLifecycleError(runtime.runtime.Stop(ctx))
 }
 
@@ -540,7 +680,11 @@ func (runtime *ebusDriverRuntime) BindCorrelation(correlation drivermanager.Corr
 		}
 		return nil
 	})
-	if err != nil || runtime.running == nil {
+	if err != nil {
+		return
+	}
+	runtime.recovery.admitted(correlation.Generation)
+	if runtime.running == nil {
 		return
 	}
 	select {
@@ -1153,6 +1297,7 @@ type managedEBusEndpoint struct {
 type ebusGenerationHealth struct {
 	mu          sync.Mutex
 	lost        bool
+	reason      string
 	reported    bool
 	correlation drivermanager.Correlation
 	reporter    ebusFailureReporter
@@ -1164,13 +1309,29 @@ type managedEBusProxyLifecycle interface {
 }
 
 func (health *ebusGenerationHealth) connectionLost() {
+	health.connectionLostBecause(ebusLossAdapterConnection)
+}
+
+// connectionLostBecause records the generation's terminal connection loss
+// with its closed trigger category (adapter connection or proxy listener).
+func (health *ebusGenerationHealth) connectionLostBecause(reason string) {
 	health.mu.Lock()
-	health.lost = true
+	if !health.lost {
+		health.lost = true
+		health.reason = reason
+	}
 	reporter, correlation := health.pendingReportLocked()
+	lossErr := health.lossErrorLocked()
 	health.mu.Unlock()
 	if reporter != nil {
-		reporter(correlation, ebuserrors.ErrAdapterReset)
+		reporter(correlation, lossErr)
 	}
+}
+
+// lossErrorLocked is the reported loss: an adapter reset carrying the
+// trigger category, so classification stays a retryable dependency loss.
+func (health *ebusGenerationHealth) lossErrorLocked() error {
+	return &ebusConnectionLoss{reason: health.reason}
 }
 
 func (health *ebusGenerationHealth) bind(correlation drivermanager.Correlation, reporter ebusFailureReporter) {
@@ -1181,9 +1342,10 @@ func (health *ebusGenerationHealth) bind(correlation drivermanager.Correlation, 
 	health.correlation = correlation
 	health.reporter = reporter
 	report, reportCorrelation := health.pendingReportLocked()
+	lossErr := health.lossErrorLocked()
 	health.mu.Unlock()
 	if report != nil {
-		report(reportCorrelation, ebuserrors.ErrAdapterReset)
+		report(reportCorrelation, lossErr)
 	}
 }
 

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
@@ -13,8 +12,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -87,7 +84,7 @@ func newM2MGraphQLRuntimeWithTesla(config ebusgateway.Config, adapter *modbusada
 	return newM2MGraphQLRuntimeWithMatter(config, adapter, growatt, tesla, nil)
 }
 
-func newM2MGraphQLRuntimeWithMatter(config ebusgateway.Config, adapter *modbusadapter.Adapter, growatt *growattBMSRS485ProductionProvider, tesla *teslaHSCRetainedOwner, matterProvider feedv1.Provider) (*m2mGraphQLRuntime, error) {
+func newM2MGraphQLRuntimeWithMatter(config ebusgateway.Config, adapter *modbusadapter.Adapter, growatt *growattBMSRS485ProductionProvider, tesla *teslaHSCRetainedOwner, matterProvider feedv1.Provider, managed ...*managedSidecarBindings) (*m2mGraphQLRuntime, error) {
 	if config.M2MGraphQL.Disabled() {
 		return nil, nil
 	}
@@ -112,20 +109,45 @@ func newM2MGraphQLRuntimeWithMatter(config ebusgateway.Config, adapter *modbusad
 			return current, err == nil
 		}
 	}
+	pvCurrent := func(_ context.Context, asset string) (json.RawMessage, bool) {
+		if adapter == nil {
+			return nil, false
+		}
+		current, ok := adapter.SemanticPVCurrentByAsset(asset)
+		if !ok {
+			return nil, false
+		}
+		encoded, err := json.Marshal(map[string]any{"snapshot": current.Snapshot, "evaluation": current.Evaluation, "selections": current.Selections, "projection": current.Projection})
+		return encoded, err == nil
+	}
+	storageCurrent := newGrowattStorageGraphQLProvider(growatt)
+	if len(managed) == 1 && managed[0] != nil {
+		bindings := managed[0]
+		pvCurrent = func(ctx context.Context, asset string) (out json.RawMessage, ok bool) {
+			err := bindings.modbus(ctx, func(adapter *modbusadapter.Adapter) error {
+				current, available := adapter.SemanticPVCurrentByAsset(asset)
+				if !available {
+					return errors.New("PV publication unavailable")
+				}
+				var err error
+				out, err = json.Marshal(map[string]any{"snapshot": current.Snapshot, "evaluation": current.Evaluation, "selections": current.Selections, "projection": current.Projection})
+				return err
+			})
+			return out, err == nil
+		}
+		storageCurrent = func(ctx context.Context, asset string) (out json.RawMessage, ok bool) {
+			err := bindings.growatt(ctx, func(provider *growattBMSRS485ProductionProvider) error {
+				var err error
+				out, err = currentGrowattStoragePublic(ctx, asset, provider)
+				return err
+			})
+			return out, err == nil
+		}
+	}
 	graphqlHandler, err := m2mgraphql.NewHandler(m2mgraphql.Config{
-		AllowedAssets: allowed,
-		SemanticPVCurrent: func(_ context.Context, asset string) (json.RawMessage, bool) {
-			if adapter == nil {
-				return nil, false
-			}
-			current, ok := adapter.SemanticPVCurrentByAsset(asset)
-			if !ok {
-				return nil, false
-			}
-			encoded, err := json.Marshal(map[string]any{"snapshot": current.Snapshot, "evaluation": current.Evaluation, "selections": current.Selections, "projection": current.Projection})
-			return encoded, err == nil
-		},
-		SemanticStorageCurrent: newGrowattStorageGraphQLProvider(growatt),
+		AllowedAssets:          allowed,
+		SemanticPVCurrent:      pvCurrent,
+		SemanticStorageCurrent: storageCurrent,
 		SemanticEVSECurrent:    semanticEVSECurrent,
 	})
 	if err != nil {
@@ -141,9 +163,15 @@ func newM2MGraphQLRuntimeWithMatter(config ebusgateway.Config, adapter *modbusad
 		if err != nil {
 			return nil, errors.New("matter binding feed handler configuration is invalid")
 		}
+		// The Matter routes spend the same per-host request budget as GraphQL
+		// before the serialized capture; a refusal is the feed's own error.
+		budgetedMatter, err := m2mgraphql.RequestBudget(graphqlHandler, http.StripPrefix("/matter-binding", matterHandler), feedv1.WriteUnavailable)
+		if err != nil {
+			return nil, errors.New("matter binding feed request budget is unavailable")
+		}
 		mux := http.NewServeMux()
 		mux.Handle("/graphql/m2m/v1", graphqlHandler)
-		mux.Handle("/matter-binding/", http.StripPrefix("/matter-binding", matterHandler))
+		mux.Handle("/matter-binding/", budgetedMatter)
 		handler = mux
 	}
 	rawListener, err := net.Listen("tcp", config.M2MGraphQL.ListenAddr)
@@ -152,17 +180,10 @@ func newM2MGraphQLRuntimeWithMatter(config ebusgateway.Config, adapter *modbusad
 	}
 	listener := newBoundedM2MListener(rawListener, m2mMaxPreTLSConnections)
 	runtime := &m2mGraphQLRuntime{listener: listener}
-	verifiedHandler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		if request.TLS == nil || len(request.TLS.VerifiedChains) == 0 || len(request.TLS.PeerCertificates) == 0 {
-			response.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-		principal := m2mFingerprint(request.TLS.PeerCertificates[0].Raw)
-		requestContext := m2mgraphql.WithMTLSPrincipal(request.Context(), principal)
-		requestContext = feedv1.WithPrincipal(requestContext, principal)
-		handler.ServeHTTP(response, request.WithContext(requestContext))
-	})
-	runtime.server = &http.Server{TLSConfig: tlsConfig, ErrorLog: log.New(io.Discard, "", 0), ReadHeaderTimeout: m2mHTTPHeaderTimeout, ReadTimeout: m2mHTTPBodyTimeout, WriteTimeout: m2mHTTPBodyTimeout, IdleTimeout: m2mHTTPBodyTimeout, Handler: newM2MRequestDeadlineHandler(verifiedHandler, m2mRequestTimeout)}
+	// The listener provides server-authenticated TLS 1.3 transport integrity
+	// only. No client principal is derived: client certificates are optional
+	// and publication is filtered by the configured asset allow-list.
+	runtime.server = &http.Server{TLSConfig: tlsConfig, ErrorLog: log.New(io.Discard, "", 0), ReadHeaderTimeout: m2mHTTPHeaderTimeout, ReadTimeout: m2mHTTPBodyTimeout, WriteTimeout: m2mHTTPBodyTimeout, IdleTimeout: m2mHTTPBodyTimeout, Handler: newM2MRequestDeadlineHandler(handler, m2mRequestTimeout)}
 	go func() { _ = runtime.server.Serve(tls.NewListener(listener, tlsConfig)) }()
 	return runtime, nil
 }
@@ -234,38 +255,15 @@ func newM2MTLSConfig(config ebusgateway.M2MGraphQLConfig) (*tls.Config, error) {
 		return nil, errors.New("server certificate identity mismatch")
 	}
 	certificate.Leaf = leaf
-	caPEM, err := os.ReadFile(config.ClientCAFile)
-	if err != nil {
-		return nil, err
-	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(caPEM) {
-		return nil, errors.New("invalid client CA")
-	}
-	denied := make(map[string]struct{}, len(config.DeniedPrincipalFingerprints))
-	for _, fingerprint := range config.DeniedPrincipalFingerprints {
-		denied[strings.ToLower(fingerprint)] = struct{}{}
-	}
-	return &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{certificate}, ClientAuth: tls.RequireAndVerifyClientCert, ClientCAs: pool, VerifyPeerCertificate: func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
-		if len(verifiedChains) == 0 || len(rawCerts) == 0 {
-			return errors.New("unverified client certificate")
-		}
-		if _, blocked := denied[m2mFingerprint(rawCerts[0])]; blocked {
-			return errors.New("denied client certificate")
-		}
-		return nil
-	}, SessionTicketsDisabled: true}, nil
+	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{certificate}, ClientAuth: tls.NoClientCert, SessionTicketsDisabled: true}
+	return tlsConfig, nil
 }
 
-func m2mFingerprint(der []byte) string { sum := sha256.Sum256(der); return hex.EncodeToString(sum[:]) }
 func (runtime *m2mGraphQLRuntime) Addr() string {
 	if runtime == nil || runtime.listener == nil {
 		return ""
 	}
 	return runtime.listener.Addr().String()
-}
-func (runtime *m2mGraphQLRuntime) RequiresVerifiedClientCertificate() bool {
-	return runtime != nil && runtime.server != nil
 }
 func (runtime *m2mGraphQLRuntime) Close() error {
 	if runtime == nil || runtime.server == nil {

@@ -1,10 +1,13 @@
 package catalogv1
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal/contributionv1"
 	"math/rand"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -38,12 +41,6 @@ func (s *sourceFake) Capture(time.Time) ([]Resource, []Field, error) {
 	s.calls.Add(1)
 	return s.resources, s.fields, nil
 }
-
-type authFake struct{}
-
-func (authFake) Scope(any) (string, error) { return "scope-r1", nil }
-func (authFake) Discover(any, Action) bool { return true }
-func (authFake) Invoke(any, Action) bool   { return true }
 
 type invokeFake struct{ calls atomic.Int32 }
 
@@ -106,18 +103,18 @@ func actionField() Field {
 func TestInvokeDoesNotReachNativeOwnerAfterFailedRevalidation(t *testing.T) {
 	m, idx := actionManifestAndIndex()
 	invoker, reject := &invokeFake{}, &rejectRevalidate{}
-	c := New(idx, &sourceFake{resources: []Resource{actionResource()}}, authFake{}, invoker)
+	c := New(idx, &sourceFake{resources: []Resource{actionResource()}}, invoker)
 	c.now = func() time.Time { return time.Unix(10, 0).UTC() }
 	c.SetRevalidator(reject)
 	if err := c.Publish(m); err != nil {
 		t.Fatal(err)
 	}
-	catalog, err := c.Catalog("caller")
+	catalog, err := c.Catalog()
 	if err != nil {
 		t.Fatal(err)
 	}
 	claim := Claims{CatalogRevision: catalog.CatalogRevision, Digest: catalog.Contributions[0].Digest, DriverID: "test.driver", ManifestID: "test.manifest", ManifestVersion: "1.0.0", ActionID: "action", ResourceID: "asset", CapabilityID: "test.capability", IdempotencyKey: "once", Deadline: time.Unix(20, 0)}
-	if _, err := c.Invoke("caller", claim); err == nil {
+	if _, err := c.Invoke(claim); err == nil {
 		t.Fatal("stale source revalidation invoked native owner")
 	}
 	if reject.calls.Load() != 1 || invoker.calls.Load() != 0 {
@@ -127,12 +124,12 @@ func TestInvokeDoesNotReachNativeOwnerAfterFailedRevalidation(t *testing.T) {
 
 func TestPublishDetachesCanonicalManifestAndNoopsOnIdenticalDigest(t *testing.T) {
 	m, idx := actionManifestAndIndex()
-	c := New(idx, nil, authFake{}, nil)
+	c := New(idx, nil, nil)
 	c.now = func() time.Time { return time.Unix(10, 0).UTC() }
 	if err := c.Publish(m); err != nil {
 		t.Fatal(err)
 	}
-	first, err := c.Catalog("caller")
+	first, err := c.Catalog()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +144,7 @@ func TestPublishDetachesCanonicalManifestAndNoopsOnIdenticalDigest(t *testing.T)
 	if err := c.Publish(replayed); err != nil {
 		t.Fatal(err)
 	}
-	second, err := c.Catalog("caller")
+	second, err := c.Catalog()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,17 +160,17 @@ func TestPublishDetachesCanonicalManifestAndNoopsOnIdenticalDigest(t *testing.T)
 
 func TestWithdrawAbsentOrRepeatedIdentityIsRevisionNoop(t *testing.T) {
 	m, idx := actionManifestAndIndex()
-	c := New(idx, nil, authFake{}, nil)
+	c := New(idx, nil, nil)
 	c.now = func() time.Time { return time.Unix(10, 0).UTC() }
 	if err := c.Publish(m); err != nil {
 		t.Fatal(err)
 	}
-	first, err := c.Catalog("caller")
+	first, err := c.Catalog()
 	if err != nil {
 		t.Fatal(err)
 	}
 	c.Withdraw("missing.driver", "missing.manifest", "1.0.0")
-	afterMissing, err := c.Catalog("caller")
+	afterMissing, err := c.Catalog()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +178,7 @@ func TestWithdrawAbsentOrRepeatedIdentityIsRevisionNoop(t *testing.T) {
 		t.Fatal("absent withdrawal changed catalog revision")
 	}
 	c.Withdraw("test.driver", "test.manifest", "1.0.0")
-	afterPresent, err := c.Catalog("caller")
+	afterPresent, err := c.Catalog()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +186,7 @@ func TestWithdrawAbsentOrRepeatedIdentityIsRevisionNoop(t *testing.T) {
 		t.Fatal("present withdrawal did not change catalog revision")
 	}
 	c.Withdraw("test.driver", "test.manifest", "1.0.0")
-	afterRepeated, err := c.Catalog("caller")
+	afterRepeated, err := c.Catalog()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,13 +196,13 @@ func TestWithdrawAbsentOrRepeatedIdentityIsRevisionNoop(t *testing.T) {
 }
 func TestCatalogFivePacksAbsentAndDeterministic(t *testing.T) {
 	s := &sourceFake{}
-	c := New(contributionv1.NewStaticIndex(), s, authFake{}, nil)
+	c := New(contributionv1.NewStaticIndex(), s, nil)
 	c.now = func() time.Time { return time.Unix(1, 0).UTC() }
-	a, err := c.Catalog("caller")
+	a, err := c.Catalog()
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := c.Catalog("caller")
+	b, err := c.Catalog()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,12 +221,12 @@ func TestCatalogMakesSourcePresenceTruthful(t *testing.T) {
 	resource := actionResource()
 	resource.Domain = p.ID
 	s := &sourceFake{resources: []Resource{resource}}
-	c := New(idx, s, authFake{}, nil)
+	c := New(idx, s, nil)
 	c.now = func() time.Time { return time.Unix(1, 0).UTC() }
 	if err := c.Publish(m); err != nil {
 		t.Fatal(err)
 	}
-	got, err := c.Catalog("caller")
+	got, err := c.Catalog()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,14 +243,14 @@ func TestCatalogMakesSourcePresenceTruthful(t *testing.T) {
 func TestConflictQuarantinesBothAndInvocationIsExactlyOnce(t *testing.T) {
 	m, idx := actionManifestAndIndex()
 	invoker := &invokeFake{}
-	c := New(idx, &sourceFake{resources: []Resource{actionResource()}}, authFake{}, invoker)
+	c := New(idx, &sourceFake{resources: []Resource{actionResource()}}, invoker)
 	c.now = func() time.Time { return time.Unix(10, 0).UTC() }
 	revalidator := &revalidateFake{}
 	c.SetRevalidator(revalidator)
 	if err := c.Publish(m); err != nil {
 		t.Fatal(err)
 	}
-	catalog, err := c.Catalog("caller")
+	catalog, err := c.Catalog()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +258,7 @@ func TestConflictQuarantinesBothAndInvocationIsExactlyOnce(t *testing.T) {
 		t.Fatalf("action mapping=%+v", catalog.Actions)
 	}
 	claim := Claims{CatalogRevision: catalog.CatalogRevision, Digest: catalog.Contributions[0].Digest, DriverID: "test.driver", ManifestID: "test.manifest", ManifestVersion: "1.0.0", ActionID: "action", ResourceID: "asset", CapabilityID: "test.capability", IdempotencyKey: "once", Deadline: time.Unix(20, 0)}
-	if _, err := c.Invoke("caller", claim); err != nil {
+	if _, err := c.Invoke(claim); err != nil {
 		t.Fatal(err)
 	}
 	if invoker.calls.Load() != 1 {
@@ -274,7 +271,7 @@ func TestConflictQuarantinesBothAndInvocationIsExactlyOnce(t *testing.T) {
 	if err := c.Publish(m); err != nil {
 		t.Fatal(err)
 	}
-	after, err := c.Catalog("caller")
+	after, err := c.Catalog()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -286,19 +283,19 @@ func TestConflictQuarantinesBothAndInvocationIsExactlyOnce(t *testing.T) {
 func TestInvokeCatalogRevisionIgnoresResponseEvaluationInstant(t *testing.T) {
 	m, idx := actionManifestAndIndex()
 	invoker, revalidator := &invokeFake{}, &revalidateFake{}
-	c := New(idx, &sourceFake{resources: []Resource{actionResource()}}, authFake{}, invoker)
+	c := New(idx, &sourceFake{resources: []Resource{actionResource()}}, invoker)
 	now := time.Unix(10, 0).UTC()
 	c.now = func() time.Time { now = now.Add(time.Second); return now }
 	c.SetRevalidator(revalidator)
 	if err := c.Publish(m); err != nil {
 		t.Fatal(err)
 	}
-	first, err := c.Catalog("caller")
+	first, err := c.Catalog()
 	if err != nil {
 		t.Fatal(err)
 	}
 	claim := Claims{CatalogRevision: first.CatalogRevision, Digest: first.Contributions[0].Digest, DriverID: "test.driver", ManifestID: "test.manifest", ManifestVersion: "1.0.0", ActionID: "action", ResourceID: "asset", CapabilityID: "test.capability", IdempotencyKey: "once", Deadline: time.Unix(100, 0)}
-	if _, err := c.Invoke("caller", claim); err != nil {
+	if _, err := c.Invoke(claim); err != nil {
 		t.Fatalf("response evaluation time made action stale: %v", err)
 	}
 	if invoker.calls.Load() != 1 || revalidator.calls.Load() != 1 {
@@ -310,18 +307,18 @@ func TestInvokeCatalogRevisionNormalizesProductionSourceEvaluationClock(t *testi
 	m, idx := actionManifestAndIndex()
 	invoker, revalidator := &invokeFake{}, &revalidateFake{}
 	source := &volatileEvaluationSource{}
-	c := New(idx, source, authFake{}, invoker)
+	c := New(idx, source, invoker)
 	c.now = func() time.Time { return time.Unix(10, 0).UTC() }
 	c.SetRevalidator(revalidator)
 	if err := c.Publish(m); err != nil {
 		t.Fatal(err)
 	}
-	first, err := c.Catalog("caller")
+	first, err := c.Catalog()
 	if err != nil {
 		t.Fatal(err)
 	}
 	claim := Claims{CatalogRevision: first.CatalogRevision, Digest: first.Contributions[0].Digest, DriverID: "test.driver", ManifestID: "test.manifest", ManifestVersion: "1.0.0", ActionID: "action", ResourceID: "asset", CapabilityID: "test.capability", SnapshotID: "snapshot", Revision: "revision", BindingID: "binding", SourceEpoch: "epoch", DriverGeneration: 1, IdempotencyKey: "once", Deadline: time.Unix(100, 0)}
-	if _, err := c.Invoke("caller", claim); err != nil {
+	if _, err := c.Invoke(claim); err != nil {
 		t.Fatalf("volatile production-source evaluation clock made action stale: %v", err)
 	}
 	if source.captures != 2 || invoker.calls.Load() != 1 {
@@ -334,17 +331,17 @@ func TestCatalogRevisionPreservesLargeNonClockEvaluationIntegers(t *testing.T) {
 	resource := actionResource()
 	resource.Source = Source{SnapshotID: "snapshot", Revision: "revision", BindingID: "binding", SourceEpoch: "epoch", DriverGeneration: 1, EvaluationDigest: "volatile", Evaluation: json.RawMessage(`{"context":{"evaluated_at":"2026-09-13T00:00:00Z"},"facts":[{"counter":9007199254740992}]}`)}
 	source := &sourceFake{resources: []Resource{resource}}
-	c := New(idx, source, authFake{}, &invokeFake{})
+	c := New(idx, source, &invokeFake{})
 	c.now = func() time.Time { return time.Unix(10, 0).UTC() }
 	if err := c.Publish(m); err != nil {
 		t.Fatal(err)
 	}
-	first, err := c.Catalog("caller")
+	first, err := c.Catalog()
 	if err != nil {
 		t.Fatal(err)
 	}
 	source.resources[0].Source.Evaluation = json.RawMessage(`{"context":{"evaluated_at":"2026-09-13T00:00:01Z"},"facts":[{"counter":9007199254740993}]}`)
-	second, err := c.Catalog("caller")
+	second, err := c.Catalog()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -358,18 +355,18 @@ func TestCatalogRevisionPreservesSameNamedNonContextEvidence(t *testing.T) {
 	resource := actionResource()
 	resource.Source = Source{SnapshotID: "snapshot", Revision: "revision", BindingID: "binding", SourceEpoch: "epoch", DriverGeneration: 1, EvaluationDigest: "outer-1", Evaluation: json.RawMessage(`{"context":{"evaluated_at":"2026-09-13T00:00:00Z","evaluate_monotonic":{"nanoseconds":"1"}},"facts":[{"evaluated_at":"native-evidence-1","evaluate_monotonic":{"counter":"1"}}],"evaluation_digest":"inner-1"}`)}
 	source := &sourceFake{resources: []Resource{resource}}
-	c := New(idx, source, authFake{}, &invokeFake{})
+	c := New(idx, source, &invokeFake{})
 	c.now = func() time.Time { return time.Unix(10, 0).UTC() }
 	if err := c.Publish(m); err != nil {
 		t.Fatal(err)
 	}
-	first, err := c.Catalog("caller")
+	first, err := c.Catalog()
 	if err != nil {
 		t.Fatal(err)
 	}
 	source.resources[0].Source.EvaluationDigest = "outer-2"
 	source.resources[0].Source.Evaluation = json.RawMessage(`{"context":{"evaluated_at":"2026-09-13T00:00:01Z","evaluate_monotonic":{"nanoseconds":"2"}},"facts":[{"evaluated_at":"native-evidence-2","evaluate_monotonic":{"counter":"2"}}],"evaluation_digest":"inner-2"}`)
-	second, err := c.Catalog("caller")
+	second, err := c.Catalog()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -397,12 +394,12 @@ func TestCatalogActionRequiresExactContributionAndSemanticContext(t *testing.T) 
 		t.Run(tc.name, func(t *testing.T) {
 			resource := valid
 			tc.mutate(&resource)
-			c := New(idx, &sourceFake{resources: []Resource{resource}}, authFake{}, &invokeFake{})
+			c := New(idx, &sourceFake{resources: []Resource{resource}}, &invokeFake{})
 			c.now = func() time.Time { return time.Unix(10, 0).UTC() }
 			if err := c.Publish(m); err != nil {
 				t.Fatal(err)
 			}
-			catalog, err := c.Catalog("caller")
+			catalog, err := c.Catalog()
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -422,7 +419,7 @@ func TestCatalogScopesCollidingResourceIDsByContribution(t *testing.T) {
 	secondResource := firstResource
 	secondResource.ContributionDriverID = second.Contributor.DriverID
 	secondResource.ContributionManifestID = second.ManifestID
-	c := New(idx, &sourceFake{resources: []Resource{firstResource, secondResource}}, authFake{}, &invokeFake{})
+	c := New(idx, &sourceFake{resources: []Resource{firstResource, secondResource}}, &invokeFake{})
 	c.now = func() time.Time { return time.Unix(10, 0).UTC() }
 	if err := c.Publish(first); err != nil {
 		t.Fatal(err)
@@ -430,7 +427,7 @@ func TestCatalogScopesCollidingResourceIDsByContribution(t *testing.T) {
 	if err := c.Publish(second); err != nil {
 		t.Fatal(err)
 	}
-	catalog, err := c.Catalog("caller")
+	catalog, err := c.Catalog()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -458,12 +455,12 @@ func TestCatalogFiltersAcceptedOwnerWithUndeclaredResourceSemantics(t *testing.T
 		t.Run(tc.name, func(t *testing.T) {
 			resource := valid
 			tc.mutate(&resource)
-			c := New(idx, &sourceFake{resources: []Resource{resource}}, authFake{}, nil)
+			c := New(idx, &sourceFake{resources: []Resource{resource}}, nil)
 			c.now = func() time.Time { return time.Unix(10, 0).UTC() }
 			if err := c.Publish(m); err != nil {
 				t.Fatal(err)
 			}
-			catalog, err := c.Catalog("caller")
+			catalog, err := c.Catalog()
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -479,17 +476,17 @@ func TestCatalogFiltersWithdrawnRowsAndRejectsDanglingAcceptedFields(t *testing.
 	resource := actionResource()
 	field := actionField()
 	source := &sourceFake{resources: []Resource{resource}, fields: []Field{field}}
-	c := New(idx, source, authFake{}, nil)
+	c := New(idx, source, nil)
 	c.now = func() time.Time { return time.Unix(10, 0).UTC() }
 	if err := c.Publish(m); err != nil {
 		t.Fatal(err)
 	}
-	before, err := c.Catalog("caller")
+	before, err := c.Catalog()
 	if err != nil || len(before.Resources) != 1 || len(before.Fields) != 1 {
 		t.Fatalf("accepted rows missing: catalog=%+v err=%v", before, err)
 	}
 	c.Withdraw(m.Contributor.DriverID, m.ManifestID, m.ManifestVersion)
-	after, err := c.Catalog("caller")
+	after, err := c.Catalog()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -500,7 +497,7 @@ func TestCatalogFiltersWithdrawnRowsAndRejectsDanglingAcceptedFields(t *testing.
 		t.Fatal(err)
 	}
 	source.resources = nil
-	if _, err := c.Catalog("caller"); err == nil || !strings.Contains(err.Error(), "field has no exact") {
+	if _, err := c.Catalog(); err == nil || !strings.Contains(err.Error(), "field has no exact") {
 		t.Fatalf("dangling accepted field err=%v", err)
 	}
 }
@@ -512,12 +509,12 @@ func TestCatalogRejectsDuplicateAcceptedFieldIdentity(t *testing.T) {
 	second := first
 	second.Value = json.RawMessage(`2`)
 	source := &sourceFake{resources: []Resource{resource}, fields: []Field{second, first}}
-	c := New(idx, source, authFake{}, nil)
+	c := New(idx, source, nil)
 	c.now = func() time.Time { return time.Unix(10, 0).UTC() }
 	if err := c.Publish(m); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.Catalog("caller"); err == nil || !strings.Contains(err.Error(), "ambiguous detached field identity") {
+	if _, err := c.Catalog(); err == nil || !strings.Contains(err.Error(), "ambiguous detached field identity") {
 		t.Fatalf("duplicate field identity err=%v", err)
 	}
 }
@@ -538,12 +535,12 @@ func TestCatalogFieldsRequireExactManifestDeclaration(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			field := valid
 			tc.mutate(&field)
-			c := New(idx, &sourceFake{resources: []Resource{resource}, fields: []Field{field}}, authFake{}, nil)
+			c := New(idx, &sourceFake{resources: []Resource{resource}, fields: []Field{field}}, nil)
 			c.now = func() time.Time { return time.Unix(10, 0).UTC() }
 			if err := c.Publish(m); err != nil {
 				t.Fatal(err)
 			}
-			catalog, err := c.Catalog("caller")
+			catalog, err := c.Catalog()
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -572,18 +569,18 @@ func TestCanonicalOrderUsesCompleteTuplesAndRevisionBindsFields(t *testing.T) {
 	resource := actionResource()
 	field := actionField()
 	s := &fencedSourceFake{sourceFake: sourceFake{resources: []Resource{resource}, fields: []Field{field}}, fence: "one"}
-	c := New(idx, s, authFake{}, nil)
+	c := New(idx, s, nil)
 	c.now = func() time.Time { return time.Unix(1, 0) }
 	if err := c.Publish(m); err != nil {
 		t.Fatal(err)
 	}
-	first, err := c.Catalog("c")
+	first, err := c.Catalog()
 	if err != nil {
 		t.Fatal(err)
 	}
 	s.fields[0].Value = json.RawMessage(`2`)
 	s.fence = "two"
-	second, err := c.Catalog("c")
+	second, err := c.Catalog()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -605,7 +602,7 @@ func TestWireMembersUseClosedSnakeCaseNames(t *testing.T) {
 }
 
 func TestSetClockAndInvokeDoNotRace(t *testing.T) {
-	c := New(nil, nil, nil, nil)
+	c := New(nil, nil, nil)
 	at := time.Unix(1_800_000_000, 0).UTC()
 	done := make(chan struct{})
 	go func() {
@@ -615,8 +612,129 @@ func TestSetClockAndInvokeDoNotRace(t *testing.T) {
 		}
 	}()
 	for i := 0; i < 200; i++ {
-		_, _ = c.Invoke(nil, Claims{})
-		_, _ = c.Invoke(nil, Claims{Deadline: at.Add(time.Second), IdempotencyKey: "k"})
+		_, _ = c.Invoke(Claims{})
+		_, _ = c.Invoke(Claims{Deadline: at.Add(time.Second), IdempotencyKey: "k"})
 	}
 	<-done
+}
+
+func TestM22DescriptorDiagnosticsAndLossAreDetached(t *testing.T) {
+	m, index := actionManifestAndIndex()
+	diagnostic := contributionv1.Diagnostic{ID: "diagnostic", Group: "group", Label: contributionv1.Label{Key: "fixture.diagnostic", Default: "Synthetic diagnostic"}, MemberID: "fixture.member", Kind: "field", Order: 7}
+	index.AddNativeMember(m.Contributor.NativeContract, diagnostic.Kind, diagnostic.MemberID)
+	m.Diagnostics = append(m.Diagnostics, diagnostic)
+	m.Views = []contributionv1.View{{ID: "summary", Group: "group", Label: contributionv1.Label{Key: "fixture.summary", Default: "Summary"}, Renderer: "summary", Slot: "lens", FieldIDs: []string{"field"}, DiagnosticIDs: []string{diagnostic.ID}}}
+	resource := actionResource()
+	resource.Source.Projection = json.RawMessage(`{"dispositions":[{"outcome":"withheld","reason":"fixture.unavailable","loss":[{"kind":"omission","description":"Synthetic loss","source_items":["test.field"],"reversible":false}]}]}`)
+	resource.Source.DriverGeneration = 9007199254740993
+	source := &sourceFake{resources: []Resource{resource}}
+	composer := New(index, source, nil)
+	if err := composer.Publish(m); err != nil {
+		t.Fatal(err)
+	}
+	result, err := composer.Catalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Descriptors) != 1 || !reflect.DeepEqual(result.Descriptors[0].Diagnostics, []contributionv1.Diagnostic{diagnostic}) || result.Descriptors[0].Views[0].DiagnosticIDs[0] != diagnostic.ID {
+		t.Fatalf("diagnostic metadata lost: %+v", result.Descriptors)
+	}
+	if !bytes.Equal(result.Resources[0].Source.Projection, resource.Source.Projection) {
+		t.Fatal("projection loss or unavailable disposition changed")
+	}
+	raw, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(raw, []byte(`"driver_generation":"9007199254740993"`)) {
+		t.Fatal("generation lost decimal-string identity")
+	}
+	result.Descriptors[0].Diagnostics[0].MemberID = "changed"
+	result.Resources[0].Source.Projection[0] = 'x'
+	next, err := composer.Catalog()
+	if err != nil || next.Descriptors[0].Diagnostics[0].MemberID != diagnostic.MemberID || !bytes.Equal(next.Resources[0].Source.Projection, resource.Source.Projection) {
+		t.Fatal("result aliases source or descriptor")
+	}
+}
+
+func TestM22DetachedRegistryIdentityIsComplete(t *testing.T) {
+	for _, member := range []string{"driver_id", "manifest_id", "manifest_version"} {
+		t.Run(member, func(t *testing.T) {
+			m, index := actionManifestAndIndex()
+			digest, err := contributionv1.CanonicalDigest(m, index)
+			if err != nil {
+				t.Fatal(err)
+			}
+			key := contributionv1.DescriptorKey{DriverID: m.Contributor.DriverID, ManifestID: m.ManifestID, ManifestVersion: m.ManifestVersion}
+			switch member {
+			case "driver_id":
+				key.DriverID = "other.driver"
+			case "manifest_id":
+				key.ManifestID = "other.manifest"
+			case "manifest_version":
+				key.ManifestVersion = "1.0.1"
+			}
+			composer := New(index, nil, nil)
+			if composer.InstallDetachedRegistrySnapshot([]contributionv1.AcceptedDescriptor{{Key: key, Manifest: m, Digest: digest}}, nil) == nil {
+				t.Fatal("mismatched descriptor key admitted")
+			}
+			result, err := composer.Catalog()
+			if err != nil || len(result.Descriptors) != 0 {
+				t.Fatal("rejected installation changed catalog")
+			}
+		})
+	}
+}
+
+func TestM22InstalledRegistrySnapshotIsDetached(t *testing.T) {
+	m, index := actionManifestAndIndex()
+	registry := contributionv1.NewRegistry(index)
+	if err := registry.ReplaceGeneration(contributionv1.DriverGeneration{DriverID: m.Contributor.DriverID, Generation: 1}, []contributionv1.Manifest{m}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := registry.Snapshot()
+	composer := New(index, nil, nil)
+	if err := composer.InstallDetachedRegistrySnapshot(snapshot.Accepted, snapshot.Quarantined); err != nil {
+		t.Fatal(err)
+	}
+	snapshot.Accepted[0].Manifest.Groups[0].Label.Default = "changed after install"
+	result, err := composer.Catalog()
+	if err != nil || result.Descriptors[0].Groups[0].Label.Default != m.Groups[0].Label.Default {
+		t.Fatal("installed descriptor aliases caller snapshot")
+	}
+}
+
+func TestCatalogActionBridgeRemainsFailClosedWithoutRevalidation(t *testing.T) {
+	m, idx := actionManifestAndIndex()
+	for _, withInvoker := range []bool{false, true} {
+		t.Run(fmt.Sprint(withInvoker), func(t *testing.T) {
+			var bridge Invoker
+			invoker := &invokeFake{}
+			if withInvoker {
+				bridge = invoker
+			}
+			c := New(idx, &sourceFake{resources: []Resource{actionResource()}}, bridge)
+			c.SetClock(func() time.Time { return time.Unix(10, 0).UTC() })
+			if err := c.Publish(m); err != nil {
+				t.Fatal(err)
+			}
+			catalog, err := c.Catalog()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !withInvoker && len(catalog.Actions) != 0 {
+				t.Fatal("read-only composition exposed actions")
+			}
+			if withInvoker && (len(catalog.Actions) != 1 || catalog.Actions[0].Enabled) {
+				t.Fatal("action enabled without native revalidator")
+			}
+			claim := Claims{CatalogRevision: catalog.CatalogRevision, Digest: catalog.Contributions[0].Digest, DriverID: "test.driver", ManifestID: "test.manifest", ManifestVersion: "1.0.0", ActionID: "action", ResourceID: "asset", CapabilityID: "test.capability", IdempotencyKey: "once", Deadline: time.Unix(20, 0)}
+			if _, err := c.Invoke(claim); err == nil {
+				t.Fatal("missing native bridge admitted invocation")
+			}
+			if invoker.calls.Load() != 0 {
+				t.Fatal("native owner called without revalidation")
+			}
+		})
+	}
 }

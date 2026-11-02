@@ -49,7 +49,6 @@ type issue743OperatorHandlerProvider interface {
 }
 
 type issue743OperatorEndpointProvider interface {
-	eebusV1OperatorSocketPath() string
 	eebusV1ServeOperator(context.Context, string, func(net.Conn) (int, error)) (io.Closer, error)
 }
 
@@ -584,8 +583,8 @@ func TestIssue743OperatorSocketModesAndSameEffectiveUIDOnLinux(t *testing.T) {
 	if !ok {
 		t.Fatal("eeBUS AF_UNIX operator endpoint is unavailable")
 	}
-	if got := endpoint.eebusV1OperatorSocketPath(); got != "/data/eebus/operator-mcp.sock" {
-		t.Fatalf("operator socket path = %q, want /data/eebus/operator-mcp.sock", got)
+	if got := EEBusV1OperatorSocketPath("/data/eebus"); got != "/data/eebus-operator/operator-mcp.sock" {
+		t.Fatalf("operator socket path = %q, want /data/eebus-operator/operator-mcp.sock", got)
 	}
 	socketRoot, err := os.MkdirTemp("", "e743-")
 	if err != nil {

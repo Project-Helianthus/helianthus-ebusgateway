@@ -776,7 +776,7 @@ func TestCharacterizationConsumersOfAllThreeFamilies(t *testing.T) {
 		t.Fatal(err)
 	}
 	composer.SetClock(func() time.Time { return at })
-	catalog, err := composer.Catalog(nil)
+	catalog, err := composer.Catalog()
 	if err != nil {
 		t.Fatal(err)
 	}

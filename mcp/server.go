@@ -68,6 +68,10 @@ type ServiceStatus struct {
 	FirmwareVersion  string `json:"firmware_version"`
 	UpdatesAvailable bool   `json:"updates_available"`
 	InitiatorAddress string `json:"initiator_address,omitempty"`
+	// Condition names a degraded or failed condition of the service, for
+	// example the failed generation-owned startup task of an admitted eBUS
+	// generation. Empty when there is none.
+	Condition string `json:"condition,omitempty"`
 }
 
 type StatusProvider interface {
@@ -224,18 +228,32 @@ type SystemState struct {
 	HwcCylinderTemperatureBottom *float64 `json:"hwc_cylinder_temperature_bottom,omitempty"`
 }
 
+// ConfigBound is the active write bound of one config field. Source is
+// "controller_profile" (Profile names the matched identity) or
+// "unmatched_policy" (Reason names why no profile bound applies). NarrowedOnly
+// marks profile evidence that can only narrow policy, not qualify an installation.
+type ConfigBound struct {
+	NarrowedOnly bool    `json:"narrowed_only"`
+	MinC         float64 `json:"min_c"`
+	MaxC         float64 `json:"max_c"`
+	Source       string  `json:"source"`
+	Reason       string  `json:"reason,omitempty"`
+	Profile      string  `json:"profile,omitempty"`
+}
+
 type SystemConfig struct {
-	AdaptiveHeatingCurve         *bool    `json:"adaptive_heating_curve,omitempty"`
-	AlternativePoint             *float64 `json:"alternative_point,omitempty"`
-	HeatingCircuitBivalencePoint *float64 `json:"heating_circuit_bivalence_point,omitempty"`
-	DhwBivalencePoint            *float64 `json:"dhw_bivalence_point,omitempty"`
-	HcEmergencyTemperature       *float64 `json:"hc_emergency_temperature,omitempty"`
-	HwcMaxFlowTempDesired        *float64 `json:"hwc_max_flow_temp_desired,omitempty"`
-	MaxRoomHumidity              *int     `json:"max_room_humidity,omitempty"`
-	MaintenanceDate              *string  `json:"maintenance_date,omitempty"`
-	InstallerName                *string  `json:"installer_name,omitempty"`
-	InstallerPhone               *string  `json:"installer_phone,omitempty"`
-	InstallerMenuCode            *int     `json:"installer_menu_code,omitempty"`
+	AdaptiveHeatingCurve         *bool        `json:"adaptive_heating_curve,omitempty"`
+	AlternativePoint             *float64     `json:"alternative_point,omitempty"`
+	HeatingCircuitBivalencePoint *float64     `json:"heating_circuit_bivalence_point,omitempty"`
+	DhwBivalencePoint            *float64     `json:"dhw_bivalence_point,omitempty"`
+	DhwBivalenceBound            *ConfigBound `json:"dhw_bivalence_point_bound,omitempty"`
+	HcEmergencyTemperature       *float64     `json:"hc_emergency_temperature,omitempty"`
+	HwcMaxFlowTempDesired        *float64     `json:"hwc_max_flow_temp_desired,omitempty"`
+	MaxRoomHumidity              *int         `json:"max_room_humidity,omitempty"`
+	MaintenanceDate              *string      `json:"maintenance_date,omitempty"`
+	InstallerName                *string      `json:"installer_name,omitempty"`
+	InstallerPhone               *string      `json:"installer_phone,omitempty"`
+	InstallerMenuCode            *int         `json:"installer_menu_code,omitempty"`
 }
 
 type SystemProperties struct {
@@ -508,6 +526,12 @@ type Server struct {
 	synchronizedEvidenceCapture SynchronizedEvidenceCapture
 	leafPromotionCapture        LeafPromotionCapture
 	serverVersion               string
+	sharedSemanticMu            sync.RWMutex
+	sharedSemanticProvider      SemanticSnapshotProvider
+	sharedSemanticRegistered    bool
+	runtimeControlMu            sync.RWMutex
+	runtimeControl              RuntimeControlService
+	runtimeControlRegistered    bool
 
 	tools []Tool
 
@@ -971,6 +995,10 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 		s.writeRPCError(w, req.ID, rpcErrorInvalidRequest("invalid json"))
 		return
 	}
+	if err := validateRPCEnvelopeMembers(body); err != nil {
+		s.writeRPCError(w, nil, rpcErrorInvalidRequest("duplicate jsonrpc request member"))
+		return
+	}
 	if req.JSONRPC != "2.0" || req.Method == "" {
 		s.writeRPCError(w, req.ID, rpcErrorInvalidRequest("invalid jsonrpc request"))
 		return
@@ -986,6 +1014,40 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeRPCResult(w, req.ID, result)
+}
+
+// validateRPCEnvelopeMembers checks only the envelope; params retain their own validation.
+// The caller has already validated the JSON syntax with json.Unmarshal.
+func validateRPCEnvelopeMembers(body []byte) error {
+	decoder := json.NewDecoder(strings.NewReader(string(body)))
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	if token != json.Delim('{') {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		key, ok := token.(string)
+		if !ok {
+			return errors.New("invalid jsonrpc request member")
+		}
+		if _, exists := seen[key]; exists {
+			return errors.New("duplicate jsonrpc request member")
+		}
+		seen[key] = struct{}{}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return err
+		}
+	}
+	_, err = decoder.Token()
+	return err
 }
 
 func (s *Server) dispatch(ctx context.Context, method string, params json.RawMessage) (any, *rpcError) {
@@ -1102,6 +1164,16 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 	}
 	if !s.hasToolNamed(rawCall.Name) {
 		return nil, rpcErrorInvalidParams(fmt.Sprintf("unknown tool %q", rawCall.Name))
+	}
+	if rawCall.Name == SemanticSnapshotTool {
+		return s.handleSharedSemanticSnapshot(ctx, rawCall.Arguments, hasDuplicateKeys), nil
+	}
+	if isRuntimeControlTool(rawCall.Name) {
+		// Lifecycle tools refuse duplicate, missing, additional and
+		// non-string members as a tool-level INVALID_ARGUMENT, so they read
+		// the raw arguments before the generic duplicate-key rejection and
+		// before any decoding into a map could discard a member.
+		return s.handleRuntimeControlRawCall(ctx, rawCall.Name, rawCall.Arguments, hasDuplicateKeys), nil
 	}
 	if spec, ok := eebusV1CommandSpecForName(rawCall.Name); ok {
 		if hasDuplicateKeys {
@@ -3182,6 +3254,10 @@ func cloneMCPSystemStatus(status *SystemStatus) *SystemStatus {
 		if config.DhwBivalencePoint != nil {
 			v := *config.DhwBivalencePoint
 			config.DhwBivalencePoint = &v
+		}
+		if config.DhwBivalenceBound != nil {
+			v := *config.DhwBivalenceBound
+			config.DhwBivalenceBound = &v
 		}
 		if config.HcEmergencyTemperature != nil {
 			v := *config.HcEmergencyTemperature

@@ -43,6 +43,14 @@ GraphQL/query text, JSONPath, formulas, register offsets, opcodes, decoders,
 routes, retry policy, authority or precondition results. There is no arbitrary
 component escape hatch.
 
+The shell marks the selected navigation control with `aria-current="page"`
+and clears that state on other controls. Catalog refresh exposes `aria-busy`
+until the latest request completes, including failure. Replacing catalog
+content restores focus to the equivalent enabled paging control when focus was
+inside that content; if the control disappears or becomes disabled, focus
+returns to Refresh. Focus outside the catalog stays in place. A failed refresh
+retains the last valid content and its focused control.
+
 The JSON size limit is 256 KiB. Limits are 64 groups, 64 views, 512 fields, 64
 actions and 128 diagnostics. IDs are manifest-scoped Unicode strings of at most
 128 code points; this is the JSON Schema `maxLength` and Go validator limit.

@@ -14,6 +14,15 @@ type zeroModbusJitter struct{}
 func (zeroModbusJitter) Next(time.Duration) time.Duration { return 0 }
 
 func mapModbusRuntimeConfig(config ebusgateway.ModbusTCPConfig) (modbusadapter.Config, error) {
+	return mapModbusInstanceRuntimeConfig(config, nil)
+}
+
+// mapModbusInstanceRuntimeConfig maps one instance. A nil pacing is the
+// configuration v1 mapping with its transport limits unchanged. A configuration
+// v2 instance holds one connection with exactly one request in flight, its
+// reconnect backoff between the pacing floor and ceiling, and the adapter
+// pacing gate for the gap and the settle wait.
+func mapModbusInstanceRuntimeConfig(config ebusgateway.ModbusTCPConfig, pacing *ebusgateway.ModbusTCPPacing) (modbusadapter.Config, error) {
 	if !config.Enabled {
 		if config.Endpoint != "" || config.DialTimeout != 0 {
 			return modbusadapter.Config{}, errors.New("disabled Modbus TCP configuration contains active fields")
@@ -49,7 +58,7 @@ func mapModbusRuntimeConfig(config ebusgateway.ModbusTCPConfig) (modbusadapter.C
 		return modbusadapter.Config{}, err
 	}
 
-	return modbusadapter.Config{
+	mapped := modbusadapter.Config{
 		Enabled:     true,
 		DialTimeout: config.DialTimeout,
 		Endpoint: modbus.TCPEndpointConfig{
@@ -87,5 +96,17 @@ func mapModbusRuntimeConfig(config ebusgateway.ModbusTCPConfig) (modbusadapter.C
 			Clock:                    clock,
 			RuntimeAcquisitionSource: source,
 		},
-	}, nil
+	}
+	if pacing != nil {
+		if !validModbusTCPPacing(*pacing) {
+			return modbusadapter.Config{}, errors.New("enabled Modbus TCP instance pacing is invalid")
+		}
+		mapped.Endpoint.PoolLimits.Connection.MaxInFlight = 1
+		mapped.Endpoint.SchedulerLimits.SharedBurstSlots = 1
+		mapped.Endpoint.SchedulerLimits.MaxInFlightRequests = 1
+		mapped.Endpoint.Backoff.Floor = pacing.BackoffFloor
+		mapped.Endpoint.Backoff.Ceiling = pacing.BackoffCeiling
+		mapped.Pacing = &modbusadapter.Pacing{Gap: pacing.Gap, Settle: pacing.Settle}
+	}
+	return mapped, nil
 }

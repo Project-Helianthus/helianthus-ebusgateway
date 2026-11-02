@@ -10,6 +10,7 @@ import (
 	"time"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/drivermanager"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/eebusadmin"
 	eebusruntime "github.com/Project-Helianthus/helianthus-eebusreg"
 )
@@ -733,9 +734,9 @@ func waitEEBusRestart(ctx context.Context, delay time.Duration) bool {
 }
 
 func newEEBusAdminHandler(eebusAdapter *eebusRuntimeAdapter, eebusAdmin eebusruntime.AdminV1, readiness eebusadmin.ReadinessV1) (http.Handler, error) {
-	config := eebusadmin.Config{Admin: eebusAdmin, Raw: eebusAdapter, Readiness: func() eebusadmin.ReadinessV1 { return readiness }}
+	config := eebusadmin.Config{Admin: eebusAdmin, Raw: eebusAdapter, Readiness: func() eebusadmin.ReadinessV1 { return eebusReadinessWithOperatorEndpoint(readiness) }}
 	config.Audit = func(event eebusadmin.AuditEvent) {
-		log.Printf("eebus_admin_audit action=%s scope=host_operator request_id=%s idempotency=%s prior=%s resulting=%s reason=%s timestamp=%s",
+		log.Printf("eebus_admin_audit action=%s request_id=%s idempotency=%s prior=%s resulting=%s reason=%s timestamp=%s",
 			event.Action, event.RequestID, event.IdempotencyOutcome, event.PriorStateClass,
 			event.ResultingStateClass, event.Reason, event.Timestamp.UTC().Format(time.RFC3339Nano))
 	}
@@ -743,7 +744,7 @@ func newEEBusAdminHandler(eebusAdapter *eebusRuntimeAdapter, eebusAdmin eebusrun
 }
 
 func unavailableEEBusAdminHandler(readiness eebusadmin.ReadinessV1) http.Handler {
-	return eebusadmin.NewUnavailableHandlerWithReadiness(func() eebusadmin.ReadinessV1 { return readiness })
+	return eebusadmin.NewUnavailableHandlerWithReadiness(func() eebusadmin.ReadinessV1 { return eebusReadinessWithOperatorEndpoint(readiness) })
 }
 
 func eebusReadinessForLifecycle(snapshot eebusRuntimeLifecycleSnapshot) eebusadmin.ReadinessV1 {
@@ -763,4 +764,18 @@ func eebusReadinessForLifecycle(snapshot eebusRuntimeLifecycleSnapshot) eebusadm
 		}
 	}
 	return readiness
+}
+
+func (b *managedSidecarBindings) serveEEBusAdmin(w http.ResponseWriter, r *http.Request) {
+	entry := b.entry(managedEEBusID)
+	err := entry.with(r.Context(), func(native drivermanager.Runtime) error {
+		lease := entry.runtime.active.Load()
+		if lease == nil || lease.adminHandler == nil {
+			return drivermanager.ErrUnavailable
+		}
+		return native.(*eebusManagedDriver).WithGeneration(native.Generation(), func(*eebusRuntimeAdapter, eebusruntime.AdminV1) error { lease.adminHandler.ServeHTTP(w, r); return nil })
+	})
+	if err != nil {
+		unavailableEEBusAdminHandler(eebusReadinessForLifecycle(b.eebusLifecycleSnapshot())).ServeHTTP(w, r)
+	}
 }

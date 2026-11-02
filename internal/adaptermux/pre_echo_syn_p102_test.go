@@ -373,7 +373,7 @@ func TestPreEchoSyn_StuckWrite_IdleReleaseStillFires(t *testing.T) {
 // suppression chain
 // (betweenWritesSyn → preEchoMidFrameSuppress → suppressIdleRelease)
 // blocked the IdleReleaseGrace path, so ownership persisted up to
-// MaxOwnershipDuration (10s).
+// MaxOwnershipDuration.
 //
 // Post-fix:
 //   - suppressIdleRelease no longer reads queueJustDrained — it gates

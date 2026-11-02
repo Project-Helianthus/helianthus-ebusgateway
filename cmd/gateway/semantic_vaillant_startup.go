@@ -509,12 +509,8 @@ func (p *vaillantSemanticPoller) readDhwPseudoCircuitStartupEvidence(ctx context
 	if isDhwPseudoCircuitTemperatureEvidence(flow) {
 		snapshot.FlowTemperatureC = flow
 	}
-	calc, calcKnown := p.readDhwPseudoCircuitStartupTemperatureEvidence(ctx, instance, circuit_calc_flow_temp)
-	if isDhwPseudoCircuitTemperatureEvidence(calc) {
-		snapshot.CalcFlowTempC = calc
-	}
-	if snapshot.FlowTemperatureC == nil && snapshot.CalcFlowTempC == nil {
-		return nil, flowKnown && calcKnown
+	if snapshot.FlowTemperatureC == nil {
+		return nil, flowKnown
 	}
 	return snapshot, true
 }
@@ -914,14 +910,6 @@ func (p *vaillantSemanticPoller) refreshBoilerStatusStartup(ctx context.Context)
 
 	snapshot := &vaillantBoilerSnapshot{}
 	updated := false
-	if boilerAddress != 0 {
-		probeCtx, cancel := p.startupProbeContext(ctx)
-		if value := p.readB509DATA2c(probeCtx, boilerAddress, boiler_b509_flow_temperature); value != nil {
-			snapshot.FlowTemperatureC = value
-			updated = true
-		}
-		cancel()
-	}
 	if raw, ok := p.readB524Startup(ctx, localDHW.opcode, localDHW.group, dhwInstance, dhw_current_temp); ok {
 		if value := decodeB524Float32FromRaw(raw); value != nil {
 			snapshot.DhwTemperatureC = value

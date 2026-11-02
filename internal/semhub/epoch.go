@@ -17,6 +17,11 @@ type EpochRecord struct {
 	Kind        EventKind            `json:"kind"`
 	// Assets names the assets a fence or retirement covers, in bytewise order.
 	Assets []semreg.AssetID `json:"assets,omitempty"`
+	// Ordinal is the per-source admission ordinal of a hub-native succession
+	// within its incarnation. It is set on both records of the succession's
+	// single append (the retired predecessor and the admitted successor) and is
+	// zero on every other record.
+	Ordinal uint64 `json:"ordinal,omitempty"`
 }
 
 // EpochJournal records epoch lifecycle transitions. It is the seam for
@@ -184,7 +189,7 @@ func (h *Hub) revokeEpoch(id semreg.SourceID, epoch semreg.SourceEpochID) error 
 	}
 	sort.Slice(affected, func(i, j int) bool { return affected[i] < affected[j] })
 	// Journal first: a failed append leaves the source live and unchanged.
-	if err := h.journal.Append(EpochRecord{Incarnation: h.incarnation, Source: id, Epoch: epoch, Generation: generation, Kind: EventSourceRetired, Assets: affected}); err != nil {
+	if err := h.appendEpochLocked(EpochRecord{Incarnation: h.incarnation, Source: id, Epoch: epoch, Generation: generation, Kind: EventSourceRetired, Assets: affected}); err != nil {
 		h.unlock()
 		return fmt.Errorf("semhub: journal source retirement: %w", err)
 	}
@@ -193,5 +198,20 @@ func (h *Hub) revokeEpoch(id semreg.SourceID, epoch semreg.SourceEpochID) error 
 	src.token++
 	h.bus.emit(Event{Kind: EventSourceRetired, Source: id, Epoch: epoch, Generation: generation, NoPublication: true})
 	h.unlock()
+	return nil
+}
+
+// appendEpochLocked preserves the existing journal semantics and retains detached
+// recovery history. The caller holds the hub mutex; no new persistence occurs.
+func (h *Hub) appendEpochLocked(records ...EpochRecord) error {
+	if err := h.journal.Append(records...); err != nil {
+		return err
+	}
+	if h.recovery == nil {
+		return nil
+	}
+	for _, record := range records {
+		h.epochHistory = append(h.epochHistory, cloneRecord(record))
+	}
 	return nil
 }

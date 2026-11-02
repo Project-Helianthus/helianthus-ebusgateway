@@ -11,10 +11,13 @@ import (
 )
 
 func TestPortalCatalogV1IsDedicatedAndBounded(t *testing.T) {
-	h := Handler{Catalog: catalogv1.New(contributionv1.NewStaticIndex(), nil, nil, nil)}
+	h := Handler{Catalog: catalogv1.New(contributionv1.NewStaticIndex(), nil, nil)}
 	req := httptest.NewRequest(http.MethodPost, Path, bytes.NewBufferString(`{"operationName":"PortalCatalogV1","variables":{}}`))
 	res := httptest.NewRecorder()
 	h.ServeHTTP(res, req)
+	if bytes.Contains(res.Body.Bytes(), []byte(`"authorization_scope"`)) {
+		t.Fatal("retired authorization scope is published")
+	}
 	if res.Code != http.StatusOK || !bytes.Contains(res.Body.Bytes(), []byte(`"portalCatalogV1"`)) || !bytes.Contains(res.Body.Bytes(), []byte(`"domains"`)) {
 		t.Fatalf("status=%d body=%s", res.Code, res.Body.String())
 	}
@@ -26,19 +29,14 @@ func TestPortalCatalogV1IsDedicatedAndBounded(t *testing.T) {
 	}
 }
 
-func TestPortalRequestRejectsTrailingJSONBeforeCallerResolution(t *testing.T) {
-	callerResolved := false
+func TestPortalRequestRejectsTrailingJSON(t *testing.T) {
 	h := Handler{
-		Catalog: catalogv1.New(contributionv1.NewStaticIndex(), nil, nil, nil),
-		Caller: func(*http.Request) (any, error) {
-			callerResolved = true
-			return "caller", nil
-		},
+		Catalog: catalogv1.New(contributionv1.NewStaticIndex(), nil, nil),
 	}
 	req := httptest.NewRequest(http.MethodPost, Path, bytes.NewBufferString(`{"operationName":"PortalCatalogV1","variables":{}} {"operationName":"PortalCatalogV1","variables":{}}`))
 	res := httptest.NewRecorder()
 	h.ServeHTTP(res, req)
-	if res.Code != http.StatusBadRequest || callerResolved {
-		t.Fatalf("trailing JSON status=%d callerResolved=%v body=%s", res.Code, callerResolved, res.Body.String())
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("trailing JSON status=%d body=%s", res.Code, res.Body.String())
 	}
 }

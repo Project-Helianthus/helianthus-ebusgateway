@@ -480,6 +480,8 @@ func (p *vaillantSemanticPoller) hydrateFromCache(snapshot semanticCacheSnapshot
 	}
 	if snapshot.Boiler != nil {
 		p.boiler = boilerSnapshotFromGraphQL(snapshot.Boiler)
+		// Cache hydration preserves legacy return independently of B524 decoding.
+		p.boiler.ReturnTemperatureC = cloneFloat64Ptr(snapshot.Boiler.State.ReturnTemperatureC)
 	}
 	semanticZoneCount.Set(int64(len(p.zones)))
 }
@@ -837,4 +839,30 @@ func seedDhwFreshness(snapshot *vaillantDhwSnapshot, source semanticSnapshotSour
 	if snapshot.HolidayEndDate != "" {
 		setFieldFreshness(fields, dhwFieldHolidayEndDate, source, stale)
 	}
+}
+
+// mergePublishedBoilerFlow replaces the legacy scalar even on withholding;
+// value-only cache and system-flow mirrors cannot seed this field.
+func (p *vaillantSemanticPoller) mergePublishedBoilerFlow() bool {
+	p.mu.Lock()
+	publisher, target := p.boilerThermal, p.boilerAddress
+	p.mu.Unlock()
+	var flow *float64
+	if publisher != nil {
+		flow = publisher.scalar(target)
+	}
+	p.mu.Lock()
+	var previous *float64
+	if p.boiler != nil {
+		previous = p.boiler.FlowTemperatureC
+	}
+	changed := !floatPtrEquals(previous, flow)
+	if p.boiler == nil && flow != nil {
+		p.boiler = &vaillantBoilerSnapshot{}
+	}
+	if p.boiler != nil {
+		p.boiler.FlowTemperatureC = flow
+	}
+	p.mu.Unlock()
+	return changed
 }

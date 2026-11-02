@@ -363,46 +363,6 @@ func revalidateRuntimeStateMembers(
 	return result
 }
 
-// startRuntimeStateRevalidator runs an immediate revalidation cycle and
-// then schedules periodic cycles at the supplied cadence (defaults to
-// 15 min when interval ≤ 0). Each cycle reads the current member list
-// from Manager.State so postponed members from earlier cycles are
-// naturally re-included on the next tick — no separate Postponed
-// queue is needed. (Codex P2 follow-up on PR #615 — without periodic
-// cycles, postponed members beyond cap would stay stale until process
-// restart.)
-//
-// Returns immediately; the cycle goroutine exits on ctx cancellation.
-func startRuntimeStateRevalidator(
-	ctx context.Context,
-	mgr *runtimestate.Manager,
-	gw *ebusgateway.Gateway,
-	cfg ebusgateway.Config,
-	admittedSource byte,
-	interval time.Duration,
-) {
-	if interval <= 0 {
-		interval = 15 * time.Minute
-	}
-	rotation := newRevalidationRotation()
-	blocklist := globalEvictionBlocklist
-	go func() {
-		// First cycle runs immediately so cached responders refresh
-		// confidence within ~5 s of admission per M5 acceptance.
-		revalidateRuntimeStateMembers(ctx, mgr, gw, cfg, admittedSource, rotation, blocklist)
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				revalidateRuntimeStateMembers(ctx, mgr, gw, cfg, admittedSource, rotation, blocklist)
-			}
-		}
-	}()
-}
-
 // globalEvictionBlocklist is the per-process M5 eviction blocklist used by
 // both the revalidator loop (to skip resurrection during reconciliation)
 // and the AddressTableInserter observer hook (to clear entries on fresh
@@ -423,9 +383,9 @@ func (revalidateCounterAdapter) Inc(o runtimestate.RevalidationOutcome) {
 // recordAdmittedSourceInRuntimeState writes ebus.self with the validated
 // source, companion (if any), and SelectionMethod. Cache mutation only —
 // no bus traffic — so it's safe to call synchronously regardless of
-// startup-scan progress. The M5 revalidator start is intentionally
-// separated into startRuntimeStateRevalidator so the caller can defer it
-// to post-validation (after startupScanSignals.activeProbePassed) and
+// startup-scan progress. The M5 revalidator (the generation-owned
+// runRuntimeStateRevalidatorLoop) is intentionally separate so the caller
+// can defer it to post-validation (after startupScanSignals.activeProbePassed) and
 // avoid emitting directed 07 04 probes during the startup admission
 // scan window. (Codex P2 follow-up on PR #615.)
 //
@@ -450,24 +410,4 @@ func recordAdmittedSourceInRuntimeState(
 		self.CompanionTarget = &companion
 	}
 	mgr.UpdateSelf(self)
-}
-
-// finalizeRuntimeStateForAdmittedSource is the convenience composition
-// used by the warmup admission path (where activeProbePassed has already
-// fired): records ebus.self synchronously AND immediately starts the M5
-// revalidator. For the synchronous static / override admission path,
-// the caller MUST instead call recordAdmittedSourceInRuntimeState
-// directly and defer startRuntimeStateRevalidator to post-validation.
-func finalizeRuntimeStateForAdmittedSource(
-	ctx context.Context,
-	mgr *runtimestate.Manager,
-	gw *ebusgateway.Gateway,
-	cfg ebusgateway.Config,
-	admittedSource byte,
-	companion byte,
-	selectionMethod runtimestate.SelectionMethod,
-	hasCompanion bool,
-) {
-	recordAdmittedSourceInRuntimeState(mgr, admittedSource, companion, selectionMethod, hasCompanion)
-	startRuntimeStateRevalidator(ctx, mgr, gw, cfg, admittedSource, 0)
 }

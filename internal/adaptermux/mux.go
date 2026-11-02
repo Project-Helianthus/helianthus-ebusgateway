@@ -33,7 +33,8 @@ type Config struct {
 	// Protocol is "enh" or "ens".
 	Protocol string
 
-	// Network and Address specify the adapter endpoint (e.g., "tcp", "boiler.local:9999").
+	// Network and Address specify the adapter endpoint (e.g., "tcp",
+	// "boiler.local:9999", or NetworkSerial and an absolute device path).
 	Network string
 	Address string
 
@@ -49,9 +50,16 @@ type Config struct {
 	// ReconnectMaxDelay is the maximum reconnection backoff. Default: 30s.
 	ReconnectMaxDelay time.Duration
 
-	// MaxOwnershipDuration is the hard limit on continuous bus ownership.
-	// Default: 10s.
+	// MaxOwnershipDuration is the hard limit on continuous bus ownership,
+	// measured from the grant. Default: 10s. External sessions retain this
+	// budget for long transactions with continuing wire activity.
 	MaxOwnershipDuration time.Duration
+
+	// GatewayMaxOwnershipDuration additionally bounds gateway grants.
+	// Default: 1500ms. Failure paths release gateway ownership immediately;
+	// this is only the last-resort guard for a stuck grant (issue #1401).
+	// The shared MaxOwnershipDuration limit still applies when shorter.
+	GatewayMaxOwnershipDuration time.Duration
 
 	// IdleReleaseGrace is the grace period after bus acquisition before
 	// idle SYN can release ownership. Default: 200ms.
@@ -77,34 +85,6 @@ type Config struct {
 	// expectations from the immediate-release policy that fits the
 	// gateway's own pattern.
 	ExternalSessionSYNGrace time.Duration
-
-	// SYNInterval is the expected eBUS SYN cadence on the wire (default
-	// 4576 µs at 2400 baud). Used by tryGrantAndStart to decide whether
-	// the bus is idle enough to short-circuit fairness arbitration and
-	// hand the next pending external START to its session immediately.
-	// (Proxy-bug C1 / R1.)
-	SYNInterval time.Duration
-
-	// PendingStartTTL bounds the dwell time of an external pending
-	// START in the arbitrator's pendingExternal queue. Requests whose
-	// enqueuedAt has aged past this value are dropped from the queue
-	// head and rejected with errStaleStartRequest so external clients
-	// (ebusd) can retry cleanly when they actually want the bus.
-	// (Proxy-bug C3 / R3.)
-	//
-	// Sentinels:
-	//   - 0 (the zero value): use the production default (currently
-	//     250 ms — slightly above the default ReadTimeout so an
-	//     enqueue right after a read timeout still sees its first
-	//     grant attempt before the TTL drain fires; the request will
-	//     have been kicked via requestStartForSession's idle path
-	//     well before that, so the TTL only catches genuinely stuck
-	//     entries).
-	//   - Negative: disables the drain entirely. Tests and the very
-	//     rare deployment that needs pre-C3 behavior under long
-	//     gateway contention can pass -1 (or any negative duration)
-	//     to opt out.
-	PendingStartTTL time.Duration
 
 	// IsKnownInitiatorByte is an optional predicate that classifies a
 	// FAILED arbitration data byte as a real bus initiator (true) versus
@@ -138,95 +118,12 @@ type Config struct {
 	// side-observation in EBUSD-VERIFICATION-2026-05-11-batch3.md).
 	LatencyHistogramReportInterval time.Duration
 
-	// StartDeadline is the maximum time to wait for the adapter to
+	// StartDeadline also bounds gateway admission while waiting for SYN.
+	// Once selected, it is the maximum time to wait for the adapter to
 	// respond with STARTED/FAILED after a START request. Default: 5s.
 	// If the adapter does not respond within this duration, the pending
 	// start is cleared and the session is notified of failure (AM8).
 	StartDeadline time.Duration
-
-	// PostExternalReleaseGrace is the F-28 (batch-25, iter5,
-	// 2026-05-14) "polite yield" window. When an external session
-	// releases bus ownership, the arbitrator defers gateway-only
-	// grants for this duration so ebusd's TCP-delayed next
-	// ENH_REQ_START has time to arrive and be queued before the
-	// gateway's semantic poll loop re-bids and locks the bus.
-	//
-	// Live evidence (iter5 byte trace): without this gate, the
-	// gateway re-bids within microseconds after every external
-	// release, outracing ebusd's ~10-100ms TCP roundtrip every
-	// time. The result was a 200-500ms median ebusd START → STARTED
-	// latency, which compounds across multi-register scans into
-	// the residual 1-5s tail observed post-F-27.
-	//
-	// Sentinels:
-	//   - 0 (default): use 50ms.
-	//   - Negative: disable the cooldown entirely (legacy).
-	//
-	// 50ms is approximately:
-	//   ebusd's typical TCP roundtrip (~5-15ms)
-	//   + ebusd's bus-state-machine transition (~5-20ms)
-	//   + safety margin (10-30ms)
-	// Each 50ms cooldown sacrifices ~10% of the gateway's
-	// raw poll throughput when tight ebusd activity is happening,
-	// in exchange for ebusd actually completing its scans.
-	PostExternalReleaseGrace time.Duration
-
-	// FairnessRatio controls the gateway-vs-external grant rotation
-	// when BOTH a gateway pending START and at least one external
-	// pending START coexist. The arbitrator counts contended rotations
-	// and every Nth rotation hands the grant to external FIFO instead
-	// of the gateway (the default-priority bidder). Larger values
-	// favor the gateway; smaller values favor external sessions
-	// (ebusd).
-	//
-	// F-25 (batch-22, iter2, 2026-05-14): default 2 (50/50 split).
-	// Pre-F-25 this was a hard-coded constant of 4 (75% gateway /
-	// 25% external) which produced live `arbitration won in invalid
-	// state` cascades from ebusd because gateway-poll bursts left
-	// only ~25% of bus slots for ebusd to bid into, and the resulting
-	// stale STARTED dispatches collided with ebusd's bs_recvCmd
-	// state. See DefaultFairnessRatio in arbitration.go for the full
-	// rationale and the live evidence trail (iter1-result-
-	// 20260514T145344Z.md).
-	//
-	// Sentinels:
-	//   - 0 (zero value): use DefaultFairnessRatio (2).
-	//   - Negative: clamped to DefaultFairnessRatio (defensive).
-	//   - 1: every contended rotation alternates; expected gateway
-	//     share ~50% but ebusd MAY pre-empt back-to-back if it has
-	//     a queue. Tests use 1 to force-deterministic ebusd grants.
-	FairnessRatio int
-
-	// ExternalStartStaleness bounds the wall-clock age (measured from
-	// startRequest.enqueuedAt) of an EXTERNAL-session START at the
-	// moment the adapter reports `StreamEventStarted`. If the request
-	// has been in the gateway's path (pendingExternal queue + in-flight
-	// adapter arbitration) for longer than this budget, the grant is
-	// silently aborted: the session's notify channel receives
-	// `cancelled: true` (session.go's handleStart silent-suppress per
-	// F-17 takes the no-deliver branch) and ownership is NOT confirmed.
-	// The wire-level arbitration win still happened — bus state
-	// recovers naturally via the next SYN idle burst when no SEND
-	// frame follows.
-	//
-	// Iter1 fix (F-24, batch-21, 2026-05-14): ebusd's bus state machine
-	// times out internally before the gateway's queue+arbitration
-	// pipeline can deliver ENH_RES_STARTED for tight-scan-08 sub-
-	// register reads. When the late STARTED arrives, ebusd is in
-	// bs_recvCmd / bs_skip (mid-parsing the gateway's prior poll
-	// response) and logs `arbitration won in invalid state {skip|
-	// receive command|ready}`, silently dropping the request. The
-	// staleness guard prevents the gateway from delivering a grant
-	// that ebusd has already discarded, eliminating the bus-state
-	// desync. Default: 300ms (well below ebusd's typical 1-2s
-	// arbitration-wait timeout, but above the steady-state median
-	// queue+arbitration latency of ~50-150ms).
-	//
-	// Sentinels:
-	//   - 0 (zero value): use the 300ms default.
-	//   - Negative: disable the guard entirely (legacy behavior;
-	//     useful for regression testing). Tests use -1.
-	ExternalStartStaleness time.Duration
 
 	// BlackholeThreshold is the duration of consecutive read timeouts
 	// (after the bus was previously active) before triggering a TCP
@@ -286,10 +183,10 @@ func (c *Config) defaults() {
 		c.ReconnectMaxDelay = 30 * time.Second
 	}
 	if c.MaxOwnershipDuration == 0 {
-		// 10s is strictly larger than any request timeout (5s for B524
-		// probes, 2s semantic default) to prevent the ownership guard
-		// from firing before a legitimate request completes.
 		c.MaxOwnershipDuration = 10 * time.Second
+	}
+	if c.GatewayMaxOwnershipDuration == 0 {
+		c.GatewayMaxOwnershipDuration = 1500 * time.Millisecond
 	}
 	if c.IdleReleaseGrace == 0 {
 		// 200ms is enough for any eBUS transaction to complete (~100ms for
@@ -313,24 +210,6 @@ func (c *Config) defaults() {
 	}
 	if c.LatencyHistogramReportInterval == 0 {
 		c.LatencyHistogramReportInterval = 60 * time.Second
-	}
-	if c.SYNInterval == 0 {
-		// 4576 µs ≈ one SYN period at 2400 baud on a clean eBUS line.
-		// (Proxy-bug C1 / R1.)
-		c.SYNInterval = 4576 * time.Microsecond
-	}
-	if c.PendingStartTTL == 0 {
-		// Default 250 ms — slightly above the default ReadTimeout
-		// (200 ms) so a START enqueued right after a read timeout
-		// still sees a grant attempt before the TTL drain fires.
-		// requestStartForSession kicks tryGrantAndStart on every
-		// enqueue, so on an idle bus the request typically lands a
-		// grant in < 1 ms; the 250 ms window is only there for
-		// genuinely stuck requests where the kick saw no idle path
-		// (e.g. blockingArbActive, pendingStartAbsorb > 0).
-		// Negative values disable the drain. (Proxy-bug C3 / R3 +
-		// Codex P1 round 1 on PR #623.)
-		c.PendingStartTTL = 250 * time.Millisecond
 	}
 	if c.ExternalSessionSYNGrace == 0 {
 		// F-27 (batch-24, iter4, 2026-05-14): lowered from 2s to 250ms.
@@ -367,37 +246,6 @@ func (c *Config) defaults() {
 	}
 	if c.StartDeadline <= 0 {
 		c.StartDeadline = 5 * time.Second
-	}
-	if c.ExternalStartStaleness == 0 {
-		// F-24 (batch-21, 2026-05-14): 300ms default. Well below ebusd's
-		// arbitration-wait timeout (~1-2s) so legitimate grants flow
-		// through; above the steady-state queue+arbitration latency
-		// (~50-150ms median) so normal traffic is unaffected. Operators
-		// can tune via the addon options.
-		c.ExternalStartStaleness = 300 * time.Millisecond
-	}
-	if c.PostExternalReleaseGrace == 0 {
-		// F-36 (batch-32, iter13): 250ms cooldown after every external
-		// release to give ebusd's TCP-delayed next ENH_REQ_START a
-		// window to arrive and queue before the gateway re-claims the
-		// bus. This curbs the gateway's semantic poll loop from
-		// outracing ebusd's next request via the in-process scheduler.
-		//
-		// History: F-27 (250ms→2s tested but regressed; reverted),
-		// F-28/F-29 set 50→100ms, F-36 widened to 250ms — current
-		// value. F-37 attempted 500ms but regressed in measurement
-		// and was reverted to F-36's 250ms. PR #634 P2 (Codex review,
-		// 2026-05-15): comment previously claimed F-37 widened to
-		// 500ms; that change was rolled back, so 250ms (F-36) is the
-		// authoritative value.
-		c.PostExternalReleaseGrace = 250 * time.Millisecond
-	}
-	if c.FairnessRatio == 0 {
-		// F-25 (batch-22, iter2, 2026-05-14): 2 = 50/50 split under
-		// gateway+external contention. Lowered from the previous
-		// hard-coded 4 (75% gateway / 25% external) which starved
-		// ebusd of bus slots during tight-scan-08 loops.
-		c.FairnessRatio = DefaultFairnessRatio
 	}
 	if c.BlackholeThreshold <= 0 {
 		c.BlackholeThreshold = 30 * time.Second
@@ -447,19 +295,19 @@ type arbitrationRequester interface {
 // adapter but not yet confirmed via STARTED/FAILED response.
 // Protected by stateMu.
 type pendingStartState struct {
-	sessionID   uint64
-	initiator   byte
-	notify      chan startResult
-	deadline    *time.Timer // AM8: fires if adapter doesn't respond before cfg.StartDeadline
-	blockingArb bool        // true when using blocking StartArbitration fallback
+	// responseReceived is guarded by stateMu. Once the wire response has
+	// arrived, cancellation and deadline expiry must not expect another one.
+	responseReceived bool
+	lifecycleEpoch   uint64 // selection cannot survive reset, reconnect, or close
+	sessionID        uint64
+	initiator        byte
+	notify           chan startResult
+	deadline         *time.Timer // AM8: fires if adapter doesn't respond before cfg.StartDeadline
+	blockingArb      bool        // true when using blocking StartArbitration fallback
 
 	// req is the arbitrator's startRequest pointer kept by the mux for
-	// the duration of the in-flight grant. It carries the cancelled
-	// flag the mux checks before delivering a late STARTED: if the
-	// session has re-submitted a START while this grant was in flight
-	// at the adapter, the cancelled flag is true and the delivery path
-	// converts STARTED into FAILED instead of handing the bus to a
-	// session that abandoned the grant. (Proxy-bug C4 / R4.)
+	// the duration of the in-flight grant. A cancelled wire win is retired
+	// at the next SYN and counted rather than delivered to an old waiter.
 	req *startRequest
 }
 
@@ -469,6 +317,8 @@ type pendingStartState struct {
 //   - Passive path: filtered symbol callback (third-party only)
 //   - Session management: external ENH clients (ebusd)
 type Mux struct {
+	undeliverableStarted atomic.Uint64
+
 	cfg    Config
 	logger *log.Logger
 
@@ -530,6 +380,14 @@ type Mux struct {
 
 	pendingStart       *pendingStartState // in-flight START awaiting STARTED/FAILED
 	pendingStartAbsorb int                // stale adapter responses to absorb (FAILED/STARTED from cancelled requests)
+	// localLosers tracks clients supplied a source by local FAILED independently
+	// of the selected waiter, including while its physical response is absorbed.
+	// Protected by stateMu; cleared at a response or observed SYN boundary.
+	localLosers []*startRequest
+	// localLoserSource is the selected source advertised to localLosers.
+	// It also identifies a retired selection after SYN clears that set,
+	// until another selection or lifecycle boundary retires its identity.
+	localLoserSource byte
 	// absorbSkipLog* rate-limits the hot tryGrantAndStart skip log while
 	// pendingStartAbsorb is acting as the stale-response barrier.
 	absorbSkipLogLastEmit        time.Time
@@ -613,33 +471,31 @@ type Mux struct {
 
 	// gatewayTxnActive reports whether bus.Send is actively consuming
 	// activeCh for a gateway transaction. Separate from ownership:
-	// ownership can outlive the transaction up to IdleReleaseGrace.
-	// Only when gatewayTxnActive is true are bytes delivered to
-	// activeCh. Set in completeArbitrationGrant for the gateway,
-	// cleared when ownership is released (transaction complete,
-	// NACK, SYN timeout, or idle grace expired).
+	// after a normal end, ownership can outlive the transaction up to
+	// IdleReleaseGrace. Only when gatewayTxnActive is true are bytes
+	// delivered to activeCh (plus the owed resync SYNs below). Set by
+	// the first gateway write after completeArbitrationGrant, cleared
+	// when the transaction ends (SYN terminator, transaction complete,
+	// NACK, SYN timeout, idle grace expired). A failed transaction (write
+	// error, active read timeout, context cancel, arbitration loss,
+	// abandoned on re-bid) also releases the ownership in the same
+	// critical section (issue #1401).
 	gatewayTxnActive bool
 
-	// collisionResyncSYNs tracks only the fixed protocol.Bus recovery
-	// envelope after F-NEW-29's first-byte foreign-initiator signal. It is
-	// protected by stateMu and reset at the next grant or recovery handoff.
-	collisionResyncSYNs uint8
+	// collisionResyncOwed is the number of wire SYNs still owed to
+	// protocol.Bus after a confirmed arbitration loss released the gateway
+	// (issue #1401; F-NEW-29 first-byte foreign initiator or escape-pair
+	// echo collision). The bus waits for protocol.CollisionRetryResyncSYNCount
+	// SYNs before it re-bids, and with ownership already released no SYN
+	// would otherwise reach activeCh. Protected by stateMu; zeroed by the
+	// collision lifecycle completion, the next gateway bid or grant, reset,
+	// reconnect, context cancellation and Close.
+	collisionResyncOwed uint8
 
-	// F-24-fix (batch-23, 2026-05-17, Codex PR #634 P1 thread
-	// "Wait for idle after suppressing stale STARTED"): when the
-	// F-24 stale-STARTED suppression branch fires, the external
-	// initiator has WON wire arbitration but the gateway never
-	// confirmed ownership (`arb.hasOwner` stays false). If a fresh
-	// grant fires immediately, the next initiator (gateway or
-	// another external) issues a START in the middle of the
-	// abandoned external winner's bus slot, colliding with bytes
-	// already on the wire. deferRegrantUntilNextSyn defers the
-	// follow-up `tryGrantAndStart` until the SYN handler observes
-	// the next SYN-idle boundary — proof the abandoned frame
-	// terminated. Cleared in onSYNLocked (any SYN observation
-	// satisfies the wait — SYN itself is a bus-idle marker).
-	// Protected by stateMu.
+	// A cancelled or disconnected wire winner occupies its slot until the next SYN.
 	deferRegrantUntilNextSyn bool
+	arbitrationRecovery      arbitrationRecovery // requested under stateMu, applied only by readLoop
+	retiredSelection         bool                // recognizes late results after the absorb budget and SYN fence end
 
 	// activeTxn is the diagnostics snapshot for the current/last gateway
 	// transaction. Updated under stateMu. Exposed via ActiveTxnSnapshot()
@@ -655,6 +511,31 @@ type Mux struct {
 	// Gateway echo tracker (for the internal active path).
 	// Protected by stateMu.
 	gatewayEcho *echoTracker
+
+	// gatewayLeadWait is the outstanding raw-echo expectation for the
+	// escape lead of a gateway write (issue #1003). Set by the sendLoop
+	// write path, resolved once by the readLoop's raw-symbol handling or
+	// retired at reset/reconnect/close. See raw_symbols.go.
+	gatewayLeadWait atomic.Pointer[gatewayLeadWait]
+
+	// gatewayEscapeDiag counts failed escape-pair verifications and rate-limits
+	// their log line (issue #1416). See raw_symbols.go.
+	gatewayEscapeDiag gatewayEscapeEchoDiag
+
+	// gatewaySuffixCommitHook, when set, runs after a gateway escape lead
+	// was written and before its suffix commit. Test-only seam for
+	// interleaving a lifecycle boundary at the commit point; nil in
+	// production.
+	gatewaySuffixCommitHook func()
+	// gatewayLeadCommitHook, when set, runs after the wait is armed and
+	// before the lead is committed; nil in production.
+	gatewayLeadCommitHook func()
+
+	// externalAbandonAfter schedules the external-session abandon
+	// watchdog (F-34/F-35). It defaults to time.AfterFunc; it is a field
+	// so deterministic tests can capture and fire the deadline without
+	// sleeping on the wall clock.
+	externalAbandonAfter func(time.Duration, func())
 
 	// External sessions.
 	sessionsMu sync.Mutex // write lock — protects map AND session echo trackers
@@ -796,7 +677,6 @@ type sendRequest struct {
 func New(cfg Config) *Mux {
 	cfg.defaults()
 	arb := newArbitrator()
-	arb.setPolicy(cfg.PendingStartTTL, cfg.FairnessRatio, cfg.PostExternalReleaseGrace)
 	mux := &Mux{
 		cfg:          cfg,
 		logger:       cfg.Logger,
@@ -807,6 +687,7 @@ func New(cfg Config) *Mux {
 		activeSendCh: make(chan sendRequest, 256),  // AM49: increased from 16 for burst tolerance
 		activeCh:     make(chan activeEvent, 4096), // unified byte+error channel (4096: survives ~16s of bus traffic during arbitration waits)
 	}
+	mux.externalAbandonAfter = func(d time.Duration, f func()) { time.AfterFunc(d, f) }
 	// Phase 3 Step B3.2: instantiate the v8 classifier only when a
 	// non-Off mode is configured. ModeOff is equivalent to a nil
 	// classifier (both yield a no-op Observe path); leaving it nil
@@ -940,11 +821,37 @@ func (m *Mux) Close() error {
 			m.cancel()
 		}
 
+		// Close the adapter transport before any arbitration teardown.
+		// The readLoop blocks in m.upstream, not necessarily m.conn; test
+		// transports and some wrappers are distinct objects, so closing
+		// only conn can leave readLoop parked forever. Issue #1003: a
+		// gateway escape-pair commit holds the arbitrator lock while its
+		// write is in flight, and the teardown below takes that lock
+		// (forceRelease, failAllPending), directly or behind a readLoop
+		// that holds stateMu while waiting for it. Closing first fails a
+		// stalled write, so the commit returns and the teardown proceeds
+		// instead of waiting for a write deadline (or forever, with
+		// deadlines disabled). The pointers stay published until the
+		// teardown below is done, so a racing tryGrantAndStart still sees
+		// the (now closed) transport's capabilities and fails through its
+		// normal error paths.
+		m.connMu.Lock()
+		upstream := m.upstream
+		conn := m.conn
+		m.connMu.Unlock()
+		if upstream != nil {
+			m.closeErr = upstream.Close()
+		} else if conn != nil {
+			m.closeErr = conn.Close()
+		}
+
 		// Cancel in-flight pending START if any.
+		m.retireGatewayLeadWait(errors.New("adaptermux: closed"))
 		m.stateMu.Lock()
 		pendingToCancel := m.pendingStart
 		m.pendingStart = nil
 		m.pendingStartAbsorb = 0
+		m.localLosers = nil
 		m.clearAbsorbSkipLogStateLocked()
 		// F-NEW-25: stop the absorb-reset debounce timer if armed.
 		// Stop() is best-effort — if the callback is already
@@ -963,13 +870,9 @@ func (m *Mux) Close() error {
 		if pendingToCancel != nil && pendingToCancel.deadline != nil {
 			pendingToCancel.deadline.Stop() // AM8: cancel deadline timer
 		}
-		// batch-23 round-5 (Codex P2 2026-05-17 PR #634): clear F-24
-		// stale-STARTED deferral latch on Close. Close is the strongest
-		// possible boundary — no further grants will be attempted on
-		// this mux, but clearing the flag keeps state coherent for any
-		// observer/test that inspects post-Close state and matches the
-		// invariant set by reconnect() / handleReset().
 		m.deferRegrantUntilNextSyn = false
+		m.arbitrationRecovery = arbitrationRecoveryReset
+		m.retiredSelection = false
 		// Closing is also a transaction-generation boundary. Leave no
 		// recovery token live after shutdown: a caller may still hold an
 		// activeTransport reference, but it must not be able to terminalize
@@ -979,7 +882,7 @@ func (m *Mux) Close() error {
 			m.recordGatewayInactive(ReasonContextCancel)
 		}
 		m.gatewayEcho.reset()
-		m.collisionResyncSYNs = 0
+		m.collisionResyncOwed = 0
 		m.activeTxn.firstByteSuspectArbLoss.Store(false)
 		m.stateMu.Unlock()
 		if pendingToCancel != nil {
@@ -1017,20 +920,10 @@ func (m *Mux) Close() error {
 		}
 		sessWg.Wait()
 
-		// Close adapter transport. The readLoop blocks in m.upstream, not
-		// necessarily m.conn; test transports and some wrappers are distinct
-		// objects, so closing only conn can leave readLoop parked forever.
 		m.connMu.Lock()
-		upstream := m.upstream
-		conn := m.conn
 		m.upstream = nil
 		m.conn = nil
 		m.connMu.Unlock()
-		if upstream != nil {
-			m.closeErr = upstream.Close()
-		} else if conn != nil {
-			m.closeErr = conn.Close()
-		}
 
 		m.wg.Wait()
 
@@ -1193,15 +1086,31 @@ func (m *Mux) ManagedConnectionReady() bool {
 	return ready
 }
 
-// connect dials the adapter and performs the INIT handshake.
+// openUpstreamConn opens the serial device or dials the network endpoint.
+func (m *Mux) openUpstreamConn() (net.Conn, error) {
+	if m.cfg.Network == NetworkSerial {
+		conn, err := openSerialConn(m.cfg.Address, m.cfg.Protocol)
+		if err != nil {
+			return nil, fmt.Errorf("open serial %s: %w", m.cfg.Address, err)
+		}
+		return conn, nil
+	}
+	dialer := net.Dialer{Timeout: m.cfg.DialTimeout}
+	conn, err := dialer.DialContext(m.ctx, m.cfg.Network, m.cfg.Address)
+	if err != nil {
+		return nil, fmt.Errorf("dial %s/%s: %w", m.cfg.Network, m.cfg.Address, err)
+	}
+	return conn, nil
+}
+
+// connect opens the adapter connection and performs the INIT handshake.
 func (m *Mux) connect() error {
 	m.connMu.Lock()
 	defer m.connMu.Unlock()
 
-	dialer := net.Dialer{Timeout: m.cfg.DialTimeout}
-	conn, err := dialer.DialContext(m.ctx, m.cfg.Network, m.cfg.Address)
+	conn, err := m.openUpstreamConn()
 	if err != nil {
-		return fmt.Errorf("dial %s/%s: %w", m.cfg.Network, m.cfg.Address, err)
+		return err
 	}
 
 	// Set TCP options (log failures instead of discarding).
@@ -1566,6 +1475,27 @@ func (m *Mux) reconnect() (delegated bool, err error) {
 	owner := m.connectionLostOwner()
 	delegated = owner != nil
 	managedGateHeld := false
+	// Issue #1003: a gateway write waiting for an escape pair's raw echoes
+	// holds its managed-use lease, and an escape suffix commit holds the
+	// arbitrator lock while it writes. The old stream can no longer echo
+	// that pair, so the reconnect fences it: the write fails promptly and
+	// releases the lease before the managed gate is drained. On the
+	// delegated path the fence follows the upstream close, which unblocks
+	// a suffix write stalled on the old connection.
+	retireErr := fmt.Errorf("adaptermux: adapter disconnected: %w", ebuserrors.ErrAdapterReset)
+	if !delegated {
+		// Close the old connection for callback-free muxes before the
+		// arbitration teardown below, for the same reason as the managed
+		// path: a commit write stalled on it holds the arbitrator lock.
+		m.connMu.Lock()
+		if m.conn != nil {
+			if err := m.conn.Close(); err != nil {
+				m.logger.Printf("adaptermux: old conn close: %v", err)
+			}
+		}
+		m.connMu.Unlock()
+		m.retireGatewayLeadWait(retireErr)
+	}
 	if delegated {
 		m.connectionLossDelegated.Store(true)
 
@@ -1584,6 +1514,7 @@ func (m *Mux) reconnect() (delegated bool, err error) {
 				m.logger.Printf("adaptermux: managed conn close: %v", closeErr)
 			}
 		}
+		m.retireGatewayLeadWait(retireErr)
 
 		m.connectionUseMu.Lock()
 		managedGateHeld = true
@@ -1608,6 +1539,7 @@ func (m *Mux) reconnect() (delegated bool, err error) {
 	m.phase.reset(wirePhaseIdle)
 	m.arb.forceRelease()
 	m.gatewayEcho.reset()
+	m.collisionResyncOwed = 0
 	if m.gatewayTxnActive {
 		m.gatewayTxnActive = false
 		m.recordGatewayInactive(ReasonReconnect)
@@ -1624,20 +1556,13 @@ func (m *Mux) reconnect() (delegated bool, err error) {
 	// Clear blockingArbActive here because the transport is being replaced.
 	m.blockingArbGen++
 	m.blockingArbActive = false
-	// batch-23 round-5 (Codex P2 2026-05-17 PR #634): clear F-24
-	// stale-STARTED deferral latch on the reset boundary. The latch
-	// is set by tryGrantAndStart's F-24-fix path (~3689) and normally
-	// cleared by onSYNLocked (~2051) when the next SYN observation
-	// proves the abandoned external initiator's slot has terminated.
-	// A TCP disconnect/reconnect is stronger evidence than a SYN that
-	// the abandoned slot is gone; without this clear, a reconnect
-	// between stale-STARTED suppression and the next SYN would leave
-	// post-reconnect grants permanently blocked on a quiet/blackholed
-	// bus.
 	m.deferRegrantUntilNextSyn = false
+	m.arbitrationRecovery = arbitrationRecoveryReset
+	m.retiredSelection = false
 	pendingToCancel := m.pendingStart
 	m.pendingStart = nil
 	m.pendingStartAbsorb = 0
+	m.localLosers = nil
 	m.clearAbsorbSkipLogStateLocked()
 	// F-NEW-25: stop the absorb-reset debounce timer on reconnect.
 	// reconnect explicitly drains pendingStartAbsorb here; leaving
@@ -1700,17 +1625,9 @@ func (m *Mux) reconnect() (delegated bool, err error) {
 		m.logger.Printf("adaptermux: active channel full, dropping disconnect notification")
 	}
 
-	// Close the old connection for callback-free muxes. Managed teardown
-	// detached and closed the transport before draining provider use above.
-	if !delegated {
-		m.connMu.Lock()
-		if m.conn != nil {
-			if err := m.conn.Close(); err != nil {
-				m.logger.Printf("adaptermux: old conn close: %v", err)
-			}
-		}
-		m.connMu.Unlock()
-	}
+	// The old connection was closed before the teardown above (managed
+	// teardown detached and closed the transport before draining provider
+	// use; callback-free muxes closed the connection first as well).
 	if delegated {
 		owner()
 		m.logger.Printf("adaptermux: connection recovery delegated to lifecycle owner")
@@ -1777,7 +1694,7 @@ func (m *Mux) readLoop() {
 		default:
 		}
 
-		event, err := m.readUpstream()
+		item, err := m.readUpstreamItem()
 		if err != nil {
 			if m.ctx.Err() != nil {
 				return // context cancelled, shutting down
@@ -1823,12 +1740,13 @@ func (m *Mux) readLoop() {
 				m.stateMu.Lock()
 				ownerID, _, hasOwner := m.arb.owner()
 				if hasOwner && !m.busOwned.IsZero() &&
-					time.Since(m.busOwned) > m.cfg.MaxOwnershipDuration {
+					time.Since(m.busOwned) > m.ownershipDurationLimit(ownerID) {
 					m.arb.releaseOwnership(ownerID)
 					m.gatewayEcho.reset()
 					if ownerID == gatewaySessionID && m.gatewayTxnActive {
 						m.gatewayTxnActive = false
 						m.recordGatewayInactive(ReasonMaxOwnership)
+						m.discardStaleActiveBytesLocked()
 						quietBusOwnerWasGateway = true
 					}
 					quietBusTimedOut = true
@@ -1850,12 +1768,6 @@ func (m *Mux) readLoop() {
 				// reset for external sessions on ownership timeout.
 				_ = quietBusTimedOut
 
-				// On a quiet bus no SYN or transaction-complete events
-				// reach onReceived, so tryGrantAndStart is never called.
-				// Drain pending START requests here to prevent stalls.
-				if m.arb.hasPending() {
-					m.tryGrantAndStart()
-				}
 				continue
 			}
 			if errors.Is(err, ebuserrors.ErrInvalidPayload) {
@@ -1899,13 +1811,54 @@ func (m *Mux) readLoop() {
 		// recommends a drop — operators run Shadow first to
 		// validate the classifier against the wire before
 		// promoting to Enforce.
-		if m.v8 != nil {
+		//
+		// Issue #1003: the classifier judges the logical item. When it
+		// drops that item, the raw symbol that completed it is dropped
+		// from the session view too, so enforce mode filters both views
+		// consistently. A raw-only item (no logical item) is not
+		// classified.
+		event := item.event
+		m.reconcileArbitrationClassifier(event)
+		// Issue #1003: the gateway escape-pair verifier sees every
+		// observed raw symbol in true wire order, before any session-view
+		// filtering below. The v8 AA-injection filter only shapes what
+		// sessions (and the logical consumers) receive; an 0xAA it drops
+		// between an escape lead and its suffix still decides the pair
+		// (A9 AA 00 fails it as a malformed echo).
+		if item.hasRaw {
+			m.observeGatewayLeadEcho(item.rawSymbol, event)
+		}
+		if m.v8 != nil && event.Kind != 0 {
 			if m.v8.Observe(event, time.Now()) {
+				continue
+			}
+		} else if m.v8 != nil && item.hasRaw && item.rawSymbol == protocol.SymbolSyn {
+			// A raw-only 0xAA (absorbed inside a pending escape pair) has
+			// no logical item but is still a wire SYN the AA-injection
+			// filter must judge; a drop withholds it from sessions.
+			if m.v8.Observe(transport.StreamEvent{Kind: transport.StreamEventWireSyn, Byte: protocol.SymbolSyn}, time.Now()) {
 				continue
 			}
 		}
 
+		// Issue #1003: raw view first. External sessions receive the
+		// observed wire symbol immediately and in upstream order (an
+		// escape lead before its suffix exists); the logical item it
+		// completed, if any, is then processed below for phase tracking,
+		// passive reconstruction and the gateway active path, without a
+		// second session delivery.
+		var bids map[*startRequest]chan startResult
+		if item.hasRaw {
+			bids = m.onRawSymbol(item.rawSymbol, event)
+		}
+		deliverLogicalToSessions := !item.hasRaw
+
 		switch event.Kind {
+		case 0:
+			// Raw-only item: an escape lead, a 0xAA absorbed inside a
+			// pending pair, or a symbol discarded by a decode fault. It
+			// has no logical consequence.
+			continue
 		case transport.StreamEventStarted:
 			m.logger.Printf("adaptermux: readLoop got StreamEventStarted data=0x%02X", event.Data)
 			// Peek the pending bidder's session ID BEFORE
@@ -1918,30 +1871,42 @@ func (m *Mux) readLoop() {
 			// sessions. Codex P2 round 4 on PR #620.
 			//
 			// pendingStartAbsorb > 0 means the response is for a
-			// cancelled bid — bus state is already torn down, no
-			// synthesis needed regardless of bidder identity.
+			// cancelled bid. Local loser reconstruction is snapshotted
+			// independently because it can outlive that bidder.
 			m.stateMu.Lock()
 			var startedBidderSessionID uint64
 			var startedBidderInitiator byte
 			var startedBidderValid bool
+			startedEpoch := m.arb.lifecycleEpoch.Load()
+			startedLosers := m.localLosers
+			startedSelectedSource := m.localLoserSource
+			startedRetiredSelection := m.retiredSelection
 			if m.pendingStartAbsorb == 0 && m.pendingStart != nil {
 				startedBidderSessionID = m.pendingStart.sessionID
 				startedBidderInitiator = m.pendingStart.initiator
 				startedBidderValid = true
 			}
-			// The STARTED event represents a real winner byte that
-			// the adapter consumed from the wire. Bump
-			// lastWireActivity so the C1 fast path / requestStart-
-			// ForSession enqueue-kick correctly treat the wire as
-			// non-idle during the third-party transaction that is
-			// about to flow through onReceived. Without this, a new
-			// external START enqueued in the gap between this
-			// control event and the next StreamEventByte would see
-			// an old timestamp and idle-kick mid-frame. (Codex P2
-			// round 6 on PR #623.)
 			m.lastWireActivity = time.Now()
 			m.stateMu.Unlock()
-			m.handleArbitrationResponse(true, event.Data)
+			bidderFailed := m.handleArbitrationResponse(true, event.Data)
+			m.expectForeignTelegram(event.Data)
+			if startedEpoch != m.arb.lifecycleEpoch.Load() {
+				continue
+			}
+			if !startedBidderValid && startedRetiredSelection && event.Data != startedSelectedSource {
+				// A retired bidder has no result frame conveying the foreign
+				// source. Reset local losers that still hold the advertised
+				// source, then deliver the actual source once to every session
+				// and passive observer. An intervening SYN clears the loser
+				// list, but does not remove this wire-observation obligation.
+				m.resetLocalLoserSources(startedLosers)
+				m.deliverToSessions(event.Data, 0, false, time.Now())
+				m.emitPassive(PassiveEvent{
+					Kind:       PassiveEventSymbol,
+					Symbol:     event.Data,
+					ObservedAt: time.Now(),
+				})
+			}
 			// Synthesize the arbitration-winner byte as a passive
 			// observation for external sessions ONLY when the gateway
 			// is the winner. The wire DID carry this byte (e.g. 0x7F)
@@ -1962,14 +1927,12 @@ func (m *Mux) readLoop() {
 			//
 			// We restrict synthesis to gateway-wins because:
 			//   - When an external session wins, it receives
-			//     ENHResStarted via its own handleStart goroutine
-			//     (session.go: deliverStarted). That goroutine and
-			//     this readLoop are independent, so an unconditional
-			//     synthesis here could enqueue ENHResReceived
-			//     (winner_byte) BEFORE the session's own
-			//     ENHResStarted, presenting an out-of-order
-			//     arbitration result to a strict ENH parser
-			//     (Codex P2 follow-up on PR #620).
+			//     ENHResStarted instead (queued at its stream
+			//     position by completeArbitrationGrant since issue
+			//     #1003; previously by its handleStart goroutine).
+			//     A synthesized ENHResReceived(winner_byte) would
+			//     be a duplicate initiator for that session (Codex
+			//     P2 follow-up on PR #620).
 			//   - For gateway wins, there is no competing per-
 			//     session control event — the gateway consumes
 			//     STARTED synchronously, so no goroutine race
@@ -1997,19 +1960,19 @@ func (m *Mux) readLoop() {
 						// intentionally NOT notified (gateway-
 						// owned bytes are suppressed in
 						// onReceived too — consistent).
-						m.deliverToSessions(event.Data, gatewaySessionID, true, time.Now())
+						m.deliverWinnerByteToOtherSessions(event.Data, gatewaySessionID, startedLosers...)
 					} else {
 						// External session won — skip the winner
-						// (its handleStart goroutine delivers
-						// ENHResStarted asynchronously; synthesis
-						// here would race that frame). Other
+						// (completeArbitrationGrant already queued
+						// its ENHResStarted; a synthesized
+						// RECEIVED would duplicate it). Other
 						// external sessions (multi-monitor
 						// deployments) still need the byte to
 						// keep their bus state synced — without
 						// it they'd misread the next target/PB
 						// byte as the frame source. (Codex P2
 						// round 3.)
-						m.deliverWinnerByteToOtherSessions(event.Data, startedBidderSessionID)
+						m.deliverWinnerByteToOtherSessions(event.Data, startedBidderSessionID, startedLosers...)
 						// Passive observer pipeline also needs
 						// the non-gateway winner byte — the
 						// PassiveTransport / bus reconstructor
@@ -2026,6 +1989,7 @@ func (m *Mux) readLoop() {
 						})
 					}
 				} else {
+					m.resetLocalLoserSources(startedLosers)
 					// Mismatched STARTED (AM56): the wire byte
 					// belongs to some third party, not the bidder.
 					// handleArbitrationResponse has already failed
@@ -2035,11 +1999,10 @@ func (m *Mux) readLoop() {
 					// non-bidder sessions and passive observers so
 					// their bus state stays synced with physical
 					// reality. (Codex P2 round 6 on PR #620.)
-					if startedBidderSessionID == gatewaySessionID {
+					if startedBidderSessionID == gatewaySessionID || !bidderFailed {
 						// Gateway was bidder but lost to a third
-						// party — every external session needs
-						// the byte (gateway has no session in
-						// m.sessions; no echo suppression needed).
+						// party, or cancellation suppressed FAILED:
+						// no session result conveys the actual source.
 						m.deliverToSessions(event.Data, 0, false, time.Now())
 					} else {
 						// External session was bidder but lost.
@@ -2123,22 +2086,27 @@ func (m *Mux) readLoop() {
 			// bump and the snapshot.
 			notifyByte := event.Data
 			var activeBidderSessionID uint64
-			var hasActiveBidder bool
+			var failedLosers []*startRequest
 			m.stateMu.Lock()
 			m.lastWireActivity = time.Now()
+			failedEpoch := m.arb.lifecycleEpoch.Load()
+			failedLosers = m.localLosers
 			if m.pendingStartAbsorb == 0 && m.pendingStart != nil {
 				activeBidderSessionID = m.pendingStart.sessionID
-				hasActiveBidder = true
 				if isPhantom && m.pendingStart.sessionID == activeBidderSessionID {
 					notifyByte = m.pendingStart.initiator
 				}
 			}
 			m.stateMu.Unlock()
 
-			m.handleArbitrationResponse(false, notifyByte)
+			bidderFailed := m.handleArbitrationResponse(false, notifyByte)
+			m.expectForeignTelegram(event.Data)
+			if failedEpoch != m.arb.lifecycleEpoch.Load() {
+				continue
+			}
 
 			// Synthesize the winner byte:
-			//   - No active bidder (absorbed-stale OR no pending):
+			//   - No notified bidder (retired, replaced, or no pending):
 			//     deliver to all external sessions. The wire byte
 			//     was consumed; the rest of the third-party frame
 			//     will continue through onReceived. Without this,
@@ -2154,9 +2122,13 @@ func (m *Mux) readLoop() {
 			//     RECEIVED(winner)). Multi-monitor deployments need
 			//     the byte on the non-bidder sessions to keep their
 			//     bus state synced. (Codex P2 round 3 on PR #620.)
+			// Local FAILED advertised a source even if the physical result
+			// is a suppressed phantom. Reset affected clients before the
+			// next wire byte so they can reconstruct the actual source.
+			m.resetLocalLoserSources(failedLosers)
 			if !isPhantom {
 				switch {
-				case !hasActiveBidder:
+				case !bidderFailed:
 					m.deliverToSessions(event.Data, 0, false, time.Now())
 				case activeBidderSessionID == gatewaySessionID:
 					m.deliverToSessions(event.Data, 0, false, time.Now())
@@ -2186,16 +2158,16 @@ func (m *Mux) readLoop() {
 			// WasEscaped flag through onReceived so adapter-direct
 			// passive consumers see the same provenance the raw-TCP
 			// passive observers get via their local escape decoder.
-			m.onReceived(event.Byte, event.WasEscaped)
+			m.onLogicalReceivedForBids(event.Byte, event.WasEscaped, deliverLogicalToSessions, bids)
 		case transport.StreamEventWireSyn:
 			// F-38-fix (PR #155 P1, 2026-05-15): pre-grant SYN passive
 			// marker emitted by enh_transport during awaitingStart.
 			// Identical downstream effect to a wire SYN byte (route to
 			// onReceived as 0xAA with wasEscaped=false), but the new
 			// kind keeps the active sender's ReadByte queue clean.
-			m.onReceived(event.Byte, false)
+			m.onLogicalReceivedForBids(event.Byte, false, deliverLogicalToSessions, bids)
 		default:
-			m.onReceived(event.Byte, event.WasEscaped)
+			m.onLogicalReceivedForBids(event.Byte, event.WasEscaped, deliverLogicalToSessions, bids)
 		}
 	}
 }
@@ -2262,7 +2234,34 @@ func (m *Mux) readUpstream() (transport.StreamEvent, error) {
 // into activeCh so consumers downstream of the mux see the same
 // per-byte truth as a raw-TCP passive observer would via the local
 // escape decoder.
+//
+// onReceived is the logical-only entry: the byte is also delivered to
+// external sessions. It is used when the upstream supplies no raw view.
 func (m *Mux) onReceived(symbol byte, wasEscaped bool) {
+	m.onLogicalReceived(symbol, wasEscaped, true)
+}
+
+// ownershipDurationLimit keeps the gateway failure guard from shortening
+// the existing external-session budget. Both receive timeout paths use it.
+func (m *Mux) ownershipDurationLimit(ownerID uint64) time.Duration {
+	limit := m.cfg.MaxOwnershipDuration
+	if ownerID == gatewaySessionID && m.cfg.GatewayMaxOwnershipDuration < limit {
+		limit = m.cfg.GatewayMaxOwnershipDuration
+	}
+	return limit
+}
+
+// onLogicalReceived processes one logical byte. deliverToSessions is false
+// when the external sessions already received the raw wire symbol(s) that
+// produced this byte (issue #1003): sessions are then fed exclusively from
+// the raw view and must not see a second, logical RECEIVED.
+func (m *Mux) onLogicalReceived(symbol byte, wasEscaped bool, deliverToSessions bool) {
+	m.onLogicalReceivedForBids(symbol, wasEscaped, deliverToSessions, nil)
+}
+
+// onLogicalReceivedForBids retains the eligibility boundary frozen before raw
+// SYN delivery. Logical-only input takes its snapshot under the state lock below.
+func (m *Mux) onLogicalReceivedForBids(symbol byte, wasEscaped bool, deliverToSessions bool, bids map[*startRequest]chan startResult) {
 	now := time.Now()
 
 	// --- Phase 1: state update under stateMu ---
@@ -2270,31 +2269,6 @@ func (m *Mux) onReceived(symbol byte, wasEscaped bool) {
 
 	ownerID, _, hasOwner := m.arb.owner()
 
-	// Track wire activity for two purposes:
-	//   1. F-10v2 (PR #621): inter-byte-gap measurement that drives
-	//      SYN-timeout / idle-release decisions for external owners.
-	//      Every non-SYN byte resets the activity clock, so a long-
-	//      running external transaction with real inter-responder
-	//      traffic does not get torn down purely because the grant
-	//      itself is old.
-	//   2. Proxy-bug C1 (PR #623): the bus-idle fast path in
-	//      tryGrant + the requestStartForSession enqueue-kick both
-	//      consult lastWireActivity to decide whether the wire is
-	//      quiescent. THIRD-PARTY passive frames must count as "wire
-	//      busy" too — otherwise the idle check fires while a non-
-	//      mux initiator is mid-transaction and the kick issues an
-	//      adapter START in the middle of passive traffic. (Codex
-	//      P2 round 5 on PR #623.)
-	//
-	// SYN markers do NOT bump the activity clock — they are the very
-	// signal we use to decide when the bus has been idle long enough
-	// for a release.
-	//
-	// F-23 (batch-19, Codex bot on PR-2): the SYN exclusion keys on
-	// the wire-side classification, not on byte value. An escape-
-	// decoded payload 0xAA (wasEscaped=true) is genuine bus traffic
-	// from a third-party frame and MUST refresh the activity clock;
-	// only a real un-escaped wire SYN counts as bus-idle.
 	if symbol != protocol.SymbolSyn || wasEscaped {
 		m.lastWireActivity = now
 	}
@@ -2318,6 +2292,9 @@ func (m *Mux) onReceived(symbol byte, wasEscaped bool) {
 	isWireSyn := symbol == protocol.SymbolSyn && !wasEscaped
 	var phaseEvent wirePhaseEvent
 	if isWireSyn {
+		// FAILED supplied the source only until this stream boundary.
+		// A later STARTED must supply it again for loser reconstruction.
+		m.localLosers = nil
 		if hasOwner && ownerID == gatewaySessionID {
 			// Gateway owns bus, phase tracking skipped for data bytes.
 			// Treat SYN as idle so IdleReleaseGrace controls release.
@@ -2344,12 +2321,13 @@ func (m *Mux) onReceived(symbol byte, wasEscaped bool) {
 	ownershipTimedOut := false
 	var ownershipTimedOutGateway bool
 	if hasOwner && !m.busOwned.IsZero() &&
-		time.Since(m.busOwned) > m.cfg.MaxOwnershipDuration {
+		time.Since(m.busOwned) > m.ownershipDurationLimit(ownerID) {
 		m.arb.releaseOwnership(ownerID)
 		m.gatewayEcho.reset()
 		if ownerID == gatewaySessionID && m.gatewayTxnActive {
 			m.gatewayTxnActive = false
 			m.recordGatewayInactive(ReasonMaxOwnership)
+			m.discardStaleActiveBytesLocked()
 			ownershipTimedOutGateway = true
 		}
 		hasOwner = false
@@ -2392,6 +2370,9 @@ func (m *Mux) onReceived(symbol byte, wasEscaped bool) {
 			// suppress the activeCh delivery; gatewayTxnActive stays true
 			// and the next real echo byte completes the handshake normally.
 			activeExpects = false
+		}
+		if shouldTryGrant && bids == nil {
+			bids = m.arb.snapshotBids()
 		}
 		m.stateMu.Unlock()
 
@@ -2443,9 +2424,11 @@ func (m *Mux) onReceived(symbol byte, wasEscaped bool) {
 		for _, pe := range passiveEvents {
 			m.emitPassive(pe)
 		}
-		m.deliverSYNToSessions(now)
+		if deliverToSessions {
+			m.deliverSYNToSessions(now)
+		}
 		if shouldTryGrant {
-			m.tryGrantAndStart()
+			m.tryGrantAndStartForBids(bids)
 		}
 		return
 	}
@@ -2540,31 +2523,69 @@ func (m *Mux) onReceived(symbol byte, wasEscaped bool) {
 	// after-arbitration classifier (helianthus-ebusgo bus.go:1328-1378)
 	// can raise ErrBusCollision and sendWithRetries can retry naturally.
 	//
+	// Issue #1401: the loss also releases the gateway's ownership at once
+	// (releaseGatewayOnArbitrationLossLocked) instead of holding the grant
+	// through a recovery envelope; holding it only blocked external
+	// bidders, up to MaxOwnershipDuration when no lifecycle callback ended
+	// the envelope. The stale-byte discard runs before the foreign byte is
+	// queued (phase 2, after the abandoned write's watchdog is cancelled),
+	// so protocol.Bus still reads it as the first-byte echo, and the resync
+	// SYNs the bus waits for stay owed to activeCh.
+	//
 	// Strict P11 mid-write drop remains active for ALL other mismatches:
 	// mid-frame stale bytes, non-initiator-class noise, post-first-echo wire
 	// intrusions. P11 round-2's design intent is preserved after ownership
 	// is validated by at least one echo.
-	firstByteSuspectArbLoss := false
 	cancelGatewayWatchdogFromCollision := false
-	if hadPendingEcho &&
+	foreignInitiatorReleased := false
+	foreignToActive := false
+	foreignInitiatorByte := protocol.AddressClassOf(symbol) == protocol.AddressClassMaster
+	if isGatewayOwned && m.gatewayTxnActive && hadPendingEcho &&
 		m.gatewayEcho.matchCount() == 0 &&
 		m.gatewayEcho.writeCount() == 1 &&
 		symbol != preMatchHead &&
-		protocol.AddressClassOf(symbol) == protocol.AddressClassMaster &&
+		foreignInitiatorByte &&
 		!m.activeTxn.firstByteSuspectArbLoss.Load() {
-		firstByteSuspectArbLoss = true
 		m.activeTxn.firstByteSuspectArbLoss.Store(true)
-		m.collisionResyncSYNs = 0
-		// This is the unique false-to-true recovery transition. The
-		// outstanding write can no longer receive its echo, so arrange
-		// cancellation after stateMu unlock and before the foreign byte is
-		// delivered to protocol.Bus. A later token read must stay pure: it
-		// may race a terminal decision and a new transaction generation.
-		cancelGatewayWatchdogFromCollision = true
+		// Classify while the transaction is still live: the terminal
+		// class is computed from the read prefix at release.
+		m.recordReadPrefixAndClassify(symbol)
+		// The outstanding write can no longer receive its echo: cancel the
+		// watchdog after stateMu unlock, before the byte reaches activeCh.
+		cancelGatewayWatchdogFromCollision = m.releaseGatewayOnArbitrationLossLocked()
+		foreignToActive = true
+		foreignInitiatorReleased = true
+		m.logger.Printf("adaptermux: ownership released for session %d (foreign initiator 0x%02X as first echo of txn id=%d: arbitration lost)",
+			gatewaySessionID, symbol, m.activeTxn.id)
+	} else if isGatewayOwned && !m.gatewayTxnActive &&
+		m.activeTxn.inactiveReas != ReasonNone && foreignInitiatorByte {
+		// Issue #1401: a foreign initiator byte after the gateway's
+		// transaction already ended (normally inside the IdleReleaseGrace
+		// tail) is another initiator's telegram on the wire. The gateway lost
+		// the bus; holding the grant until the SYN after that telegram
+		// would only block external bidders. The transaction's own reason
+		// is already recorded and its activeCh content (the terminator
+		// echo protocol.Bus may still read) is left untouched. The grant
+		// window before the first write (no reason yet) is excluded: stale
+		// pre-grant bytes must not abort a fresh grant.
+		m.releaseGatewayOwnershipLocked()
+		m.deferRegrantUntilNextSyn = true
+		foreignInitiatorReleased = true
+		m.logger.Printf("adaptermux: ownership released for session %d (foreign initiator 0x%02X after txn id=%d ended reason=%s)",
+			gatewaySessionID, symbol, m.activeTxn.id, m.activeTxn.inactiveReas)
+	}
+	if foreignInitiatorReleased {
+		m.activeTxn.foreignInitiatorReleases.Add(1)
+		// From here on the byte is third-party traffic: the passive path
+		// and the wire-phase tracker see the foreign telegram from its
+		// source byte (the tracker was reset to idle at the last
+		// gateway-owned SYN).
+		isGatewayOwned = false
+		phaseEvent = m.phase.advanceWithProvenance(symbol, false)
 	}
 
 	activeExpects := m.gatewayTxnActive
-	if activeExpects && hadPendingEcho && !firstByteSuspectArbLoss {
+	if activeExpects && hadPendingEcho {
 		// Mid-write: only the next expected echo passes.
 		activeExpects = symbol == preMatchHead
 	}
@@ -2612,6 +2633,21 @@ func (m *Mux) onReceived(symbol byte, wasEscaped bool) {
 	// section: check + non-blocking send. activeCh is capacity-4096 and
 	// deliverToActive already uses a non-blocking select, so holding
 	// stateMu across the send cannot deadlock.
+	if foreignToActive {
+		// Issue #1401: the arbitration-loss release above already ended the
+		// transaction, so this bypasses the gatewayTxnActive gate on
+		// purpose. Only this goroutine produces activeCh bytes and the bus
+		// is blocked on the first echo, so nothing interleaves with the
+		// stale discard done under the earlier critical section.
+		m.stateMu.Lock()
+		select {
+		case m.activeCh <- activeEvent{kind: activeEventByte, b: symbol, wasEscaped: wasEscaped}:
+			m.activeTxn.bytesDeliveredToActive.Add(1)
+		default:
+			m.logger.Printf("adaptermux: active channel full, dropping foreign initiator byte 0x%02X", symbol)
+		}
+		m.stateMu.Unlock()
+	}
 	if activeExpects {
 		m.stateMu.Lock()
 		if m.gatewayTxnActive {
@@ -2650,7 +2686,9 @@ func (m *Mux) onReceived(symbol byte, wasEscaped bool) {
 		m.emitPassive(pe)
 	}
 
-	m.deliverToSessions(symbol, ownerID, hasOwner, now)
+	if deliverToSessions {
+		m.deliverToSessions(symbol, ownerID, hasOwner, now)
+	}
 
 	if phaseEvent == wirePhaseEventTransactionDone ||
 		phaseEvent == wirePhaseEventCmdNACK {
@@ -2686,7 +2724,6 @@ func (m *Mux) onReceived(symbol byte, wasEscaped bool) {
 			}
 		}
 		m.stateMu.Unlock()
-		m.tryGrantAndStart()
 	}
 }
 
@@ -2705,14 +2742,27 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	var passiveEvents []PassiveEvent
 	var cancelGatewayWatchdog bool
 
-	// F-24-fix (Codex PR #634 P1 thread "Wait for idle after
-	// suppressing stale STARTED"): any SYN observation marks a bus-
-	// idle boundary, so the abandoned external initiator's slot has
-	// terminated. Clear the deferral flag; the post-SYN
-	// tryGrantAndStart kick fired by readLoop (when shouldTryGrant
-	// is true) will now proceed normally on this SYN observation or
-	// the next one.
 	m.deferRegrantUntilNextSyn = false
+	if m.arbitrationRecovery != arbitrationRecoveryReset {
+		m.arbitrationRecovery = arbitrationRecoveryNone
+	}
+
+	// Issue #1401: a confirmed arbitration loss released the gateway at
+	// once, but protocol.Bus still waits for
+	// protocol.CollisionRetryResyncSYNCount wire SYNs before it re-bids.
+	// Deliver exactly the owed number to activeCh although the gateway no
+	// longer owns the bus, so the retry is not starved until its request
+	// deadline. Surplus SYNs are not delivered; the window closes early on
+	// the collision lifecycle completion or the gateway's next bid.
+	if m.collisionResyncOwed > 0 && !m.gatewayTxnActive {
+		select {
+		case m.activeCh <- activeEvent{kind: activeEventByte, b: protocol.SymbolSyn}:
+			m.collisionResyncOwed--
+		default:
+			m.activeTxn.terminatorDropOnFullCh.Add(1)
+			m.logger.Printf("adaptermux: active channel full, dropping owed collision resync SYN")
+		}
+	}
 
 	// SYN-path diagnostics (bounded). Capture gwActiveBefore snapshot
 	// under stateMu so the ring entry matches the decision the SYN
@@ -2820,19 +2870,6 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	// recordSent/markRequestStart/flushOnSYN — it CANNOT carry over to
 	// a new transaction.
 	betweenWritesSyn := m.gatewayEcho.IsQueueJustDrained() && !hasPendingEcho
-	// F-NEW-29 recovery: the protocol bus owns a fixed SYN envelope only
-	// after the exact first-byte foreign-initiator predicate has fired. Do
-	// not generalize this exception to any ordinary P11 mismatch. Keep the
-	// recovery state alive after the two protocol-owned SYNs: surplus SYNs
-	// are suppressed until the retry handoff clears the abandoned grant.
-	collisionRecoveryActive := wasGatewayOwned && m.gatewayTxnActive &&
-		m.activeTxn.firstByteSuspectArbLoss.Load()
-	collisionResyncSYN := collisionRecoveryActive &&
-		m.collisionResyncSYNs < protocol.CollisionRetryResyncSYNCount
-	collisionResyncSurplusSYN := collisionRecoveryActive && !collisionResyncSYN
-	if collisionResyncSYN {
-		m.collisionResyncSYNs++
-	}
 
 	// batch-25 hotfix — reverted batch-24 round-6 broadening (grantSyn /
 	// interWriteSyn). Live Prometheus history showed the broader gate
@@ -2858,8 +2895,8 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	// noise. The expected-echo queue (and the inter-write sentinel)
 	// must survive so the next real echo still matches.
 	preEchoMidFrameSuppress := wasGatewayOwned && m.gatewayTxnActive &&
-		(midWriteSyn || betweenWritesSyn) && !collisionRecoveryActive
-	if !preEchoMidFrameSuppress && !collisionRecoveryActive {
+		(midWriteSyn || betweenWritesSyn)
+	if !preEchoMidFrameSuppress {
 		m.gatewayEcho.flushOnSYN()
 	}
 
@@ -2931,7 +2968,7 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	terminatorDelivered := false
 	if hasOwner && ownerID == gatewaySessionID && m.gatewayTxnActive &&
 		m.activeTxn.bytesDeliveredToActive.Load() > 0 &&
-		!preEchoMidFrameSuppress && !collisionRecoveryActive {
+		!preEchoMidFrameSuppress {
 		select {
 		case m.activeCh <- activeEvent{kind: activeEventByte, b: protocol.SymbolSyn}:
 			terminatorDelivered = true
@@ -3089,8 +3126,8 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	// mid-frame (midWriteSyn OR betweenWritesSyn) — BUT bound the
 	// betweenWritesSyn case by IdleReleaseGrace so a pathological
 	// stall doesn't pin ownership forever. midWriteSyn has its own
-	// implicit bound via bus.Send's activeChanTimeout (5s for the
-	// outer Send context); the sentinel-only case relies on grace.
+	// bound via bus.Send's activeChanTimeout, whose expiry releases the
+	// grant at once (issue #1401); the sentinel-only case relies on grace.
 	//
 	// When grace expires for the between-writes case, the existing
 	// gateway-owner release branch below clears the sentinel via
@@ -3098,15 +3135,9 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	// observation IS a legitimate idle terminator.
 	elapsedSinceGrant := time.Since(m.busOwned)
 	betweenWritesWithinGrace := betweenWritesSyn && elapsedSinceGrant <= m.cfg.IdleReleaseGrace
-	// A classified collision owns its bounded resynchronization envelope even
-	// when an external bidder is pending. In particular, F-26 must not release
-	// the old gateway grant on the first recovery SYN; the lifecycle completion
-	// performs the atomic release, and a later post-terminal SYN opens normal
-	// arbitration for whichever pending bidder policy selects.
-	suppressIdleRelease := collisionRecoveryActive ||
-		(wasGatewayOwned && m.gatewayTxnActive &&
-			m.activeTxn.bytesDeliveredToActive.Load() > 0 &&
-			(midWriteSyn || betweenWritesWithinGrace))
+	suppressIdleRelease := wasGatewayOwned && m.gatewayTxnActive &&
+		m.activeTxn.bytesDeliveredToActive.Load() > 0 &&
+		(midWriteSyn || betweenWritesWithinGrace)
 	if phaseEvent == wirePhaseEventSYNIdle && hasOwner && !suppressIdleRelease {
 		// Two thresholds:
 		//   - Gateway owner: 200 ms IdleReleaseGrace measured from
@@ -3226,7 +3257,7 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	// existing diag tests; semantically it now covers a superset.
 	preFirstEchoSyn := hasOwner && ownerID == gatewaySessionID &&
 		m.gatewayTxnActive && m.activeTxn.bytesDeliveredToActive.Load() == 0
-	preEchoSuppressed := preFirstEchoSyn || preEchoMidFrameSuppress || collisionResyncSurplusSYN
+	preEchoSuppressed := preFirstEchoSyn || preEchoMidFrameSuppress
 	if preEchoSuppressed {
 		m.activeTxn.synSuppressedPreEcho.Add(1)
 	}
@@ -3365,9 +3396,11 @@ func (m *Mux) handleReset() {
 	// is only cleared on TCP disconnect (in reconnect()), which calls
 	// connect() to repopulate it after re-establishing the connection.
 
+	m.retireGatewayLeadWait(fmt.Errorf("adaptermux: %w", ebuserrors.ErrAdapterReset))
 	m.stateMu.Lock()
 	m.phase.reset(wirePhaseIdle)
 	m.gatewayEcho.reset()
+	m.collisionResyncOwed = 0
 	wasGatewayActive := m.gatewayTxnActive
 	if m.gatewayTxnActive {
 		m.gatewayTxnActive = false
@@ -3376,14 +3409,12 @@ func (m *Mux) handleReset() {
 	// Bump gen forward (monotonic) — see reconnect() for rationale.
 	m.blockingArbGen++
 	m.blockingArbActive = false
-	// batch-23 round-5 (Codex P2 2026-05-17 PR #634): clear F-24
-	// stale-STARTED deferral latch on the reset boundary. See the
-	// matching comment in reconnect() for the rationale — a RESETTED
-	// boundary is stronger evidence than a SYN that the abandoned
-	// external initiator's slot is gone.
 	m.deferRegrantUntilNextSyn = false
+	m.arbitrationRecovery = arbitrationRecoveryReset
+	m.retiredSelection = false
 	pendingToCancel := m.pendingStart
 	m.pendingStart = nil
+	m.localLosers = nil
 	m.pendingStartAbsorb = 0 // reset clears adapter state; no stale responses will arrive
 	m.clearAbsorbSkipLogStateLocked()
 	// F-NEW-25: stop the absorb-reset debounce timer on RESETTED
@@ -3586,32 +3617,8 @@ func (m *Mux) deliverToActive(symbol byte, countAsDelivered bool) {
 // handleArbitrationResponse. This ensures passive observers continue
 // to receive bus bytes during gateway arbitration.
 //
-// requestStartForSession submits a START request via the arbitrator
-// and additionally:
-//
-//   - Marks any in-flight grant for the SAME session as cancelled
-//     (proxy-bug C4 / R4 in-flight branch — Codex P1 round 1 on
-//     PR #623). The arbitrator's replace path inside requestStart
-//     can only flag entries that are still in pendingExternal /
-//     pendingGateway; once tryGrant has popped a request into
-//     m.pendingStart, a same-session re-submit no longer finds it
-//     in the arbitrator and the cancelled flag would otherwise stay
-//     false. Catching the in-flight case here is what makes
-//     handleArbitrationResponse's cancelled-check actually fire in
-//     production.
-//
-//   - Opportunistically kicks tryGrantAndStart if the bus is idle
-//     (proxy-bug C1 fast-path enqueue trigger — Codex P1 round 1
-//     on PR #623). The mux's primary grant rhythm is driven by SYN
-//     arrivals via readLoop; on a quiet bus that means a new START
-//     can wait up to ReadTimeout (~200 ms default) before the first
-//     grant attempt — long past the C3 PendingStartTTL window of
-//     50 ms. Kicking on enqueue lets the idle fast-path grant a
-//     submission immediately when no SYN is imminent.
-//
-// All Mux/session/active-path callers MUST route through this method
-// rather than calling m.arb.requestStart directly, so both branches
-// of the C4 cancel + the C1 enqueue-kick are guaranteed to run.
+// requestStartForSession replaces a session's bid and cancels any previous
+// in-flight request. Only a subsequent idle SYN can forward the bid.
 func (m *Mux) requestStartForSession(sessionID uint64, initiator byte) <-chan startResult {
 	managedGateHeld, admitted := m.beginManagedConnectionUse()
 	releaseManagedGate := func() {
@@ -3635,6 +3642,12 @@ func (m *Mux) requestStartForSession(sessionID uint64, initiator byte) <-chan st
 	// so no ABBA risk.
 	m.stateMu.Lock()
 	cancelGatewayWatchdog := false
+	if sessionID == gatewaySessionID {
+		// Issue #1401: the gateway's new bid is the end of its previous
+		// transaction. Release a grant that transaction left live or
+		// unused, and discard what it left in activeCh, before queueing.
+		cancelGatewayWatchdog = m.retirePreviousGatewayTxnLocked()
+	}
 	// F-39 (2026-05-15, Codex adversarial on PR #633):
 	// in-flight same-session+same-initiator duplicate. The pending
 	// START is a real bid for the same arbitration the new caller
@@ -3660,23 +3673,6 @@ func (m *Mux) requestStartForSession(sessionID uint64, initiator byte) <-chan st
 	// markInFlightCancelled — that's a real change of intent.
 	if m.pendingStart != nil && m.pendingStart.sessionID == sessionID &&
 		sessionID != gatewaySessionID && m.pendingStart.initiator == initiator {
-		// F-39-fix² (PR #634 P1 Codex review, 2026-05-17): refresh
-		// the in-flight request's enqueuedAt to "now" so the
-		// staleness drain at the response-arrival site
-		// (handleArbitrationResponse's
-		// drainStalePendingExternalLocked-style check via
-		// ExternalStartStaleness, default 300 ms) does not suppress
-		// the eventual STARTED as stale. The latest ebusd retry may
-		// be only a few ms old even though the original bid has been
-		// in-flight for >300 ms; without this refresh the gateway
-		// silently cancels the new waiter (above) AND suppresses the
-		// upstream grant, leaving the fresh retry with no ENH
-		// response on the wire. Mirrors the queued-coalesce path's
-		// `existing.enqueuedAt = a.now()` refresh in
-		// arb.requestStart (round-2 F-39-fix landed in 24bbed7).
-		if m.pendingStart.req != nil {
-			m.pendingStart.req.enqueuedAt = m.arb.now()
-		}
 		m.stateMu.Unlock()
 		ch := make(chan startResult, 1)
 		ch <- startResult{
@@ -3701,38 +3697,48 @@ func (m *Mux) requestStartForSession(sessionID uint64, initiator byte) <-chan st
 	// is also gated on stateMu, so it cannot interleave between
 	// step 1 and step 2.
 	ch := m.arb.requestStart(sessionID, initiator)
+	if sessionID == gatewaySessionID {
+		// Bound admission only. Once selected at SYN, the physical START has
+		// its own deadline and must remain deliverable even after this timer.
+		time.AfterFunc(m.cfg.StartDeadline, func() { m.expireGatewayAdmission(ch) })
+	}
 
-	// Step 3: opportunistic kick — only when the wire has been quiet
-	// for at least one SYN interval. The SYN-driven grant rhythm in
-	// readLoop won't fire for up to ReadTimeout (~200 ms) on a
-	// genuinely quiet bus; without this kick a START can sit
-	// unattended past the C3 PendingStartTTL window. On a busy bus
-	// the next SYN handler will pick up the grant naturally, so we
-	// don't intrude on the established arbitration cadence. The
-	// idle check mirrors the snapshot used inside tryGrantAndStart
-	// for the C1 fast path. Read the snapshot while still holding
-	// stateMu so we get a coherent view before releasing.
-	idle := m.lastWireActivity.IsZero() ||
-		time.Since(m.lastWireActivity) >= m.cfg.SYNInterval
 	m.stateMu.Unlock()
 	if cancelGatewayWatchdog {
 		m.cancelGatewayWatchdog()
 	}
-	// Release before the idle kick: tryGrantAndStart takes its own managed
-	// read admission. Keeping this R lock while a loss writer is queued would
-	// make the nested RLock self-deadlock under RWMutex writer preference.
 	releaseManagedGate()
-	if idle {
-		m.tryGrantAndStart()
-	}
 
 	return ch
+}
+
+// expireGatewayAdmission resolves only the queued or deferred-loser bid
+// identified by notify. selectAtSYN and replacement use the same lock, so
+// expiry cannot cancel a selected wire bid or a newer gateway request.
+func (m *Mux) expireGatewayAdmission(notify <-chan startResult) {
+	m.arb.mu.Lock()
+	defer m.arb.mu.Unlock()
+	var req *startRequest
+	if pending := m.arb.pendingGateway; pending != nil && pending.notify == notify {
+		req = pending
+		m.arb.pendingGateway = nil
+	} else if loser := m.arb.deferredGatewayLoser; loser != nil && loser.notify == notify {
+		req = loser
+		m.arb.deferredGatewayLoser = nil
+	} else {
+		return
+	}
+	req.notify <- startResult{initiator: req.initiator, err: fmt.Errorf("adaptermux: gateway admission: %w", ebuserrors.ErrTimeout)}
 }
 
 // Guard: only one pending START at a time. If pendingStart is non-nil,
 // this method is a no-op — the next tryGrantAndStart will fire after
 // the current one resolves.
 func (m *Mux) tryGrantAndStart() {
+	m.tryGrantAndStartForBids(nil)
+}
+
+func (m *Mux) tryGrantAndStartForBids(bids map[*startRequest]chan startResult) {
 	managedGateHeld, admitted := m.beginManagedConnectionUse()
 	if !admitted {
 		return
@@ -3805,54 +3811,83 @@ func (m *Mux) tryGrantAndStart() {
 		m.stateMu.Unlock()
 		return
 	}
-	// F-24-fix (Codex PR #634 P1 thread "Wait for idle after
-	// suppressing stale STARTED"): if F-24 just suppressed a stale
-	// external STARTED, the abandoned external initiator's bus slot
-	// has not yet terminated with a SYN. Defer regrant until the
-	// next SYN observation clears the flag in onSYNLocked.
 	if m.deferRegrantUntilNextSyn {
-		m.logger.Printf("adaptermux: tryGrantAndStart skipped — F-24 stale-STARTED suppression pending bus-idle (next SYN)")
+		m.logger.Printf("adaptermux: tryGrantAndStart skipped — undeliverable STARTED awaiting next SYN")
 		m.stateMu.Unlock()
 		return
 	}
 
-	// Bus-idle snapshot for the proxy-bug C1 (R1) fast path: the
-	// wire has been quiet for at least one SYN interval. When the
-	// fast path engages, tryGrant hands the external FIFO head over
-	// directly and skips the fairness rotation — fairness has
-	// nothing to balance when there is no real contention.
-	// lastWireActivity is bumped on every non-SYN adapter byte while
-	// ownership is held; on a fresh boot it may be zero (no traffic
-	// yet), which we treat as idle so the first external START
-	// doesn't wait a fairness quantum. tryGrant itself rejects when
-	// the bus is owned, so this snapshot does not need to consult
-	// the arbitrator's ownership state.
-	busIdle := m.lastWireActivity.IsZero() ||
-		time.Since(m.lastWireActivity) >= m.cfg.SYNInterval
-
-	req, granted := m.arb.tryGrant(busIdle)
+	req, losers := m.arb.selectBidsAtSYN(true, bids)
+	granted := req != nil
 	if !granted {
 		m.stateMu.Unlock()
 		return
 	}
+	// An external loser's FAILED must precede the next wire byte, so it is
+	// published now and undone if the START never reaches the adapter. A
+	// collision told to protocol.Bus cannot be undone (it would wait for SYNs
+	// that nobody owes it), so the gateway's loss waits for the START outcome.
+	var gatewayLoser *startRequest
+	for _, loser := range losers {
+		if loser.sessionID == gatewaySessionID {
+			gatewayLoser = loser
+			continue
+		}
+		queued := false
+		m.sessionsMu.Lock()
+		if sess := m.sessions[loser.sessionID]; sess != nil {
+			sess.parserResetNeeded.Store(true)
+			sess.deliverFailed(req.initiator)
+			queued = true
+		}
+		m.sessionsMu.Unlock()
+		loser.notify <- startResult{initiator: req.initiator, failedQueued: queued}
+	}
 	sessionID := req.sessionID
 	initiator := req.initiator
 	notify := req.notify
+	// settleLocalLosses runs once per selection, when the transport call that
+	// carries the START has returned. A nil startErr means the source reached
+	// the adapter and the local losses stand.
+	settleLocalLosses := func(startErr error) {
+		if startErr != nil {
+			m.undoLocalLosses(losers)
+		}
+		m.stateMu.Lock()
+		owned := m.arb.takeDeferredGatewayLoser(gatewayLoser)
+		if owned && startErr == nil {
+			m.collisionResyncOwed = protocol.CollisionRetryResyncSYNCount
+		}
+		m.stateMu.Unlock()
+		if !owned {
+			return // expiry, reset, disconnect or close already resolved it
+		}
+		if startErr != nil {
+			gatewayLoser.notify <- startResult{initiator: gatewayLoser.initiator, err: startErr}
+			return
+		}
+		gatewayLoser.notify <- startResult{initiator: initiator}
+	}
 
+	m.retiredSelection = false
+	m.localLosers = losers
+	m.localLoserSource = initiator
 	m.pendingStart = &pendingStartState{
-		sessionID:   sessionID,
-		initiator:   initiator,
-		notify:      notify,
-		blockingArb: isBlockingPath,
-		req:         req,
+		lifecycleEpoch: m.arb.lifecycleEpoch.Load(),
+		sessionID:      sessionID,
+		initiator:      initiator,
+		notify:         notify,
+		blockingArb:    isBlockingPath,
+		req:            req,
 	}
 	// AM8: start a deadline timer so pendingStart cannot block indefinitely
 	// if the adapter never responds with STARTED/FAILED.
 	m.pendingStart.deadline = time.AfterFunc(m.cfg.StartDeadline, func() {
 		m.stateMu.Lock()
-		if m.pendingStart != nil && m.pendingStart.notify == notify {
+		if m.pendingStart != nil && m.pendingStart.notify == notify && !m.pendingStart.responseReceived {
 			pending := m.pendingStart
 			m.pendingStart = nil
+			m.fenceArbitrationUntilSYNLocked()
 			m.armPendingStartAbsorbLocked("deadline")
 			// F-15 (operator hand-off, batch-9/11): gate the reconnect by
 			// transport type, mirroring `cancelPendingStart`'s existing
@@ -3904,6 +3939,10 @@ func (m *Mux) tryGrantAndStart() {
 			cancelledInFlight := pending.req != nil && pending.req.cancelled.Load()
 			m.stateMu.Unlock()
 			m.logger.Printf("adaptermux: pendingStart deadline expired for session %d (AM8, wasBlocking=%v, cancelledInFlight=%v)", pending.sessionID, wasBlocking, cancelledInFlight)
+			// The hung START may never return, so its deferred loser ends here.
+			if m.arb.takeDeferredGatewayLoser(gatewayLoser) {
+				gatewayLoser.notify <- startResult{initiator: gatewayLoser.initiator, err: fmt.Errorf("adaptermux: START deadline expired: %w", ebuserrors.ErrTimeout)}
+			}
 			// AM8: guard the send — if another path already delivered a
 			// result, the channel is full and this send would block forever.
 			var result startResult
@@ -3955,6 +3994,7 @@ func (m *Mux) tryGrantAndStart() {
 		m.logger.Printf("adaptermux: RequestStart(0x%02X) sent for session %d", initiator, sessionID)
 		if err := requester.RequestStart(initiator); err != nil {
 			m.logger.Printf("adaptermux: RequestStart failed for session %d: %v", sessionID, err)
+			settleLocalLosses(err)
 			// P1 fix: only send failure if we still own the pending slot.
 			// cancelPendingStart (session disconnect / cancel on another
 			// goroutine) may have already cleared m.pendingStart and sent
@@ -3997,26 +4037,26 @@ func (m *Mux) tryGrantAndStart() {
 				// Since the adapter never received the START, no stale
 				// response will arrive — decrement absorb counter so the
 				// next real arbitration response is not incorrectly consumed.
-				shouldAdvance := false
+
 				if m.pendingStartAbsorb > 0 {
 					m.pendingStartAbsorb--
 					if m.pendingStartAbsorb == 0 {
 						m.clearAbsorbSkipLogStateLocked()
 					}
-					shouldAdvance = m.pendingStartAbsorb == 0 && m.arb.hasPending()
+				}
+				if m.pendingStartAbsorb == 0 {
+					m.retiredSelection = false
+					m.deferRegrantUntilNextSyn = false
+					if m.arbitrationRecovery == arbitrationRecoveryAtSYN {
+						m.arbitrationRecovery = arbitrationRecoveryNone
+					}
 				}
 				m.stateMu.Unlock()
-				if shouldAdvance {
-					// A managed loss writer may already be waiting. Release the
-					// outer R admission before recursively advancing the queue;
-					// otherwise RWMutex writer preference blocks the nested RLock
-					// while this frame can never release its original read lock.
-					releaseManagedGate()
-					m.tryGrantAndStart()
-				}
+
 			}
 			return
 		}
+		settleLocalLosses(nil)
 	} else if starter, ok := tr.(interface {
 		StartArbitration(byte) error
 	}); ok {
@@ -4056,6 +4096,7 @@ func (m *Mux) tryGrantAndStart() {
 		m.closeMu.Lock()
 		if m.closing.Load() {
 			m.closeMu.Unlock()
+			settleLocalLosses(errors.New("adaptermux: closed"))
 			m.stateMu.Lock()
 			if m.pendingStart != nil && m.pendingStart.notify == notify {
 				if m.pendingStart.deadline != nil {
@@ -4094,6 +4135,7 @@ func (m *Mux) tryGrantAndStart() {
 			if startErr != nil {
 				err := startErr
 				m.logger.Printf("adaptermux: START arbitration failed for session %d: %v", sessionID, err)
+				settleLocalLosses(err)
 				// P1 fix (#3063005909): only send failure if we still own
 				// the pending slot.  cancelPendingStart may have cleared
 				// m.pendingStart and already sent a failure on notify while
@@ -4146,12 +4188,10 @@ func (m *Mux) tryGrantAndStart() {
 						}
 					}
 					m.stateMu.Unlock()
-					if isCurrentGen && m.arb.hasPending() {
-						m.tryGrantAndStart()
-					}
 				}
 				return
 			}
+			settleLocalLosses(nil)
 			// Blocking path: adapter already confirmed — handle inline.
 			// P1 fix (#3063005909): verify ownership before completing.
 			// cancelPendingStart may have run while StartArbitration was
@@ -4173,6 +4213,8 @@ func (m *Mux) tryGrantAndStart() {
 				// completeArbitrationGrant will follow.
 				if isCurrentGen {
 					m.blockingArbActive = false
+					m.fenceArbitrationUntilSYNLocked()
+					m.undeliverableStarted.Add(1)
 				}
 				// Codex-R8: scope absorb + queue advance to our generation.
 				if isCurrentGen && m.pendingStartAbsorb > 0 {
@@ -4182,17 +4224,15 @@ func (m *Mux) tryGrantAndStart() {
 					}
 				}
 				m.stateMu.Unlock()
-				if isCurrentGen && m.arb.hasPending() {
-					m.tryGrantAndStart()
-				}
 				return
 			}
 			if m.pendingStart.deadline != nil {
 				m.pendingStart.deadline.Stop() // AM8: cancel deadline timer
 			}
-			m.pendingStart = nil
+			pending := m.pendingStart
+			pending.responseReceived = true
 			m.stateMu.Unlock()
-			m.completeArbitrationGrant(sessionID, initiator, notify)
+			m.completeArbitrationGrant(pending)
 			// Clear blockingArbActive AFTER ownership is confirmed.
 			// Codex-R11: re-check generation under the lock at the clear
 			// site. The cached isCurrentGen could be stale if reconnect()
@@ -4209,12 +4249,14 @@ func (m *Mux) tryGrantAndStart() {
 		return
 	} else {
 		m.logger.Printf("adaptermux: transport does not support arbitration")
+		settleLocalLosses(errors.New("adaptermux: transport does not support arbitration"))
 		m.stateMu.Lock()
 		if m.pendingStart != nil && m.pendingStart.notify == notify {
 			if m.pendingStart.deadline != nil {
 				m.pendingStart.deadline.Stop() // AM8: cancel deadline timer
 			}
 			m.pendingStart = nil
+			m.fenceArbitrationUntilSYNLocked()
 		}
 		m.stateMu.Unlock()
 		notify <- startResult{granted: false, initiator: initiator, err: errors.New("adaptermux: transport does not support arbitration")}
@@ -4224,31 +4266,57 @@ func (m *Mux) tryGrantAndStart() {
 // completeArbitrationGrant finalizes a successful arbitration grant.
 // Used by the blocking StartArbitration fallback path and by
 // handleArbitrationResponse on STARTED.
-func (m *Mux) completeArbitrationGrant(sessionID uint64, initiator byte, notify chan startResult) {
-	// Check ArbitrationSendsSource BEFORE acquiring stateMu to avoid
-	// ABBA deadlock: arbitrationSendsSource acquires connMu, and doSend
-	// acquires connMu -> stateMu. Reversing that order here (stateMu ->
-	// connMu) would deadlock.
+func (m *Mux) completeArbitrationGrant(pending *pendingStartState) {
 	sendsSource := m.arbitrationSendsSource()
-
-	// AM57+Codex-P1: set busOwned, phase, AND confirmOwnership atomically
-	// under stateMu. For external sessions, the liveness check is also
-	// done under stateMu (via sessionsMu nested inside) to prevent a
-	// race where RemoveSession deletes the session between the liveness
-	// check and confirmOwnership, leaving a dead owner in the arbitrator.
-	// Lock order: stateMu → sessionsMu → arb.mu. No path holds
-	// sessionsMu or arb.mu then acquires stateMu, so ABBA-safe.
 	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+	// A lifecycle boundary retires the result itself; a late commit must
+	// neither resurrect its fence nor publish observations in the new stream.
+	if pending.lifecycleEpoch != m.arb.lifecycleEpoch.Load() {
+		return
+	}
+	// Cancellation may win between the adapter response and this commit.
+	if m.pendingStart != pending {
+		m.fenceArbitrationUntilSYNLocked()
+		m.undeliverableStarted.Add(1)
+		return
+	}
+	m.pendingStart = nil
+	if pending.deadline != nil {
+		pending.deadline.Stop()
+	}
+	sessionID, initiator, notify := pending.sessionID, pending.initiator, pending.notify
+	reject := func() {
+		m.fenceArbitrationUntilSYNLocked()
+		m.undeliverableStarted.Add(1)
+		select {
+		case notify <- startResult{cancelled: true, initiator: initiator}:
+		default:
+		}
+	}
+	if pending.req != nil && pending.req.cancelled.Load() {
+		reject()
+		return
+	}
+	// Publish STARTED while the session liveness and ownership commit are
+	// protected together. The writer can only SEND after stateMu is released.
+	startedQueued := false
 	if sessionID != gatewaySessionID {
 		m.sessionsMu.Lock()
-		_, alive := m.sessions[sessionID]
-		m.sessionsMu.Unlock()
-		if !alive {
-			m.stateMu.Unlock()
-			m.logger.Printf("adaptermux: session %d disconnected during START, discarding grant", sessionID)
-			notify <- startResult{granted: false, initiator: initiator, err: errors.New("session disconnected")}
+		defer m.sessionsMu.Unlock()
+		sess := m.sessions[sessionID]
+		if sess == nil || sess.closed.Load() {
+			reject()
 			return
 		}
+		sess.bytesSentSinceGrant.Store(0)
+		sess.grantDelivered.Store(false)
+		gen := sess.grantGeneration.Add(1)
+		if !sess.deliverStartedForGrant(initiator, gen) {
+			reject()
+			return
+		}
+		startedQueued = true
 	}
 	if sendsSource {
 		m.phase.startRequestWithSource(initiator)
@@ -4256,103 +4324,63 @@ func (m *Mux) completeArbitrationGrant(sessionID uint64, initiator byte, notify 
 		m.phase.startRequest()
 	}
 	now := time.Now()
-	m.busOwned = now
-	m.lastWireActivity = now
-	// Drain activeCh BEFORE marking the transaction active so the
-	// drain count belongs to this grant (not the previous transaction).
-	// Safety net: normal flow should produce zero drains after the
-	// gatewayTxnActive-on-SYN lifecycle fix.
-	drained := 0
+	m.busOwned, m.lastWireActivity = now, now
 	if sessionID == gatewaySessionID {
-		drained = m.drainActiveCh()
-		if drained > 0 {
-			m.logger.Printf("adaptermux: drained %d bytes from activeCh on grant", drained)
-		}
+		drained := m.drainActiveCh()
+		m.activeTxn.staleActiveDiscarded.Add(uint64(drained))
 		m.gatewayEcho.markRequestStart()
 		m.gatewayTxnActive = false
 		m.recordGatewayGrant(initiator, drained)
 	}
 	m.arb.confirmOwnership(sessionID, initiator)
-	m.stateMu.Unlock()
+	notify <- startResult{granted: true, initiator: initiator, startedQueued: startedQueued}
+}
 
-	// F-34 (batch-30, iter11, 2026-05-15): external-session
-	// abandon-watchdog. Codex iter10 attack #1: when ebusd is
-	// granted while its bus reconstructor is in `bs_skip` (parsing
-	// a foreign frame), ebusd silently drops the grant — no
-	// session.handleSend ever follows. Pre-F-34, the gateway then
-	// waits the full ExternalSessionSYNGrace (250ms post-F-27)
-	// before reclaiming. F-34 detects the silent-drop within a
-	// short window (default 25ms) by checking
-	// session.bytesSentSinceGrant after the watchdog deadline; if
-	// still 0 and the session still owns the bus, force-release.
-	//
-	// Live evidence (iter10): 23 `arbitration won in invalid state
-	// skip` events / 60-scan tight burst. Each cost ~250ms post-
-	// F-27. Reducing to ~25ms-deadline+release closes 23 × ~225ms =
-	// ~5.2 seconds of dead-bus-time per burst.
-	//
-	// Gateway-session-0 is exempt: the gateway's own active path
-	// always sends bytes immediately after grant (sendEndOfMessage
-	// pipeline), so no abandon scenario exists.
-	if sessionID != gatewaySessionID {
-		m.sessionsMu.Lock()
-		sess := m.sessions[sessionID]
-		m.sessionsMu.Unlock()
-		if sess != nil {
-			sess.bytesSentSinceGrant.Store(0)
-			// F-34-fix (PR #633 P1 line 3196, 2026-05-15): bind the
-			// watchdog to the GRANT it armed via grantGeneration.
-			// Without this, when the same session completes one
-			// transaction and is re-granted within 75 ms, the OLD
-			// timer fires for the NEW grant — sees bytesSentSinceGrant
-			// == 0 (just reset) and isOwner true (re-granted) — and
-			// force-releases the fresh ownership before any byte can
-			// be sent. Per-grant generation gives the timer a
-			// discriminator: if generation has advanced, the timer is
-			// stale and exits silently.
-			grantGen := sess.grantGeneration.Add(1)
-			// F-35 (iter12): 25ms was too tight — legitimate grants
-			// where ebusd's TCP roundtrip + bus-state transition takes
-			// >25ms got force-released, producing 503 watchdog firings
-			// / 2 min and regressing scan success 65%→60%. 75ms gives
-			// ebusd time for the legit happy path while still cutting
-			// the silent-drop tail by 3x (vs F-27's 250ms).
-			deadline := 75 * time.Millisecond
-			time.AfterFunc(deadline, func() {
-				if sess.closed.Load() {
-					return
-				}
-				if sess.grantGeneration.Load() != grantGen {
-					return // a newer grant superseded the one this timer was armed for
-				}
-				if sess.bytesSentSinceGrant.Load() > 0 {
-					return // grant was used; nothing to do
-				}
-				if !m.arb.isOwner(sessionID) {
-					return // ownership already released by some other path
-				}
-				m.logger.Printf("adaptermux: F-34 abandon-watchdog firing for session %d gen=%d (no SEND within %v after grant) — force-releasing ownership",
-					sessionID, grantGen, deadline)
-				m.arb.releaseOwnership(sessionID)
-				if m.arb.hasPending() {
-					m.tryGrantAndStart()
-				}
-			})
-		}
+// externalAbandonDeadline is the F-35 abandon-watchdog budget, measured from
+// the moment the granted session's STARTED reached its client.
+const externalAbandonDeadline = 75 * time.Millisecond
+
+// armExternalAbandonWatchdog starts the F-34/F-35 abandon watchdog for the
+// grant identified by grantGen. Called by the session writer after STARTED
+// for that grant was written to the client. The watchdog releases ownership
+// only when the same grant is still current, no SEND arrived for it and the
+// session still owns the bus.
+func (m *Mux) armExternalAbandonWatchdog(sess *session, grantGen uint32) {
+	after := m.externalAbandonAfter
+	if after == nil {
+		after = func(d time.Duration, f func()) { time.AfterFunc(d, f) }
 	}
-
-	// F-18: per-session echo tracker removed; gateway-side
-	// markRequestStart is invoked above for the gateway path only.
-
-	// Notify requester of success.
-	notify <- startResult{granted: true, initiator: initiator}
+	sessionID := sess.id
+	after(externalAbandonDeadline, func() {
+		if sess.closed.Load() {
+			return
+		}
+		if uint32(sess.grantGeneration.Load()) != grantGen {
+			return // a newer grant superseded the one this timer was armed for
+		}
+		if sess.bytesSentSinceGrant.Load() > 0 {
+			return // grant was used; nothing to do
+		}
+		if !m.arb.isOwner(sessionID) {
+			return // ownership already released by some other path
+		}
+		m.logger.Printf("adaptermux: F-34 abandon-watchdog firing for session %d gen=%d (no SEND within %v after STARTED reached the client) — force-releasing ownership",
+			sessionID, grantGen, externalAbandonDeadline)
+		m.arb.releaseOwnership(sessionID)
+	})
 }
 
 // handleArbitrationResponse processes a STARTED or FAILED event from
 // the adapter, resolving the pending START registered by tryGrantAndStart.
-func (m *Mux) handleArbitrationResponse(started bool, data byte) {
+// It reports whether a non-cancelled failure carrying the winner was sent to
+// the selected waiter. Source routing must skip that session only when this
+// result actually conveys the source; a pre-handler snapshot can be cancelled
+// or replaced before attribution and must then receive the source as an observer.
+func (m *Mux) handleArbitrationResponse(started bool, data byte) bool {
 	m.logger.Printf("adaptermux: arbitration response started=%v data=0x%02X", started, data)
 	m.stateMu.Lock()
+	// readLoop snapshots these before consuming even a stale response.
+	m.localLosers = nil
 
 	// Absorb stale responses from cancelled RequestStart calls.
 	// cancelPendingStart increments pendingStartAbsorb when it clears a
@@ -4362,11 +4390,14 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 	// initiator matching impossible) would incorrectly fail a newer
 	// pending request.
 	if m.pendingStartAbsorb > 0 {
+		m.fenceArbitrationUntilSYNLocked()
 		m.pendingStartAbsorb--
 		if m.pendingStartAbsorb == 0 {
 			m.clearAbsorbSkipLogStateLocked()
 		}
-		shouldAdvance := !started && m.pendingStartAbsorb == 0 && m.pendingStart == nil && m.arb.hasPending()
+		if started {
+			m.undeliverableStarted.Add(1)
+		}
 		// F-15 follow-up (PR #626 Codex bot review on b3b7f13 + e6b96ee
 		// — P1 finding): the absorb-consume branch used to reconnect
 		// unconditionally on STARTED (`needReconnect := started`). On
@@ -4409,17 +4440,20 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 				}
 			}
 		}
-		if shouldAdvance {
-			m.tryGrantAndStart()
-		}
-		return
+		return false
 	}
 
 	pending := m.pendingStart
 	if pending == nil {
+		if m.retiredSelection {
+			m.fenceArbitrationUntilSYNLocked()
+			if started {
+				m.undeliverableStarted.Add(1)
+			}
+		}
 		m.stateMu.Unlock()
 		m.logger.Printf("adaptermux: stale arbitration response (no pending START)")
-		return
+		return false
 	}
 
 	if started {
@@ -4448,16 +4482,11 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 			// path. Suppress silently with cancelled=true.
 			cancelledInFlight := pending.req != nil && pending.req.cancelled.Load()
 			m.pendingStart = nil
+			m.fenceArbitrationUntilSYNLocked()
 			m.armPendingStartAbsorbLocked("started-mismatch")
 			if pending.deadline != nil {
 				pending.deadline.Stop() // AM8: cancel deadline timer
 			}
-			// The mismatched-STARTED's `data` byte was consumed
-			// from the wire and a third-party transaction is about
-			// to flow through onReceived; bump lastWireActivity so
-			// the C1 fast path / enqueue-kick treat the wire as
-			// non-idle until the next byte event. (Codex P2 round 6
-			// on PR #623.)
 			m.lastWireActivity = time.Now()
 			m.stateMu.Unlock()
 			if cancelledInFlight {
@@ -4489,10 +4518,7 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 				}
 			}
 			// After resolving, check if more requests are pending.
-			if m.arb.hasPending() {
-				m.tryGrantAndStart()
-			}
-			return
+			return !cancelledInFlight
 		}
 		// Proxy-bug C4 / R4: if the session has re-submitted a START
 		// for this session while THIS grant was in flight at the
@@ -4528,6 +4554,8 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 			if pending.deadline != nil {
 				pending.deadline.Stop() // AM8: cancel deadline timer
 			}
+			m.fenceArbitrationUntilSYNLocked()
+			m.undeliverableStarted.Add(1)
 			m.stateMu.Unlock()
 			m.logger.Printf("adaptermux: suppressing STARTED for session %d — request was cancelled/replaced; absorbed (C4/R4)", pending.sessionID)
 			// F-17 follow-up (PR #626 review round-1, angry-tester
@@ -4579,81 +4607,14 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 			}:
 			default:
 			}
-			// Advance the queue if anything else is pending. The
-			// adapter is fine; eBUS arbitration is per-SYN; no
-			// transport-level action is required.
-			if m.arb.hasPending() {
-				m.tryGrantAndStart()
-			}
-			return
+			return false
 		}
-		// F-24 (batch-21, 2026-05-14): external-session START staleness
-		// guard. ebusd's bus state machine has an internal arbitration-
-		// wait timeout (~1-2s); when the gateway's queue+arbitration
-		// pipeline takes longer than ebusd's timeout, ebusd silently
-		// abandons the request internally. A late ENH_RES_STARTED then
-		// arrives in ebusd's bs_recvCmd / bs_skip / bs_ready-wrong
-		// state and ebusd logs `arbitration won in invalid state` and
-		// silently drops the bid — never sending the M2S frame bytes.
-		// ebusctl reports `ERR: arbitration lost`. Live evidence
-		// (2026-05-14 17:03-17:24): 31 invalid-state events over 27
-		// minutes; tight-scan-08 success rate 13-20% vs 95% target.
-		//
-		// Suppress grants whose age exceeds ExternalStartStaleness so
-		// the gateway never delivers a STARTED that ebusd will
-		// discard. Wire-level arbitration win recovers via the next
-		// SYN-idle burst because no SEND frame follows. The session's
-		// notify is set to cancelled:true so session.go's handleStart
-		// takes the silent-suppress branch (mirroring the F-17 C4/R4
-		// path semantics). Gateway session 0 is not subject to this
-		// guard because the gateway's own send path doesn't fall
-		// through ebusd's state machine.
-		if pending.sessionID != gatewaySessionID && pending.req != nil &&
-			m.cfg.ExternalStartStaleness > 0 &&
-			time.Since(pending.req.enqueuedAt) > m.cfg.ExternalStartStaleness {
-			m.pendingStart = nil
-			if pending.deadline != nil {
-				pending.deadline.Stop()
-			}
-			age := time.Since(pending.req.enqueuedAt)
-			// F-24-fix (Codex PR #634 P1 thread "Wait for idle after
-			// suppressing stale STARTED"): defer the next grant until
-			// the SYN handler confirms a bus-idle boundary. The
-			// adapter reported a real wire-level arbitration win for
-			// this external initiator; even though we suppressed the
-			// STARTED notification, the initiator's M2S frame is (or
-			// is about to be) on the wire. arb.hasOwner is false here
-			// (we never confirmed ownership), so without this flag a
-			// concurrent gateway or external START would race the
-			// abandoned external's bus slot. The flag is consumed in
-			// onSYNLocked — any SYN observation (whether mid-frame
-			// terminator or pure idle SYN) is sufficient proof the
-			// abandoned bus slot has ended.
-			m.deferRegrantUntilNextSyn = true
-			m.stateMu.Unlock()
-			m.logger.Printf("adaptermux: suppressing stale STARTED for session %d — request age %v > budget %v (F-24); deferring regrant until next SYN",
-				pending.sessionID, age, m.cfg.ExternalStartStaleness)
-			select {
-			case pending.notify <- startResult{
-				granted:   false,
-				cancelled: true,
-				initiator: pending.initiator,
-				err:       errors.New("adaptermux: external START exceeded ExternalStartStaleness budget (F-24)"),
-			}:
-			default:
-			}
-			// NOTE: intentionally NOT calling tryGrantAndStart here.
-			// The next SYN observation in onSYNLocked clears
-			// deferRegrantUntilNextSyn and the readLoop's
-			// shouldTryGrant path picks up the grant naturally.
-			return
-		}
-		m.pendingStart = nil
+		pending.responseReceived = true
 		if pending.deadline != nil {
-			pending.deadline.Stop() // AM8: cancel deadline timer
+			pending.deadline.Stop()
 		}
 		m.stateMu.Unlock()
-		m.completeArbitrationGrant(pending.sessionID, pending.initiator, pending.notify)
+		m.completeArbitrationGrant(pending)
 	} else {
 		// F-17 follow-up (PR #626 review round-1, angry-tester finding
 		// F-1, FAILED-half): if the in-flight request was cancelled by
@@ -4668,6 +4629,7 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 		// its own fresh notify channel and the queue advances below.
 		cancelledInFlight := pending.req != nil && pending.req.cancelled.Load()
 		m.pendingStart = nil
+		m.fenceArbitrationUntilSYNLocked()
 		if pending.deadline != nil {
 			pending.deadline.Stop() // AM8: cancel deadline timer
 		}
@@ -4692,12 +4654,11 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 				err:       fmt.Errorf("adaptermux: arbitration lost to 0x%02X: %w", data, ebuserrors.ErrBusCollision),
 			}
 		}
+		return !cancelledInFlight
 	}
 
 	// After resolving, check if more requests are pending.
-	if m.arb.hasPending() {
-		m.tryGrantAndStart()
-	}
+	return false
 }
 
 // cancelPendingStart cancels an in-flight pending START if it belongs
@@ -4708,13 +4669,16 @@ func (m *Mux) cancelPendingStart(sessionID uint64) {
 	if m.pendingStart != nil && m.pendingStart.sessionID == sessionID {
 		pending := m.pendingStart
 		m.pendingStart = nil
+		m.fenceArbitrationUntilSYNLocked()
 		if pending.deadline != nil {
 			pending.deadline.Stop() // AM8: cancel deadline timer
 		}
-		// The adapter will still send STARTED or FAILED for the cancelled
-		// RequestStart. Increment absorb counter so handleArbitrationResponse
-		// discards that stale response instead of failing a newer request.
-		m.armPendingStartAbsorbLocked("cancel")
+		// Expect a stale response only if the adapter has not responded yet.
+		// STARTED may already have been consumed before ownership commits;
+		// in that case the next SYN is the only remaining regrant barrier.
+		if !pending.responseReceived {
+			m.armPendingStartAbsorbLocked("cancel")
+		}
 		// Codex PR #502 P1 (v2 — mirror C2 reconnect pattern): if the
 		// cancelled pending was on the blocking StartArbitration path,
 		// the goroutine may still be hung in the transport call.
@@ -4729,8 +4693,8 @@ func (m *Mux) cancelPendingStart(sessionID uint64) {
 		// blockingArbGen, clears blockingArbActive, and fails/re-queues
 		// arbitration safely under stateMu. The hung goroutine's late
 		// return finds a stale gen and skips state mutation. Do NOT
-		// advance the queue in-line — the reconnect path does that.
-		wasBlocking := pending.blockingArb
+		// admit another bid before the next SYN after reconnect.
+		wasBlocking := pending.blockingArb && !pending.responseReceived
 		m.stateMu.Unlock()
 		// AM8: guard the send — if another path already delivered a
 		// result for this notify channel, skip to avoid blocking.
@@ -4756,10 +4720,6 @@ func (m *Mux) cancelPendingStart(sessionID uint64) {
 					m.logger.Printf("adaptermux: cancelPendingStart triggered transport reconnect to unstick hung StartArbitration (session %d)", sessionID)
 				}
 			}
-		} else if m.arb.hasPending() {
-			// Non-blocking path: no hung goroutine to worry about,
-			// just advance the queue as before.
-			m.tryGrantAndStart()
 		}
 		return
 	}
@@ -4888,13 +4848,10 @@ func (m *Mux) fireAbsorbReset() {
 	// unlikely but possible if the runtime queued multiple fires)
 	// see the IsZero short-circuit and don't re-log.
 	m.pendingAbsorbResetDueAt = time.Time{}
-	shouldAdvance := m.pendingStart == nil && m.arb.hasPending()
+
 	m.stateMu.Unlock()
 
 	// F-22: NO transport-reconnect side effect.
-	if shouldAdvance {
-		m.tryGrantAndStart()
-	}
 }
 
 // clearAbsorbSkipLogStateLocked resets the rate-limit fields associated with
@@ -5042,7 +4999,7 @@ func (m *Mux) sendLoop() {
 				}
 				m.stateMu.Unlock()
 			}
-			err := m.doSend(req.sessionID, req.data)
+			err := m.doSendNormalized(req.sessionID, req.data, req.structural)
 			req.result <- err
 		}
 	}
@@ -5059,6 +5016,16 @@ func (m *Mux) sendLoop() {
 // next SYN/grant reset. The deferred rollback below handles all
 // failure exits uniformly.
 func (m *Mux) doSend(sessionID uint64, data byte) error {
+	return m.doSendNormalized(sessionID, data, false)
+}
+
+// doSendNormalized writes one requested byte to the adapter, applying the
+// write normalization of its source (issue #1003, see raw_symbols.go):
+// external sessions send raw symbols unchanged; a gateway logical byte is
+// encoded into its raw SEND symbols when the active path advertises logical
+// writes, and every resulting symbol is verified. structural is the
+// gateway's explicit end-of-message SYN mark.
+func (m *Mux) doSendNormalized(sessionID uint64, data byte, structural bool) error {
 	isGateway := sessionID == gatewaySessionID
 	sendOK := false
 	defer func() {
@@ -5066,11 +5033,10 @@ func (m *Mux) doSend(sessionID uint64, data byte) error {
 			return
 		}
 		m.stateMu.Lock()
-		if m.gatewayTxnActive {
-			m.gatewayTxnActive = false
-			m.recordGatewayInactive(ReasonActiveWriteError)
-		}
 		m.gatewayEcho.rollbackSent()
+		// Issue #1401: a failed gateway write also releases the grant
+		// now rather than at the next idle SYN or MaxOwnershipDuration.
+		m.releaseGatewayAfterFailureLocked(ReasonActiveWriteError)
 		m.stateMu.Unlock()
 		// Codex round-1 MUST FIX #2 on PR #647: write-error
 		// rollback must ALSO cancel the watchdog the sendLoop
@@ -5148,8 +5114,25 @@ func (m *Mux) doSend(sessionID uint64, data byte) error {
 			pacer.BeforeActiveWrite(time.Now())
 		}
 	}
-	_, err := tr.Write([]byte{data})
-	if err != nil {
+	symbols := []byte{data}
+	if isGateway && m.activePathIsLogical() {
+		symbols = gatewaySendSymbols(data, structural)
+	}
+	if err := m.writeSymbols(tr, symbols); err != nil {
+		var leadErr errGatewayLeadEcho
+		if errors.As(err, &leadErr) {
+			// Escape-lead verification failed: return the bus-level
+			// class (collision, timeout, reset) to protocol.Bus as is.
+			if errors.Is(leadErr.err, ebuserrors.ErrBusCollision) {
+				// protocol.Bus now waits for two SYN symbols before it
+				// retries, so the transaction must stay live to deliver
+				// them: hand it to the bounded collision recovery
+				// lifecycle instead of rolling it back.
+				sendOK = true
+				m.enterWriteCollisionRecovery()
+			}
+			return leadErr.err
+		}
 		return fmt.Errorf("%w: %v", errAdapterWrite, err)
 	}
 
@@ -5255,6 +5238,36 @@ func (m *Mux) deliverToSessions(symbol byte, currentOwner uint64, hasOwner bool,
 	}
 }
 
+// resetLocalLoserSources inserts a synthetic session reconstruction boundary
+// when the locally selected source from FAILED did not win on the wire. An
+// intervening observed SYN already clears localLosers. This boundary
+// belongs only to affected ENH sessions, never to raw or passive wire evidence.
+func (m *Mux) resetLocalLoserSources(losers []*startRequest) {
+	m.sessionsMu.Lock()
+	defer m.sessionsMu.Unlock()
+	for _, loser := range losers {
+		if sess := m.sessions[loser.sessionID]; sess != nil {
+			sess.deliverReceived(protocol.SymbolSyn)
+		}
+	}
+}
+
+// undoLocalLosses retracts the source advertised by local FAILED when its START
+// never reached the adapter. A SYN or RESETTED seen since publication already
+// cleared localLosers and gave these sessions their boundary, and a later
+// selection owns any list it installed, so only the same list is reset here.
+func (m *Mux) undoLocalLosses(losers []*startRequest) {
+	m.stateMu.Lock()
+	current := len(losers) > 0 && len(m.localLosers) > 0 && m.localLosers[0] == losers[0]
+	if current {
+		m.localLosers = nil
+	}
+	m.stateMu.Unlock()
+	if current {
+		m.resetLocalLoserSources(losers)
+	}
+}
+
 // deliverWinnerByteToOtherSessions delivers an arbitration-winner byte
 // as a passive observation to every external session EXCEPT the one
 // identified by exceptSessionID. Used by the readLoop's STARTED/FAILED
@@ -5268,10 +5281,16 @@ func (m *Mux) deliverToSessions(symbol byte, currentOwner uint64, hasOwner bool,
 //
 // EBUSD-VERIFICATION-2026-05-10.md F-9/F-10 follow-up; Codex P2
 // round 3 on PR #620.
-func (m *Mux) deliverWinnerByteToOtherSessions(symbol byte, exceptSessionID uint64) {
+func (m *Mux) deliverWinnerByteToOtherSessions(symbol byte, exceptSessionID uint64, losers ...*startRequest) {
 	m.sessionsMu.Lock()
 	defer m.sessionsMu.Unlock()
+sessionLoop:
 	for _, sess := range m.sessions {
+		for _, loser := range losers {
+			if loser.sessionID == sess.id {
+				continue sessionLoop
+			}
+		}
 		if sess.id == exceptSessionID {
 			continue
 		}

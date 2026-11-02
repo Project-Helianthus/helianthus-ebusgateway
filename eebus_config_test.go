@@ -72,6 +72,8 @@ func TestMSP06EEBusRuntimeCouplingIsConfinedToApprovedSeams(t *testing.T) {
 	allowedConfigReferences := []string{
 		"cmd/gateway/eebus_admin_config.go",
 		"cmd/gateway/eebus_config_flags.go",
+		// Issue #1306 snapshots native config inside the private lifecycle seam.
+		"cmd/gateway/eebus_managed_driver.go",
 		"cmd/gateway/eebus_runtime_adapter.go",
 		"cmd/gateway/eebus_runtime_config.go",
 		"cmd/gateway/gateway_run_lifecycle.go",
@@ -79,6 +81,9 @@ func TestMSP06EEBusRuntimeCouplingIsConfinedToApprovedSeams(t *testing.T) {
 		"config.go",
 	}
 	requiredRuntimeImports := map[string]bool{
+		// Issue #1306 keeps native runtime/admin handles inside the private
+		// managed-driver lifecycle seam, behind generation-fenced callbacks.
+		"cmd/gateway/eebus_managed_driver.go":       false,
 		"cmd/gateway/eebus_mutation_lab_profile.go": false,
 		"cmd/gateway/eebus_runtime_adapter.go":      false,
 		"cmd/gateway/eebus_runtime_config.go":       false,
@@ -101,9 +106,9 @@ func TestMSP06EEBusRuntimeCouplingIsConfinedToApprovedSeams(t *testing.T) {
 		// Issue #784 adds the owner-only raw SHIP/SPINE acquisition seam for
 		// private leaf-promotion evidence. It does not project into consumers.
 		"cmd/gateway/leaf_promotion_live_source.go": false,
-		// Issue #794 consumes the same facades at the adapter boundary and
-		// emits only typed, public-safe semantic overlay values.
-		"cmd/gateway/eebus_promoted_semantic.go": false,
+		// Issue #1312 moves native observation/publication into the existing
+		// runtime adapter. The semantic overlay is no longer an approved
+		// native runtime importer; the scan below rejects coupling there.
 	}
 	var unexpected []string
 	err = filepath.WalkDir(".", func(path string, entry os.DirEntry, walkErr error) error {

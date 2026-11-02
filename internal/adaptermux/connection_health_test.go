@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
 )
 
@@ -176,7 +177,9 @@ func TestManagedConnectionLossDelegatesRecoveryAndFencesOldMux(t *testing.T) {
 		t.Fatalf("AddSession() id = %d after delegated loss, want 0", id)
 	}
 	_ = client.Close()
-	result := <-mux.requestStartForSession(41, 0x31)
+	ch := mux.requestStartForSession(41, 0x31)
+	mux.onLogicalReceived(protocol.SymbolSyn, false, false)
+	result := <-ch
 	if !errors.Is(result.err, errNotConnected) {
 		t.Fatalf("old-generation START error = %v, want errNotConnected", result.err)
 	}
@@ -291,7 +294,9 @@ func TestManagedConnectionLossLinearizesProxyAdmissionAndProviderUse(t *testing.
 		defer cancel()
 
 		go func() {
-			result := <-mux.requestStartForSession(41, 0x31)
+			ch := mux.requestStartForSession(41, 0x31)
+			mux.onLogicalReceived(protocol.SymbolSyn, false, false)
+			result := <-ch
 			if result.err == nil {
 				t.Error("RequestStart unexpectedly succeeded across loss")
 			}
@@ -642,10 +647,8 @@ func TestManagedConnectionLossDoesNotDeadlockCancelledStartQueueAdvance(t *testi
 		startErr:        errors.New("adapter disconnected"),
 	}
 	mux := New(Config{
-		Protocol:        "enh",
-		PendingStartTTL: time.Hour,
-		SYNInterval:     time.Hour,
-		StartDeadline:   time.Hour,
+		Protocol:      "enh",
+		StartDeadline: time.Hour,
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -36,6 +36,8 @@ import (
 // labels were misleading; le_25000 must include faster frames.
 var adaptermuxSessionFrameLatencyBucketTotal = expvar.NewMap("adaptermux_session_frame_latency_us_bucket_total")
 
+var adaptermuxSessionBacklogFlushesTotal = expvar.NewInt("adaptermux_session_backlog_flushes_total")
+
 // adaptermuxSessionFrameLatencySlowThresholdMicros is the per-frame
 // latency above which we emit a structured log line so operators can
 // see concrete slow samples without parsing the bucket histogram. 25 ms
@@ -83,10 +85,13 @@ func recordLatencyBuckets(elapsedUs int64) {
 }
 
 const (
-	// defaultSessionSendBuffer is the default send channel capacity
-	// for external sessions. If the buffer fills, the session is
+	// defaultSessionSendBuffer bounds retained frames, including writer
+	// lookahead, for external sessions. If the channel fills, the session is
 	// forcibly closed (backpressure protection, from proxy convention).
 	defaultSessionSendBuffer = 8192
+
+	maxSessionPacerBacklog = 2
+	sessionWriterLookahead = maxSessionPacerBacklog + 1
 
 	// maxSessions is the hard ceiling on concurrent external sessions.
 	// Prevents unbounded memory growth from runaway connections (AM25/AM50).
@@ -105,6 +110,8 @@ const (
 // m.gatewayEcho (the same echoTracker struct is retained), but it is
 // strictly gateway-scoped.
 type session struct {
+	grantDelivered atomic.Bool
+
 	id   uint64
 	conn net.Conn
 	mux  *Mux
@@ -168,6 +175,10 @@ type session struct {
 	// 2026-05-15).
 	grantGeneration atomic.Uint64
 
+	// Writer-owned state; backlogFlushes is atomic for diagnostics.
+	flushBacklog   bool
+	backlogFlushes atomic.Uint64
+
 	// wg waits for reader, writer, and handleStart goroutines to finish.
 	wg sync.WaitGroup
 }
@@ -184,6 +195,12 @@ const rawTCPDiagnosticThreshold uint32 = 16
 type sessionFrame struct {
 	kind    sessionFrameKind
 	payload byte
+	// grantGen is set on a STARTED frame queued by the mux at grant time
+	// (issue #1003): the low 32 bits of the session's grantGeneration for
+	// that grant. The writer arms the F-34/F-35 abandon watchdog for this
+	// grant once the frame reached the client. Zero means "no watchdog".
+	// A uint32 keeps the frame at 16 bytes next to enqueuedAtNano.
+	grantGen uint32
 	// enqueuedAtNano is the elapsed nanoseconds from the package-level
 	// monoAnchor at the moment the frame was enqueued on sendCh. The
 	// writeLoop computes latency as
@@ -193,7 +210,7 @@ type sessionFrame struct {
 	//
 	// We store an int64 (8 bytes) rather than a time.Time (24 bytes,
 	// because of the wall/ext/Location triple) because every external
-	// session preallocates an 8192-entry ring buffer (sendCh) and the
+	// session reserves an 8192-frame budget (sendCh plus lookahead) and the
 	// gateway may host up to maxSessions=1000 sessions; a 24-byte
 	// field would inflate baseline channel capacity by ~128 MiB across
 	// the session pool versus the 8-byte form (Codex P2 PR #619).
@@ -244,7 +261,7 @@ func (m *Mux) AddSession(conn net.Conn) uint64 {
 		id:     id,
 		conn:   conn,
 		mux:    m,
-		sendCh: make(chan sessionFrame, defaultSessionSendBuffer),
+		sendCh: make(chan sessionFrame, defaultSessionSendBuffer-sessionWriterLookahead),
 		done:   make(chan struct{}),
 	}
 
@@ -335,12 +352,25 @@ func (m *Mux) RemoveSession(id uint64) {
 	m.sessionPacers.Delete(id)
 
 	if ok {
-		m.arb.removeSession(id)
+		m.releaseSessionGrant(sess)
+		m.arb.cancelStart(id)
 		m.cancelPendingStart(id)
-		m.tryGrantAndStart()
 		sess.close()
 		m.logger.Printf("adaptermux: session %d disconnected", id)
 	}
+}
+
+// releaseSessionGrant retires an unused win behind the next SYN boundary.
+func (m *Mux) releaseSessionGrant(sess *session) {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+	if m.arb.isOwner(sess.id) {
+		m.fenceArbitrationUntilSYNLocked()
+		if !sess.grantDelivered.Load() {
+			m.undeliverableStarted.Add(1)
+		}
+	}
+	m.arb.releaseOwnership(sess.id)
 }
 
 // close shuts down a session's goroutines and connection.
@@ -406,6 +436,25 @@ func (s *session) deliverStarted(payload byte) {
 	case s.sendCh <- sessionFrame{kind: sessionFrameStarted, payload: payload, enqueuedAtNano: time.Since(monoAnchor).Nanoseconds()}:
 	default:
 		go s.mux.RemoveSession(s.id) // goroutine: overflow removal
+	}
+}
+
+// deliverStartedForGrant queues the STARTED of a grant the mux just
+// confirmed, tagged with that grant's generation so the writer can arm the
+// abandon watchdog when the frame becomes visible to the client.
+func (s *session) deliverStartedForGrant(payload byte, grantGen uint64) bool {
+	if s.closed.Load() {
+		return false
+	}
+	// AM23: the parser reset that follows arbitration must be armed
+	// before the client can see STARTED and start sending.
+	s.parserResetNeeded.Store(true)
+	select {
+	case s.sendCh <- sessionFrame{kind: sessionFrameStarted, payload: payload, grantGen: uint32(grantGen), enqueuedAtNano: time.Since(monoAnchor).Nanoseconds()}:
+		return true
+	default:
+		go s.mux.RemoveSession(s.id) // goroutine: overflow removal
+		return false
 	}
 }
 
@@ -483,7 +532,16 @@ func (s *session) handleMessage(msg transport.ENHMessage) {
 
 // handleSend processes a SEND command from the client.
 func (s *session) handleSend(data byte) {
-	if !s.mux.arb.isOwner(s.id) {
+	// STARTED can already be visible while completeArbitrationGrant holds
+	// stateMu. Wait for that commit before checking ownership, and release
+	// the lock before any potentially blocking send or transport operation.
+	s.mux.stateMu.Lock()
+	isOwner := s.mux.arb.isOwner(s.id)
+	if isOwner {
+		s.mux.phase.markOwnerWrite()
+	}
+	s.mux.stateMu.Unlock()
+	if !isOwner {
 		// Session is not bus owner — host-side error, not bus error.
 		// F-6 observability: log so operators can correlate orphan
 		// SEND attempts with missing/lost STARTs
@@ -570,7 +628,7 @@ func (s *session) handleStart(initiator byte) {
 		s.mux.logger.Printf("adaptermux: session %d START 0xAA (SYN cancel)", s.id)
 		s.sawHandshake.Store(true) // F-7: SYN-cancel is still a START
 		s.mux.arb.cancelStart(s.id)
-		s.mux.arb.releaseOwnership(s.id)
+		s.mux.releaseSessionGrant(s)
 		s.mux.cancelPendingStart(s.id)
 		return
 	}
@@ -581,8 +639,7 @@ func (s *session) handleStart(initiator byte) {
 	// (EBUSD-VERIFICATION-2026-05-10.md).
 	s.mux.logger.Printf("adaptermux: session %d START 0x%02X requested (RequestStart(0x%02X) sent for session %d)", s.id, initiator, initiator, s.id)
 	s.sawHandshake.Store(true) // F-7 diagnostic: legitimate ENH client
-	// Use the Mux wrapper so the proxy-bug C4 in-flight cancel and
-	// C1 enqueue-kick fire on every external START submission.
+	// Submit this session's bid to the next idle SYN window.
 	ch := s.mux.requestStartForSession(s.id, initiator)
 
 	// Wait for arbitration result in a tracked goroutine.
@@ -592,14 +649,25 @@ func (s *session) handleStart(initiator byte) {
 		select {
 		case result := <-ch:
 			// AM23: signal readLoop to reset ENH parser after arbitration
-			// completes (enh.md:128). Set unconditionally — parser state
-			// may be stale regardless of grant/fail outcome.
-			s.parserResetNeeded.Store(true)
+			// completes (enh.md:128). Set for every outcome — parser
+			// state may be stale regardless of grant/fail outcome —
+			// except an outcome the mux already queued: those paths
+			// armed the reset before publishing STARTED or FAILED.
+			// Re-arming here could discard a split SEND or re-bid
+			// that the client began after seeing the control frame.
+			if !result.startedQueued && !result.failedQueued {
+				s.parserResetNeeded.Store(true)
+			}
 			if s.closed.Load() {
 				return
 			}
 			if result.granted {
-				s.deliverStarted(result.initiator)
+				// Issue #1003: the mux queues the grant's STARTED at its
+				// stream position; deliver here only for a grant that
+				// was not queued by the mux.
+				if !result.startedQueued {
+					s.deliverStarted(result.initiator)
+				}
 			} else if result.cancelled {
 				// AM55 fix: client-initiated SYN cancel — the client
 				// already knows it cancelled, don't deliver spurious FAILED.
@@ -609,7 +677,7 @@ func (s *session) handleStart(initiator byte) {
 				// RESETTED so the client sees the correct boundary event
 				// instead of a spurious collision (P1 fix).
 				s.deliverReset(byte(s.mux.upstreamFeatures.Load()))
-			} else {
+			} else if !result.failedQueued {
 				s.deliverFailed(result.initiator)
 			}
 		case <-s.done:
@@ -712,58 +780,154 @@ func (s *session) deliverInfo(b byte) {
 func (s *session) writeLoop() {
 	defer s.wg.Done()
 
+	var lookahead [sessionWriterLookahead]sessionFrame
+	pending := lookahead[:0]
+	flushRemaining := 0
 	for {
-		select {
-		case frame := <-s.sendCh:
-			err := s.writeFrame(frame)
-			// F-10 instrumentation: measure enqueue→TCP-write latency
-			// for every frame so operators can correlate "send to fe:
-			// ERR: read timeout" events on ebusd's side with concrete
-			// pipeline-latency samples. ebusd's 25 ms per-byte budget
-			// is the threshold: frames slower than that get a log line
-			// in addition to bucket counts. (Measure on every frame,
-			// not just slow ones, so the histogram surface is complete.)
-			if frame.enqueuedAtNano != 0 {
-				// Monotonic subtraction relative to monoAnchor; immune
-				// to wall-clock steps (Codex P2 round 2 on PR #619).
-				elapsedUs := (time.Since(monoAnchor).Nanoseconds() - frame.enqueuedAtNano) / 1_000
-				recordLatencyBuckets(elapsedUs)
-				if elapsedUs > adaptermuxSessionFrameLatencySlowThresholdMicros && !s.closed.Load() {
-					s.mux.logger.Printf("adaptermux: session %d frame delivery slow: kind=%d latency=%dus (threshold=%dus — exceeds ebusd's default --receivetimeout)",
-						s.id, frame.kind, elapsedUs, adaptermuxSessionFrameLatencySlowThresholdMicros)
-				}
-			}
-			if err != nil {
-				if !s.closed.Load() && !errors.Is(err, net.ErrClosed) {
-					s.mux.logger.Printf("adaptermux: session %d write error: %v", s.id, err)
-				}
-				// AM46+Codex: mark closed and close resources directly.
-				// We must close done+conn HERE because RemoveSession's
-				// sess.close() checks closed.Swap(true) and would no-op
-				// if we already set closed=true. Without closing conn,
-				// readLoop stays blocked on Read() indefinitely.
-				if !s.closed.Swap(true) {
-					close(s.done)
-					_ = s.conn.Close()
-				}
-				// Drain remaining frames so blocked senders are unblocked.
-			drainLoop:
-				for {
-					select {
-					case <-s.sendCh:
-					default:
-						break drainLoop
-					}
-				}
-				go s.mux.RemoveSession(s.id)
+		if len(pending) == 0 {
+			select {
+			case frame := <-s.sendCh:
+				pending = append(pending, frame)
+			case <-s.done:
+				return
+			case <-s.mux.ctx.Done():
 				return
 			}
+		}
+		select {
 		case <-s.done:
 			return
 		case <-s.mux.ctx.Done():
 			return
+		default:
+		}
+		// ModeOff retains its FIFO, zero-pacer path. Snapshot only frames
+		// already available, so a producer cannot keep the writer draining.
+		if pacer := s.mux.SessionPacer(s.id); pacer != nil {
+			// Look ahead only far enough to detect a symbol backlog. Never
+			// drain a full channel into a second buffer while TCP is stalled.
+			for n := len(s.sendCh); n > 0 && len(pending) <= maxSessionPacerBacklog; n-- {
+				pending = append(pending, <-s.sendCh)
+			}
+			queuedSymbols := 0
+			for _, frame := range pending {
+				if frame.kind == sessionFrameReceived {
+					queuedSymbols++
+					if queuedSymbols > maxSessionPacerBacklog {
+						break
+					}
+				}
+			}
+			if !s.flushBacklog && queuedSymbols > maxSessionPacerBacklog {
+				s.flushBacklog = true
+				flushRemaining = len(pending) + len(s.sendCh)
+				total := s.backlogFlushes.Add(1)
+				adaptermuxSessionBacklogFlushesTotal.Add(1)
+				s.mux.logger.Printf("adaptermux: session %d frame latency backlog flush: backlog_flushes=%d", s.id, total)
+			}
+			// Outside a backlog flush, drain the older RECEIVED prefix without
+			// pacing through its arbitration notification. Keep strict FIFO so
+			// pre-grant traffic cannot be mistaken for a post-grant SEND echo.
+			// Other controls fence this scan; the backlog counter is unchanged.
+			if !s.flushBacklog {
+				for i, frame := range pending {
+					if frame.kind == sessionFrameReceived {
+						continue
+					}
+					if i > 0 && (frame.kind == sessionFrameStarted || frame.kind == sessionFrameFailed) {
+						s.flushBacklog = true
+						flushRemaining = i + 1
+					}
+					break
+				}
+			}
+			if !s.flushBacklog && pending[0].kind == sessionFrameReceived {
+				if delay := time.Until(pacer.NextOutput(time.Now())); delay > 0 {
+					timer := time.NewTimer(delay)
+					select {
+					case <-timer.C:
+					case frame := <-s.pacerArrival(pending):
+						timer.Stop()
+						pending = append(pending, frame)
+						continue
+					case <-s.done:
+						timer.Stop()
+						return
+					case <-s.mux.ctx.Done():
+						timer.Stop()
+						return
+					}
+				}
+			}
+		}
+		frame := pending[0]
+		copy(pending, pending[1:])
+		pending = pending[:len(pending)-1]
+		err := s.writeFrame(frame)
+		if err == nil && frame.kind == sessionFrameStarted && frame.grantGen != 0 && s.mux != nil {
+			s.grantDelivered.Store(true)
+			// Issue #1003: the grant became visible to the client
+			// only now; start its abandon deadline here, not at the
+			// upstream grant.
+			s.mux.armExternalAbandonWatchdog(s, frame.grantGen)
+		}
+		// F-10 instrumentation: measure enqueue→TCP-write latency
+		// for every frame so operators can correlate "send to fe:
+		// ERR: read timeout" events on ebusd's side with concrete
+		// pipeline-latency samples. ebusd's 25 ms per-byte budget
+		// is the threshold: frames slower than that get a log line
+		// in addition to bucket counts. (Measure on every frame,
+		// not just slow ones, so the histogram surface is complete.)
+		if frame.enqueuedAtNano != 0 {
+			// Monotonic subtraction relative to monoAnchor; immune
+			// to wall-clock steps (Codex P2 round 2 on PR #619).
+			elapsedUs := (time.Since(monoAnchor).Nanoseconds() - frame.enqueuedAtNano) / 1_000
+			recordLatencyBuckets(elapsedUs)
+			if elapsedUs > adaptermuxSessionFrameLatencySlowThresholdMicros && !s.closed.Load() {
+				s.mux.logger.Printf("adaptermux: session %d frame delivery slow: kind=%d latency=%dus backlog_flushes=%d (threshold=%dus — exceeds ebusd's default --receivetimeout)",
+					s.id, frame.kind, elapsedUs, s.backlogFlushes.Load(), adaptermuxSessionFrameLatencySlowThresholdMicros)
+			}
+		}
+		if err != nil {
+			if !s.closed.Load() && !errors.Is(err, net.ErrClosed) {
+				s.mux.logger.Printf("adaptermux: session %d write error: %v", s.id, err)
+			}
+			// AM46+Codex: mark closed and close resources directly.
+			// We must close done+conn HERE because RemoveSession's
+			// sess.close() checks closed.Swap(true) and would no-op
+			// if we already set closed=true. Without closing conn,
+			// readLoop stays blocked on Read() indefinitely.
+			if !s.closed.Swap(true) {
+				close(s.done)
+				_ = s.conn.Close()
+			}
+			// Drain remaining frames so blocked senders are unblocked.
+		drainLoop:
+			for {
+				select {
+				case <-s.sendCh:
+				default:
+					break drainLoop
+				}
+			}
+			go s.mux.RemoveSession(s.id)
+			return
+		}
+		if s.flushBacklog {
+			flushRemaining--
+			if flushRemaining == 0 {
+				s.flushBacklog = false
+			}
 		}
 	}
+}
+
+// pacerArrival bounds writer lookahead even when controls occupy the window.
+func (s *session) pacerArrival(pending []sessionFrame) <-chan sessionFrame {
+	if len(pending) > maxSessionPacerBacklog {
+		return nil
+	}
+	return s.sendCh
 }
 
 // writeFrame encodes and writes an ENH frame to the client connection.
@@ -809,100 +973,66 @@ func (s *session) writeFrame(frame sessionFrame) error {
 		return fmt.Errorf("adaptermux: unknown session frame kind %d", frame.kind)
 	}
 
-	// Phase 3 Step B3.6f (frame-atomic-visibility v8 §4.5): pace
-	// the TCP egress through the per-session v8classifier.Pacer.
-	// The pacer enforces τ_wire_byte=4.17ms cadence on AVERAGE
-	// across frames — see "frame-average pacing semantics" below.
-	//
-	// SEMANTICS — frame-average pacing (Codex round-1 MUST FIX on
-	// PR #648, refined by round-2 MEDIUM #1): each session frame
-	// is written via a SINGLE conn.Write call — the writer makes
-	// NO deliberate intra-frame pacing or splitting. TCP itself
-	// is a byte stream and does NOT preserve application write
-	// boundaries for the peer's Read calls; the peer may receive
-	// the frame as 1 read or N reads depending on its own buffer
-	// management and TCP segmentation. What the pacer guarantees
-	// is that the WRITER never inserts an intra-frame τ gap that
-	// could let the peer's Read coincide with a partial ENH
-	// escape sequence (`0xA9 NN`).
-	//
-	// The cadence is enforced AT FRAME GRANULARITY:
-	//   - For an N-byte frame, the Schedule loop reserves N
-	//     byte slots. After the loop, lastScheduledEmit points at
-	//     the LAST reserved slot (frameStart + (N-1)*τ); the
-	//     NEXT frame's first Schedule call advances it to
-	//     frameStart + N*τ (Codex round-2 MEDIUM #2 precision).
-	//   - NEXT frame's first byte therefore emits no earlier
-	//     than prevFrameStart + N*τ — the wire-equivalent rate
-	//     for N bytes.
-	//   - Within a frame, the writer issues ONE Write; there is
-	//     no deliberate intra-frame sleep.
-	//
-	// This matches how the bus itself would emit a multi-byte
-	// frame — the bytes are wire-encoded back-to-back at the
-	// adapter, then arrive at the gateway's read side together
-	// (modulo TCP fragmentation jitter). Frame-average pacing
-	// is the correct trade-off: inter-frame cadence is wire-
-	// equivalent, intra-frame writes are atomic at the WRITER.
-	//
-	// Wiring contract:
-	//   1. Call Schedule(now) ONCE to get the FIRST byte's emit
-	//      time. This is what we sleep until.
-	//   2. Call Schedule(now) (len(buf)-1) more times to advance
-	//      the pacer's cadence anchor by τ per byte, so the NEXT
-	//      frame's first byte is paced from lastEmit + N×τ.
-	//   3. Sleep until emitAt with shutdown-responsive cancel via
-	//      s.done / s.mux.ctx.Done.
-	//   4. Write the whole frame in a single conn.Write.
-	//
-	// ModeOff zero-overhead contract: when m.v8 == nil OR the
-	// per-session pacer is nil (which can happen during the brief
-	// window between AddSession and ensureSessionPacer completing —
-	// though in practice they're sequential), the pacer path is
-	// fully bypassed — no Schedule call, no time.Now, no sleep.
-	// External-session active writes through mux.doSend already
-	// pace independently of this output cadence.
-	//
-	// Do NOT conflate this hook point with mux.doSend's tr.Write
-	// (that's the L_rtt-EMA / BeforeActiveWrite side per v8 §1.4,
-	// which uses BeforeActiveWrite + EchoDeadlines + RecordEcho
-	// against the adapter, NOT the client's TCP egress).
-	// Defensive nil-check on s.mux — production callers always
-	// have a mux (session is constructed via Mux.AddSession), but
-	// unit tests (e.g. TestSession_WriteFrameErrorHost) build a
-	// bare session struct without a mux to exercise the encoder
-	// path in isolation. Without this guard those tests panic on
-	// s.mux.v8.
+	// Keep ordinary mirrored symbols at wire cadence. A queued burst is
+	// drained without sleeps and rebases the cadence on actual egress.
+	// STARTED/FAILED bypass scheduling; every ENH frame remains one Write.
+	var flushPacer *v8classifier.Pacer
 	if s.mux != nil && s.mux.v8 != nil {
 		if pacer := s.mux.SessionPacer(s.id); pacer != nil {
-			now := time.Now()
-			emitAt := pacer.Schedule(now)
-			// Advance the cadence anchor for the remaining
-			// bytes in this frame. Each Schedule call increments
-			// lastScheduledEmit by τ; we discard the returned
-			// emit-times for byte indexes 1..N-1 because the
-			// frame is written in a single Write, but the anchor
-			// advance is what enforces inter-FRAME cadence on
-			// the next iteration.
-			for i := 1; i < len(buf); i++ {
-				_ = pacer.Schedule(now)
-			}
-			if delay := time.Until(emitAt); delay > 0 {
-				timer := time.NewTimer(delay)
-				select {
-				case <-timer.C:
-				case <-s.done:
-					timer.Stop()
-					return net.ErrClosed
-				case <-s.mux.ctx.Done():
-					timer.Stop()
-					return s.mux.ctx.Err()
+			if s.flushBacklog {
+				flushPacer = pacer
+			} else if frame.kind != sessionFrameStarted && frame.kind != sessionFrameFailed {
+				if emitAt, paced := reserveSymbolSlots(pacer, time.Now(), sessionFrameSymbols(frame.kind)); paced {
+					if delay := time.Until(emitAt); delay > 0 {
+						timer := time.NewTimer(delay)
+						select {
+						case <-timer.C:
+						case <-s.done:
+							timer.Stop()
+							return net.ErrClosed
+						case <-s.mux.ctx.Done():
+							timer.Stop()
+							return s.mux.ctx.Err()
+						}
+					}
 				}
 			}
 		}
 	}
 	_, err := s.conn.Write(buf)
+	if err == nil && flushPacer != nil {
+		// A blocked Write must not leave the next ordinary slot in the past.
+		flushPacer.ResumeOutput(time.Now())
+	}
 	return err
+}
+
+// sessionFrameSymbols reports how many eBUS wire symbols a session frame
+// represents for output pacing (issue #1003). RECEIVED carries one observed
+// wire symbol regardless of its ENH encoding length; STARTED and FAILED
+// stand for the single arbitration symbol the adapter consumed; control
+// frames (RESETTED, ERROR_EBUS, ERROR_HOST, INFO) carry none.
+func sessionFrameSymbols(kind sessionFrameKind) int {
+	switch kind {
+	case sessionFrameReceived, sessionFrameStarted, sessionFrameFailed:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// reserveSymbolSlots reserves one pacer slot per wire symbol and returns the
+// emit time of the first one. paced is false for a frame without wire
+// symbols, which is written without consulting the pacer.
+func reserveSymbolSlots(pacer *v8classifier.Pacer, now time.Time, symbols int) (emitAt time.Time, paced bool) {
+	if symbols <= 0 {
+		return time.Time{}, false
+	}
+	emitAt = pacer.Schedule(now)
+	for i := 1; i < symbols; i++ {
+		_ = pacer.Schedule(now)
+	}
+	return emitAt, true
 }
 
 // isResetOrDisconnectError reports whether err represents a bus reset

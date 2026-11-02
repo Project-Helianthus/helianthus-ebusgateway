@@ -1,0 +1,101 @@
+package main
+
+import (
+	"context"
+	"log"
+	"net"
+	"net/netip"
+	"strconv"
+
+	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/portalconfig"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimecontrol"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/portal"
+)
+
+func openGatewayPortalConfig(cfg ebusgateway.Config, registry *runtimecontrol.Registry) *portalconfig.Store {
+	var drivers []portalconfig.Driver
+	if registry != nil {
+		for _, driver := range registry.List().Drivers {
+			drivers = append(drivers, portalconfig.Driver{ID: string(driver.DriverID), Enabled: driver.Disposition == runtimecontrol.DispositionEnabled})
+		}
+	}
+	store, _ := openGatewayPortalConfigDrivers(cfg, drivers)
+	return store
+}
+
+// openGatewayPortalConfigDrivers opens the host-owned store whose editable
+// drivers, and host-supplied initial enablement, are exactly drivers.
+func openGatewayPortalConfigDrivers(cfg ebusgateway.Config, drivers []portalconfig.Driver) (*portalconfig.Store, error) {
+	initial := portalconfig.Record{Format: portalconfig.Format, Revision: "0", Drivers: append([]portalconfig.Driver{}, drivers...)}
+	constraints := portalConfigConstraints(cfg, drivers)
+	// Open returns a usable error view even on cold-load failure. Keep that
+	// view mounted and never replace corrupt or unavailable storage with defaults.
+	store, err := portalconfig.Open(cfg.PortalConfigRoot, initial, constraints)
+	if err != nil {
+		log.Printf("portal configuration unavailable: %v", err)
+	}
+	return store, err
+}
+
+// portalConfigConstraints is the host-provisioned option set for a driver set.
+func portalConfigConstraints(cfg ebusgateway.Config, drivers []portalconfig.Driver) portalconfig.Constraints {
+	plan := newHTTPControlPlaneRoutePlan(cfg, false)
+	constraints := portalconfig.Constraints{
+		GraphQL: plan.graphqlPath != "", MCP: plan.mcpPath != "",
+		AdapterProxy: cfg.ProxyListenAddr != "", Matter: !cfg.M2MGraphQL.Disabled(),
+	}
+	for _, driver := range drivers {
+		constraints.Drivers = append(constraints.Drivers, driver.ID)
+	}
+	return constraints
+}
+
+func gatewayPortalConfigCallbacks(store *portalconfig.Store, cfg ebusgateway.Config) *portal.ConfigCallbacks {
+	// Snapshot provisioned endpoints, not socket readiness or desired selections.
+	plan := newHTTPControlPlaneRoutePlan(cfg, false)
+	_, httpBinding := gatewayPortalHTTPAddress(cfg.HTTPAddr)
+	bindings := portalconfig.ListenerAvailability{Local: httpBinding}
+	if plan.graphqlPath != "" {
+		bindings.GraphQL = httpBinding
+	}
+	if plan.mcpPath != "" {
+		bindings.MCP = httpBinding
+	}
+	bindings.AdapterProxy = gatewayPortalListenerBinding("adapter_proxy", cfg.ProxyListenAddr)
+	return &portal.ConfigCallbacks{
+		Bindings: func(context.Context) portalconfig.ListenerAvailability { return bindings },
+		Read:     func(context.Context) (portalconfig.Record, error) { return store.Read() },
+		Update: func(_ context.Context, record portalconfig.Record) (portalconfig.Record, error) {
+			return store.Update(record)
+		},
+	}
+}
+
+// gatewayPortalHTTPAddress maps the configured HTTP endpoint to listener input
+// and planning evidence together. Preserve the listen address byte-for-byte:
+// omitted and unspecified hosts bind wildcard interfaces, never loopback.
+func gatewayPortalHTTPAddress(endpoint string) (string, portalconfig.ListenerBinding) {
+	return endpoint, gatewayPortalListenerBinding("http", endpoint)
+}
+
+// gatewayPortalListenerBinding deliberately performs no DNS resolution or socket
+// probing. Hostnames and unassigned ephemeral ports lack a concrete endpoint.
+func gatewayPortalListenerBinding(owner, endpoint string) portalconfig.ListenerBinding {
+	host, portText, err := net.SplitHostPort(endpoint)
+	if err != nil {
+		return portalconfig.ListenerBinding{}
+	}
+	port, err := strconv.ParseUint(portText, 10, 16)
+	if err != nil || port == 0 {
+		return portalconfig.ListenerBinding{}
+	}
+	address := netip.IPv6Unspecified() // Empty host may bind both address families.
+	if host != "" {
+		address, err = netip.ParseAddr(host)
+		if err != nil {
+			return portalconfig.ListenerBinding{}
+		}
+	}
+	return portalconfig.ListenerBinding{Owner: owner, Address: address, Port: uint16(port), Available: true}
+}

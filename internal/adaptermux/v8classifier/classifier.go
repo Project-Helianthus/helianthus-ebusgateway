@@ -523,6 +523,18 @@ func (c *Classifier) fsmEnterPassive(_ transport.StreamEvent) {
 	c.publishFSMSnapshotLocked()
 }
 
+// ResetArbitrationTracking reconciles an aborted mux arbitration or a stream
+// lifecycle boundary with the classifier. Only the mux read goroutine may call
+// this method, serially with Observe. It changes no wire-observation counters and
+// emits no synthetic transport reset or administrative event.
+func (c *Classifier) ResetArbitrationTracking() {
+	if c == nil || c.fsm == nil {
+		return
+	}
+	c.fsm.ResetToIdle()
+	c.publishFSMSnapshotLocked()
+}
+
 // fsmReset routes a StreamEventReset into the FSM's hard reset.
 // Transport-level reset invalidates any in-flight telegram state.
 func (c *Classifier) fsmReset() {

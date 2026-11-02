@@ -146,7 +146,7 @@ func TestIssue848ConnectAuditMatrixIsExactlyOnceAndSecretFree(t *testing.T) {
 		}
 		for index, want := range wants {
 			got := target.events[index]
-			if got.Action != "connect_selection" || got.Principal != PrincipalHostOperator || got.IdempotencyOutcome != want.IdempotencyOutcome || got.PriorStateClass != want.PriorStateClass || got.ResultingStateClass != want.ResultingStateClass || got.Reason != want.Reason || got.RequestID == "" || got.Timestamp.IsZero() {
+			if got.Action != "connect_selection" || got.IdempotencyOutcome != want.IdempotencyOutcome || got.PriorStateClass != want.PriorStateClass || got.ResultingStateClass != want.ResultingStateClass || got.Reason != want.Reason || got.RequestID == "" || got.Timestamp.IsZero() {
 				t.Fatalf("audit[%d]=%#v, want disposition=%q prior=%q resulting=%q reason=%q", index, got, want.IdempotencyOutcome, want.PriorStateClass, want.ResultingStateClass, want.Reason)
 			}
 			encoded, err := json.Marshal(got)
@@ -201,8 +201,8 @@ func TestIssue848ConnectAuditMatrixIsExactlyOnceAndSecretFree(t *testing.T) {
 		}
 		assertEvents(t, collector, []AuditEvent{
 			{IdempotencyOutcome: "executed", PriorStateClass: "precondition_accepted", ResultingStateClass: "changed", Reason: "connection_started"},
-			{IdempotencyOutcome: "replayed", PriorStateClass: "host_operator", ResultingStateClass: "changed", Reason: "connection_started"},
-			{IdempotencyOutcome: "conflict", PriorStateClass: "host_operator", ResultingStateClass: "rejected", Reason: "idempotency_conflict"},
+			{IdempotencyOutcome: "replayed", PriorStateClass: "request_received", ResultingStateClass: "changed", Reason: "connection_started"},
+			{IdempotencyOutcome: "conflict", PriorStateClass: "request_received", ResultingStateClass: "rejected", Reason: "idempotency_conflict"},
 		})
 	})
 
@@ -246,7 +246,7 @@ func TestIssue848ConnectAuditMatrixIsExactlyOnceAndSecretFree(t *testing.T) {
 			t.Fatalf("leader status=%d body=%s", leader.Code, leader.Body.String())
 		}
 		assertEvents(t, collector, []AuditEvent{
-			{IdempotencyOutcome: "rejected", PriorStateClass: "host_operator", ResultingStateClass: "rejected", Reason: "attempt_timeout"},
+			{IdempotencyOutcome: "rejected", PriorStateClass: "request_received", ResultingStateClass: "rejected", Reason: "attempt_timeout"},
 			{IdempotencyOutcome: "executed", PriorStateClass: "precondition_accepted", ResultingStateClass: "changed", Reason: "connection_started"},
 		})
 	})
@@ -993,7 +993,7 @@ func issue817MutationResult(t *testing.T, response *httptest.ResponseRecorder) s
 	}{envelope.StateRevision, envelope.Data.Outcome, envelope.Data.Replayed, envelope.Data.SelectionID}
 }
 
-func TestIssue817AuditUsesOneOperatorClassificationAndExcludesRequestSecrets(t *testing.T) {
+func TestIssue817AuditExcludesCallerIdentityAndRequestSecrets(t *testing.T) {
 	admin := &adminV1Stub{snapshot: testAdminSnapshot()}
 	var events []AuditEvent
 	handler := newIssue817Server(t, admin, nil, func(event AuditEvent) { events = append(events, event) })
@@ -1009,7 +1009,7 @@ func TestIssue817AuditUsesOneOperatorClassificationAndExcludesRequestSecrets(t *
 		t.Fatal(err)
 	}
 	audit := string(encoded)
-	for _, forbidden := range []string{"portal_owner", "ha_integration", "audit-key-817", "irrelevant-secret", "csrf", "cookie"} {
+	for _, forbidden := range []string{"host_operator", `"principal"`, "portal_owner", "ha_integration", "audit-key-817", "irrelevant-secret", "csrf", "cookie"} {
 		if strings.Contains(strings.ToLower(audit), strings.ToLower(forbidden)) {
 			t.Fatalf("audit retains split identity or request secret %q: %s", forbidden, audit)
 		}

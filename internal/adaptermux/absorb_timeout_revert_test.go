@@ -100,14 +100,12 @@ func TestF22_FreshRequestStartGrantNotDroppedAsStale(t *testing.T) {
 	logger := log.New(&logBuf, "", 0)
 
 	mux := New(Config{
-		Protocol:        "enh",
-		Network:         "tcp",
-		Address:         "127.0.0.1:0",
-		ReadTimeout:     200 * time.Millisecond,
-		StartDeadline:   200 * time.Millisecond,
-		PendingStartTTL: 24 * time.Hour,
-		SYNInterval:     time.Hour,
-		Logger:          logger,
+		Protocol:      "enh",
+		Network:       "tcp",
+		Address:       "127.0.0.1:0",
+		ReadTimeout:   200 * time.Millisecond,
+		StartDeadline: 200 * time.Millisecond,
+		Logger:        logger,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -180,13 +178,11 @@ func TestF22_NoLivelockAfterReset(t *testing.T) {
 	mock := newP3MockTransport()
 
 	mux := New(Config{
-		Protocol:        "enh",
-		Network:         "tcp",
-		Address:         "127.0.0.1:0",
-		ReadTimeout:     200 * time.Millisecond,
-		StartDeadline:   200 * time.Millisecond,
-		PendingStartTTL: 24 * time.Hour,
-		SYNInterval:     time.Hour,
+		Protocol:      "enh",
+		Network:       "tcp",
+		Address:       "127.0.0.1:0",
+		ReadTimeout:   200 * time.Millisecond,
+		StartDeadline: 200 * time.Millisecond,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -261,13 +257,11 @@ func TestF22_TimeoutResetStillResetsCounterWithoutReconnect(t *testing.T) {
 	const startDeadline = 200 * time.Millisecond
 
 	mux := New(Config{
-		Protocol:        "enh",
-		Network:         "tcp",
-		Address:         "127.0.0.1:0",
-		ReadTimeout:     200 * time.Millisecond,
-		StartDeadline:   startDeadline,
-		PendingStartTTL: 24 * time.Hour,
-		SYNInterval:     time.Hour,
+		Protocol:      "enh",
+		Network:       "tcp",
+		Address:       "127.0.0.1:0",
+		ReadTimeout:   200 * time.Millisecond,
+		StartDeadline: startDeadline,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -397,14 +391,12 @@ func TestF22_LegitimateAbsorptionViaExistingPath(t *testing.T) {
 	logger := log.New(&logBuf, "", 0)
 
 	mux := New(Config{
-		Protocol:        "enh",
-		Network:         "tcp",
-		Address:         "127.0.0.1:0",
-		ReadTimeout:     200 * time.Millisecond,
-		StartDeadline:   200 * time.Millisecond,
-		PendingStartTTL: 24 * time.Hour,
-		SYNInterval:     time.Hour,
-		Logger:          logger,
+		Protocol:      "enh",
+		Network:       "tcp",
+		Address:       "127.0.0.1:0",
+		ReadTimeout:   200 * time.Millisecond,
+		StartDeadline: 200 * time.Millisecond,
+		Logger:        logger,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())

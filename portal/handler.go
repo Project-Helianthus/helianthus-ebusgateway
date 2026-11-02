@@ -24,6 +24,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semanticview"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 )
 
@@ -58,22 +59,37 @@ var (
 )
 
 type Options struct {
-	GraphQLPath            string
-	PortalCatalogPath      string
-	SnapshotPath           string
-	SubscriptionPath       string
-	MCPPath                string
-	EEBusAdminPath         string
-	GatewayVersion         string
-	BuildID                string
-	ListRegistry           func() []RegistryDevice
-	ListSemantic           func() SemanticSnapshot
-	GetBusObservability    func() any
-	ListProjections        func() []ProjectionDevice
-	GetProjection          func(address byte, plane string) (ProjectionGraph, bool)
-	ExplorerBus            ExplorerBus // nil disables explorer
-	ExplorerSource         byte        // static fallback for standalone/test handlers
-	ExplorerSourceProvider func() (byte, bool)
+	Config *ConfigCallbacks
+
+	// PortalCatalogAvailable declares a catalog route mounted by the host outside
+	// this handler. A configured URL alone does not establish availability.
+	PortalCatalogAvailable bool
+	BasePath               string
+	// ExternalPrefix is a trusted configured path stripped by the embedding proxy.
+	// BasePath remains the internal Portal directory mount. Headers never select
+	// either; the IngressPathHeader value only prefixes URLs written in a response.
+	ExternalPrefix string
+	// SemanticSnapshotAvailable is set by the host only after mounting the
+	// accepted shared GraphQL read; a catalog capture provider alone is insufficient.
+	SemanticSnapshotAvailable bool
+	Contributions             *ContributionOptions
+	SharedSemanticView        func(context.Context) (semanticview.View, error)
+	GraphQLPath               string
+	PortalCatalogPath         string
+	SnapshotPath              string
+	SubscriptionPath          string
+	MCPPath                   string
+	EEBusAdminPath            string
+	GatewayVersion            string
+	BuildID                   string
+	ListRegistry              func() []RegistryDevice
+	ListSemantic              func() SemanticSnapshot
+	GetBusObservability       func() any
+	ListProjections           func() []ProjectionDevice
+	GetProjection             func(address byte, plane string) (ProjectionGraph, bool)
+	ExplorerBus               ExplorerBus // nil disables explorer
+	ExplorerSource            byte        // static fallback for standalone/test handlers
+	ExplorerSourceProvider    func() (byte, bool)
 	// EbusStandardServer is the in-process L7 catalog sub-server consumed
 	// by the M5_PORTAL read-only consumer UI. Nil disables the
 	// /api/v1/ebus-standard/* routes (they return 404) and hides the
@@ -119,7 +135,11 @@ type RawModbusAuditEvent struct {
 }
 
 type handler struct {
-	opts          Options
+	opts      Options
+	mountPath string
+	// relativeShell keeps the historical "./" shell base for handlers created
+	// without a mount or prefix, whose external directory is unknown.
+	relativeShell bool
 	files         http.Handler
 	timeline      *timelineBuffer
 	snapshots     *snapshotStore
@@ -573,8 +593,16 @@ type IssueDraft struct {
 }
 
 func NewHandler(opts Options) http.Handler {
+	standalone := opts.BasePath == ""
+	if opts.Contributions != nil {
+		contributions := *opts.Contributions
+		opts.Contributions = &contributions
+	}
 	if opts.GraphQLPath == "" {
 		opts.GraphQLPath = "/graphql"
+	}
+	if opts.BasePath == "" {
+		opts.BasePath = "/portal/"
 	}
 	if opts.PortalCatalogPath == "" {
 		opts.PortalCatalogPath = "/graphql/portal/v1"
@@ -588,6 +616,15 @@ func NewHandler(opts Options) http.Handler {
 	if opts.MCPPath == "" {
 		opts.MCPPath = "/mcp"
 	}
+	if err := validatePortalPaths(opts); err != nil {
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "invalid portal path configuration", http.StatusInternalServerError)
+		})
+	}
+	mountPath := strings.TrimSuffix(opts.BasePath, "/")
+	// opts.BasePath keeps the configured external directory for route matching;
+	// response URLs are built per request by servedURLs.
+	opts.BasePath = opts.ExternalPrefix + opts.BasePath
 	if opts.GatewayVersion == "" {
 		opts.GatewayVersion = "dev"
 	}
@@ -607,11 +644,13 @@ func NewHandler(opts Options) http.Handler {
 		}
 	}
 	h := &handler{
-		opts:      opts,
-		files:     http.FileServer(http.FS(staticFS)),
-		timeline:  newTimelineBuffer(1000),
-		snapshots: newSnapshotStore(50),
-		sessions:  newSessionStore(100),
+		opts:          opts,
+		mountPath:     mountPath,
+		relativeShell: standalone && opts.ExternalPrefix == "",
+		files:         http.FileServer(http.FS(staticFS)),
+		timeline:      newTimelineBuffer(1000),
+		snapshots:     newSnapshotStore(50),
+		sessions:      newSessionStore(100),
 	}
 	if opts.ExplorerBus != nil {
 		h.explorer = newExplorerStore(opts.ExplorerBus, opts.ExplorerSource, opts.ExplorerSourceProvider)
@@ -919,6 +958,39 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "request url missing", http.StatusBadRequest)
 		return
 	}
+	if !validPortalRequestPath(r.URL) {
+		http.Error(w, "invalid portal request path", http.StatusBadRequest)
+		return
+	}
+	if r.URL.Path == h.opts.PortalCatalogPath || r.URL.Path == h.externalEndpoint(h.opts.PortalCatalogPath) {
+		h.serveContributionCatalog(w, r)
+		return
+	}
+	// Accept direct mounts as well as the existing host StripPrefix adapter.
+	for _, base := range []string{strings.TrimSuffix(h.opts.BasePath, "/"), h.mountPath} {
+		if base == "" {
+			continue
+		}
+		if r.URL.Path == base {
+			urls, ok := h.responseURLs(w, r)
+			if !ok {
+				return
+			}
+			target := urls.base
+			if r.URL.RawQuery != "" {
+				target += "?" + r.URL.RawQuery
+			}
+			w.Header().Set("Location", target)
+			w.WriteHeader(http.StatusMovedPermanently)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, base+"/") {
+			r = r.Clone(r.Context())
+			r.URL.Path = strings.TrimPrefix(r.URL.Path, base)
+			r.URL.RawPath = ""
+			break
+		}
+	}
 	path := r.URL.Path
 	if path == "" {
 		path = "/"
@@ -937,20 +1009,37 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleAPI(recorder, r, strings.TrimPrefix(path, "/api/v1/"))
 		return
 	}
-	if path == "/" || strings.EqualFold(path, "/index.html") {
+	if path == "/" || path == "/index.html" {
+		urls, ok := h.responseURLs(recorder, r)
+		if !ok {
+			return
+		}
+		shellBase := urls.base
+		if h.relativeShell {
+			// Preserve direct and StripPrefix mounting for callers without an explicit mount.
+			shellBase = "./"
+		}
 		recorder.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_ = indexTemplate.Execute(recorder, map[string]any{
-			"GraphQLPath": h.opts.GraphQLPath,
+			"GraphQLPath": urls.endpoint(h.opts.GraphQLPath),
+			"BasePath":    shellBase,
 		})
 		return
 	}
 	if strings.HasPrefix(path, "/assets/") {
+		info, err := fs.Stat(staticFS, strings.TrimPrefix(path, "/"))
+		if err != nil || info.IsDir() {
+			http.NotFound(recorder, r)
+			return
+		}
 		recorder.Header().Set("Cache-Control", "no-cache")
 		if applyAssetETag(recorder, r, path) {
 			return
 		}
+		h.files.ServeHTTP(recorder, r)
+		return
 	}
-	h.files.ServeHTTP(recorder, r)
+	http.NotFound(recorder, r)
 }
 
 func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string) {
@@ -958,6 +1047,10 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 
 	// Explorer routes support POST/DELETE, must be checked before the GET-only guard.
 	trimmed := strings.Trim(path, "/")
+	if trimmed == "config" {
+		h.handleConfig(w, r)
+		return
+	}
 	if trimmed == "semantic/pv/current" {
 		h.handleSemanticPV(w, r)
 		return
@@ -998,13 +1091,19 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 			"readiness":       h.opts.Readiness(),
 		})
 	case "bootstrap":
+		urls, ok := h.responseURLs(w, r)
+		if !ok {
+			return
+		}
+		base := urls.base
 		streamEnabled := h.opts.ListRegistry != nil || h.opts.ListSemantic != nil || h.opts.ListProjections != nil
 		eebusAdminAvailable := h.opts.Readiness().EEBusReadiness == "READY"
 		eebusAdminPath := ""
 		if eebusAdminAvailable {
-			eebusAdminPath = h.opts.EEBusAdminPath
+			eebusAdminPath = urls.endpoint(h.opts.EEBusAdminPath)
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
+			"portal_read": h.portalRead(base),
 			"capabilities": map[string]bool{
 				"registry":          h.opts.ListRegistry != nil,
 				"semantic":          h.opts.ListSemantic != nil,
@@ -1034,37 +1133,37 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 				"modbus_raw_read":  h.opts.RawModbusEnabled && h.opts.ModbusProvider != nil,
 			},
 			"endpoints": map[string]string{
-				"graphql":                  h.opts.GraphQLPath,
-				"portal_catalog":           h.opts.PortalCatalogPath,
-				"snapshot":                 h.opts.SnapshotPath,
-				"subscriptions":            h.opts.SubscriptionPath,
-				"mcp":                      h.opts.MCPPath,
+				"graphql":                  urls.endpoint(h.opts.GraphQLPath),
+				"portal_catalog":           urls.endpoint(h.opts.PortalCatalogPath),
+				"snapshot":                 urls.endpoint(h.opts.SnapshotPath),
+				"subscriptions":            urls.endpoint(h.opts.SubscriptionPath),
+				"mcp":                      urls.endpoint(h.opts.MCPPath),
 				"eebus_admin":              eebusAdminPath,
-				"bus_observability":        "/portal/api/v1/bus/observability",
-				"search":                   "/portal/api/v1/search",
-				"stream":                   "/portal/api/v1/stream",
-				"timeline":                 "/portal/api/v1/timeline/events",
-				"provenance":               "/portal/api/v1/provenance/events",
-				"snapshots":                "/portal/api/v1/snapshots",
-				"capture":                  "/portal/api/v1/snapshots/capture",
-				"retention":                "/portal/api/v1/snapshots/retention",
-				"snapshot_diff":            "/portal/api/v1/snapshots/diff",
-				"snapshot_view":            "/portal/api/v1/snapshots/view",
-				"semantic_storage_current": "/portal/api/v1/semantic/storage/current",
-				"sessions":                 "/portal/api/v1/sessions",
-				"session_save":             "/portal/api/v1/sessions/save",
-				"session_load":             "/portal/api/v1/sessions/load",
-				"issue_draft":              "/portal/api/v1/issues/draft",
-				"issue_export":             "/portal/api/v1/issues/export",
-				"explorer_scans":           "/portal/api/v1/explorer/scans",
-				"explorer_scan_current":    "/portal/api/v1/explorer/scans/current",
-				"explorer_scan_results":    "/portal/api/v1/explorer/scans/current/results",
-				"explorer_scan_stream":     "/portal/api/v1/explorer/scans/current/stream",
-				"explorer_read_b524":       "/portal/api/v1/explorer/read/b524",
-				"explorer_read_b509":       "/portal/api/v1/explorer/read/b509",
-				"explorer_read_scanid":     "/portal/api/v1/explorer/read/scanid",
-				"semantic_pv_current":      "/portal/api/v1/semantic/pv/current",
-				"modbus_raw_read":          "/portal/api/v1/explorer/modbus/raw-read",
+				"bus_observability":        base + "api/v1/bus/observability",
+				"search":                   base + "api/v1/search",
+				"stream":                   base + "api/v1/stream",
+				"timeline":                 base + "api/v1/timeline/events",
+				"provenance":               base + "api/v1/provenance/events",
+				"snapshots":                base + "api/v1/snapshots",
+				"capture":                  base + "api/v1/snapshots/capture",
+				"retention":                base + "api/v1/snapshots/retention",
+				"snapshot_diff":            base + "api/v1/snapshots/diff",
+				"snapshot_view":            base + "api/v1/snapshots/view",
+				"semantic_storage_current": base + "api/v1/semantic/storage/current",
+				"sessions":                 base + "api/v1/sessions",
+				"session_save":             base + "api/v1/sessions/save",
+				"session_load":             base + "api/v1/sessions/load",
+				"issue_draft":              base + "api/v1/issues/draft",
+				"issue_export":             base + "api/v1/issues/export",
+				"explorer_scans":           base + "api/v1/explorer/scans",
+				"explorer_scan_current":    base + "api/v1/explorer/scans/current",
+				"explorer_scan_results":    base + "api/v1/explorer/scans/current/results",
+				"explorer_scan_stream":     base + "api/v1/explorer/scans/current/stream",
+				"explorer_read_b524":       base + "api/v1/explorer/read/b524",
+				"explorer_read_b509":       base + "api/v1/explorer/read/b509",
+				"explorer_read_scanid":     base + "api/v1/explorer/read/scanid",
+				"semantic_pv_current":      base + "api/v1/semantic/pv/current",
+				"modbus_raw_read":          base + "api/v1/explorer/modbus/raw-read",
 			},
 			"limits": map[string]any{
 				"max_events_per_second": 200,

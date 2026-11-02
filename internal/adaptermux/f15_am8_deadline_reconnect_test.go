@@ -35,13 +35,11 @@ func TestAM8Deadline_NonBlockingPath_NoReconnect(t *testing.T) {
 	mock := newP3MockTransport()
 
 	mux := New(Config{
-		Protocol:        "enh",
-		Network:         "tcp",
-		Address:         "127.0.0.1:0",
-		ReadTimeout:     200 * time.Millisecond,
-		StartDeadline:   150 * time.Millisecond, // short for test speed
-		PendingStartTTL: 24 * time.Hour,
-		SYNInterval:     time.Hour, // keep idle path quiet
+		Protocol:      "enh",
+		Network:       "tcp",
+		Address:       "127.0.0.1:0",
+		ReadTimeout:   200 * time.Millisecond,
+		StartDeadline: 150 * time.Millisecond, // short for test speed
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -272,13 +270,11 @@ func TestF22_AbsorbTimerResetsCounterWithoutReconnect(t *testing.T) {
 	const startDeadline = 200 * time.Millisecond
 
 	mux := New(Config{
-		Protocol:        "enh",
-		Network:         "tcp",
-		Address:         "127.0.0.1:0",
-		ReadTimeout:     200 * time.Millisecond,
-		StartDeadline:   startDeadline,
-		PendingStartTTL: 24 * time.Hour,
-		SYNInterval:     time.Hour,
+		Protocol:      "enh",
+		Network:       "tcp",
+		Address:       "127.0.0.1:0",
+		ReadTimeout:   200 * time.Millisecond,
+		StartDeadline: startDeadline,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())

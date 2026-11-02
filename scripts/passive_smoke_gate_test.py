@@ -186,6 +186,17 @@ type Config struct {
         except OSError as exc:
             self.fail(f"cannot read immutable pre-candidate fixture: {exc}")
 
+    def _transport_snapshot_candidate(self) -> str:
+        # Freeze both sides of the transport-only exception. Reading the live
+        # store here would fold unrelated future edits into the allowed case.
+        candidate = self._pre_candidate_bus_observability_base()
+        fixture = SCRIPT_DIR / "testdata" / "passive_smoke_transport_snapshot_edits.json"
+        for edit in json.loads(fixture.read_text(encoding="utf-8")):
+            self.assertEqual(candidate.count(edit["before"]), 1,
+                             "transport fixture edit must match exactly once")
+            candidate = candidate.replace(edit["before"], edit["after"], 1)
+        return candidate
+
     def _create_temp_repo(
         self,
         changed_file: str,
@@ -339,7 +350,7 @@ func (store *BusObservabilityStore) RenderPrometheus() {
 
     def test_bus_observability_transport_snapshot_is_only_exception(self) -> None:
         base = self._pre_candidate_bus_observability_base()
-        allowed = (REPO_ROOT / "bus_observability_store.go").read_text(encoding="utf-8")
+        allowed = self._transport_snapshot_candidate()
         repo_path, _ = self._create_temp_repo(
             "bus_observability_store.go", base_text=base, modified_text=allowed
         )
@@ -350,6 +361,20 @@ func (store *BusObservabilityStore) RenderPrometheus() {
         )
         self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
         self.assertIn("not triggered", result.stdout)
+
+        specimen_change = allowed.replace(
+            "specimens map[string]*specimenFamilyBucket // keyed by family",
+            "specimens specimens.Store",
+        )
+        self.assertNotEqual(specimen_change, allowed)
+        (repo_path / "bus_observability_store.go").write_text(specimen_change, encoding="utf-8")
+        result = subprocess.run(
+            ["bash", "scripts/passive_smoke_gate.sh"], cwd=repo_path,
+            env=self._script_env(PASSIVE_SMOKE_GATE_BASE_REF="HEAD"),
+            text=True, capture_output=True, check=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("PASSIVE_SMOKE_REPORT is required", result.stdout)
 
         for hostile in (
             '\nfunc transportSnapshotPassiveMutation(store *BusObservabilityStore) { store.passive.state = "unsafe" }\n',
@@ -366,6 +391,71 @@ func (store *BusObservabilityStore) RenderPrometheus() {
             self.assertNotEqual(result.returncode, 0, hostile)
             self.assertIn("PASSIVE_SMOKE_REPORT is required", result.stdout)
 
+    def test_baud_presence_is_only_metrics_exception(self) -> None:
+        allowed = (REPO_ROOT / "bus_observability_store.go").read_text(encoding="utf-8")
+        # Reconstruct the source immediately before the configured-presence
+        # addition; the older runtime-snapshot fixture remains immutable.
+        base = allowed
+        for addition, previous in (
+            ("\t// Captured before defaults; independent of readiness and transport counters.\n\tebusConfigured bool\n\n", ""),
+            ("// PreserveEBusConfigurationPresence captures operator configuration before runtime\n// wrappers or defaults are injected. Repeated calls retain the original fact.\nfunc (cfg *Config) PreserveEBusConfigurationPresence() {\n\tif cfg.ebusConfigurationPresence == nil {\n\t\tpresent := cfg.ebusConfigured()\n\t\tcfg.ebusConfigurationPresence = &present\n\t}\n}\n\nfunc (cfg Config) ebusConfigured() bool {\n\tif cfg.ebusConfigurationPresence != nil {\n\t\treturn *cfg.ebusConfigurationPresence\n\t}\n\treturn cfg.Transport != nil || cfg.PassiveTransport != nil ||\n\t\tcfg.TransportConfig.Protocol != \"\" || cfg.TransportConfig.Address != \"\"\n}\n\nfunc NewBusObservabilityStore(cfg Config) *BusObservabilityStore {\n\tebusConfigured := cfg.ebusConfigured()\n",
+             "func NewBusObservabilityStore(cfg Config) *BusObservabilityStore {\n"),
+            ("\t\tcfg:            cfg,\n\t\tnow:            time.Now,\n\t\tebusConfigured: ebusConfigured,", "\t\tcfg: cfg,\n\t\tnow: time.Now,"),
+            ("writeTransportRuntimeMetrics(writer, transportRuntimeStatus, store.ebusConfigured)", "writeTransportRuntimeMetrics(writer, transportRuntimeStatus)"),
+        ):
+            self.assertEqual(base.count(addition), 1)
+            base = base.replace(addition, previous)
+        repo_path, _ = self._create_temp_repo(
+            "bus_observability_store.go", base_text=base, modified_text=allowed
+        )
+        tracked = repo_path / "bus_observability_store.go"
+
+        for staged in (False, True):
+            with self.subTest(staged=staged):
+                tracked.write_text(allowed, encoding="utf-8")
+                if staged:
+                    subprocess.run(["git", "add", "bus_observability_store.go"], cwd=repo_path, check=True, capture_output=True, text=True)
+                result = subprocess.run(
+                    ["bash", "scripts/passive_smoke_gate.sh"], cwd=repo_path,
+                    env=self._script_env(PASSIVE_SMOKE_GATE_BASE_REF="HEAD"),
+                    text=True, capture_output=True, check=False,
+                )
+                self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+                self.assertIn("not triggered", result.stdout)
+                for hostile in (
+                    allowed.replace('cfg.TransportConfig.Address != ""', 'cfg.TransportConfig.Address == ""'),
+                    allowed.replace("return *cfg.ebusConfigurationPresence", "return true"),
+                    allowed.replace("\tif cfg.ebusConfigurationPresence == nil {", "\tstorePassiveMutation()\n\tif cfg.ebusConfigurationPresence == nil {"),
+                    allowed.replace("\tcfg = applyDefaults(cfg)", "\tstorePassiveMutation()\n\tcfg = applyDefaults(cfg)"),
+                    allowed.replace("\tebusConfigured :=", "\tstore.mu.Lock()\n\tebusConfigured :="),
+                    allowed.replace("store.ebusConfigured)", "true)"),
+                ):
+                    self.assertNotEqual(hostile, allowed)
+                    tracked.write_text(hostile, encoding="utf-8")
+                    result = subprocess.run(
+                        ["bash", "scripts/passive_smoke_gate.sh"], cwd=repo_path,
+                        env=self._script_env(PASSIVE_SMOKE_GATE_BASE_REF="HEAD"),
+                        text=True, capture_output=True, check=False,
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("PASSIVE_SMOKE_REPORT is required", result.stdout)
+
+    def test_config_ebus_presence_field_exemption_is_exact(self) -> None:
+        base = "type Config struct {\n\tTransport int\n}\n"
+        allowed = "type Config struct {\n\tebusConfigurationPresence *bool\n\n\tTransport int\n}\n"
+        repo_path, _ = self._create_temp_repo("config.go", base_text=base, modified_text=allowed)
+        env = self._script_env(PASSIVE_SMOKE_GATE_BASE_REF="HEAD")
+        result = subprocess.run(["bash", "scripts/passive_smoke_gate.sh"], cwd=repo_path, env=env, text=True, capture_output=True, check=False)
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        for hostile in (
+            allowed.replace("*bool", "*bool\n\tPassiveForce bool"),
+            allowed.replace("ebusConfigurationPresence *bool", "ebusConfigurationPresence bool"),
+        ):
+            (repo_path / "config.go").write_text(hostile, encoding="utf-8")
+            result = subprocess.run(["bash", "scripts/passive_smoke_gate.sh"], cwd=repo_path, env=env, text=True, capture_output=True, check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("PASSIVE_SMOKE_REPORT is required", result.stdout)
+
     def test_transport_snapshot_fixture_falls_back_without_local_history(self) -> None:
         temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(temp_dir.cleanup)
@@ -373,7 +463,7 @@ func (store *BusObservabilityStore) RenderPrometheus() {
         subprocess.run(["git", "init", "-b", "main"], cwd=repo_path, check=True, capture_output=True, text=True)
         subprocess.run(["git", "config", "user.name", "Codex"], cwd=repo_path, check=True, capture_output=True, text=True)
         subprocess.run(["git", "config", "user.email", "codex@example.com"], cwd=repo_path, check=True, capture_output=True, text=True)
-        (repo_path / "bus_observability_store.go").write_text((REPO_ROOT / "bus_observability_store.go").read_text(encoding="utf-8"), encoding="utf-8")
+        (repo_path / "bus_observability_store.go").write_text(self._transport_snapshot_candidate(), encoding="utf-8")
         subprocess.run(["git", "add", "."], cwd=repo_path, check=True, capture_output=True, text=True)
         subprocess.run(["git", "commit", "-m", "depth-one candidate"], cwd=repo_path, check=True, capture_output=True, text=True)
         subprocess.run(["git", "checkout", "--detach", "HEAD"], cwd=repo_path, check=True, capture_output=True, text=True)
@@ -384,7 +474,7 @@ func (store *BusObservabilityStore) RenderPrometheus() {
 
     def test_transport_snapshot_fixture_survives_empty_successor_commit(self) -> None:
         base = self._pre_candidate_bus_observability_base()
-        allowed = (REPO_ROOT / "bus_observability_store.go").read_text(encoding="utf-8")
+        allowed = self._transport_snapshot_candidate()
         repo_path, _ = self._create_temp_repo("bus_observability_store.go", base_text=base, modified_text=base)
         tracked = repo_path / "bus_observability_store.go"
         tracked.write_text(allowed, encoding="utf-8")

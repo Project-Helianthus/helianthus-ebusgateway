@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"flag"
 	"io"
 	"net"
 	"net/url"
@@ -46,12 +47,23 @@ func withEndpointOwner(owner endpointOwner, err error) error {
 }
 
 type gatewayFlagInputs struct {
-	modbusEndpointFile string
+	modbusEndpointFile  string
+	modbusEndpointsFile string
+	// flags is the set these inputs were bound to; it tells explicitly set
+	// flags from defaults when the configuration is selected.
+	flags *flag.FlagSet
 }
 
+// resolveModbusEndpointFile resolves the Modbus TCP configuration after flag
+// parsing. When the configuration was bound with -modbus-tcp-endpoints-file
+// set, it selects configuration v2; otherwise the single-line v1 path below
+// runs exactly as before.
 func resolveModbusEndpointFile(config *ebusgateway.ModbusTCPConfig, path string) error {
 	if config == nil {
 		return errors.New("invalid Modbus TCP endpoint file configuration")
+	}
+	if inputs, ok := takeModbusTCPFlagBinding(config); ok && inputs.explicit(modbusEndpointsFlag) {
+		return resolveModbusEndpointsDocument(config, inputs.modbusEndpointsFile, inputs.explicit(modbusTCPV1Flags...))
 	}
 	if !config.Enabled {
 		// TCP endpoint inputs remain inert while disabled, but the independent
@@ -68,31 +80,8 @@ func resolveModbusEndpointFile(config *ebusgateway.ModbusTCPConfig, path string)
 		return errors.New("modbus TCP endpoint inputs are mutually exclusive")
 	}
 
-	before, err := os.Lstat(path)
-	if err != nil || !before.Mode().IsRegular() {
-		return errors.New("invalid Modbus TCP endpoint file")
-	}
-	file, err := os.Open(path)
+	content, err := readProtectedModbusFile(path, maxModbusEndpointFileBytes)
 	if err != nil {
-		return errors.New("invalid Modbus TCP endpoint file")
-	}
-	defer func() { _ = file.Close() }()
-	after, err := file.Stat()
-	if err != nil || !after.Mode().IsRegular() || !os.SameFile(before, after) {
-		return errors.New("invalid Modbus TCP endpoint file")
-	}
-	if permissions := after.Mode().Perm(); permissions != 0o400 && permissions != 0o600 {
-		return errors.New("invalid Modbus TCP endpoint file")
-	}
-	stat, ok := after.Sys().(*syscall.Stat_t)
-	if !ok || stat.Uid != uint32(os.Geteuid()) {
-		return errors.New("invalid Modbus TCP endpoint file")
-	}
-	if after.Size() < 1 || after.Size() > maxModbusEndpointFileBytes {
-		return errors.New("invalid Modbus TCP endpoint file")
-	}
-	content, err := io.ReadAll(io.LimitReader(file, maxModbusEndpointFileBytes+1))
-	if err != nil || len(content) < 1 || len(content) > maxModbusEndpointFileBytes {
 		return errors.New("invalid Modbus TCP endpoint file")
 	}
 	endpoint := string(content)
@@ -103,15 +92,63 @@ func resolveModbusEndpointFile(config *ebusgateway.ModbusTCPConfig, path string)
 	return nil
 }
 
-func redactFileSourcedModbusError(err error, endpoint string) error {
-	if err == nil || endpoint == "" {
-		return err
+var errProtectedModbusFile = errors.New("unsafe or unreadable protected Modbus file")
+
+// readProtectedModbusFile reads one protected Modbus input: a regular file
+// that is not a link, owned by the effective user, with mode 0400 or 0600,
+// between 1 and maxBytes bytes. Every refusal is the same categorical error.
+func readProtectedModbusFile(path string, maxBytes int64) ([]byte, error) {
+	before, err := os.Lstat(path)
+	if err != nil || !before.Mode().IsRegular() {
+		return nil, errProtectedModbusFile
 	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, errProtectedModbusFile
+	}
+	defer func() { _ = file.Close() }()
+	after, err := file.Stat()
+	if err != nil || !after.Mode().IsRegular() || !os.SameFile(before, after) {
+		return nil, errProtectedModbusFile
+	}
+	if permissions := after.Mode().Perm(); permissions != 0o400 && permissions != 0o600 {
+		return nil, errProtectedModbusFile
+	}
+	stat, ok := after.Sys().(*syscall.Stat_t)
+	if !ok || stat.Uid != uint32(os.Geteuid()) {
+		return nil, errProtectedModbusFile
+	}
+	if after.Size() < 1 || after.Size() > maxBytes {
+		return nil, errProtectedModbusFile
+	}
+	content, err := io.ReadAll(io.LimitReader(file, maxBytes+1))
+	if err != nil || len(content) < 1 || int64(len(content)) > maxBytes {
+		return nil, errProtectedModbusFile
+	}
+	return content, nil
+}
+
+func redactFileSourcedModbusError(err error, endpoint string) error {
+	return redactFileSourcedModbusEndpoints(err, endpoint)
+}
+
+// redactFileSourcedModbusEndpoints redacts every file-sourced endpoint, its
+// host and its host name from err: the single v1 endpoint or every entry of
+// the configuration v2 document.
+func redactFileSourcedModbusEndpoints(err error, endpoints ...string) error {
 	values := make(map[string]string)
-	addEndpointRedaction(values, endpoint, redactedModbusEndpoint)
-	if parsed, parseErr := url.Parse(endpoint); parseErr == nil {
-		addEndpointRedaction(values, parsed.Host, redactedModbusEndpoint)
-		addEndpointRedaction(values, parsed.Hostname(), redactedModbusEndpoint)
+	for _, endpoint := range endpoints {
+		if endpoint == "" {
+			continue
+		}
+		addEndpointRedaction(values, endpoint, redactedModbusEndpoint)
+		if parsed, parseErr := url.Parse(endpoint); parseErr == nil {
+			addEndpointRedaction(values, parsed.Host, redactedModbusEndpoint)
+			addEndpointRedaction(values, parsed.Hostname(), redactedModbusEndpoint)
+		}
+	}
+	if err == nil || len(values) == 0 {
+		return err
 	}
 	collectEndpointRedactions(err, endpointOwnerUnknown, values, 0)
 	ordered := make([]string, 0, len(values))

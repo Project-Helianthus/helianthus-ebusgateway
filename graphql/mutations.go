@@ -1,9 +1,7 @@
 package graphql
 
 import (
-	"bytes"
 	"context"
-	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -14,8 +12,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/vaillant/systemconfig"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 	"github.com/Project-Helianthus/helianthus-ebusgo/types"
@@ -85,49 +83,23 @@ const (
 type ConfigFieldSpec = configFieldSpec
 
 type configFieldSpec struct {
-	group     byte
-	addr      uint16
-	valueType configValueType
-	min       float64
-	max       float64
-	maxLen    int
-	enum      map[string]uint16
+	conversionErr error
+	group         byte
+	addr          uint16
+	valueType     configValueType
+	min           float64
+	max           float64
+	maxLen        int
+	enum          map[string]uint16
 }
 
 const (
 	mutationControllerFallbackAddr = byte(0x15)
-	mutationB524OpcodeLocal        = byte(0x02)
+	mutationB524OpcodeLocal        = systemconfig.OpcodeLocal
 	mutationSystemPlane            = "system"
 	mutationSetExtRegisterMethod   = "set_ext_register"
 	mutationGetExtRegisterMethod   = "get_ext_register"
 )
-
-// canonicalRegulatorTargetAddresses lists the eBUS standard target
-// (companion) addresses for heating-regulator-class sources. Per the
-// docs-owned source-address table (helianthus-ebusgo
-// protocol/source_address_selection.go), each entry is a Companion
-// byte from a P0/P1 row whose canonical description names "Heating
-// regulator" or "Heating circuit regulator":
-//
-//	0x15 — companion of 0x10 (P0 Heating regulator)        [Vaillant primary]
-//	0x35 — companion of 0x30 (P0 Heating circuit reg. 1)
-//	0x75 — companion of 0x70 (P0 Heating circuit reg. 2)
-//	0xF5 — companion of 0xF0 (P0 Heating circuit reg. 3)
-//	0x76 — companion of 0x71 (P1 Heating controller)
-//	0xF6 — companion of 0xF1 (P1 Heating controller)
-//
-// Listed in priority order: Vaillant's primary regulator (BASV2 family
-// and successors CTLV*/CTLS*/CTLR*/BASS*) lives at 0x15. P0/P1
-// alternates handle multi-regulator setups and competing vendors.
-//
-// This identifier-free detection replaces the previous BASV-prefix
-// DeviceID scan (PR #598 review pivot 2026-05-09): the prefix check
-// would silently skip any non-BASV controller (CTLV*/CTLS*/CTLR*/
-// BASS*/future identifiers), and even with TOCTOU re-validation the
-// scan was racy with concurrent registry mutation. Looking up by
-// canonical address is atomic per Lookup call and identifier-
-// agnostic.
-var canonicalRegulatorTargetAddresses = []byte{0x15, 0x35, 0x75, 0xF5, 0x76, 0xF6}
 
 var circuitConfigFieldSpecs = map[string]configFieldSpec{
 	"heatingCurve":    {group: 0x02, addr: 0x000F, valueType: configValueFloat32, min: 0.1, max: 4.0},
@@ -147,17 +119,27 @@ var zoneConfigFieldSpecs = map[string]configFieldSpec{
 	"holidaySetpoint":      {group: 0x03, addr: 0x0005, valueType: configValueFloat32, min: 5.0, max: 30.0},
 }
 
-var systemConfigFieldSpecs = map[string]configFieldSpec{
-	"dhwBivalencePointC":   {group: 0x00, addr: 0x0001, valueType: configValueFloat32, min: -20.0, max: 50.0},
-	"maxRoomHumidityPct":   {group: 0x00, addr: 0x000E, valueType: configValueUint16, min: 30, max: 80},
-	"adaptiveHeatingCurve": {group: 0x00, addr: 0x0014, valueType: configValueBoolU8},
-	"hcBivalencePointC":    {group: 0x00, addr: 0x0023, valueType: configValueFloat32, min: -20.0, max: 30.0},
-	"hcEmergencyTempC":     {group: 0x00, addr: 0x0026, valueType: configValueFloat32, min: 20.0, max: 80.0},
-	"hwcMaxFlowTempC":      {group: 0x00, addr: 0x0046, valueType: configValueFloat32, min: 15.0, max: 80.0},
-	"maintenanceDate":      {group: 0x00, addr: 0x002C, valueType: configValueDateHDA3},
-	"installerName":        {group: 0x00, addr: 0x006C, valueType: configValueCString, maxLen: 12},
-	"installerPhone":       {group: 0x00, addr: 0x006F, valueType: configValueCString, maxLen: 12},
-	"installerMenuCode":    {group: 0x00, addr: 0x0076, valueType: configValueUint16, min: 0, max: 999},
+var systemConfigFieldSpecs = SystemConfigFieldSpecs()
+
+func adaptSystemConfigSpec(s systemconfig.ConfigFieldSpec) configFieldSpec {
+	out := configFieldSpec{group: s.RegisterGroup, addr: s.RegisterAddr, min: s.Min, max: s.Max, maxLen: s.MaxLen, enum: s.Enum}
+	switch s.ValueType {
+	case systemconfig.ValueFloat32:
+		out.valueType = configValueFloat32
+	case systemconfig.ValueUint16:
+		out.valueType = configValueUint16
+	case systemconfig.ValueBoolU8:
+		out.valueType = configValueBoolU8
+	case systemconfig.ValueEnumU16:
+		out.valueType = configValueEnumU16
+	case systemconfig.ValueCString:
+		out.valueType = configValueCString
+	case systemconfig.ValueDateHDA3:
+		out.valueType = configValueDateHDA3
+	default:
+		out.conversionErr = fmt.Errorf("unsupported native value type %d: %w", s.ValueType, ebuserrors.ErrInvalidPayload)
+	}
+	return out
 }
 
 type paramSchemaProvider interface {
@@ -169,6 +151,14 @@ type paramBuilder interface {
 }
 
 func NewSchema(builder *Builder, registry InvokeRegistry, invoker Invoker, hub *BroadcastHub) (graphqlgo.Schema, error) {
+	return buildSchema(builder, registry, invoker, hub, true)
+}
+
+// buildSchema builds the gateway schema; semanticOperation adds the one
+// generic semantic operation mutation and the extension that keeps the
+// supplied request variables for it. Without it the schema is the one that
+// existed before the route.
+func buildSchema(builder *Builder, registry InvokeRegistry, invoker Invoker, hub *BroadcastHub, semanticOperation bool) (graphqlgo.Schema, error) {
 	if builder == nil {
 		return graphqlgo.Schema{}, fmt.Errorf("graphql schema missing builder: %w", ebuserrors.ErrInvalidPayload)
 	}
@@ -179,7 +169,12 @@ func NewSchema(builder *Builder, registry InvokeRegistry, invoker Invoker, hub *
 
 	var mutationType *graphqlgo.Object
 	if registry != nil && invoker != nil {
-		mutationType = buildMutationType(registry, invoker, builder.boilerConfigWriter(), builder.systemConfigWriter(), builder.scheduleWriter(), builder.mutationSourceForRequest)
+		mutationType = buildMutationType(registry, invoker, builder.boilerConfigWriter(), builder.systemConfigWriter(), builder.scheduleWriter(), builder.mutationSourceForRequest, builder.systemConfigBound)
+		if semanticOperation {
+			// The one generic semantic operation route; it reads the builder's
+			// injected router per request and never uses the eBUS invoker.
+			mutationType.AddFieldConfig(semanticOperationFieldName, semanticOperationField(builder))
+		}
 	}
 
 	var subscriptionType *graphqlgo.Object
@@ -187,11 +182,15 @@ func NewSchema(builder *Builder, registry InvokeRegistry, invoker Invoker, hub *
 		subscriptionType = buildSubscriptionType(hub, types)
 	}
 
-	return graphqlgo.NewSchema(graphqlgo.SchemaConfig{
+	schema, err := graphqlgo.NewSchema(graphqlgo.SchemaConfig{
 		Query:        queryType,
 		Mutation:     mutationType,
 		Subscription: subscriptionType,
 	})
+	if err == nil && semanticOperation && mutationType != nil {
+		schema.AddExtensions(semanticOperationVariablesExtension{})
+	}
+	return schema, err
 }
 
 func NewInvokeHandler(builder *Builder, registry InvokeRegistry, invoker Invoker) (http.Handler, error) {
@@ -204,13 +203,17 @@ func NewInvokeHandler(builder *Builder, registry InvokeRegistry, invoker Invoker
 		Schema:   &schema,
 		Pretty:   true,
 		GraphiQL: false,
-		RootObjectFn: func(_ context.Context, _ *http.Request) map[string]interface{} {
-			return newGraphQLRootObject(builder)
+		RootObjectFn: func(_ context.Context, r *http.Request) map[string]interface{} {
+			root := newGraphQLRootObject(builder)
+			// Request-line and header facts for the semanticOperation
+			// resolver only; the body is never read here.
+			root[semanticOperationTransportRootKey] = semanticOperationTransportOf(r)
+			return root
 		},
 	}), nil
 }
 
-func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter BoilerConfigWriter, systemWriter SystemConfigWriter, scheduleWriter ScheduleWriter, mutationSourceProvider func() (byte, bool)) *graphqlgo.Object {
+func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter BoilerConfigWriter, systemWriter SystemConfigWriter, scheduleWriter ScheduleWriter, mutationSourceProvider func() (byte, bool), boundProviders ...func() *ConfigBound) *graphqlgo.Object {
 	if mutationSourceProvider == nil {
 		mutationSourceProvider = func() (byte, bool) { return 0, false }
 	}
@@ -506,7 +509,7 @@ func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter Bo
 				},
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					mutationSource, mutationSourceAdmitted := mutationSourceProvider()
-					return setSystemConfigResolve(params, registry, invoker, systemWriter, mutationSource, mutationSourceAdmitted), nil
+					return setSystemConfigResolve(params, registry, invoker, systemWriter, mutationSource, mutationSourceAdmitted, boundProviders...), nil
 				},
 			},
 			"set_system_config": &graphqlgo.Field{
@@ -517,7 +520,7 @@ func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter Bo
 				},
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					mutationSource, mutationSourceAdmitted := mutationSourceProvider()
-					return setSystemConfigResolve(params, registry, invoker, systemWriter, mutationSource, mutationSourceAdmitted), nil
+					return setSystemConfigResolve(params, registry, invoker, systemWriter, mutationSource, mutationSourceAdmitted, boundProviders...), nil
 				},
 			},
 			"setZoneConfig": &graphqlgo.Field{
@@ -611,7 +614,7 @@ func setCircuitConfigResolve(params graphqlgo.ResolveParams, registry InvokeRegi
 	return applyConfigMutation(params.Context, registry, invoker, mutationSource, mutationSourceAdmitted, spec, instance, fieldValue)
 }
 
-func setSystemConfigResolve(params graphqlgo.ResolveParams, registry InvokeRegistry, invoker Invoker, systemWriter SystemConfigWriter, mutationSource byte, mutationSourceAdmitted bool) ConfigMutationResult {
+func setSystemConfigResolve(params graphqlgo.ResolveParams, registry InvokeRegistry, invoker Invoker, systemWriter SystemConfigWriter, mutationSource byte, mutationSourceAdmitted bool, boundProviders ...func() *ConfigBound) ConfigMutationResult {
 	fieldName, _ := params.Args["field"].(string)
 	fieldValue, _ := params.Args["value"].(string)
 	if systemWriter != nil {
@@ -621,11 +624,7 @@ func setSystemConfigResolve(params graphqlgo.ResolveParams, registry InvokeRegis
 		}
 		return systemWriter.SetSystemConfig(ctx, fieldName, fieldValue)
 	}
-	spec, err := resolveConfigFieldSpec("system", fieldName, systemConfigFieldSpecs)
-	if err != nil {
-		return configMutationError(err)
-	}
-	return applyConfigMutation(params.Context, registry, invoker, mutationSource, mutationSourceAdmitted, spec, 0x00, fieldValue)
+	return applySystemFieldMutation(params.Context, registry, invoker, mutationSource, mutationSourceAdmitted, fieldName, fieldValue, systemConfigFieldSpecs, suppliedSystemConfigBound(boundProviders))
 }
 
 func setZoneConfigResolve(params graphqlgo.ResolveParams, registry InvokeRegistry, invoker Invoker, mutationSource byte, mutationSourceAdmitted bool) ConfigMutationResult {
@@ -706,7 +705,7 @@ func setDhwTimeProgramResolve(params graphqlgo.ResolveParams, scheduleWriter Sch
 	return result
 }
 
-func applyConfigMutation(ctx context.Context, registry InvokeRegistry, invoker Invoker, source byte, sourceAdmitted bool, spec configFieldSpec, instance byte, rawValue string) ConfigMutationResult {
+func applyConfigMutation(ctx context.Context, registry InvokeRegistry, invoker Invoker, source byte, sourceAdmitted bool, spec configFieldSpec, instance byte, rawValue string, bound ...*ConfigBound) ConfigMutationResult {
 	if registry == nil || invoker == nil {
 		return configMutationError(fmt.Errorf("config mutation missing dependencies: %w", ebuserrors.ErrInvalidPayload))
 	}
@@ -719,7 +718,7 @@ func applyConfigMutation(ctx context.Context, registry InvokeRegistry, invoker I
 		return configMutationError(err)
 	}
 
-	plane, err := resolveControllerSystemPlane(registry)
+	plane, err := resolveControllerSystemPlane(registry, bound...)
 	if err != nil {
 		return configMutationError(err)
 	}
@@ -876,35 +875,71 @@ func scheduleWriteMutationError(err error) *mcp.TimeProgramWriteResult {
 }
 
 // ApplyConfigMutation performs a B524 set_ext_register write with read-back verification.
-func ApplyConfigMutation(ctx context.Context, registry InvokeRegistry, invoker Invoker, source byte, sourceAdmitted bool, fieldName string, rawValue string, specs map[string]configFieldSpec) ConfigMutationResult {
+func ApplyConfigMutation(ctx context.Context, registry InvokeRegistry, invoker Invoker, source byte, sourceAdmitted bool, fieldName string, rawValue string, specs map[string]configFieldSpec, bounds ...*ConfigBound) ConfigMutationResult {
+	return applySystemFieldMutation(ctx, registry, invoker, source, sourceAdmitted, fieldName, rawValue, specs, bounds...)
+}
+
+func suppliedSystemConfigBound(providers []func() *ConfigBound) *ConfigBound {
+	if len(providers) == 0 || providers[0] == nil {
+		return nil
+	}
+	return providers[0]()
+}
+
+// applySystemFieldMutation validates a supplied driver bound before native I/O.
+func applySystemFieldMutation(ctx context.Context, registry InvokeRegistry, invoker Invoker, source byte, sourceAdmitted bool, fieldName string, rawValue string, specs map[string]configFieldSpec, bounds ...*ConfigBound) ConfigMutationResult {
 	spec, err := resolveConfigFieldSpec("system", fieldName, specs)
 	if err != nil {
 		return configMutationError(err)
 	}
-	return applyConfigMutation(ctx, registry, invoker, source, sourceAdmitted, spec, 0x00, rawValue)
+	var expectedBound []*ConfigBound
+	if fieldName == SystemConfigFieldDHWBivalencePoint {
+		if len(bounds) == 0 || bounds[0] == nil {
+			return configMutationError(fmt.Errorf("%s: missing resolved driver bound: %w", fieldName, ebuserrors.ErrInvalidPayload))
+		}
+		bound := *bounds[0]
+		if math.IsNaN(bound.MinC) || math.IsNaN(bound.MaxC) || math.IsInf(bound.MinC, 0) || math.IsInf(bound.MaxC, 0) || bound.MinC > bound.MaxC {
+			return configMutationError(fmt.Errorf("%s: invalid resolved driver bound: %w", fieldName, ebuserrors.ErrInvalidPayload))
+		}
+		if bound.MinC < spec.min || bound.MaxC > spec.max {
+			return configMutationError(fmt.Errorf("%s: resolved driver bound exceeds conservative policy: %w", fieldName, ebuserrors.ErrInvalidPayload))
+		}
+		qualified := bound.Source == ConfigBoundSourceControllerProfile && bound.NarrowedOnly && bound.Profile != "" && bound.Reason == ""
+		policy := bound.Source == ConfigBoundSourceUnmatchedPolicy && bound.MinC == spec.min && bound.MaxC == spec.max && bound.Profile == "" && !bound.NarrowedOnly
+		if !qualified && !policy {
+			return configMutationError(fmt.Errorf("%s: unqualified resolved driver bound: %w", fieldName, ebuserrors.ErrInvalidPayload))
+		}
+		if bound.ControllerAddress == 0 {
+			return configMutationError(fmt.Errorf("%s: missing bound controller address: %w", fieldName, ebuserrors.ErrInvalidPayload))
+		}
+		expectedBound = []*ConfigBound{&bound}
+		spec.min, spec.max = math.Max(spec.min, bound.MinC), math.Min(spec.max, bound.MaxC)
+		if _, encodeErr := encodeConfigValue(spec, rawValue); encodeErr != nil {
+			return configMutationError(fmt.Errorf("%s: %s: %w", fieldName, bound.Describe(), encodeErr))
+		}
+	}
+	return applyConfigMutation(ctx, registry, invoker, source, sourceAdmitted, spec, systemconfig.Instance, rawValue, expectedBound...)
 }
 
 // SystemConfigFieldSpecs returns a copy of the system config field specs map.
 func SystemConfigFieldSpecs() map[string]configFieldSpec {
-	cp := make(map[string]configFieldSpec, len(systemConfigFieldSpecs))
-	for k, v := range systemConfigFieldSpecs {
-		cp[k] = v
+	cp := make(map[string]configFieldSpec)
+	for k, v := range systemconfig.SystemConfigFieldSpecs() {
+		cp[k] = adaptSystemConfigSpec(v)
 	}
 	return cp
 }
 
-// EncodeSystemConfigValue validates and encodes a system config field value.
-// Returns the encoded payload, the field spec (for readback), and any error.
 func EncodeSystemConfigValue(fieldName, rawValue string) ([]byte, configFieldSpec, error) {
-	spec, err := resolveConfigFieldSpec("system", fieldName, systemConfigFieldSpecs)
+	payload, spec, err := systemconfig.EncodeSystemConfigValue(fieldName, rawValue)
 	if err != nil {
 		return nil, configFieldSpec{}, err
 	}
-	payload, err := encodeConfigValue(spec, rawValue)
-	if err != nil {
-		return nil, configFieldSpec{}, err
+	adapted := adaptSystemConfigSpec(spec)
+	if adapted.conversionErr != nil {
+		return nil, adapted, adapted.conversionErr
 	}
-	return payload, spec, nil
+	return payload, adapted, nil
 }
 
 // ConfigFieldSpecGroup returns the B524 group byte for a field spec.
@@ -925,6 +960,9 @@ func ConfigReadbackMatchesWrite(spec configFieldSpec, written, readback []byte) 
 
 func resolveConfigFieldSpec(scope, fieldName string, specs map[string]configFieldSpec) (configFieldSpec, error) {
 	if spec, ok := specs[fieldName]; ok {
+		if spec.conversionErr != nil {
+			return configFieldSpec{}, spec.conversionErr
+		}
 		return spec, nil
 	}
 	allowed := make([]string, 0, len(specs))
@@ -935,135 +973,44 @@ func resolveConfigFieldSpec(scope, fieldName string, specs map[string]configFiel
 	return configFieldSpec{}, fmt.Errorf("unknown %s field %q (allowed: %s): %w", scope, fieldName, strings.Join(allowed, ", "), ebuserrors.ErrInvalidPayload)
 }
 
-func encodeConfigValue(spec configFieldSpec, raw string) ([]byte, error) {
-	switch spec.valueType {
+func nativeConfigSpec(s configFieldSpec) (systemconfig.ConfigFieldSpec, error) {
+	if s.conversionErr != nil {
+		return systemconfig.ConfigFieldSpec{}, s.conversionErr
+	}
+	out := systemconfig.ConfigFieldSpec{RegisterGroup: s.group, RegisterAddr: s.addr, Min: s.min, Max: s.max, MaxLen: s.maxLen, Enum: s.enum}
+	switch s.valueType {
 	case configValueFloat32:
-		value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
-		if err != nil {
-			return nil, fmt.Errorf("invalid float value %q: %w", raw, ebuserrors.ErrInvalidPayload)
-		}
-		if value < spec.min || value > spec.max {
-			return nil, fmt.Errorf("value %.4g out of range [%.4g, %.4g]: %w", value, spec.min, spec.max, ebuserrors.ErrInvalidPayload)
-		}
-		payload := make([]byte, 4)
-		binary.LittleEndian.PutUint32(payload, math.Float32bits(float32(value)))
-		return payload, nil
+		out.ValueType = systemconfig.ValueFloat32
 	case configValueUint16:
-		value, err := parseIntegerString(strings.TrimSpace(raw))
-		if err != nil {
-			return nil, fmt.Errorf("invalid integer value %q: %w", raw, ebuserrors.ErrInvalidPayload)
-		}
-		if float64(value) < spec.min || float64(value) > spec.max {
-			return nil, fmt.Errorf("value %d out of range [%.0f, %.0f]: %w", value, spec.min, spec.max, ebuserrors.ErrInvalidPayload)
-		}
-		payload := make([]byte, 2)
-		binary.LittleEndian.PutUint16(payload, uint16(value))
-		return payload, nil
+		out.ValueType = systemconfig.ValueUint16
 	case configValueBoolU8:
-		parsed, ok := parseBoolString(raw)
-		if !ok {
-			return nil, fmt.Errorf("invalid boolean value %q (expected true/false): %w", raw, ebuserrors.ErrInvalidPayload)
-		}
-		if parsed {
-			return []byte{1}, nil
-		}
-		return []byte{0}, nil
+		out.ValueType = systemconfig.ValueBoolU8
 	case configValueEnumU16:
-		key := strings.ToLower(strings.TrimSpace(raw))
-		if spec.enum == nil {
-			return nil, fmt.Errorf("missing enum mapping: %w", ebuserrors.ErrInvalidPayload)
-		}
-		mapped, ok := spec.enum[key]
-		if !ok {
-			return nil, fmt.Errorf("invalid enum value %q (allowed: %s): %w", raw, strings.Join(sortedEnumKeys(spec.enum), ", "), ebuserrors.ErrInvalidPayload)
-		}
-		payload := make([]byte, 2)
-		binary.LittleEndian.PutUint16(payload, mapped)
-		return payload, nil
+		out.ValueType = systemconfig.ValueEnumU16
 	case configValueCString:
-		return encodeCStringValue(raw, spec.maxLen)
+		out.ValueType = systemconfig.ValueCString
 	case configValueDateHDA3:
-		return encodeDateHDA3Value(raw)
+		out.ValueType = systemconfig.ValueDateHDA3
 	default:
-		return nil, fmt.Errorf("unsupported value encoding: %w", ebuserrors.ErrInvalidPayload)
+		return systemconfig.ConfigFieldSpec{}, fmt.Errorf("unsupported config value type %d: %w", s.valueType, ebuserrors.ErrInvalidPayload)
 	}
+	return out, nil
 }
 
-func encodeCStringValue(raw string, maxLen int) ([]byte, error) {
-	trimmed := strings.TrimSpace(raw)
-	for i := 0; i < len(trimmed); i++ {
-		b := trimmed[i]
-		if b < 0x20 || b > 0x7E {
-			return nil, fmt.Errorf("invalid byte 0x%02X at position %d (only printable ASCII 0x20-0x7E allowed): %w", b, i, ebuserrors.ErrInvalidPayload)
-		}
-	}
-	if maxLen > 0 && len(trimmed) > maxLen {
-		return nil, fmt.Errorf("string length %d exceeds maxLen %d: %w", len(trimmed), maxLen, ebuserrors.ErrInvalidPayload)
-	}
-	padLen := len(trimmed) + 1
-	if maxLen > 0 && padLen < maxLen+1 {
-		padLen = maxLen + 1
-	}
-	payload := make([]byte, padLen)
-	copy(payload, trimmed)
-	return payload, nil
-}
-
-func encodeDateHDA3Value(raw string) ([]byte, error) {
-	trimmed := strings.TrimSpace(raw)
-	t, err := time.Parse("2006-01-02", trimmed)
+func encodeConfigValue(spec configFieldSpec, raw string) ([]byte, error) {
+	native, err := nativeConfigSpec(spec)
 	if err != nil {
-		return nil, fmt.Errorf("invalid date %q (expected YYYY-MM-DD): %w", raw, ebuserrors.ErrInvalidPayload)
+		return nil, err
 	}
-	year := t.Year()
-	if year < 2000 || year > 2099 {
-		return nil, fmt.Errorf("year %d out of range [2000, 2099]: %w", year, ebuserrors.ErrInvalidPayload)
-	}
-	if trimmed == "2015-01-01" {
-		return nil, fmt.Errorf("sentinel date 2015-01-01 rejected: %w", ebuserrors.ErrInvalidPayload)
-	}
-	return []byte{byte(t.Day()), byte(t.Month()), byte(year - 2000)}, nil
+	return systemconfig.EncodeValue(native, raw)
 }
 
-func parseBoolString(raw string) (bool, bool) {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "true", "1", "on", "yes":
-		return true, true
-	case "false", "0", "off", "no":
-		return false, true
-	default:
-		return false, false
+func resolveControllerSystemPlane(reg InvokeRegistry, bounds ...*ConfigBound) (router.Plane, error) {
+	var expectedController []byte
+	if len(bounds) != 0 && bounds[0] != nil {
+		expectedController = []byte{bounds[0].ControllerAddress}
 	}
-}
-
-func parseIntegerString(raw string) (int, error) {
-	if raw == "" {
-		return 0, fmt.Errorf("empty integer")
-	}
-	if strings.ContainsAny(raw, ".eE") {
-		value, err := strconv.ParseFloat(raw, 64)
-		if err != nil {
-			return 0, err
-		}
-		if math.IsNaN(value) || math.IsInf(value, 0) || math.Trunc(value) != value {
-			return 0, fmt.Errorf("not an integer")
-		}
-		return int(value), nil
-	}
-	return strconv.Atoi(raw)
-}
-
-func sortedEnumKeys(values map[string]uint16) []string {
-	out := make([]string, 0, len(values))
-	for key := range values {
-		out = append(out, key)
-	}
-	sort.Strings(out)
-	return out
-}
-
-func resolveControllerSystemPlane(reg InvokeRegistry) (router.Plane, error) {
-	entry, err := findControllerEntry(reg)
+	entry, err := findControllerEntry(reg, expectedController...)
 	if err != nil {
 		return nil, err
 	}
@@ -1084,10 +1031,18 @@ func resolveControllerSystemPlane(reg InvokeRegistry) (router.Plane, error) {
 	if !ok {
 		return nil, fmt.Errorf("controller system plane not routable: %w", ebuserrors.ErrInvalidPayload)
 	}
+	if len(bounds) != 0 && bounds[0] != nil {
+		bound := bounds[0]
+		current := systemconfig.CaptureBoundRegistryIdentity(reg, bound.ControllerAddress)
+		if !bound.ControllerRegistryIdentity.Valid || !current.Valid || current != bound.ControllerRegistryIdentity {
+			return nil, fmt.Errorf("bound controller registry identity or qualification changed: %w", ebuserrors.ErrInvalidPayload)
+		}
+	}
+
 	return routerPlane, nil
 }
 
-func findControllerEntry(reg InvokeRegistry) (registry.DeviceEntry, error) {
+func findControllerEntry(reg InvokeRegistry, expectedController ...byte) (registry.DeviceEntry, error) {
 	if reg == nil {
 		return nil, fmt.Errorf("registry missing: %w", ebuserrors.ErrInvalidPayload)
 	}
@@ -1125,8 +1080,11 @@ func findControllerEntry(reg InvokeRegistry) (registry.DeviceEntry, error) {
 	// in the canonical list, so the previous fallback behavior is
 	// preserved as a no-op semantic when no other regulator is
 	// registered.
-	for _, addr := range canonicalRegulatorTargetAddresses {
+	for _, addr := range systemconfig.CanonicalRegulatorTargetAddresses() {
 		if entry, ok := reg.Lookup(addr); ok && entry != nil {
+			if len(expectedController) != 0 && addr != expectedController[0] {
+				return nil, fmt.Errorf("bound controller does not match routed controller: %w", ebuserrors.ErrInvalidPayload)
+			}
 			return entry, nil
 		}
 	}
@@ -1227,89 +1185,16 @@ func toByte(value any) (byte, bool) {
 }
 
 func confirmDecodableReadback(spec configFieldSpec, payload []byte) error {
-	switch spec.valueType {
-	case configValueFloat32:
-		if len(payload) < 4 {
-			return fmt.Errorf("float32 payload too short: %w", ebuserrors.ErrInvalidPayload)
-		}
-		raw := binary.LittleEndian.Uint32(payload[:4])
-		value := float64(math.Float32frombits(raw))
-		if math.IsNaN(value) || math.IsInf(value, 0) {
-			return fmt.Errorf("float32 payload invalid: %w", ebuserrors.ErrInvalidPayload)
-		}
-		return nil
-	case configValueUint16:
-		_, ok := decodePayloadUint16(payload)
-		if !ok {
-			return fmt.Errorf("uint16 payload invalid: %w", ebuserrors.ErrInvalidPayload)
-		}
-		return nil
-	case configValueBoolU8:
-		if len(payload) < 1 {
-			return fmt.Errorf("bool payload too short: %w", ebuserrors.ErrInvalidPayload)
-		}
-		if payload[0] > 1 {
-			return fmt.Errorf("bool payload out of range: %w", ebuserrors.ErrInvalidPayload)
-		}
-		return nil
-	case configValueCString:
-		return nil
-	case configValueDateHDA3:
-		if len(payload) < 3 {
-			return fmt.Errorf("date payload too short: %w", ebuserrors.ErrInvalidPayload)
-		}
-		return nil
-	case configValueEnumU16:
-		value, ok := decodePayloadUint16(payload)
-		if !ok {
-			return fmt.Errorf("enum payload invalid: %w", ebuserrors.ErrInvalidPayload)
-		}
-		for _, candidate := range spec.enum {
-			if value == candidate {
-				return nil
-			}
-		}
-		return fmt.Errorf("enum payload unknown value %d: %w", value, ebuserrors.ErrInvalidPayload)
-	default:
-		return fmt.Errorf("unsupported readback decode: %w", ebuserrors.ErrInvalidPayload)
+	native, err := nativeConfigSpec(spec)
+	if err != nil {
+		return err
 	}
+	return systemconfig.ConfirmDecodableReadback(native, payload)
 }
 
 func configReadbackMatchesWrite(spec configFieldSpec, written, readback []byte) bool {
-	switch spec.valueType {
-	case configValueFloat32:
-		if len(written) < 4 || len(readback) < 4 {
-			return false
-		}
-		return binary.LittleEndian.Uint32(readback[:4]) == binary.LittleEndian.Uint32(written[:4])
-	case configValueUint16, configValueEnumU16:
-		want, okWant := decodePayloadUint16(written)
-		got, okGot := decodePayloadUint16(readback)
-		return okWant && okGot && want == got
-	case configValueBoolU8:
-		return len(written) > 0 && len(readback) > 0 && (readback[0] == 0 || readback[0] == 1) && readback[0] == written[0]
-	case configValueCString:
-		wTrimmed := bytes.TrimRight(written, "\x00")
-		rTrimmed := bytes.TrimRight(readback, "\x00")
-		return bytes.Equal(wTrimmed, rTrimmed)
-	case configValueDateHDA3:
-		if len(written) < 3 || len(readback) < 3 {
-			return false
-		}
-		return bytes.Equal(written[:3], readback[:3])
-	default:
-		return false
-	}
-}
-
-func decodePayloadUint16(payload []byte) (uint16, bool) {
-	if len(payload) == 0 {
-		return 0, false
-	}
-	if len(payload) == 1 {
-		return uint16(payload[0]), true
-	}
-	return binary.LittleEndian.Uint16(payload[:2]), true
+	native, err := nativeConfigSpec(spec)
+	return err == nil && systemconfig.ConfigReadbackMatchesWrite(native, written, readback)
 }
 
 func invokeResolve(params graphqlgo.ResolveParams, registry InvokeRegistry, invoker Invoker, source byte, sourceAdmitted bool) (InvokeResult, error) {

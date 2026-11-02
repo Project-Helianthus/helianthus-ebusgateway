@@ -1,0 +1,364 @@
+package runtimecontrol
+
+import (
+	"context"
+	"errors"
+	"reflect"
+	"testing"
+	"time"
+
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/drivermanager"
+	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
+)
+
+func p11ScopedFailure(t *testing.T, r *Recorder, err error, bad AssetID, driver DriverID) {
+	t.Helper()
+	var re *RestoreError
+	if !errors.As(err, &re) || !reflect.DeepEqual(re.Assets, []AssetID{bad}) || !reflect.DeepEqual(re.Drivers, []DriverID{driver}) || len(re.Sources) != 0 {
+		t.Fatalf("expected asset-scoped restore failure: %v", err)
+	}
+	if !r.failedAssets[bad] || !reflect.DeepEqual(r.Report().Failed, []AssetID{bad}) {
+		t.Fatalf("missing failed asset: %+v", r.Report())
+	}
+}
+
+func TestP11RestoreClockHighCoversRetainedIntents(t *testing.T) {
+	for _, bad := range []AssetID{synthAssets[0], synthAssets[1], secondAsset} {
+		for _, mode := range []string{"below-first", "below-last", "equal-maximum"} {
+			t.Run(string(bad)+"/"+mode, func(t *testing.T) {
+				w := newWorld(t, worldOpts{second: true, compact: -1})
+				w.mustRestore()
+				w.admit(synthSource)
+				w.admit(secondSource)
+				src, driver, good, goodSrc := synthSource, synthDriver, secondAsset, secondSource
+				if bad == secondAsset {
+					src, driver, good, goodSrc = secondSource, secondDriver, synthAssets[0], synthSource
+				}
+				w.mustPublish(goodSrc, good)
+				first := w.mustPublish(src, bad).Accepted.Point
+				last := w.mustPublish(src, bad).Accepted.Point
+				if last <= first {
+					t.Fatal("fixture must retain distinct points")
+				}
+				pre := w.states(good)
+				w.loseProcess(time.Second)
+				w.rewrite(func(s *walStream) {
+					mark := s.Clocks[bad]
+					switch mode {
+					case "below-first":
+						mark.High = first - 1
+					case "below-last":
+						mark.High = last - 1
+					default:
+						mark.High = last
+					}
+					s.Clocks[bad] = mark
+				})
+				err := w.restore()
+				if mode == "equal-maximum" {
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !w.bridge.hub.Readable(semreg.AssetID(bad)) {
+						t.Fatal("equal maximum did not reopen reads")
+					}
+					w.admit(src)
+					if point := w.mustPublish(src, bad).Accepted.Point; point <= last {
+						t.Fatalf("allocator went backward: %d <= %d", point, last)
+					}
+				} else {
+					p11ScopedFailure(t, w.rec, err, bad, driver)
+					if w.bridge.hub.ReadAdmitted(semreg.AssetID(bad)) || w.bridge.hub.Readable(semreg.AssetID(bad)) {
+						t.Fatal("damaged asset reads admitted")
+					}
+					if _, err := w.publish(src, bad); refusalCode(err) != RefusalFailedPrecondition {
+						t.Fatalf("damaged asset writer: %v", err)
+					}
+				}
+				assertStates(t, "unrelated retained asset", w.states(good), pre)
+				if !w.bridge.hub.Readable(semreg.AssetID(good)) || w.rec.admit(goodSrc, []AssetID{good}) != nil {
+					t.Fatal("healthy reads or writer admission closed")
+				}
+				w.admit(goodSrc)
+				w.mustPublish(goodSrc, good)
+			})
+		}
+	}
+}
+
+// Exercise the clock helper directly so unrelated replay validation cannot mask
+// the high-water guard. Asset and intent-point variations exercise the guard;
+// source, driver and epoch variations are metadata controls, not independent
+// coverage of restoreClocks.
+func TestP11ClockCoverageIndependentFields(t *testing.T) {
+	for _, field := range []string{"baseline", "asset", "source", "driver", "clock-epoch", "intent-point"} {
+		t.Run(field, func(t *testing.T) {
+			asset, source, driver, epoch, point := AssetID("asset:p11-a"), SourceID("source:p11-a"), DriverID("fam.p11-a"), "boot-p11-a", uint64(17)
+			switch field {
+			case "asset":
+				asset = "asset:p11-b"
+			case "source":
+				source = "source:p11-b"
+			case "driver":
+				driver = "fam.p11-b"
+			case "clock-epoch":
+				epoch = "boot-p11-b"
+			case "intent-point":
+				point = 29
+			}
+			host := &synthHost{boot: epoch, now: 100}
+			clock := newSynthClock(host)
+			anchor, err := clock.Anchor(0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			good := AssetID("asset:p11-healthy")
+			r, err := NewRecorder(RecorderOptions{Store: &faultStore{}, Hub: &hubBridge{}, Clock: clock, Sources: []ManagedSource{
+				{Driver: driver, Source: source, Assets: []AssetID{asset}}, {Driver: "fam.p11-healthy", Source: "source:p11-healthy", Assets: []AssetID{good}},
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			s := newStream()
+			// A later array element has a lower point: coverage must take the maximum.
+			s.Entries = []walEntry{{Source: source, Point: point, Assets: []walAsset{{Asset: asset}}}, {Source: source, Point: point - 2, Assets: []walAsset{{Asset: asset}}}}
+			s.Clocks[asset] = clockMark{High: point - 1, Anchor: anchor, Unit: clockUnit}
+			failed := map[AssetID]bool{}
+			clocks := r.restoreClocks(s, 0, failed)
+			if !failed[asset] || !clocks[asset].failed || failed[good] || clocks[good].failed {
+				t.Fatalf("clock failure escaped its asset: %v", failed)
+			}
+			mark := s.Clocks[asset]
+			mark.High = point
+			s.Clocks[asset] = mark
+			failed = map[AssetID]bool{}
+			clocks = r.restoreClocks(s, 0, failed)
+			if len(failed) != 0 || clocks[asset].failed || clocks[asset].last != point {
+				t.Fatalf("equal maximum rejected: %v %+v", failed, clocks[asset])
+			}
+		})
+	}
+}
+
+type p11ReprojectHub struct {
+	ManagedHub
+	bad AssetID
+}
+
+func (h p11ReprojectHub) Reproject(asset AssetID) error {
+	if asset == h.bad {
+		return errors.New("synthetic reprojection refusal")
+	}
+	return h.ManagedHub.Reproject(asset)
+}
+
+func TestP11ReprojectionFailureKeepsDriverRecoverySuccessful(t *testing.T) {
+	for _, bad := range []AssetID{synthAssets[0], synthAssets[1], secondAsset} {
+		t.Run(string(bad), func(t *testing.T) {
+			w := newWorld(t, worldOpts{second: true, compact: -1})
+			w.mustRestore()
+			w.admit(synthSource)
+			w.admit(secondSource)
+			w.mustPublish(synthSource, synthAssets[0])
+			w.mustPublish(synthSource, synthAssets[1])
+			w.mustPublish(secondSource, secondAsset)
+			badSrc, badDriver, good, goodSrc, goodDriver := synthSource, synthDriver, secondAsset, secondSource, secondDriver
+			if bad == secondAsset {
+				badSrc, badDriver, good, goodSrc, goodDriver = secondSource, secondDriver, synthAssets[0], synthSource, synthDriver
+			}
+			pre := w.states(good)
+			w.loseProcess(time.Second)
+			w.rec.hub = p11ReprojectHub{ManagedHub: w.bridge, bad: bad}
+			execs := map[DriverID]*synthExec{
+				synthDriver:  {w: w, src: synthSource, start: func(context.Context, LifecycleCorrelation) error { return nil }},
+				secondDriver: {w: w, src: secondSource, start: func(context.Context, LifecycleCorrelation) error { return nil }},
+			}
+			// Join the service before its store manager cleanup, including on failure.
+			defer func() {
+				if w.svc != nil {
+					w.svc.Close()
+				}
+			}()
+			if err := w.startService("inc-p11", execs); err != nil {
+				t.Fatalf("per-asset reprojection refusal failed driver recovery: %v", err)
+			}
+			report := w.rec.Report()
+			wantRestored := append([]AssetID{secondAsset}, synthAssets...)
+			var wantReopened []AssetID
+			for _, id := range wantRestored {
+				if id != bad {
+					wantReopened = append(wantReopened, id)
+				}
+			}
+			if !reflect.DeepEqual(report.Restored, wantRestored) || !reflect.DeepEqual(report.Reopened, wantReopened) || len(report.Failed) != 0 || len(report.FailedSource) != 0 || len(w.rec.failedAssets) != 0 {
+				t.Fatalf("reprojection refusal lost per-asset outcome: %+v", report)
+			}
+			for _, driver := range []DriverID{badDriver, goodDriver} {
+				waitFor(t, "driver running", func() bool { return w.status(driver).ObservedState == drivermanager.ObservedRunning })
+				if len(execs[driver].snapshot()) == 0 {
+					t.Fatalf("driver %s was not started", driver)
+				}
+			}
+			if w.bridge.hub.ReadAdmitted(semreg.AssetID(bad)) || w.bridge.hub.Readable(semreg.AssetID(bad)) {
+				t.Fatal("failed reprojection opened reads")
+			}
+			if err := w.rec.admit(badSrc, []AssetID{bad}); err != nil {
+				t.Fatalf("per-asset read gate blocked writer admission: %v", err)
+			}
+			assertStates(t, "healthy asset", w.states(good), pre)
+			if !w.bridge.hub.Readable(semreg.AssetID(good)) || w.rec.admit(goodSrc, []AssetID{good}) != nil {
+				t.Fatal("healthy path closed")
+			}
+			w.admit(goodSrc)
+			w.mustPublish(goodSrc, good)
+		})
+	}
+}
+
+func TestP11EmptyRestorePreservesLiveHubWithoutReplay(t *testing.T) {
+	for _, mode := range []string{"fresh", "admitted", "populated"} {
+		t.Run(mode, func(t *testing.T) {
+			w := newWorld(t, worldOpts{second: true, compact: -1})
+			if mode != "fresh" {
+				w.admit(synthSource)
+			}
+			if mode == "populated" {
+				// Bypass the recorder to model live state without any durable material.
+				batch, err := w.stage(synthSource, synthAssets[0], nil)(7)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if out := w.bridge.Publish(context.Background(), synthSource, batch, 7); out.Accepted == nil {
+					t.Fatalf("fixture publish: %+v", out)
+				}
+			}
+			if w.material() != nil {
+				t.Fatal("fixture unexpectedly durable")
+			}
+			before := w.bridge.hub.ExportRecovery()
+			readAdmission := map[AssetID]bool{}
+			for asset := range w.rec.assets {
+				readAdmission[asset] = w.bridge.hub.ReadAdmitted(semreg.AssetID(asset))
+			}
+			hub := &p11InstallHub{ManagedHub: w.bridge}
+			w.rec.hub = hub
+			if err := w.restore(); err != nil {
+				t.Fatalf("empty startup: %v", err)
+			}
+			if hub.replays != 0 || hub.installed || hub.reprojects != 0 {
+				t.Fatalf("empty startup invoked replay=%d install=%v reproject=%d", hub.replays, hub.installed, hub.reprojects)
+			}
+			report := w.rec.Report()
+			if !reflect.DeepEqual(report.Restored, append([]AssetID{secondAsset}, synthAssets...)) || len(report.Reopened) != 0 || len(report.Failed) != 0 {
+				t.Fatalf("empty startup report: %+v", report)
+			}
+			if after := w.bridge.hub.ExportRecovery(); !reflect.DeepEqual(after, before) {
+				t.Fatal("empty startup changed live hub state")
+			}
+			for asset, admitted := range readAdmission {
+				if w.bridge.hub.ReadAdmitted(semreg.AssetID(asset)) != admitted {
+					t.Fatalf("empty startup changed read admission for %s", asset)
+				}
+				if err := w.rec.admit(w.rec.assets[asset].source, []AssetID{asset}); err != nil {
+					t.Fatalf("empty startup blocked writer %s: %v", asset, err)
+				}
+			}
+			if mode == "fresh" {
+				for src, assets := range w.sources() {
+					w.admit(src)
+					for _, asset := range assets {
+						w.mustPublish(src, asset)
+						if !w.bridge.hub.Readable(semreg.AssetID(asset)) {
+							t.Fatal("fresh publication not readable")
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
+type p11InstallHub struct {
+	ManagedHub
+	bad        AssetID
+	installed  bool
+	replays    int
+	reprojects int
+}
+
+func (h *p11InstallHub) Replay(base, frame []byte, scratch bool) (Replay, error) {
+	h.replays++
+	replay, err := h.ManagedHub.Replay(base, frame, scratch)
+	if err != nil {
+		return nil, err
+	}
+	return &p11InstallReplay{Replay: replay, hub: h}, nil
+}
+
+func (h *p11InstallHub) Reproject(asset AssetID) error {
+	h.reprojects++
+	return h.ManagedHub.Reproject(asset)
+}
+
+type p11InstallReplay struct {
+	Replay
+	hub *p11InstallHub
+}
+
+func (r *p11InstallReplay) Install(failed map[AssetID]bool) (map[AssetID][]byte, map[AssetID]error) {
+	r.hub.installed = true
+	closed := make(map[AssetID]bool, len(failed)+1)
+	for asset, value := range failed {
+		closed[asset] = value
+	}
+	closed[r.hub.bad] = true
+	installed, refused := r.Replay.Install(closed)
+	if refused == nil {
+		refused = map[AssetID]error{}
+	}
+	refused[r.hub.bad] = errors.New("synthetic asset-scoped install refusal")
+	return installed, refused
+}
+
+func TestP11DurableRestoreHonorsScopedInstallRefusal(t *testing.T) {
+	for _, bad := range []AssetID{synthAssets[0], synthAssets[1], secondAsset} {
+		t.Run(string(bad), func(t *testing.T) {
+			w := newWorld(t, worldOpts{second: true, compact: -1})
+			badSrc, badDriver, good, goodSrc := synthSource, synthDriver, secondAsset, secondSource
+			if bad == secondAsset {
+				badSrc, badDriver, good, goodSrc = secondSource, secondDriver, synthAssets[0], synthSource
+			}
+			w.mustRestore()
+			w.admit(synthSource)
+			w.admit(secondSource)
+			for _, id := range synthAssets {
+				w.mustPublish(synthSource, id)
+			}
+			w.mustPublish(secondSource, secondAsset)
+			w.loseProcess(time.Second)
+			if w.material() == nil {
+				t.Fatal("fixture has no durable material")
+			}
+			hub := &p11InstallHub{ManagedHub: w.bridge, bad: bad}
+			w.rec.hub = hub
+			p11ScopedFailure(t, w.rec, w.restore(), bad, badDriver)
+			if !hub.installed {
+				t.Fatal("durable replay installation bypassed")
+			}
+			if w.bridge.hub.ReadAdmitted(semreg.AssetID(bad)) || w.bridge.hub.Readable(semreg.AssetID(bad)) {
+				t.Fatal("refused asset reads opened")
+			}
+			if _, err := w.publish(badSrc, bad); refusalCode(err) != RefusalFailedPrecondition {
+				t.Fatalf("refused asset writer: %v", err)
+			}
+			if w.rec.admit(goodSrc, []AssetID{good}) != nil || !w.bridge.hub.ReadAdmitted(semreg.AssetID(good)) {
+				t.Fatal("healthy retained asset admission closed")
+			}
+			w.admit(goodSrc)
+			w.mustPublish(goodSrc, good)
+			if !w.bridge.hub.Readable(semreg.AssetID(good)) {
+				t.Fatal("healthy retained asset did not become readable")
+			}
+		})
+	}
+}

@@ -2,8 +2,6 @@ package ebusgateway
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -94,21 +92,27 @@ type EEBusConfig struct {
 	TrustStorePath     string
 	RemoteSKIAllowlist []string
 	PairingWindowMode  EEBusPairingWindowMode
+	// OperatorSocketDir is the directory of the owner-only eeBUS operator MCP
+	// socket. Empty selects the default, the sibling "<StateRoot>-operator" of
+	// the state root, with a bounded fallback when that cannot be used. It is
+	// independent of the eeBUS runtime sidecar: it applies with eeBUS disabled
+	// too, because the operator MCP endpoint does not depend on the sidecar.
+	OperatorSocketDir string
 }
 
 // M2MGraphQLConfig configures the dedicated public M2M API listener. The field
 // and CLI prefix retain their pre-v1 name while the listener also hosts other
 // versioned M2M contracts such as the Matter binding feed.
 // An all-zero value is disabled. Any partially populated value is rejected by
-// the command runtime rather than being silently enabled.
+// the command runtime rather than being silently enabled. An enabled listener
+// requires the listen address, server identity, server certificate and key and
+// at least one allowed asset. Client certificates are not authenticated.
 type M2MGraphQLConfig struct {
-	ListenAddr                  string
-	ServerName                  string
-	ClientCAFile                string
-	ServerCertFile              string
-	ServerKeyFile               string
-	AllowedAssets               []string
-	DeniedPrincipalFingerprints []string
+	ListenAddr     string
+	ServerName     string
+	ServerCertFile string
+	ServerKeyFile  string
+	AllowedAssets  []string
 }
 
 // PortalPVConfig independently enables the Portal PV BFF and raw Modbus
@@ -234,9 +238,8 @@ func growattStorageOperationFitsDeadline(maxQuiescence, responseTimeout, deadlin
 }
 
 func (config M2MGraphQLConfig) Disabled() bool {
-	return config.ListenAddr == "" && config.ServerName == "" && config.ClientCAFile == "" &&
-		config.ServerCertFile == "" && config.ServerKeyFile == "" && len(config.AllowedAssets) == 0 &&
-		len(config.DeniedPrincipalFingerprints) == 0
+	return config.ListenAddr == "" && config.ServerName == "" &&
+		config.ServerCertFile == "" && config.ServerKeyFile == "" && len(config.AllowedAssets) == 0
 }
 
 func (config M2MGraphQLConfig) Validate() error {
@@ -244,8 +247,8 @@ func (config M2MGraphQLConfig) Validate() error {
 		return nil
 	}
 	if strings.TrimSpace(config.ListenAddr) == "" || strings.TrimSpace(config.ServerName) == "" ||
-		strings.TrimSpace(config.ClientCAFile) == "" || strings.TrimSpace(config.ServerCertFile) == "" ||
-		strings.TrimSpace(config.ServerKeyFile) == "" || len(config.AllowedAssets) == 0 {
+		strings.TrimSpace(config.ServerCertFile) == "" || strings.TrimSpace(config.ServerKeyFile) == "" ||
+		len(config.AllowedAssets) == 0 {
 		return errors.New("M2M GraphQL configuration is incomplete")
 	}
 	assets := make(map[string]struct{}, len(config.AllowedAssets))
@@ -257,12 +260,6 @@ func (config M2MGraphQLConfig) Validate() error {
 			return errors.New("M2M GraphQL configuration contains a duplicate allowed asset")
 		}
 		assets[asset] = struct{}{}
-	}
-	for _, fingerprint := range config.DeniedPrincipalFingerprints {
-		decoded, err := hex.DecodeString(fingerprint)
-		if err != nil || len(decoded) != sha256.Size {
-			return errors.New("M2M GraphQL configuration contains an invalid denied principal fingerprint")
-		}
 	}
 	return nil
 }
@@ -298,6 +295,8 @@ type StartupSourceOverride struct {
 }
 
 type Config struct {
+	ebusConfigurationPresence *bool
+
 	Transport                transport.RawTransport
 	PassiveTransport         transport.RawTransport // pre-configured passive transport (adapter-direct mode)
 	ProxyListenAddr          string                 // TCP listen address for ENH proxy clients (empty disables)
@@ -306,6 +305,7 @@ type Config struct {
 	M2MGraphQL               M2MGraphQLConfig
 	PortalPV                 PortalPVConfig
 	PortalStorage            PortalStorageConfig
+	PortalConfigRoot         string // Host-owned, existing directory for the separate Portal desired record.
 	ModbusTCPConfig          ModbusTCPConfig
 	EvidenceRecorderConfig   EvidenceRecorderConfig
 	EvidenceOneShotEnabled   bool
@@ -497,6 +497,7 @@ func DefaultConfig() Config {
 		MCPPath:                                 "/mcp",
 		UIPath:                                  "/ui",
 		PortalPath:                              "/portal",
+		PortalConfigRoot:                        "/data",
 		MDNSAdvertise:                           true,
 		MDNSInstance:                            "helianthus",
 		InstanceGUID:                            "",

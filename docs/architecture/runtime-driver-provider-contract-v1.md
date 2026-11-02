@@ -1,23 +1,52 @@
 # Runtime driver/provider and north-south contract v1
 
-Status: proposed software 0.7 contract. This document specifies a subsequent
-implementation; the current binary does not expose the lifecycle service or a
-universal manager for every protocol family.
+Status: pre-1.0 contract mirror with partial implementation for G5
+([#1032](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1032)).
+The gateway exposes an internal desired-state service and five ordinary MCP
+lifecycle tools over the shared production registry: the lifecycle-only
+`ebus.primary`, eeBUS, Growatt and configured Modbus TCP drivers, including
+registered disabled descriptors.
+This is not a universal public provider SPI or acceptance of every scenario
+below, and does not close #1032. No namespace is stable before Helianthus 1.0.
 
-Implementation status (issue
-[#1024](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1024)):
-the gateway-internal semantic publication hub (`internal/semhub`) implements
-the publication side of sections 4 to 8 for in-process publishers: stable
-asset and source identities with per-incarnation binding, service and
-capability identities; source epochs admitted before a provider opens, with
-distinct epoch and driver-generation identities; one transactional
-publication path over the SemReg publication kernel with the kernel's own
-replay and error identifiers; ordered, bounded event fan-out; and the
-generation fence, epoch retirement, activation and reprojection rules of the
-withdrawal sequence. The hub is runtime composition, not a public API, and
-persists nothing: epochs are journalled in memory only. The `list`, `get`,
-`start`, `stop` and `restart` service, desired-state persistence and every
-public lifecycle projection remain unimplemented.
+The merged public
+[runtime driver lifecycle contract](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/architecture/runtime-driver-lifecycle.md)
+is the normative G5 registration/lifecycle companion. Its final D1/D3/D4/D5
+rules supersede revision 9's experimental/operator-boundary proposal:
+START and STOP are idempotent by desired state, RESTART executes, and there
+are no client-visible receipts, idempotency keys or per-principal key spaces.
+MCP may start and stop drivers directly; G5 has no kernel operator boundary,
+principal or authority check and no authorization before 0.9. Later roadmap
+work is 0.11. D1 creates new epochs on process start, RESTART and START after
+STOP; D5 remains service-side write-ahead persistence with gateway-owned hub
+export/restore hooks. Native invocation safety retains its own owner.
+
+Current implementation includes the G4 publication hub (`internal/semhub`),
+typed registration, the durable control store (`internal/runtimestate`), the
+internal desired-state service and write-ahead recorder
+(`internal/runtimecontrol`), the manager-to-hub bridge, generation-owned tasks
+and production shell composition (`cmd/gateway`). The hub alone persists
+nothing. Direct publishers keep their in-memory recovery boundary; the
+`ebus.primary` registration declares no managed semantic assets; this does
+not establish the asset or acceptance scope of the managed sidecars.
+The five ordinary host tools are `helianthus.runtime.list`,
+`helianthus.runtime.get`, `helianthus.runtime.start`, `helianthus.runtime.stop`
+and `helianthus.runtime.restart` (`mcp/runtime_control.go`). They are distinct
+from the superseded experimental tools and are not driver-contributed hooks.
+There is no lifecycle GraphQL API; existing daemon/adapter MCP and GraphQL
+status parity remains required.
+
+The ledger in section 13 reconciles current source and existing tests,
+including the accepted P06 checkpoint validation, P09 store progression,
+P10 decision hold/correlation, P11 restore and P13 pending-work changes.
+Those test references are inspected evidence, not newly passed test runs.
+P14 bounds observation publication but does not deliver source/native
+identity propagation: `Service.corr` still does not populate `SourceID`,
+and durable source/native-generation mapping remains undelivered. Owner
+review of the final S0–S7/CTL/LIFE matrix and production residuals remains,
+including [#1263](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1263)
+and [#1296](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1296).
+J17 is merged; no J17 fence hold remains.
 
 A fence or retirement batch uses the caller's `ObservedAt` and monotonic point
 as its publication instant. The requesting family supplies them on the same
@@ -54,11 +83,12 @@ Deviation record (the normative passages are amended where they apply):
 
 Contract ID: `helianthus.gateway.driver-runtime/v1`
 
-Gateway baseline: `Project-Helianthus/helianthus-ebusgateway` commit
-[`e31106c9c726fbb8df7546901763e19b93659e72`](https://github.com/Project-Helianthus/helianthus-ebusgateway/tree/e31106c9c726fbb8df7546901763e19b93659e72)
+Gateway source:
+[public runtime repository](https://github.com/Project-Helianthus/helianthus-ebusgateway/tree/main).
 
-Program source: software 0.7 guide commit
-[`ec6050fb31738f201c96203c52be0702671df343`](https://github.com/Project-Helianthus/helianthus-execution-plans/tree/ec6050fb31738f201c96203c52be0702671df343/software-stabilization-07-08.implementing)
+Program source:
+[software 0.7 guide](https://github.com/Project-Helianthus/helianthus-execution-plans/tree/main/software-stabilization-07-08.implementing).
+Historical review coordinates remain in the linked issue and PR records.
 
 ## 1. Decision and boundary
 
@@ -72,7 +102,8 @@ The contract covers:
 - deterministic `list` and `get` views;
 - `start`, `stop`, and `restart` without restarting the gateway process;
 - persistent desired state separate from observed runtime state;
-- optimistic revision checks and persistent idempotency records;
+- optimistic revision checks against durable desired revisions, with no
+  lifecycle idempotency record (final D3);
 - source-epoch and driver-generation fencing;
 - capability activation, admission, withdrawal, drain, and close proof;
 - native observation to qualified semantic publication and projection;
@@ -98,14 +129,13 @@ and implemented by
 The accepted dependency is docs-semantic
 [#3](https://github.com/Project-Helianthus/helianthus-docs-semantic/issues/3),
 merged PR [#5](https://github.com/Project-Helianthus/helianthus-docs-semantic/pull/5),
-remote-main commit `b16667d719defc7b0fef0400ee3ad387469018ac`, specifically
-[`api/v1/kernel.md`](https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/b16667d719defc7b0fef0400ee3ad387469018ac/api/v1/kernel.md),
-[`serialization.md`](https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/b16667d719defc7b0fef0400ee3ad387469018ac/api/v1/serialization.md),
-[`acceptance.md`](https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/b16667d719defc7b0fef0400ee3ad387469018ac/api/v1/acceptance.md),
+with public contract files
+[`api/v1/kernel.md`](https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/main/api/v1/kernel.md),
+[`serialization.md`](https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/main/api/v1/serialization.md),
+[`acceptance.md`](https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/main/api/v1/acceptance.md),
 and
-[`acceptance-vectors.json`](https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/b16667d719defc7b0fef0400ee3ad387469018ac/api/v1/acceptance-vectors.json).
-That squash commit has contract content identical to independently accepted PR
-HEAD `395733fd19c1e5d92a9d1fbc0afb79bddd107a22`. The complete exact-HEAD Astra
+[`acceptance-vectors.json`](https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/main/api/v1/acceptance-vectors.json).
+The merged dependency preserves the independently accepted PR content. The complete exact-HEAD Astra
 audit returned `NO_BLOCKING_FINDINGS`; issue #3 is closed. A future successor
 requires its own compatibility reconciliation before replacing this pin.
 
@@ -121,7 +151,8 @@ The dependency must preserve these distinct identities:
 - native transport connection generation;
 - driver generation;
 - semantic snapshot and object revisions;
-- lifecycle operation ID;
+- internal lifecycle sequence and correlation (never a client operation
+  handle, final D3);
 - intent ID and idempotency key; and
 - causal correlation ID.
 
@@ -142,7 +173,7 @@ ownership for every service, capability, operation, and effect definition.
 
 | Owner | Required responsibility |
 |---|---|
-| Gateway runtime control | Driver catalog, desired-state persistence, lifecycle serialization, revision/idempotency decisions, per-driver isolation, admission coordination, composition, and public lifecycle projection |
+| Gateway runtime control | Driver catalog, desired-state persistence, lifecycle serialization, optimistic revision decisions, per-driver isolation, admission coordination, composition, and public lifecycle projection |
 | Native driver/adapter | Native endpoint identity, connection and protocol lifecycle, discovery, qualification, decode, raw evidence, request construction, native retry/reconnect, native authorization, ACK/readback interpretation, and resource close proof |
 | Semantic kernel and packs | Protocol-neutral identities, facts, services, capabilities, operation intents/outcomes, provenance, validation, conflict, and projection-loss types |
 | Native-to-semantic binding | Exact profile/version and unique `PackRef`/`DefinitionIndex` mapping from qualified native evidence to semantic facts/capabilities and from a semantic operation and typed `ExpectedEffect` to one typed native operation and pack-evaluated readback predicate |
@@ -169,7 +200,6 @@ type CatalogRevision uint64   // revision-consistent list view
 type DriverGeneration uint64  // starts at 1 inside one SourceEpochID
 type LifecycleOperationID string
 type LifecycleSequence uint64  // monotonic per DriverID, starts at 1
-type IdempotencyKey string
 
 type LifecycleOperationKind string
 const (
@@ -230,22 +260,22 @@ type LifecycleCorrelation struct {
 type ControlErrorCode string
 const (
     ErrorInvalidArgument      ControlErrorCode = "INVALID_ARGUMENT"
-    ErrorPermissionDenied     ControlErrorCode = "PERMISSION_DENIED"
     ErrorNotFound             ControlErrorCode = "NOT_FOUND"
-    ErrorRevisionConflict     ControlErrorCode = "REVISION_CONFLICT"
-    ErrorIdempotencyConflict  ControlErrorCode = "IDEMPOTENCY_CONFLICT"
     ErrorFailedPrecondition   ControlErrorCode = "FAILED_PRECONDITION"
     ErrorUnavailable          ControlErrorCode = "UNAVAILABLE"
     ErrorDeadlineExceeded     ControlErrorCode = "DEADLINE_EXCEEDED"
-    ErrorCloseUnconfirmed     ControlErrorCode = "CLOSE_UNCONFIRMED"
+    ErrorRevisionConflict     ControlErrorCode = "REVISION_CONFLICT"
+    ErrorTransitionBusy       ControlErrorCode = "TRANSITION_BUSY"
+    ErrorResourceExhausted    ControlErrorCode = "RESOURCE_EXHAUSTED"
+    ErrorCounterExhausted     ControlErrorCode = "COUNTER_EXHAUSTED"
 )
 
 type ControlError struct {
-    Code        ControlErrorCode
-    Message     string
-    Retriable   bool
-    Current     *DriverView
-    OperationID *LifecycleOperationID
+    Code      ControlErrorCode
+    Row       int            // refusal-table order of the lifecycle page
+    Message   string
+    Retriable bool
+    Current   *DesiredResult // REVISION_CONFLICT only
 }
 
 type DesiredState string
@@ -386,32 +416,40 @@ type GetDriverResult struct {
 type StartDriverRequest struct {
     DriverID         DriverID
     ExpectedRevision DriverRevision
-    IdempotencyKey   IdempotencyKey
 }
 type StopDriverRequest = StartDriverRequest
 type RestartDriverRequest = StartDriverRequest
 
-type LifecycleDisposition string
-const (
-    LifecycleAccepted LifecycleDisposition = "ACCEPTED"
-    LifecycleNoOp     LifecycleDisposition = "NO_OP"
-)
-
-type LifecycleReceipt struct {
-    OperationID LifecycleOperationID
-    Sequence    *LifecycleSequence
-    Disposition LifecycleDisposition
-    Desired     DesiredRecord
+// DesiredResult is the whole accepted or same-desired no-op result:
+// {desired_state, desired_revision}.
+type DesiredResult struct {
+    DesiredState    DesiredState
+    DesiredRevision DriverRevision
 }
 
 type ControlService interface {
     ListDrivers(context.Context, ListDriversRequest) (ListDriversResult, error)
     GetDriver(context.Context, GetDriverRequest) (GetDriverResult, error)
-    StartDriver(context.Context, StartDriverRequest) (LifecycleReceipt, error)
-    StopDriver(context.Context, StopDriverRequest) (LifecycleReceipt, error)
-    RestartDriver(context.Context, RestartDriverRequest) (LifecycleReceipt, error)
+    StartDriver(context.Context, StartDriverRequest) (DesiredResult, error)
+    StopDriver(context.Context, StopDriverRequest) (DesiredResult, error)
+    RestartDriver(context.Context, RestartDriverRequest) (DesiredResult, error)
 }
 ```
+
+D3 amendment to the types above: the request has no idempotency key, the
+result is `DesiredResult` only, and `IDEMPOTENCY_CONFLICT`,
+`PERMISSION_DENIED` and every receipt, disposition and operation-ID member are
+withdrawn (final D3/D4). `DesiredRecord.LastOperation`,
+`ObservedRecord.ActiveOperation` and the operation ID, request digest and
+completion members of `LifecycleOperationRecord` are superseded as well: the
+durable in-flight state is the typed work slot record of section 5, and
+completed operations leave no durable record. `CLOSE_UNCONFIRMED` remains an
+observed-state reason, not a request refusal. The lifecycle request carries no
+idempotency key at all; the intent idempotency of sections 8 to 10 is a
+separate semantic mechanism. `DriverView`, `ListDriversResult` and
+`GetDriverResult` above describe internal content, not the wire: the public
+projection is the closed eight-member driver object of section 5 (S2/D4
+ordinary MCP lifecycle tools).
 
 `ControlErrorCode` is confined to gateway lifecycle transport and persistence.
 It does not rename a semantic rejection. Semantic validation, publication,
@@ -438,12 +476,11 @@ reclassifying it. It never mints a 39th semantic error, maps zero routes to an
 invented `NO_ROUTE`, or changes a semantic error into an uppercase lifecycle
 error.
 
-An `ACCEPTED` receipt has a non-empty `OperationID` and a non-nil `Sequence`
-containing the exact per-driver sequence allocated in the same transaction as
-its operation record. A `NO_OP` receipt has an empty operation ID and nil
-sequence. The persisted idempotency receipt uses the same representation, so an
-identical replay returns the original operation ID and sequence and never
-allocates another record.
+An accepted decision and a same-desired no-op return the same closed
+`DesiredResult`; neither carries an operation ID, a lifecycle sequence, a
+disposition or a completion claim. A lost response is resolved by list/get
+readback, and a repeated changing request with an old expected revision
+conflicts.
 
 `DriverID` is stable across process restart and gateway rename. It is not a bus
 address, semantic asset ID, native binding ID, or public compatibility alias.
@@ -458,6 +495,42 @@ entries and `CatalogRevision` come from one read transaction. `GetDriver`
 returns `NOT_FOUND` for an unknown ID; it never constructs a driver as a read
 side effect.
 
+### S0 registry and typed provider seam
+
+Package [`internal/runtimecontrol`](https://github.com/Project-Helianthus/helianthus-ebusgateway/tree/main/internal/runtimecontrol) implements
+the S0 slice of the registration companion
+[runtime driver lifecycle](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/architecture/runtime-driver-lifecycle.md)
+(A1): descriptor format `v1`, validation before effects, a frozen in-memory
+registry with coherent list/get reads, and the typed lifecycle-adapter seam
+(`NewAdapter` over a factory returning a `drivermanager.Runtime`). By itself
+it performs no construction, desired-state persistence, lifecycle control or
+runtime composition (the production registration of `ebus.primary` is
+section 7, S4/S6/S7 shell integration), and it imports only the standard
+library and `internal/drivermanager`.
+
+`Register` validates a whole batch, disabled entries included, and installs it
+in one step or not at all. Per descriptor, in order: format, `DriverID`,
+direction, disposition, `NativeContractRef`, adapter, owned sources, hooks.
+Then, against the installed registry and the batch: duplicate `DriverID`,
+duplicate source ownership, and a source the hub already attributes to
+another driver. Any refusal invokes no adapter, bumps no `CatalogRevision` and
+mutates no hub ownership; the hub is consulted through a read-only view. A
+`NativeContractRef` field is 1 to 256 bytes of `[A-Za-z0-9._/+-]`, starting
+alphanumeric, with no `..`, no `//` and no IP literal, so URLs, host:port
+pairs and userinfo cannot pass. A source ID follows the SemReg opaque rule.
+An empty owned-source set is accepted. Every hook declaration fails:
+`mcp`, `setup`, `portal`, `semantic` and `evidence` as unimplemented, any
+other name as unknown; `ResolveHook` returns the same refusals for a
+registered driver. Reads return detached copies; `Binding` returns the frozen
+construction material and stored adapter without invoking it, and unknown or
+noncanonical IDs return `NOT_FOUND`.
+
+`DriverID`, `SourceID`, `SourceEpoch`, `DriverGeneration`, `NativeGeneration`,
+`DesiredRevision`, `CatalogRevision`, `LifecycleSequence` and `HubSeq` are
+distinct defined types in this package, not aliases of each other or of the
+publication hub's identifiers. The snapshot and correlation types carry no
+receipt, idempotency key, principal or authorization field (final D3/D4).
+
 An epoch transition has a non-zero `AttemptLimit` and finite `DeadlineUTC` from
 the manager's lifecycle-construction policy. Those bounds persist across
 component/reconciler recovery in one source epoch and are not reset by a wakeup.
@@ -470,59 +543,642 @@ transition barrier completes.
 Lifecycle calls acknowledge a persistent control decision. They do not claim
 that native startup, shutdown, or replacement has completed.
 
-For every mutation, the control service performs one atomic transaction:
+D3 amendment: the docs-ebus
+[runtime driver lifecycle](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/architecture/runtime-driver-lifecycle.md)
+sections "S1/D3: minimal durable control decisions" and "S3/D2: bootstrap,
+load failures and explicit repair" supersede the receipt, idempotency-key,
+principal-scoped ledger, request-hash and completed-operation rules of this
+section, of the receipt paragraphs in section 4 and of the receipt-specific
+CTL rows in section 13. Where this document still describes those
+mechanisms, the lifecycle page wins. The subsection below records what the
+storage seam implements.
 
-1. Validate the caller's lifecycle authority, closed request shape, driver ID,
-   non-zero expected revision, non-empty idempotency key, and caller deadline.
-2. Canonically hash contract ID, operation name, driver ID, expected revision,
-   and all request fields.
-3. Look up `(authority principal, idempotency key)` in the persistent ledger.
-   An identical hash returns the stored receipt. A different hash returns
-   `IDEMPOTENCY_CONFLICT` without state change.
-4. Compare `ExpectedRevision` with the current persistent driver revision. A
-   mismatch returns `REVISION_CONFLICT` with the current view.
-5. Resolve `ACCEPTED` or `NO_OP`. For `ACCEPTED`, allocate the next per-driver
-   lifecycle sequence and commit the desired record, typed `PENDING`
-   `LifecycleOperationRecord`, request hash, and receipt together, then wake the
-   asynchronous reconciler. The operation record stores the exact `START`,
-   `STOP`, or `RESTART` kind; a digest is never decoded to recover it. For
-   `NO_OP`, persist only the request hash and receipt against the unchanged
-   desired record; its operation ID is empty and no operation record or
-   reconciler wakeup is required.
+### S3 durable control store (implemented storage seam)
 
-The idempotency ledger survives process restart and remains at least as long as
-the desired-state schema's rollback window. Expiry cannot occur while the
-associated lifecycle operation or migration rollback remains reachable.
+Package [`internal/runtimestate`](https://github.com/Project-Helianthus/helianthus-ebusgateway/tree/main/internal/runtimestate) owns the
+independently versioned `runtime_control` namespace (format version 1) under
+the sole runtime-state writer. Top-level, meta and eBUS versions are
+unchanged; unknown namespaces keep round-tripping. The namespace holds only:
+one issued-revision mark, the catalog view revision, one record per decided
+driver (desired `RUNNING` or `STOPPED`, its desired revision, the internal
+lifecycle sequence and at most two typed work slots, current and reserved (the current slot always holds
+the older transition: its sequence precedes the reserved sequence, and a record
+violating this fails only that driver),
+with exact kind, accepted revision, sequence, phase, correlation, cleanup
+obligations, bounded attempts and deadline) and a typed D5 recovery envelope
+whose payload is opaque to the writer and verified by digest. There is no
+receipt, idempotency key, principal, request digest or completed-operation
+store. Revisions are encoded as canonical decimal strings and held as
+unsigned 64-bit values; every increment that would overflow refuses with
+`COUNTER_EXHAUSTED` before mutation.
 
-Operation semantics are:
+Load dispositions are distinct: `MISSING` (readable state with no control
+material), `LOADED`, `MISSING_WITH_MATERIAL` (no namespace while a quarantine
+copy exists), `CORRUPT` (whole-file corruption, or a namespace whose
+structure, mark, catalog revision or recovery envelope cannot be validated),
+`UNREADABLE`, `UNSUPPORTED` (a schema version other than 1) and `LOCKED`
+(the store lock cannot be acquired). Every disposition except `MISSING` and
+`LOADED` fails control closed for the namespace only: the shell keeps
+starting, every configured driver is withheld as `FAILED`, nothing is seeded
+and the namespace bytes are preserved verbatim on every later write. A
+malformed driver record fails only that driver while independent records stay
+usable. A file that cannot be read, or whose corrupt quarantine rename fails,
+blocks persistence so its bytes are never overwritten; a quarantine copy is
+never replaced. The writer holds an exclusive `flock` on the `<state>.lock`
+sidecar from load until stop, which the offline reset also takes. Any sidecar
+open or lock acquisition error (another holder or any other failure) yields
+`LOCKED` and blocks persistence for the process: no decision, work, catalog,
+recovery, seed, registration or generic write is accepted, and a corrupt file
+is not quarantined. The readable file is still decoded read-only: the GUID, the
+eBUS cache and opaque namespaces keep their last-known-good in-memory values,
+and the last-known-good `runtime_control` namespace is served by the snapshot
+and per-driver reads with `ReadOnly` set while every configured driver starts
+`FAILED`. It is never read as missing and never overwritten later. Stop waits
+for every in-flight writer (a control transaction or a ticker flush) before it
+closes write admission and releases the lock. The final flush takes the writer
+slot with the stop context; a context that ended before or during Stop skips
+the flush and is returned, and the lock is still released as soon as the
+in-flight writer finishes. Control admission reports closed once the manager is
+stopped or persistence is blocked. A work update of a stored identity may not
+move its phase backwards, lower its attempts used, or extend or remove an
+established deadline.
 
-- `start`: change desired state to `RUNNING`. If it is already `RUNNING`, return
-  `NO_OP` without resetting backoff, replacing a degraded generation, or bumping
-  revision. Recovery that replaces a live/degraded generation uses `restart`.
-- `stop`: change desired state to `STOPPED`. If already `STOPPED`, return
-  `NO_OP`. A no-op does not assert that an unconfirmed native close succeeded;
-  the observed view retains failure/quarantine.
-- `restart`: require desired state `RUNNING`, increment its revision, record a
-  new operation that makes the reconciler fence the current generation and
-  construct a replacement. A stopped driver returns `FAILED_PRECONDITION`.
+The one-time seed runs only for `MISSING` with a valid persisted instance
+GUID: the mark starts at 0 and each configured driver, in bytewise `DriverID`
+order, is one accepted decision at mark + 1 (enabled `RUNNING`, disabled
+`STOPPED`). The store never generates or replaces the GUID and never touches
+meta. In an existing namespace a configured driver without a record becomes
+visible through a mark-only write, and a record whose driver is no longer
+configured and holds no work slot or D5 reference is deleted with a mark-only
+write, in one durable transaction before any read. A driver registered earlier
+in the process that is later unconfigured also advances the mark and catalog
+(a mark-only write) even when it has no stored record. The startup plan derives
+`STARTING` only from durable desired `RUNNING` of an enabled driver; durable
+`STOPPED` and record-less drivers start `STOPPED`, disabled configuration
+yields `DISABLED` without rewriting intent, and failed control yields
+`FAILED`. Process shutdown never changes durable intent.
 
-For accepted changes, the driver revision and catalog revision increment once.
-An idempotent replay and a no-op do not increment either revision. The
-reconciler reads the lowest nonterminal lifecycle sequence for a driver and
-executes the stored kind and desired revision; it never infers an action from
-the final desired record or opaque digest. It does not coalesce accepted
-records, including `RESTART`, and it cannot begin the next sequence until the
-current record reaches `COMPLETED` with a terminal reason.
+`DecideControl` applies the lifecycle refusal table in order: closed request
+shape (`DriverID`, `ExpectedRevision` as a nonzero canonical decimal string),
+registration, control state (a failed load or record is `FAILED_PRECONDITION`,
+pending readback is `UNAVAILABLE`), configured eligibility and a finite
+unexpired deadline, all before the serialization point. The namespace-wide
+serialization point is the runtime-state sole-writer lock shared with cache,
+meta and ticker writes; the wait is bounded and never outlasts the deadline.
+After acquiring it the request reconfirms admission, rechecks the deadline,
+reads the mark, compares the expected revision with the driver's current
+desired revision (the mark for a driver without a record), answers a
+same-desired START or STOP as a no-op without writing, refuses RESTART in
+desired `STOPPED`, consults the slot planner (rows 7 and 8), checks the record
+and byte limits and the counters, rechecks the deadline and durably writes the
+decision with the advanced mark and catalog revision. A bounded-wait timeout
+refuses `REVISION_CONFLICT` only for a conclusively stale expectation and
+`TRANSITION_BUSY` otherwise, with no durable change. Accepted and no-op results
+are `{desired_state, desired_revision}` only.
 
-The transition from `PENDING` to `ACTIVE` is durable. Successful or terminally
-failed reconciliation commits the operation's completion, terminal reason, and
-observed transition in one transaction. On process restart, any nonterminal
-record is requeued in sequence. An `ACTIVE` record belongs to the old source
-epoch and resumes as pending work under the new epoch; old callbacks and
-observations remain fenced. Replaying a `RESTART` with no surviving native
-generation starts exactly one new generation under the new epoch and completes
-that restart record; it is never lost merely because the final desired state is
-already `RUNNING`.
+Every control commit (seed, registration, decision, work, catalog and
+recovery) checks the namespace byte limit on the staged namespace first and
+refuses `RESOURCE_EXHAUSTED` without writing. A work update may only advance the
+phase, correlation and obligations of a stored transition, promote the reserved
+slot or clear slots; the accepted identity (kind, desired revision and
+sequence) never changes.
+
+A control transaction stages privately, persists the whole file through a
+same-directory temporary file, a required file fsync and a rename (no
+cross-filesystem fallback) and exposes the committed state only after a
+successful parent-directory fsync. Any failure before the rename discards the
+staging and refuses `UNAVAILABLE`; no later cache, meta or ticker write can
+publish it, because generic writes re-emit only the committed namespace. A
+directory fsync failure after a successful rename, including an error the
+generic namespaces tolerate, is ambiguous persistence: nothing is
+acknowledged or exposed, admission is closed for every driver and generic
+writes are deferred until the readback finds the stored namespace equal to
+the staged or the committed one and a directory fsync succeeds; readback
+agreement alone never reopens admission. The generic namespaces keep the
+best-effort directory fsync.
+
+The offline repair is `scripts/reset_runtime_control.py --state-file <file>
+--namespace runtime_control --desired STOPPED --driver-id <id>...`. It
+previews by default and replaces only with `--apply --gateway-stopped`, refuses
+while another process holds the store lock, refuses a corrupt or unreadable
+file (including any preserved meta/eBUS value the gateway loader rejects:
+invalid typed fields, out-of-range addresses or duplicate member addresses), a missing or invalid GUID, an unsupported namespace
+version or unknown namespace member, an unvalidated mark or catalog revision, an
+unverifiable D5
+envelope (including a driver ID that is not canonical or exceeds 128 bytes) or
+one recording a revision above the mark, and an unvalidated
+configured ID set (`FAILED_PRECONDITION`, or `COUNTER_EXHAUSTED` when `H + N`
+or `C + 1` overflows). It writes an exclusive, fsynced quarantine copy of the
+exact original bytes, then replaces only the namespace member: one `STOPPED`
+record per configured ID at `H + 1` through `H + N` in bytewise order with no
+work slot, the mark `H + N` and catalog revision `C + 1`, copying every other
+member and the D5 envelope byte-for-byte. Failures before replacement leave
+the original file intact; a rerun overwrites its stale temporary file. After
+replacement, a directory fsync failure or unconfirmed readback reports
+`AMBIGUOUS` (exit 5), retains the quarantine copy and requires inspection of
+the state before retrying; it never claims that the original was preserved.
+
+### S1/D3 desired-state service (implemented internal service)
+
+The receipt, idempotency-ledger and operation-record transaction that this
+section described before the D3 amendment is withdrawn. Package
+[`internal/runtimecontrol`](https://github.com/Project-Helianthus/helianthus-ebusgateway/tree/main/internal/runtimecontrol) implements the
+S1/S2.1/S5/S6.1 slice of the lifecycle page as an internal `Service`. It
+performs no endpoint I/O of its own and has no authentication (D4). Its
+production registration is section 7 (S4/S6/S7 shell integration), its only
+external surface is the ordinary MCP adapter below (S2/D4 ordinary MCP
+lifecycle tools), and it still imports only the standard library and
+`internal/drivermanager`.
+
+**Seams.** The service reaches the S3 store only through the `Store`
+interface (decide, commit work, advance catalog, commit recovery, coherent
+catalog and driver reads, admission and readback). Each driver has an
+injected `LifecycleExecutor` (`Start` and `Stop` with a
+`LifecycleCorrelation`; `Stop` reports native close and semantic cleanup as
+two independent obligations), and the service has one injected
+`RecoveryAdapter` (`Restore`, `Secure`). There is no default recovery adapter
+and no fake success path. `New` refuses a missing store, recovery adapter or
+incarnation name, a noncanonical or duplicate driver ID, a missing executor,
+more than 128 drivers and an attempt limit above 8, all before any store,
+executor or adapter call; `Start` refuses a driver set that differs from the
+store's visible drivers without writing.
+
+A `DriverConfig` may carry a `RetryPolicy` that narrows the retry policy for
+that driver only. Its `MaxAttempts` bounds the start attempts of one epoch
+(the generation counts them) and never raises the service limit; a positive
+`Delay` replaces the service retry delay before each of that driver's
+retries. A retry still needs a retryable executor error and stays inside the
+persisted per-operation budget. The zero value keeps the service policy, and
+`New` refuses a negative value, an attempt limit above 8 or a delay above the
+30-second budget.
+
+**Decisions.** `Control` decodes the closed two-member request (refusal-table
+row 1) and `Decide` checks the method and registration (rows 1 and 2)
+without the store; the store applies rows 3 to 10 under its namespace-wide
+serialization point. The service's slot planner runs under that point and
+takes only the driver's own mutex:
+
+- with no typed work the request takes the current slot, except during an
+  untyped process-start attempt, where STOP or RESTART synthesizes
+  `CANCEL_ATTEMPT` as the current slot (with the attempt's epoch, generation,
+  both cleanup obligations and a deadline) and takes the reserved slot;
+- behind a current transition the request takes the empty reserved slot;
+  STOP or RESTART behind a START fences that START;
+- an executing RESTART or a full reserved slot is `TRANSITION_BUSY` (row 8);
+- quarantine or unresolved recovery refuses START and RESTART at row 7, while
+  STOP stays allowed;
+- every plan must enqueue exactly one new transition of the requested kind,
+  keep stored work unchanged and never leave a reserved slot without a
+  current one; anything else fails closed as `TRANSITION_BUSY`.
+
+An accepted decision is durable before `Decide` returns. Only then does the
+service publish the view, emit `DESIRED_ACCEPTED`, fence the superseded
+attempt (cancel its context and mark its pending result as never to be
+installed) and wake the driver's reconciler. From its planner until that
+acceptance is published, the decision holds the driver: no attempt result is
+installed, no slot is pruned and the reconciler takes no step for it, even
+when it already sees the committed slots, so reconciliation never runs ahead
+of the acceptance. A same-desired no-op writes,
+publishes, emits, fences and wakes nothing. Both return
+`{desired_state, desired_revision}` only. Cancelling the caller's context
+after acceptance retracts nothing: the work runs under the service's own
+lifetime, within the persisted per-operation budget (at most 8 attempts and a
+30-second deadline, never renewed by a wake, a no-op or recovery).
+
+**Reconciliation.** One reconciler per eligible driver derives work only from
+the committed typed slots. `PENDING` is accepted and not begun. `ACTIVE`
+carries the correlation being started or stopped with both obligations
+pending. `CLEANUP` is settling, and with both obligations cleared it is
+terminal. A START with a reserved successor is canceled: a Stop with its own
+correlation settles its obligations, and a late success is never published.
+STOP withdraws the admitted generation and publishes `STOPPED` only after both
+obligations are durably cleared. An unconfirmed native close publishes
+`FAILED/CLOSE_UNCONFIRMED` with the safety quarantine, retains the slot and
+blocks admission until process restart. RESTART withdraws the admitted
+generation, then starts one replacement under a new epoch. A START that
+exhausts its budget ends `FAILED` with desired `RUNNING` unchanged; recovery is
+a RESTART, never a START no-op.
+
+Cleanup runs within the same nonrenewable budget. Each cleanup attempt is
+charged durably in the slot before the executor's `Stop` is invoked, so
+process loss during `Stop` never grants an extra attempt. `Stop` runs under a
+context that ends at the persisted deadline; once the deadline has passed it
+receives an already-expired context, and a late process-start success is
+withdrawn under the attempt's original deadline in the same way. No new
+deadline is computed for cleanup. The attempt limit governs start attempts
+only: cleanup owns one further reserved attempt, accounted apart from the start
+budget, so a limit of one cannot let a START consume the attempt that native
+close and semantic cleanup need. A START that succeeds after its deadline still
+gets that reserved cleanup attempt under its original deadline. When the
+reserved cleanup attempt or the deadline is
+spent with semantic cleanup still pending, the driver ends `FAILED` with a
+`CLEANUP_STALLED` diagnostic, START and RESTART refuse at row 7 until process
+restart, the obligation stays durable and no further `Stop` runs. An
+unconfirmed native close quarantines as described above. A RESTART creates its
+replacement only while a start attempt and time remain in the slot's budget
+after the predecessor's cleanup; when the predecessor's cleanup used the last
+permitted attempt, the RESTART ends `FAILED` with a retry-exhausted diagnostic
+and no replacement is started. Budgets are never renewed: a new RESTART is a
+new decision with a new budget. A charge whose commit outcome was unknown and
+that readback adopted is not charged a second time.
+
+Epochs are derived from the incarnation name,
+the driver ID and a per-process ordinal, so every process start, RESTART and
+START after STOP gets a new epoch (final D1). The generation starts at 1 in
+each epoch and grows by one per retry.
+
+Before every work commit the service also checks the progression of the
+stored transition. An unassigned correlation may be assigned once. Within one
+epoch the generation only grows, and an obligation only goes from pending to
+cleared, except at the `PENDING` to `ACTIVE` step that incurs it. A new epoch
+replaces the old one only after both old obligations are cleared, and an
+established epoch is never removed.
+
+**Recovery.** `Start` restores the committed D5 material before any executor
+call or admission. An adapter that implements `EmptyRestorer` is also told
+when no material is committed (`RestoreEmpty`), so its managed writers open
+only after this step. A restore failure withholds the drivers it names as
+`FAILED/DEPENDENCY_UNAVAILABLE` with no reconciler, and START or RESTART for
+them refuses at row 7. A `*RestoreError` names exactly the drivers it failed
+closed; any other failure names the material's drivers, or every driver when
+the material names none. Otherwise each slot resumes from its own state:
+
+- `PENDING` runs;
+- `ACTIVE` left by an earlier incarnation first settles the historical
+  correlation, then runs under a new epoch, so an unfinished RESTART performs
+  its one replacement although desired already says `RUNNING`;
+- `CLEANUP` with pending obligations only settles them;
+- a terminal slot is only pruned.
+
+A driver with no slot and desired `RUNNING` gets the untyped process-start
+attempt, which persists nothing.
+
+**Ambiguous persistence.** When a decision or work commit reports ambiguous
+persistence, the store keeps the staged state hidden and closes admission.
+The service then runs a bounded readback itself, without waiting for another
+request. The first readback runs at once, and at most the attempt limit of
+readbacks follow, spaced by the retry delay and each bounded by an equal share
+of the operation budget (about 50 seconds in all with the defaults). Admission
+reopens only when the store's readback agrees with the staged or the committed
+namespace and directory durability is re-established. The service then
+publishes the committed view and wakes every reconciler, so an adopted
+decision is shown and executed. A decision whose commit was ambiguous keeps
+holding its driver until then, and a further decision for that driver is
+refused `TRANSITION_BUSY` meanwhile. It is adopted exactly when the driver's
+committed desired revision moved off the request's expected revision. An
+adopted decision publishes its `DESIRED_ACCEPTED` with that view, exactly as a
+direct commit would and never earlier, and only then fences the START it
+supersedes. A rejected decision emits nothing and fences nothing: a STOP or
+RESTART that did not persist leaves the START it would have canceled running
+with its attempt, budget and original deadline unchanged. A disagreement fails control closed in the
+store; an unresolved series is reported, and admission stays closed. List and
+get keep serving the last committed view throughout. A driver with desired `STOPPED` and no slot
+is left alone. No completed-operation history is consulted.
+
+**Pruning.** A terminal slot is pruned only after `Secure` returns its D5
+material and that material is committed; a `Secure` failure keeps the slot
+durable and retries. While a terminal slot with an empty reserved slot is
+being pruned, a changing decision for that driver that still sees the slot is
+refused `TRANSITION_BUSY` until the prune commits, because the store accepts
+clearing both slots and a newly reserved transition must never be dropped.
+Diagnostics are an in-memory
+ring of at most 32 sanitized terminal summaries of at most 512 bytes per
+driver, built from closed codes and counters only. They are dropped with the
+process and never used for admission, deduplication or recovery.
+
+**Views and events.** List and get read an atomically published view and
+never wait for a store write, a reconciler or a decision. The view is rebuilt
+from one coherent store read plus the staged observations. Every observed
+transition durably advances the catalog revision before the view that shows it
+is exposed, and a revision's content never changes once exposed. Observed
+transitions never change desired state, its revision or the mark. Events
+(`DESIRED_ACCEPTED`, `OBSERVED_CHANGED`) are appended to a bounded ring
+(default 256, at most 4096) only after the transition is committed and visible
+at the event's catalog revision. A reader behind the window, or ahead of it,
+is told to resync from `List`, whose `EventCursor` names the newest event
+included. A view and its events are published atomically for event readers:
+the events are retained and the view stored under the event log's lock, and
+waiters are woken only afterwards. A resync at a published `EventCursor`
+therefore always finds that cursor's events. A pending `OBSERVED_CHANGED`
+event that the published view no longer shows (because a newer observation
+of the same driver is staged and has its own event) is coalesced away rather
+than stamped with the newer view's revision. When control state is read-only
+at start, every driver is withheld as `FAILED`, but the view keeps the stored
+catalog revision and each stored desired revision unchanged. Durable withholding refuses lifecycle mutations with non-retriable `FAILED_PRECONDITION` carrying the withholding reason, transient store conditions retain retriable `UNAVAILABLE`, and the withheld view preserves configured enabled state and available durable desired intent independently of service startup. An event carries the driver ID, its kind, the catalog revision,
+desired state and revision, observed state, reason, the quarantine flag and
+the lifecycle correlation (source epoch and driver generation) the observation
+refers to; an accepted decision carries the driver's correlation at
+acceptance. Views and events carry closed codes and identities only: no
+operation ID, endpoint, credential, raw error, principal or authority field.
+
+**Isolation.** The only service-wide lock guards in-memory view assembly and
+is never held across a store write, an executor call or an adapter call. A
+blocked or failing executor of one driver delays only that driver's
+reconciler. While one driver's store write is blocked, other drivers' reads
+stay immediate and their decisions wait at most the store's bounded
+serialization wait before `TRANSITION_BUSY`.
+
+**Errors.** Recovery-adapter (semantic) failures are reported as
+`SemanticError`, which keeps the original error for `errors.Is` and
+`errors.As` and is never turned into a lifecycle refusal code. Executor
+failures are `LifecycleError`, and request refusals are `Refusal` with the
+refusal-table code and row. Executable evidence is
+`internal/runtimecontrol/service_test.go` against the merged store.
+
+### S2/D4 ordinary MCP lifecycle tools (implemented MCP adapter)
+
+Issue
+[#1227](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1227)
+implements the first external control surface of the lifecycle contract: the
+D4 amendment to the docs-ebus
+[MCP page](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/api/mcp.md)
+and the
+[runtime driver lifecycle](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/architecture/runtime-driver-lifecycle.md)
+section "S2/D4: ordinary MCP external control", proposed in
+[docs-ebus #718](https://github.com/Project-Helianthus/helianthus-docs-ebus/pull/718).
+It replaces revision 9's kernel operator boundary and experimental tools.
+Where that amendment and the merged S1/D3 rules differ, the merged rules and
+the service behaviour above apply.
+
+**Registration.** Package `mcp` registers `helianthus.runtime.list`,
+`helianthus.runtime.get`, `helianthus.runtime.start`,
+`helianthus.runtime.stop` and `helianthus.runtime.restart`, in that order, on
+the ordinary tool inventory (`RegisterRuntimeControlTools`). The production
+HTTP shell registers them unconditionally while it composes the ordinary MCP
+server, before the MCP route is mounted, so they stay listed for the shell's
+lifetime whatever eBUS does (STOPPED, FAILED, withheld or disabled) and with
+eeBUS disabled or absent. A disabled driver stays visible; tool disappearance
+never signals unavailability. A control path whose service could not be built
+still lists the tools and answers `UNAVAILABLE`. The tools are host tools,
+not driver contributions: driver hooks stay unimplemented.
+
+**Transports.** The tools use the ordinary registration and dispatch path, so
+they are served by every ordinary MCP transport the gateway offers. Today
+that is the HTTP JSON-RPC endpoint. The gateway has no stdio MCP transport
+and this slice adds none; the amendment's "HTTP and stdio" is read as every
+ordinary MCP transport the gateway offers. An endpoint that serves the
+ordinary inventory (the owner-only eeBUS operator endpoint does) lists them
+too; the read-only evidence scope does not expose them.
+
+**Delegation.** The adapter is a thin delegate of one `ControlService` and
+never calls DriverManager, constructs a provider, opens an endpoint,
+reconciles or polls:
+
+| Tool | Complete arguments | Service call |
+|---|---|---|
+| `helianthus.runtime.list` | `{}` | `List()`: one coherent cached view |
+| `helianthus.runtime.get` | `{"DriverID": ...}` | `Get(DriverID)`: one cached entry |
+| `helianthus.runtime.start` | `{"DriverID": ..., "ExpectedRevision": ...}` | `Control(ctx, START, body)`: the service's closed decoding, then `Decide` |
+| `helianthus.runtime.stop` | same two members | `Control(ctx, STOP, body)` |
+| `helianthus.runtime.restart` | same two members | `Control(ctx, RESTART, body)` |
+
+**Closed inputs.** Arguments are closed, case-sensitive objects: list takes
+no member, get exactly `DriverID`, each mutation exactly `DriverID` and
+`ExpectedRevision`, every value a JSON string. Missing, additional or
+duplicate members, non-string values, non-object arguments (an explicit
+`null` included) and trailing data are refused as `INVALID_ARGUMENT` (refusal
+row 1) before any service read or decision; an omitted `arguments` member
+reads as the empty object. Duplicates are detected anywhere in the call
+parameters on the token stream, before any decoding could discard one, and
+answer the same tool-level refusal. Mutation bodies reach the service
+unchanged, so the MCP refusals are the service's own. Inside a well-formed
+JSON-RPC request the arguments value cannot carry trailing data; a request
+body with trailing data is refused by the JSON-RPC layer before dispatch.
+`DriverID` follows the canonical pattern of section 4 and at most 128 bytes;
+a noncanonical or unregistered ID is `NOT_FOUND` from the cached read.
+`ExpectedRevision` echoes the read-back `desired_revision` as a canonical
+nonzero unsigned 64-bit decimal string. No idempotency key, digest, receipt,
+principal, authority, operation handle or deadline member is accepted or
+returned.
+
+**Deadlines.** Every mutation reaches the service with a finite deadline.
+When the transport supplies none (an HTTP request has none), the adapter
+bounds the call to 10 seconds, longer than the store's bounded namespace-wide
+serialization wait, so contention answers `TRANSITION_BUSY`; an earlier
+caller deadline is kept. The service's refusal for a call without a finite
+deadline (refusal row 5, `INVALID_ARGUMENT`) is therefore unreachable through
+MCP by construction: the tools always supply the 10 second default and keep
+an earlier caller deadline. The reads take no deadline: they never wait for a
+store write, a reconciler or a decision.
+
+**Data.** List `data` is exactly `{catalog_revision, drivers}` and get `data`
+exactly `{catalog_revision, driver}`. A driver object has exactly
+`driver_id`, `enabled`, `desired_state`, `desired_revision`,
+`observed_state`, `reason`, `safety_quarantined` and `revision`, in that
+order, projected from the cached `DriverStatus`, and one optional member,
+`recovery`, last, present only while `observed_state` is `BACKOFF` with a
+published schedule (see "Recovery member" below). List entries come from one
+coherent view in bytewise `driver_id` order, each carrying the view's catalog
+revision, with `drivers: []` for an empty catalog; get uses its entry's
+revision as `catalog_revision`. Revisions are canonical decimal strings and
+read `"0"` only for a withheld or unissued view. Accepted and same-desired
+no-op mutations answer exactly `{desired_state, desired_revision}` after the
+decision is durable: completion is observed through list or get, and readback
+never attributes a completion to a call. START while desired `RUNNING` and
+STOP while desired `STOPPED` are no-ops after the revision comparison. Every
+accepted RESTART takes a new revision and executes one replacement; after a
+lost RESTART response an old-revision retry conflicts, and a fresh-revision
+retry after settlement restarts again.
+
+**Recovery member.** `DriverStatus.Recovery` renders the optional `recovery`
+object of the
+[MCP page](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/api/mcp.md)
+from the cached view, and the Portal driver row of the
+[configuration API](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/docs/architecture/portal-config-sharing.md)
+carries the same object. It exists only while the entry is in `BACKOFF` and
+the executor reported a schedule, an attempt number from one and a due time;
+every other state has no member, whatever its reason, and a `BACKOFF` without a
+schedule omits it. Its four members are all required: `attempt` is the number of the
+attempt scheduled, `next_attempt_at` its due time in UTC with the `Z`
+designator, `last_failure_class` one of `DIAL_FAILED`, `TIMEOUT`,
+`TRANSPORT_CLOSED` and `OTHER`, and `last_failure_cause` display text of at
+most 160 printable ASCII characters. A schedule whose failure the executor did
+not describe is published as `OTHER` with an empty cause. Accepted-mutation data
+and `REVISION_CONFLICT` data never carry it, and the member adds no tool,
+argument, error code or GraphQL field.
+
+**Envelope and errors.** All five tools use the ordinary envelope:
+`meta.contract` `helianthus-ebus-mcp` 1.0, `meta.consistency` `LIVE` with no
+snapshot argument, `meta.data_timestamp` and `meta.data_hash` (SHA-256 of
+the serialized `data` alone). Success has `error: null`. A refusal sets MCP
+`isError` and the error object `code`, `message`, `retriable` and
+`source_layer` (`gateway`), keeping the lifecycle code and the refusal
+table's retryable column:
+
+| Code | Retriable | Data |
+|---|---|---|
+| `INVALID_ARGUMENT` | no | null |
+| `NOT_FOUND` | no | null |
+| `FAILED_PRECONDITION` | no | null |
+| `UNAVAILABLE` | yes | null |
+| `DEADLINE_EXCEEDED` | yes | null |
+| `REVISION_CONFLICT` | yes | the cached `{desired_state, desired_revision}` |
+| `TRANSITION_BUSY` | yes | null |
+| `RESOURCE_EXHAUSTED` | yes | null |
+| `COUNTER_EXHAUSTED` | no | null |
+| `INTERNAL` | no | null |
+
+Messages are fixed categorical texts per code and refusal row; refusal
+reasons and raw errors, which can name storage paths, never reach the wire.
+A service error outside the refusal table (an unresolved readback or a
+closed service), and a refusal code the table does not list, answers
+`INTERNAL`, not retriable, after the service's own readback; the caller reads
+the durable state through list or get before deciding again. `UNAVAILABLE` is
+reserved for the table's transient rows.
+
+**Boundaries.** There is no lifecycle principal, authority adapter or
+authorization check before 0.9, no separate listener or socket and no
+operator-boundary-only registration. The tools never route through
+`ebus.v1.rpc.invoke` and grant no native pairing or device-write authority;
+the eeBUS operator tools and every native-write safeguard are unchanged. The
+tools are classified `core_stable`, which implies no GraphQL face: no
+lifecycle GraphQL field, resolver, mutation or subscription exists, and the
+eBUS MCP/GraphQL status parity is unchanged. Every namespace stays pre-stable
+until 1.0.
+
+Executable evidence: `mcp/runtime_control_test.go` (schema and output
+goldens `mcp/testdata/runtime_control_tools.json` and
+`mcp/testdata/runtime_control_outputs.json`, strict decoding, deadlines,
+MCP-to-service equivalence for every refusal code) and the fake-endpoint
+`runGatewayLifecycle` integration through the production HTTP shell in
+`cmd/gateway/runtime_control_test.go`. These are offline software tests; they
+claim no transport execution on hardware, smoke result or qualification.
+
+### S3.7 to S3.9 service write-ahead recovery (implemented internal recorder)
+
+`internal/runtimecontrol` adds a `Recorder`, the service's D5 recovery adapter
+for registered, service-routed managed sources. Each `ManagedSource` names its
+driver, its source and its complete owned asset set; an asset belongs to one
+source. The recorder still imports only the standard library and
+`internal/drivermanager`. It reaches the publication hub through the
+`ManagedHub` and `Replay` seams (opaque bytes only) and a `RecoveryClock`
+(process samples, restart-comparable elapsed-time anchors). The bridge from the
+in-process hub to these seams exists only in the package tests; a later wiring
+ticket places it in the composition layer, as for the store bridge. Direct
+publishers that do not route every mutation through a `Writer` keep their
+memory-only boundary and get no durable-replay claim.
+
+**Two durable steps.** A `Writer` publication or control takes the
+service-side source gate, then every affected asset gate in bytewise order
+(the hub and the store manager hold no lock across any of it). Under those
+gates it assigns the source's next WAL sequence, one intent ordinal per asset
+and one monotonic point, and durably persists them with the exact staged
+envelope, the advanced per-asset clock high-water mark and its elapsed-time
+anchor. Only then does it call the hub. A control's per-asset attempt bytes
+exist only inside the hub call, so each asset's exact attempt is persisted
+from the hub's pre-submission callback, outside every hub lock, before that
+asset is submitted; a failed write refuses that asset's submission. After the
+hub returns, the gates are released and a second transaction persists each
+asset's accepted step (exact bytes, original point, opaque result with
+snapshot identity, canonical bytes, revision vector and cursor, incarnation
+and `HubSeq`) or its verbatim rejection identifier. Both steps rewrite the one
+D5 envelope; memory changes only after a write succeeds, so a failed intent
+consumes no counter, never reaches the hub and leaves no staging behind. A
+failed outcome write leaves the intent pending (`ErrOutcomeNotDurable`) until
+`Flush`, `Secure` or a restore resolves it. An uncertain hub completion blocks
+the source and its assets for the rest of the process.
+
+A control callback reserves its asset and byte charge before persistence.
+Confirmed pre-commit failures release only that reservation and charge.
+Ambiguous writes retain both for the rest of the control call, including after
+readback settlement, because their staging bytes may be durable. A failed
+callback does not authorize submission. Accepted control bytes must match the
+successfully staged bytes; a missing stage or mismatch blocks the source and
+assets as uncertain without persisting an outcome.
+
+**Clock.** Each new point is `max(H + d + (m - m0), last + 1)`, where `H` is
+the asset's durable high-water mark, `d` the verified elapsed time from its
+anchor to the process sample `m0` taken at restore, and `m` the current
+sample. Every reserved point, including pending and rejected attempts, is
+persisted with its intent; `H` is never lowered. Missing or unverifiable
+continuity, a backward clock or arithmetic overflow fails the asset closed.
+
+**Restore before admission.** `Start` calls `Restore` (or `RestoreEmpty`)
+before any executor call. The recorder validates ownership and ordering: a
+stream naming an unmanaged source or asset is refused as a whole, a WAL
+sequence gap (for example a removed intent) fails its source closed, and an
+ordinal gap or malformed asset record fails its asset closed. It replays the
+verified checkpoint on detached kernels, then walks the intents in stream
+order. That order respects both the per-source WAL order and the per-asset
+ordinal order, because every intent is persisted under its source gate and
+all its asset gates, so every lower pending entry is resolved before a
+dependent recorded outcome. A recorded accepted step is replayed at its
+original point and verified against its stored result; a recorded rejection
+is reinstated and never applied. A pending step compares the replayed cursor:
+a matching sequence and digest reads back, an unchanged cursor resubmits the
+exact stored bytes at their original point, and anything else, or an
+uncertain resubmission, fails the source closed. A control asset that was
+never durably staged was never submitted and consumes its ordinal without a
+result. The replay is then installed into the hub, which refuses any asset
+that already holds state or a source that was already admitted. Each
+installed asset is reprojected afresh; only an acknowledged reprojection
+reopens reads, so an asset behind a rejected or unattempted control stays
+closed. Failures are returned as `*RestoreError`, which withholds only the
+named drivers; healthy unrelated assets and sources are restored. Prior
+epochs, admissions and native-close claims stay historical: the new epoch's
+first batch retires the prior epoch, and an unfinished cleanup keeps its
+native-close obligation until the executor proves the close.
+
+**Verified compaction.** `Compact` (also run after a successful restore and
+when the entry count reaches the configured threshold, default 64) takes every
+source and asset gate and refuses while any intent lacks a durable or
+restore-resolved outcome, any outcome is queued, or any path is failed closed
+or blocked: that material stays reachable. It exports a hub checkpoint,
+restores it into a scratch hub and compares every managed asset's exact state
+(accepted log and results, snapshot identity, canonical bytes, revisions,
+`HubSeq`, control gate) with the live hub. Only a match replaces the stream in
+one atomic write that keeps every counter and clock mark; any refusal,
+mismatch or write failure leaves the previous stream byte-identical.
+
+**Budgets.** One operation stages at most 128 assets and 8 MiB; at most 128
+intents may lack a durable outcome; the encoded stream is bounded (default
+48 MiB of the 64 MiB namespace). Before an intent is accepted the recorder
+reserves room for its outcome (four times the staged size plus twice the
+largest recorded result per asset, plus 4 KiB per asset). A request that
+cannot fit is refused `RESOURCE_EXHAUSTED` before any counter, point or hub
+call is consumed; nothing reachable is evicted. The stream holds no receipt,
+idempotency key, principal or completed-operation record: entries leave it
+only at a verified restore point.
+
+**Ambiguous recorder writes.** A recorder write after which the store keeps
+admission closed (for example a rename that succeeded and a directory sync
+that failed) is handled exactly like a service-owned write. The recorder
+implements `ReadbackBinder`: `Start` binds the service's bounded readback
+resolver before restoration, and the ambiguous write arms it at once, with no
+further request. The first readback runs immediately, the bounded retries
+follow, and admission reopens only when the readback agrees with the staged
+or the committed envelope and directory durability is re-established;
+otherwise control stays failed closed. While the readback is pending, managed
+publications, controls and `Secure` are refused `UNAVAILABLE` (retryable),
+before any gate, hub call or store write; each refusal re-arms the resolver if
+it has ended. When a readback reopens admission, the service calls
+`ReadbackResolved` and the recorder settles the write against the committed
+envelope, without calling the hub and without rebuilding or replaying
+anything. If the staged bytes persisted, memory adopts them exactly; if they
+did not, the staged transaction is discarded. An intent whose hub call never
+ran (its caller was already refused) is withdrawn rather than adopted: memory
+keeps the previous stream, and the next transaction rewrites the envelope
+without it. A restart before that transaction resolves the intent like any
+pending intent, so the hub sees it at most once. A queued outcome is written
+again by the next `Flush` or `Secure`; reapplying an adopted outcome is
+byte-identical. A committed envelope that matches neither stream fails every
+managed path closed and refuses every later recorder write. No fsync runs
+under a hub or store-manager lock.
+
+**Isolation bound.** No durable write runs under a hub lock or the store
+manager's read path. While a managed source's durable write is stalled inside
+the store's file write, another family's `Admitted` and `ReadAdmitted` reads,
+its direct publications, a managed asset's `Inspect` and the committed
+control read each return within 100 ms.
+
+**Limits.** A transition cover that the hub installs inside a publication
+commit is not routed through a `Writer`; managed writers must not rely on
+generation transitions until a later slice records covers. The hub itself
+keeps every accepted batch in memory, so a checkpoint grows with history; the
+stream bound refuses new work rather than evicting it. Executable evidence
+is `internal/runtimecontrol/recovery_test.go` (S3.9 cases a to f, cursor
+rules, compaction, clock, capacity, isolation and ambiguous recorder writes)
+against the merged store and the in-process hub.
 
 At process start the HTTP/API/health shell becomes available before drivers are
 reconciled. The store loads every desired record independently. Corrupt or
@@ -554,6 +1210,109 @@ epoch, generation, sequence, batch ID, and digest. Crash recovery therefore
 cannot omit an accepted, possibly submitted, or cleanup-incomplete asset. The
 index is never rebuilt from a live provider, current discovery result, or
 compatibility alias.
+
+A6 recovery prerequisite (S3.8): the future control service owns write-ahead
+persistence outside every hub mutex. `internal/semhub` supplies only opt-in
+`Options.Recovery` hooks, `Tx.Export`, `ExportRecovery`, and `Restore`; these
+perform no filesystem, fsync, provider, or native I/O. `BeforeControl` receives
+an owned copy of the exact staged JSON batch, its sequence/digest, control key,
+and persisted monotonic point before submission, and can refuse submission.
+`Accepted` receives a separate owned copy of an accepted publication or control
+result after commit, including the exact canonical snapshot, snapshot ID,
+revision vector, cursor/digest, incarnation, and HubSeq. Publication intent can
+be exported after `Apply` and before `Commit`; that draft is never acceptance.
+Accepted delivery is at-least-once: the service deduplicates by asset,
+publication key (source, epoch, generation), sequence and digest. A replayed
+control acceptance retains its original incarnation, HubSeq and exact result;
+an exact replay of an accepted publication repeats its stored acceptance with
+the original HubSeq, so an interrupted delivery is repeated; a new event
+position does not identify a new accepted batch.
+An accepted callback cannot roll back a committed batch: if it is interrupted,
+the batch stays accepted, the call reports the interruption, and an exact
+publication replay or a `RetryControl` delivers the stored acceptance again with
+its original HubSeq. Callbacks run outside
+the hub, source and asset locks while the exact pending attempt remains reserved;
+they must not reenter a hub mutation. Storage failures and uncertain response windows remain
+the service's WAL obligations. A `BeforeControl` refusal is a terminal
+`Rejected` outcome with error ID `semhub.control_export_refused`; `RetryControl`
+does not retry that refusal. After repairing storage, the service must
+`AbandonControl` and issue a new fence or retirement request. The rejected
+attempt's exact bytes remain historical; the new operation builds its own
+attempt from the current snapshot. No refused attempt advances a cursor.
+
+`ExportRecovery` captures a coherent detached record of declaration identities,
+pack references, every accepted batch in per-asset commit order, its original
+monotonic point and exact result, the last control gate/attempts, epoch
+history, and each historically admitted source's identity regime (hub-native
+or its legacy family) with the driver that owns the source. A source whose
+every admission was withdrawn is listed as unfixed instead, so every source
+with epoch history carries exactly one of a regime or an unfixed marker.
+Copying coherent metadata uses the existing hub
+synchronization; serialization, buffer export, validators, and persistence run
+outside it.
+Rejected attempts remain control history and never enter the accepted replay
+log or advance a restored cursor. Enabled recovery retains the complete log;
+the service must bound admission and retain replay material until a verified
+restore point permits compaction. Default production hubs do not collect it.
+
+Restore requires the same declared asset/source/driver identity and compatible
+validators, empty asset kernels, and no prior admission of an affected source
+in the new incarnation, including withdrawn admissions. Every declared recovery
+asset must be present, including assets of sources omitted entirely from the
+checkpoint; missing coverage rejects the record and closes all empty declared
+assets. Checkpoint entries with undeclared asset IDs also reject the record and
+close all empty declared assets. Malformed epoch identities, zero generations, non-lifecycle
+event kinds, invalid or unordered asset IDs, missing or invalid source
+identity regimes (including a source with history that has neither a regime
+nor an unfixed marker), unfixed markers without history or with an admitted
+epoch that was never retired, and missing,
+unknown or conflicting source driver ownership reject the checkpoint before
+replay or epoch reservation. A control status that reports an attempt the
+accepted log already holds as pending, rejected or uncertain also rejects it.
+Restored cursor and history epoch IDs are reserved against admission and epoch
+transitions, even for assetless sources or with a different generation:
+restoration requires a new epoch, and the generation sequence restarts with
+that epoch (as in LIFE-06); generation current+1 applies to legacy successors
+on the retained kernel within one incarnation, and a hub-native successor
+starts at generation 1 (section 7, hub-native epoch succession). Successor admission must retain the
+restored identity regime; changing legacy family or switching between legacy
+and hub-native identity is refused. An unfixed source admits any regime, as
+after a withdrawn first admission. Restored sources stay claimed by their
+owning driver, including sources without assets; another driver's admission
+or declaration is a collision. A source restores once per incarnation: a
+second restore of the same source, or an admission that lands before the
+restored state is installed, refuses the checkpoint. `ExportRecovery` during a restore returns the zero record (version 0), which no
+restore accepts, so a partially installed hub never becomes a checkpoint.
+Restore and admission never
+interleave: from the coverage scan to the end of installation, declarations and
+admissions are refused with a restore-in-progress error and retried by the
+caller afterwards. Ownership, regimes and historical epochs are installed in
+one critical section, and an admission that commits afterwards rechecks the
+restored regime. A withdrawn epoch may be admitted again; the later admission
+is the current one. A regime requires an
+admission in the history or accepted publications, and an unfixed marker
+requires an admission in the history.
+It replays accepted publication and control batches on detached kernels using
+the persisted monotonic points, verifies every exact result, and reinstates retained
+history/tombstones and per-key cursors. A corrupt step or changed validator
+behavior installs no partial asset state and leaves that asset closed;
+independent valid assets may restore but remain closed too until each fresh
+family reprojection acknowledges its restored snapshot through `Resettle`.
+A missing callback cannot acknowledge restoration. The current prerequisite
+uses a synthetic reprojection gate for publication-only and empty entries:
+`Resettle` reports `Kind=generation_fenced` with a zero `ControlID` when no
+historical control exists. For a never-published entry that callback view has
+`Present=false` and an empty `SnapshotID`; it acknowledges rebuilding an empty
+cache. The callback preserves the absence reported by `Inspect`. These callback
+markers confer no control authority.
+Historical settlement grants no current read acknowledgement. Outstanding
+semantic gates remain closed; the future service must resolve their original WAL work before new admission.
+Prior admissions, activations, revocations, and retirements remain inert
+history and never create live handles, native-close proof, or a current epoch.
+No historical control operation is revived as a current-incarnation retry.
+The active epoch journal remains in memory and is not replayed by restoration.
+Full service loss/crash-at-acceptance integration (S3.9) remains subsequent
+work; this prerequisite does not implement the lifecycle service.
 
 For each recorded asset, the manager reads the exact immutable current
 `Snapshot`, verifies that its `SnapshotID` and semantic revision match the
@@ -1237,9 +1996,13 @@ current process epoch.
 The gateway manager may retain its bounded lifecycle construction retry policy.
 It does not retry a native operation or duplicate an adapter's reconnect loop.
 An adapter may report a retry classification and owner-authorized earliest time;
-the manager consumes it within one configured lifecycle budget. Modbus reconnect
-and request retry remain inside the current Modbus owner and its one total
-operation context.
+the manager consumes it within one configured lifecycle budget. A driver policy
+may add a persistent phase after that budget: while the driver is desired
+`RUNNING`, a retryable failure series then continues with capped exponential
+backoff instead of ending `FAILED`/`RETRY_EXHAUSTED`. Only `ebus.primary`
+enables it (described under the shell integration below); every other driver
+keeps the bounded budget. Modbus reconnect and request retry remain inside the
+current Modbus owner and its one total operation context.
 
 ## 7. Lifecycle ordering
 
@@ -1316,12 +2079,84 @@ admission both succeed. Static catalog entries may remain `candidate`,
    Timeout or unconfirmed close publishes `FAILED/CLOSE_UNCONFIRMED`, retains any
    semantic work, and quarantines the source epoch.
 6. A close-before-Prepare RESTART claims the completed cleanup reservation at its
-   persisted next cursor only after both obligations complete. It never allocates
+   persisted next cursor only after both obligations complete. Under the A2
+   lifecycle amendment the composed service instead retires the old epoch and
+   admits one new hub-native epoch through the succession seam below; the
+   same-epoch text of this item remains the rule only until that service lands. It never allocates
    another generation, reuses the retired generation, or accepts an old callback.
    The sole exception is a native replacement seam that itself proves
    non-overlap, fencing, drain, and ownership transfer; it still persists one
    exact withdrawal/reservation transition and satisfies the same semantic
    supersession and cursor rules.
+
+### Hub-native epoch succession
+
+`Hub.AdmitSuccessor(Succession{Previous, Operation})` is the publication-free
+hub seam for the A2 lifecycle amendment
+([docs-ebus runtime driver lifecycle, A2](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/architecture/runtime-driver-lifecycle.md)).
+`Previous` is a handle of the predecessor admission and `Operation` is the
+opaque correlation of the accepted lifecycle operation (an explicit RESTART or
+a START after a completed STOP). The operation needs no asset declaration and
+submits no SemReg batch; a lifecycle-only source with no assets succeeds the
+same way. The implemented rules are:
+
+1. Admission rules. The source must be hub-native: a legacy source, or a source
+   whose restored regime is legacy, is refused with `ErrAdmission` and keeps its
+   legacy successor path (`AdmitSource` with generation current+1, or
+   `BeginEpoch`). `Previous` must belong to this hub incarnation and name the
+   source's current admission identity and epoch; a handle of another
+   incarnation or of a withdrawn admission is refused with SemReg's
+   `StaleSourceEpoch`, and a handle of an already succeeded admission resolves
+   only under rule 4. The current epoch must be retired by
+   `RetireEpoch` (a fence alone is refused), and the latest control operation
+   of the source, including its reprojection, must be finished: an unfinished
+   operation returns `ControlPendingError`, a settling one `SettlePendingError`
+   after one reprojection pass, and an abandoned operation with an open asset
+   `ErrControlAbandoned`. Native close proof and the durable intent/outcome
+   protocol remain service obligations; the hub cannot observe them.
+2. Identity. The successor epoch derives from (hub incarnation, `SourceID`,
+   admission ordinal). The ordinal is per source and per incarnation, starts at
+   1 for the first succession and advances by exactly one per successful
+   succession; the source's first admission in an incarnation keeps its
+   existing (incarnation, `SourceID`) derivation. The successor starts at driver
+   generation 1, is not the first admission of the source, receives a new
+   admission identity, and every asset's cursor for the new key starts at
+   sequence 1. Old cursors, tombstones and retained history stay unchanged. A
+   derived epoch that repeats a current, retired or restored epoch is refused.
+3. One write-ahead operation. The retired predecessor (its epoch and last
+   generation, covering no asset because its asset retirements were journalled
+   by the retirement control) and the successor admission (epoch, generation 1)
+   are appended as one all-or-none journal operation. Both records carry the
+   ordinal in `EpochRecord.Ordinal`, which is zero on every other record. A
+   failed append exposes no handle, consumes no ordinal, records no claim and
+   emits no event. A successful succession emits one `epoch_admitted` event.
+4. One successor per predecessor. The successor is recorded against the
+   predecessor's admission identity together with `Operation`. A repeated or
+   concurrent claim with the same operation returns that same successor handle
+   (stale once the successor itself has moved on); a claim with another
+   operation is refused with `ErrAdmission`. No duplicate allocates another
+   ordinal, epoch or admission.
+5. Counter exhaustion. When the ordinal, the admission identity or the handle
+   counter cannot advance without wrapping, the succession fails with
+   `ErrAdmission` and `ErrCounterExhausted` and changes nothing.
+6. Afterwards. The predecessor handle and every older handle remain rejected
+   for publication, `Activate` and `AdmitSuccessor`. A manager retry inside the
+   successor epoch uses the existing `Fence`/`Activate` path and keeps the
+   epoch. `Withdraw` refuses a successor admission: the succession is
+   journalled, so a successor that fails to start is retired and succeeded
+   again under the next ordinal. `Withdraw` of a first admission and the legacy
+   `AdmitSource`, `BeginEpoch` and `Withdraw` paths are unchanged.
+7. Recovery. `ExportRecovery` carries both succession records with their
+   ordinal in the epoch history, and `Restore` reinstates them verbatim as
+   inert history; every named epoch stays reserved and the restored regime stays
+   hub-native. No restored succession, handle or ordinal is current: a
+   prior-incarnation handle cannot claim a successor, the new incarnation's
+   first admission derives its own epoch, and its ordinal starts again at 1 under
+   the new incarnation identity. `Restore` rejects ordinals on unrelated events,
+   malformed or nonadjacent retirement/admission pairs, and ordinals that do not
+   start at 1 and advance by one per source within each incarnation. Succession
+   pairs must retain a retired, previously admitted predecessor and the derived
+   successor identity at generation 1, with no assets on either paired record.
 
 For an ordinary promoted generation, the cleanup asset set is the bytewise union
 of every asset in its durable publication index and every pending/uncertain
@@ -1342,6 +2177,387 @@ unconfirmed close quarantines the driver for the source epoch. Before
 reservation at its unchanged cursor; an uncertain abort retains the claim and
 quarantine. After the durable `CONSUMED` transition, supersession always uses a
 new cleanup reservation and never releases the consumed generation for reuse.
+
+### S4 manager-to-hub bridge (implemented callable composition)
+
+This subsection records the implemented S4/A3/A4 bridge of the
+[docs-ebus runtime driver lifecycle](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/architecture/runtime-driver-lifecycle.md)
+for the lifecycle-only `ebus.primary` driver. The next subsection records
+how process startup installs it.
+
+DriverManager hooks (`internal/drivermanager`):
+
+1. `LifecycleHooks.HoldAdmission` runs after a provider generation was
+   constructed and before `RUNNING` publishes. Observed state stays
+   `STARTING` with no effective capability, so `Invoke` refuses the
+   generation. The hook runs with every manager lock released and may do hub
+   work. On a nil result the manager rechecks that its operation is still
+   current, runs the bounded pre-admission activation (the existing B503
+   observer activation) and publishes `RUNNING` with the effective
+   capabilities in one state transition. A superseded operation is retired as
+   a late admission. A hook error retires the never-published generation on
+   the independent late-retirement deadline. An unproven close quarantines
+   the driver (`FAILED/CLOSE_UNCONFIRMED`). A proven close fails the attempt
+   through the driver's ordinary classification, so any retry stays
+   manager-owned and constructs afresh. `AdmissionHold` names the native
+   generation, the manager operation, the previous admitted generation and
+   whether the attempt is a manager-owned retry or a replacement.
+2. `StopWithReport` performs the same transition as `Stop` and returns a
+   `CloseReport` with a `CloseClass`. `PROVEN` (nil) and
+   `PROVEN_AFTER_DRAIN_TIMEOUT` (drain expired, close confirmed) are close
+   proof, and so is `NOT_REQUIRED` (nothing was open). `UNCONFIRMED`
+   (quarantine) and `INTERNAL_ERROR` are not. Runtime quarantine dominates the
+   class even when `Stop` returned nil. The observed transition keeps its
+   characterized precedence, in which a nil result reads `STOPPED`; changing
+   that observed precedence is left to the owner of the drivermanager
+   characterization. A stopped driver with a construction still in flight
+   reports `INTERNAL_ERROR`, because a late admission may still follow.
+   `LifecycleHooks.Closed` receives the report of every explicit stop, every
+   superseded late admission and every failed hold after the manager locks
+   are released.
+3. `BindHooks` binds the hooks of one driver once. A lifecycle bridge can
+   therefore attach to a manager that was composed elsewhere. `Watch` returns
+   a snapshot and a channel that closes at the next observed transition.
+
+The `ebus.primary` bridge (`cmd/gateway`, `ebusControlRuntime`) implements the
+service's `LifecycleExecutor`:
+
+1. `Prepare` admits the configured source's inert first hub epoch at
+   generation 1 before any endpoint is constructed, including when desired
+   state is `STOPPED`. It declares no asset, so the epoch barrier is empty and
+   complete. The source identity and the native contract reference are
+   supplied by the caller and are required. No placeholder is installed and
+   no identity is derived from an endpoint.
+2. Correlation. Each service correlation becomes a full key: `DriverID`,
+   `SourceID`, source epoch, driver generation and the operation's lifecycle
+   sequence. The service correlation carries no `SourceID` yet, so the bridge
+   binds the one configured source. A different driver or source is refused.
+   The first START of the incarnation claims the inert epoch. A new epoch
+   after a fenced predecessor requires proven native close and the
+   predecessor's hub retirement, and then admits exactly one hub-native
+   successor through `AdmitSuccessor`. The successor carries an opaque
+   operation identity derived from the key, so repeated or concurrent calls
+   for one operation resolve to that one successor. A repeated `Start` of the
+   same key joins the start in flight or returns its recorded result. It
+   never calls DriverManager again, so no native budget is renewed. A late or
+   stale key (another epoch, generation or sequence) and a key whose STOP
+   arrived before it bound are refused before any hub or native work.
+3. Admission. The bridge calls `StartAsync` once per accepted operation and
+   reports success only when DriverManager published `RUNNING` for a native
+   generation that the hold mapped to this epoch. On the first admission of
+   an epoch, the hold checks that the claimed hub generation is live; a
+   mismatch fails closed (LIFE-10). On a manager-driven retry or failure
+   replacement, the hold keeps the epoch, fences the old driver generation
+   and activates the next one through `Fence` and `Activate`, outside manager
+   locks and with admission still held. The explicit
+   `{key, native generation}` mapping is recorded before admission. Driver
+   generation restarts at 1 in every epoch, while native generation is
+   process monotonic. Mappings are process-local and historical after process
+   loss. Executor errors are closed and non-retryable (`ReasonCode` only), so
+   the service never adds a second native retry loop. A failed start fences
+   the epoch and requests the manager-owned close on the bridge's independent
+   cleanup deadline before it returns, so nothing stays open.
+4. Stop. `Stop` fences the epoch at once, which immediately rejects late
+   construction, health and publication. It then runs two independent
+   obligations. The native one is one manager-owned `StopWithReport`, which
+   repeated calls join and which revokes leases, B503 issuance and proxy
+   readiness at the manager's existing withdrawal boundary. The semantic one
+   is hub `RetireEpoch` of the asset-free epoch, run once the withdrawal
+   fence is visible. Neither obligation waits for the other's success.
+   `NativeClosed` reports only a proven close class. `UNCONFIRMED`
+   quarantines the bridge and blocks every successor whatever the epoch.
+   `INTERNAL_ERROR` is retried by the next `Stop`. A retirement failure keeps
+   the epoch unretired, which blocks succession, and the next `Stop` or
+   succession retries it.
+5. Views and gates. `View`, `Admitted`, `PublicationHandle` and
+   `ReportFailure` read one manager snapshot, so admission and observed
+   `RUNNING` are visible together. Semantic capabilities are always empty.
+   Native capabilities are the manager's effective invocation gates, reported
+   only while the exact key is admitted. The lifecycle-only source publishes
+   nothing. The publication gate exists so that a stale key never obtains a
+   live handle. The hub seam has no declaration, transaction or withdrawal
+   method.
+
+LIFE applicability for this asset-free adapter: LIFE-01–LIFE-10 and the A2
+rows LIFE-05, LIFE-25, LIFE-26, LIFE-31 and LIFE-32 have named fake-endpoint
+tests. The bridge tests and the J10 service tests together cover LIFE-02.
+The rows that need semantic assets, staged activation batches, per-asset
+cursors or shared assets (LIFE-14–LIFE-24 and LIFE-27–LIFE-30, LIFE-22
+included) do not apply to an asset-free source. They stay with the first
+family migration that declares assets. Executor-originated observations
+reach the service through `Service.ObserveNative`, described with the shell
+integration below, so a manager-driven `BACKOFF`, retry or terminal `FAILED`
+after `RUNNING` is visible in the service view as well as the bridge view.
+
+### S4/S6/S7 shell integration (implemented production composition)
+
+This subsection records how `runGatewayLifecycle` installs the bridge, the
+desired-state service and the generation task runner. It implements the
+"Shell and preparation order", "STOP and generation task ownership", S6 and
+S7 sections of the docs-ebus runtime driver lifecycle for `ebus.primary`.
+
+Composition order (before any eBUS endpoint, before the HTTP shell):
+
+1. The configured source of `ebus.primary` is derived from its `DriverID`
+   and the configured owner identity, the persisted instance GUID, as a
+   hub-native source identifier. It never uses an endpoint, address,
+   connection handle or discovery result. The native contract reference
+   names the public eBUS transport module, its `transport.DriverRuntime`
+   contract and the exact module version linked into the binary. When the
+   build records no exact version (a workspace build reports a devel
+   version, or a Replace directive substitutes the module), the reference
+   names the module path with the `devel` marker, registration is admitted
+   and status presents the reference verbatim. A process without an instance
+   GUID has no source identity: `ebus.primary` is withheld and presented
+   `FAILED`, and no placeholder is installed.
+2. The bridge binds its DriverManager hooks to the existing manager before
+   anything can start it. Then the descriptor is validated, frozen and
+   registered in the shared production registry (southbound, lifecycle-only,
+   one source, no hooks), alongside the managed sidecar descriptors.
+   The accepted configured selection determines its enabled disposition.
+3. The configured drivers are registered in the durable store: the one-time
+   seed when no control state exists and an instance GUID is persisted, a
+   mark-only registration otherwise. A failed load disposition (corrupt,
+   unreadable, unsupported or locked control state, or a missing GUID for
+   the seed) writes nothing and presents `FAILED`. A disabled configured
+   disposition wins over durable desired state and never rewrites it.
+4. The service starts. Its recovery step first restores committed D5
+   material: through a managed recovery adapter when the composition has
+   one; with no managed owner, committed material fails the drivers it names
+   closed and stays committed unchanged. Only then is each driver that
+   restoration did not withhold prepared: for `ebus.primary`, the inert hub
+   admission with an empty, complete epoch barrier, also when desired state
+   is `STOPPED`. Then the reconcilers start. When durable intent is
+   `RUNNING`, startup waits, within a short bound, until the reconciler's
+   first native start reached DriverManager, never for `RUNNING`.
+
+The production composition has no managed semantic asset, so it uses the
+lifecycle-only recovery adapter. The bridge from the store to the service's
+`Store` seam lives in `cmd/gateway`, because `internal/runtimecontrol` may not
+import the store or the hub.
+
+Single startup owner. The historical unconditional DriverManager start and
+the one-shot wait for the first `RUNNING` generation are removed. Only the
+service's reconciliation, through the bridge, starts, stops or replaces the
+eBUS generation; DriverManager stays the only native retry owner. No
+composition failure is a process error: HTTP, health, MCP, GraphQL and status
+start when eBUS is stopped, starting, failing, withheld or failed to load.
+
+Executor. The service's executor for `ebus.primary` is the bridge plus the
+task runner:
+
+1. `Start` consults the runner first. While a predecessor generation's tasks
+   are `DRAINING` (fenced, not joined), one bounded join is attempted. A drain
+   that outlives it refuses the start with `DEPENDENCY_UNAVAILABLE`, so no
+   successor is started; the start can be requested again once the drain
+   joined.
+2. `Stop` fences the runner's generation before the bridge's own STOP fence,
+   outside every bridge and manager lock, so no effect of the stopped
+   generation lands after the bridge fences. The admitted mutation source is
+   withdrawn at the same point. The bridge then runs the two independent
+   obligations, and the tasks get one bounded drain. A generation that does
+   not join stays `DRAINING` with its pending names.
+3. Task synchronization runs after every start and stop and on every
+   DriverManager change, so a manager-driven same-epoch replacement, a loss
+   of admission or a late admission is reconciled without a lifecycle
+   decision. A generation that is not yet admitted is simply retried on the
+   next change.
+
+Generation tasks. A task set is owned by the full admitted generation key:
+`DriverID`, `SourceID`, epoch and driver generation must be set, plus the
+native-generation mapping. The lifecycle sequence may be 0: it names the
+untyped process-start attempt of durable desired `RUNNING`, which has no
+typed work slot, and the epoch plus the process-monotonic native generation
+keep the key unique. The post-start eBUS steps run as four ordered,
+start-critical tasks (source admission, semantic surface, startup scan,
+passive observe-first) once per admitted generation: current-session source validation and admission (default
+policy, configured source, passive advisory warmup, or static and override
+admission), the startup discovery scan, the M5 revalidation loop, background
+full scanning and the passive promotion loop. A later START from `STOPPED`
+and a manager-driven replacement rerun them. The task reuses the existing
+native selection, scan, revalidation, background scan and promotion
+functions. Every effect it installs, such as the admitted mutation source,
+goes through the generation scope, and the goroutines it starts are joined
+with the generation. Process-scoped consumers are created once, by the first
+admitted generation, and survive stopped periods: the semantic poller and
+its writers, the passive reconstructor and listener, the address-table
+inserter subscription and the promoter. Their I/O through the stable
+transport reports unavailability while no generation is admitted. A task
+failure is logged with its native generation and never starts, restarts or
+replaces a generation. A failed start-critical task (for example the passive
+reconstructor start, the passive shadow attach or the leaf-promotion capture
+runtime) keeps the shell and the native generation up, skips its dependent
+tasks and is presented on the adapter status as `degraded`; MCP names the
+task in the adapter status `condition`. Best-effort work (revalidation,
+background scanning, passive promotion) runs as joined helpers that log and
+continue. The startup discovery scan loop reports its completion through the
+scan signals, and the generation is not joined before that loop returned.
+
+Status (S6). Daemon status keeps describing the process. Adapter status
+follows current native admission from the cached DriverManager snapshot, with
+no endpoint I/O. While a generation is admitted (`RUNNING` or `DEGRADED`) the
+historical projection applies. While `STOPPED` or `DISABLED` the adapter
+reports `stopped`, and while starting, backing off, stopping or failed it
+reports `unavailable`; an admitted generation with a failed start-critical
+task reports `degraded`. The retained firmware version stays visible unchanged
+as identity evidence. MCP and GraphQL use the same projection. The admitted
+initiator address and proxy readiness keep deriving from live DriverManager
+admission (proxy `DISABLED`/`DEGRADED`/`READY`).
+
+Retained evidence (S7). Bus observability, identification evidence and the
+active/passive deduplicator stay process-scoped. STOP, START and RESTART
+neither move, clear nor reset them. Capture pauses while no generation is
+admitted, and existing records keep their identity, provenance and age.
+
+Process exit closes mutation admission first: the service accepts no further
+decision and its reconcilers stop without writing. Durable desired `RUNNING`
+or `STOPPED` and in-flight work stay exactly as committed, and no STOP
+operation is synthesized. The generation tasks are then fenced and joined
+(bounded) before the shell and the process consumers are torn down, and
+DriverManager shuts the native generation down through its existing owner.
+Cached list and get views stay readable until teardown.
+
+A manager-driven same-epoch replacement is admitted by the bridge's
+admission hold only after the predecessor generation's tasks joined: the
+hold withdraws them (fence, one bounded join) and refuses while they drain,
+as a retryable dependency failure that DriverManager retries within its own
+budget.
+
+Manager-owned recovery after `RUNNING`. When a generation reports its own
+loss (the adapter-direct mux delegates a terminal read error or the AM27
+blackhole, the proxy listener fails, or a consumer call finds the provider
+transport closed), DriverManager withdraws the generation and runs the
+`ebus.primary` retry policy. Five fast replacement attempts come first: the
+first after one second, each further delay doubled up to thirty seconds.
+While the driver is desired `RUNNING` the series then never ends by itself:
+the persistent phase restarts at one second and doubles up to five minutes.
+Every delay carries 20% jitter and is clamped to its phase's bounds, so a
+delay on the cap lies between four and five minutes. The proxy class reaches
+the same owner and follows the same policy. The AM27 threshold itself is
+unchanged.
+
+Only a retryable failure continues the series: a dial failure, a timeout, a
+closed or refused endpoint, a refused admission while the predecessor's
+tasks drain, and every answer of the peer. A failed INIT handshake (the
+adapter answers with features that do not confirm the requested ones, rejects
+INIT or drops the connection) and a malformed adapter payload are the peer's
+answer: a degraded or restarting adapter produces them, so they never prove a
+local configuration error. A failure that retrying cannot heal ends the
+series `FAILED` with its own reason, and these are limited to conditions that
+are provably local: a configuration that local validation rejected before any
+dial as `CONFIG_INVALID` (an endpoint that does not normalize, a missing
+network or address, a protocol the gateway cannot open over the configured
+network, an adapter-direct option that does not parse), a lifecycle identity
+mismatch (the hub source no longer carries the epoch and generation the
+bridge holds) as `INTERNAL_ERROR`, an unavailable or superseded runtime as
+`PROVIDER_UNAVAILABLE`, and an unconfirmed close as `CLOSE_UNCONFIRMED` with
+quarantine. The proxy class runs the same validation before its dial, so a
+failure after the dial is always the peer's. An explicit `STOP` ends the
+series with `STOPPED`. An operator `RESTART`, also one during a backoff wait,
+cancels the wait at once and opens a new epoch whose next failure series
+starts again with the full fast budget.
+`RETRY_EXHAUSTED` is not reached by `ebus.primary`.
+
+An injected transport is a one-shot resource: the factory cannot reconstruct
+it after consumption. If its INIT fails, the first attempt ends terminally
+with `PROVIDER_UNAVAILABLE`, preserving the INIT cause without scheduling a
+retry. This does not classify the peer's answer as invalid configuration.
+
+Opening START admitted into recovery. The opening START of an epoch (process
+start, `START` after `STOP`, `RESTART`) runs under the service's
+per-operation budget of thirty seconds, and that budget bounds only its first
+attempt. When the first attempt fails for a retryable reason (a dial failure,
+a timeout, a closed transport, a failed INIT handshake), DriverManager
+schedules the first retry of a persistent series, and the bridge admits the
+START into that recovery at the first manager snapshot that shows it:
+`BACKOFF` with `RETRY_SCHEDULED`, the schedule, a persistent series
+(`RetrySnapshot.Persistent`), desired `RUNNING`, and a manager revision after
+the bridge dispatched this epoch's start.
+`Start` then returns `runtimecontrol.RecoveringStart` with that `BACKOFF`.
+The service admits the epoch like a `RUNNING` one: the slot completes, the
+cleanup obligations pass to the admitted generation, so `STOP` and
+`RESTART` withdraw it, and a repeated `START` is a no-op. The service
+publishes the `BACKOFF` with its schedule instead of `RUNNING`. From then on
+the recovery is the one described above: the same policy and terminal set,
+the same forwarded transitions, the same view and the same log lines. The
+failed start is logged with its class, cause text and the schedule, and each
+retry is a recovery attempt whose first reason is the failed start's class.
+The first successful construction is admitted as the epoch's generation, and
+`RUNNING` reaches the service as a native observation. A terminal class
+still fails the START with its own reason, because DriverManager publishes
+`FAILED` for it and never schedules a retry. A first attempt that is still in
+flight when the budget ends fails the START as before. A `RecoveringStart`
+whose observation the service cannot admit is a failed start: its generation
+is withdrawn. Drivers with a bounded policy are unchanged: their retries
+stay within the opening START's budget.
+
+The gateway logs the loss with its closed trigger category and the schedule,
+every visible `BACKOFF` with the next attempt's number, due time (UTC), delay
+and phase, every replacement attempt with its number, phase and reason (the
+trigger, then the previous attempt's error class), every failed attempt with
+its closed error class and cause text, and the admitted recovered generation.
+A failed attempt whose connection reached the INIT handshake also carries the
+handshake outcome: `handshake=(init_attempts=N, features_seen=..., payload_class=...)`
+names the INIT attempts made inside the construction (the adapter-direct
+multiplexer retries INIT up to five times, the proxy class sends one), the
+features byte of every answer that did not confirm the requested features,
+and the payload class of every INIT attempt that failed (`invalid_payload`,
+`timeout`, `transport_closed`, `adapter_host_error`, `adapter_reset` or
+`failed`). The class of a rejected configuration is `config_rejected`, and
+it never carries a handshake. A failed start outside a recovery series is
+logged the same way. The cause text is the innermost cause of the failure
+(the socket call and its errno, a resolver's verdict, an i/o timeout or a
+protocol sentinel). The wrapping that names the dialed address is dropped,
+anything address-like that remains is redacted, and the text is bounded to
+one line, so no line names an endpoint.
+
+The gateway's manager watch forwards these manager-driven transitions to the
+service through `Service.ObserveNative`, once the epoch's opening START has
+succeeded or was admitted into recovery: `BACKOFF` with `RETRY_SCHEDULED`
+and its schedule (the ordinal of the next attempt within the failure series
+and its due time), a retry
+`STARTING`, the recovered `RUNNING` or `DEGRADED` generation, and the
+terminal `FAILED` of a failure that retrying cannot heal (or
+`CLOSE_UNCONFIRMED` with quarantine). The service's own reconciler applies
+such an observation only while the driver has no work slot, no held decision
+and no attempt in flight, and only for the source epoch and driver generation
+of the admitted generation. A stale or foreign observation is dropped.
+`STOPPING`, `STOPPED` and `DISABLED` are never accepted from an executor, and
+a schedule is accepted only with `BACKOFF`, with both of its fields set. An
+observation changes no desired state, slot, budget or cleanup obligation, so
+a `FAILED` generation is still withdrawn by a later `STOP` or `RESTART`. A
+quarantining observation blocks admission like a service-observed unconfirmed
+close. As a result `helianthus.runtime.list`, `helianthus.runtime.get` and
+the Portal driver readback leave `RUNNING` as soon as the transport is lost.
+They never show `RUNNING` over a closed transport. The service view's
+`DriverStatus` carries the schedule as `NextAttempt` and `NextAttemptUTC`
+while it shows that `BACKOFF`, together with the failure that scheduled the
+retry (`LastFailureClass` and `LastFailureCause`), and zero values in every
+other state; service events stay categorical and do not carry them. The
+failure comes from DriverManager: its classifier attaches a `FailureDetail`
+(a closed class and a cause text) to the failure of a start or replacement
+attempt, and the loss reporter attaches the closed trigger of a lost
+connection. The manager stores it in `RetrySnapshot.LastFailure` with the
+schedule and never interprets it, so it takes no part in any retry decision.
+The class maps from the error categories of the recovery log: a failed dial
+(`dial_refused`, `dial_unreachable`, `dial_failed`) is `DIAL_FAILED`; a dial or
+INIT timeout (`dial_timeout`, `handshake_timeout`) or an exceeded deadline is
+`TIMEOUT`; a closed transport (`transport_closed`), an adapter that reset the
+connection and a lost adapter connection or transport are `TRANSPORT_CLOSED`;
+every other category, and a lost proxy listener or provider, is `OTHER`. The
+cause text is the log's redacted innermost cause, or `connection lost (trigger)`
+with the closed trigger for a lost connection, and the service reduces it again
+before it enters the view:
+printable ASCII on one line, every address shape of the public contract
+(IP and hardware address groups, `host:port`, URL schemes, paths, `user@host`,
+dotted host names and the host label after `dial`, `lookup`, `resolve` or
+`connect to`) replaced, at most 160 characters. The `helianthus.runtime.*`
+MCP projection renders the `recovery` member from this view only (see "Data."
+above), and so does the Portal driver row. An operator
+`helianthus.runtime.restart` starts a new epoch.
+
+Limits of this composition: the service correlation carries no `SourceID`
+and the driver-to-native generation mapping stays process-local.
 
 ## 8. Upward flow
 
@@ -1813,37 +3029,37 @@ outside this composition.
 Exact public source anchors for these statements:
 
 - eBUS manager configuration and declared capabilities:
-  [`cmd/gateway/ebus_driver_runtime.go#L18-L94`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/e31106c9c726fbb8df7546901763e19b93659e72/cmd/gateway/ebus_driver_runtime.go#L18-L94)
+  [`cmd/gateway/ebus_driver_runtime.go#L18-L94`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/ebus_driver_runtime.go#L18-L94)
 - eBUS source/write admission and lifecycle callbacks:
-  [`cmd/gateway/ebus_driver_runtime.go#L241-L282`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/e31106c9c726fbb8df7546901763e19b93659e72/cmd/gateway/ebus_driver_runtime.go#L241-L282) and
-  [`#L345-L573`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/e31106c9c726fbb8df7546901763e19b93659e72/cmd/gateway/ebus_driver_runtime.go#L345-L573)
+  [`cmd/gateway/ebus_driver_runtime.go#L241-L282`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/ebus_driver_runtime.go#L241-L282) and
+  [`#L345-L573`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/ebus_driver_runtime.go#L345-L573)
 - eBUS public tool inventory, invoke guard, and B503 read-only surface:
-  [`mcp/server_tools.go#L1-L369`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/e31106c9c726fbb8df7546901763e19b93659e72/mcp/server_tools.go#L1-L369),
-  [`mcp/server.go#L1932-L1989`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/e31106c9c726fbb8df7546901763e19b93659e72/mcp/server.go#L1932-L1989), and
-  [`mcp/vaillant_b503.go#L46-L152`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/e31106c9c726fbb8df7546901763e19b93659e72/mcp/vaillant_b503.go#L46-L152)
+  [`mcp/server_tools.go#L1-L369`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/mcp/server_tools.go#L1-L369),
+  [`mcp/server.go#L1932-L1989`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/mcp/server.go#L1932-L1989), and
+  [`mcp/vaillant_b503.go#L46-L152`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/mcp/vaillant_b503.go#L46-L152)
 - current manager lifecycle, late admission retirement, generation callback
   fencing, and admission:
-  [`internal/drivermanager/manager.go#L93-L189`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/e31106c9c726fbb8df7546901763e19b93659e72/internal/drivermanager/manager.go#L93-L189),
-  [`#L325-L658`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/e31106c9c726fbb8df7546901763e19b93659e72/internal/drivermanager/manager.go#L325-L658), and
-  [`#L764-L845`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/e31106c9c726fbb8df7546901763e19b93659e72/internal/drivermanager/manager.go#L764-L845)
+  [`internal/drivermanager/manager.go#L93-L189`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/internal/drivermanager/manager.go#L93-L189),
+  [`#L325-L658`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/internal/drivermanager/manager.go#L325-L658), and
+  [`#L764-L845`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/internal/drivermanager/manager.go#L764-L845)
 - eeBUS slot replacement/retirement and provider adapter:
-  [`cmd/gateway/eebus_runtime_adapter.go#L26-L156`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/e31106c9c726fbb8df7546901763e19b93659e72/cmd/gateway/eebus_runtime_adapter.go#L26-L156)
+  [`cmd/gateway/eebus_runtime_adapter.go#L26-L156`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/eebus_runtime_adapter.go#L26-L156)
 - eeBUS public read inventory and owner-only raw command inventory:
-  [`mcp/eebus_v1.go#L19-L108`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/e31106c9c726fbb8df7546901763e19b93659e72/mcp/eebus_v1.go#L19-L108) and
-  [`mcp/eebus_v1_commands.go#L18-L69`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/e31106c9c726fbb8df7546901763e19b93659e72/mcp/eebus_v1_commands.go#L18-L69)
+  [`mcp/eebus_v1.go#L19-L108`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/mcp/eebus_v1.go#L19-L108) and
+  [`mcp/eebus_v1_commands.go#L18-L69`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/mcp/eebus_v1_commands.go#L18-L69)
 - eeBUS native authorization and optional mutation runtime:
-  [`internal/eebuscommand/router.go#L50-L127`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/e31106c9c726fbb8df7546901763e19b93659e72/internal/eebuscommand/router.go#L50-L127)
+  [`internal/eebuscommand/router.go#L50-L127`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/internal/eebuscommand/router.go#L50-L127)
   and the closed mutation-lab profile loader
-  [`cmd/gateway/eebus_mutation_lab_profile.go#L12-L84`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/e31106c9c726fbb8df7546901763e19b93659e72/cmd/gateway/eebus_mutation_lab_profile.go#L12-L84)
+  [`cmd/gateway/eebus_mutation_lab_profile.go#L12-L84`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/eebus_mutation_lab_profile.go#L12-L84)
 - Modbus public tool/provider surface and composition:
-  [`mcp/modbus_v1.go#L15-L152`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/e31106c9c726fbb8df7546901763e19b93659e72/mcp/modbus_v1.go#L15-L152),
-  [`cmd/gateway/modbus_mcp_provider.go#L32-L159`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/e31106c9c726fbb8df7546901763e19b93659e72/cmd/gateway/modbus_mcp_provider.go#L32-L159), and
-  [`cmd/gateway/gateway_http_server.go#L68-L85`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/e31106c9c726fbb8df7546901763e19b93659e72/cmd/gateway/gateway_http_server.go#L68-L85)
+  [`mcp/modbus_v1.go#L15-L152`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/mcp/modbus_v1.go#L15-L152),
+  [`cmd/gateway/modbus_mcp_provider.go#L32-L159`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/modbus_mcp_provider.go#L32-L159), and
+  [`cmd/gateway/gateway_http_server.go#L68-L85`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/gateway_http_server.go#L68-L85)
 - Modbus adapter ownership and reconnect boundary:
-  [`internal/modbusadapter/adapter.go#L19-L75`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/e31106c9c726fbb8df7546901763e19b93659e72/internal/modbusadapter/adapter.go#L19-L75) and
-  [`#L257-L299`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/e31106c9c726fbb8df7546901763e19b93659e72/internal/modbusadapter/adapter.go#L257-L299)
+  [`internal/modbusadapter/adapter.go#L19-L75`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/internal/modbusadapter/adapter.go#L19-L75) and
+  [`#L257-L299`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/internal/modbusadapter/adapter.go#L257-L299)
 - independent driver startup and process availability behavior:
-  [`cmd/gateway/gateway_run_lifecycle.go#L43-L140`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/e31106c9c726fbb8df7546901763e19b93659e72/cmd/gateway/gateway_run_lifecycle.go#L43-L140)
+  [`cmd/gateway/gateway_run_lifecycle.go#L43-L140`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/gateway_run_lifecycle.go#L43-L140)
 
 ## 12. SemReg cutover and retained native evidence
 
@@ -1883,21 +3099,76 @@ protocol ownership; they are not compatibility semantic APIs.
 ## 13. Acceptance scenarios for implementation
 
 Each scenario becomes an executable fixture or integration test in its later
-owning issue. The expected result is normative.
+owning issue. The expected result is normative. CTL-01 to CTL-11 below are the
+D3 concurrency and readback rows of the docs-ebus runtime driver lifecycle page.
+They replace the former idempotency-key, authority and receipt rows; no test
+of those rows applies any more. CTL-12 to CTL-19 remain on the lifecycle page.
+The service tests prove the rows against the durable store; the ordinary MCP
+adapter (section 5, S2/D4) is proven equivalent to the service for every
+refusal code and for the no-op, conflict and lost-RESTART rows, without
+adding any receipt, key or authority row.
+
+### G5 current acceptance ledger
+
+The normative row definitions remain in this section and the merged
+[docs-ebus lifecycle page](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/architecture/runtime-driver-lifecycle.md)
+(S0/A1, S1/D3, S2/D4, S3/D2/D3, S4/A3/A4, S5, S6, S7 and amended CTL vectors).
+**Delivered** means the bounded implementation and named test source exist;
+**partial** identifies a delivered subset with remaining obligations;
+**unverified** means acceptance has not been established here; **remaining**
+names deferred work. Every row's execution, committed-change review and full
+CI are unverified by this documentation reconciliation. No physical result
+is inferred. Proven/Hypothesis/Unknown evidence grades remain separate from
+qualification, freshness and physical acceptance.
+
+| Slice / vectors | Delivered source and existing test evidence (inspection only) | Partial / remaining acceptance |
+|---|---|---|
+| S0; CTL-01/02 registration | [internal/runtimecontrol/registry.go](../../internal/runtimecontrol/registry.go), `provider.go`; `registry_test.go` covers validation before effects, detached frozen descriptors, ordering, distinct identity types and unrelated fixture families | Delivered internal seam and production registration through [cmd/gateway/managed_sidecar_composition.go](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/managed_sidecar_composition.go): `ebus.primary`, eeBUS, Growatt and configured Modbus TCP descriptors, including disabled entries. The universal public provider SPI remains undelivered; registration alone does not establish acceptance of every contributed hook. |
+| S1; CTL-03–11 | [internal/runtimecontrol/service.go](../../internal/runtimecontrol/service.go), `reconcile.go`, `service_test.go`; P10 in `decision_edges_test.go` covers failed-commit hold balancing, adopted publication ownership, resolver acceptance order and recovered cleanup correlation | Delivered desired-state control under final D3. Source/native-generation propagation and owner acceptance of the complete concurrency matrix remain; no receipt/key/authority acceptance rows apply. |
+| S2; CTL-01–19 adapter obligations | [mcp/runtime_control.go](../../mcp/runtime_control.go), `runtime_control_test.go`, `runtime_control_characterization_test.go` delegate the ordinary five tools to the service, with closed decoding and deterministic envelopes | Delivered ordinary MCP adapter over the shared production registry, including managed sidecars; complete current-source CTL matrix acceptance remains unverified. No experimental namespace or lifecycle GraphQL graduation is claimed. |
+| S3; CTL-12–19 | [internal/runtimestate/runtime_control.go](../../internal/runtimestate/runtime_control.go), `runtime_control_test.go` cover reset fencing, issued-revision mark, serialization/readback, bootstrap and disabled state. P09 tests cover requested-kind allocation, monotonic work progression, valid correlation progression and preservation of the reserved slot | Delivered durable storage safeguards; clearing the final slot still relies on the service to settle terminal obligations. Full production recovery acceptance remains unverified. |
+| S3.7–S3.9; LIFE-06/19/21/23/24/26–30 recovery aspects | [internal/runtimecontrol/recovery.go](../../internal/runtimecontrol/recovery.go), `recovery_test.go`; P11 in `recovery_restore_edges_test.go` covers retained-intent clock highs, scoped install refusal, reprojection failure and empty restore without replay. P06 in [internal/semhub/restore.go](../../internal/semhub/restore.go), `restore_test.go` validates fence/control coverage, exact prior admission, declaration/published ownership, succession ordinals and historical control re-export | Delivered synthetic recorder/checkpoint safeguards. Reprojection failure keeps reads closed without inventing a driver restore failure. Direct publishers are not migrated; shared-asset and full production D5 restoration remain partial/unverified. |
+| S4; LIFE-01–10/25/26/31/32 asset-free subset | [cmd/gateway/ebus_control_runtime.go](../../cmd/gateway/ebus_control_runtime.go), `ebus_control_runtime_test.go`, with service tests for failure isolation, implement admission, classified close, independent obligations and successor reservation for the lifecycle-only source | Delivered bounded bridge, not semantic-asset activation or family qualification. Durable source/native mapping and production residual acceptance remain. |
+| S5 | Registry hook refusals in [internal/runtimecontrol/registry_test.go](../../internal/runtimecontrol/registry_test.go); [cmd/gateway/managed_sidecar_composition_test.go](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/managed_sidecar_composition_test.go) covers shared registry/service/MCP listing, disabled and desired-stopped selection, sidecar STOP/RESTART, failure isolation, replacement drain and no duplicate eager starts | Managed sidecar composition is delivered. Complete S5/DM-HOOKS acceptance for each registered family remains to be established; typed registration and these bounded fixtures do not establish universal lifecycle coverage. |
+| S6; LIFE-02 and status parity | [cmd/gateway/gateway_run_setup.go](../../cmd/gateway/gateway_run_setup.go), `runtime_control_test.go`, `runtime_control_characterization_test.go`; [mcp/runtime_control_characterization_test.go](../../mcp/runtime_control_characterization_test.go) covers shell/status and payload behavior | Delivered shell integration and cached status surfaces. Full current-source parity/CI and production failure acceptance remain unverified; retained identity cannot grant admission. |
+| S7; task drain and retained evidence | [cmd/gateway/ebus_generation_tasks.go](../../cmd/gateway/ebus_generation_tasks.go), `ebus_generation_tasks_test.go`; P13 tracks active invocations after their parent task returns, reports pending names and requires fencing, the exclusive gate and zero active work before join. MCP characterization covers retained evidence across STOP | Delivered pending-work/join semantics; process-scoped evidence keeps identity, provenance, age and partial last-known-good fields. Store/observer relocation remains #1021/DM-RAW; no #1020 or native wire acceptance closure. |
+| P14 observation seam; LIFE-08/09 | [internal/runtimecontrol/native.go](../../internal/runtimecontrol/native.go), `service.go`, `executor_observations_test.go` reject superseded epoch/generation publication and signal a resynchronization gap for superseded deferred events | Partial: `reconcile.go`'s `corr` omits `SourceID`; these guards do not prove full source identity or durable native-generation mapping. Those mappings remain undelivered. |
+| LIFE-11–13 | `internal/semhub` generation fencing and retained history, with checkpoint tests in `restore_test.go` | Hub/kernel evidence is distinct from end-to-end production acceptance; current complete vector execution remains unverified here. |
+| LIFE-14–24/27–30 semantic-asset paths, including LIFE-22 | Synthetic hub/recorder tests cover parts of staging, replay, ordering and cleanup; the lifecycle-only eBUS source has no assets to exercise them | Partial, not satisfied by an empty barrier. Registered managed families must still establish applicable staged-asset, per-asset cursor, shared-asset isolation and production restoration acceptance. |
+
+Production startup calls `prepareManagedSidecars` in
+[cmd/gateway/gateway_run_lifecycle.go](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/gateway_run_lifecycle.go)
+before composing the desired-state service and its five ordinary MCP tools.
+Acceptance must therefore include the registered managed families, including
+disabled descriptors: deterministic list/get, configured eligibility, durable
+desired state and recovery, STOP/RESTART and drain, failure isolation, and each
+family's applicable publication/restore and contributed-hook obligations.
+The asset-free eBUS bridge evidence above cannot discharge those obligations.
+
+The open acceptance ledger retains
+[#1263](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1263)
+and [#1296](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1296),
+source/native-generation propagation, the owner-reviewed final matrix and
+production residuals. Their closure is not established by this mirror.
+Full independent committed-change review, full repository CI and applicable
+transport/passive acceptance remain unverified. This ledger changes no native
+protocol meaning, decoder, admission rule, retained evidence or qualification.
+
+### Normative scenario definitions
 
 | ID | Scenario | Expected result |
 |---|---|---|
-| CTL-01 | List with drivers in arbitrary registration order | Bytewise `DriverID` order and one catalog revision |
-| CTL-02 | Get an unknown driver | `NOT_FOUND`; no factory call or state mutation |
-| CTL-03 | Start with stale expected revision | `REVISION_CONFLICT` plus current view; no persistent/native change |
-| CTL-04 | Replay identical start key and request after process restart | Original receipt; no revision bump or second native start |
-| CTL-05 | Reuse an idempotency key with another request hash | `IDEMPOTENCY_CONFLICT`; no state change |
-| CTL-06 | Start an already desired-running driver | `NO_OP`; no backoff reset, replacement, or revision bump |
-| CTL-07 | Restart a desired-stopped driver | `FAILED_PRECONDITION`; no state change |
-| CTL-08 | Accepted start, restart, and stop calls queue before the reconciler consumes its wake | Three typed records retain exact kinds and consecutive per-driver sequences; reconciliation executes them in order without coalescing |
-| CTL-09 | Process exits after a restart record becomes `ACTIVE` but before terminal completion | The new source epoch requeues that exact nonterminal restart in order and starts one new generation; final `RUNNING` desired state does not erase it |
-| CTL-10 | Idempotent replay of an accepted queued operation | Original receipt returns with the same non-nil operation sequence; no duplicate journal record, revision bump, or native action |
-| CTL-11 | Lifecycle request resolves as `NO_OP` | Receipt has empty operation ID and nil sequence; replay preserves both and allocates no journal record |
+| CTL-01 | List and get with drivers in arbitrary registration order, while decisions and observed transitions race | Bytewise `DriverID` order; every entry carries the view's one catalog revision; a revision never shows two contents and never goes backwards for a reader |
+| CTL-02 | Get or decide an unknown or noncanonical driver | `NOT_FOUND`; no executor call, store write or view change |
+| CTL-03 | Changing or same-desired request with a stale expected revision | `REVISION_CONFLICT` with the current desired view; no durable, view, event or native change |
+| CTL-04 | Accepted START response is lost; read back and restart the process | Durable desired state and revision are read back; a same-desired START is a no-op with no key or receipt lookup; a changing START persists typed START in the current slot and recovery resumes it |
+| CTL-05 | Request with any member besides `DriverID` and `ExpectedRevision`, a duplicate member, trailing JSON or a malformed revision | `INVALID_ARGUMENT` at row 1 before any store access |
+| CTL-06 | START while desired `RUNNING` in `BACKOFF` or `FAILED` (including quarantined), STOP while desired `STOPPED` with an unconfirmed close | No-op returning desired state and revision only; retry budget, quarantine, observations, both revisions and the mark unchanged |
+| CTL-07 | RESTART in desired `STOPPED`; repeated RESTARTs in `RUNNING`; RESTART, STOP and START during `STOPPING` | `FAILED_PRECONDITION` for RESTART in `STOPPED` (also during `STOPPING`); each accepted RESTART takes a new revision and runs one stop-then-start under a new epoch; STOP during `STOPPING` is a no-op; START takes the reserved slot and a further changing request is `TRANSITION_BUSY` |
+| CTL-08 | STOP or RESTART during `STARTING` and `BACKOFF`, with a typed START and with an untyped process-start attempt | Takes the reserved slot (the untyped case synthesizes `CANCEL_ATTEMPT` as the current slot with the attempt's correlation and obligations); the old attempt is fenced, its cleanup runs with its own correlation and a late result is never published; a further changing request is `TRANSITION_BUSY`; no accepted RESTART disappears |
+| CTL-09 | Process memory is lost while an accepted RESTART is `ACTIVE` | D5 is restored first; the new incarnation settles the historical correlation and performs the retained replacement under a new epoch before dropping the slot |
+| CTL-10 | Lost RESTART response | Resolved by readback; the old-revision retry conflicts and a fresh-revision retry after settlement executes another restart |
+| CTL-11 | Concurrent same-desired requests, also while slots are occupied, and concurrent changing requests with one expected revision | Same-desired requests are no-ops with no durable record, wake, event or counter; of the changing requests exactly one is accepted and the others conflict |
 | LIFE-01 | Prepare returns behind a closed gate, then activation succeeds with a matching proof | Only the post-proof manager transition installs the generation and exposes admission, `RUNNING`, and qualified capabilities together |
 | LIFE-02 | One driver startup fails | That driver becomes `BACKOFF`/`FAILED`; API/health and unrelated drivers remain available |
 | LIFE-03 | Ordinary Stop completes its semantic withdrawal and proves native close | One durable two-obligation record fences callbacks, retires generation-owned semantic paths through the cleanup reservation, records close proof, leaves that successor inert/available, then publishes `STOPPED` |

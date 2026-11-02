@@ -36,15 +36,27 @@ type SunSpecPollIdentity struct {
 	DeadlineIdentity uint64
 }
 
+// SunSpecFlavorEvaluation is one registry flavor decision: the flavor ID and
+// why that flavor matched or was rejected. It carries no device evidence.
+type SunSpecFlavorEvaluation struct {
+	FlavorID string
+	Reason   modbusreg.SunSpecFroniusFlavorReason
+}
+
 type SunSpecQualificationResult struct {
 	Outcome          SunSpecQualificationOutcome
 	CapabilityID     string
 	CapabilityReason modbusreg.SunSpecCapabilityReason
 	FlavorID         string
 	FlavorReason     modbusreg.SunSpecFroniusFlavorReason
-	ObservationCount int
-	SampleID         string
-	Chain            modbusreg.SunSpecChainSnapshot
+	// FlavorEvaluations lists every registry flavor decision in registry order
+	// once the capability is admitted, so a refusal stays diagnosable when the
+	// flavors reject for different reasons. FlavorReason stays the single
+	// reason shared by all of them, or empty when they differ.
+	FlavorEvaluations []SunSpecFlavorEvaluation
+	ObservationCount  int
+	SampleID          string
+	Chain             modbusreg.SunSpecChainSnapshot
 }
 
 // SunSpecProducer owns bounded acquisition and delegates all model, capability,
@@ -219,6 +231,7 @@ func (producer *SunSpecProducer) classify(identity SunSpecPollIdentity, snapshot
 	}
 
 	selection := producer.registry.SelectFroniusObservedFlavor(snapshot)
+	result.FlavorEvaluations = sunSpecFlavorEvaluations(selection.Evaluations())
 	if selection.Matched() {
 		flavor, ok := selection.Decision()
 		if !ok || selection.Reason() != modbusreg.SunSpecFroniusFlavorSelectionReasonMatched ||
@@ -257,6 +270,17 @@ func (producer *SunSpecProducer) classify(identity SunSpecPollIdentity, snapshot
 		result.Outcome = SunSpecQualificationStop
 	}
 	return result
+}
+
+func sunSpecFlavorEvaluations(evaluations []modbusreg.SunSpecFroniusFlavorDecision) []SunSpecFlavorEvaluation {
+	if len(evaluations) == 0 {
+		return nil
+	}
+	out := make([]SunSpecFlavorEvaluation, len(evaluations))
+	for index, evaluation := range evaluations {
+		out[index] = SunSpecFlavorEvaluation{FlavorID: evaluation.FlavorID(), Reason: evaluation.Reason()}
+	}
+	return out
 }
 
 func commonRejectedFroniusFlavorReason(evaluations []modbusreg.SunSpecFroniusFlavorDecision) modbusreg.SunSpecFroniusFlavorReason {

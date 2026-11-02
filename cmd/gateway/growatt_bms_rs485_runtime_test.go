@@ -39,6 +39,28 @@ type growattEndpointFake struct {
 	readStarted    chan struct{}
 	readDeadline   chan time.Time
 	releaseRead    chan struct{}
+	// clock, when set, stamps every response from one receipt clock shared by
+	// all endpoints of a test, as successive real endpoints share the process
+	// wall and monotonic clocks. Without it each endpoint restarts at the same
+	// per-endpoint instants, which keeps single-endpoint goldens fixed but
+	// makes a successor generation's evidence repeat its predecessor's.
+	clock *growattReceiptClock
+}
+
+// growattReceiptClock is the shared native receipt clock of growattEndpointFake.
+// Every reading advances both coordinates, so no two responses of any endpoint
+// sharing it carry the same receipt instant.
+type growattReceiptClock struct {
+	mu   sync.Mutex
+	tick int64
+}
+
+func (clock *growattReceiptClock) next() (time.Time, time.Duration) {
+	clock.mu.Lock()
+	defer clock.mu.Unlock()
+	clock.tick++
+	elapsed := time.Duration(clock.tick) * time.Millisecond
+	return time.Unix(1_800_000_000, 0).Add(elapsed).UTC(), elapsed
 }
 
 func TestPortalRawModbusUsesOnlyTCPAvailableComposition(t *testing.T) {
@@ -142,12 +164,16 @@ func (fake *growattEndpointFake) Read(ctx context.Context, unit byte, request mo
 		response.Provenance.Offset++
 	}
 	words := append([]uint16(nil), fake.words[request.Offset()]...)
+	receiptWall, receivedAt := time.Unix(1_800_000_000, int64(index)).UTC(), time.Duration(index+1)*time.Millisecond
+	if fake.clock != nil {
+		receiptWall, receivedAt = fake.clock.next()
+	}
 	return response, modbus.RTUReadEvidence{
 		Generation: fake.generation, RequestID: uint64(index + 1), UnitID: unit, Function: request.Function(),
 		Offset: request.Offset(), Quantity: request.Quantity(), RequestADU: []byte{byte(unit), byte(request.Function()), byte(request.Offset() >> 8), byte(request.Offset())},
 		ResponseADU: []byte{byte(unit), byte(request.Function()), byte(len(words) * 2)}, Words: words,
-		Current: true, IntegrityValid: true, TerminalOutcome: "success", ReceiptWall: time.Unix(1_800_000_000, int64(index)).UTC(),
-		ReceivedAt: time.Duration(index+1) * time.Millisecond, ClockEpoch: growattBMSRS485ClockEpoch,
+		Current: true, IntegrityValid: true, TerminalOutcome: "success", ReceiptWall: receiptWall,
+		ReceivedAt: receivedAt, ClockEpoch: growattBMSRS485ClockEpoch,
 	}, nil
 }
 

@@ -10,7 +10,8 @@ import (
 	graphqlgo "github.com/graphql-go/graphql"
 )
 
-const querySchemaShapeSHA256 = "e7c5796506872d185c3031ab168c3e719a025404d07085a9d30907b7b3be9ab2"
+// Computed by querySchemaShapeDigest after the additive M09 schema update.
+var querySchemaShapeSHA256 = fmt.Sprintf("%x", [sha256.Size]byte{82, 196, 7, 217, 37, 105, 36, 110, 129, 55, 67, 80, 112, 243, 117, 36, 165, 53, 177, 67, 196, 68, 89, 219, 175, 231, 184, 22, 118, 116, 20, 110})
 
 func TestQuerySchemaKeepsIntrospectionShape(t *testing.T) {
 	t.Parallel()
@@ -45,7 +46,7 @@ func TestQuerySchemaKeepsExactRootFieldSet(t *testing.T) {
 		"circuits", "cylinders", "daemonStatus", "daemon_status", "device", "devices", "dhw",
 		"energyTotals", "energy_totals", "fm5Interpretation", "fm5SemanticMode", "fm5_semantic_mode",
 		"gatewayIdentity", "gateway_identity", "methods", "planes", "radioDevices", "radio_devices",
-		"schedules", "solar", "system", "vaillantCapabilities", "vaillantErrorHistory", "vaillantErrors", "vaillantErrorsHistory",
+		"schedules", "semanticSnapshot", "solar", "system", "vaillantCapabilities", "vaillantErrorHistory", "vaillantErrors", "vaillantErrorsHistory",
 		"vaillantLiveMonitor", "vaillantLiveMonitorSession", "vaillantServiceCurrent", "vaillantServiceHistory", "vaillant_regulator_capability", "watchSummary", "zones",
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {

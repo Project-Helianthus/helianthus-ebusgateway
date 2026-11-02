@@ -4,8 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -41,6 +44,8 @@ func TestSchemaCorpusMatchesFeedWireValues(t *testing.T) {
 		"intent":      intent,
 		"execution":   execution,
 		"error":       map[string]any{"contract": Contract, "error": "invalid_intent"},
+		// The listener's spent-budget refusal must stay inside the schema.
+		"budget_refusal": budgetRefusalWire(t),
 	}
 	for name, value := range valid {
 		t.Run(name, func(t *testing.T) {
@@ -101,6 +106,40 @@ func TestSchemaCorpusMatchesFeedWireValues(t *testing.T) {
 			mutate(value)
 			if err := validateFeedSchema(schema, value); err == nil {
 				t.Fatal("invalid wire value accepted")
+			}
+		})
+	}
+}
+
+// The feed embeds the Portal source wire type; only that embedded generation
+// uses decimal strings. Feed resource fences and operation claims stay integers.
+func TestSchemaEmbeddedPortalGeneration(t *testing.T) {
+	schema := readFeedSchema(t)
+	for _, tc := range []struct {
+		name  string
+		value any
+		valid bool
+	}{
+		{"zero", "0", true},
+		{"current", "7", true},
+		{"beyond-browser-integer", "9007199254740993", true},
+		{"uint64-max", "18446744073709551615", true},
+		{"numeric", float64(7), false},
+		{"empty", "", false},
+		{"negative", "-1", false},
+		{"leading-zero", "07", false},
+		{"fraction", "1.5", false},
+		{"exponent", "1e3", false},
+		{"text", "generation", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			snapshot := validSnapshot(t, ResourceCurrent, true)
+			value := wireValue(t, SnapshotResponse{Contract: Contract, Cursor: Cursor{Instance: "schema", Sequence: 1}, Snapshot: snapshot}).(map[string]any)
+			source := value["snapshot"].(map[string]any)["operations"].([]any)[0].(map[string]any)["action"].(map[string]any)["source"].(map[string]any)
+			source["driver_generation"] = tc.value
+			err := validateFeedSchema(schema, value)
+			if (err == nil) != tc.valid {
+				t.Fatalf("generation %v: valid=%v, error=%v", tc.value, tc.valid, err)
 			}
 		})
 	}
@@ -190,6 +229,12 @@ enumOK:
 		}
 	}
 	if text, ok := value.(string); ok {
+		if pattern, ok := schema["pattern"].(string); ok {
+			matched, err := regexp.MatchString(pattern, text)
+			if err != nil || !matched {
+				return fmt.Errorf("%s: pattern mismatch", path)
+			}
+		}
 		if min, ok := schema["minLength"].(float64); ok && len(text) < int(min) {
 			return fmt.Errorf("%s: too short", path)
 		}
@@ -285,4 +330,18 @@ func feedSchemaPointer(root map[string]any, reference string) (map[string]any, e
 		return nil, fmt.Errorf("reference %q is not a schema", reference)
 	}
 	return result, nil
+}
+
+func budgetRefusalWire(t *testing.T) any {
+	t.Helper()
+	response := httptest.NewRecorder()
+	WriteUnavailable(response)
+	if response.Code != http.StatusServiceUnavailable || response.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("budget refusal status=%d content-type=%q", response.Code, response.Header().Get("Content-Type"))
+	}
+	var value map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &value); err != nil {
+		t.Fatal(err)
+	}
+	return value
 }

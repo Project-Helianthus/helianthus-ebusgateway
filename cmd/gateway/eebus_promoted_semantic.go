@@ -7,23 +7,24 @@ import (
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/promotioncapture"
-	"github.com/Project-Helianthus/helianthus-eebusreg/eebusraw"
 )
 
-// eebusPromotedSemanticProvider is deliberately an adapter-bound reader. It
-// converts the fixed, already-promoted catalog into protocol-neutral GraphQL
-// overlay values and retains neither raw payloads nor eeBUS identity.
+// The compatibility overlay stays empty until the shared SemReg consumer
+// admits a documented mapping. Refresh only supplies native observations.
 type eebusPromotedSemanticProvider struct {
-	runtime leafPromotionEEBusRuntime
-	mu      sync.RWMutex
-	overlay graphql.PromotedSemanticOverlay
+	adapter   *eebusRuntimeAdapter
+	mu        sync.RWMutex
+	overlay   graphql.PromotedSemanticOverlay
+	startOnce sync.Once
+	cancel    context.CancelFunc
+	done      chan struct{}
 }
 
 func newEEBusPromotedSemanticProvider(adapter *eebusRuntimeAdapter) *eebusPromotedSemanticProvider {
-	if adapter == nil || adapter.runtime == nil {
+	if adapter == nil || (adapter.runtime == nil && adapter.managed == nil) {
 		return nil
 	}
-	return &eebusPromotedSemanticProvider{runtime: adapter.runtime}
+	return &eebusPromotedSemanticProvider{adapter: adapter, done: make(chan struct{})}
 }
 
 // wireEEBusPromotedSemanticGraphQL composes the public-safe overlay for
@@ -37,7 +38,9 @@ func wireEEBusPromotedSemanticGraphQL(ctx context.Context, builder *graphql.Buil
 	if promoted == nil {
 		return base
 	}
-	promoted.Start(ctx)
+	if adapter.managed == nil {
+		promoted.Start(ctx)
+	}
 	composed := graphql.NewPromotedSemanticProvider(base, promoted.Overlay)
 	builder.SetSemanticProvider(composed)
 	return composed
@@ -56,89 +59,50 @@ func (p *eebusPromotedSemanticProvider) Start(ctx context.Context) {
 	if p == nil {
 		return
 	}
-	go func() {
-		p.Refresh(ctx)
-		ticker := time.NewTicker(15 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				p.Refresh(ctx)
+	p.startOnce.Do(func() {
+		if p.done == nil {
+			p.done = make(chan struct{})
+		}
+		ctx, p.cancel = context.WithCancel(ctx)
+		go func() {
+			defer close(p.done)
+			p.Refresh(ctx)
+			ticker := time.NewTicker(15 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					p.Refresh(ctx)
+				}
 			}
-		}
-	}()
+		}()
+	})
 }
 
-// Refresh replaces only the eeBUS-owned overlay. Any unavailable/degraded
-// cycle clears it atomically, leaving the eBUS base provider untouched.
+func (p *eebusPromotedSemanticProvider) Close(ctx context.Context) error {
+	if p == nil {
+		return nil
+	}
+	if p.cancel != nil {
+		p.cancel()
+	}
+	select {
+	case <-p.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// Refresh delegates to the adapter publication boundary without native feature
+// reads or direct semantic promotion.
 func (p *eebusPromotedSemanticProvider) Refresh(ctx context.Context) {
-	if p == nil || p.runtime == nil {
+	if p == nil || p.adapter == nil || ctx.Err() != nil {
 		return
 	}
-	next := graphql.PromotedSemanticOverlay{Zones: map[string]graphql.PromotedZoneOverlay{}}
-	snapshot, err := p.runtime.Snapshot()
-	if err != nil || snapshot.Validate() != nil || snapshot.Meta.MaskTier != eebusraw.MaskTierRaw || snapshot.Status.State != "ready" {
-		p.replace(next)
-		return
-	}
-	slots, err := leafPromotionResolveSlots(snapshot)
-	if err != nil {
-		p.replace(next)
-		return
-	}
-	registry, err := promotioncapture.DefaultRegistry()
-	if err != nil {
-		p.replace(next)
-		return
-	}
-	reader := &leafPromotionLiveSource{eebus: p.runtime}
-	featureCache := make(map[string]eebusraw.FeaturesGetDataV1)
-	functionCache := make(map[string]eebusraw.ReadObservationV1)
-	var binding eebusraw.RuntimeBindingV1
-	for _, candidate := range registry.Candidates() {
-		if candidate.SemanticPath == nil || candidate.EEBusSource == nil ||
-			(candidate.ProtocolEligibility != promotioncapture.ProtocolCrossProtocol && candidate.ProtocolEligibility != promotioncapture.ProtocolEEBusNative) {
-			continue
-		}
-		locator, locatorErr := leafPromotionLocatorForSource(snapshot, slots, *candidate.EEBusSource)
-		if locatorErr != nil || len(candidate.EEBusSource.ValueFunctions) == 0 {
-			continue
-		}
-		inventory, inventoryErr := reader.readFeatureInventory(ctx, locator, featureCache)
-		if inventoryErr != nil {
-			continue
-		}
-		if binding == (eebusraw.RuntimeBindingV1{}) {
-			binding = inventory.Runtime
-		} else if inventory.Runtime != binding {
-			p.replace(graphql.PromotedSemanticOverlay{Zones: map[string]graphql.PromotedZoneOverlay{}})
-			return
-		}
-		if reader.verifySourceProfile(ctx, candidate, locator, inventory, functionCache) != nil {
-			continue
-		}
-		observation, readErr := reader.readEEBusFunction(ctx, locator, candidate.EEBusSource.ValueFunctions[0], functionCache)
-		if readErr != nil {
-			continue
-		}
-		if observation.Runtime != binding {
-			p.replace(graphql.PromotedSemanticOverlay{Zones: map[string]graphql.PromotedZoneOverlay{}})
-			return
-		}
-		_, normalized, _, decodeErr := leafPromotionDecodeEEBus(candidate, observation.Value.Value())
-		if decodeErr == nil {
-			applyPromotedValue(&next, *candidate.SemanticPath, normalized)
-		}
-	}
-	p.replace(next)
-}
-
-func (p *eebusPromotedSemanticProvider) replace(overlay graphql.PromotedSemanticOverlay) {
-	p.mu.Lock()
-	p.overlay = overlay
-	p.mu.Unlock()
+	_, _ = p.adapter.refreshSemregSnapshot(ctx)
 }
 
 func applyPromotedValue(overlay *graphql.PromotedSemanticOverlay, path string, value promotioncapture.TypedValue) {

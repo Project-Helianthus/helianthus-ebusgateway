@@ -10,12 +10,16 @@ import (
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semanticoperations"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semanticview"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebus_standard"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mdns"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal/catalogv1"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
+	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 )
 
 func startHTTPServer(
@@ -40,6 +44,7 @@ func startHTTPServer(
 	buildInfo gatewayBuildInfo,
 	daemonUpdatesAvailable func() bool,
 	ebusDriver *ebusDriverController,
+	runtimeControl *gatewayRuntimeControl,
 ) (*http.Server, mdns.Advertiser, error) {
 	if cfg.HTTPAddr == "" {
 		return nil, nil, nil
@@ -78,16 +83,25 @@ func startHTTPServer(
 		portalStorageClient = nil
 	}
 
-	queryHandler, snapshotHandler, subscriptionHandler, err := newHTTPControlPlaneGraphQLHandlers(gateway, builder, hub)
+	sharedSemanticProvider := newGatewaySemanticSnapshotProvider(runtimeControl)
+	if err := installGatewaySemanticOperationRoute(builder, sharedSemanticProvider); err != nil {
+		return nil, nil, err
+	}
+	queryHandler, snapshotHandler, subscriptionHandler, mcpServer, err := newHTTPControlPlaneSemanticHandlers(gateway, builder, hub, sharedSemanticProvider)
 	if err != nil {
 		return nil, nil, err
 	}
-	mcpServer, err := mcp.NewServer(gateway.Registry, gateway.Router)
+	// The scrape route reads the same provider instance as GraphQL, MCP and
+	// Portal; its transport exposition stays owned by the bus store.
+	semanticMetrics, err := newGatewaySemanticMetrics(sharedSemanticProvider, gatewaySemanticMetricRegistry())
 	if err != nil {
 		return nil, nil, err
 	}
 	if err := mcpServer.SetServerVersion(buildInfo.ReleaseVersion); err != nil {
 		return nil, nil, fmt.Errorf("configure MCP build identity: %w", err)
+	}
+	if err := registerRuntimeControlMCPTools(mcpServer, runtimeControl); err != nil {
+		return nil, nil, fmt.Errorf("register runtime control MCP tools: %w", err)
 	}
 	if eebusProvider != nil {
 		if err := mcpServer.RegisterEEBusV1Provider(eebusProvider); err != nil {
@@ -122,7 +136,7 @@ func startHTTPServer(
 		}
 	}
 	mcpServer.SetAdmittedRPCSourceProvider(ebusSourceProvider)
-	mcpServer.SetStatusProvider(newMCPRuntimeStatusProviderForBuild(semanticProvider, ebusSourceProvider, buildInfo, daemonUpdatesAvailable))
+	mcpServer.SetStatusProvider(newMCPRuntimeStatusProviderForControl(semanticProvider, ebusSourceProvider, buildInfo, daemonUpdatesAvailable, ebusAdapterLifecycleStatus(ebusDriver), ebusAdapterConditionFor(ebusDriver)))
 	if busObservability != nil {
 		mcpServer.SetBusObservabilityProvider(newMCPBusObservabilityProvider(busObservability))
 	}
@@ -170,7 +184,7 @@ func startHTTPServer(
 	// semantics on absence, so this MUST be called before any MCP
 	// surface serves its first envelope. The provider closure is
 	// evaluated per-envelope; hot-path cost is a single pointer load +
-	// struct copy. See decision doc @ 567a6798 §4.2 + §5.
+	// struct copy. See the responder capability decision, sections 4.2 and 5.
 	//
 	// A nil return from buildResponderCapabilityProvider means the raw
 	// transport protocol does not canonicalize to any of the three
@@ -197,33 +211,35 @@ func startHTTPServer(
 	}
 
 	mux := http.NewServeMux()
-	// This fixed route is intentionally separate from the legacy control-plane
-	// GraphQL endpoint: it starts with no source or action authority and never
-	// falls back to an existing GraphQL/MCP/native path.
-	mux.Handle("/graphql/portal/v1", newPortalCatalogV1Handler(portalCatalogSource))
 	routePlan := newHTTPControlPlaneRoutePlan(cfg, busObservability != nil)
 	registerHTTPControlPlaneCoreRoutes(
-		mux, routePlan, cfg.DumpOutputDir, busObservability, queryHandler, snapshotHandler, subscriptionHandler, mcpServer, eebusAdminHandler,
+		mux, routePlan, cfg.DumpOutputDir, newGatewayMetricsHandler(busObservability, semanticMetrics), queryHandler, snapshotHandler, subscriptionHandler, mcpServer, eebusAdminHandler,
 	)
+	var portalOptions portal.Options
+	var portalConfig *gatewayPortalConfigRuntime
 	if routePlan.portalPath != "" {
+		// Startup loaded the record before driver registration and applied
+		// its driver selections. A composition without that step mounts the
+		// same store and reports nothing as applied.
+		portalConfig = runtimeControl.PortalConfig()
+		if portalConfig == nil {
+			portalConfig = openGatewayPortalConfigRuntime(cfg)
+		}
 		portalModbusProvider := portalTCPModbusProvider(modbusProvider)
-		portalPath := routePlan.portalPath
 		var getPortalBusObservability func() any
 		if busObservability != nil {
 			getPortalBusObservability = func() any {
 				return busObservability.Snapshot().Summary
 			}
 		}
-		portalHandler := portal.NewHandler(portal.Options{
-			GraphQLPath:       cfg.GraphQLPath,
-			PortalCatalogPath: "/graphql/portal/v1",
-			SnapshotPath:      cfg.SnapshotPath,
-			SubscriptionPath:  cfg.SubscriptionPath,
-			MCPPath:           cfg.MCPPath,
-			EEBusAdminPath:    "/admin/eebus/v1",
-			Readiness: func() portal.RuntimeReadiness {
-				return projectGatewayReadiness(ebusProxyReadiness, eebusLifecycle.LifecycleSnapshot())
-			},
+		portalOptions = portal.Options{
+			Config:                 portalConfig.callbacks(cfg, runtimeControl),
+			GraphQLPath:            cfg.GraphQLPath,
+			SnapshotPath:           cfg.SnapshotPath,
+			SubscriptionPath:       cfg.SubscriptionPath,
+			MCPPath:                cfg.MCPPath,
+			EEBusAdminPath:         "/admin/eebus/v1",
+			Readiness:              gatewayPortalReadiness(eebusProvider, eebusLifecycle, ebusProxyReadiness),
 			GatewayVersion:         buildInfo.ReleaseVersion,
 			BuildID:                buildInfo.BuildID,
 			SemanticPVEnabled:      cfg.PortalPV.SemanticEnabled,
@@ -386,14 +402,59 @@ func startHTTPServer(
 			// here would make /api/v1/ebus-standard/* routes 404 in
 			// production (handler.go nil-guard) — see PR #507.
 			EbusStandardServer: mcpServer.EbusStandardServer(),
-		})
-		mux.Handle(portalPath+"/", http.StripPrefix(portalPath, portalHandler))
-		mux.HandleFunc(portalPath, func(w http.ResponseWriter, r *http.Request) {
-			http.Redirect(w, r, portalPath+"/", http.StatusMovedPermanently)
-		})
+		}
 	}
+	configureGatewayPortalSemanticRead(&portalOptions, sharedSemanticProvider)
+	registerHTTPPortalRoutes(mux, routePlan.portalPath, portalOptions, portalCatalogSource)
 
+	cfg.HTTPAddr, _ = gatewayPortalHTTPAddress(cfg.HTTPAddr)
+	if portalConfig != nil {
+		// The listener releases the writer on exit or startup failure.
+		return startHTTPControlPlaneListener(ctx, cfg, mux, gateway, mcpServer, eebusProvider, portalConfig)
+	}
 	return startHTTPControlPlaneListener(ctx, cfg, mux, gateway, mcpServer, eebusProvider)
+}
+
+func gatewayPortalReadiness(eebusProvider mcp.EEBusV1Provider, eebusLifecycle *eebusRuntimeLifecycle, ebusProxyReadiness func() string) func() portal.RuntimeReadiness {
+	return func() portal.RuntimeReadiness {
+		snapshot := eebusLifecycle.LifecycleSnapshot()
+		if adapter, ok := eebusProvider.(*eebusRuntimeAdapter); ok && adapter.managed != nil {
+			snapshot = adapter.managed.eebusLifecycleSnapshot()
+		}
+		return projectGatewayReadiness(ebusProxyReadiness, snapshot)
+	}
+}
+
+// registerRuntimeControlMCPTools registers the helianthus.runtime tools on the
+// ordinary MCP server as thin delegates of the composed control service. They
+// stay registered for the shell's lifetime whatever eBUS or eeBUS do (G5 D4:
+// tool disappearance is not an unavailable-state signal); a control path
+// without a service still lists them and answers UNAVAILABLE.
+func registerRuntimeControlMCPTools(server *mcp.Server, control *gatewayRuntimeControl) error {
+	var service mcp.RuntimeControlService
+	if composed := control.Service(); composed != nil {
+		service = composed
+	}
+	return mcp.RegisterRuntimeControlTools(server, service)
+}
+
+// registerHTTPPortalRoutes declares catalog availability at the same boundary
+// that mounts the real route, independently of Portal's in-process adapter.
+func registerHTTPPortalRoutes(mux *http.ServeMux, portalPath string, opts portal.Options, source catalogv1.SourceCapture) {
+	const catalogPath = "/graphql/portal/v1"
+	mux.Handle(catalogPath, newPortalCatalogV1Handler(source))
+	if portalPath == "" {
+		return
+	}
+	opts.PortalCatalogPath = catalogPath
+	opts.PortalCatalogAvailable = true
+	opts.BasePath = portalPath + "/"
+	portalHandler := portal.NewHandler(opts)
+	mux.Handle(portalPath+"/", http.StripPrefix(portalPath, portalHandler))
+	// The bare mount reaches the same handler unstripped, so its redirect to the
+	// Portal directory carries the served prefix (portal.IngressPathHeader) and
+	// the query instead of a root-absolute target that Ingress cannot route.
+	mux.Handle(portalPath, portalHandler)
 }
 
 func validatePortalCatalogRoute(cfg ebusgateway.Config) error {
@@ -424,4 +485,51 @@ func portalTCPModbusProvider(provider mcp.ModbusV1Provider) mcp.ModbusV1Provider
 		return nil
 	}
 	return provider
+}
+
+// installGatewaySemanticOperationRoute composes the one GraphQL
+// semanticOperation route over the shared current-generation capture and the
+// SemReg operation kernel, and injects its executor lookup. The default lookup
+// holds no send-capable executor; a qualified driver composition supplies its
+// own. No runtime intent owner is composed yet, so the route answers
+// UNAVAILABLE without capture or send until that integration exists.
+func installGatewaySemanticOperationRoute(builder *graphql.Builder, snapshots semanticoperations.SnapshotCapture) error {
+	return composeGatewaySemanticOperationRoute(builder, snapshots, nil, semanticoperations.NoExecutors())
+}
+
+func composeGatewaySemanticOperationRoute(builder *graphql.Builder, snapshots semanticoperations.SnapshotCapture, intents semanticoperations.IntentOwner, executors semanticoperations.ExecutorLookup) error {
+	if builder == nil {
+		return fmt.Errorf("graphql builder missing for semantic operation route")
+	}
+	kernel, err := semanticoperations.NewBuiltinKernel()
+	if err != nil {
+		return fmt.Errorf("compose semantic operation kernel: %w", err)
+	}
+	builder.SetSemanticOperationRouter(semanticoperations.NewRouter(gatewaySemanticOperationConfigFor(semanticoperations.Config{
+		Snapshots: snapshots, Kernel: kernel, Intents: intents, Executors: executors,
+	})))
+	return nil
+}
+
+// gatewaySemanticOperationConfigFor is a test seam around the production route
+// composition; production leaves the configuration unchanged.
+var gatewaySemanticOperationConfigFor = func(config semanticoperations.Config) semanticoperations.Config { return config }
+
+// configureGatewayPortalSemanticRead binds Portal to the HTTP shared provider.
+func configureGatewayPortalSemanticRead(opts *portal.Options, provider *hubSemanticSnapshotProvider) {
+	opts.SemanticSnapshotAvailable = true
+	opts.SharedSemanticView = func(ctx context.Context) (semanticview.View, error) {
+		if provider == nil || provider.hub == nil {
+			return semanticview.View{}, semhub.ErrCaptureUnavailable
+		}
+		selection, ok := provider.hub.(interface{ AssetIDs() []semreg.AssetID })
+		if !ok {
+			return semanticview.View{}, semhub.ErrCaptureUnavailable
+		}
+		metadata, inputs, err := provider.Capture(ctx, selection.AssetIDs())
+		if err != nil {
+			return semanticview.View{}, err
+		}
+		return semanticview.Build(metadata, inputs)
+	}
 }

@@ -12,6 +12,7 @@ import (
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/drivermanager"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mdns"
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
@@ -299,8 +300,7 @@ func TestMSP05BRunJoinsLaterErrorWithSidecarShutdown(t *testing.T) {
 		return nil, nil, laterErr
 	}
 
-	cfg := ebusgateway.DefaultConfig()
-	cfg.EEBusConfig = msp05bEnabledConfig()
+	cfg := msp05bGatewayRunConfig(t)
 	err := run(context.Background(), cfg)
 	if !errors.Is(err, laterErr) || !errors.Is(err, runtime.shutdownErr) {
 		t.Fatalf("run error = %v; want later gateway and sidecar shutdown causes", err)
@@ -543,5 +543,34 @@ func msp05bGatewayRunConfig(t *testing.T) ebusgateway.Config {
 	cfg.Transport = transport.NewLoopback()
 	cfg.BroadcastListen = false
 	cfg.RuntimeStatePath = filepath.Join(t.TempDir(), "runtime-state.json")
+	withManagedSidecarRunState(t, &cfg)
 	return cfg
+}
+
+// Sidecars now obey durable intent and reconcile asynchronously. Provision the
+// store and wait for the native startup outcome before testing later failures.
+// A failing eeBUS start keeps its three attempts; only the delay between them
+// is shortened so the outcome arrives within the wait.
+func withManagedSidecarRunState(t *testing.T, cfg *ebusgateway.Config) {
+	t.Helper()
+	withRuntimeControlTestState(t, cfg)
+	originalRetry := eebusManagedStartRetry
+	t.Cleanup(func() { eebusManagedStartRetry = originalRetry })
+	eebusManagedStartRetry.Delay = 5 * time.Millisecond
+	original := gatewayRuntimeControlStarted
+	t.Cleanup(func() { gatewayRuntimeControlStarted = original })
+	gatewayRuntimeControlStarted = func(control *gatewayRuntimeControl) {
+		original(control)
+		m06Wait(t, func() bool {
+			for _, s := range control.service.List().Drivers {
+				if s.DriverID == primaryEBusDriverID || !s.Enabled {
+					continue
+				}
+				if s.ObservedState != drivermanager.ObservedRunning && s.ObservedState != drivermanager.ObservedFailed {
+					return false
+				}
+			}
+			return true
+		})
+	}
 }

@@ -49,6 +49,10 @@ requires_ebus_transport_gate() {
     internal/adaptermux/*)
       return 0
       ;;
+    go.mod)
+      ebus_dependency_changed
+      return
+      ;;
   esac
   return 1
 }
@@ -77,6 +81,17 @@ requires_b503_native_transport_gate() {
       ;;
   esac
   return 1
+}
+
+# Dependency-only repins can replace production eBUS transport/protocol code.
+ebus_dependency_changed() {
+  local changes
+  changes="$({
+    git diff --unified=0 "${base_ref}...HEAD" -- go.mod
+    git diff --cached --unified=0 -- go.mod
+    git diff --unified=0 -- go.mod
+  } | awk '/^[+-][^+-]/ { print substr($0, 2) }')"
+  grep -Eq '(^|[[:space:]])github\.com/Project-Helianthus/helianthus-ebusgo[[:space:]]+' <<< "${changes}"
 }
 
 # The Modbus RTU gate is deliberately separate from the eBUS M6a topology
@@ -109,6 +124,7 @@ requires_modbus_rtu_transport_gate() {
 	cmd/gateway/gateway_http_server.go|\
 	cmd/gateway/gateway_run_setup.go|\
     cmd/gateway/growatt_bms_rs485_runtime.go|\
+    cmd/gateway/growatt_managed_driver.go|\
 	cmd/gateway/tesla_hsc_retained_owner.go|\
 	cmd/gateway/growatt_storage_semreg.go|\
 	cmd/gateway/m2m_graphql_runtime.go|\
@@ -150,7 +166,7 @@ run_modbus_rtu_transport_gate() {
   )
   echo "transport gate: Modbus RTU production conformance."
   if ! GOWORK=off go test ./cmd/gateway \
-    -run 'Test(GrowattBMSRS485|PortalRawModbusUsesOnlyTCPAvailableComposition|TeslaHSCRetained)' -count=1; then
+    -run 'Test(M04|M06|GrowattBMSRS485|PortalRawModbusUsesOnlyTCPAvailableComposition|TeslaHSCRetained)' -count=1; then
     echo "transport gate: FAIL — Modbus RTU gateway composition evidence failed."
     return 1
   fi
@@ -204,8 +220,6 @@ semreg_public_config_only() {
 			"// M2MGraphQLConfig configures the dedicated public canonical-PV listener."|\
 			"// M2MGraphQLConfig configures the dedicated public SemReg PV listener."|\
 			"KnownAssets                 []string"|\
-			"len(config.KnownAssets) == 0 && len(config.DeniedPrincipalFingerprints) == 0"|\
-			"len(config.DeniedPrincipalFingerprints) == 0"|\
 			"known := make(map[string]struct{}, len(config.KnownAssets))"|\
 			"for _, asset := range config.KnownAssets {"|\
 			"if _, allowed := assets[asset]; !allowed {"|\

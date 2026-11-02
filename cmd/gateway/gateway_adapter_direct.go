@@ -20,10 +20,24 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 
 const adapterDirectENSProtocol ebusgateway.TransportProtocol = "adapter-direct-ens"
 
-func wireAdapterDirectWithConnectionLost(ctx context.Context, cfg *ebusgateway.Config, onConnectionLost func()) (func() error, activeTxnClassifier, error) {
+// adapterDirectBlackholeThreshold is a test-only override of the mux AM27
+// blackhole threshold. Zero keeps the adaptermux default of 30 seconds;
+// production never sets it.
+var adapterDirectBlackholeThreshold time.Duration
+
+// wireAdapterDirectWithConnectionLost composes one adapter-direct generation.
+// onConnectionLost, when set, becomes the generation's lifecycle owner: it is
+// called at most once with the closed trigger category of the first terminal
+// loss (the adapter connection, AM27 included, or the proxy listener).
+//
+// Every configuration check runs before the multiplexer dials, and its
+// failure is a rejected configuration (rejectEBusConfig). A failure of the
+// multiplexer's start is the adapter's outcome; when it reached the INIT
+// handshake it carries what the handshake saw.
+func wireAdapterDirectWithConnectionLost(ctx context.Context, cfg *ebusgateway.Config, onConnectionLost func(reason string)) (func() error, activeTxnClassifier, error) {
 	normalized, err := ebusgateway.NormalizeEBusDriverTransportConfig(cfg.TransportConfig)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, rejectEBusConfig(err)
 	}
 	if normalized.Protocol != ebusgateway.TransportAdapterDirect && normalized.Protocol != adapterDirectENSProtocol {
 		return nil, nil, nil
@@ -32,7 +46,7 @@ func wireAdapterDirectWithConnectionLost(ctx context.Context, cfg *ebusgateway.C
 	network := normalized.Network
 	address := normalized.Address
 	if address == "" {
-		return nil, nil, fmt.Errorf("adapter-direct requires an address (e.g. adapter-direct://boiler.local:9999): %w", ebuserrors.ErrInvalidPayload)
+		return nil, nil, rejectEBusConfig(fmt.Errorf("adapter-direct requires an address (e.g. adapter-direct://boiler.local:9999): %w", ebuserrors.ErrInvalidPayload))
 	}
 
 	// Determine ENH vs ENS sub-protocol. ENH is the default.
@@ -87,7 +101,7 @@ func wireAdapterDirectWithConnectionLost(ctx context.Context, cfg *ebusgateway.C
 	}
 	phantomBytes, err := parseHexByteList(cfg.PhantomInitiatorRejectBytes)
 	if err != nil {
-		return nil, nil, fmt.Errorf("invalid -phantom-initiator-reject-bytes %q: %w", cfg.PhantomInitiatorRejectBytes, err)
+		return nil, nil, rejectEBusConfig(fmt.Errorf("invalid -phantom-initiator-reject-bytes %q: %w", cfg.PhantomInitiatorRejectBytes, err))
 	}
 	if len(phantomBytes) == 0 {
 		// Empty CSV disables filtering entirely — every byte is
@@ -110,12 +124,10 @@ func wireAdapterDirectWithConnectionLost(ctx context.Context, cfg *ebusgateway.C
 	if muxCfg.DialTimeout == 0 {
 		muxCfg.DialTimeout = 5 * time.Second
 	}
-	// Mux read timeout controls how often the idle-timeout branch runs
-	// (tryGrantAndStart) AND how quickly activeCh receives bytes from
-	// the upstream ENH transport. 50ms matches the eBUS SYN interval so
-	// waitForSyn (which needs 2 SYNs) completes within ~100ms instead
-	// of ~400ms at 200ms, preventing scan-abort after collision retry.
-	muxCfg.ReadTimeout = 50 * time.Millisecond
+	muxCfg.BlackholeThreshold = adapterDirectBlackholeThreshold
+	if err := adapterMuxOptions.apply(&muxCfg); err != nil {
+		return nil, nil, rejectEBusConfig(err)
+	}
 	if muxCfg.WriteTimeout == 0 {
 		muxCfg.WriteTimeout = 5 * time.Second
 	}
@@ -132,7 +144,7 @@ func wireAdapterDirectWithConnectionLost(ctx context.Context, cfg *ebusgateway.C
 	if envMode := os.Getenv(v8classifier.EnvVarName); envMode != "" {
 		parsedMode, err := v8classifier.ParseMode(envMode)
 		if err != nil {
-			return nil, nil, fmt.Errorf("invalid %s=%q (expected off|shadow|enforce): %w", v8classifier.EnvVarName, envMode, err)
+			return nil, nil, rejectEBusConfig(fmt.Errorf("invalid %s=%q (expected off|shadow|enforce): %w", v8classifier.EnvVarName, envMode, err))
 		}
 		muxCfg.V8ClassifierMode = parsedMode
 		if parsedMode != v8classifier.ModeOff {
@@ -140,11 +152,19 @@ func wireAdapterDirectWithConnectionLost(ctx context.Context, cfg *ebusgateway.C
 		}
 	}
 
+	handshake := &ebusHandshakeTrace{}
+	muxCfg.Logger = handshake.logger()
 	mux := adaptermux.New(muxCfg)
-	connectionLostOwner := onConnectionLost
+	var connectionLostOwner, proxyListenerLost func()
 	if onConnectionLost != nil {
+		// One shared one-shot owner: the first terminal loss of this
+		// generation (upstream or listener) is reported, with its trigger.
 		var connectionLostOnce sync.Once
-		connectionLostOwner = func() { connectionLostOnce.Do(onConnectionLost) }
+		report := func(reason string) {
+			connectionLostOnce.Do(func() { onConnectionLost(reason) })
+		}
+		connectionLostOwner = func() { report(ebusLossAdapterConnection) }
+		proxyListenerLost = func() { report(ebusLossProxyListener) }
 	}
 	mux.SetConnectionLostCallback(connectionLostOwner)
 	// Codex PR #502 P2: the instance-scoped classifier is returned to
@@ -170,7 +190,7 @@ func wireAdapterDirectWithConnectionLost(ctx context.Context, cfg *ebusgateway.C
 		cfg.ObserveFirstWarmupPostResetWindow = 0
 	}
 
-	if err := mux.Start(ctx); err != nil {
+	if err := handshake.finish(mux.Start(ctx)); err != nil {
 		return nil, nil, fmt.Errorf("start multiplexer: %w", err)
 	}
 
@@ -180,7 +200,7 @@ func wireAdapterDirectWithConnectionLost(ctx context.Context, cfg *ebusgateway.C
 	// external clients like ebusd).
 	var proxyListener *adaptermux.ProxyListener
 	if cfg.ProxyListenAddr != "" {
-		onProxyFatal := adapterDirectProxyFatalCallback(mux, connectionLostOwner)
+		onProxyFatal := adapterDirectProxyFatalCallback(mux, proxyListenerLost)
 		pl, err := adaptermux.NewProxyListenerWithFatalCallback(ctx, mux, cfg.ProxyListenAddr, log.Default(), onProxyFatal)
 		if err != nil {
 			if cerr := mux.Close(); cerr != nil {

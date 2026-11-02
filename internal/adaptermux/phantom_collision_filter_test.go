@@ -31,7 +31,6 @@ func TestReadLoop_PhantomCollisionByteNotMirrored(t *testing.T) {
 			return b != 0x71
 		},
 		// Keep legacy invariants stable for this mux-level test.
-		PendingStartTTL: 24 * time.Hour,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -116,7 +115,6 @@ func TestReadLoop_RealMasterByteStillMirrored(t *testing.T) {
 		ReadTimeout: 200 * time.Millisecond,
 		// Treat every byte as a known initiator — C5 must be a no-op.
 		IsKnownInitiatorByte: func(b byte) bool { return true },
-		PendingStartTTL:      24 * time.Hour,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -195,12 +193,10 @@ func TestFailedNotify_PhantomBidderReceivesOwnInitiator(t *testing.T) {
 		Network:     "tcp",
 		Address:     "127.0.0.1:0",
 		ReadTimeout: 200 * time.Millisecond,
-		SYNInterval: time.Hour,
 		// 0x71 is the documented AND-collision artifact 0x7F & 0xF1;
 		// classify it as NOT a known initiator. Everything else
 		// is real.
 		IsKnownInitiatorByte: func(b byte) bool { return b != 0x71 },
-		PendingStartTTL:      24 * time.Hour,
 	})
 
 	// Stage the external bidder's pending START as if tryGrant had

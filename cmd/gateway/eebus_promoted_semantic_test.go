@@ -68,11 +68,11 @@ func TestEEBusPromotedSemanticOverlayIsDeepCloned(t *testing.T) {
 func TestEEBusPromotedSemanticStartDoesNotBlockInitialRefresh(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	provider := &eebusPromotedSemanticProvider{runtime: promotedRuntimeStub{snapshot: func() (eebusruntime.SnapshotV1, error) {
+	provider := &eebusPromotedSemanticProvider{adapter: &eebusRuntimeAdapter{runtime: &m18Runtime{snapshot: func() (eebusruntime.SnapshotV1, error) {
 		close(entered)
 		<-release
 		return eebusruntime.SnapshotV1{}, nil
-	}}}
+	}}}}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan struct{})
@@ -292,16 +292,4 @@ func assertPromotedRegistryOverlay(t *testing.T, overlay graphql.PromotedSemanti
 			t.Fatalf("%s mapping = %#v", want.id, zone)
 		}
 	}
-}
-
-type promotedRuntimeStub struct {
-	snapshot func() (eebusruntime.SnapshotV1, error)
-}
-
-func (stub promotedRuntimeStub) Snapshot() (eebusruntime.SnapshotV1, error) { return stub.snapshot() }
-func (promotedRuntimeStub) FeaturesGet(context.Context, eebusraw.ReadAuthorizationV1, eebusraw.FeaturesGetRequestV1) (eebusraw.FeaturesGetDataV1, *eebusraw.ErrorV1) {
-	return eebusraw.FeaturesGetDataV1{}, nil
-}
-func (promotedRuntimeStub) FeaturesDataGet(context.Context, eebusraw.ReadAuthorizationV1, eebusraw.FeatureDataGetRequestV1) (eebusraw.FeatureDataGetDataV1, *eebusraw.ErrorV1) {
-	return eebusraw.FeatureDataGetDataV1{}, nil
 }

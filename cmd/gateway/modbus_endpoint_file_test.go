@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -92,7 +93,7 @@ func TestResolveModbusEndpointFileDisabledIsInertForAnyRetainedInputs(t *testing
 	if err := resolveModbusEndpointFile(&cfg, "/missing/retained-endpoint"); err != nil {
 		t.Fatalf("disabled config inspected retained inputs: %v", err)
 	}
-	if cfg != (ebusgateway.ModbusTCPConfig{}) {
+	if !reflect.DeepEqual(cfg, ebusgateway.ModbusTCPConfig{}) {
 		t.Fatalf("disabled config is not inert: %+v", cfg)
 	}
 }

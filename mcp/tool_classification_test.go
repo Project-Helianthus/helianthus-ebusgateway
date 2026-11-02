@@ -1,6 +1,8 @@
 package mcp
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -21,11 +23,12 @@ const (
 
 func toolClassificationPolicy() map[string]toolClass {
 	return map[string]toolClass{
-		toolRuntimeStatusGetName:   toolClassCoreStable,
-		toolBusSummaryGetName:      toolClassReservedDraft,
-		toolBusMessagesListName:    toolClassReservedDraft,
-		toolBusPeriodicityListName: toolClassReservedDraft,
-		toolWatchSummaryGetName:    toolClassReservedDraft,
+		toolRuntimeStatusGetName:         toolClassCoreStable,
+		toolBusSummaryGetName:            toolClassReservedDraft,
+		toolBusMessagesListName:          toolClassReservedDraft,
+		toolBusPeriodicityListName:       toolClassReservedDraft,
+		toolBusProtocolSpecimensListName: toolClassReservedDraft,
+		toolWatchSummaryGetName:          toolClassReservedDraft,
 		// Raw 07 04 identification evidence (#1017); graduates to GraphQL
 		// (busIdentificationEvidence), so it must be core stable.
 		toolBusIdentificationEvidenceListName: toolClassCoreStable,
@@ -78,6 +81,14 @@ func toolClassificationPolicy() map[string]toolClass {
 		toolVaillantB503LiveMonitorName:       toolClassCoreStable,
 		toolVaillantB503LiveSessionGetName:    toolClassCoreStable,
 		GrowattProtocolIIV1IdentityGetTool:    toolClassCoreStable,
+		// G5 runtime lifecycle host tools (#1227, D4): ordinary MCP, no
+		// experimental namespace. Classification is per-tool maturity and
+		// implies no GraphQL face; D4 adds no lifecycle GraphQL surface.
+		RuntimeControlListTool:    toolClassCoreStable,
+		RuntimeControlGetTool:     toolClassCoreStable,
+		RuntimeControlStartTool:   toolClassCoreStable,
+		RuntimeControlStopTool:    toolClassCoreStable,
+		RuntimeControlRestartTool: toolClassCoreStable,
 	}
 }
 
@@ -100,7 +111,7 @@ func testInstallB503ForClassification(server *Server) {
 
 func isReservedDraftTool(name string) bool {
 	switch name {
-	case toolBusSummaryGetName, toolBusMessagesListName, toolBusPeriodicityListName, toolWatchSummaryGetName:
+	case toolBusSummaryGetName, toolBusMessagesListName, toolBusPeriodicityListName, toolBusProtocolSpecimensListName, toolWatchSummaryGetName:
 		return true
 	default:
 		return false
@@ -116,10 +127,14 @@ func TestToolClassificationPolicy(t *testing.T) {
 	// Install production-wired dynamic tools so the policy check covers the
 	// registered operator inventory, not only the default NewServer tools.
 	testInstallB503ForClassification(server)
+	server.SetBusObservabilityProvider(&testBusObservabilityProvider{snapshot: BusObservabilitySnapshot{}})
 	server.SetIdentificationEvidenceProvider(testIdentificationEvidenceProvider{})
 	registerGrowattProtocolIIV1Tool(server, &growattProtocolIIV1FixtureProvider{modbusV1FixtureProvider: &modbusV1FixtureProvider{}})
 	if err := server.RegisterEEBusV1CommandRouter(&issue749TypedRouter{}); err != nil {
 		t.Fatalf("RegisterEEBusV1CommandRouter error = %v", err)
+	}
+	if err := RegisterRuntimeControlTools(server, &rcFake{}); err != nil {
+		t.Fatalf("RegisterRuntimeControlTools error = %v", err)
 	}
 
 	res := doRPC(t, issue743OperatorHandler(t, server), rpcRequest{JSONRPC: "2.0", ID: 1, Method: "tools/list", Params: nil})
@@ -135,9 +150,50 @@ func TestToolClassificationPolicy(t *testing.T) {
 		t.Fatalf("tools/list tools type = %T; want []any", resultMap["tools"])
 	}
 
+	busTools := []string{
+		toolBusSummaryGetName,
+		toolBusMessagesListName,
+		toolBusPeriodicityListName,
+		toolBusProtocolSpecimensListName,
+		toolBusIdentificationEvidenceListName,
+	}
+	for _, name := range busTools {
+		if !hasToolName(tools, name) {
+			t.Fatalf("classification inventory missing bus tool %q", name)
+		}
+	}
+
 	classification := toolClassificationPolicy()
+	for _, name := range busTools {
+		t.Run("missing classification/"+name, func(t *testing.T) {
+			policy := toolClassificationPolicy()
+			delete(policy, name)
+			if err := validateToolClassificationInventory(tools, policy); err == nil || !strings.Contains(err.Error(), name+" missing classification") {
+				t.Fatalf("missing classification error = %v; want rejection of %s", err, name)
+			}
+		})
+		t.Run("unknown classification/"+name, func(t *testing.T) {
+			policy := toolClassificationPolicy()
+			policy[name] = toolClass("unknown")
+			if err := validateToolClassificationInventory(tools, policy); err == nil || !strings.Contains(err.Error(), name+" has unknown classification") {
+				t.Fatalf("unknown classification error = %v; want rejection of %s", err, name)
+			}
+		})
+	}
+	t.Run("unclassified tool", func(t *testing.T) {
+		inventory := append([]any(nil), tools...)
+		inventory = append(inventory, map[string]any{"name": "ebus.v1.bus.unclassified"})
+		if err := validateToolClassificationInventory(inventory, classification); err == nil || !strings.Contains(err.Error(), "ebus.v1.bus.unclassified missing classification") {
+			t.Fatalf("unclassified tool error = %v; want rejection", err)
+		}
+	})
+
+	if err := validateToolClassificationInventory(tools, classification); err != nil {
+		t.Fatal(err)
+	}
 
 	experimentalCount := 0
+	runtimeControlCount := 0
 	for _, raw := range tools {
 		toolMap, ok := raw.(map[string]any)
 		if !ok {
@@ -160,11 +216,46 @@ func TestToolClassificationPolicy(t *testing.T) {
 			}
 			experimentalCount++
 		}
+		if strings.HasPrefix(name, "helianthus.") {
+			if !strings.HasPrefix(name, "helianthus.runtime.") || class != toolClassCoreStable {
+				t.Fatalf("host tool %q classified %q; want a core stable helianthus.runtime tool", name, class)
+			}
+			runtimeControlCount++
+		}
+	}
+
+	if runtimeControlCount != len(runtimeControlToolNames) {
+		t.Fatalf("helianthus.runtime tool count = %d; want %d", runtimeControlCount, len(runtimeControlToolNames))
 	}
 
 	if experimentalCount != 0 {
 		t.Fatalf("experimental tool count = %d; want 0 in showroom surface", experimentalCount)
 	}
+}
+
+// validateToolClassificationInventory checks the enumerated inventory, including
+// provider-installed tools, rather than only the policy's declared keys.
+func validateToolClassificationInventory(tools []any, classification map[string]toolClass) error {
+	var failures []error
+	for _, raw := range tools {
+		tool, ok := raw.(map[string]any)
+		if !ok {
+			failures = append(failures, fmt.Errorf("tool entry type = %T; want map", raw))
+			continue
+		}
+		name, _ := tool["name"].(string)
+		class, ok := classification[name]
+		if !ok {
+			failures = append(failures, fmt.Errorf("tool %s missing classification", name))
+			continue
+		}
+		switch class {
+		case toolClassCoreStable, toolClassLegacy, toolClassReservedDraft, toolClassExperimental:
+		default:
+			failures = append(failures, fmt.Errorf("tool %s has unknown classification %q", name, class))
+		}
+	}
+	return errors.Join(failures...)
 }
 
 func TestBusObservabilityToolClassificationReservation(t *testing.T) {
@@ -209,6 +300,7 @@ func TestBusObservabilityToolClassificationReservation(t *testing.T) {
 		toolBusMessagesListName,
 		toolBusPeriodicityListName,
 		toolWatchSummaryGetName,
+		toolBusProtocolSpecimensListName,
 	} {
 		if !hasToolName(tools, name) {
 			t.Fatalf("tools list missing reserved draft tool %q", name)

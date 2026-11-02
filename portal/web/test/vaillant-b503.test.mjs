@@ -124,6 +124,8 @@ function buildSandbox({ source, sourcePath, elements, fetchImpl }) {
   const PortalShell = sandbox.__PortalShell;
   const shell = new PortalShell();
   shell._isConnected = true;
+  // A bootstrapped shell: GraphQL comes only from the bootstrap endpoint.
+  shell._graphqlEndpoint = "/graphql";
   shell.render = () => {};
   shell.bindEvents = () => {};
   shell.querySelector = (selector) => elements.get(selector) || null;

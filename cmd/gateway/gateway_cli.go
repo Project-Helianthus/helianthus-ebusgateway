@@ -34,10 +34,11 @@ func gatewayMDNSText(cfg ebusgateway.Config) []string {
 }
 
 func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) *gatewayFlagInputs {
-	inputs := &gatewayFlagInputs{}
+	inputs := &gatewayFlagInputs{flags: fs}
 	if fs == nil || cfg == nil {
 		return inputs
 	}
+	bindModbusTCPFlagInputs(&cfg.ModbusTCPConfig, inputs)
 
 	fs.StringVar((*string)(&cfg.TransportConfig.Protocol), "transport", string(cfg.TransportConfig.Protocol), "transport protocol: enh, ens, udp-plain, tcp-plain, or ebusd-tcp")
 	fs.StringVar(&cfg.TransportConfig.Network, "network", cfg.TransportConfig.Network, "transport network: unix, tcp, or udp")
@@ -48,6 +49,7 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) *gatewayFlagInputs {
 	fs.BoolVar(&cfg.ModbusTCPConfig.Enabled, "modbus-tcp-enabled", cfg.ModbusTCPConfig.Enabled, "enable the read-only Modbus TCP sidecar")
 	fs.StringVar(&cfg.ModbusTCPConfig.Endpoint, "modbus-tcp-endpoint", cfg.ModbusTCPConfig.Endpoint, "Modbus TCP endpoint URI (tcp://host:port)")
 	fs.StringVar(&inputs.modbusEndpointFile, "modbus-tcp-endpoint-file", "", "path to an owner-only file containing the Modbus TCP endpoint URI")
+	fs.StringVar(&inputs.modbusEndpointsFile, modbusEndpointsFlag, "", "path to the owner-only Modbus TCP endpoints document (configuration v2; excludes every other modbus-tcp flag)")
 	fs.DurationVar(&cfg.ModbusTCPConfig.DialTimeout, "modbus-tcp-dial-timeout", cfg.ModbusTCPConfig.DialTimeout, "Modbus TCP dial timeout")
 	fs.BoolVar(&cfg.ModbusTCPConfig.GrowattBMSRS485.Enabled, "growatt-bms-rs485-enabled", cfg.ModbusTCPConfig.GrowattBMSRS485.Enabled, "enable the exact read-only Growatt BMS RS-485 V2.02 observer")
 	fs.StringVar(&cfg.ModbusTCPConfig.GrowattBMSRS485.AssetID, "growatt-bms-rs485-asset-id", cfg.ModbusTCPConfig.GrowattBMSRS485.AssetID, "explicit non-secret stable Growatt BMS semantic asset identity")
@@ -174,6 +176,7 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) *gatewayFlagInputs {
 	fs.StringVar(&cfg.RuntimeStatePath, "runtime-state-path",
 		cfg.RuntimeStatePath,
 		"override /data/runtime_state.json path (empty uses runtimestate package default)")
+	fs.StringVar(&cfg.PortalConfigRoot, "portal-config-root", cfg.PortalConfigRoot, "existing host-owned directory for Portal desired configuration (no runtime application)")
 	fs.StringVar(&cfg.DumpOutputDir, "dump-output-dir", cfg.DumpOutputDir, "unknown device dump output dir")
 	fs.StringVar(&cfg.DumpUploadURL, "dump-upload-url", cfg.DumpUploadURL, "unknown device dump upload url (internal)")
 	fs.BoolVar(&cfg.DumpIncludePII, "dump-include-pii", cfg.DumpIncludePII, "include identifiers in unknown device dumps")

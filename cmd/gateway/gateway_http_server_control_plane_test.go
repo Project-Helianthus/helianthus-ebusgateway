@@ -1,13 +1,36 @@
 package main
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"reflect"
 	"strings"
 	"testing"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimecontrol"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/portal"
 )
+
+func TestM06PortalReadinessWithNilLifecycleAndManagedAdapter(t *testing.T) {
+	entry := &managedSidecar{descriptor: runtimecontrol.Descriptor{DriverID: managedEEBusID, Disposition: runtimecontrol.DispositionEnabled}}
+	adapter := &eebusRuntimeAdapter{managed: &managedSidecarBindings{sidecars: &managedSidecars{entries: []*managedSidecar{entry}}}}
+	readiness := gatewayPortalReadiness(adapter, nil, func() string { return "READY" })
+	want := portal.RuntimeReadiness{
+		ProcessReadiness: "READY", HTTPReadiness: "READY", ProxyReadiness: "READY",
+		EEBusReadiness: "DEGRADED", EEBusDegradedReason: "RUNTIME_FACTORY_UNAVAILABLE",
+	}
+	if got := readiness(); got != want {
+		t.Fatalf("managed readiness = %+v; want %+v", got, want)
+	}
+	entry.descriptor.Disposition = runtimecontrol.DispositionDisabled
+	want.EEBusReadiness, want.EEBusDegradedReason = "DISABLED", ""
+	if got := readiness(); got != want {
+		t.Fatalf("updated managed readiness = %+v; want %+v", got, want)
+	}
+}
 
 func TestHTTPControlPlaneRouteManifestIsDeterministic(t *testing.T) {
 	cfg := ebusgateway.DefaultConfig()
@@ -96,9 +119,9 @@ func TestMainStartsControlPlaneBeforeWarmupAndRetiresItInLIFOOrder(t *testing.T)
 	text := string(source)
 
 	start := strings.Index(text, "server, advertiser, err := startHTTPServerFn(")
-	warmup := strings.Index(text, "ebusDriver.WaitRunning(ctx)")
-	if start < 0 || warmup < 0 || start > warmup {
-		t.Fatalf("control-plane start must precede WaitRunning warmup: start=%d warmup=%d", start, warmup)
+	warmup := strings.Index(text, "control.BindTasks(ctx, generationTasks")
+	if start < 0 || warmup < 0 || start > warmup || strings.Contains(text, "WaitRunning(") {
+		t.Fatalf("control-plane start must precede the generation-owned post-start tasks, with no WaitRunning gate: start=%d tasks=%d", start, warmup)
 	}
 
 	last := -1
@@ -150,11 +173,11 @@ func TestRunOrchestrationKeepsDriverPreparationBeforeShutdownAndStart(t *testing
 	}
 	text := string(source)
 
-	prepare := strings.Index(text, "prepareGatewayEBusDriver(&cfg)")
+	prepare := strings.Index(text, "prepareGatewayEBusDriver(&cfg, sidecars.driverConfigs()...)")
 	shutdown := strings.Index(text, "ebusDriver.Shutdown(stopCtx)")
-	start := strings.Index(text, "ebusDriver.Start(ctx)")
-	if prepare < 0 || shutdown < 0 || start < 0 || prepare > shutdown || shutdown > start {
-		t.Fatalf("driver preparation, LIFO shutdown defer, and start order changed: prepare=%d shutdown=%d start=%d", prepare, shutdown, start)
+	start := strings.Index(text, "startGatewayRuntimeControl(ctx")
+	if prepare < 0 || shutdown < 0 || start < 0 || prepare > shutdown || shutdown > start || strings.Contains(text, "ebusDriver.Start(") {
+		t.Fatalf("driver preparation, LIFO shutdown defer, and single-owner control start order changed: prepare=%d shutdown=%d start=%d", prepare, shutdown, start)
 	}
 }
 
@@ -168,11 +191,12 @@ func TestRunOrchestrationKeepsDeferredShutdownStackInAcquisitionOrder(t *testing
 	last := -1
 	for _, closeCall := range []string{
 		"evidenceRuntime.Close()",
-		"modbusAdapter.Close()",
-		"m2mRuntime.Close()",
-		"eebusLifecycle.Shutdown()",
 		"runtimeStateMgr.Stop(stopCtx)",
 		"ebusDriver.Shutdown(stopCtx)",
+		"control.CloseAdmission(closeCtx)",
+		"control.CloseNative(closeCtx)",
+		"teslaHSCRetained.Close()",
+		"m2mRuntime.Close()",
 		"artifactBuilder.EmitToFile(artifactPath)",
 		"gateway.Close()",
 		"shutdownHTTPControlPlane(server)",
@@ -212,14 +236,66 @@ func TestRunOrchestrationKeepsFlagsConfigurationAdmissionAndStartupBarriersOrder
 	assertOrder(mainText, "flag.Parse()", "applyTransportSourcePolicy(&cfg)", "run(ctx, cfg)")
 	assertOrder(lifecycleText,
 		"prepareGatewayRunConfig(&cfg)",
-		"prepareGatewayEBusDriver(&cfg)",
-		"ebusDriver.Start(ctx)",
+		"prepareGatewayEBusDriver(&cfg, sidecars.driverConfigs()...)",
+		"startGatewayRuntimeControl(ctx",
 		"ResolveAdmissionPath(cfg.TransportConfig.Protocol)",
 	)
 	assertOrder(lifecycleText,
 		"semanticBarrier = make(chan struct{})",
-		"startDiscoveryScanLoopFn(ctx, startupCfg, gateway, builder, adapterClassifier)",
-		"go startBackgroundFullScanFn(ctx, startupCfg, gateway, builder, startupScanSignals.semanticBootstrapReady)",
+		"startDiscoveryScanLoopFn(genCtx, startupCfg, gateway, builder, adapterClassifier)",
+		"startBackgroundFullScanFn(runCtx, startupCfg, gateway, builder, startupScanSignals.semanticBootstrapReady)",
 	)
 	assertOrder(lifecycleText, "insertSubscribeOnce sync.Once", "insertSubscribeOnce.Do(func()")
+}
+
+func TestHTTPPortalBootstrapMatchesMountedCatalog(t *testing.T) {
+	for _, mount := range []string{"/portal", "/console/portal"} {
+		t.Run(mount, func(t *testing.T) {
+			mux := http.NewServeMux()
+			contributions, err := newGatewayPortalCatalogContributions()
+			if err != nil {
+				t.Fatal(err)
+			}
+			source := newGatewayPortalCatalogSource(nil, nil, nil, contributions)
+			registerHTTPPortalRoutes(mux, mount, portal.Options{}, source)
+			res := httptest.NewRecorder()
+			mux.ServeHTTP(res, httptest.NewRequest(http.MethodGet, mount+"/api/v1/bootstrap", nil))
+			if res.Code != http.StatusOK {
+				t.Fatalf("bootstrap status %d: %s", res.Code, res.Body.String())
+			}
+			var bootstrap struct {
+				Read struct {
+					BasePath    string   `json:"base_path"`
+					Unavailable []string `json:"unavailable_operations"`
+				} `json:"portal_read"`
+				Endpoints map[string]string `json:"endpoints"`
+			}
+			if err := json.Unmarshal(res.Body.Bytes(), &bootstrap); err != nil {
+				t.Fatal(err)
+			}
+			if bootstrap.Read.BasePath != mount+"/" {
+				t.Fatalf("base_path = %q", bootstrap.Read.BasePath)
+			}
+			if !reflect.DeepEqual(bootstrap.Read.Unavailable, []string{"semanticSnapshot"}) {
+				t.Fatalf("unavailable_operations = %v", bootstrap.Read.Unavailable)
+			}
+			catalog := httptest.NewRecorder()
+			mux.ServeHTTP(catalog, httptest.NewRequest(http.MethodPost, bootstrap.Endpoints["portal_catalog"], strings.NewReader(`{"operationName":"PortalCatalogV1"}`)))
+			if catalog.Code != http.StatusOK {
+				t.Fatalf("catalog status %d: %s", catalog.Code, catalog.Body.String())
+			}
+			var result struct {
+				Data struct {
+					Catalog json.RawMessage `json:"portalCatalogV1"`
+				} `json:"data"`
+				Errors json.RawMessage `json:"errors"`
+			}
+			if err := json.Unmarshal(catalog.Body.Bytes(), &result); err != nil {
+				t.Fatal(err)
+			}
+			if len(result.Data.Catalog) == 0 || len(result.Errors) != 0 {
+				t.Fatalf("catalog response: %s", catalog.Body.String())
+			}
+		})
+	}
 }

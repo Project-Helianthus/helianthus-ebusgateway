@@ -17,6 +17,7 @@ import (
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/vaillant/systemconfig"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
@@ -72,7 +73,7 @@ const (
 	circuit_flow_temp      = uint16(0x0008) // flow_temperature (VF[x])
 	circuit_pump_status    = uint16(0x001B) // pump_status (observed Vaillant "Status Pump")
 	circuit_circuit_state  = uint16(0x001E) // circuit_state (observed Vaillant "Status circuit"; 0=standby 1=heating 2=cooling 3=dhw)
-	circuit_calc_flow_temp = uint16(0x0020) // calculated_flow_temperature
+	circuit_calc_flow_temp = uint16(0x0020) // legacy selector name; circuit_unknown_10 raw evidence, not a temperature
 	circuit_mixer_position = uint16(0x0021) // mixer_position_pct
 	circuit_humidity       = uint16(0x0022) // room_humidity_pct
 	circuit_dew_point      = uint16(0x0023) // dew_point_temperature
@@ -294,6 +295,26 @@ func startVaillantSemanticPolling(ctx context.Context, cfg ebusgateway.Config, g
 	return poller
 }
 
+// sourceAndCompanion returns the initiator and companion currently selected
+// for the poller under its state lock.
+func (p *vaillantSemanticPoller) sourceAndCompanion() (byte, byte) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.source, p.companion
+}
+
+// setSourceAndCompanion rebinds the poller to the initiator and companion
+// admitted by the current generation, so a successor that selects different
+// addresses is not served with the first generation's cached ones.
+func (p *vaillantSemanticPoller) setSourceAndCompanion(source, companion byte) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	p.source, p.companion = source, companion
+	p.mu.Unlock()
+}
+
 type vaillantSemanticPoller struct {
 	scheduler *ebusgateway.SemanticReadScheduler
 	tasks     *semanticTaskScheduler
@@ -327,8 +348,9 @@ type vaillantSemanticPoller struct {
 	fm5EvidenceTTL           time.Duration
 	circuitFullScanInterval  time.Duration
 
-	pollMu sync.Mutex
-	readMu sync.Mutex
+	pollMu          sync.Mutex
+	boilerPublishMu sync.Mutex
+	readMu          sync.Mutex
 
 	// identityProbedAddresses tracks per-address probe attempts for
 	// EnqueueAddressIdentityProbe (P5). Each address is probed at
@@ -341,6 +363,7 @@ type vaillantSemanticPoller struct {
 	mu                          sync.Mutex
 	controller                  byte
 	boilerAddress               byte
+	boilerThermal               *boilerThermalPublisher
 	regulatorCapability         productids.ControllerCapability
 	regAbsenceState             regulatorAbsenceState
 	regAbsenceSince             time.Time
@@ -1983,11 +2006,6 @@ func (p *vaillantSemanticPoller) refreshCircuits(ctx context.Context) {
 			snapshot.PumpStatusLiveAt = now
 			anyRead = true
 		}
-		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_calc_flow_temp); ok {
-			v := value
-			snapshot.CalcFlowTempC = &v
-			anyRead = true
-		}
 		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_mixer_position); ok {
 			v := value
 			snapshot.MixerPositionPct = &v
@@ -2049,12 +2067,8 @@ func (p *vaillantSemanticPoller) readDhwPseudoCircuitEvidence(ctx context.Contex
 	if isDhwPseudoCircuitTemperatureEvidence(flow) {
 		snapshot.FlowTemperatureC = flow
 	}
-	calc, calcKnown := p.readDhwPseudoCircuitTemperatureEvidence(ctx, instance, circuit_calc_flow_temp)
-	if isDhwPseudoCircuitTemperatureEvidence(calc) {
-		snapshot.CalcFlowTempC = calc
-	}
-	if snapshot.FlowTemperatureC == nil && snapshot.CalcFlowTempC == nil {
-		return nil, flowKnown && calcKnown
+	if snapshot.FlowTemperatureC == nil {
+		return nil, flowKnown
 	}
 	return snapshot, true
 }
@@ -2181,9 +2195,6 @@ func mergeCircuitSnapshotNonDestructive(existing, incoming *vaillantCircuitSnaps
 		merged.PumpStatusRaw = cloneUint16Ptr(incoming.PumpStatusRaw)
 		merged.PumpStatusLiveAt = incoming.PumpStatusLiveAt
 	}
-	if incoming.CalcFlowTempC != nil {
-		merged.CalcFlowTempC = cloneFloat64Ptr(incoming.CalcFlowTempC)
-	}
 	if incoming.MixerPositionPct != nil {
 		merged.MixerPositionPct = cloneFloat64Ptr(incoming.MixerPositionPct)
 	}
@@ -2224,12 +2235,12 @@ func cloneCircuitSnapshot(snapshot *vaillantCircuitSnapshot) *vaillantCircuitSna
 		FrostProtectionC:   cloneFloat64Ptr(snapshot.FrostProtectionC),
 		PumpStatusRaw:      cloneUint16Ptr(snapshot.PumpStatusRaw),
 		PumpStatusLiveAt:   snapshot.PumpStatusLiveAt,
-		CalcFlowTempC:      cloneFloat64Ptr(snapshot.CalcFlowTempC),
-		MixerPositionPct:   cloneFloat64Ptr(snapshot.MixerPositionPct),
-		HumidityPct:        cloneFloat64Ptr(snapshot.HumidityPct),
-		DewPointC:          cloneFloat64Ptr(snapshot.DewPointC),
-		PumpHoursRaw:       cloneUint32Ptr(snapshot.PumpHoursRaw),
-		PumpStartsRaw:      cloneUint32Ptr(snapshot.PumpStartsRaw),
+		// CalcFlowTempC stays unavailable, including snapshots retained before the RR0020 correction.
+		MixerPositionPct: cloneFloat64Ptr(snapshot.MixerPositionPct),
+		HumidityPct:      cloneFloat64Ptr(snapshot.HumidityPct),
+		DewPointC:        cloneFloat64Ptr(snapshot.DewPointC),
+		PumpHoursRaw:     cloneUint32Ptr(snapshot.PumpHoursRaw),
+		PumpStartsRaw:    cloneUint32Ptr(snapshot.PumpStartsRaw),
 	}
 }
 
@@ -2624,18 +2635,17 @@ type vaillantSystemSnapshot struct {
 
 type boilerStatusField uint8
 
+// Circuit registers (GG=0x02) are not boiler fields: circuit 0's pump status
+// (RR=0x001B) and circuit state (RR=0x001E) are published only on the circuit
+// surface, so no boiler status field is defined for them.
 const (
 	boilerStatusFieldFlowTemperature boilerStatusField = iota
-	boilerStatusFieldPumpActive
-	boilerStatusFieldHeatingStatusRaw
 )
 
 type boilerStatusRegisterDecoder uint8
 
 const (
 	boilerStatusRegisterDecoderFloat32 boilerStatusRegisterDecoder = iota
-	boilerStatusRegisterDecoderUint16Bool
-	boilerStatusRegisterDecoderUint16Int
 )
 
 type boilerStatusRegisterDefinition struct {
@@ -2661,22 +2671,6 @@ func boilerStatusRegisterDefinitionsForTier(tier boilerStatusTier) []boilerStatu
 				group:    localRegulator.group,
 				instance: regulatorInstance,
 				addr:     system_flow_temperature,
-			},
-			{
-				field:    boilerStatusFieldPumpActive,
-				decoder:  boilerStatusRegisterDecoderUint16Bool,
-				opcode:   localCircuits.opcode,
-				group:    localCircuits.group,
-				instance: 0x00,
-				addr:     circuit_pump_status,
-			},
-			{
-				field:    boilerStatusFieldHeatingStatusRaw,
-				decoder:  boilerStatusRegisterDecoderUint16Int,
-				opcode:   localCircuits.opcode,
-				group:    localCircuits.group,
-				instance: 0x00,
-				addr:     circuit_circuit_state,
 			},
 		}
 	case boilerStatusTierMedium, boilerStatusTierSlow:
@@ -2706,6 +2700,9 @@ func (p *vaillantSemanticPoller) refreshBoilerStatusTier(ctx context.Context, ti
 	boilerAddress := p.boilerAddress
 	p.mu.Unlock()
 	if controller == 0 && boilerAddress == 0 {
+		if p.mergePublishedBoilerFlow() {
+			p.publishBoilerStatus(semanticSnapshotSourceLive)
+		}
 		return
 	}
 
@@ -2728,6 +2725,9 @@ func (p *vaillantSemanticPoller) refreshBoilerStatusTier(ctx context.Context, ti
 			p.mu.Lock()
 			p.boiler = mergeBoilerSnapshotNonDestructive(p.boiler, snapshot)
 			p.mu.Unlock()
+		}
+		if p.mergePublishedBoilerFlow() {
+			p.publishBoilerStatus(semanticSnapshotSourceLive)
 		}
 		return
 	}
@@ -2760,29 +2760,8 @@ func (p *vaillantSemanticPoller) refreshBoilerStatusB524(ctx context.Context, ti
 			updated = true
 			switch register.field {
 			case boilerStatusFieldFlowTemperature:
-				snapshot.FlowTemperatureC = &value
-			}
-		case boilerStatusRegisterDecoderUint16Bool:
-			raw, ok := p.readB524Uint16(ctx, register.opcode, register.group, register.instance, register.addr)
-			if !ok || raw == nil {
-				continue
-			}
-			updated = true
-			switch register.field {
-			case boilerStatusFieldPumpActive:
-				active := *raw != 0
-				snapshot.CentralHeatingPumpActive = &active
-			}
-		case boilerStatusRegisterDecoderUint16Int:
-			raw, ok := p.readB524Uint16(ctx, register.opcode, register.group, register.instance, register.addr)
-			if !ok || raw == nil {
-				continue
-			}
-			updated = true
-			switch register.field {
-			case boilerStatusFieldHeatingStatusRaw:
-				status := int(*raw)
-				snapshot.HeatingStatusRaw = &status
+				// Controller flow is not qualified boiler flow.
+				_ = value
 			}
 		}
 	}
@@ -2798,7 +2777,6 @@ func (p *vaillantSemanticPoller) mergeBoilerMirrorFieldsFromSnapshots(snapshot *
 	p.mu.Lock()
 	controller := p.controller
 	system := cloneSystemSnapshot(p.system)
-	circuit := cloneCircuitSnapshot(p.circuits[0x00])
 	p.mu.Unlock()
 	if controller == 0 {
 		return false
@@ -2806,23 +2784,11 @@ func (p *vaillantSemanticPoller) mergeBoilerMirrorFieldsFromSnapshots(snapshot *
 
 	now := p.now()
 	maxAge := p.boilerMirrorMaxAge()
-	updated := false
-	if system != nil && system.Controller == controller && system.SystemFlowTemperature != nil && semanticSnapshotObservedWithin(system.SystemFlowTemperatureLiveAt, now, maxAge) {
-		snapshot.FlowTemperatureC = cloneFloat64Ptr(system.SystemFlowTemperature)
-		updated = true
-	}
-	if circuit != nil && circuit.Controller == controller {
-		if circuit.PumpStatusRaw != nil && semanticSnapshotObservedWithin(circuit.PumpStatusLiveAt, now, maxAge) {
-			active := *circuit.PumpStatusRaw != 0
-			snapshot.CentralHeatingPumpActive = &active
-			updated = true
-		}
-		if circuit.CircuitStateRaw != nil && semanticSnapshotObservedWithin(circuit.CircuitStateLiveAt, now, maxAge) {
-			status := int(*circuit.CircuitStateRaw)
-			snapshot.HeatingStatusRaw = &status
-			updated = true
-		}
-	}
+	// Fresh controller flow triggers publication without supplying boiler flow.
+	updated := system != nil && system.Controller == controller && system.SystemFlowTemperature != nil && semanticSnapshotObservedWithin(system.SystemFlowTemperatureLiveAt, now, maxAge)
+	// Circuit 0 is not a boiler source. Its pump status and circuit state stay
+	// on the circuit surface; the boiler pump and heating-status diagnostic
+	// remain absent here, so partial merges preserve independent boiler evidence.
 	if updated {
 		p.mergeBoilerDHWFieldsFromSnapshot(snapshot)
 	}
@@ -2896,10 +2862,8 @@ func (p *vaillantSemanticPoller) refreshBoilerStatusB509(ctx context.Context, bo
 	updated := false
 	switch tier {
 	case boilerStatusTierFast:
-		if value := p.readB509DATA2c(ctx, boilerAddress, boiler_b509_flow_temperature); value != nil {
-			snapshot.FlowTemperatureC = value
-			updated = true
-		}
+		// Acquisition retains native evidence; only the hub result supplies flow.
+		_, updated = p.readB509Value(ctx, boilerAddress, boiler_b509_flow_temperature)
 		if value := p.readB509OnOff(ctx, boilerAddress, boiler_b509_central_heating_pump); value != nil {
 			snapshot.CentralHeatingPumpActive = value
 			updated = true
@@ -3048,8 +3012,12 @@ func (p *vaillantSemanticPoller) publishBoilerStatus(source semanticSnapshotSour
 		return
 	}
 
+	p.boilerPublishMu.Lock()
+	defer p.boilerPublishMu.Unlock()
+
+	p.mergePublishedBoilerFlow()
 	p.mu.Lock()
-	snapshot := p.boiler
+	snapshot := cloneBoilerSnapshot(p.boiler)
 	p.mu.Unlock()
 
 	previous := p.provider.BoilerStatus()
@@ -3942,6 +3910,8 @@ func (p *vaillantSemanticPoller) publishSystem(source semanticSnapshotSource) {
 			ModuleConfigurationVR71: uint16ToIntPtr(snapshot.ModuleConfigurationVR71),
 		},
 	}
+	dhwBound := p.controllerConfigBound()
+	current.Config.DhwBivalenceBound = &dhwBound
 
 	switch source {
 	case semanticSnapshotSourceCache:
@@ -4941,6 +4911,7 @@ func systemStatusEquals(a, b *graphql.SystemStatus) bool {
 		floatPtrEquals(a.Config.AlternativePoint, b.Config.AlternativePoint) &&
 		floatPtrEquals(a.Config.HeatingCircuitBivalencePoint, b.Config.HeatingCircuitBivalencePoint) &&
 		floatPtrEquals(a.Config.DhwBivalencePoint, b.Config.DhwBivalencePoint) &&
+		configBoundEquals(a.Config.DhwBivalenceBound, b.Config.DhwBivalenceBound) &&
 		floatPtrEquals(a.Config.HcEmergencyTemperature, b.Config.HcEmergencyTemperature) &&
 		floatPtrEquals(a.Config.HwcMaxFlowTempDesired, b.Config.HwcMaxFlowTempDesired) &&
 		intPtrEquals(a.Config.MaxRoomHumidity, b.Config.MaxRoomHumidity) &&
@@ -6045,6 +6016,9 @@ func (p *vaillantSemanticPoller) readB509ValueWithMaxAge(ctx context.Context, ta
 			response, err := p.sendSemanticFrame(reqCtx, request)
 			cancel()
 			p.readMu.Unlock()
+			if addr == boiler_b509_flow_temperature {
+				p.retainBoilerThermalRead(request, response, err)
+			}
 
 			if err != nil {
 				lastErr = err
@@ -6199,7 +6173,9 @@ func (p *vaillantSemanticPoller) SetSystemConfig(ctx context.Context, fieldName 
 		return p.writeSystemCStringPair(ctx, fieldName, rawValue, pair)
 	}
 
-	payload, spec, err := graphql.EncodeSystemConfigValue(fieldName, rawValue)
+	// Bound validation consults only identity already held in the registry and
+	// completes before any bus I/O. Missing API qualifiers stay unmatched.
+	payload, spec, _, err := systemconfig.EncodeSystemConfigValueForController(fieldName, rawValue, p.controllerB524Identity())
 	if err != nil {
 		return graphql.ConfigMutationResult{Success: false, Error: err.Error()}
 	}
@@ -6207,10 +6183,10 @@ func (p *vaillantSemanticPoller) SetSystemConfig(ctx context.Context, fieldName 
 	return p.writeSystemSingleRegister(ctx, fieldName, rawValue, spec, payload)
 }
 
-func (p *vaillantSemanticPoller) writeSystemSingleRegister(ctx context.Context, fieldName, rawValue string, spec graphql.ConfigFieldSpec, payload []byte) graphql.ConfigMutationResult {
-	opcode := byte(0x02)
+func (p *vaillantSemanticPoller) writeSystemSingleRegister(ctx context.Context, fieldName, rawValue string, spec systemconfig.ConfigFieldSpec, payload []byte) graphql.ConfigMutationResult {
+	opcode := systemconfig.OpcodeLocal
 	group := spec.Group()
-	instance := byte(0x00)
+	instance := systemconfig.Instance
 	addr := spec.Addr()
 
 	if err := p.writeB524Value(ctx, opcode, group, instance, addr, payload); err != nil {
@@ -6221,10 +6197,10 @@ func (p *vaillantSemanticPoller) writeSystemSingleRegister(ctx context.Context, 
 	if !ok {
 		return graphql.ConfigMutationResult{Success: false, Error: "b524 write confirm failed: read-back unavailable"}
 	}
-	if err := graphql.ConfirmDecodableReadback(spec, readback); err != nil {
+	if err := systemconfig.ConfirmDecodableReadback(spec, readback); err != nil {
 		return graphql.ConfigMutationResult{Success: false, Error: fmt.Sprintf("b524 write confirm failed: %v", err)}
 	}
-	if !graphql.ConfigReadbackMatchesWrite(spec, payload, readback) {
+	if !systemconfig.ConfigReadbackMatchesWrite(spec, payload, readback) {
 		return graphql.ConfigMutationResult{Success: false, Error: "b524 write confirm failed: read-back mismatch"}
 	}
 
@@ -7166,10 +7142,11 @@ func (p *vaillantSemanticPoller) discoverB524RootWithOptions(ctx context.Context
 	// matching the admitted source or companion is dropped regardless
 	// of how it entered the candidate set.
 	skipReservedSourceCompanion := func(addr byte) bool {
-		if addr == p.source {
+		reservedSource, reservedCompanion := p.sourceAndCompanion()
+		if addr == reservedSource {
 			return true
 		}
-		if p.companion != 0 && addr == p.companion {
+		if reservedCompanion != 0 && addr == reservedCompanion {
 			return true
 		}
 		return false
@@ -7313,10 +7290,11 @@ func (p *vaillantSemanticPoller) EnqueueAddressIdentityProbe(addr byte) {
 	// these (skipReservedSourceCompanion); this probe path must
 	// honor the same protection so we don't emit identity traffic
 	// to our own admitted address (or its companion).
-	if addr == p.source {
+	probeSource, probeCompanion := p.sourceAndCompanion()
+	if addr == probeSource {
 		return
 	}
-	if p.companion != 0 && addr == p.companion {
+	if probeCompanion != 0 && addr == probeCompanion {
 		return
 	}
 	// P5 round-6 (Codex P2 follow-up 2026-05-08): resolve the input
@@ -7367,7 +7345,8 @@ func (p *vaillantSemanticPoller) EnqueueAddressIdentityProbe(addr byte) {
 	probeFn := func(ctx context.Context) {
 		probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		_, err := registryScanDirectedFn(probeCtx, p.bus, p.reg, p.source, []byte{probeAddr})
+		scanSource, _ := p.sourceAndCompanion()
+		_, err := registryScanDirectedFn(probeCtx, p.bus, p.reg, scanSource, []byte{probeAddr})
 		if err != nil {
 			log.Printf("semantic_address_identity_probe address=0x%02X status=fail err=%v", probeAddr, err)
 			return
@@ -7636,6 +7615,11 @@ func (p *vaillantSemanticPoller) readB524ValueLive(ctx context.Context, opcode, 
 }
 
 func (p *vaillantSemanticPoller) readB524Float32LE(ctx context.Context, opcode, group, instance byte, addr uint16) (float64, bool) {
+	// The circuit RR0020 selector is raw evidence in the native catalog.
+	// Reject it before acquisition or cache lookup, regardless of payload width.
+	if opcode == localCircuits.opcode && group == localCircuits.group && addr == circuit_calc_flow_temp {
+		return 0, false
+	}
 	raw, ok := p.readB524Value(ctx, opcode, group, instance, addr)
 	if !ok || len(raw) < 4 {
 		return 0, false
@@ -8626,6 +8610,7 @@ func (adapter mcpSemanticProviderAdapter) System() *mcp.SystemStatus {
 			AlternativePoint:             cloneFloatPtr(status.Config.AlternativePoint),
 			HeatingCircuitBivalencePoint: cloneFloatPtr(status.Config.HeatingCircuitBivalencePoint),
 			DhwBivalencePoint:            cloneFloatPtr(status.Config.DhwBivalencePoint),
+			DhwBivalenceBound:            mcpConfigBound(status.Config.DhwBivalenceBound),
 			HcEmergencyTemperature:       cloneFloatPtr(status.Config.HcEmergencyTemperature),
 			HwcMaxFlowTempDesired:        cloneFloatPtr(status.Config.HwcMaxFlowTempDesired),
 			MaxRoomHumidity:              cloneIntPtr(status.Config.MaxRoomHumidity),

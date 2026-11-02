@@ -35,13 +35,11 @@ func TestAM8Deadline_NonBlockingPath_InFlightCancelled_SuppressedSilently(t *tes
 	mock := newP3MockTransport()
 
 	mux := New(Config{
-		Protocol:        "enh",
-		Network:         "tcp",
-		Address:         "127.0.0.1:0",
-		ReadTimeout:     200 * time.Millisecond,
-		StartDeadline:   150 * time.Millisecond,
-		PendingStartTTL: 24 * time.Hour,
-		SYNInterval:     time.Hour,
+		Protocol:      "enh",
+		Network:       "tcp",
+		Address:       "127.0.0.1:0",
+		ReadTimeout:   200 * time.Millisecond,
+		StartDeadline: 150 * time.Millisecond,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -143,13 +141,11 @@ func TestRequestStartErr_InFlightCancelled_SuppressedSilently(t *testing.T) {
 	}
 
 	mux := New(Config{
-		Protocol:        "enh",
-		Network:         "tcp",
-		Address:         "127.0.0.1:0",
-		ReadTimeout:     200 * time.Millisecond,
-		StartDeadline:   2 * time.Second, // long; we want the err path, not the deadline
-		PendingStartTTL: 24 * time.Hour,
-		SYNInterval:     time.Hour,
+		Protocol:      "enh",
+		Network:       "tcp",
+		Address:       "127.0.0.1:0",
+		ReadTimeout:   200 * time.Millisecond,
+		StartDeadline: 2 * time.Second, // long; we want the err path, not the deadline
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -212,13 +208,11 @@ func TestRequestStartErr_InFlightCancelled_ResetErr_DeliversReset(t *testing.T) 
 	}
 
 	mux := New(Config{
-		Protocol:        "enh",
-		Network:         "tcp",
-		Address:         "127.0.0.1:0",
-		ReadTimeout:     200 * time.Millisecond,
-		StartDeadline:   2 * time.Second,
-		PendingStartTTL: 24 * time.Hour,
-		SYNInterval:     time.Hour,
+		Protocol:      "enh",
+		Network:       "tcp",
+		Address:       "127.0.0.1:0",
+		ReadTimeout:   200 * time.Millisecond,
+		StartDeadline: 2 * time.Second,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())

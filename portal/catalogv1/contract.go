@@ -36,6 +36,19 @@ type Identity struct {
 	ManifestVersion string `json:"manifest_version"`
 	Digest          string `json:"digest"`
 }
+
+const DescriptorVersion = "helianthus.gateway.portal-descriptor/v1"
+
+// ReadDescriptor carries admitted presentation metadata, never action authority.
+type ReadDescriptor struct {
+	Identity
+	DescriptorVersion string                      `json:"descriptor_version"`
+	Groups            []contributionv1.Group      `json:"groups"`
+	Fields            []contributionv1.Field      `json:"fields"`
+	Views             []contributionv1.View       `json:"views"`
+	Diagnostics       []contributionv1.Diagnostic `json:"diagnostics"`
+}
+
 type Domain struct {
 	Pack        contributionv1.PackRef `json:"pack"`
 	SourceState string                 `json:"source_state"`
@@ -48,7 +61,7 @@ type Source struct {
 	EvaluationDigest string `json:"evaluation_digest"`
 	BindingID        string `json:"binding_id"`
 	SourceEpoch      string `json:"source_epoch"`
-	DriverGeneration uint64 `json:"driver_generation"`
+	DriverGeneration uint64 `json:"driver_generation,string"`
 	// These detached records retain the evidence-bearing SemReg tuple.  The
 	// scalar fence members above are for admission claims; they never replace
 	// provenance, disposition, loss, quality, binding, or revision data.
@@ -101,17 +114,17 @@ type Quarantine struct {
 	Reason          string `json:"reason"`
 }
 type Catalog struct {
-	Contract           string       `json:"contract"`
-	CatalogRevision    string       `json:"catalog_revision"`
-	CatalogDigest      string       `json:"catalog_digest"`
-	EvaluationInstant  time.Time    `json:"evaluation_instant"`
-	AuthorizationScope string       `json:"authorization_scope"`
-	Domains            []Domain     `json:"domains"`
-	Contributions      []Identity   `json:"contributions"`
-	Resources          []Resource   `json:"resources"`
-	Fields             []Field      `json:"fields"`
-	Actions            []Action     `json:"actions"`
-	Quarantines        []Quarantine `json:"quarantines"`
+	Contract          string           `json:"contract"`
+	CatalogRevision   string           `json:"catalog_revision"`
+	CatalogDigest     string           `json:"catalog_digest"`
+	EvaluationInstant time.Time        `json:"evaluation_instant"`
+	Domains           []Domain         `json:"domains"`
+	Contributions     []Identity       `json:"contributions"`
+	Descriptors       []ReadDescriptor `json:"descriptors"`
+	Resources         []Resource       `json:"resources"`
+	Fields            []Field          `json:"fields"`
+	Actions           []Action         `json:"actions"`
+	Quarantines       []Quarantine     `json:"quarantines"`
 }
 
 // Descriptor is a validated contribution plus its host-computed digest.
@@ -128,11 +141,6 @@ type SourceCapture interface {
 type FencedSourceCapture interface {
 	SourceCapture
 	Fence() string
-}
-type Authorizer interface {
-	Scope(caller any) (string, error)
-	Discover(caller any, action Action) bool
-	Invoke(caller any, action Action) bool
 }
 type Invoker interface {
 	Invoke(action Action, claim Claims) (json.RawMessage, error)
@@ -165,7 +173,6 @@ type Composer struct {
 	quarantined map[identity]bool
 	revision    uint64
 	source      SourceCapture
-	auth        Authorizer
 	now         func() time.Time
 	invoker     Invoker
 	revalidator Revalidator
@@ -186,8 +193,8 @@ func (c *Composer) SetClock(now func() time.Time) {
 
 type identity struct{ driver, manifest, version string }
 
-func New(index contributionv1.SemanticIndex, source SourceCapture, auth Authorizer, invoker Invoker) *Composer {
-	return &Composer{index: index, descriptors: make(map[identity]Descriptor), quarantined: make(map[identity]bool), source: source, auth: auth, invoker: invoker, now: func() time.Time { return time.Now().UTC() }}
+func New(index contributionv1.SemanticIndex, source SourceCapture, invoker Invoker) *Composer {
+	return &Composer{index: index, descriptors: make(map[identity]Descriptor), quarantined: make(map[identity]bool), source: source, invoker: invoker, now: func() time.Time { return time.Now().UTC() }}
 }
 
 // Publish validates and binds the digest itself. A same identity with divergent
@@ -264,7 +271,10 @@ func (c *Composer) InstallDetachedRegistrySnapshot(accepted []contributionv1.Acc
 		if _, exists := nextDescriptors[key]; exists {
 			return errors.New("duplicate detached descriptor identity")
 		}
-		nextDescriptors[key] = Descriptor{Manifest: item.Manifest, Digest: item.Digest}
+		if key != (identity{item.Manifest.Contributor.DriverID, item.Manifest.ManifestID, item.Manifest.ManifestVersion}) {
+			return errors.New("detached descriptor key does not match manifest")
+		}
+		nextDescriptors[key] = Descriptor{Manifest: clone(item.Manifest), Digest: item.Digest}
 	}
 	nextQuarantined := make(map[identity]bool, len(quarantined))
 	for _, item := range quarantined {
@@ -298,6 +308,10 @@ func sortCatalog(c *Catalog) {
 	})
 	sort.Slice(c.Contributions, func(i, j int) bool {
 		return less(c.Contributions[i].DriverID, c.Contributions[i].ManifestID, c.Contributions[i].ManifestVersion, c.Contributions[j].DriverID, c.Contributions[j].ManifestID, c.Contributions[j].ManifestVersion)
+	})
+	sort.Slice(c.Descriptors, func(i, j int) bool {
+		a, b := c.Descriptors[i], c.Descriptors[j]
+		return less(a.DriverID, a.ManifestID, a.ManifestVersion, b.DriverID, b.ManifestID, b.ManifestVersion)
 	})
 	sort.Slice(c.Resources, func(i, j int) bool {
 		a, b := c.Resources[i], c.Resources[j]

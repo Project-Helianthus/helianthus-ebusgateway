@@ -93,6 +93,10 @@ type BusObservabilityStore struct {
 	// pending. A byte-less event right after it is the protocol
 	// layer's outcome re-emit of the same observation.
 	lastByteEchoMismatchAt time.Time
+	// lastEchoMismatchRequest is the request carried by that event, when
+	// it had one; a re-emit carrying a different request is not a repeat.
+	lastEchoMismatchRequest    protocol.Frame
+	lastEchoMismatchHasRequest bool
 
 	recent      []BusMessageRecord
 	recentStart int
@@ -2555,8 +2559,13 @@ func echoMismatchByteObserved(event protocol.BusEvent) bool {
 // new observation and which subclass it belongs to.
 func (store *BusObservabilityStore) attributeEchoMismatchLocked(event protocol.BusEvent, escapePairTotal uint64) (bool, string) {
 	now := store.now()
+	// A driver replacement restarts the mux counters; do not carry the
+	// previous generation's attribution count into the new one.
+	if escapePairTotal < store.escapePairAttributed {
+		store.escapePairAttributed = 0
+	}
 	if echoMismatchByteObserved(event) {
-		store.lastByteEchoMismatchAt = now
+		store.armEchoMismatchReemitLocked(event, now)
 		return true, classifyEchoMismatchSubclass(event.Byte, event.EchoWasEscaped)
 	}
 	if escapePairTotal > store.escapePairAttributed {
@@ -2564,11 +2573,25 @@ func (store *BusObservabilityStore) attributeEchoMismatchLocked(event protocol.B
 		store.lastByteEchoMismatchAt = time.Time{}
 		return true, echoMismatchSubclassEscapePair
 	}
-	if !store.lastByteEchoMismatchAt.IsZero() && now.Sub(store.lastByteEchoMismatchAt) <= echoMismatchReemitWindow {
+	if !store.lastByteEchoMismatchAt.IsZero() && now.Sub(store.lastByteEchoMismatchAt) <= echoMismatchReemitWindow &&
+		(!event.HasRequest || !store.lastEchoMismatchHasRequest || framesEqual(event.Request, store.lastEchoMismatchRequest)) {
 		store.lastByteEchoMismatchAt = time.Time{}
 		return false, ""
 	}
+	// Counted as unknown: its own outcome re-emit may follow.
+	store.armEchoMismatchReemitLocked(event, now)
 	return true, echoMismatchSubclassByteUnknown
+}
+
+func (store *BusObservabilityStore) armEchoMismatchReemitLocked(event protocol.BusEvent, now time.Time) {
+	store.lastByteEchoMismatchAt = now
+	store.lastEchoMismatchRequest = event.Request
+	store.lastEchoMismatchHasRequest = event.HasRequest
+}
+
+func framesEqual(a, b protocol.Frame) bool {
+	return a.Source == b.Source && a.Target == b.Target && a.Primary == b.Primary &&
+		a.Secondary == b.Secondary && a.FrameType == b.FrameType && bytes.Equal(a.Data, b.Data)
 }
 
 // SetEscapePairFailureProvider registers the source of the mux's lifetime

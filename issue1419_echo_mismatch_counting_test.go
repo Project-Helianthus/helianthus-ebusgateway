@@ -83,9 +83,52 @@ func TestEchoMismatchByteLessOutsideReemitWindowIsByteUnknown(t *testing.T) {
 
 	_ = store.OnBusEvent(echoMismatchEvent(0x42, true))
 	_ = store.OnBusEvent(echoMismatchEvent(0, false))
+	*now = now.Add(echoMismatchReemitWindow + time.Millisecond)
 	_ = store.OnBusEvent(echoMismatchEvent(0, false))
 	metricLine(t, store, echoMismatchErrorSeries, "4")
 	metricLine(t, store, subclassSeries("byte_unknown"), "2")
+}
+
+// Kills: counting a real zero-byte mismatch and its outcome re-emit twice.
+func TestEchoMismatchZeroByteAndReemitCountedOnce(t *testing.T) {
+	t.Parallel()
+	store, _ := echoMismatchTestStore()
+	_ = store.OnBusEvent(echoMismatchEvent(0, false))
+	_ = store.OnBusEvent(echoMismatchEvent(0, false))
+	metricLine(t, store, echoMismatchErrorSeries, "1")
+	metricLine(t, store, subclassSeries("byte_unknown"), "1")
+}
+
+// Kills: deduplicating a byte-less event whose request differs from the
+// preceding byte-bearing event.
+func TestEchoMismatchDifferentRequestIsNotReemit(t *testing.T) {
+	t.Parallel()
+	store, _ := echoMismatchTestStore()
+	first := echoMismatchEvent(0x42, false)
+	first.HasRequest = true
+	first.Request = protocol.Frame{Source: 0x10, Target: 0x15, Primary: 0xB5, Secondary: 0x09, Data: []byte{1}}
+	other := echoMismatchEvent(0, false)
+	other.HasRequest = true
+	other.Request = protocol.Frame{Source: 0x10, Target: 0x15, Primary: 0xB5, Secondary: 0x09, Data: []byte{2}}
+	_ = store.OnBusEvent(first)
+	_ = store.OnBusEvent(other)
+	metricLine(t, store, echoMismatchErrorSeries, "2")
+	metricLine(t, store, subclassSeries("byte_unknown"), "1")
+}
+
+// Kills: carrying escape-pair attribution across a mux counter reset.
+func TestEchoMismatchEscapePairCounterResetIsAttributed(t *testing.T) {
+	t.Parallel()
+	store, now := echoMismatchTestStore()
+	var lead uint64 = 5
+	store.SetEscapePairFailureProvider(func() (uint64, uint64) { return lead, 0 })
+	for i := 0; i < 5; i++ {
+		_ = store.OnBusEvent(echoMismatchEvent(0, false))
+	}
+	lead = 1
+	*now = now.Add(time.Second)
+	_ = store.OnBusEvent(echoMismatchEvent(0, false))
+	metricLine(t, store, subclassSeries("escape_pair_verify"), "6")
 }
 
 // Kills: a re-emit window that survives an intervening event of another kind.

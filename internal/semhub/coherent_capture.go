@@ -38,6 +38,23 @@ type CoherentCapture struct {
 // reenter the hub or block on a hub writer. Inspect remains an independent,
 // ungated audit surface.
 func (h *Hub) Capture(ctx context.Context, ids []semreg.AssetID, now func() time.Time) (CoherentCapture, error) {
+	return h.capture(ctx, ids, func() (semreg.TimePoint, captureContext, error) {
+		at := now()
+		wall := semreg.TimePoint{UnixNanoseconds: semreg.Int64(strconv.FormatInt(at.UnixNano(), 10)), ClockID: "clock.utc", UncertaintyNS: "0"}
+		return wall, func(snapshot semreg.Snapshot) (semreg.EvaluationContext, error) {
+			return recordedEvaluationContext(snapshot, wall)
+		}, nil
+	})
+}
+
+// captureContext returns the evaluation context of one admitted snapshot from
+// the inputs sampled once for the whole capture.
+type captureContext func(semreg.Snapshot) (semreg.EvaluationContext, error)
+
+// capture holds the shared selection, locking, admission, exposure and
+// cancellation rules. sample runs exactly once, under the read lock, after the
+// selection bound and restoring checks; it must not reenter the hub.
+func (h *Hub) capture(ctx context.Context, ids []semreg.AssetID, sample func() (semreg.TimePoint, captureContext, error)) (CoherentCapture, error) {
 	if h == nil {
 		return CoherentCapture{}, ErrCaptureUnavailable
 	}
@@ -52,12 +69,15 @@ func (h *Hub) Capture(ctx context.Context, ids []semreg.AssetID, now func() time
 	if h.restoring {
 		return CoherentCapture{}, ErrCaptureUnavailable
 	}
-	at := now()
+	at, contextFor, err := sample()
+	if err != nil {
+		return CoherentCapture{}, err
+	}
 	metadata, err := packs.NewMetadataRegistry()
 	if err != nil {
 		return CoherentCapture{}, err
 	}
-	result := CoherentCapture{Metadata: metadata, EvaluatedAt: semreg.TimePoint{UnixNanoseconds: semreg.Int64(strconv.FormatInt(at.UnixNano(), 10)), ClockID: "clock.utc", UncertaintyNS: "0"}, Assets: make([]CapturedAsset, 0, len(ids))}
+	result := CoherentCapture{Metadata: metadata, EvaluatedAt: at, Assets: make([]CapturedAsset, 0, len(ids))}
 	seen := map[semreg.AssetID]bool{}
 	for _, id := range ids {
 		if err := ctx.Err(); err != nil {
@@ -92,7 +112,7 @@ func (h *Hub) Capture(ctx context.Context, ids []semreg.AssetID, now func() time
 				if !item.PublicAdmitted {
 					item.UnavailableReason = "semantic.read.reason.publication_withheld"
 				} else {
-					evaluationContext, err := recordedEvaluationContext(snapshot, result.EvaluatedAt)
+					evaluationContext, err := contextFor(snapshot)
 					if err != nil {
 						return CoherentCapture{}, err
 					}

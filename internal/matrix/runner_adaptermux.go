@@ -27,6 +27,9 @@ const (
 // labelPattern bounds the opaque session, candidate and setup labels.
 var labelPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
+// ipv4LikePattern catches dotted-number labels such as 10.0.0.12.
+var ipv4LikePattern = regexp.MustCompile(`^[0-9]+(\.[0-9]+){3}$`)
+
 type workloadAddresses struct {
 	initiator    byte
 	initiatorSet bool
@@ -43,6 +46,9 @@ func validateLabel(flagName string, value string, required bool) error {
 	}
 	if !labelPattern.MatchString(value) {
 		return fmt.Errorf("%s %q is not an opaque label (letters, digits, '.', '_', '-', at most 64)", flagName, value)
+	}
+	if net.ParseIP(value) != nil || ipv4LikePattern.MatchString(value) {
+		return fmt.Errorf("%s %q looks like a network address; use an opaque label", flagName, value)
 	}
 	return nil
 }

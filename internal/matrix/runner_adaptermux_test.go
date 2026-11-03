@@ -430,6 +430,7 @@ func TestAdapterMuxV2OptionValidation(t *testing.T) {
 		{"empty session", func(options *RunnerOptions) { options.SessionID = "" }},
 		{"empty candidate", func(options *RunnerOptions) { options.Candidate = "" }},
 		{"setup with a path", func(options *RunnerOptions) { options.HardwareSetup = "../setup" }},
+		{"setup with an IPv4 literal", func(options *RunnerOptions) { options.HardwareSetup = "192.168.1.5" }},
 		{"candidate with a coordinate", func(options *RunnerOptions) { options.Candidate = "host:8888" }},
 		{"unknown transport", func(options *RunnerOptions) { options.Transports = []string{"EBUSD"} }},
 		{"expected failures", func(options *RunnerOptions) { options.ExpectedFailures = map[string]string{"ENS-AD01": "x"} }},

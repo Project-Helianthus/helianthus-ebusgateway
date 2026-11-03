@@ -128,6 +128,9 @@ func (stats *GuardedRelayStats) Snapshot() (forwarded int, refused int, refusals
 	return stats.forwarded, stats.refused, append([]string(nil), stats.refusals...)
 }
 
+// relayUpstreamTimeout bounds one upstream answer.
+const relayUpstreamTimeout = 10 * time.Second
+
 // ServeGuardedEbusdRelay relays one client connection to the ebusd command
 // port. Each client line passes CheckEbusdCommand; a refused line is answered
 // locally and never reaches ebusd. The upstream connection is dialed on the
@@ -174,11 +177,16 @@ func ServeGuardedEbusdRelay(ctx context.Context, client net.Conn, dialUpstream f
 				return fmt.Errorf("dial ebusd command port: %w", err)
 			}
 			upstreamReader = bufio.NewReader(upstream)
+			// A silent upstream must not outlive the case: closing the
+			// connection on cancellation unblocks the pending read.
+			conn := upstream
+			defer context.AfterFunc(ctx, func() { _ = conn.Close() })()
 		}
 		stats.record(true, command)
 		if _, err := io.WriteString(upstream, command+"\n"); err != nil {
 			return err
 		}
+		_ = upstream.SetReadDeadline(time.Now().Add(relayUpstreamTimeout))
 		lines, err := readEbusdAnswer(upstreamReader)
 		if err != nil {
 			return fmt.Errorf("ebusd answer: %w", err)

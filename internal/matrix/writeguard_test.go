@@ -211,7 +211,7 @@ func (peer *fakeENHPeer) serve(conn net.Conn) {
 	defer func() { _ = conn.Close() }()
 	const (
 		idle = iota
-		master
+		initiatorSend
 		awaitAck
 		awaitSyn
 	)
@@ -245,14 +245,14 @@ func (peer *fakeENHPeer) serve(conn net.Conn) {
 					write(transport.ENHResFailed, 0x10)
 					continue
 				}
-				source, wire, state = message.Data, nil, master
+				source, wire, state = message.Data, nil, initiatorSend
 				write(transport.ENHResStarted, message.Data)
 			case transport.ENHReqSend:
 				if !write(transport.ENHResReceived, message.Data) {
 					return
 				}
 				switch state {
-				case master:
+				case initiatorSend:
 					wire = append(wire, message.Data)
 					logical, whole := unescapeSymbols(wire)
 					if !whole || len(logical) < 4 || len(logical) != 4+int(logical[3])+1 {
@@ -505,4 +505,31 @@ func TestExplorerScanArgsAreReadOnlyScan(t *testing.T) {
 	if !strings.Contains(joined, "--transport tcp --host 127.0.0.1 --port 4711") {
 		t.Fatalf("explorer args %q do not point at the guarded relay", joined)
 	}
+}
+
+func TestGuardedRelayEndsOnCancelWhenUpstreamIsSilent(t *testing.T) {
+	t.Parallel()
+
+	client, relaySide := net.Pipe()
+	upstreamRelay, upstreamPeer := net.Pipe()
+	defer func() { _ = upstreamPeer.Close() }()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- ServeGuardedEbusdRelay(ctx, relaySide, func(context.Context) (net.Conn, error) {
+			return upstreamRelay, nil
+		}, &GuardedRelayStats{})
+	}()
+	go func() { _, _ = io.Copy(io.Discard, upstreamPeer) }()
+	if _, err := io.WriteString(client, "hex -s f7 08070400\n"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("relay stayed blocked on a silent upstream after cancellation")
+	}
+	_ = client.Close()
 }

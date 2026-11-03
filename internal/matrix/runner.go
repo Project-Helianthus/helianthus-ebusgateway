@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,6 +28,23 @@ type RunnerOptions struct {
 	StartEbusd       string
 	StopEbusd        string
 	SmokeCommand     string
+
+	// The fields below apply to the adaptermux-v2 suite only.
+	Transports       []string
+	SessionID        string
+	Candidate        string
+	HardwareSetup    string
+	ExternalClient   string
+	MuxENHAddr       string
+	EbusdCommandAddr string
+	ExplorerCommand  string
+	// WorkloadInitiator and WorkloadTarget are hex bytes: the initiator the
+	// harness clients use and the target of their identification requests.
+	WorkloadInitiator string
+	WorkloadTarget    string
+	// ConfirmAdapterAction is asked immediately before a W-class cell runs
+	// its first command; without a confirmation the cell fails unexecuted.
+	ConfirmAdapterAction func(caseID string, action string) bool
 }
 
 type commandResult struct {
@@ -57,11 +75,90 @@ type CaseVerdict struct {
 	ConfigFiles []string        `json:"config_files"`
 	LogFiles    []string        `json:"log_files"`
 	Commands    []commandResult `json:"commands"`
+
+	SouthboundTransport string `json:"southbound_transport,omitempty"`
+	Invariant           string `json:"invariant,omitempty"`
+	InvariantFamily     string `json:"invariant_family,omitempty"`
+	Composition         string `json:"composition,omitempty"`
+	NorthboundClient    string `json:"northbound_client,omitempty"`
+	HardwareSetup       string `json:"hardware_setup,omitempty"`
+	SessionID           string `json:"session_id,omitempty"`
+	Candidate           string `json:"candidate,omitempty"`
+	PlannedReason       string `json:"planned_reason,omitempty"`
+}
+
+// adapterMuxVerdictJSON is the adaptermux-v2 verdict shape: every field of
+// the matrix schema is present, empty or not.
+type adapterMuxVerdictJSON struct {
+	CaseID              string          `json:"case_id"`
+	Suite               string          `json:"suite"`
+	Kind                TopologyKind    `json:"kind"`
+	SouthboundTransport string          `json:"southbound_transport"`
+	Invariant           string          `json:"invariant"`
+	InvariantFamily     string          `json:"invariant_family"`
+	Composition         string          `json:"composition"`
+	NorthboundClient    string          `json:"northbound_client"`
+	HardwareSetup       string          `json:"hardware_setup"`
+	SessionID           string          `json:"session_id"`
+	Candidate           string          `json:"candidate"`
+	Target              string          `json:"target"`
+	Status              string          `json:"status"`
+	Outcome             string          `json:"outcome"`
+	Expected            string          `json:"expected"`
+	Expectation         string          `json:"expectation"`
+	InfraReason         string          `json:"infra_reason"`
+	PlannedReason       string          `json:"planned_reason"`
+	Error               string          `json:"error,omitempty"`
+	StartedAt           string          `json:"started_at"`
+	EndedAt             string          `json:"ended_at"`
+	ConfigFiles         []string        `json:"config_files"`
+	LogFiles            []string        `json:"log_files"`
+	Commands            []commandResult `json:"commands"`
+}
+
+// MarshalJSON keeps the full88 and passive verdict bytes unchanged and
+// writes every schema field for adaptermux-v2 verdicts.
+func (verdict CaseVerdict) MarshalJSON() ([]byte, error) {
+	type plainVerdict CaseVerdict
+	if verdict.Suite != SuiteAdapterMuxV2 {
+		return json.Marshal(plainVerdict(verdict))
+	}
+	return json.Marshal(adapterMuxVerdictJSON{
+		CaseID:              verdict.CaseID,
+		Suite:               verdict.Suite,
+		Kind:                verdict.Kind,
+		SouthboundTransport: verdict.SouthboundTransport,
+		Invariant:           verdict.Invariant,
+		InvariantFamily:     verdict.InvariantFamily,
+		Composition:         verdict.Composition,
+		NorthboundClient:    verdict.NorthboundClient,
+		HardwareSetup:       verdict.HardwareSetup,
+		SessionID:           verdict.SessionID,
+		Candidate:           verdict.Candidate,
+		Target:              verdict.Target,
+		Status:              verdict.Status,
+		Outcome:             verdict.Outcome,
+		Expected:            verdict.Expected,
+		Expectation:         verdict.Expectation,
+		InfraReason:         verdict.InfraReason,
+		PlannedReason:       verdict.PlannedReason,
+		Error:               verdict.Error,
+		StartedAt:           verdict.StartedAt,
+		EndedAt:             verdict.EndedAt,
+		ConfigFiles:         verdict.ConfigFiles,
+		LogFiles:            verdict.LogFiles,
+		Commands:            verdict.Commands,
+	})
 }
 
 type Runner struct {
 	options RunnerOptions
 	nowUTC  func() time.Time
+
+	// adaptermux-v2 client workload plumbing.
+	workload workloadAddresses
+	dial     func(ctx context.Context, address string) (net.Conn, error)
+	listen   func(network string, address string) (net.Listener, error)
 }
 
 const (
@@ -105,17 +202,36 @@ func NewRunner(options RunnerOptions) (*Runner, error) {
 		return nil, fmt.Errorf("case timeout must be >= 0")
 	}
 	options.ExpectedFailures = normalizeExpectedFailures(options.ExpectedFailures)
+	var workload workloadAddresses
+	if options.Suite == SuiteAdapterMuxV2 {
+		parsed, err := validateAdapterMuxOptions(&options)
+		if err != nil {
+			return nil, err
+		}
+		workload = parsed
+	} else if err := rejectAdapterMuxOptions(options); err != nil {
+		return nil, err
+	}
+	dialer := &net.Dialer{}
 	return &Runner{
 		options: options,
 		nowUTC: func() time.Time {
 			return time.Now().UTC()
 		},
+		workload: workload,
+		dial: func(ctx context.Context, address string) (net.Conn, error) {
+			return dialer.DialContext(ctx, "tcp", address)
+		},
+		listen: net.Listen,
 	}, nil
 }
 
 func (runner *Runner) Run(ctx context.Context) ([]CaseVerdict, error) {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if runner.options.Suite == SuiteAdapterMuxV2 {
+		return runner.runAdapterMuxV2(ctx)
 	}
 
 	allCases, err := CasesForSuite(runner.options.Suite)

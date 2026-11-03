@@ -1,0 +1,476 @@
+== P01/configs/helianthus.json
+{
+  "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+  "case_id": "P01",
+  "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+  "ebusd_via_proxy": false,
+  "gateway_transport": "ens",
+  "kind": "direct-adapter",
+  "passive_mode": "unsupported_or_misconfigured",
+  "proxy_addr_env": "MATRIX_PROXY_ADDR",
+  "suite": "passive",
+  "target": "local",
+  "uses_ebusd": false,
+  "uses_proxy": false
+}
+== P01/logs/runner.log
+dry-run mode: no command executed
+start-gateway
+start-proxy
+start-ebusd
+smoke
+stop-ebusd
+stop-proxy
+stop-gateway
+== P01/verdict.json
+{
+  "case_id": "P01",
+  "suite": "passive",
+  "kind": "direct-adapter",
+  "passive_mode": "unsupported_or_misconfigured",
+  "target": "local",
+  "status": "planned",
+  "outcome": "planned",
+  "expected": "pass",
+  "started_at": "2026-01-01T00:00:00Z",
+  "ended_at": "2026-01-01T00:00:00Z",
+  "config_files": [
+    "$OUT/P01/configs/helianthus.json"
+  ],
+  "log_files": [
+    "$OUT/P01/logs/runner.log"
+  ],
+  "commands": []
+}
+== P02/configs/helianthus.json
+{
+  "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+  "case_id": "P02",
+  "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+  "ebusd_via_proxy": false,
+  "gateway_transport": "enh",
+  "kind": "direct-adapter",
+  "passive_mode": "unsupported_or_misconfigured",
+  "proxy_addr_env": "MATRIX_PROXY_ADDR",
+  "suite": "passive",
+  "target": "local",
+  "uses_ebusd": false,
+  "uses_proxy": false
+}
+== P02/logs/runner.log
+dry-run mode: no command executed
+start-gateway
+start-proxy
+start-ebusd
+smoke
+stop-ebusd
+stop-proxy
+stop-gateway
+== P02/verdict.json
+{
+  "case_id": "P02",
+  "suite": "passive",
+  "kind": "direct-adapter",
+  "passive_mode": "unsupported_or_misconfigured",
+  "target": "local",
+  "status": "planned",
+  "outcome": "planned",
+  "expected": "pass",
+  "started_at": "2026-01-01T00:00:00Z",
+  "ended_at": "2026-01-01T00:00:00Z",
+  "config_files": [
+    "$OUT/P02/configs/helianthus.json"
+  ],
+  "log_files": [
+    "$OUT/P02/logs/runner.log"
+  ],
+  "commands": []
+}
+== P03/configs/helianthus.json
+{
+  "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+  "case_id": "P03",
+  "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+  "ebusd_via_proxy": false,
+  "gateway_transport": "ens",
+  "kind": "proxy-single-client",
+  "passive_mode": "required",
+  "proxy_addr_env": "MATRIX_PROXY_ADDR",
+  "suite": "passive",
+  "target": "local",
+  "uses_ebusd": false,
+  "uses_proxy": true
+}
+== P03/configs/proxy.json
+{
+  "case_id": "P03",
+  "max_parallel_sessions": 2,
+  "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+  "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+  "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+  "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+  "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+  "southbound_transport": "ens",
+  "target": "local"
+}
+== P03/logs/runner.log
+dry-run mode: no command executed
+start-gateway
+start-proxy
+start-ebusd
+smoke
+stop-ebusd
+stop-proxy
+stop-gateway
+== P03/verdict.json
+{
+  "case_id": "P03",
+  "suite": "passive",
+  "kind": "proxy-single-client",
+  "passive_mode": "required",
+  "target": "local",
+  "status": "planned",
+  "outcome": "planned",
+  "expected": "pass",
+  "started_at": "2026-01-01T00:00:00Z",
+  "ended_at": "2026-01-01T00:00:00Z",
+  "config_files": [
+    "$OUT/P03/configs/helianthus.json",
+    "$OUT/P03/configs/proxy.json"
+  ],
+  "log_files": [
+    "$OUT/P03/logs/runner.log"
+  ],
+  "commands": []
+}
+== P04/configs/ebusd.json
+{
+  "case_id": "P04",
+  "commandline_opts": "--enablehex",
+  "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+  "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+  "mqtt_host_env": "MATRIX_MQTT_HOST",
+  "mqtt_port_env": "MATRIX_MQTT_PORT",
+  "network_device": "MATRIX_PROXY_ENS_ADDR",
+  "scanconfig": true,
+  "target": "local",
+  "transport": "ens",
+  "upstream": "proxy"
+}
+== P04/configs/helianthus.json
+{
+  "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+  "case_id": "P04",
+  "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+  "ebusd_via_proxy": true,
+  "gateway_transport": "ens",
+  "kind": "proxy-dual-client",
+  "passive_mode": "required",
+  "proxy_addr_env": "MATRIX_PROXY_ADDR",
+  "suite": "passive",
+  "target": "local",
+  "uses_ebusd": true,
+  "uses_proxy": true
+}
+== P04/configs/proxy.json
+{
+  "case_id": "P04",
+  "max_parallel_sessions": 2,
+  "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+  "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+  "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+  "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+  "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+  "southbound_transport": "ens",
+  "target": "local"
+}
+== P04/logs/runner.log
+dry-run mode: no command executed
+start-gateway
+start-proxy
+start-ebusd
+smoke
+stop-ebusd
+stop-proxy
+stop-gateway
+== P04/verdict.json
+{
+  "case_id": "P04",
+  "suite": "passive",
+  "kind": "proxy-dual-client",
+  "passive_mode": "required",
+  "target": "local",
+  "status": "planned",
+  "outcome": "planned",
+  "expected": "pass",
+  "started_at": "2026-01-01T00:00:00Z",
+  "ended_at": "2026-01-01T00:00:00Z",
+  "config_files": [
+    "$OUT/P04/configs/helianthus.json",
+    "$OUT/P04/configs/proxy.json",
+    "$OUT/P04/configs/ebusd.json"
+  ],
+  "log_files": [
+    "$OUT/P04/logs/runner.log"
+  ],
+  "commands": []
+}
+== P05/configs/ebusd.json
+{
+  "case_id": "P05",
+  "commandline_opts": "--enablehex",
+  "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+  "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+  "mqtt_host_env": "MATRIX_MQTT_HOST",
+  "mqtt_port_env": "MATRIX_MQTT_PORT",
+  "network_device": "MATRIX_PROXY_ENH_ADDR",
+  "scanconfig": true,
+  "target": "local",
+  "transport": "enh",
+  "upstream": "proxy"
+}
+== P05/configs/helianthus.json
+{
+  "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+  "case_id": "P05",
+  "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+  "ebusd_via_proxy": true,
+  "gateway_transport": "enh",
+  "kind": "proxy-dual-client",
+  "passive_mode": "required",
+  "proxy_addr_env": "MATRIX_PROXY_ADDR",
+  "suite": "passive",
+  "target": "local",
+  "uses_ebusd": true,
+  "uses_proxy": true
+}
+== P05/configs/proxy.json
+{
+  "case_id": "P05",
+  "max_parallel_sessions": 2,
+  "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+  "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+  "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+  "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+  "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+  "southbound_transport": "enh",
+  "target": "local"
+}
+== P05/logs/runner.log
+dry-run mode: no command executed
+start-gateway
+start-proxy
+start-ebusd
+smoke
+stop-ebusd
+stop-proxy
+stop-gateway
+== P05/verdict.json
+{
+  "case_id": "P05",
+  "suite": "passive",
+  "kind": "proxy-dual-client",
+  "passive_mode": "required",
+  "target": "local",
+  "status": "planned",
+  "outcome": "planned",
+  "expected": "pass",
+  "started_at": "2026-01-01T00:00:00Z",
+  "ended_at": "2026-01-01T00:00:00Z",
+  "config_files": [
+    "$OUT/P05/configs/helianthus.json",
+    "$OUT/P05/configs/proxy.json",
+    "$OUT/P05/configs/ebusd.json"
+  ],
+  "log_files": [
+    "$OUT/P05/logs/runner.log"
+  ],
+  "commands": []
+}
+== P06/configs/ebusd.json
+{
+  "case_id": "P06",
+  "commandline_opts": "--enablehex",
+  "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+  "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+  "mqtt_host_env": "MATRIX_MQTT_HOST",
+  "mqtt_port_env": "MATRIX_MQTT_PORT",
+  "network_device": "MATRIX_ADAPTER_ADDR",
+  "scanconfig": true,
+  "target": "local",
+  "transport": "ens",
+  "upstream": "adapter"
+}
+== P06/configs/helianthus.json
+{
+  "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+  "case_id": "P06",
+  "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+  "ebusd_via_proxy": false,
+  "gateway_transport": "ebusd-tcp",
+  "kind": "via-ebusd-tcp",
+  "passive_mode": "unsupported_or_misconfigured",
+  "proxy_addr_env": "MATRIX_PROXY_ADDR",
+  "suite": "passive",
+  "target": "local",
+  "uses_ebusd": true,
+  "uses_proxy": false
+}
+== P06/logs/runner.log
+dry-run mode: no command executed
+start-gateway
+start-proxy
+start-ebusd
+smoke
+stop-ebusd
+stop-proxy
+stop-gateway
+== P06/verdict.json
+{
+  "case_id": "P06",
+  "suite": "passive",
+  "kind": "via-ebusd-tcp",
+  "passive_mode": "unsupported_or_misconfigured",
+  "target": "local",
+  "status": "planned",
+  "outcome": "planned",
+  "expected": "pass",
+  "started_at": "2026-01-01T00:00:00Z",
+  "ended_at": "2026-01-01T00:00:00Z",
+  "config_files": [
+    "$OUT/P06/configs/helianthus.json",
+    "$OUT/P06/configs/ebusd.json"
+  ],
+  "log_files": [
+    "$OUT/P06/logs/runner.log"
+  ],
+  "commands": []
+}
+== index.json
+{
+  "cases": [
+    {
+      "case_id": "P01",
+      "suite": "passive",
+      "kind": "direct-adapter",
+      "passive_mode": "unsupported_or_misconfigured",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-01-01T00:00:00Z",
+      "ended_at": "2026-01-01T00:00:00Z",
+      "config_files": [
+        "$OUT/P01/configs/helianthus.json"
+      ],
+      "log_files": [
+        "$OUT/P01/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "P02",
+      "suite": "passive",
+      "kind": "direct-adapter",
+      "passive_mode": "unsupported_or_misconfigured",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-01-01T00:00:00Z",
+      "ended_at": "2026-01-01T00:00:00Z",
+      "config_files": [
+        "$OUT/P02/configs/helianthus.json"
+      ],
+      "log_files": [
+        "$OUT/P02/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "P03",
+      "suite": "passive",
+      "kind": "proxy-single-client",
+      "passive_mode": "required",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-01-01T00:00:00Z",
+      "ended_at": "2026-01-01T00:00:00Z",
+      "config_files": [
+        "$OUT/P03/configs/helianthus.json",
+        "$OUT/P03/configs/proxy.json"
+      ],
+      "log_files": [
+        "$OUT/P03/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "P04",
+      "suite": "passive",
+      "kind": "proxy-dual-client",
+      "passive_mode": "required",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-01-01T00:00:00Z",
+      "ended_at": "2026-01-01T00:00:00Z",
+      "config_files": [
+        "$OUT/P04/configs/helianthus.json",
+        "$OUT/P04/configs/proxy.json",
+        "$OUT/P04/configs/ebusd.json"
+      ],
+      "log_files": [
+        "$OUT/P04/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "P05",
+      "suite": "passive",
+      "kind": "proxy-dual-client",
+      "passive_mode": "required",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-01-01T00:00:00Z",
+      "ended_at": "2026-01-01T00:00:00Z",
+      "config_files": [
+        "$OUT/P05/configs/helianthus.json",
+        "$OUT/P05/configs/proxy.json",
+        "$OUT/P05/configs/ebusd.json"
+      ],
+      "log_files": [
+        "$OUT/P05/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "P06",
+      "suite": "passive",
+      "kind": "via-ebusd-tcp",
+      "passive_mode": "unsupported_or_misconfigured",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-01-01T00:00:00Z",
+      "ended_at": "2026-01-01T00:00:00Z",
+      "config_files": [
+        "$OUT/P06/configs/helianthus.json",
+        "$OUT/P06/configs/ebusd.json"
+      ],
+      "log_files": [
+        "$OUT/P06/logs/runner.log"
+      ],
+      "commands": []
+    }
+  ],
+  "generated_at": "2026-01-01T00:00:00Z",
+  "suite": "passive",
+  "target": "local"
+}

@@ -267,11 +267,11 @@ func TestM40MappingRowKeyCoversKindAndItemID(t *testing.T) {
 	}{
 		{"no row", nil, projection.ProjectionUnknown, eebusoutput.ReasonMappingUnknown},
 		{"unknown row", []eebusoutput.MappingRow{{Item: fact, Evidence: eebusoutput.EvidenceUnknown}}, projection.ProjectionUnknown, eebusoutput.ReasonMappingUnknown},
-		{"hypothesis row on the exact key", []eebusoutput.MappingRow{{Item: fact, Evidence: eebusoutput.EvidenceHypothesis, Source: "public candidate"}}, projection.ProjectionWithheld, eebusoutput.ReasonMappingCandidate},
+		{"hypothesis row on the exact key", []eebusoutput.MappingRow{{Item: fact, Evidence: eebusoutput.EvidenceHypothesis, Source: "https://example.org/public-candidate"}}, projection.ProjectionWithheld, eebusoutput.ReasonMappingCandidate},
 		// Catches a lookup keyed by item id only.
-		{"hypothesis row with another kind", []eebusoutput.MappingRow{{Item: projection.RequestedItem{Kind: projection.ItemCapability, ItemID: fact.ItemID}, Evidence: eebusoutput.EvidenceHypothesis, Source: "public candidate"}}, projection.ProjectionUnknown, eebusoutput.ReasonMappingUnknown},
+		{"hypothesis row with another kind", []eebusoutput.MappingRow{{Item: projection.RequestedItem{Kind: projection.ItemCapability, ItemID: fact.ItemID}, Evidence: eebusoutput.EvidenceHypothesis, Source: "https://example.org/public-candidate"}}, projection.ProjectionUnknown, eebusoutput.ReasonMappingUnknown},
 		// Catches a lookup keyed by kind only.
-		{"hypothesis row with another item id", []eebusoutput.MappingRow{{Item: projection.RequestedItem{Kind: projection.ItemFact, ItemID: semoptest.LevelFact.FactID}, Evidence: eebusoutput.EvidenceHypothesis, Source: "public candidate"}}, projection.ProjectionUnknown, eebusoutput.ReasonMappingUnknown},
+		{"hypothesis row with another item id", []eebusoutput.MappingRow{{Item: projection.RequestedItem{Kind: projection.ItemFact, ItemID: semoptest.LevelFact.FactID}, Evidence: eebusoutput.EvidenceHypothesis, Source: "https://example.org/public-candidate"}}, projection.ProjectionUnknown, eebusoutput.ReasonMappingUnknown},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f := semoptest.New(t)
@@ -299,8 +299,8 @@ func TestM40MappingRowKeyCoversKindAndItemID(t *testing.T) {
 		capture := &m40Capture{}
 		capture.set(m40Fixed(registry, input))
 		binding := m40Binding(t, eebusoutput.Config{Snapshots: capture, Mappings: []eebusoutput.MappingRow{
-			{Item: fact, Evidence: eebusoutput.EvidenceHypothesis, Source: "public candidate"},
-			{Item: projection.RequestedItem{Kind: projection.ItemCapability, ItemID: semoptest.CapabilityLevel.ID}, Evidence: eebusoutput.EvidenceHypothesis, Source: "public candidate"},
+			{Item: fact, Evidence: eebusoutput.EvidenceHypothesis, Source: "https://example.org/public-candidate"},
+			{Item: projection.RequestedItem{Kind: projection.ItemCapability, ItemID: semoptest.CapabilityLevel.ID}, Evidence: eebusoutput.EvidenceHypothesis, Source: "https://example.org/public-candidate"},
 		}})
 		out, err := binding.Project(context.Background(), []semreg.AssetID{semoptest.AssetID})
 		if err != nil {
@@ -317,13 +317,16 @@ func TestM40ProvenAndMalformedMappingRowsFailClosed(t *testing.T) {
 		rows []eebusoutput.MappingRow
 		want error
 	}{
-		{"proven row", []eebusoutput.MappingRow{{Item: fact, Evidence: eebusoutput.EvidenceProven, Source: "public contract"}}, eebusoutput.ErrMappingFrozen},
+		{"proven row", []eebusoutput.MappingRow{{Item: fact, Evidence: eebusoutput.EvidenceProven, Source: "https://example.org/public-contract"}}, eebusoutput.ErrMappingFrozen},
 		{"hypothesis without public source", []eebusoutput.MappingRow{{Item: fact, Evidence: eebusoutput.EvidenceHypothesis}}, eebusoutput.ErrMappingInvalid},
 		{"qualification word is not evidence", []eebusoutput.MappingRow{{Item: fact, Evidence: "qualified"}}, eebusoutput.ErrMappingInvalid},
 		{"empty evidence", []eebusoutput.MappingRow{{Item: fact}}, eebusoutput.ErrMappingInvalid},
 		{"invalid kind", []eebusoutput.MappingRow{{Item: projection.RequestedItem{Kind: "entity", ItemID: fact.ItemID}, Evidence: eebusoutput.EvidenceUnknown}}, eebusoutput.ErrMappingInvalid},
 		{"invalid item id", []eebusoutput.MappingRow{{Item: projection.RequestedItem{Kind: fact.Kind, ItemID: "Not An ID"}, Evidence: eebusoutput.EvidenceUnknown}}, eebusoutput.ErrMappingInvalid},
-		{"duplicate key", []eebusoutput.MappingRow{{Item: fact, Evidence: eebusoutput.EvidenceUnknown}, {Item: fact, Evidence: eebusoutput.EvidenceHypothesis, Source: "public candidate"}}, eebusoutput.ErrMappingInvalid},
+		{"hypothesis source blank", []eebusoutput.MappingRow{{Item: fact, Evidence: eebusoutput.EvidenceHypothesis, Source: "   "}}, eebusoutput.ErrMappingInvalid},
+		{"hypothesis source arbitrary", []eebusoutput.MappingRow{{Item: fact, Evidence: eebusoutput.EvidenceHypothesis, Source: "x"}}, eebusoutput.ErrMappingInvalid},
+		{"hypothesis source not https", []eebusoutput.MappingRow{{Item: fact, Evidence: eebusoutput.EvidenceHypothesis, Source: "http://example.org/a"}}, eebusoutput.ErrMappingInvalid},
+		{"duplicate key", []eebusoutput.MappingRow{{Item: fact, Evidence: eebusoutput.EvidenceUnknown}, {Item: fact, Evidence: eebusoutput.EvidenceHypothesis, Source: "https://example.org/public-candidate"}}, eebusoutput.ErrMappingInvalid},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			binding, err := eebusoutput.NewBinding(eebusoutput.Config{Mappings: tt.rows})

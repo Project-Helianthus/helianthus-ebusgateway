@@ -11,7 +11,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/url"
 	"reflect"
+	"strings"
 	"sync"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semanticoperations"
@@ -173,7 +175,7 @@ func NewBinding(config Config) (*Binding, error) {
 		case EvidenceProven:
 			return nil, ErrMappingFrozen
 		case EvidenceHypothesis:
-			if row.Source == "" {
+			if !publicSource(row.Source) {
 				return nil, ErrMappingInvalid
 			}
 		case EvidenceUnknown:
@@ -320,4 +322,17 @@ func isNil(value any) bool {
 		return reflected.IsNil()
 	}
 	return false
+}
+
+// publicSource accepts only an absolute https URL with a host and no embedded
+// whitespace or credentials.
+func publicSource(source string) bool {
+	if source == "" || strings.TrimSpace(source) != source || strings.ContainsAny(source, " \t\r\n") {
+		return false
+	}
+	parsed, err := url.Parse(source)
+	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.User != nil {
+		return false
+	}
+	return true
 }

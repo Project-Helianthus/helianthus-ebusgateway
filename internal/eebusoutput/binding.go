@@ -9,6 +9,7 @@ package eebusoutput
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"sync"
@@ -108,7 +109,11 @@ func (s *MemorySink) Accept(asset semreg.AssetID, result Result) {
 	if s.accepted == nil {
 		s.accepted = map[semreg.AssetID]Result{}
 	}
-	s.accepted[asset] = result
+	kept, ok := cloneResult(result)
+	if !ok {
+		return
+	}
+	s.accepted[asset] = kept
 }
 
 // Accepted returns the last accepted result of one asset.
@@ -116,7 +121,24 @@ func (s *MemorySink) Accepted(asset semreg.AssetID) (Result, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	result, ok := s.accepted[asset]
-	return result, ok
+	if !ok {
+		return Result{}, false
+	}
+	return cloneResult(result)
+}
+
+// cloneResult deep-copies a result so retained state shares no memory with
+// callers. A report that cannot be copied is not retained.
+func cloneResult(result Result) (Result, bool) {
+	raw, err := json.Marshal(result)
+	if err != nil {
+		return Result{}, false
+	}
+	var out Result
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return Result{}, false
+	}
+	return out, true
 }
 
 // Config composes a Binding. Snapshots is required for projection; a nil

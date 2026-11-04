@@ -592,3 +592,52 @@ func TestM40ConcurrentProjectAndRelay(t *testing.T) {
 		t.Fatal("no accepted result")
 	}
 }
+
+func TestM40MemorySinkIsolatesRetainedState(t *testing.T) {
+	registry := m40Registry(t)
+	f := semoptest.New(t)
+	input := m40Input(t, f, nil)
+	capture := &m40Capture{}
+	capture.set(m40Fixed(registry, input))
+	sink := &eebusoutput.MemorySink{}
+	binding := m40Binding(t, eebusoutput.Config{Snapshots: capture, Sink: sink})
+	out, err := binding.Project(context.Background(), []semreg.AssetID{semoptest.AssetID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := m40JSON(t, *out.Assets[0].Result)
+
+	scribble := func(r *eebusoutput.Result) {
+		for i := range r.Report.Dispositions {
+			d := &r.Report.Dispositions[i]
+			d.Outcome = projection.ProjectionUnsupported
+			if d.Reason != nil {
+				*d.Reason = "mutated"
+			}
+			for j := range d.SourceKeys {
+				d.SourceKeys[j].PackID = "mutated"
+			}
+		}
+		for i := range r.Report.Requested {
+			r.Report.Requested[i].ItemID = "mutated"
+		}
+	}
+	scribble(out.Assets[0].Result)
+	got, ok := sink.Accepted(semoptest.AssetID)
+	if !ok || !bytes.Equal(m40JSON(t, got), want) {
+		t.Fatal("mutating the Project result changed retained state")
+	}
+	scribble(&got)
+	again, _ := sink.Accepted(semoptest.AssetID)
+	if !bytes.Equal(m40JSON(t, again), want) {
+		t.Fatal("mutating the Accepted result changed retained state")
+	}
+
+	own := again
+	sink.Accept(semoptest.AssetID, own)
+	scribble(&own)
+	final, _ := sink.Accepted(semoptest.AssetID)
+	if !bytes.Equal(m40JSON(t, final), want) {
+		t.Fatal("mutating an ingress result changed retained state")
+	}
+}

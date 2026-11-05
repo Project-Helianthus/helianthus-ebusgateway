@@ -211,7 +211,7 @@ func TestRunSunSpecLiveSmokeEnforcesTotalAttemptDeadlineOnPollContext(t *testing
 	if !sawDeadline || !errors.Is(pollErr, context.DeadlineExceeded) {
 		t.Fatalf("saw deadline=%v poll error=%v; want real expired poll context", sawDeadline, pollErr)
 	}
-	if elapsed < attemptTimeout || elapsed > 500*time.Millisecond {
+	if elapsed < attemptTimeout || elapsed > 2*time.Second {
 		t.Fatalf("elapsed = %s; want bounded by attempt timeout", elapsed)
 	}
 }

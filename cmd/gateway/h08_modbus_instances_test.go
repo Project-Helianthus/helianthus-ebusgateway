@@ -215,8 +215,9 @@ func h08RenderComposition(t *testing.T, cfg ebusgateway.Config) string {
 
 // TestH08V1CompositionIsGoldenEquivalent characterizes configuration v1. It
 // was recorded against the composition before configuration v2 existed and
-// passes unchanged after it: driver ID, source, durable registration,
-// service configuration and transport limits.
+// keeps the Modbus driver ID, source, durable registration, service
+// configuration and transport limits. The later host-only CAN entry stays
+// visible but inert in both configurations.
 func TestH08V1CompositionIsGoldenEquivalent(t *testing.T) {
 	h08InstallTransport(t)
 	enabled := ebusgateway.DefaultConfig()
@@ -229,30 +230,38 @@ func TestH08V1CompositionIsGoldenEquivalent(t *testing.T) {
 		"enabled": {enabled, `descriptor modbus.sunspec southbound enabled sources=[modbus.sunspec:<guid>] native=github.com/Project-Helianthus/helianthus-modbus/TCPEndpoint withheld=false constructed=true
   modbus enabled=true endpoint=tcp://192.0.2.40:502 dial=3s paced=false
 descriptor growatt.bms.rs485 southbound disabled sources=[growatt.bms.rs485:<guid>] native=github.com/Project-Helianthus/helianthus-modbus/RTUProductionEndpoint withheld=false constructed=false
+descriptor growatt.bms.can southbound disabled sources=[growatt.bms.can:<guid>] native=github.com/Project-Helianthus/helianthus-ebusgateway/GrowattBMSCANReceiveOnly withheld=false constructed=false
 descriptor eebus.primary southbound disabled sources=[eebus.primary:<guid>] native=github.com/Project-Helianthus/helianthus-eebusreg/` + managedEEBusContractForGolden(t) + ` withheld=false constructed=false
 registered ebus.primary
 registered eebus.primary
+registered growatt.bms.can
 registered growatt.bms.rs485
 registered modbus.sunspec
 store modbus.sunspec enabled=true
 store growatt.bms.rs485 enabled=false
+store growatt.bms.can enabled=false
 store eebus.primary enabled=false
 service modbus.sunspec retry=0
 service growatt.bms.rs485 retry=0
+service growatt.bms.can retry=3
 service eebus.primary retry=3
 `},
 		"disabled": {disabled, `descriptor modbus.sunspec southbound disabled sources=[modbus.sunspec:<guid>] native=github.com/Project-Helianthus/helianthus-modbus/TCPEndpoint withheld=false constructed=false
 descriptor growatt.bms.rs485 southbound disabled sources=[growatt.bms.rs485:<guid>] native=github.com/Project-Helianthus/helianthus-modbus/RTUProductionEndpoint withheld=false constructed=false
+descriptor growatt.bms.can southbound disabled sources=[growatt.bms.can:<guid>] native=github.com/Project-Helianthus/helianthus-ebusgateway/GrowattBMSCANReceiveOnly withheld=false constructed=false
 descriptor eebus.primary southbound disabled sources=[eebus.primary:<guid>] native=github.com/Project-Helianthus/helianthus-eebusreg/` + managedEEBusContractForGolden(t) + ` withheld=false constructed=false
 registered ebus.primary
 registered eebus.primary
+registered growatt.bms.can
 registered growatt.bms.rs485
 registered modbus.sunspec
 store modbus.sunspec enabled=false
 store growatt.bms.rs485 enabled=false
+store growatt.bms.can enabled=false
 store eebus.primary enabled=false
 service modbus.sunspec retry=0
 service growatt.bms.rs485 retry=0
+service growatt.bms.can retry=3
 service eebus.primary retry=3
 `},
 	} {
@@ -337,7 +346,7 @@ func TestH08SunSpecAndHuaweiEntriesRegisterTwoInstances(t *testing.T) {
 	for _, d := range sidecars.registry.List().Drivers {
 		ids = append(ids, d.DriverID)
 	}
-	if fmt.Sprint(ids) != "[ebus.primary eebus.primary growatt.bms.rs485 modbus.huawei.emma.site-a modbus.sunspec]" {
+	if fmt.Sprint(ids) != "[ebus.primary eebus.primary growatt.bms.can growatt.bms.rs485 modbus.huawei.emma.site-a modbus.sunspec]" {
 		t.Fatalf("registered = %v", ids)
 	}
 	bindings := &managedSidecarBindings{sidecars: sidecars}
@@ -402,7 +411,7 @@ func TestH08DuplicateRefusesTheSetWithZeroFactoryCalls(t *testing.T) {
 			t.Cleanup(func() { gatewayManagedSidecarDescriptorsFor = original })
 			gatewayManagedSidecarDescriptorsFor = func(d []runtimecontrol.Descriptor) []runtimecontrol.Descriptor {
 				for i := range d {
-					if d[i].DriverID != managedGrowattID && d[i].DriverID != managedEEBusID {
+					if d[i].DriverID != managedGrowattID && d[i].DriverID != managedEEBusID && d[i].DriverID != managedGrowattCANID {
 						constructed.Add(1)
 					}
 				}
@@ -415,7 +424,7 @@ func TestH08DuplicateRefusesTheSetWithZeroFactoryCalls(t *testing.T) {
 			for _, d := range sidecars.registry.List().Drivers {
 				ids = append(ids, d.DriverID)
 			}
-			if fmt.Sprint(ids) != "[ebus.primary eebus.primary growatt.bms.rs485]" {
+			if fmt.Sprint(ids) != "[ebus.primary eebus.primary growatt.bms.can growatt.bms.rs485]" {
 				t.Fatalf("registered = %v", ids)
 			}
 			for _, s := range sidecars.entries {
@@ -473,7 +482,7 @@ func TestH08DialFailureOnOneInstanceLeavesTheOtherRunning(t *testing.T) {
 		listed[d.DriverID] = d
 		order = append(order, d.DriverID)
 	}
-	if fmt.Sprint(order) != "[ebus.primary eebus.primary growatt.bms.rs485 modbus.sunspec modbus.sunspec.roof]" {
+	if fmt.Sprint(order) != "[ebus.primary eebus.primary growatt.bms.can growatt.bms.rs485 modbus.sunspec modbus.sunspec.roof]" {
 		t.Fatalf("MCP list order = %v", order)
 	}
 	if listed["modbus.sunspec"].ObservedState != "FAILED" || listed["modbus.sunspec.roof"].ObservedState != "RUNNING" {

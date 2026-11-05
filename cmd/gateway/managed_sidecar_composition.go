@@ -24,9 +24,10 @@ import (
 )
 
 const (
-	managedSunSpecID runtimecontrol.DriverID = "modbus.sunspec"
-	managedGrowattID runtimecontrol.DriverID = "growatt.bms.rs485"
-	managedEEBusID   runtimecontrol.DriverID = "eebus.primary"
+	managedGrowattCANID runtimecontrol.DriverID = "growatt.bms.can"
+	managedSunSpecID    runtimecontrol.DriverID = "modbus.sunspec"
+	managedGrowattID    runtimecontrol.DriverID = "growatt.bms.rs485"
+	managedEEBusID      runtimecontrol.DriverID = "eebus.primary"
 )
 
 type managedSidecars struct {
@@ -98,7 +99,7 @@ func prepareManagedSidecars(ctx context.Context, cfg ebusgateway.Config, hub *se
 	}
 	tcpNative := sidecarNativeContract("github.com/Project-Helianthus/helianthus-modbus", "TCPEndpoint")
 	tcpInstances := make(map[runtimecontrol.DriverID]modbusTCPInstance, len(instances))
-	descriptors := make([]runtimecontrol.Descriptor, 0, len(instances)+2)
+	descriptors := make([]runtimecontrol.Descriptor, 0, len(instances)+3)
 	for _, instance := range instances {
 		tcpInstances[instance.driverID] = instance
 		descriptors = append(descriptors, descriptor(instance.driverID, instance.enabled, source(instance.driverID), tcpNative, modbusTCPInstanceAdapter(instance, hub, contributions, &pvGeneration)))
@@ -109,6 +110,7 @@ func prepareManagedSidecars(ctx context.Context, cfg ebusgateway.Config, hub *se
 	}
 	descriptors = gatewayManagedSidecarDescriptorsFor(append(descriptors,
 		descriptor(managedGrowattID, cfg.ModbusTCPConfig.GrowattBMSRS485.Enabled, growattSource, sidecarNativeContract("github.com/Project-Helianthus/helianthus-modbus", "RTUProductionEndpoint"), newGrowattManagedDriverFactory(cfg.ModbusTCPConfig.GrowattBMSRS485, modbusProviderGrowattBMS, hub, openGrowattBMSRTUEndpoint)),
+		descriptor(managedGrowattCANID, cfg.GrowattBMSCANConfig.Enabled, source(managedGrowattCANID), sidecarNativeContract("github.com/Project-Helianthus/helianthus-ebusgateway", "GrowattBMSCANReceiveOnly"), newGrowattBMSCANManagedFactory(cfg.GrowattBMSCANConfig, nil)),
 		managedEEBusDescriptor(cfg, source(managedEEBusID)),
 	))
 	// An accepted Portal selection narrows configured eligibility before any
@@ -116,6 +118,11 @@ func prepareManagedSidecars(ctx context.Context, cfg ebusgateway.Config, hub *se
 	// load stays registered with a failing executor and is never constructed.
 	portalWithheld := make(map[runtimecontrol.DriverID]error, len(descriptors))
 	for i := range descriptors {
+		// CAN is configured only by the host and is not a member of the
+		// closed Portal record. A failed record cannot select or withhold it.
+		if descriptors[i].DriverID == managedGrowattCANID {
+			continue
+		}
 		enabled, withheld := portalConfig.configure(descriptors[i].DriverID, descriptors[i].Disposition == runtimecontrol.DispositionEnabled)
 		if !enabled && descriptors[i].Disposition == runtimecontrol.DispositionEnabled {
 			descriptors[i].Disposition = runtimecontrol.DispositionDisabled
@@ -158,7 +165,7 @@ func prepareManagedSidecars(ctx context.Context, cfg ebusgateway.Config, hub *se
 			registrationErrors[d.DriverID] = err
 		}
 	}
-	for _, id := range []runtimecontrol.DriverID{managedEEBusID, managedGrowattID} {
+	for _, id := range []runtimecontrol.DriverID{managedEEBusID, managedGrowattCANID, managedGrowattID} {
 		for _, d := range descriptors {
 			if d.DriverID == id {
 				registrationErrors[id] = registry.Register(d)
@@ -175,6 +182,16 @@ func prepareManagedSidecars(ctx context.Context, cfg ebusgateway.Config, hub *se
 			sidecar.modbusTCP = &instance
 			if sidecar.withheld == nil && d.Disposition == runtimecontrol.DispositionEnabled && instance.withheld != "" {
 				sidecar.withheld = modbusTCPWithheldFailure(instance)
+			}
+		}
+		if d.DriverID == managedGrowattCANID {
+			sidecar.retry = runtimecontrol.RetryPolicy{MaxAttempts: 3, Delay: 5 * time.Second}
+			// Disabled descriptors never construct a native adapter, so enforce
+			// its disabled-config validator here. Keep host eligibility false
+			// while delivering the refusal through the startup diagnostic.
+			if !cfg.GrowattBMSCANConfig.Enabled && cfg.GrowattBMSCANConfig != (growattBMSCANConfig{}) {
+				sidecar.withheld = errors.Join(sidecar.withheld, errGrowattBMSCANDisabledConfig)
+				log.Print("Growatt BMS CAN configuration refused: disabled observer contains active fields reason=CONFIG_INVALID")
 			}
 		}
 		if d.DriverID == managedEEBusID {
@@ -234,6 +251,12 @@ func (sidecars *managedSidecars) driverConfigs() []drivermanager.DriverConfig {
 // the single operator log line of that failure.
 func (s *managedSidecar) classifyStartFailure(err error) drivermanager.Failure {
 	switch {
+	case s.descriptor.DriverID == managedGrowattCANID:
+		if errors.Is(err, errGrowattBMSCANConfig) || errors.Is(err, errGrowattBMSCANListenOnly) || errors.Is(err, errGrowattBMSCANPlatform) {
+			log.Print("Growatt BMS CAN unavailable: valid interface, positive stale-after, confirmed controller listen-only mode and Linux SocketCAN are required")
+			return drivermanager.Failure{Reason: drivermanager.Reason{Code: drivermanager.ReasonConfigInvalid}}
+		}
+		log.Print("Growatt BMS CAN receiver unavailable; continuing without CAN")
 	case s.modbusTCP != nil && s.modbusTCP.v2:
 		log.Printf("Modbus TCP instance unavailable; continuing driver=%s", s.descriptor.DriverID)
 	case s.descriptor.DriverID == managedSunSpecID:
@@ -293,6 +316,40 @@ func (sidecars *managedSidecars) bind(manager *drivermanager.Manager, primary *e
 	sidecars.primary = primary
 	for _, s := range sidecars.entries {
 		s.manager = manager
+	}
+}
+
+// Bind native failure observations before service reconciliation can START a
+// receiver. The manager first withdraws generation-local capabilities and
+// consumer leases; the service then publishes the same admitted failure.
+func (sidecars *managedSidecars) bindNativeObservations(service *runtimecontrol.Service) {
+	if sidecars == nil {
+		return
+	}
+	for _, sidecar := range sidecars.entries {
+		if sidecar.runtime == nil || sidecar.manager == nil {
+			continue
+		}
+		if can, ok := sidecar.runtime.Runtime.(*growattBMSCANManagedDriver); ok {
+			can.reportFailure = func(native drivermanager.Correlation, lifecycle runtimecontrol.LifecycleCorrelation) {
+				// BindCorrelation follows manager admission but precedes the
+				// executor's START result. Let that result settle before reporting
+				// a post-admission failure, even if Receive failed immediately.
+				sidecar.mu.Lock()
+				started, current := sidecar.started, sidecar.key == lifecycle
+				sidecar.mu.Unlock()
+				if !current || started == nil {
+					return
+				}
+				<-started
+				failure := drivermanager.Failure{Reason: drivermanager.Reason{Code: drivermanager.ReasonProviderUnavailable}}
+				if sidecar.manager.ReportFailure(string(sidecar.descriptor.DriverID), native, failure) {
+					service.ObserveNative(lifecycle, runtimecontrol.NativeObservation{
+						State: drivermanager.ObservedFailed, Reason: failure.Reason.Code,
+					})
+				}
+			}
+		}
 	}
 }
 
@@ -415,7 +472,7 @@ func (s *managedSidecar) Start(ctx context.Context, correlation runtimecontrol.L
 		snapshot, _ := s.manager.Snapshot(string(s.descriptor.DriverID))
 		if snapshot.ObservedState != drivermanager.ObservedRunning {
 			err = &managedSidecarStartError{reason: snapshot.Reason.Code,
-				retryable: s.retry.MaxAttempts > 1 && snapshot.ObservedState == drivermanager.ObservedFailed && !snapshot.SafetyQuarantined}
+				retryable: s.retry.MaxAttempts > 1 && snapshot.ObservedState == drivermanager.ObservedFailed && !snapshot.SafetyQuarantined && (s.descriptor.DriverID != managedGrowattCANID || snapshot.Reason.Code != drivermanager.ReasonConfigInvalid)}
 		}
 	}
 	s.mu.Lock()
@@ -498,6 +555,14 @@ type managedSidecarLease struct {
 	adminAvailable bool
 	semanticOnce   sync.Once
 	semanticDone   chan struct{}
+}
+
+func (runtime *managedSidecarRuntime) BindCorrelation(c drivermanager.Correlation) {
+	if binder, ok := runtime.Runtime.(interface {
+		BindCorrelation(drivermanager.Correlation)
+	}); ok {
+		binder.BindCorrelation(c)
+	}
 }
 
 func (lease *managedSidecarLease) fence() {

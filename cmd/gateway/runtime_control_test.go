@@ -528,18 +528,18 @@ func TestRuntimeControlLifecycleDurableStoppedBootAndLaterControl(t *testing.T) 
 		t.Fatalf("endpoint opens while desired STOPPED = %d; want 0", got)
 	}
 	list := process.control.Service().List()
-	if len(list.Drivers) != 4 || list.Drivers[0].DriverID != primaryEBusDriverID {
-		t.Fatalf("service list = %+v; want ebus.primary and three disabled sidecars", list.Drivers)
+	if len(list.Drivers) != 5 || list.Drivers[0].DriverID != primaryEBusDriverID {
+		t.Fatalf("service list = %+v; want ebus.primary and four disabled sidecars", list.Drivers)
 	}
-	for i, id := range []runtimecontrol.DriverID{managedEEBusID, managedGrowattID, managedSunSpecID} {
+	for i, id := range []runtimecontrol.DriverID{managedEEBusID, managedGrowattCANID, managedGrowattID, managedSunSpecID} {
 		d := list.Drivers[i+1]
 		if d.DriverID != id || d.Enabled || d.ObservedState != drivermanager.ObservedDisabled {
 			t.Fatalf("configured disabled sidecar = %+v; want %s DISABLED", d, id)
 		}
 	}
 	registered := process.control.Registry().List()
-	if len(registered.Drivers) != 4 || registered.Drivers[0].DriverID != primaryEBusDriverID || len(registered.Drivers[0].Sources) != 1 || len(registered.Drivers[0].Hooks) != 0 {
-		t.Fatalf("registry = %+v; want four registered drivers and lifecycle-only ebus.primary with one source and no hooks", registered.Drivers)
+	if len(registered.Drivers) != 5 || registered.Drivers[0].DriverID != primaryEBusDriverID || len(registered.Drivers[0].Sources) != 1 || len(registered.Drivers[0].Hooks) != 0 {
+		t.Fatalf("registry = %+v; want five registered drivers and lifecycle-only ebus.primary with one source and no hooks", registered.Drivers)
 	}
 	wantSource, _ := ebusPrimarySourceID(rctlGUID)
 	if registered.Drivers[0].Sources[0] != wantSource {
@@ -694,8 +694,8 @@ func TestRuntimeControlLifecycleShellStartsWhateverEBusDoes(t *testing.T) {
 			t.Fatalf("withheld = %v; want the missing source identity", process.control.withheld)
 		}
 		registered := process.control.Registry().List().Drivers
-		if len(registered) != 3 {
-			t.Fatalf("registered %d drivers without eBUS source identity; want three disabled sidecars", len(registered))
+		if len(registered) != 4 {
+			t.Fatalf("registered %d drivers without eBUS source identity; want four disabled sidecars", len(registered))
 		}
 		for _, d := range registered {
 			if d.DriverID == primaryEBusDriverID || d.Disposition != runtimecontrol.DispositionDisabled {
@@ -1813,7 +1813,7 @@ func TestRuntimeControlMCPLifecycleThroughOrdinaryHTTP(t *testing.T) {
 	}
 	list := process.mcpList()
 	cached := service.List()
-	if len(list.Drivers) != 4 || list.CatalogRevision != strconv.FormatUint(uint64(cached.Revision), 10) ||
+	if len(list.Drivers) != 5 || list.CatalogRevision != strconv.FormatUint(uint64(cached.Revision), 10) ||
 		list.Drivers[0].DesiredRevision != strconv.FormatUint(uint64(cached.Drivers[0].DesiredRevision), 10) {
 		t.Fatalf("MCP list %+v differs from the service's cached view %+v", list, cached)
 	}
@@ -1960,7 +1960,7 @@ func TestRuntimeControlMCPToolsWhileEBusFailed(t *testing.T) {
 			process.requireMCPTools()
 			failed := process.mcpWaitObserved(drivermanager.ObservedFailed)
 			t.Logf("FAILED view: enabled=%v desired=%s/%s reason=%s revision=%s", failed.Enabled, failed.DesiredState, failed.DesiredRevision, failed.Reason, failed.Revision)
-			if list := process.mcpList(); len(list.Drivers) != 4 || list.Drivers[0].ObservedState != string(drivermanager.ObservedFailed) {
+			if list := process.mcpList(); len(list.Drivers) != 5 || list.Drivers[0].ObservedState != string(drivermanager.ObservedFailed) {
 				t.Fatalf("list while FAILED = %+v", list)
 			}
 			expected := failed.DesiredRevision
@@ -2004,7 +2004,7 @@ func TestRuntimeControlMCPDisabledDriverStaysVisible(t *testing.T) {
 	if disabled.Enabled {
 		t.Fatalf("disabled driver reads %+v", disabled)
 	}
-	if list := process.mcpList(); len(list.Drivers) != 4 || list.Drivers[0].Enabled {
+	if list := process.mcpList(); len(list.Drivers) != 5 || list.Drivers[0].Enabled {
 		t.Fatalf("list = %+v; want the disabled driver visible", list)
 	}
 	args := rctlMutationArgs(primaryEBusDriverID, disabled.DesiredRevision)

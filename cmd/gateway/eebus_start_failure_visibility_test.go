@@ -387,7 +387,8 @@ func TestM69AddonEEBusRetryRecoversWithinTheWindow(t *testing.T) {
 }
 
 // The production policy is the earlier lifecycle's three attempts five
-// seconds apart, and it is installed for eebus.primary only.
+// seconds apart. CAN has its own bounded receive-open policy; the Modbus
+// sidecars do not use this service retry policy.
 func TestM69EEBusRetryPolicyIsScopedToEEBus(t *testing.T) {
 	if eebusManagedStartRetry != (runtimecontrol.RetryPolicy{MaxAttempts: 3, Delay: 5 * time.Second}) {
 		t.Fatalf("eeBUS start retry = %+v; want 3 attempts 5s apart", eebusManagedStartRetry)
@@ -395,13 +396,16 @@ func TestM69EEBusRetryPolicyIsScopedToEEBus(t *testing.T) {
 	m06Factories(t, "", "")
 	sidecars := prepareManagedSidecars(context.Background(), ebusgateway.DefaultConfig(), nil, "", nil, nil)
 	_, service := sidecars.serviceConfigs()
-	if len(service) != 3 {
-		t.Fatalf("service configs = %d; want 3 sidecars", len(service))
+	if len(service) != 4 {
+		t.Fatalf("service configs = %d; want 4 sidecars", len(service))
 	}
 	for _, config := range service {
 		want := runtimecontrol.RetryPolicy{}
 		if config.DriverID == managedEEBusID {
 			want = eebusManagedStartRetry
+		}
+		if config.DriverID == managedGrowattCANID {
+			want = runtimecontrol.RetryPolicy{MaxAttempts: 3, Delay: 5 * time.Second}
 		}
 		if config.Retry != want {
 			t.Fatalf("%s retry = %+v; want %+v", config.DriverID, config.Retry, want)

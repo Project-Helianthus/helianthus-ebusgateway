@@ -954,7 +954,16 @@ func (p *m57Process) waitObserved(want map[runtimecontrol.DriverID]drivermanager
 	deadline := time.Now().Add(rctlBound)
 	for {
 		drivers := p.drivers()
-		ready := len(drivers) == len(m57Drivers)
+		// The four fixture drivers are active; host-only CAN is also registered
+		// but remains disabled. Pin the complete set even for subset waits.
+		ready := len(drivers) == len(m57Drivers)+1
+		for _, id := range m57Drivers {
+			_, present := drivers[id]
+			ready = ready && present
+		}
+		can, present := drivers[managedGrowattCANID]
+		ready = ready && present && !can.Enabled && can.DesiredState == "STOPPED" &&
+			can.ObservedState == "DISABLED" && can.Reason == "CONFIG_DISABLED"
 		for id, state := range want {
 			ready = ready && drivers[id].ObservedState == string(state)
 		}

@@ -1,12 +1,13 @@
 # Managed sidecar composition after G5
 
-The gateway composes SunSpec TCP, Growatt BMS RS-485 and eeBUS through the
-shared runtime registry, native manager and durable lifecycle service.
+The gateway composes SunSpec TCP, Growatt BMS RS-485, the receive-only Growatt
+BMS CAN observer and eeBUS through the shared runtime registry, native manager
+and durable lifecycle service.
 Physical family activation remains Unknown.
 
 ## Gateway registration and consumer behavior
 
-Proven: the gateway composes the three sidecars through the shared registry,
+Proven: the gateway composes these sidecar families through the shared registry,
 native manager and durable service. Disabled entries remain visible without constructing native
 runtimes. Consumer bindings acquire only the current admitted generation.
 
@@ -50,14 +51,15 @@ fixtures do not establish either.
 
 A sidecar START whose manager attempt does not reach `RUNNING` returns a
 closed executor error carrying the manager's reason, so the lifecycle view
-reports `PROVIDER_UNAVAILABLE` (or `CONFIG_INVALID` for an eeBUS
+reports `PROVIDER_UNAVAILABLE` (or `CONFIG_INVALID` for an eeBUS or CAN
 configuration category) rather than `INTERNAL_ERROR`. The error carries no
-native text. SunSpec and Growatt keep non-retryable start errors and the
-service policy. The gateway re-issues a failed Modbus START as an ordinary
-RESTART decision (see "Modbus start retry and failed-start succession" below).
-A Growatt START that fails because its configuration is incomplete or its
-RS-485 timing is rejected reports `CONFIG_INVALID`. Every other Growatt and
-Modbus TCP start failure reports `PROVIDER_UNAVAILABLE`.
+native text. SunSpec and Growatt BMS RS-485 keep non-retryable start errors
+and the service policy. The gateway re-issues a failed Modbus START as an
+ordinary RESTART decision (see "Modbus start retry and failed-start succession"
+below). A Growatt BMS RS-485 START that fails because its configuration is
+incomplete or its RS-485 timing is rejected reports `CONFIG_INVALID`. Every
+other Growatt BMS RS-485 and Modbus TCP start failure reports
+`PROVIDER_UNAVAILABLE`.
 
 eeBUS classifies a native start error with the construction categories, so
 a protected-credentials failure reports `LOCAL_IDENTITY_UNAVAILABLE` and only
@@ -75,6 +77,53 @@ fixtures in
 drive the production startup with the add-on's eeBUS flag set and injected
 native factories. They do not establish the native cause on any
 installation.
+
+### Receive-only Growatt BMS CAN
+
+Proven: `growatt.bms.can` is registered through the shared manager and durable
+lifecycle service. It is disabled by default, with no constructed receiver.
+The host enables it with `-growatt-bms-can-enabled` and supplies
+`-growatt-bms-can-interface`, `-growatt-bms-can-listen-only-confirmed` and a
+positive `-growatt-bms-can-stale-after` duration. These options appear in
+gateway help. The controller must already be in listen-only mode before the
+receiver opens. The confirmation records that precondition; the observer does
+not verify or configure controller mode and never transmits.
+
+Construction is inert; START validates configuration and opens a Linux
+SocketCAN receiver. Invalid configuration, missing listen-only confirmation
+and unsupported platforms fail closed without retry. Retryable start failures
+use the service policy of up to three attempts, with a five-second delay
+before each retry. Two retries contribute ten seconds of backoff, plus attempt
+time, within the existing service budget. The manager retry budget is zero,
+so this does not create a second retry owner.
+
+After admission, receive-loop termination withdraws effective capabilities and
+publishes `FAILED/PROVIDER_UNAVAILABLE` through the manager and runtime control
+service. Notifications retain native and lifecycle generation correlation;
+an early failure waits for START completion, and a retired receiver cannot
+fail its successor. Automatic retries cover startup; recovery from an admitted
+receive-loop failure requires explicit RESTART. STOP joins reception before
+closing the descriptor, and successful retirement precedes a replacement
+receiver. Unconfirmed receiver cleanup latches native safety quarantine and
+prevents opening a replacement.
+
+CAN configuration is host-only. It is absent from the closed persisted Portal
+driver-selection record and has no Portal selection control. A corrupt,
+unsupported or locked Portal record does not withhold valid host-enabled CAN;
+the record-governed drivers still fail closed. This exemption applies only to
+Portal selection: durable lifecycle state and recovery requirements still
+apply to CAN.
+
+`RUNNING` establishes lifecycle admission only. Public CAN snapshot exposure
+through MCP or GraphQL remains deferred; no observation tool, semantic
+publication or native control operation is added. The `TestCAN03` fixtures in
+[`growatt_bms_can_cli_test.go`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/growatt_bms_can_cli_test.go)
+cover configuration, retries, receive failures, restart and cleanup. The
+`TestM28` failure-isolation fixtures in
+[`portal_config_runtime_test.go`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/portal_config_runtime_test.go)
+keep CAN running while preserving Portal rejection and governed-driver
+withholding. These are synthetic software checks. Physical qualification and
+live trials are not established; installation behavior remains Unknown.
 
 ### Modbus TCP driver instances
 
@@ -213,7 +262,7 @@ manager hooks before startup and accepts the identical `ebus.primary`
 descriptor registered by `prepareManagedSidecars`. Its typed factory returns
 the already prepared native runtime wrapper; registry acceptance alone does
 not connect the service to a family. The gateway explicitly composes the
-three family bindings described above; reserved hooks remain unavailable.
+family bindings described above; reserved hooks remain unavailable.
 
 ## Adapter inputs, outputs and ownership
 
@@ -280,6 +329,7 @@ composition. Keep the current family-specific decoders and evidence paths.
 | --- | --- | --- |
 | SunSpec TCP | [`startModbusRuntime`](../../cmd/gateway/modbus_runtime_adapter.go) takes context, `ModbusTCPConfig`, hub, `modbusadapter.Dialer`, `modbusadapter.Factory`; returns `*modbusadapter.Adapter` or error. `modbusadapter.Start` opens the native endpoint. `Adapter.Close` closes it and retires its PV publication. | Inject the existing factory and dialer into the wrapper. Move the opening call under managed start. Own the qualify/refresh worker and Portal PV lease per admitted generation; join the worker and revoke the lease before adapter close. Migrate the existing direct/legacy publication ownership to the managed writer and epoch barrier before claiming D5 recovery. |
 | Growatt BMS RS-485 | [`startGrowattBMSRS485Runtime`](../../cmd/gateway/growatt_bms_rs485_runtime.go) takes `GrowattBMSRS485Config`, hub; returns `*growattBMSRS485ProductionProvider`. `openGrowattBMSRTUEndpoint` is the existing injectable open seam. Provider methods include `GrowattBMSRS485V202`, `GrowattStorageSemanticCurrent`, `LastObservationEvidence`, `Close`. | Bind config/source and service correlation before opening. Preserve the existing admission-before-endpoint ordering, native read admission and observation serialization. Add cancellable, bounded join around in-flight reads; `Close()` has no context and cannot alone prove a bounded drain. Keep immutable native observation evidence and retained storage fields. Attach the Storage contribution to the actual admitted generation. |
+| Growatt BMS CAN | [`newGrowattBMSCANManagedFactory`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/growatt_bms_can_runtime.go) takes `GrowattBMSCANConfig` and an injectable receive-only opener; returns an inert lifecycle adapter. | Proven: host-only registration, disabled defaults, managed start/stop/restart, bounded startup retries, correlated receive-failure reporting and cleanup quarantine. Public snapshot bindings remain deferred. |
 | eeBUS | [`startEEBusRuntime`](../../cmd/gateway/eebus_runtime_adapter.go) takes context, `EEBusConfig`, interface resolver and `eebusRuntimeFactory`; returns `*eebusRuntimeAdapter`. The operator variant returns adapter plus `AdminV1`. Native lifecycle is `Start(ctx)` / `Shutdown()`; adapter provides `Snapshot()` and once-only `Shutdown()`. | Construct and start inside managed ownership. Preserve incomplete-pair cleanup in `startEEBusOperatorRuntime`. Use the existing `eebusRuntimeSlot` reader drain/replace shape and command router; fence readers before draining. Its `Shutdown()` has no context, so prove bounded close/join or report unconfirmed close. Do not turn an eeBUS trust or native write decision into a generic lifecycle decision. |
 
 The existing `eebusRuntimeSlot` methods `BeginRetire`, `DrainRetired`,
@@ -290,7 +340,7 @@ runtime must be shut down and its drain accounted for. A rejected replacement
 must also be closed. A slot becoming unavailable proves neither native close
 nor semantic cleanup.
 
-## Growatt lifecycle implementation status
+## Growatt BMS RS-485 lifecycle implementation status
 
 Proven: `newGrowattManagedDriverFactory` constructs an inert wrapper around the
 existing read-only BMS RS-485 family provider. It refuses unsupported profiles;
@@ -428,7 +478,8 @@ and native qualification; no status read opens an endpoint.
 | Huawei S-Dongle | Typed/injected-provider contracts exist. | Unknown without its own native evidence. | Withheld as a registered instance (`FAMILY_NOT_ADMITTED`); no inherited route or qualification. |
 | Growatt Protocol II | Typed/injected-provider contracts exist. | Separate evidence required; BMS RS-485 evidence is insufficient. | Withheld pending its own evidence and decision. |
 | OutBack | Typed/injected-provider contracts exist. | Unknown without its own accepted native evidence. | Withheld pending its own evidence and decision. |
-| CAN | Proposed host observation contract; no activation established by this document. | Unknown; native ownership/evidence decisions required. | Withheld. The [CAN observation proposal](can-metric-observation-contract.md) supplies no live route. |
+| Growatt BMS CAN | Proven: receive-only SocketCAN driver and inert managed factory exist. | Synthetic admission and lifecycle checks do not establish physical qualification or installation compatibility. | Proven: disabled-by-default, host-configured managed receiver with bounded startup retries, correlated failure reporting and cleanup quarantine. No Portal selection controls, public CAN snapshot tools or semantic publication. |
+| Other CAN families | Proposed host observation contract; no activation established by this document. | Unknown; native ownership/evidence decisions required. | Withheld. The [CAN observation proposal](can-metric-observation-contract.md) supplies no live route for these families. |
 
 All MCP namespaces remain pre-stable before 1.0. Reuse the five ordinary
 `helianthus.runtime.*` tools added by G5; they are shell tools, not descriptor

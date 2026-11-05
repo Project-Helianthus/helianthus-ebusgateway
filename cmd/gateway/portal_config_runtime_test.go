@@ -46,6 +46,9 @@ func m28Sidecars(t *testing.T) *m28Natives {
 	gatewayManagedSidecarDescriptorsFor = func(descriptors []runtimecontrol.Descriptor) []runtimecontrol.Descriptor {
 		for i := range descriptors {
 			id := descriptors[i].DriverID
+			if _, selected := natives.runtimes[id]; !selected {
+				continue
+			}
 			descriptors[i].Disposition = runtimecontrol.DispositionEnabled
 			descriptors[i].Adapter = runtimecontrol.NewAdapter(func(context.Context, runtimecontrol.Construction) (*m06Runtime, error) {
 				natives.constructs[id].Add(1)
@@ -358,8 +361,9 @@ func TestM28RetainedPrimaryDeselectionDisablesWithoutRewritingIntent(t *testing.
 
 // TestM28CorruptStoreKeepsShellAndWithholdsRecordControlledDrivers: a record
 // that exists but does not load leaves HTTP, Portal and MCP available,
-// reports an explicit closed error for every driver, withholds every
-// host-enabled driver failed and unopened, and is never rewritten.
+// reports an explicit closed error for every governed driver, withholds those
+// drivers failed and unopened, and is never rewritten. Host-only CAN continues
+// independently of the Portal record.
 func TestM28CorruptStoreKeepsShellAndWithholdsRecordControlledDrivers(t *testing.T) {
 	adopted := m28AdoptedRecord(true)
 	for _, tc := range []struct {
@@ -387,6 +391,12 @@ func TestM28CorruptStoreKeepsShellAndWithholdsRecordControlledDrivers(t *testing
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			natives := m28Sidecars(t)
+			portalAdapters := gatewayManagedSidecarDescriptorsFor
+			canOpens := can03FakeOpener(t, 0)
+			canAdapter := gatewayManagedSidecarDescriptorsFor
+			gatewayManagedSidecarDescriptorsFor = func(descriptors []runtimecontrol.Descriptor) []runtimecontrol.Descriptor {
+				return canAdapter(portalAdapters(descriptors))
+			}
 			root := t.TempDir()
 			path := filepath.Join(root, portalConfigRecordFile)
 			stored := tc.record(t)
@@ -405,7 +415,12 @@ func TestM28CorruptStoreKeepsShellAndWithholdsRecordControlledDrivers(t *testing
 				defer func() { _ = holder.Close() }()
 			}
 			env := newRCtlEnv(t)
-			process := env.start(m28Options(root))
+			opts := m28Options(root)
+			opts.config = func(c *ebusgateway.Config) {
+				c.PortalConfigRoot = root
+				c.GrowattBMSCANConfig = growattBMSCANConfig{Enabled: true, Interface: "can7", ListenOnlyConfirmed: true, StaleAfter: 2 * time.Second}
+			}
+			process := env.start(opts)
 
 			// Shell and APIs stay up.
 			bootstrap, err := rctlHTTPClient.Get(strings.TrimSuffix(process.mcpURL, "/mcp") + "/portal/api/v1/bootstrap")
@@ -416,7 +431,7 @@ func TestM28CorruptStoreKeepsShellAndWithholdsRecordControlledDrivers(t *testing
 			if bootstrap.StatusCode != http.StatusOK {
 				t.Fatalf("Portal bootstrap status %d", bootstrap.StatusCode)
 			}
-			if listed := process.mcpList(); len(listed.Drivers) != len(portalConfigDriverIDs) {
+			if listed := process.mcpList(); len(listed.Drivers) != len(portalConfigDriverIDs)+1 {
 				t.Fatalf("MCP runtime list %+v; want every configured driver", listed)
 			}
 			code, view := m28Config(t, process, http.MethodGet, nil)
@@ -429,8 +444,8 @@ func TestM28CorruptStoreKeepsShellAndWithholdsRecordControlledDrivers(t *testing
 			}
 			m28RequireRows(t, view, rows)
 
-			// Every host-enabled driver is withheld: failed, never constructed,
-			// never started and never opened.
+			// Every Portal-governed driver is withheld: failed, never
+			// constructed, never started and never opened.
 			process.waitObserved(drivermanager.ObservedFailed)
 			for _, id := range m28SidecarIDs {
 				m28WaitObserved(t, process, id, drivermanager.ObservedFailed)
@@ -443,6 +458,10 @@ func TestM28CorruptStoreKeepsShellAndWithholdsRecordControlledDrivers(t *testing
 				if count != [2]int32{} {
 					t.Fatalf("withheld %s constructed/started %v; want neither", id, count)
 				}
+			}
+			can := m28WaitObserved(t, process, managedGrowattCANID, drivermanager.ObservedRunning)
+			if !can.Enabled || can.SafetyQuarantined || canOpens.Load() != 1 {
+				t.Fatalf("host-only CAN = %+v, opens=%d; want one running receiver", can, canOpens.Load())
 			}
 			if code, _ := m28Config(t, process, http.MethodPut, m28Marshal(t, adopted)); code == http.StatusOK {
 				t.Fatal("a record that did not load accepted an edit")
@@ -650,6 +669,7 @@ func TestM28PortalDriverSetMatchesManagedComposition(t *testing.T) {
 		cfg := ebusgateway.DefaultConfig()
 		cfg.ModbusTCPConfig.Enabled = enabled
 		cfg.ModbusTCPConfig.GrowattBMSRS485.Enabled = enabled
+		cfg.GrowattBMSCANConfig.Enabled = enabled
 		cfg.EEBusConfig.Enabled = enabled
 		sidecars := prepareManagedSidecars(context.Background(), cfg, nil, rctlGUID, nil, nil)
 		composed := []runtimecontrol.DriverID{primaryEBusDriverID}
@@ -659,13 +679,23 @@ func TestM28PortalDriverSetMatchesManagedComposition(t *testing.T) {
 		for _, entry := range sidecars.entries {
 			id := entry.descriptor.DriverID
 			composed = append(composed, id)
+			if id == managedGrowattCANID {
+				// CAN is host-configured; adding it to the closed Portal record
+				// would require a separate record migration.
+				if got := entry.descriptor.Disposition == runtimecontrol.DispositionEnabled; got != enabled {
+					t.Fatalf("CAN disposition enabled=%t; want host configuration %t", got, enabled)
+				}
+				continue
+			}
 			if got := portalConfigHostEnabled(cfg, id); got != (entry.descriptor.Disposition == runtimecontrol.DispositionEnabled) {
 				t.Fatalf("host seed for %s = %t; composed disposition %s", id, got, entry.descriptor.Disposition)
 			}
 		}
 		sort.Slice(composed, func(i, j int) bool { return composed[i] < composed[j] })
-		if !reflect.DeepEqual(composed, portalConfigDriverIDs) {
-			t.Fatalf("composed drivers %v; Portal driver set %v", composed, portalConfigDriverIDs)
+		want := append(append([]runtimecontrol.DriverID(nil), portalConfigDriverIDs...), managedGrowattCANID)
+		sort.Slice(want, func(i, j int) bool { return want[i] < want[j] })
+		if !reflect.DeepEqual(composed, want) {
+			t.Fatalf("composed drivers %v; want Portal driver set plus host-configured CAN %v", composed, want)
 		}
 	}
 }

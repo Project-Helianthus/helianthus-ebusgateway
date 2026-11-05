@@ -990,6 +990,9 @@ func testB524Float32Payload(value float64) []byte {
 }
 
 func TestRefreshDiscoveryPrimesDHWBeforeStartupZoneScan(t *testing.T) {
+	if testing.Short() {
+		t.Skip("measured long-running coverage; exercised by full CI")
+	}
 	t.Parallel()
 
 	var selectors [][]byte
@@ -1047,6 +1050,9 @@ func TestRefreshDiscoveryPrimesDHWBeforeStartupZoneScan(t *testing.T) {
 }
 
 func TestRefreshDiscoveryRetriesDHWBeforeStartupZoneScan(t *testing.T) {
+	if testing.Short() {
+		t.Skip("measured long-running coverage; exercised by full CI")
+	}
 	t.Parallel()
 
 	dhwRequests := 0
@@ -5289,6 +5295,9 @@ func TestVaillantSemanticPoller_RegulatorDetectionMixedKnownAndUnknown(t *testin
 }
 
 func TestVaillantSemanticPoller_RefreshDiscoverySetsRegulatorCapability(t *testing.T) {
+	if testing.Short() {
+		t.Skip("measured long-running coverage; exercised by full CI")
+	}
 	t.Parallel()
 
 	catalog, err := productids.LoadCatalog()

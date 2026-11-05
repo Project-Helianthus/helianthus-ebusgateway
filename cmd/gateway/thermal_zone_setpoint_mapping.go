@@ -141,17 +141,7 @@ func mapThermalZoneSetpoints(input thermalZoneSetpointInput) (thermalZoneSetpoin
 	}
 	out := thermalZoneSetpointResult{Evaluation: in.Evaluation}
 	// Prefer the immediately preceding selections over older diagnostic records.
-	sort.SliceStable(in.Previous, func(i, j int) bool {
-		a, b := in.Previous[i], in.Previous[j]
-		if a.Current != b.Current {
-			return a.Current
-		}
-		// Full records include every identity, role and receipt axis, then all
-		// remaining evidence as a deterministic tie-break before truncation.
-		left, _ := json.Marshal(a)
-		right, _ := json.Marshal(b)
-		return string(left) < string(right)
-	})
+	thermalZoneSetpointSortHistory(in.Previous)
 	retained := map[string]bool{}
 	for _, previous := range in.Previous {
 		if previous.Current {
@@ -428,11 +418,40 @@ func thermalZoneSetpointCopy[T any](v T) (T, error) {
 }
 
 func thermalZoneSetpointSort[T any](values []T) {
-	sort.Slice(values, func(i, j int) bool {
-		a, _ := json.Marshal(values[i])
-		b, _ := json.Marshal(values[j])
-		return string(a) < string(b)
+	type keyed struct {
+		value T
+		key   string
+	}
+	entries := make([]keyed, len(values))
+	for i, value := range values {
+		key, _ := json.Marshal(value)
+		entries[i] = keyed{value, string(key)}
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].key < entries[j].key })
+	for i, entry := range entries {
+		values[i] = entry.value
+	}
+}
+
+func thermalZoneSetpointSortHistory(values []thermalZoneSetpointHistory) {
+	type keyed struct {
+		value thermalZoneSetpointHistory
+		key   string
+	}
+	entries := make([]keyed, len(values))
+	for i, value := range values {
+		key, _ := json.Marshal(value)
+		entries[i] = keyed{value, string(key)}
+	}
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].value.Current != entries[j].value.Current {
+			return entries[i].value.Current
+		}
+		return entries[i].key < entries[j].key
 	})
+	for i, entry := range entries {
+		values[i] = entry.value
+	}
 }
 
 // Normalize each source independently before validation so aggregation cannot

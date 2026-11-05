@@ -1147,7 +1147,24 @@ func TestServiceObservedTransitionsNeverBumpDesiredRevision(t *testing.T) {
 	})
 	// Close cancels blocked callbacks and joins the reconciler even on Fatal.
 	defer f.svc.Close()
-	accepted := f.mustDecide(MethodStart, "fam.alpha")
+	// STOPPED may be published before the terminal work slot is pruned.
+	var accepted DesiredView
+	for {
+		var err error
+		accepted, err = f.svc.Control(ctx, MethodStart, body("fam.alpha", stop.DesiredRevision))
+		if err == nil {
+			break
+		}
+		var refusal *Refusal
+		if !errors.As(err, &refusal) || refusal.Code != RefusalTransitionBusy {
+			t.Fatalf("START after STOPPED: %v", err)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("terminal pruning did not finish: %v", ctx.Err())
+		case <-time.After(time.Millisecond):
+		}
+	}
 	if accepted.DesiredRevision != stop.DesiredRevision+1 {
 		t.Fatalf("acceptance incremented the revision by %d", accepted.DesiredRevision-stop.DesiredRevision)
 	}

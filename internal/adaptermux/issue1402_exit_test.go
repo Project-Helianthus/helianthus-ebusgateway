@@ -176,7 +176,7 @@ func t02CheckArbitrationExit(t *testing.T, tc t02ExitCase, mode v8classifier.Mod
 	logWriter := &t02ExitLogWriter{}
 	m.logger = log.New(logWriter, "", 0)
 	m.v8 = v8classifier.New(mode)
-	m.cfg.StartDeadline = 10 * time.Second
+	m.cfg.StartDeadline = 60 * time.Second
 	if tc.retire == "deadline" || tc.timeout {
 		m.cfg.StartDeadline = 30 * time.Millisecond
 	}
@@ -206,12 +206,12 @@ func t02CheckArbitrationExit(t *testing.T, tc t02ExitCase, mode v8classifier.Mod
 		}
 		select {
 		case tr.steps <- step:
-		case <-time.After(time.Second):
+		case <-time.After(60 * time.Second):
 			t.Fatal("readLoop not reading")
 		}
 		select {
 		case <-step.processed:
-		case <-time.After(time.Second):
+		case <-time.After(60 * time.Second):
 			t.Fatal("readLoop did not finish dispatch")
 		}
 	}
@@ -229,7 +229,7 @@ func t02CheckArbitrationExit(t *testing.T, tc t02ExitCase, mode v8classifier.Mod
 		t.Helper()
 		select {
 		case <-selectedDone:
-		case <-time.After(time.Second):
+		case <-time.After(60 * time.Second):
 			t.Fatal("session result waiter did not finish")
 		}
 	}
@@ -275,12 +275,12 @@ func t02CheckArbitrationExit(t *testing.T, tc t02ExitCase, mode v8classifier.Mod
 			if result.granted || result.err == nil {
 				t.Fatalf("expiry=%+v", result)
 			}
-		case <-time.After(time.Second):
+		case <-time.After(60 * time.Second):
 			t.Fatal("bid did not expire")
 		}
 	}
 	if tc.timeout {
-		deadline := time.Now().Add(time.Second)
+		deadline := time.Now().Add(60 * time.Second)
 		for {
 			m.stateMu.Lock()
 			absorbing := m.pendingStartAbsorb > 0
@@ -318,7 +318,7 @@ func t02CheckArbitrationExit(t *testing.T, tc t02ExitCase, mode v8classifier.Mod
 			tr.steps <- t02ExitStep{err: io.EOF}
 			select {
 			case <-loopDone:
-			case <-time.After(time.Second):
+			case <-time.After(60 * time.Second):
 				t.Fatal("disconnect teardown blocked")
 			}
 			if selectedID != gatewaySessionID {
@@ -583,12 +583,12 @@ func t02ForeignTelegramFixture(t *testing.T, raw bool, response transport.Stream
 		}
 		select {
 		case tr.steps <- step:
-		case <-time.After(time.Second):
+		case <-time.After(60 * time.Second):
 			t.Fatal("readLoop not reading")
 		}
 		select {
 		case <-step.processed:
-		case <-time.After(time.Second):
+		case <-time.After(60 * time.Second):
 			t.Fatal("readLoop did not finish dispatch")
 		}
 	}

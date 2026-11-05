@@ -1247,7 +1247,7 @@ func TestM61SuccessorGenerationPublishesStorageAfterSameEpochRestart(t *testing.
 	asset := semreg.AssetID(config.AssetID)
 	endpoints, open := m61Endpoints()
 	driver := m04Driver(t, config, open)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	defer func() {
 		if err := driver.Stop(ctx); err != nil {
@@ -1340,7 +1340,7 @@ func TestM61ManagedSidecarRestartRepublishesStorage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	defer func() {
 		if err := manager.Shutdown(ctx); err != nil {

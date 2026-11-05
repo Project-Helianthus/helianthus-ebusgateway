@@ -341,6 +341,9 @@ func TestTeslaHSCRetainedOwnerEqualMonotonicLaterWallPublishesWithoutRefresh(t *
 }
 
 func TestTeslaHSCRetainedOwnerEqualMonotonicConcurrentReadsRemainStable(t *testing.T) {
+	if testing.Short() {
+		t.Skip("measured long-running coverage; exercised by full CI")
+	}
 	owner := startTeslaEqualMonotonicFixture(t)
 	wantEvidence := owner.RetainedEvidence()
 	var wait sync.WaitGroup
@@ -634,6 +637,9 @@ func TestTeslaHSCRetainedOwnerSuccessorReservationIsAtomic(t *testing.T) {
 }
 
 func TestTeslaHSCRetainedOwnerConcurrentReadsPerformNoIngestionOrIO(t *testing.T) {
+	if testing.Short() {
+		t.Skip("measured long-running coverage; exercised by full CI")
+	}
 	owner := startTeslaRetainedFixture(t, teslaRetainedConfig())
 	if err := owner.IngestPersistent(context.Background(), teslaPersistentOutcome(t, 1, 16)); err != nil {
 		t.Fatal(err)

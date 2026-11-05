@@ -339,8 +339,8 @@ func TestM56RouterReplayNeverRedispatches(t *testing.T) {
 		h := newHarness(t, semoptest.Outcome{Block: true})
 		h.owner.Replay = true
 		request := h.f.Request()
-		request.Timeout = 150 * time.Millisecond
-		first := h.route(t, request)
+		request.Timeout = semanticoperations.MaxTimeout
+		first := routeAfterExecutorStart(t, h, request, true)
 		second := h.route(t, request)
 		h.selected.Release()
 		awaitDone(t, h.selected)
@@ -379,6 +379,55 @@ func TestM56RouterReplayNeverRedispatches(t *testing.T) {
 	})
 }
 
+// Cancellation follows executor entry; the deadline case keeps the real request
+// timeout. Both use the maximum setup budget allowed by the public contract.
+func routeAfterExecutorStart(t *testing.T, h harness, request semanticoperations.Request, cancelAfterStart bool) view {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	t.Cleanup(h.selected.Release)
+	started := make(chan struct{})
+	h.selected.Before = func() { close(started) }
+	type response struct {
+		result semanticoperations.Result
+		err    error
+	}
+	done := make(chan response, 1)
+	go func() {
+		result, err := h.router.Route(ctx, request)
+		done <- response{result, err}
+	}()
+	select {
+	case <-started:
+	case result := <-done:
+		// The scheduler may resume this waiter after both signals are ready.
+		select {
+		case <-started:
+		default:
+			t.Fatalf("route finished before executor start: %+v, %v", result.result, result.err)
+		}
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		return viewOf(result.result)
+	case <-time.After(60 * time.Second):
+		t.Fatal("executor did not start")
+	}
+	if cancelAfterStart {
+		cancel()
+	}
+	select {
+	case result := <-done:
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		return viewOf(result.result)
+	case <-time.After(60 * time.Second):
+		t.Fatal("route did not finish after executor start")
+		return view{}
+	}
+}
+
 func awaitDone(t *testing.T, e *semoptest.Executor) {
 	t.Helper()
 	select {
@@ -392,8 +441,8 @@ func TestM56RouterBoundsTheWait(t *testing.T) {
 	t.Run("expired wait is unknown without delivery claim", func(t *testing.T) {
 		h := newHarness(t, semoptest.Outcome{Block: true})
 		request := h.f.Request()
-		request.Timeout = 150 * time.Millisecond
-		got := h.route(t, request)
+		request.Timeout = semanticoperations.MaxTimeout
+		got := routeAfterExecutorStart(t, h, request, false)
 		h.selected.Release()
 		awaitDone(t, h.selected)
 		if got != (view{"unknown", null, null, null, null, semanticoperations.ReasonEvidenceTimeout}) {
@@ -404,8 +453,8 @@ func TestM56RouterBoundsTheWait(t *testing.T) {
 		h := newHarness(t, semoptest.Outcome{Kind: operation.OutcomeAcknowledgedUnverified, Delivery: operation.DeliverySent, Ack: operation.AckAccepted, Block: true})
 		h.owner.Replay = true
 		request := h.f.Request()
-		request.Timeout = 150 * time.Millisecond
-		if got := h.route(t, request); got != (view{"unknown", null, null, null, null, semanticoperations.ReasonEvidenceTimeout}) {
+		request.Timeout = semanticoperations.MaxTimeout
+		if got := routeAfterExecutorStart(t, h, request, true); got != (view{"unknown", null, null, null, null, semanticoperations.ReasonEvidenceTimeout}) {
 			t.Fatalf("first = %+v", got)
 		}
 		h.selected.Release()

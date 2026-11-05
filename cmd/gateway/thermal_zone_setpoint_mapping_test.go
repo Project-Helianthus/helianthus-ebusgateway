@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"sort"
+	"strings"
 	"testing"
 
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
@@ -475,6 +477,9 @@ func TestThermalZoneSetpointMappingMergedDispositions(t *testing.T) {
 }
 
 func TestThermalZoneSetpointMappingRepeatedFeedback(t *testing.T) {
+	if testing.Short() {
+		t.Skip("measured long-running coverage; exercised by full CI")
+	}
 	for _, scenario := range []string{"unchanged", "partial", "missing", "changing_identity"} {
 		t.Run(scenario, func(t *testing.T) {
 			in := thermalZoneSetpointFixture()
@@ -917,5 +922,90 @@ func TestI41MalformedSourceDispositions(t *testing.T) {
 				t.Fatal("malformed source disposition was accepted")
 			}
 		})
+	}
+}
+
+// Compare cached keys against the previous full-JSON comparators. Every native
+// identity member varies independently so omitting any member from a key changes
+// its ordering relative to the reference. Equal JSON keys also retain stable
+// history order, even when their mapping pointers are distinct.
+func TestThermalZoneSetpointSortMatchesJSONOrdering(t *testing.T) {
+	fixture := thermalZoneSetpointFixture()
+	base := thermalZoneSetpointHistory{Observation: fixture.Observations[0], Mapping: &fixture.Mappings[0], Current: true}
+	variants := []thermalZoneSetpointHistory{base}
+	var vary func(reflect.Value, string)
+	vary = func(value reflect.Value, path string) {
+		for i := 0; i < value.NumField(); i++ {
+			name := path + value.Type().Field(i).Name
+			if value.Field(i).Kind() == reflect.Struct {
+				vary(value.Field(i), name+".")
+				continue
+			}
+			t.Run(name, func(t *testing.T) {
+				changed := base
+				field := reflect.ValueOf(&changed.Observation.Identity).Elem()
+				for _, part := range strings.Split(name, ".") {
+					field = field.FieldByName(part)
+				}
+				switch field.Kind() {
+				case reflect.String:
+					field.SetString(field.String() + ":other")
+				case reflect.Uint8, reflect.Uint16:
+					field.SetUint(field.Uint() + 1)
+				default:
+					t.Fatalf("uncovered identity field %s", name)
+				}
+				variants = append(variants, changed)
+				assertThermalZoneSetpointSort(t, []thermalZoneSetpointHistory{changed, base, changed, base})
+			})
+		}
+	}
+	vary(reflect.ValueOf(base.Observation.Identity), "")
+	other := base
+	other.Current = false
+	variants = append(variants, other)
+	other = base
+	other.Reason = "synthetic-other"
+	variants = append(variants, other)
+	other = base
+	mapping := *base.Mapping
+	other.Mapping = &mapping
+	variants = append(variants, other, base)
+	assertThermalZoneSetpointSort(t, variants)
+}
+
+func assertThermalZoneSetpointSort(t *testing.T, values []thermalZoneSetpointHistory) {
+	t.Helper()
+	key := func(v thermalZoneSetpointHistory) string {
+		b, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	for _, stable := range []bool{false, true} {
+		want := append([]thermalZoneSetpointHistory(nil), values...)
+		got := append([]thermalZoneSetpointHistory(nil), values...)
+		less := func(i, j int) bool {
+			if stable && want[i].Current != want[j].Current {
+				return want[i].Current
+			}
+			return key(want[i]) < key(want[j])
+		}
+		if stable {
+			sort.SliceStable(want, less)
+			thermalZoneSetpointSortHistory(got)
+		} else {
+			sort.Slice(want, less)
+			thermalZoneSetpointSort(got)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("stable=%v: cached ordering differs from full JSON ordering", stable)
+		}
+		for i := range want {
+			if got[i].Mapping != want[i].Mapping {
+				t.Fatalf("stable=%v: tie order differs at %d", stable, i)
+			}
+		}
 	}
 }

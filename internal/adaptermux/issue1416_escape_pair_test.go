@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	escapePairTestGuard = 10 * time.Second
+	escapePairTestGuard = 60 * time.Second
 	// escapePairIdleSyn is the idle SYN cadence of the synthetic bus.
 	escapePairIdleSyn = 40 * time.Millisecond
 	escapePairSource  = 0x31

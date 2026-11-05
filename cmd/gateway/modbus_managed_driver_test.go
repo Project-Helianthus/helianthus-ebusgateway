@@ -740,6 +740,9 @@ func TestM03ManagerRetryAfterClosedStartFailure(t *testing.T) {
 }
 
 func TestM03ReplacementRetainsDistinctSampleEvidence(t *testing.T) {
+	if testing.Short() {
+		t.Skip("measured long-running coverage; exercised by full CI")
+	}
 	for _, newEpoch := range []bool{false, true} {
 		t.Run(fmt.Sprint("new_epoch=", newEpoch), func(t *testing.T) {
 			driver := m03Driver(t, true, func(modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) { return &m03Endpoint{}, nil }, nil)

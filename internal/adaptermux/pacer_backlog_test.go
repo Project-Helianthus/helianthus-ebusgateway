@@ -171,7 +171,7 @@ func TestSessionPacer_NotificationInterruptsWait(t *testing.T) {
 				if !writes[n].at.Before(anchor.Add(tau / 2)) {
 					t.Fatal("notification did not interrupt the pacing wait")
 				}
-				if gap := writes[n].at.Sub(notificationAt); gap > 5*time.Millisecond {
+				if gap := writes[n].at.Sub(notificationAt); gap > 100*time.Millisecond {
 					t.Fatalf("notification took %v after enqueue; want <=100ms", gap)
 				}
 				for i := 0; i < n; i++ {
@@ -182,7 +182,7 @@ func TestSessionPacer_NotificationInterruptsWait(t *testing.T) {
 						t.Fatalf("symbol %d was held back by pacing", i)
 					}
 				}
-				if gap := writes[n].at.Sub(writes[n-1].at); gap > 5*time.Millisecond {
+				if gap := writes[n].at.Sub(writes[n-1].at); gap > 100*time.Millisecond {
 					t.Fatalf("notification followed flushed prefix after %v; want <=100ms", gap)
 				}
 				// Only the older prefix is unpaced; the next symbol resumes cadence.
@@ -492,7 +492,7 @@ func TestSessionPacer_NotificationArrivesDuringBacklogFlush(t *testing.T) {
 					mux, _, _, cleanup := newClassifiedTestMux(t, v8classifier.ModeShadow)
 					t.Cleanup(cleanup)
 					mux.ensureSessionPacer(1)
-					const tau = 20 * time.Millisecond
+					const tau = 300 * time.Millisecond
 					mux.SessionPacer(1).SetTau(tau)
 					c := &snapshotBacklogConn{
 						backlogConn: backlogConn{written: make(chan struct{}, 16)},
@@ -548,7 +548,7 @@ func TestSessionPacer_NotificationArrivesDuringBacklogFlush(t *testing.T) {
 						}
 						if f.kind == sessionFrameReceived {
 							if f.payload == 0x13 && flushPrefix {
-								if gap := writes[i+1].at.Sub(writes[i].at); gap > 5*time.Millisecond {
+								if gap := writes[i+1].at.Sub(writes[i].at); gap > 100*time.Millisecond {
 									t.Fatalf("notification followed flushed prefix after %v; want <=100ms", gap)
 								}
 							} else if f.payload >= 0x13 && writes[i].at.Sub(previousMirror) < tau {

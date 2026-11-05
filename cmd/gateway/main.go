@@ -17,6 +17,10 @@ func main() {
 	if code, selected := dispatchEBusLocalWorker(os.Args, newEBusLocalWorkerChildPorts); selected {
 		os.Exit(code)
 	}
+	// The NO_SEND Tesla observation run is likewise selected from argv alone.
+	if code, selected := dispatchTeslaObserve(os.Args, newTeslaObservePorts); selected {
+		os.Exit(code)
+	}
 
 	cfg := ebusgateway.DefaultConfig()
 	inputs := bindFlags(flag.CommandLine, &cfg)

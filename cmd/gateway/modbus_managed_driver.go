@@ -14,6 +14,8 @@ import (
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 )
 
+type modbusManagedSemanticWork interface{ FenceSemantic() error }
+
 type modbusManagedWork interface {
 	Start()
 	Close() error
@@ -59,10 +61,14 @@ type modbusManagedAttempt struct {
 	startupCaller    context.Context
 	startupFinalized bool
 
-	opened   chan struct{} // native open returned; adapter and openErr are final
-	started  chan struct{} // startup decided and, if it failed, retired
-	stopped  chan struct{}
-	stopOnce sync.Once
+	prepared             chan struct{} // inert work and its separate semantic owner are final
+	semanticWork         modbusManagedSemanticWork
+	semanticFenceStarted atomic.Bool
+	semanticFenced       atomic.Bool
+	opened               chan struct{} // native open returned; adapter and openErr are final
+	started              chan struct{} // startup decided and, if it failed, retired
+	stopped              chan struct{}
+	stopOnce             sync.Once
 
 	adapter *modbusadapter.Adapter
 	openErr error
@@ -184,7 +190,7 @@ retry:
 		}
 		generation := driver.generation.Add(1)
 		runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-		a = &modbusManagedAttempt{nativeGeneration: generation, scope: &modbusadapter.PublicationScope{Epoch: semreg.SourceEpochID(driver.correlation.Epoch), Generation: uint64(driver.correlation.Generation), Previous: driver.previous}, cancel: cancel, startupCaller: ctx, opened: make(chan struct{}), started: make(chan struct{}), stopped: make(chan struct{})}
+		a = &modbusManagedAttempt{nativeGeneration: generation, scope: &modbusadapter.PublicationScope{Epoch: semreg.SourceEpochID(driver.correlation.Epoch), Generation: uint64(driver.correlation.Generation), Previous: driver.previous}, cancel: cancel, startupCaller: ctx, opened: make(chan struct{}), prepared: make(chan struct{}), started: make(chan struct{}), stopped: make(chan struct{})}
 		driver.active.Store(a)
 		driver.revision.Add(1)
 		forwardCancel := context.AfterFunc(ctx, a.cancelStartup)
@@ -268,15 +274,18 @@ func (driver *modbusManagedDriver) open(ctx context.Context, a *modbusManagedAtt
 	a.startErr = a.openErr
 	close(a.opened)
 	if a.openErr != nil {
+		close(a.prepared)
 		return
 	}
 	if a.adapter != nil && driver.workFactory != nil && a.admissible(ctx) {
 		a.work = driver.workFactory(ctx, a.adapter)
-		// Claim installation after inert preparation. Withdrawal revokes the
-		// claim without waiting for external Start code; retirement joins it.
-		if a.work != nil && a.admissible(ctx) && a.admission.CompareAndSwap(modbusWorkPending, modbusWorkInstalling) {
-			a.work.Start()
-		}
+		a.semanticWork, _ = a.work.(modbusManagedSemanticWork)
+	}
+	// Publish the semantic owner before installing any worker effects. Stop
+	// can fence it without joining a blocked Start or acquisition goroutine.
+	close(a.prepared)
+	if a.work != nil && a.admissible(ctx) && a.admission.CompareAndSwap(modbusWorkPending, modbusWorkInstalling) {
+		a.work.Start()
 	}
 	if err := a.commitStartup(ctx); err != nil {
 		nativeErr, semanticErr := a.retire()
@@ -288,6 +297,12 @@ func (driver *modbusManagedDriver) open(ctx context.Context, a *modbusManagedAtt
 // commitStartup is the startup decision. Withdrawal or caller cancellation
 // observed here fails the attempt; cancellation arriving later is ignored.
 func (a *modbusManagedAttempt) commitStartup(ctx context.Context) error {
+	if work, ok := a.work.(interface{ StartError() error }); ok {
+		if err := work.StartError(); err != nil {
+			return err
+		}
+	}
+
 	a.startupMu.Lock()
 	defer a.startupMu.Unlock()
 	if a.withdrawn() {
@@ -336,13 +351,23 @@ func (a *modbusManagedAttempt) retireNative() error {
 // fence, or the retained fence owner of a failed epoch admission. Passes
 // serialize in the publication core, and the scope records their progress.
 func (a *modbusManagedAttempt) fenceSemantic() error {
+	a.semanticFenceStarted.Store(true)
+	var adapterErr error
 	if a.adapter != nil {
-		return a.adapter.WithdrawSemantic()
+		adapterErr = a.adapter.WithdrawSemantic()
+	} else if err, owned := a.scope.RetryStartupCleanup(); owned {
+		adapterErr = err
 	}
-	if err, owned := a.scope.RetryStartupCleanup(); owned {
-		return err
+	<-a.prepared
+	var workErr error
+	if a.semanticWork != nil {
+		workErr = a.semanticWork.FenceSemantic()
 	}
-	return nil
+	err := errors.Join(adapterErr, workErr)
+	if err == nil {
+		a.semanticFenced.Store(true)
+	}
+	return err
 }
 
 func (a *modbusManagedAttempt) fenceAsync() <-chan error {
@@ -420,7 +445,7 @@ func (driver *modbusManagedDriver) stopAttempt(a *modbusManagedAttempt) {
 // failed epoch admission, is a fence timeout; cleanup keeps ownership and
 // successor admission stays closed until it completes.
 func (a *modbusManagedAttempt) deadlineErr(err error) error {
-	if a.scope.FencePending() {
+	if a.scope.FencePending() || a.semanticFenceStarted.Load() && !a.semanticFenced.Load() {
 		return errors.Join(errModbusPublicationFenceTimeout, err)
 	}
 	return err

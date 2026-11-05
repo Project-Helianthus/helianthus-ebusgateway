@@ -363,7 +363,7 @@ func TestH08SunSpecAndHuaweiEntriesRegisterTwoInstances(t *testing.T) {
 	if code := failureReasonForH08(huawei.withheld); code != drivermanager.ReasonProviderUnavailable {
 		t.Fatalf("withheld reason = %s", code)
 	}
-	if !strings.Contains(output(), "Modbus TCP instance withheld driver=modbus.huawei.emma.site-a family=huawei.emma posture=WITHHELD reason=FAMILY_NOT_ADMITTED") {
+	if !strings.Contains(output(), "Modbus TCP instance withheld driver=modbus.huawei.emma.site-a family=huawei.emma posture=WITHHELD reason=NO_ADMITTED_CHILD_PROFILE") {
 		t.Fatalf("withheld instance logged no closed reason: %s", output())
 	}
 	if transport.totalDials() != 0 || transport.factories.Load() != 0 {
@@ -514,21 +514,21 @@ func TestH08WithheldHuaweiInstanceListsWithItsClosedReason(t *testing.T) {
 	process := env.start(rctlProcessOptions{config: func(cfg *ebusgateway.Config) {
 		cfg.ModbusTCPConfig = h08V2(
 			ebusgateway.ModbusTCPEndpointConfig{Label: "default", Family: "sunspec", Endpoint: h08EndpointA},
-			ebusgateway.ModbusTCPEndpointConfig{Label: "site-a", Family: "huawei.smartlogger", Endpoint: "tcp://logger-a.example.invalid:502"},
+			ebusgateway.ModbusTCPEndpointConfig{Label: "site-a", Family: "huawei.emma", Endpoint: "tcp://logger-a.example.invalid:502"},
 		)
 	}})
 	h08AwaitStates(t, process, map[runtimecontrol.DriverID]drivermanager.ObservedState{
-		managedSunSpecID:                   drivermanager.ObservedRunning,
-		"modbus.huawei.smartlogger.site-a": drivermanager.ObservedFailed,
+		managedSunSpecID:            drivermanager.ObservedRunning,
+		"modbus.huawei.emma.site-a": drivermanager.ObservedFailed,
 	})
-	withheld := h08Status(t, process, "modbus.huawei.smartlogger.site-a")
+	withheld := h08Status(t, process, "modbus.huawei.emma.site-a")
 	if withheld.Reason != drivermanager.ReasonProviderUnavailable || !withheld.Enabled || withheld.SafetyQuarantined {
 		t.Fatalf("withheld instance = %+v", withheld)
 	}
 	if transport.dialed("logger-a.example.invalid:502") != 0 || transport.factories.Load() != 1 {
 		t.Fatalf("withheld instance touched its endpoint: dials=%v factories=%d", transport.dials, transport.factories.Load())
 	}
-	if !strings.Contains(output(), "reason=FAMILY_NOT_ADMITTED") || strings.Contains(output(), "logger-a") {
+	if !strings.Contains(output(), "reason=NO_ADMITTED_CHILD_PROFILE") || strings.Contains(output(), "logger-a") {
 		t.Fatalf("log = %s", output())
 	}
 	process.stop()
@@ -645,7 +645,7 @@ func TestH08TransportStatusAggregatesEveryInstance(t *testing.T) {
 	cfg.ModbusTCPConfig = h08V2(
 		ebusgateway.ModbusTCPEndpointConfig{Label: "default", Family: "sunspec", Endpoint: h08EndpointA},
 		ebusgateway.ModbusTCPEndpointConfig{Label: "roof", Family: "sunspec", Endpoint: h08EndpointB},
-		ebusgateway.ModbusTCPEndpointConfig{Label: "site-b", Family: "huawei.sdongle", Endpoint: "tcp://dongle-b.example.invalid:502"},
+		ebusgateway.ModbusTCPEndpointConfig{Label: "site-b", Family: "huawei.emma", Endpoint: "tcp://dongle-b.example.invalid:502"},
 	)
 	sidecars := prepareManagedSidecars(context.Background(), cfg, newTestSemanticHub(t), rctlGUID, nil, nil)
 	manager, err := drivermanager.New(drivermanager.Config{Drivers: sidecars.driverConfigs()})

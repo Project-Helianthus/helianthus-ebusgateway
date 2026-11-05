@@ -53,7 +53,11 @@ closed executor error carrying the manager's reason, so the lifecycle view
 reports `PROVIDER_UNAVAILABLE` (or `CONFIG_INVALID` for an eeBUS
 configuration category) rather than `INTERNAL_ERROR`. The error carries no
 native text. SunSpec and Growatt keep non-retryable start errors and the
-service policy.
+service policy. The gateway re-issues a failed Modbus START as an ordinary
+RESTART decision (see "Modbus start retry and failed-start succession" below).
+A Growatt START that fails because its configuration is incomplete or its
+RS-485 timing is rejected reports `CONFIG_INVALID`. Every other Growatt and
+Modbus TCP start failure reports `PROVIDER_UNAVAILABLE`.
 
 eeBUS classifies a native start error with the construction categories, so
 a protected-credentials failure reports `LOCAL_IDENTITY_UNAVAILABLE` and only
@@ -63,8 +67,10 @@ the stage (`operator`, `read_only` or `read_only_fallback`) and the closed
 categories only. The eeBUS sidecar keeps a zero manager retry budget; its
 service `RetryPolicy` allows three start attempts five seconds apart, the
 window of the earlier eeBUS lifecycle, so the service is its only retry
-owner. A retry is a later generation of the same epoch, and a failed START
-leaves nothing open. The `TestM69` fixtures in
+owner. A retry is a later generation of the same epoch. A failed START admits
+nothing, and the successor first retires the failed native attempt (see
+"Modbus start retry and failed-start succession" below). The `TestM69`
+fixtures in
 [`eebus_start_failure_visibility_test.go`](../../cmd/gateway/eebus_start_failure_visibility_test.go)
 drive the production startup with the add-on's eeBUS flag set and injected
 native factories. They do not establish the native cause on any
@@ -97,6 +103,66 @@ Portal panel keep addressing the v1 slot only: the v1 endpoint, or the v2
 `sunspec` entry labelled `default`. Logs carry driver IDs, never endpoints.
 The `TestH08` fixtures in `cmd/gateway` and `internal/modbusadapter` cover
 this offline; they qualify no installation.
+
+### Modbus start retry and failed-start succession
+
+A supervisor in the gateway shell re-issues the failed START of a managed
+Modbus driver. It supervises every composed Modbus TCP instance (the v1
+`modbus.sunspec` descriptor and each v2 instance) and `growatt.bms.rs485`.
+eeBUS keeps its own service policy. A disabled driver, an uncomposed driver and
+a withheld driver (including a Huawei instance withheld as
+`FAMILY_NOT_ADMITTED`) are not supervised.
+
+A failed START of a supervised driver that is desired `RUNNING` schedules one
+retry when its reason is `PROVIDER_UNAVAILABLE`, `DEPENDENCY_UNAVAILABLE`,
+`RUNTIME_NOT_READY` or `RETRY_EXHAUSTED` and the driver is not quarantined. The
+retry is an ordinary durable `RESTART` decision against the failed desired
+revision, fenced by that expected revision. The sidecar's start errors stay
+non-retryable at the service, so each retry is one START attempt under a new
+decision with its own budget. The backoff, the fencing, what ends a retry,
+the runtime-control view and the log line are defined in the
+[runtime/provider contract](runtime-driver-provider-contract-v1.md#automatic-start-retry-of-managed-modbus-drivers).
+`CONFIG_INVALID`, `INTERNAL_ERROR`, `CLOSE_UNCONFIRMED` and a quarantine are
+never retried. `RETRY_EXHAUSTED` caused by `CLEANUP_STALLED` is also excluded:
+unresolved semantic cleanup blocks recovery admission. A terminal decision
+refusal ends the scheduled retry rather than starting another backoff.
+
+**Failed-start succession.** The executor records the lifecycle key of its
+START. A START under a different key succeeds a failed START only when all of
+the following hold:
+
+- the recorded START has completed with a failure;
+- the driver and the source are the same;
+- the new key is a later generation of the same epoch (a service retry, which
+  keeps its decision sequence), or it belongs to a different epoch with a later
+  decision sequence (a RESTART, including the supervisor's).
+
+Every other key is refused as stale. A key of the same epoch with a different
+decision sequence is also stale.
+
+Before the successor binds the lifecycle, the executor retires the failed
+native attempt. It runs the managed runtime's stop, which fences withdrawal,
+drains the consumer leases and stops the native owner. A failed START can retain
+a native attempt even when no endpoint opened.
+
+| Retirement | Result |
+| --- | --- |
+| Proven: the stop returns no error and the native runtime is not safety-quarantined | The predecessor's generation is recorded as retired, so a START under it is refused as stale and a STOP for it reports the close as done. The failed START record is cleared. The successor binds its lifecycle and starts. |
+| Unproven: the stop returns an error, or the native runtime reports the safety quarantine | The START fails with a non-retryable start error that names `CLOSE_UNCONFIRMED` and carries no native text. The lifecycle is not rebound. The recorded key and the failed START record stay as they were, the predecessor is not recorded as retired, the native runtime is not started and no successor is admitted. The supervisor does not retry it. |
+
+The control service preserves this start-error reason and publishes
+`FAILED/CLOSE_UNCONFIRMED` with `SafetyQuarantined` set. It refuses subsequent
+operator RESTART decisions as quarantined until process restart, even if cleanup
+of the refused successor's own correlation reports a proven close. An
+unconfirmed-close start error is never retried, even if marked retryable.
+Quarantine blocks admission while the existing transition continues its bounded
+cleanup and persistence retries. Proven closure of its own correlation permits
+semantic cleanup retries and terminal slot pruning without clearing quarantine;
+an unconfirmed cleanup close retains its obligation without automatic retry.
+
+Offline fixtures in `cmd/gateway` cover the backoff, the retryable reasons,
+the supervised set, the cancellation conditions, the succession keys and the
+refused succession; they qualify no installation.
 
 ## Contract precedence and evidence
 
@@ -159,7 +225,7 @@ The following are required application bindings, not new exported Go APIs.
 | --- | --- | --- |
 | Composition root | Validated family configuration, configured driver/source identities, exact public native contract reference, injected native factory/open/dial functions, hub, durable store and recovery adapter | Frozen descriptor, constructed wrapper installed as `drivermanager.DriverConfig.Runtime`, and one `runtimecontrol.DriverConfig{DriverID, Executor}` in the same service, in the order below. Configuration and factory dependencies are captured by the family adapter, not encoded in public IDs. Missing identity/dependency withholds that driver. |
 | Typed construction | `context.Context`, frozen `Construction` | Family wrapper implementing existing `drivermanager.Runtime`: `Start(ctx) (uint64, error)`, `Replace(ctx) (uint64, error)`, `Stop(ctx) error`, `Generation()`, `Revision()`, `SafetyQuarantined()`. Construction returns an inert wrapper; native opening belongs to its managed start. Clean up partial factory results on failure. |
-| Lifecycle execution | `Start(ctx, LifecycleCorrelation)`; correlation binds driver, configured source, epoch, driver generation and lifecycle sequence | Nil only after that generation is admitted. Failure leaves nothing open. Maintain an explicit mapping to native generation; do not cast native counters into semantic generation. Repeated calls for one key join or return its result, without a second start. |
+| Lifecycle execution | `Start(ctx, LifecycleCorrelation)`; correlation binds driver, configured source, epoch, driver generation and lifecycle sequence | Nil only after that generation is admitted. Failure admits nothing; a native attempt it retained is retired before a successor binds (see "Modbus start retry and failed-start succession"). Maintain an explicit mapping to native generation; do not cast native counters into semantic generation. Repeated calls for one key join or return its result, without a second start. |
 | Withdrawal | `Stop(ctx, LifecycleCorrelation)`, including a generation that never opened | `StopOutcome{NativeClosed, SemanticCleaned}` with independent, truthful obligations. Native close proof comes from `StopWithReport`; semantic cleanup comes from fenced publication withdrawal/epoch retirement. A close error cannot be converted to success because cancellation was sent. |
 | Recovery | Existing `RecoveryAdapter.Restore`, `Secure`, and managed `Recorder.Writer(source)` when semantic publication is migrated | Restore before native open/admission; commit secured recovery material before pruning terminal work. Route managed publications through the recorder, not a parallel direct writer. A lifecycle-only adapter cannot claim recovery for semantic assets. |
 | Consumer binding | Current admitted generation plus family-owned provider interfaces, Portal contribution leases and publication handles | Stable shell-facing indirection; unavailable while withdrawn. Install generation effects only through a live generation scope and revoke leases before close. Never leave a request holding an unguarded retired provider pointer. |
@@ -294,7 +360,7 @@ conformance tests. These fixtures do not establish shared-service activation.
 | --- | --- | --- |
 | D1: new epochs | `runtimecontrol.Service` reconciliation allocates a new epoch on process start, explicit RESTART and START after completed STOP; driver generation begins at 1 and increases on retry. `ebusControlRuntime.Prepare`, `Start`, `Stop` demonstrate inert admission and succession. | Admit/restore before opening; bind the full key and native-generation mapping. Use hub `AdmitSuccessor` only after predecessor close and retirement. Never reuse a configured legacy epoch for a managed successor. |
 | D2: shell-up, driver-failed, explicit repair | `runtimestate.Manager.BootstrapControl`, `ControlLoad`, service cached views and `startGatewayRuntimeControl` preserve failed-load disposition without overwriting control state. | A corrupt, unreadable, unsupported or locked store keeps affected drivers failed and unopened. Keep HTTP, health, MCP, GraphQL and status available. Use the existing explicit offline repair process; never seed over a failed load or silently discard recovery material. |
-| D3: desired-state idempotence | `Service.Control` / `Decide` durably accept decisions with expected desired revision; return desired state/revision only. A same-desired no-op writes, emits, fences and wakes nothing. START on failed desired RUNNING is a no-op; repair requires RESTART. | Reuse refusal ordering, transition slots and bounded reconciliation. Add no lifecycle receipt, client key, completed-operation record or new request member. Caller cancellation after acceptance does not retract durable intent. |
+| D3: desired-state idempotence | `Service.Control` / `Decide` durably accept decisions with expected desired revision; return desired state/revision only. A same-desired no-op writes, emits, fences and wakes nothing. START on failed desired RUNNING is a no-op; repair requires RESTART, which the gateway issues itself for a managed Modbus driver. | Reuse refusal ordering, transition slots and bounded reconciliation. Add no lifecycle receipt, client key, completed-operation record or new request member. Caller cancellation after acceptance does not retract durable intent. |
 | D5: recovery | `Service.Start` restores committed material through `RecoveryAdapter` before executor calls. `Recorder` implements managed write-ahead restoration and `Secure`; terminal slots are pruned only after recovery material is committed. | Fail affected drivers closed on failed/unknown restoration. Resume pending work; settle historical ACTIVE correlations before new-epoch work; finish pending cleanup. Never reopen merely because desired state says RUNNING. Preserve unrelated valid state and native evidence. |
 
 Disabled configuration wins over durable desired state without rewriting it.

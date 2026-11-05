@@ -757,7 +757,10 @@ obligations are durably cleared. An unconfirmed native close publishes
 blocks admission until process restart. RESTART withdraws the admitted
 generation, then starts one replacement under a new epoch. A START that
 exhausts its budget ends `FAILED` with desired `RUNNING` unchanged; recovery is
-a RESTART, never a START no-op.
+a RESTART, never a START no-op. For a managed Modbus driver the gateway issues
+that RESTART itself after a bounded backoff (see "Automatic start retry of
+managed Modbus drivers" in section 7); for every other driver the RESTART comes
+from an operator.
 
 Cleanup runs within the same nonrenewable budget. Each cleanup attempt is
 charged durably in the slot before the executor's `Stop` is invoked, so
@@ -2001,8 +2004,11 @@ may add a persistent phase after that budget: while the driver is desired
 `RUNNING`, a retryable failure series then continues with capped exponential
 backoff instead of ending `FAILED`/`RETRY_EXHAUSTED`. Only `ebus.primary`
 enables it (described under the shell integration below); every other driver
-keeps the bounded budget. Modbus reconnect and request retry remain inside the
-current Modbus owner and its one total operation context.
+keeps the bounded budget. A managed Modbus driver does not use the persistent
+phase either: its failed START is re-issued by the service-level supervisor
+described under "Automatic start retry of managed Modbus drivers" in section 7.
+Modbus reconnect and request retry remain inside the current Modbus owner and
+its one total operation context.
 
 ## 7. Lifecycle ordering
 
@@ -2558,6 +2564,118 @@ above), and so does the Portal driver row. An operator
 
 Limits of this composition: the service correlation carries no `SourceID`
 and the driver-to-native generation mapping stays process-local.
+
+### Automatic start retry of managed Modbus drivers
+
+A failed START of a managed Modbus driver is retried without an operator. The
+retry is a transition of the service state machine and not of DriverManager.
+While the retry waits, the driver stays `FAILED` with its reason. The retry
+itself is an ordinary durable RESTART decision.
+
+| From | Condition | Transition |
+| --- | --- | --- |
+| `FAILED`, desired `RUNNING` | The START failed with `PROVIDER_UNAVAILABLE`, `DEPENDENCY_UNAVAILABLE`, `RUNTIME_NOT_READY` or `RETRY_EXHAUSTED`, and the driver is enabled, not quarantined and has no `CLEANUP_STALLED` diagnostic | The supervisor schedules one retry after the backoff. |
+| `FAILED`, desired `RUNNING` | The scheduled retry falls due, and the failure still stands at the same desired revision | The supervisor decides `RESTART` with that revision as the expected revision. |
+| `FAILED`, desired `RUNNING` | Any other failure: `CONFIG_INVALID`, `INTERNAL_ERROR`, `CLOSE_UNCONFIRMED`, or a quarantine | No retry. The driver stays `FAILED` until an operator decision, and START stays a no-op (CTL-06). A quarantine also refuses START and RESTART until process restart. |
+| `FAILED` | The RESTART is accepted | Desired state stays `RUNNING` and the desired revision advances. The observation becomes `STARTING` with `START_REQUESTED` under a new epoch, then `RUNNING` or `FAILED` again. |
+
+**Supervisor.** The gateway starts one supervisor after the service and the
+manager watch run. It follows the service's committed events, so it sees an
+observation only after that observation is committed and visible. At start,
+and whenever the event window has moved past its cursor, it reads `List`
+instead and reconciles every supervised driver from the catalog. A START that
+failed before the supervisor started, and an event that the bounded log
+dropped, are therefore still found. The supervisor covers the composed managed
+Modbus drivers only: every Modbus TCP instance and the Growatt BMS RS-485
+driver. `ebus.primary` and eeBUS keep their own policies. A disabled, withheld
+or uncomposed driver is never supervised.
+
+**Backoff.** For each driver the supervisor counts the retries of the current
+failure series from one. The wait before retry `n` is 5 s, doubled for each
+earlier retry, up to a cap of 5 min. The waits are 5 s, 10 s, 20 s, 40 s, 80 s
+and 160 s, and every later retry waits 5 min. The wait is counted from the
+moment the supervisor sees the failure. There is no attempt limit: while the
+driver is desired `RUNNING`, the series continues until the driver reaches
+`RUNNING` or `DEGRADED` or one of the conditions below ends it. An endpoint
+that comes up late is therefore still reached. The counter restarts at one
+after `RUNNING`, `DEGRADED` or a STOP.
+
+**Fencing.** Each retry is a `RESTART` whose expected revision is the desired
+revision of the failed observation. The service refuses it with
+`REVISION_CONFLICT` when the desired revision has moved. Every accepted retry
+opens a new desired revision, so the supervisor counts one failure once. The
+decision call is bounded at 10 s. When the service does not accept the
+decision with a retryable refusal or a transient error, the failure still
+stands, and the supervisor schedules another retry of the same failure with
+the same attempt count and delay. Only a failed START at a new desired revision
+advances the failure series and its backoff. A terminal refusal ends the
+scheduled retry.
+
+`CLEANUP_STALLED` also publishes `FAILED/RETRY_EXHAUSTED`, but describes
+unresolved semantic cleanup rather than exhausted start attempts. The
+supervisor checks the service diagnostics before scheduling and again when
+a retry falls due, and excludes that failure. These checks only guide retry
+scheduling; the service remains the authority for recovery admission.
+
+**Observability.** The runtime-control view shows the driver as `FAILED` with
+its reason while the retry waits. An accepted retry appears as a
+`DESIRED_ACCEPTED` event and a new desired revision with desired state
+`RUNNING`, followed by the observation `STARTING`, then `RUNNING` or `FAILED`.
+The view does not distinguish a supervisor RESTART from an operator RESTART.
+The gateway logs one line for each scheduled retry:
+
+```
+Modbus driver start failed; retrying driver=<driver ID> reason=<reason code> attempt=<n> delay=<duration>
+```
+
+`driver` is the driver ID. `reason` is the closed reason code of the failure.
+`attempt` is the number of the retry in the series, starting at 1. `delay` is
+the wait before the retry, for example `5s` or `5m0s`. The line carries no
+endpoint, address or native error text. A decision that the service does not
+accept because of a retryable refusal or a transient error logs the following
+line, with the `attempt` of the failed retry, and then schedules the next retry
+with its own line as above:
+
+```
+Modbus driver start retry not accepted; driver=<driver ID> attempt=<n>
+```
+
+**What ends a retry.**
+
+- A STOP. The desired state leaves `RUNNING`, the series ends and a retry that
+  falls due afterwards decides nothing.
+- A new desired revision, such as an operator RESTART. The scheduled retry
+  belongs to the older revision, so it decides nothing when it falls due, and
+  the expected revision would make the service refuse it. The result of the
+  new attempt decides what follows: a failure schedules a new retry.
+- A failure that is not retryable, a quarantine, or a driver that is no longer
+  enabled. Such a failure cancels the scheduled retry.
+- `RUNNING` or `DEGRADED`. The series ends and the counter restarts.
+- Process exit. Closing mutation admission first closes the supervisor and
+  joins a decision in flight, before the service closes. No retry is decided
+  afterwards, no STOP is synthesized, and the committed desired state stays as
+  it was.
+
+**Succession after a failed START.** A managed sidecar executor admits a
+START under a new lifecycle key after a failed START only when the failed START
+has completed and the new key is a later generation of the same epoch or the
+epoch of a later lifecycle decision. Before it rebinds the lifecycle, it
+retires the failed native attempt. A failed START can retain a native attempt
+even when no endpoint opened. When that retirement is not proven (the stop
+returns an error, or the native runtime reports the safety quarantine), the
+START fails with a non-retryable start error that names `CLOSE_UNCONFIRMED`,
+the recorded predecessor stays as it was and no successor is admitted. The
+control service preserves that reason, publishes `FAILED/CLOSE_UNCONFIRMED`
+with `SafetyQuarantined` set, and refuses subsequent operator RESTART decisions
+as quarantined until process restart. Cleanup of the refused successor's own
+correlation does not clear this quarantine. Quarantine does not block bounded
+cleanup of the existing transition: failed cleanup charge or result commits
+are retried without another START, pending semantic cleanup retries after proven
+native closure, and a settled terminal slot is pruned. An unconfirmed cleanup
+close retains its obligation without automatic retry. Neither the service nor the
+supervisor retries an unconfirmed-close start error, even if marked retryable.
+The executor-level rule is in
+[managed sidecar composition](managed-sidecar-composition.md).
 
 ## 8. Upward flow
 

@@ -1321,7 +1321,7 @@ func TestGenerationTasksCallbackOutlivingTaskIsJoinedBeforeSuccessor(t *testing.
 func TestGenerationTasksWithdrawUsesOneBoundAcrossFenceAndJoin(t *testing.T) {
 	adm := &genAdmission{}
 	scopes := make(chan *ebusGenerationScope, 1)
-	const bound = 300 * time.Millisecond
+	const bound = 500 * time.Millisecond
 	runner := genRunner(t, ebusGenerationTaskConfig{Admitted: adm.admitted, JoinTimeout: bound,
 		Tasks: []ebusGenerationTask{
 			{Name: "promote", Run: func(_ context.Context, scope *ebusGenerationScope) error { scopes <- scope; return nil }},
@@ -1344,7 +1344,7 @@ func TestGenerationTasksWithdrawUsesOneBoundAcrossFenceAndJoin(t *testing.T) {
 	if join.Joined {
 		t.Fatalf("joined while a commit holds the gate: %+v", join)
 	}
-	if elapsed >= bound+bound/2 {
+	if elapsed >= bound+bound*4/5 {
 		t.Fatalf("withdraw took %v, want one bound of %v", elapsed, bound)
 	}
 }

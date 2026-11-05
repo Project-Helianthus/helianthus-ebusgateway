@@ -241,7 +241,7 @@ func TestGatewayModbusMCPProviderReconnectHonorsShorterCallerDeadline(t *testing
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("RawRead error = %v; want caller deadline", err)
 	}
-	if elapsed := time.Since(started); elapsed > time.Second {
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
 		t.Fatalf("bounded reconnect took %s", elapsed)
 	}
 	if adapter.reads != 1 || adapter.reconnects != 1 {

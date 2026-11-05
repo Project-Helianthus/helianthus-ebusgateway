@@ -154,6 +154,8 @@ type gatewayRuntimeControl struct {
 	watchCancel context.CancelFunc
 	watchDone   chan struct{}
 	closeOnce   sync.Once
+	// modbusRetry re-issues failed managed Modbus starts; nil without any.
+	modbusRetry *modbusStartRetry
 }
 
 // newGatewayIncarnation returns a fresh process incarnation name, so source
@@ -271,6 +273,7 @@ func startGatewayRuntimeControl(ctx context.Context, opts gatewayRuntimeControlO
 	}
 	control.awaitInitialDispatch(startCtx)
 	control.startWatch()
+	control.modbusRetry = startModbusStartRetry(service, opts.Sidecars.modbusStartRetryIDs(), gatewayModbusStartRetryPolicy)
 	return control
 }
 
@@ -488,6 +491,8 @@ func (control *gatewayRuntimeControl) CloseAdmission(ctx context.Context) error 
 	}
 	var result error
 	control.closeOnce.Do(func() {
+		// No start retry is decided once admission closes.
+		control.modbusRetry.Close()
 		if control.service != nil {
 			control.service.Close()
 		}

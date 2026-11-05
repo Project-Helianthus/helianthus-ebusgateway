@@ -1144,6 +1144,9 @@ func (s *Service) stageObservation(id DriverID, obs observation) bool {
 // transitions never touch desired state or its revision.
 func (s *Service) observe(d *driverState, obs observation) {
 	d.mu.Lock()
+	// Quarantine is latched for this process. Later cleanup observations
+	// must preserve it even when their reason changes to retry exhaustion.
+	obs.quarantined = obs.quarantined || d.quarantined
 	obs.epoch, obs.generation = d.corr.Epoch, d.corr.Generation
 	d.mu.Unlock()
 	if s.stageObservation(d.id, obs) {

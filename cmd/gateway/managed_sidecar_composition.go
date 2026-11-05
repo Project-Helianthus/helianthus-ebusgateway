@@ -54,7 +54,8 @@ type managedSidecar struct {
 
 // eebusManagedStartRetry restores the startup window of the earlier eeBUS
 // lifecycle for eebus.primary: three start attempts, five seconds apart. The
-// other sidecars keep the service policy and non-retryable start errors.
+// other sidecars keep the service policy and non-retryable start errors; a
+// failed managed Modbus start is re-issued by modbusStartRetry instead.
 var eebusManagedStartRetry = runtimecontrol.RetryPolicy{MaxAttempts: eebusStartupMaxAttempts, Delay: eebusStartupBackoff}
 
 // This seam replaces only inert adapters, before any descriptor is registered.
@@ -239,6 +240,8 @@ func (s *managedSidecar) classifyStartFailure(err error) drivermanager.Failure {
 		log.Printf("Modbus TCP unavailable; continuing without Modbus")
 	case s.descriptor.DriverID == managedEEBusID:
 		return classifyManagedEEBusStartFailure(err)
+	case s.descriptor.DriverID == managedGrowattID && errors.Is(err, errGrowattConfigInvalid):
+		return drivermanager.Failure{Reason: drivermanager.Reason{Code: drivermanager.ReasonConfigInvalid}}
 	}
 	return drivermanager.Failure{Reason: drivermanager.Reason{Code: drivermanager.ReasonProviderUnavailable}}
 }
@@ -325,10 +328,11 @@ func sidecarGenerationKey(c runtimecontrol.LifecycleCorrelation) runtimecontrol.
 	return c
 }
 
-// supersedesFailedLocked reports whether c names a later generation of the
-// epoch whose last START completed with a failure. A failed START leaves
-// nothing open, so the service retry of that epoch starts afresh and a STOP
-// of the later generation covers the failed one. Callers hold s.mu.
+// supersedesFailedLocked reports whether c succeeds a START that completed
+// with a failure: a later generation of its epoch, or the epoch of a later
+// lifecycle decision (a RESTART, also the one the Modbus start retry issues).
+// The failed native attempt must be retired before binding the successor.
+// Callers hold s.mu.
 func (s *managedSidecar) supersedesFailedLocked(c runtimecontrol.LifecycleCorrelation) bool {
 	if s.started == nil || s.startErr == nil {
 		return false
@@ -338,7 +342,13 @@ func (s *managedSidecar) supersedesFailedLocked(c runtimecontrol.LifecycleCorrel
 	default:
 		return false
 	}
-	return c.DriverID == s.key.DriverID && c.SourceID == s.key.SourceID && c.Epoch == s.key.Epoch && c.Generation > s.key.Generation
+	if c.DriverID != s.key.DriverID || c.SourceID != s.key.SourceID {
+		return false
+	}
+	if c.Epoch == s.key.Epoch {
+		return c.Generation > s.key.Generation
+	}
+	return c.Sequence > s.key.Sequence
 }
 
 func (s *managedSidecar) Start(ctx context.Context, correlation runtimecontrol.LifecycleCorrelation) error {
@@ -358,9 +368,17 @@ func (s *managedSidecar) Start(ctx context.Context, correlation runtimecontrol.L
 		return errEBusControlStale
 	}
 	if s.started != nil && s.key != c {
-		if c.Sequence != s.key.Sequence || !s.supersedesFailedLocked(c) {
+		// A retry within the failed epoch keeps its decision's sequence.
+		if (c.Epoch == s.key.Epoch && c.Sequence != s.key.Sequence) || !s.supersedesFailedLocked(c) {
 			s.mu.Unlock()
 			return errEBusControlStale
+		}
+		// Failed startup can retain a native attempt even when no endpoint
+		// opened. Join its retirement before BindLifecycle changes identity;
+		// keep the predecessor recorded if cleanup cannot be proven.
+		if err := s.runtime.Stop(ctx); err != nil || s.runtime.SafetyQuarantined() {
+			s.mu.Unlock()
+			return &managedSidecarStartError{reason: drivermanager.ReasonCloseUnconfirmed}
 		}
 		if s.retired == nil {
 			s.retired = make(map[runtimecontrol.LifecycleCorrelation]bool)

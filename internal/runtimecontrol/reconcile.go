@@ -64,7 +64,8 @@ func (s *Service) reconcileStep(d *driverState) (bool, time.Duration) {
 	// owns the driver until then (or until its ambiguous commit is settled)
 	// and wakes the reconciler when it is released.
 	held := d.deciding > 0
-	blocked := d.quarantined || d.recoveryBlocked
+	quarantined := d.quarantined
+	blocked := d.recoveryBlocked
 	needsUntyped := !d.autoStartDone && d.live == nil && d.untyped == nil
 	d.mu.Unlock()
 	if held || blocked {
@@ -72,6 +73,9 @@ func (s *Service) reconcileStep(d *driverState) (bool, time.Duration) {
 	}
 	t := rec.Current
 	if t == nil {
+		if quarantined {
+			return false, 0
+		}
 		if rec.DesiredState == DesiredRunning && needsUntyped {
 			s.runUntyped(d)
 			return true, 0
@@ -84,6 +88,19 @@ func (s *Service) reconcileStep(d *driverState) (bool, time.Duration) {
 	}
 	if t.Phase == PhaseCleanup && !t.NativeClosePending && !t.SemanticCleanupPending {
 		return s.finish(d, rec, *t)
+	}
+	if quarantined {
+		// Quarantine forbids admission, but a failed START may still owe
+		// cleanup whose charge or result commit needs retrying. Never run
+		// its Start again, even while the stored phase is still ACTIVE.
+		if t.Phase != PhaseCleanup && t.Kind != KindStop {
+			return s.exhaust(d, *t, drivermanager.ReasonCloseUnconfirmed)
+		}
+		if t.Phase == PhaseCleanup && t.NativeClosePending {
+			// Cleanup itself could not prove native closure: retain the
+			// obligation without automatically retrying that close.
+			return false, 0
+		}
 	}
 	if t.Phase == PhaseCleanup && s.cleanupSpent(*t) {
 		// The persisted attempt limit or the nonrenewable deadline is spent:
@@ -558,7 +575,13 @@ func (s *Service) stepStart(d *driverState, t Transition) (bool, time.Duration) 
 			if err != nil {
 				return s.retryLater()
 			}
-			settled.Phase = t.Phase
+			// An unconfirmed predecessor close terminates replacement in
+			// CLEANUP. Keeping ACTIVE would let a later quarantined wake
+			// exhaust the slot and issue another native Stop. Proven native
+			// closure may continue semantic cleanup and then replacement.
+			if !settled.NativeClosePending {
+				settled.Phase = t.Phase
+			}
 			if err := s.commitCurrent(d, settled); err != nil {
 				return s.retryLater()
 			}
@@ -726,6 +749,9 @@ func (s *Service) runTypedAttempt(d *driverState, t Transition, a *attempt) (boo
 		if s.isFenced(d, a) {
 			return true, 0
 		}
+		if failureReason(err) == drivermanager.ReasonCloseUnconfirmed {
+			return s.exhaust(d, t, drivermanager.ReasonCloseUnconfirmed)
+		}
 		if errors.Is(a.ctx.Err(), context.DeadlineExceeded) {
 			return s.exhaust(d, t, drivermanager.ReasonRetryExhausted)
 		}
@@ -807,7 +833,13 @@ func (s *Service) exhaust(d *driverState, t Transition, reason drivermanager.Rea
 	if s.ctx.Err() != nil {
 		return false, 0
 	}
-	s.observe(d, observation{state: drivermanager.ObservedFailed, reason: reason})
+	if reason == drivermanager.ReasonCloseUnconfirmed {
+		// Cleanup of this slot cannot prove retirement of a predecessor
+		// whose close the executor explicitly reported as unconfirmed.
+		s.quarantine(d, t)
+	} else {
+		s.observe(d, observation{state: drivermanager.ObservedFailed, reason: reason})
+	}
 	next, err := s.settleObligations(d, t)
 	if err != nil {
 		return s.retryLater()
@@ -892,6 +924,9 @@ func (s *Service) runUntyped(d *driverState) {
 			d.corr = a.corr
 			d.untyped = nil
 			d.autoStartDone = true
+			if obs.quarantined {
+				d.quarantined = true
+			}
 			if admit {
 				a.admitted = true
 				a.recovering = obs.state != drivermanager.ObservedRunning
@@ -984,6 +1019,10 @@ func (s *Service) runUntyped(d *driverState) {
 			// The executor reported a native recovery it left running,
 			// with an observation the service cannot admit: withdraw it.
 			withdrawLate(drivermanager.ReasonInternalError)
+			return
+		}
+		if failureReason(err) == drivermanager.ReasonCloseUnconfirmed {
+			finishUntyped(observation{state: drivermanager.ObservedFailed, reason: drivermanager.ReasonCloseUnconfirmed, quarantined: true}, false)
 			return
 		}
 		if errors.Is(a.ctx.Err(), context.DeadlineExceeded) {
@@ -1091,7 +1130,7 @@ func failureReason(err error) drivermanager.ReasonCode {
 	if errors.As(err, &r) {
 		switch code := r.ReasonCode(); code {
 		case drivermanager.ReasonProviderUnavailable, drivermanager.ReasonDependencyUnavailable,
-			drivermanager.ReasonConfigInvalid, drivermanager.ReasonRuntimeNotReady:
+			drivermanager.ReasonConfigInvalid, drivermanager.ReasonRuntimeNotReady, drivermanager.ReasonCloseUnconfirmed:
 			return code
 		}
 	}

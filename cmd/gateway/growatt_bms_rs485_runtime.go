@@ -409,17 +409,21 @@ var openGrowattBMSRTUEndpoint = func(config modbus.RTUProductionConfig) (growatt
 // growattBMSRS485Timing is the complete validity predicate of an enabled
 // Growatt configuration, shared by the runtime and the semantic preflight; it
 // returns the RTU timing the runtime opens the endpoint with.
+// errGrowattConfigInvalid marks a start failure caused by the Growatt
+// configuration itself; no retry can cure it.
+var errGrowattConfigInvalid = errors.New("growatt BMS RS-485 configuration invalid")
+
 func growattBMSRS485Timing(config ebusgateway.GrowattBMSRS485Config) (modbus.RTUTiming, error) {
 	if !validGrowattAssetID(config.AssetID) || !validGrowattSourceID(config.SourceID) || config.AssetID == config.SourceID || semreg.SourceEpochID(config.SourceEpoch).Validate() != nil || config.DriverGeneration == 0 || config.UnitID == 0 || config.UnitID > 247 ||
 		config.SerialPath == "" || config.ResponseTimeout <= 0 || config.MaxResponseDelay <= 0 || config.MaxQuiescence <= config.MaxResponseDelay {
-		return modbus.RTUTiming{}, errors.New("enabled Growatt BMS RS-485 configuration is incomplete")
+		return modbus.RTUTiming{}, fmt.Errorf("%w: enabled Growatt BMS RS-485 configuration is incomplete", errGrowattConfigInvalid)
 	}
 	timing, err := modbus.NewRTUTiming(modbus.RTUTimingConfig{
 		Baud: config.Baud, DataBits: 8, Parity: modbus.RTUParity(config.Parity), StopBits: config.StopBits,
 		MaxResponseLatency: config.MaxResponseDelay, MaxQuiescence: config.MaxQuiescence,
 	})
 	if err != nil {
-		return modbus.RTUTiming{}, fmt.Errorf("growatt BMS RS-485 timing: %w", err)
+		return modbus.RTUTiming{}, fmt.Errorf("%w: growatt BMS RS-485 timing: %v", errGrowattConfigInvalid, err)
 	}
 	return timing, nil
 }

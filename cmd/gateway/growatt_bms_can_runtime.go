@@ -6,11 +6,15 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/drivermanager"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimecontrol"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 )
 
@@ -44,17 +48,7 @@ var (
 )
 
 // growattBMSCANConfig is the explicit, disabled-by-default composition input.
-type growattBMSCANConfig struct {
-	Enabled   bool
-	Interface string
-	// ListenOnlyConfirmed records the integrator's admission precondition:
-	// the controller is already in physical listen-only mode before the
-	// descriptor opens. The driver cannot verify or set controller mode.
-	ListenOnlyConfirmed bool
-	// StaleAfter bounds the host receipt age of the oldest source frame of
-	// the published tuple; an older tuple is withheld, never served as current.
-	StaleAfter time.Duration
-}
+type growattBMSCANConfig = ebusgateway.GrowattBMSCANConfig
 
 type growattBMSCANInterface struct {
 	Name  string
@@ -157,7 +151,7 @@ func startGrowattBMSCANDriverWithReceiver(config growattBMSCANConfig, open func(
 	}
 	identity := receiver.Identity()
 	if identity.Name != config.Interface || identity.Index <= 0 {
-		return nil, nil, errors.Join(errGrowattBMSCANIdentity, receiver.Close())
+		return nil, nil, errors.Join(errGrowattBMSCANIdentity, closeFailedGrowattBMSCANReceiver(receiver))
 	}
 	if now == nil {
 		start := time.Now()
@@ -171,10 +165,17 @@ func startGrowattBMSCANDriverWithReceiver(config growattBMSCANConfig, open func(
 	runtime, err := mcp.NewGrowattBMSV104Runtime(driver)
 	if err != nil {
 		cancel()
-		return nil, nil, errors.Join(err, receiver.Close())
+		return nil, nil, errors.Join(err, closeFailedGrowattBMSCANReceiver(receiver))
 	}
 	go driver.run(lifetime)
 	return driver, runtime, nil
+}
+
+func closeFailedGrowattBMSCANReceiver(receiver growattBMSCANReceiver) error {
+	if err := receiver.Close(); err != nil {
+		return errors.Join(drivermanager.ErrSafetyQuarantined, err)
+	}
+	return nil
 }
 
 func validGrowattBMSCANInterfaceName(name string) bool {
@@ -436,4 +437,156 @@ func growattBMSCANValid(observation growattBMSCANObservation) bool {
 		return observation.Data[6] <= 100
 	}
 	return true
+}
+
+// The managed adapter is inert until START. Only the injected receive-only
+// opener can acquire a descriptor; construction and disabled registration do not.
+func newGrowattBMSCANManagedFactory(config growattBMSCANConfig, open func(string) (growattBMSCANReceiver, error)) runtimecontrol.LifecycleAdapter {
+	if open == nil {
+		open = func(name string) (growattBMSCANReceiver, error) {
+			if runtime.GOOS != "linux" {
+				return nil, errGrowattBMSCANPlatform
+			}
+			return openGrowattBMSCANReceiver(name)
+		}
+	}
+	return runtimecontrol.NewAdapter(func(ctx context.Context, _ runtimecontrol.Construction) (*growattBMSCANManagedDriver, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return &growattBMSCANManagedDriver{config: config, open: open}, nil
+	})
+}
+
+var errGrowattBMSCANPlatform = errors.New("growatt BMS CAN requires Linux SocketCAN; platform unsupported")
+
+type growattBMSCANManagedDriver struct {
+	ops                  sync.Mutex
+	mu                   sync.Mutex
+	config               growattBMSCANConfig
+	open                 func(string) (growattBMSCANReceiver, error)
+	driver               *growattBMSCANDriver
+	generation, revision uint64
+	closeErr             error
+	lifecycle            runtimecontrol.LifecycleCorrelation
+	reportFailure        func(drivermanager.Correlation, runtimecontrol.LifecycleCorrelation)
+}
+
+var _ drivermanager.Runtime = (*growattBMSCANManagedDriver)(nil)
+
+func (d *growattBMSCANManagedDriver) BindLifecycle(c runtimecontrol.LifecycleCorrelation) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.lifecycle = c
+	return nil
+}
+
+// BindCorrelation runs only after the manager admits this native generation.
+// Watching the closed channel also catches a receive failure during START.
+// Each callback retains both correlations, so a retired receiver cannot fail
+// its successor or overwrite that successor's runtime-control observation.
+func (d *growattBMSCANManagedDriver) BindCorrelation(c drivermanager.Correlation) {
+	d.mu.Lock()
+	driver, lifecycle, report := d.driver, d.lifecycle, d.reportFailure
+	current := d.generation == c.Generation
+	d.mu.Unlock()
+	if !current || driver == nil || report == nil {
+		return
+	}
+	go func() {
+		<-driver.done
+		driver.mu.Lock()
+		failed := driver.receiveErr != nil
+		driver.mu.Unlock()
+		if failed {
+			report(c, lifecycle)
+		}
+	}()
+}
+
+func (d *growattBMSCANManagedDriver) Start(ctx context.Context) (uint64, error) {
+	d.ops.Lock()
+	defer d.ops.Unlock()
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	d.mu.Lock()
+	if d.driver != nil {
+		generation := d.generation
+		d.mu.Unlock()
+		return generation, nil
+	}
+	closeErr := d.closeErr
+	d.mu.Unlock()
+	if closeErr != nil {
+		return 0, closeErr
+	}
+	if !d.config.Enabled {
+		return 0, drivermanager.ErrUnavailable
+	}
+	driver, _, err := startGrowattBMSCANDriverWithReceiver(d.config, d.open, nil)
+	if err == nil {
+		err = ctx.Err()
+	}
+	var closeErrAfterCancel error
+	if errors.Is(err, drivermanager.ErrSafetyQuarantined) {
+		closeErrAfterCancel = err
+	}
+	if err != nil && driver != nil {
+		closeErrAfterCancel = driver.Close()
+		err = errors.Join(err, closeErrAfterCancel)
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.revision++
+	d.closeErr = closeErrAfterCancel
+	if err != nil {
+		return 0, err
+	}
+	d.driver = driver
+	d.generation++
+	return d.generation, nil
+}
+
+func (d *growattBMSCANManagedDriver) Stop(ctx context.Context) error {
+	d.ops.Lock()
+	defer d.ops.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	d.mu.Lock()
+	driver := d.driver
+	d.mu.Unlock()
+	if driver == nil {
+		return nil
+	}
+	err := driver.Close()
+	d.mu.Lock()
+	d.driver = nil
+	d.closeErr = err
+	d.revision++
+	d.mu.Unlock()
+	return err
+}
+
+func (d *growattBMSCANManagedDriver) Replace(ctx context.Context) (uint64, error) {
+	if err := d.Stop(ctx); err != nil {
+		return 0, err
+	}
+	return d.Start(ctx)
+}
+func (d *growattBMSCANManagedDriver) Generation() uint64 {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.generation
+}
+func (d *growattBMSCANManagedDriver) Revision() uint64 {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.revision
+}
+func (d *growattBMSCANManagedDriver) SafetyQuarantined() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.closeErr != nil
 }

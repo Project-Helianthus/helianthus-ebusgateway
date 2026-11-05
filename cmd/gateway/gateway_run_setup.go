@@ -264,6 +264,7 @@ func startGatewayRuntimeControl(ctx context.Context, opts gatewayRuntimeControlO
 		return control
 	}
 	control.service = service
+	opts.Sidecars.bindNativeObservations(service)
 
 	// 4: restore, prepare, publish the first view and start reconcilers.
 	startCtx, cancel := context.WithTimeout(ctx, gatewayControlStartBudget)

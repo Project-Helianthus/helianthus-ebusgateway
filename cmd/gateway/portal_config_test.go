@@ -275,6 +275,24 @@ func testPortalConfigComposition(t *testing.T, production bool) {
 			if !reflect.DeepEqual(view.Desired.Drivers, wantDrivers) {
 				t.Fatalf("host seed drivers: %+v; want %+v", view.Desired.Drivers, wantDrivers)
 			}
+			if production {
+				// Registration does not add a driver to the closed persisted
+				// Portal controls. CAN remains host-only, like any unknown option.
+				for _, id := range []string{string(managedGrowattCANID), "family.unmanaged"} {
+					unsupported := *view.Desired
+					unsupported.Drivers = append(append([]portalconfig.Driver(nil), unsupported.Drivers...), portalconfig.Driver{ID: id, Enabled: true})
+					body, err := json.Marshal(unsupported)
+					if err != nil {
+						t.Fatal(err)
+					}
+					var refusal struct {
+						Error *portalconfig.Error `json:"error"`
+					}
+					if err := json.Unmarshal(request(http.MethodPut, "/portal/api/v1/config", body, http.StatusBadRequest), &refusal); err != nil || refusal.Error == nil || refusal.Error.Code != "unsupported_selection" {
+						t.Fatalf("unsupported driver %s: %+v, %v", id, refusal, err)
+					}
+				}
+			}
 			view.Desired.Sharing.GraphQL = true
 			body, err := json.Marshal(view.Desired)
 			if err != nil {
@@ -293,10 +311,19 @@ func testPortalConfigComposition(t *testing.T, production bool) {
 			} else if err := store.Close(); err != nil {
 				t.Fatal(err)
 			}
-			reopened := openGatewayPortalConfig(cfg, registry)
-			defer func() { _ = reopened.Close() }()
+			var reopened *portalconfig.Store
+			if production {
+				// Production uses the compiled editable set, not the complete
+				// runtime registry (which also contains host-only CAN).
+				reopenedRuntime := openGatewayPortalConfigRuntime(cfg)
+				defer func() { _ = reopenedRuntime.Close() }()
+				reopened = reopenedRuntime.store
+			} else {
+				reopened = openGatewayPortalConfig(cfg, registry)
+				defer func() { _ = reopened.Close() }()
+			}
 			got, err := reopened.Read()
-			if err != nil || got.Revision != "1" || !got.Sharing.GraphQL {
+			if err != nil || got.Revision != "1" || !got.Sharing.GraphQL || !reflect.DeepEqual(got.Drivers, wantDrivers) {
 				t.Fatalf("restart: %+v, %v", got, err)
 			}
 		})

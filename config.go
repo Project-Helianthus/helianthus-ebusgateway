@@ -74,6 +74,16 @@ type TransportConfig struct {
 	Dial         func(ctx context.Context, network, address string, timeout time.Duration) (net.Conn, error)
 }
 
+// GrowattBMSCANConfig carries the disabled-by-default receive-only CAN options.
+// ListenOnlyConfirmed records operator confirmation; it does not configure or
+// verify the controller's physical mode. StaleAfter must be positive when enabled.
+type GrowattBMSCANConfig struct {
+	Enabled             bool
+	Interface           string
+	ListenOnlyConfirmed bool
+	StaleAfter          time.Duration
+}
+
 type EEBusPairingWindowMode string
 
 const EEBusPairingWindowClosed EEBusPairingWindowMode = "closed"
@@ -301,6 +311,7 @@ type Config struct {
 	PassiveTransport         transport.RawTransport // pre-configured passive transport (adapter-direct mode)
 	ProxyListenAddr          string                 // TCP listen address for ENH proxy clients (empty disables)
 	TransportConfig          TransportConfig
+	GrowattBMSCANConfig      GrowattBMSCANConfig
 	EEBusConfig              EEBusConfig
 	M2MGraphQL               M2MGraphQLConfig
 	PortalPV                 PortalPVConfig

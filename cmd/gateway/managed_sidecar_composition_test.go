@@ -62,7 +62,7 @@ func m06Factories(t *testing.T, failed runtimecontrol.DriverID, disabled runtime
 	original := gatewayManagedSidecarDescriptorsFor
 	t.Cleanup(func() { gatewayManagedSidecarDescriptorsFor = original })
 	runtimes := map[runtimecontrol.DriverID]*m06Runtime{}
-	for _, id := range []runtimecontrol.DriverID{managedSunSpecID, managedGrowattID, managedEEBusID} {
+	for _, id := range []runtimecontrol.DriverID{managedSunSpecID, managedGrowattID, managedEEBusID, managedGrowattCANID} {
 		runtimes[id] = &m06Runtime{fail: id == failed}
 	}
 	gatewayManagedSidecarDescriptorsFor = func(descriptors []runtimecontrol.Descriptor) []runtimecontrol.Descriptor {
@@ -193,10 +193,10 @@ func TestM06ProductionRegistrationFailureIsolationAndShutdown(t *testing.T) {
 		for _, id := range entries {
 			counts[id]++
 		}
-		if len(counts) != 4 {
+		if len(counts) != 5 {
 			t.Fatalf("driver list = %v", entries)
 		}
-		for _, id := range []runtimecontrol.DriverID{primaryEBusDriverID, managedSunSpecID, managedGrowattID, managedEEBusID} {
+		for _, id := range []runtimecontrol.DriverID{primaryEBusDriverID, managedSunSpecID, managedGrowattID, managedEEBusID, managedGrowattCANID} {
 			if counts[id] != 1 {
 				t.Fatalf("%s listed %d times", id, counts[id])
 			}
@@ -229,7 +229,7 @@ func TestM06ProductionRegistrationFailureIsolationAndShutdown(t *testing.T) {
 	}
 	tool := rctlDecodeTool(t, result)
 	var list rctlWireList
-	if tool.isError || json.Unmarshal(tool.data, &list) != nil || len(list.Drivers) != 4 {
+	if tool.isError || json.Unmarshal(tool.data, &list) != nil || len(list.Drivers) != 5 {
 		t.Fatalf("ordinary MCP list unavailable: %+v", tool)
 	}
 	process.stop()
@@ -395,7 +395,7 @@ func TestM06NoDuplicateEagerStarts(t *testing.T) {
 			t.Fatalf("disabled %s constructed", s.descriptor.DriverID)
 		}
 	}
-	if len(sidecars.registry.List().Drivers) != 4 {
+	if len(sidecars.registry.List().Drivers) != 5 {
 		t.Fatal("disabled descriptor batch was not registered")
 	}
 }
@@ -475,7 +475,7 @@ func TestM06ConstructionFailureKeepsSiblingRegistered(t *testing.T) {
 	if natives[managedGrowattID].starts.Load() != 0 {
 		t.Fatal("failed construction opened a native generation")
 	}
-	if len(process.control.Registry().List().Drivers) != 4 {
+	if len(process.control.Registry().List().Drivers) != 5 {
 		t.Fatal("construction failure lost the configured descriptor")
 	}
 	process.stop()

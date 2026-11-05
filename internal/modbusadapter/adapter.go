@@ -1192,3 +1192,9 @@ func (adapter *Adapter) WithdrawSemantic() error {
 func (adapter *Adapter) NativeCloseUnconfirmed() bool {
 	return adapter != nil && adapter.nativeCloseFailed.Load()
 }
+
+// PublicationActive reports generation admission without granting publication
+// authority. A managed worker must also commit through its source handle.
+func (adapter *Adapter) PublicationActive() bool {
+	return adapter != nil && adapter.config.Publication.valid()
+}

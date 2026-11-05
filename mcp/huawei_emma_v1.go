@@ -7,6 +7,7 @@ import (
 )
 
 const (
+	HuaweiEMMAV1StatusGetTool   = "modbus.v1.huawei.emma.status.get"
 	HuaweiEMMAV1IdentityGetTool = "modbus.v1.huawei.emma.identity.get"
 	HuaweiEMMAV1Profile         = "huawei.emma.readonly.v1"
 )
@@ -29,6 +30,9 @@ var huaweiEMMAV1Providers = struct {
 }{byServer: map[*Server]HuaweiEMMAV1Provider{}}
 
 func registerHuaweiEMMAV1Tool(s *Server, p ModbusV1Provider) {
+	if registerHuaweiInstanceTool(s, p, HuaweiEMMAV1StatusGetTool, "huawei.emma") {
+		return
+	}
 	v, ok := p.(HuaweiEMMAV1Provider)
 	if !ok || v == nil {
 		return
@@ -39,6 +43,9 @@ func registerHuaweiEMMAV1Tool(s *Server, p ModbusV1Provider) {
 	s.tools = append(s.tools, Tool{Name: HuaweiEMMAV1IdentityGetTool, Description: "Get the native Huawei EMMA identity qualification.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}})
 }
 func (s *Server) handleHuaweiEMMAV1Call(ctx context.Context, n string, a map[string]any) (map[string]any, bool) {
+	if n == HuaweiEMMAV1StatusGetTool {
+		return s.handleHuaweiInstanceCall(ctx, n, "huawei.emma", a)
+	}
 	if n != HuaweiEMMAV1IdentityGetTool {
 		return nil, false
 	}

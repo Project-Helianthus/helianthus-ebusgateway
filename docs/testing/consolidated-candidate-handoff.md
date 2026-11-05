@@ -234,9 +234,10 @@ positive/negative, live-observable and transport obligations without inventing I
 | Prior RTU evidence applicability | [R01 upstream PR][rtu], [J19 gateway PR][rtu-pin]; historical evidence only, no repeated hardware session scheduled | Not run | Unknown | Unassessed | Unassessed |
 
 The Huawei Modbus TCP rows below cover each gateway family of the
-[multi-endpoint contract][modbus-multi]. The gateway registers every Huawei
-instance withheld (`FAMILY_NOT_ADMITTED`) until that family's native contract
-admits a qualification, so no row can leave **Not run** before then. The
+[multi-endpoint contract][modbus-multi]. The gateway composes the admitted SmartLogger/S-Dongle read-only PV slice;
+EMMA remains withheld (`NO_ADMITTED_CHILD_PROFILE`) until its native contract
+admits acquisition. Every physical row remains **Not run** until the separately
+authorized hardware session supplies evidence. The
 per-row evidence record rule above applies to each row; a family summary
 cannot replace its four rows. The governing references are completed by the
 issues that compose and publish each family.
@@ -299,3 +300,18 @@ offline RTU gate.
 [rtu]: https://github.com/Project-Helianthus/helianthus-modbus/pull/40
 [rtu-pin]: https://github.com/Project-Helianthus/helianthus-ebusgateway/pull/1092
 [modbus-multi]: https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/api/modbus-multi-endpoint-runtime.md
+
+
+## Huawei managed PV slice
+
+Refs [gateway issue 1363](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1363).
+SmartLogger/S-Dongle composition has synthetic TCP replay coverage under
+`TestH10`, including identity admission, typed PV mapping, shared MCP/GraphQL
+snapshots, child isolation, source withdrawal and successor fencing. These
+fixtures establish no physical qualification. The focused mapping gate is
+`bash scripts/huawei_pv_semreg_gate.sh PUBLIC_DOCS_SEMANTIC_ROOT`; its public
+companion is [the Huawei PV mapping](https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/main/api/v1/mappings/huawei-sun2000-pv-v1.md).
+A completed focused/full gate result remains necessary before shipping.
+EMMA stays withheld as `NO_ADMITTED_CHILD_PROFILE`, pending
+[registry issue 199](https://github.com/Project-Helianthus/helianthus-modbusreg/issues/199).
+Storage, meter, Portal and live-device acceptance remain outside this slice.

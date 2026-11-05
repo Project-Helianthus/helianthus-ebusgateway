@@ -144,10 +144,11 @@ leaves every other instance and eBUS, eeBUS, HTTP and MCP untouched. A v2
 instance holds one connection with one request in flight. Every request of
 the instance, including retries and on-demand reads, passes one gate that
 enforces the gap after the previous completion and the settle wait after each
-connect; a wait never extends a read or attempt bound. Huawei families
-register withheld (`FAMILY_NOT_ADMITTED`): they list as FAILED with
-`PROVIDER_UNAVAILABLE`, log one categorical line and construct, dial and
-publish nothing. Raw reads, retained observations, the PV projection and its
+connect; a wait never extends a read or attempt bound. SmartLogger and
+S-Dongle instances compose their admitted native read-only providers. EMMA
+registers withheld (`NO_ADMITTED_CHILD_PROFILE`): it lists as FAILED with
+`PROVIDER_UNAVAILABLE`, logs one categorical line and constructs, dials and
+publishes nothing. Raw reads, retained observations, the PV projection and its
 Portal panel keep addressing the v1 slot only: the v1 endpoint, or the v2
 `sunspec` entry labelled `default`. Logs carry driver IDs, never endpoints.
 The `TestH08` fixtures in `cmd/gateway` and `internal/modbusadapter` cover
@@ -160,7 +161,7 @@ Modbus driver. It supervises every composed Modbus TCP instance (the v1
 `modbus.sunspec` descriptor and each v2 instance) and `growatt.bms.rs485`.
 eeBUS keeps its own service policy. A disabled driver, an uncomposed driver and
 a withheld driver (including a Huawei instance withheld as
-`FAMILY_NOT_ADMITTED`) are not supervised.
+`NO_ADMITTED_CHILD_PROFILE`) are not supervised.
 
 A failed START of a supervised driver that is desired `RUNNING` schedules one
 retry when its reason is `PROVIDER_UNAVAILABLE`, `DEPENDENCY_UNAVAILABLE`,
@@ -473,9 +474,9 @@ and native qualification; no status read opens an endpoint.
 | SunSpec TCP | Proven: TCP adapter and qualify/refresh path exist. | Requires the existing exact native profile and observation evidence; availability does not qualify a peer. | Proven: managed factory, shared service registration and generation-guarded consumer bindings. |
 | Growatt BMS RS-485 | Proven: production provider/open seam exists. | Existing family/revision admission and qualified native evidence remain required. | Proven: inert managed factory and generation-owned lifecycle wrapper exist. Shared service registration and generation-guarded consumer rebinding are composed. Semantic recovery remains subject to the managed-recorder boundary. No Protocol II or CAN inference. |
 | eeBUS | Proven: runtime, operator adapter and slot exist. | Existing trust, pairing and native use-case evidence remain independent of process health. | Proven: shared service registration and generation-guarded runtime, operator and capture bindings. Native qualification and semantic promotion remain separate. |
-| Huawei SmartLogger | Typed/injected-provider contracts exist; availability alone is insufficient. | Unknown for an unprovisioned peer/profile. | Withheld: a configured entry registers as a withheld instance (`FAMILY_NOT_ADMITTED`) that sends nothing; no activation without its own accepted evidence and composition decision. |
-| Huawei EMMA | Typed/injected-provider contracts exist. | Unknown without its own native evidence. | Withheld as a registered instance (`FAMILY_NOT_ADMITTED`); SunSpec or SmartLogger evidence cannot activate it. |
-| Huawei S-Dongle | Typed/injected-provider contracts exist. | Unknown without its own native evidence. | Withheld as a registered instance (`FAMILY_NOT_ADMITTED`); no inherited route or qualification. |
+| Huawei SmartLogger | Admitted native read-only provider composed per configured instance. | Native identity, catalogue and child-profile admission remain required; physical qualification is Unknown. | One source per instance; lazily declared PV assets per admitted inverter. No cross-family fallback. |
+| Huawei EMMA | Identity-only supplied-evidence seam exists. | No admitted acquisition profile. | Withheld as a registered instance (`NO_ADMITTED_CHILD_PROFILE`); registry issue 199 remains the prerequisite. |
+| Huawei S-Dongle | Admitted native read-only provider composed per configured instance. | Native same-connection identity tuple and child profile remain required; no inherited qualification. | One source per instance and one PV asset per admitted child. The native recorded-stop safeguards remain enforced. |
 | Growatt Protocol II | Typed/injected-provider contracts exist. | Separate evidence required; BMS RS-485 evidence is insufficient. | Withheld pending its own evidence and decision. |
 | OutBack | Typed/injected-provider contracts exist. | Unknown without its own accepted native evidence. | Withheld pending its own evidence and decision. |
 | Growatt BMS CAN | Proven: receive-only SocketCAN driver and inert managed factory exist. | Synthetic admission and lifecycle checks do not establish physical qualification or installation compatibility. | Proven: disabled-by-default, host-configured managed receiver with bounded startup retries, correlated failure reporting and cleanup quarantine. No Portal selection controls, public CAN snapshot tools or semantic publication. |
@@ -566,3 +567,63 @@ Not established by these fixtures: operation admission through a production
 intent owner, which does not exist yet; the fake owner and executor lookup stand
 in for it. Physical transport behavior, installation qualification and release
 readiness remain **Unknown**.
+
+
+### Huawei read-only PV composition
+
+Refs [gateway issue 1363](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1363).
+This is the admitted SmartLogger/S-Dongle slice. EMMA acquisition remains blocked
+by [the native prerequisite](https://github.com/Project-Helianthus/helianthus-modbusreg/issues/199).
+It adds no storage, meter, Portal, control or all-family readiness claim.
+
+The registry owns identity, catalogue selection, native decoding, per-child
+backoff, retry bounds and partial last-known-good group readings. The gateway
+supplies one connected session exposing only FC03 (at most 123 registers) and
+FC2B/MEI 0x0E basic or extended reads. Each identification call requests exactly
+one tolerant native page; the provider owns continuation and the next gap.
+Configured pacing may lengthen native pacing. It never shortens the native
+750 ms SmartLogger gap, 5 s S-Dongle gap or recommended 60 s cycle. A longer
+native cycle remains authoritative. Reconnect binds a new session generation
+and forces native re-identification before further PV publication.
+
+Asset keys follow the [finalized multi-endpoint contract](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/api/modbus-multi-endpoint-runtime.md):
+SHA-256 over UTF-8 fields, each followed by NUL: `helianthus.modbus.asset.v1`,
+configured instance label, `pv`, routed unit in decimal. Prefix the first 32
+lowercase hexadecimal characters with `pv-asset-`. The configured managed
+DriverID and owner identity supply the single instance source. Native model,
+serial, firmware and endpoint text never select semantic identity. Binding keys
+use asset, source and admitted profile as stable material, with the existing
+hub epoch/generation minting required for immutable native binding incarnations.
+A child that loses and later regains admission keeps its configured asset key but
+receives a new binding incarnation; a withdrawn binding is never revived.
+
+The [Huawei PV mapping companion](https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/main/api/v1/mappings/huawei-sun2000-pv-v1.md)
+owns decimal mapping, bounds, state vocabulary, input membership and loss.
+The gateway consumes typed facts with their native grades and receipt lineage;
+it never raises Proven/Hypothesis/Unknown or treats offline mapping qualification
+as live qualification. Negative active power, unknown states, zero input pairs,
+period counters and unconsumed words remain withheld/native evidence. Child
+failures preserve the original group receipt coordinates; a lost identity or
+confirmed inventory departure withdraws that child's facts and identity link.
+STOP fences the complete instance source before acquisition joins. Successor
+publication uses a newer hub generation and refuses the predecessor handle.
+The generic MCP snapshot and GraphQL snapshot share the existing hub; the
+SunSpec single-asset outputs keep their existing contracts.
+
+The native status tools require `instance` and expose family, routing, evidence
+state, published asset IDs and categorical losses. The EMMA `status.get` reports
+its closed refusal; the existing supplied-evidence `identity.get` seam remains
+available to its original provider contract. Status reads perform no I/O.
+The existing metrics route also emits native wire invocation, response, timeout
+and cancellation counters through the endpoint event sink: `helianthus_huawei_transport_events_total`,
+aggregated across instances with only closed `family`, `function` and `outcome`
+labels. It carries no endpoint, instance, unit, serial or identity labels.
+
+Native protocol authority remains the public
+[read pacing contract](https://github.com/Project-Helianthus/helianthus-docs-modbus/blob/main/protocols/huawei/read-pacing-v1.md),
+[monitoring contract](https://github.com/Project-Helianthus/helianthus-docs-modbus/blob/main/protocols/huawei/monitoring-readonly-v1.md)
+and [gateway contract](https://github.com/Project-Helianthus/helianthus-docs-modbus/blob/main/protocols/huawei/gateway-readonly-v1.md).
+Run `bash scripts/huawei_pv_semreg_gate.sh PUBLIC_DOCS_SEMANTIC_ROOT` against
+a standalone public docs-semantic checkout containing the merged identity
+companion. The offline gate refuses the older identity form, executes the public
+mapping vectors and runs the focused gateway, adapter and MCP tests.

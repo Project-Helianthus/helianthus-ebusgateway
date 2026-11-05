@@ -119,11 +119,11 @@ func newGatewayMetricsHandler(store *ebusgateway.BusObservabilityStore, semantic
 		return nil
 	}
 	transport := store.MetricsHandler()
-	if semantic == nil {
-		return transport
-	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		transport.ServeHTTP(w, r)
-		_, _ = io.WriteString(w, semantic.text(r.Context()))
+		if semantic != nil {
+			_, _ = io.WriteString(w, semantic.text(r.Context()))
+		}
+		_, _ = io.WriteString(w, huaweiWireCounters.text())
 	})
 }

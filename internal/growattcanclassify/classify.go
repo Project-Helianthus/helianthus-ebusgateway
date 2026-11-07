@@ -200,9 +200,15 @@ func parse(line int, raw string) Frame {
 		if len(token) < 3 || token[0] != '[' || token[len(token)-1] != ']' {
 			return reject("invalid DLC syntax")
 		}
-		n, err := strconv.Atoi(token[1 : len(token)-1])
+		digits := token[1 : len(token)-1]
+		n, err := strconv.Atoi(digits)
 		if err != nil || n < 0 || n > 8 {
 			return reject("invalid classical DLC")
+		}
+		if len(digits) != 1 {
+			// Classical frames print a one-digit length; a two-digit length is the FD form.
+			f.Flags = append(f.Flags, "FD")
+			f.Diagnostics = append(f.Diagnostics, "FD is not telemetry")
 		}
 		f.DLC = n
 		f.Payload = strings.Join(fields[3:], " ")

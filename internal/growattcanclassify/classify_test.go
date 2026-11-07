@@ -185,7 +185,7 @@ func TestCX02SharedControlOnlyUnknown(t *testing.T) {
 func TestCX02InvalidAndFlagsRetention(t *testing.T) {
 	for name, line := range map[string]string{
 		"hex": "sim0 1802F401#GG", "odd": "sim0 1802F401#0", "overlong": "sim0 1802F401#001122334455667788",
-		"FD": "sim0 1802F401##1" + payload, "RTR": "sim0 1802F401#R8", "RTR-bracket": "sim0 1802F401 [8] remote request",
+		"FD": "sim0 1802F401##1" + payload, "FD-bracket": "sim0 1802F407 [08] 41 42 43 44 01 02 03 04", "RTR": "sim0 1802F401#R8", "RTR-bracket": "sim0 1802F401 [8] remote request",
 		"error": "sim0 20000001#" + payload, "rtr-flag": "sim0 40000001#" + payload,
 		"nul": "sim0 1802F401#\x00", "escape": "sim0 1802F401#\x1b", "bad-time": "(NaN) sim0 1802F401#" + payload,
 		"dlc": "sim0 1802F401 [7] 41 42 43 44 01 02 03 04", "negative-dlc": "sim0 1802F401 [-1] 00", "wide-byte": "sim0 1802F401 [1] 0000",
@@ -195,7 +195,7 @@ func TestCX02InvalidAndFlagsRetention(t *testing.T) {
 			if f.Raw != line || len(f.Diagnostics) == 0 || len(f.Candidates) != 0 {
 				t.Fatalf("%+v", f)
 			}
-			if (name == "FD" || name == "RTR" || name == "error" || name == "rtr-flag" || name == "RTR-bracket") && len(f.Flags) == 0 {
+			if (name == "FD" || name == "FD-bracket" || name == "RTR" || name == "error" || name == "rtr-flag" || name == "RTR-bracket") && len(f.Flags) == 0 {
 				t.Fatal("flags lost")
 			}
 		})

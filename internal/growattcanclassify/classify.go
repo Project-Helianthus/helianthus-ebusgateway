@@ -179,15 +179,34 @@ func parse(line int, raw string) Frame {
 		if len(fields) != 2 {
 			f.Diagnostics = append(f.Diagnostics, "unexpected compact fields")
 		}
+		rtrLength := -1
 		if strings.HasPrefix(f.Payload, "#") {
 			f.Flags = append(f.Flags, "FD")
 			f.Diagnostics = append(f.Diagnostics, "FD is not telemetry")
-		}
-		if strings.HasPrefix(f.Payload, "R") || strings.HasPrefix(f.Payload, "r") {
+			// The character after the FD marker is the flags nibble, not payload.
+			if len(f.Payload) > 1 {
+				f.Payload = f.Payload[2:]
+			} else {
+				f.Payload = ""
+			}
+		} else if strings.HasPrefix(f.Payload, "R") || strings.HasPrefix(f.Payload, "r") {
 			f.Flags = append(f.Flags, "RTR")
 			f.Diagnostics = append(f.Diagnostics, "RTR is not telemetry")
+			// A remote request carries no data; an optional trailing digit is its length.
+			rest := f.Payload[1:]
+			f.Payload = ""
+			rtrLength = 0
+			if len(rest) == 1 && rest[0] >= '0' && rest[0] <= '9' {
+				rtrLength = int(rest[0] - '0')
+			} else if rest != "" {
+				f.Diagnostics = append(f.Diagnostics, "invalid RTR length")
+			}
 		}
-		f.DLC = len(f.Payload) / 2
+		if rtrLength >= 0 {
+			f.DLC = rtrLength
+		} else {
+			f.DLC = len(f.Payload) / 2
+		}
 	} else {
 		id = entry
 		setIdentifier(&f, id)
@@ -202,7 +221,10 @@ func parse(line int, raw string) Frame {
 		}
 		digits := token[1 : len(token)-1]
 		n, err := strconv.Atoi(digits)
-		if err != nil || n < 0 || n > 8 {
+		if err != nil || n < 0 || n > 64 {
+			return reject("invalid DLC")
+		}
+		if n > 8 && len(digits) == 1 {
 			return reject("invalid classical DLC")
 		}
 		if len(digits) != 1 {
@@ -226,10 +248,27 @@ func parse(line int, raw string) Frame {
 	data, err := hex.DecodeString(strings.ReplaceAll(f.Payload, " ", ""))
 	if err != nil {
 		f.Diagnostics = append(f.Diagnostics, "invalid payload hex or length")
+	} else if hasFlag(f.Flags, "RTR") {
+		if len(data) != 0 {
+			f.Diagnostics = append(f.Diagnostics, "payload length does not match classical DLC")
+		}
+	} else if hasFlag(f.Flags, "FD") {
+		if len(data) != f.DLC && !strings.Contains(raw, "#") {
+			f.Diagnostics = append(f.Diagnostics, "payload length does not match DLC")
+		}
 	} else if len(data) != f.DLC || len(data) > 8 {
 		f.Diagnostics = append(f.Diagnostics, "payload length does not match classical DLC")
 	}
 	return f
+}
+
+func hasFlag(flags []string, want string) bool {
+	for _, f := range flags {
+		if f == want {
+			return true
+		}
+	}
+	return false
 }
 
 func decimalTimestamp(s string) bool {

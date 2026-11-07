@@ -309,3 +309,29 @@ func TestCX02RecordBoundAndInvalidUTF8(t *testing.T) {
 		t.Fatal("invalid UTF-8 bytes not retained", f)
 	}
 }
+
+func TestCX02CompactAndFDLengthMetadata(t *testing.T) {
+	cases := []struct {
+		line  string
+		flag  string
+		dlc   int
+		clean bool
+	}{
+		{"can0 123#R8", "RTR", 8, true},
+		{"can0 123#R", "RTR", 0, true},
+		{"can0 123##1" + "00112233445566778899aabb", "FD", 12, true},
+		{"can0 123 [12] 00 11 22 33 44 55 66 77 88 99 aa bb", "FD", 12, true},
+	}
+	for _, c := range cases {
+		r := classify(t, c.line+"\n", Options{})
+		f := r.Frames[0]
+		if f.DLC != c.dlc || !hasFlag(f.Flags, c.flag) || len(f.Candidates) != 0 {
+			t.Fatalf("%q: dlc=%d flags=%v candidates=%v diag=%v", c.line, f.DLC, f.Flags, f.Candidates, f.Diagnostics)
+		}
+		for _, d := range f.Diagnostics {
+			if strings.Contains(d, "length does not match") || strings.Contains(d, "invalid") {
+				t.Fatalf("%q: unexpected diagnostic %q", c.line, d)
+			}
+		}
+	}
+}

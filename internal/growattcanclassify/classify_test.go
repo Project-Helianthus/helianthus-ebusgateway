@@ -335,3 +335,24 @@ func TestCX02CompactAndFDLengthMetadata(t *testing.T) {
 		}
 	}
 }
+
+func TestCX02CompactRawDLCSuffix(t *testing.T) {
+	f := classify(t, "sim0 311#1122334455667788_E", Options{}).Frames[0]
+	if f.RawDLC != "E" || f.DLC != 8 || f.Payload != "1122334455667788" {
+		t.Fatal(f)
+	}
+	for _, d := range f.Diagnostics {
+		if strings.Contains(d, "payload") {
+			t.Fatal(f.Diagnostics)
+		}
+	}
+	r := classify(t, "sim0 123#R8_9", Options{}).Frames[0]
+	if r.RawDLC != "9" || r.DLC != 8 || !hasFlag(r.Flags, "RTR") {
+		t.Fatal(r)
+	}
+	for _, d := range r.Diagnostics {
+		if strings.Contains(d, "invalid RTR length") {
+			t.Fatal(r.Diagnostics)
+		}
+	}
+}

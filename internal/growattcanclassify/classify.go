@@ -180,6 +180,13 @@ func parse(line int, raw string) Frame {
 			f.Diagnostics = append(f.Diagnostics, "unexpected compact fields")
 		}
 		rtrLength := -1
+		if !strings.HasPrefix(f.Payload, "#") {
+			// Compact classical records may end with _9.._F: the raw DLC of an eight-byte frame.
+			if n := len(f.Payload); n >= 2 && f.Payload[n-2] == '_' && strings.ContainsRune("9ABCDEFabcdef", rune(f.Payload[n-1])) {
+				f.RawDLC = f.Payload[n-1:]
+				f.Payload = f.Payload[:n-2]
+			}
+		}
 		if strings.HasPrefix(f.Payload, "#") {
 			f.Flags = append(f.Flags, "FD")
 			f.Diagnostics = append(f.Diagnostics, "FD is not telemetry")

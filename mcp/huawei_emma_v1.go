@@ -30,9 +30,9 @@ var huaweiEMMAV1Providers = struct {
 }{byServer: map[*Server]HuaweiEMMAV1Provider{}}
 
 func registerHuaweiEMMAV1Tool(s *Server, p ModbusV1Provider) {
-	if registerHuaweiInstanceTool(s, p, HuaweiEMMAV1StatusGetTool, "huawei.emma") {
-		return
-	}
+	// Instance status is registered independently; the supplied-evidence
+	// identity tool stays whenever its provider interface is implemented.
+	registerHuaweiInstanceTool(s, p, HuaweiEMMAV1StatusGetTool, "huawei.emma")
 	v, ok := p.(HuaweiEMMAV1Provider)
 	if !ok || v == nil {
 		return

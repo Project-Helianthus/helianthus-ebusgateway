@@ -91,3 +91,24 @@ func h10Golden(t *testing.T, name string, value any) {
 		t.Fatalf("golden %s differs: %s", name, encoded)
 	}
 }
+
+type h10EMMAIdentityFixture struct{ *h10InstanceFixture }
+
+func (p *h10EMMAIdentityFixture) HuaweiEMMAV1(context.Context) (HuaweiEMMAV1Result, error) {
+	return HuaweiEMMAV1Result{Profile: HuaweiEMMAV1Profile}, nil
+}
+
+func TestH10EMMAIdentityToolSurvivesInstanceStatus(t *testing.T) {
+	s, err := NewServer(&testRegistry{entries: map[byte]registry.DeviceEntry{}}, &testInvoker{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	RegisterModbusV1Tools(s, &h10EMMAIdentityFixture{&h10InstanceFixture{modbusV1FixtureProvider: &modbusV1FixtureProvider{}}})
+	found := map[string]bool{}
+	for _, tool := range s.tools {
+		found[tool.Name] = true
+	}
+	if !found[HuaweiEMMAV1StatusGetTool] || !found[HuaweiEMMAV1IdentityGetTool] {
+		t.Fatalf("status and identity tools must both register: %v", found)
+	}
+}

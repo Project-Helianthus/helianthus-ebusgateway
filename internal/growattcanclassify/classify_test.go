@@ -356,3 +356,23 @@ func TestCX02CompactRawDLCSuffix(t *testing.T) {
 		}
 	}
 }
+
+func TestCX02RTRLengthAndBracketForm(t *testing.T) {
+	bad := classify(t, "sim0 123#R9", Options{}).Frames[0]
+	found := false
+	for _, d := range bad.Diagnostics {
+		found = found || d == "invalid RTR length"
+	}
+	if !found || bad.DLC != 0 {
+		t.Fatal(bad)
+	}
+	ok := classify(t, "sim0 123 [8] remote request", Options{}).Frames[0]
+	if !hasFlag(ok.Flags, "RTR") || ok.DLC != 8 {
+		t.Fatal(ok)
+	}
+	for _, d := range ok.Diagnostics {
+		if strings.Contains(d, "byte width") || strings.Contains(d, "payload") {
+			t.Fatal(ok.Diagnostics)
+		}
+	}
+}

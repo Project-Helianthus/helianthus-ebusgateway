@@ -203,7 +203,7 @@ func parse(line int, raw string) Frame {
 			rest := f.Payload[1:]
 			f.Payload = ""
 			rtrLength = 0
-			if len(rest) == 1 && rest[0] >= '0' && rest[0] <= '9' {
+			if len(rest) == 1 && rest[0] >= '0' && rest[0] <= '8' {
 				rtrLength = int(rest[0] - '0')
 			} else if rest != "" {
 				f.Diagnostics = append(f.Diagnostics, "invalid RTR length")
@@ -245,20 +245,22 @@ func parse(line int, raw string) Frame {
 			f.Flags = append(f.Flags, "RTR")
 			f.Diagnostics = append(f.Diagnostics, "RTR is not telemetry")
 		}
-		for _, b := range fields[3:] {
-			if len(b) != 2 {
-				f.Diagnostics = append(f.Diagnostics, "invalid byte width")
-				break
+		if !hasFlag(f.Flags, "RTR") {
+			for _, b := range fields[3:] {
+				if len(b) != 2 {
+					f.Diagnostics = append(f.Diagnostics, "invalid byte width")
+					break
+				}
 			}
 		}
+	}
+	if hasFlag(f.Flags, "RTR") {
+		// A remote request carries no data bytes, so there is no payload to validate.
+		return f
 	}
 	data, err := hex.DecodeString(strings.ReplaceAll(f.Payload, " ", ""))
 	if err != nil {
 		f.Diagnostics = append(f.Diagnostics, "invalid payload hex or length")
-	} else if hasFlag(f.Flags, "RTR") {
-		if len(data) != 0 {
-			f.Diagnostics = append(f.Diagnostics, "payload length does not match classical DLC")
-		}
 	} else if hasFlag(f.Flags, "FD") {
 		if len(data) != f.DLC && !strings.Contains(raw, "#") {
 			f.Diagnostics = append(f.Diagnostics, "payload length does not match DLC")

@@ -222,9 +222,13 @@ func (p *managedModbusMCPProvider) HuaweiInstanceStatus(ctx context.Context, fam
 			status := mcp.HuaweiInstanceChildStatus{Unit: child.UnitID, Family: child.Family, Profile: child.ProfileID, Evidence: string(child.Evidence), Reason: string(child.Reason)}
 			if id, ok := publication.published[child.UnitID]; ok {
 				status.AssetID = string(id)
-				out.PublishedAssetIDs = append(out.PublishedAssetIDs, string(id))
 			}
 			out.Children = append(out.Children, status)
+		}
+		// Published assets are enumerated from the publication itself so an
+		// incomplete cycle still reports the retained last-known assets.
+		for _, id := range publication.published {
+			out.PublishedAssetIDs = append(out.PublishedAssetIDs, string(id))
 		}
 		sort.Slice(out.Children, func(i, j int) bool { return out.Children[i].Unit < out.Children[j].Unit })
 		sort.Strings(out.PublishedAssetIDs)

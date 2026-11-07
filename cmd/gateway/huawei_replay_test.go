@@ -410,6 +410,9 @@ func TestH10FenceIsolationSuccessorAndLatePublication(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if successor.handle.Epoch() == first.handle.Epoch() {
+		t.Fatal("restart preserved the predecessor epoch")
+	}
 	// A restart re-identifies through a fresh native session and connection.
 	freshProvider, _, _, freshClock := h10Native(t, fixture)
 	if !freshClock.Now().After(cycle.CompletedAt) {
@@ -649,8 +652,8 @@ func TestH10ManagedDriverStopRestartFencesHuaweiWork(t *testing.T) {
 		}
 		return true
 	})
-	if len(publications) != 2 || publications[1].handle.Generation() <= publications[0].handle.Generation() {
-		t.Fatal("successor generation not advanced")
+	if len(publications) != 2 || publications[1].handle.Epoch() == publications[0].handle.Epoch() {
+		t.Fatal("successor epoch not replaced")
 	}
 	late := cycle
 	late.Cycle++

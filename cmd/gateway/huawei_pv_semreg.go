@@ -72,7 +72,9 @@ func newHuaweiPVPublication(hub *semhub.Hub, driver, source, label string, previ
 		if previous.Source() != semreg.SourceID(source) {
 			return nil, errors.New("huawei semantic source changed")
 		}
-		handle, err = hub.Activate(previous, previous.Generation()+1)
+		// A restart replaces the epoch: Fence retired the predecessor's epoch,
+		// so a hub-native successor is admitted.
+		handle, err = hub.AdmitSuccessor(semhub.Succession{Previous: previous, Operation: "lifecycle-op:" + huaweiHash(string(previous.Epoch()))[:32]})
 	}
 	if err != nil {
 		return nil, err
@@ -94,7 +96,9 @@ func (p *huaweiPVPublication) Fence() error {
 		observed = p.native.CompletedAt
 	}
 	p.mu.Unlock()
-	_, err := p.hub.Fence(semhub.FenceRequest{Source: p.handle.Source(), Epoch: p.handle.Epoch(), Generation: p.handle.Generation(), Reason: "lifecycle.driver_generation_replaced", Evidence: []semreg.EvidenceRef{huaweiEvidence("native.huawei.lifecycle", "managed generation withdrawal")}, ObservedAt: growattWall(observed), Monotonic: p.point(observed)})
+	// Retiring the stopped epoch withdraws its assets and lets a restart be
+	// admitted under a successor epoch rather than inheriting this one.
+	_, err := p.hub.RetireEpoch(semhub.RetireRequest{Source: p.handle.Source(), Epoch: p.handle.Epoch(), Reason: "lifecycle.source_stopped", Evidence: []semreg.EvidenceRef{huaweiEvidence("native.huawei.lifecycle", "managed epoch retirement")}, ObservedAt: growattWall(observed), Monotonic: p.point(observed)})
 	return err
 }
 func (p *huaweiPVPublication) Publish(cycle modbusreg.HuaweiProviderCycle) error {

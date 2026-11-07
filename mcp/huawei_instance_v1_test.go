@@ -112,3 +112,27 @@ func TestH10EMMAIdentityToolSurvivesInstanceStatus(t *testing.T) {
 		t.Fatalf("status and identity tools must both register: %v", found)
 	}
 }
+
+type h10CorelessInstanceFixture struct{ *h10InstanceFixture }
+
+func (h10CorelessInstanceFixture) ModbusV1CoreAvailable() bool { return false }
+
+func TestH10HuaweiInstanceToolsRegisterWithoutSunSpecCore(t *testing.T) {
+	s, err := NewServer(&testRegistry{entries: map[byte]registry.DeviceEntry{}}, &testInvoker{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	RegisterModbusV1Tools(s, h10CorelessInstanceFixture{&h10InstanceFixture{modbusV1FixtureProvider: &modbusV1FixtureProvider{}}})
+	have := map[string]bool{}
+	for _, tool := range s.tools {
+		have[tool.Name] = true
+	}
+	for _, name := range []string{HuaweiSmartLoggerV1StatusGetTool, HuaweiSDongleV1StatusGetTool, HuaweiEMMAV1StatusGetTool} {
+		if !have[name] {
+			t.Fatalf("%s not registered without SunSpec core", name)
+		}
+	}
+	if have[ModbusV1RawReadTool] {
+		t.Fatal("SunSpec tool registered without core")
+	}
+}

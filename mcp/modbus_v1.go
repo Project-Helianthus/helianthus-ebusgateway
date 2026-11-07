@@ -165,10 +165,14 @@ func RegisterModbusV1Tools(server *Server, provider ModbusV1Provider) {
 		registerTeslaWCVitalsV1Tool(server, provider)
 		registerGrowattProtocolIIV1Tool(server, provider)
 		registerOutBackAXSV1Tool(server, provider)
+		registerFroniusSunSpecV1Tool(server, provider)
+	}
+	// Instance-aware Huawei tools do not depend on the SunSpec core slot; the
+	// legacy single-source Huawei tools keep the core gate.
+	if _, instance := provider.(HuaweiInstanceStatusProvider); instance || coreAvailable {
 		registerHuaweiEMMAV1Tool(server, provider)
 		registerHuaweiSmartLoggerV1Tool(server, provider)
 		registerHuaweiSDongleV1Tool(server, provider)
-		registerFroniusSunSpecV1Tool(server, provider)
 	}
 	if modbusV1OptionalToolAvailable(provider, TeslaGen3EVSECurrentLimitV1GetTool) {
 		registerTeslaGen3EVSECurrentLimitV1Tool(server, provider)

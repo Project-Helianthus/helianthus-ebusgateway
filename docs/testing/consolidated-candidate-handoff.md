@@ -309,7 +309,8 @@ SmartLogger/S-Dongle composition has synthetic TCP replay coverage under
 `TestH10`, including identity admission, typed PV mapping, shared MCP/GraphQL
 snapshots, child isolation, source withdrawal and successor fencing. These
 fixtures establish no physical qualification. The focused mapping gate is
-`bash scripts/huawei_pv_semreg_gate.sh PUBLIC_DOCS_SEMANTIC_ROOT`; its public
+`bash scripts/huawei_pv_semreg_gate.sh`, which fetches the pinned public
+docs-semantic commit itself and runs from a standalone clone; its public
 companion is [the Huawei PV mapping](https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/main/api/v1/mappings/huawei-sun2000-pv-v1.md).
 A completed focused/full gate result remains necessary before shipping.
 EMMA stays withheld as `NO_ADMITTED_CHILD_PROFILE`, pending

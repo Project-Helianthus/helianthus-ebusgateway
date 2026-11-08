@@ -630,7 +630,8 @@ Native protocol authority remains the public
 [read pacing contract](https://github.com/Project-Helianthus/helianthus-docs-modbus/blob/main/protocols/huawei/read-pacing-v1.md),
 [monitoring contract](https://github.com/Project-Helianthus/helianthus-docs-modbus/blob/main/protocols/huawei/monitoring-readonly-v1.md)
 and [gateway contract](https://github.com/Project-Helianthus/helianthus-docs-modbus/blob/main/protocols/huawei/gateway-readonly-v1.md).
-Run `bash scripts/huawei_pv_semreg_gate.sh PUBLIC_DOCS_SEMANTIC_ROOT` against
-a standalone public docs-semantic checkout containing the merged identity
-companion. The offline gate refuses the older identity form, executes the public
-mapping vectors and runs the focused gateway, adapter and MCP tests.
+Run `bash scripts/huawei_pv_semreg_gate.sh` from a standalone clone. The gate
+fetches the pinned public docs-semantic commit carrying the merged identity
+companion, refuses the older identity form, executes the public mapping
+vectors, checks that the pinned SemReg runtime is selected and runs the
+focused gateway, adapter and MCP tests.

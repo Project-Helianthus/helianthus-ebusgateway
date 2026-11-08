@@ -559,6 +559,7 @@ func TestCX20CancelledStartIsInertAfterOpen(t *testing.T) {
 	if got := d.Snapshot(time.Second); got.Native.Providers[0].Promotable || len(got.Native.Raw) != 0 {
 		t.Fatal("cancelled start published")
 	}
+	cx20Stop(t, d)
 }
 
 func TestCX20DuplicateSequenceCannotRebindCount(t *testing.T) {
@@ -629,5 +630,100 @@ func TestCX20CountSurvivesEvictionWithoutIntermediateSnapshot(t *testing.T) {
 	})
 	if v := got.Cells[0]; v.ConfiguredCount != 8 || !v.CountValid || !v.CompleteCoverage {
 		t.Fatal(v)
+	}
+}
+
+func TestCX20FailedStartCleanupStop(t *testing.T) {
+	c := cx20Config(t, "synthetic0", 7)
+	d, _ := cx20Driver(t, c, cx20Association)
+	if _, err := d.Start(context.Background()); err == nil {
+		t.Fatal("expected open failure")
+	}
+	cx20Stop(t, d)
+	cx20Stop(t, d)
+	if d.SafetyQuarantined() {
+		t.Fatal("successful cleanup quarantined")
+	}
+}
+
+func TestCX20StoppedReceiveErrorRemainsDiagnostic(t *testing.T) {
+	c := cx20Config(t, "synthetic0", 7)
+	r := cx20NewReceiver(c)
+	d, _ := cx20Driver(t, c, cx20Association, r)
+	cx20Start(t, d)
+	failure := errors.New("synthetic receive failure")
+	r.fail <- failure
+	cx20Wait(t, d, 0, func(s growattLINKSnapshot) bool { return s.State == "degraded" })
+	cx20Stop(t, d)
+	got := d.Snapshot(0)
+	if got.State != "stopped" || !errors.Is(got.Native.ReceiveError, failure) {
+		t.Fatal(got.State, got.Native.ReceiveError)
+	}
+}
+
+func TestCX20RetainedCountAdmissionAndValidity(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		initial, later  int
+		descriptive     bool
+		valid, snapshot bool
+	}{
+		{"latest-admitted", 4, 8, true, true, true},
+		{"first-snapshot", 8, 4, true, true, false},
+		{"non-descriptive", 8, 4, false, true, false},
+		{"zero", 0, 4, false, false, false},
+		{"overflow", 17, 4, false, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := cx20Config(t, "synthetic0", 7)
+			r := cx20NewReceiver(c)
+			d, _ := cx20Driver(t, c, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.CX16ReplayInput {
+				in := cx20Association(s, e)
+				in.CellCount = tc.initial
+				if e.Sequence >= 2 {
+					in.CellCount = tc.later
+					if !tc.descriptive {
+						in.PCS.FieldAge = -1
+					}
+				}
+				return in
+			}, r)
+			cx20Start(t, d)
+			defer cx20Stop(t, d)
+			cx20Send(t, r, cx20Record(c.Native.Interface, 1, 0x1810, 1, time.Second))
+			if tc.snapshot {
+				cx20Wait(t, d, time.Second, cx20Received(1))
+			}
+			record := cx20Record(c.Native.Interface, 1, 0x1810, 2, time.Second)
+			cx20Send(t, r, record)
+			for n := 0; n < 257; n++ {
+				cx20Send(t, r, record)
+			}
+			// Wait on native diagnostics directly so the first managed snapshot follows eviction.
+			deadline := time.Now().Add(time.Second)
+			for {
+				native := d.provider.Snapshot(time.Second)
+				raw := native.Providers[0].Raw
+				if len(raw) == 256 && raw[0].Input.Evidence.Sequence == 2 && raw[0].Status == "rejected" {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("eviction timeout")
+				}
+				time.Sleep(time.Millisecond)
+			}
+			got := d.Snapshot(time.Second)
+			want := tc.initial
+			if tc.descriptive {
+				want = tc.later
+			}
+			v := got.Cells[0]
+			if v.ConfiguredCount != want || v.CountValid != tc.valid || v.CompleteCoverage != (tc.valid && want <= 4) {
+				t.Fatal(v.ConfiguredCount, v.CountValid, v.CompleteCoverage)
+			}
+			if len(got.Native.Providers[0].Raw) != 256 {
+				t.Fatal("raw evidence lost")
+			}
+		})
 	}
 }

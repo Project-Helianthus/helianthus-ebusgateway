@@ -36,6 +36,18 @@ func newGrowattLINKManagedDriverFactory(config ebusgateway.GrowattLINKConfig, op
 			return &growattLINKReceiver{growattProjectReceiver: r, lifetime: d.lifetime}, err
 		}, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.CX16ReplayInput {
 			in := associate(s, e)
+			// The unbuffered native source applies observations before receiving
+			// their successors. Capture confirmed counts before bounded history
+			// can evict them, even when no managed snapshot has been requested.
+			for n, selection := range d.provider.selections {
+				if selection == s {
+					native := d.provider.providers[n].CX17Snapshot(e.Monotonic, d.provider.staleAfter)
+					d.metadataMu.Lock()
+					d.retainCounts(native)
+					d.metadataMu.Unlock()
+					break
+				}
+			}
 			d.metadataMu.Lock()
 			history := d.counts[s]
 			for _, c := range history {
@@ -51,9 +63,6 @@ func newGrowattLINKManagedDriverFactory(config ebusgateway.GrowattLINKConfig, op
 				history = history[:255]
 			}
 			d.counts[s] = append(history, growattLINKCount{s, e, in.CellCount, in.CellCountValid})
-			// Retained counts are recorded only by Snapshot, from a record native
-			// admission confirmed as descriptive; an unconfirmed association never
-			// becomes the retained count.
 			d.metadataMu.Unlock()
 			return in
 		})
@@ -102,6 +111,7 @@ type growattLINKManagedDriver struct {
 	active               bool
 	operation            chan struct{}
 	operationErr         error
+	cleanupErr           error
 	quarantine           bool
 	lifetime             context.Context
 	fence                atomic.Pointer[growattLINKFence]
@@ -173,6 +183,7 @@ func (d *growattLINKManagedDriver) Start(ctx context.Context) (uint64, error) {
 			d.mu.Unlock()
 			closeErr := d.provider.Stop()
 			d.mu.Lock()
+			d.cleanupErr = closeErr
 			d.quarantine = closeErr != nil
 			err = errors.Join(err, closeErr)
 		} else {
@@ -227,7 +238,7 @@ func (d *growattLINKManagedDriver) Stop(ctx context.Context) error {
 		}
 	}
 	if !d.active {
-		err := d.operationErr
+		err := d.cleanupErr
 		d.mu.Unlock()
 		return err
 	}
@@ -254,6 +265,7 @@ func (d *growattLINKManagedDriver) beginStopLocked() chan struct{} {
 		d.mu.Lock()
 		defer d.mu.Unlock()
 		d.operationErr = err
+		d.cleanupErr = err
 		d.quarantine = err != nil
 		d.operation = nil
 		d.revision++
@@ -309,7 +321,7 @@ func (d *growattLINKManagedDriver) Snapshot(now time.Duration) growattLINKSnapsh
 	usable := d.active && f != nil && !f.fenced.Load() && s.Native.ReceiveError == nil
 	if usable {
 		s.State = "receiving"
-	} else if s.Native.ReceiveError != nil {
+	} else if d.active && s.Native.ReceiveError != nil {
 		s.State = "degraded"
 	}
 	if d.quarantine {
@@ -324,32 +336,9 @@ func (d *growattLINKManagedDriver) Snapshot(now time.Duration) growattLINKSnapsh
 			p.Promotable = false
 		}
 		v := canbusreg.CX12VectorSnapshot{Selection: p.Selection, Kind: "cells", AddressableSlots: 16, AsOf: now, MaxAge: d.provider.staleAfter, Fields: map[int]canbusreg.CXNativeField{}, LastGood: map[int]canbusreg.CXNativeField{}}
-		found := false
-		for j := len(p.Raw) - 1; j >= 0; j-- {
-			r := p.Raw[j]
-			if r.Generation != d.generation || r.Status != "descriptive" {
-				continue
-			}
-			history := d.counts[p.Selection]
-			for k := len(history) - 1; k >= 0; k-- {
-				c := history[k]
-				if c.selection == p.Selection && c.evidence == r.Input.Evidence {
-					v.ConfiguredCount = c.count
-					v.CountValid = c.valid && c.count >= 1 && c.count <= 16
-					if d.admitted == nil {
-						d.admitted = map[canbusreg.CXSelection]growattLINKAdmitted{}
-					}
-					d.admitted[p.Selection] = growattLINKAdmitted{r.Input.Evidence.Sequence, r.Input.Evidence.Monotonic, v.ConfiguredCount, v.CountValid}
-					found = true
-					break
-				}
-			}
-			break
-		}
-		if !found {
-			if a, ok := d.admitted[p.Selection]; ok {
-				v.ConfiguredCount, v.CountValid = a.count, a.valid
-			}
+		d.retainCounts(*p)
+		if a, ok := d.admitted[p.Selection]; ok {
+			v.ConfiguredCount, v.CountValid = a.count, a.valid
 		}
 		var minAge, maxAge, first, last time.Duration
 		for i := 1; i <= 16; i++ {
@@ -391,4 +380,26 @@ func (d *growattLINKManagedDriver) Snapshot(now time.Duration) growattLINKSnapsh
 		s.Cells = append(s.Cells, v)
 	}
 	return s
+}
+
+// retainCounts requires metadataMu. Only native-confirmed descriptive records
+// can update the retained count; rejected or unrelated observations cannot.
+func (d *growattLINKManagedDriver) retainCounts(p canbusreg.CX17Snapshot) {
+	for j := len(p.Raw) - 1; j >= 0; j-- {
+		r := p.Raw[j]
+		if r.Generation != p.Generation || r.Status != "descriptive" {
+			continue
+		}
+		for k := len(d.counts[p.Selection]) - 1; k >= 0; k-- {
+			c := d.counts[p.Selection][k]
+			if c.evidence != r.Input.Evidence {
+				continue
+			}
+			a, ok := d.admitted[p.Selection]
+			if !ok || (c.evidence.Sequence > a.sequence && c.evidence.Monotonic >= a.monotonic) {
+				d.admitted[p.Selection] = growattLINKAdmitted{c.evidence.Sequence, c.evidence.Monotonic, c.count, c.valid && c.count >= 1 && c.count <= 16}
+			}
+			return
+		}
+	}
 }

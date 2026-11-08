@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"sync/atomic"
 	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/drivermanager"
@@ -11,6 +12,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimecontrol"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/portal/contributionv1"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
 )
@@ -22,6 +24,10 @@ type huaweiRegistryProvider interface {
 	Close() error
 	Reconnect(modbusreg.HuaweiProviderSession) error
 }
+
+// newHuaweiRegistryProviderFn constructs the native provider of a managed
+// instance. Offline acceptance replaces it with fixture-backed providers.
+var newHuaweiRegistryProviderFn = newHuaweiRegistryProvider
 
 func newHuaweiRegistryProvider(family modbusTCPFamily, config modbusreg.HuaweiProviderConfig) (huaweiRegistryProvider, error) {
 	switch family {
@@ -55,13 +61,14 @@ type huaweiManagedWork struct {
 	instance      modbusTCPInstance
 	provider      huaweiRegistryProvider
 	publication   *huaweiPVPublication
+	portal        *huaweiPortalLease
 	err           error
 	done          chan struct{}
 	started       bool
 	rebindPending bool
 }
 
-func newHuaweiInstanceDriverAdapter(instance modbusTCPInstance, hub *semhub.Hub) runtimecontrol.LifecycleAdapter {
+func newHuaweiInstanceDriverAdapter(instance modbusTCPInstance, hub *semhub.Hub, contributions *gatewayPortalCatalogContributions) runtimecontrol.LifecycleAdapter {
 	return runtimecontrol.NewAdapter(func(ctx context.Context, c runtimecontrol.Construction) (*modbusManagedDriver, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -84,15 +91,19 @@ func newHuaweiInstanceDriverAdapter(instance modbusTCPInstance, hub *semhub.Hub)
 		}
 		c.Sources = append([]runtimecontrol.SourceID(nil), c.Sources...)
 		var previous *semhub.Handle
+		// Each work generation contributes under a strictly later Portal
+		// generation, so a withdrawn generation can never be reopened.
+		var portalGeneration atomic.Uint64
 		factory := func(ctx context.Context, adapter *modbusadapter.Adapter) modbusManagedWork {
 			run, cancel := context.WithCancel(ctx)
 			work := &huaweiManagedWork{ctx: run, cancel: cancel, adapter: adapter, instance: instance, done: make(chan struct{})}
+			work.portal = &huaweiPortalLease{contributions: contributions, owner: contributionv1.DriverGeneration{DriverID: string(instance.driverID), Generation: portalGeneration.Add(1)}}
 			work.publication, work.err = newHuaweiPVPublication(hub, string(c.DriverID), string(c.Sources[0]), instance.label, previous, adapter.PublicationActive)
 			if work.err == nil {
 				previous = work.publication.handle
 			}
 			if work.err == nil {
-				work.provider, work.err = newHuaweiRegistryProvider(instance.family, modbusreg.HuaweiProviderConfig{Source: instance.label, AllowedUnits: append([]byte(nil), instance.units...), Wait: huaweiWait})
+				work.provider, work.err = newHuaweiRegistryProviderFn(instance.family, modbusreg.HuaweiProviderConfig{Source: instance.label, AllowedUnits: append([]byte(nil), instance.units...), Wait: huaweiWait})
 			}
 			if work.err == nil {
 				var session *modbusadapter.ReadOnlySession
@@ -118,6 +129,11 @@ func newHuaweiInstanceDriverAdapter(instance modbusTCPInstance, hub *semhub.Hub)
 func (w *huaweiManagedWork) StartError() error { return w.err }
 func (w *huaweiManagedWork) Start() {
 	if w.err != nil {
+		return
+	}
+	// The contribution is admitted with the generation it describes; a
+	// refusal fails the startup, whose retirement withdraws it again.
+	if w.err = w.portal.publish(w.adapter); w.err != nil {
 		return
 	}
 	w.started = true
@@ -169,15 +185,22 @@ func (w *huaweiManagedWork) rebind() {
 	}
 }
 
+// WithdrawContribution withdraws the Portal contribution before the managed
+// attempt closes the publication scope, so the descriptor never outlives the
+// status and assets of its generation. Later withdrawals are no-ops.
+func (w *huaweiManagedWork) WithdrawContribution() { w.portal.withdraw() }
+
 // FenceSemantic is retained independently from native Close so a semantic
 // cleanup failure can be retried without misclassifying a healthy endpoint.
 func (w *huaweiManagedWork) FenceSemantic() error {
+	w.portal.withdraw()
 	if w.publication == nil {
 		return nil
 	}
 	return w.publication.Fence()
 }
 func (w *huaweiManagedWork) Close() error {
+	w.portal.withdraw()
 	w.cancel()
 	if w.started {
 		<-w.done

@@ -979,7 +979,7 @@ func modbusTCPInstanceAdapter(instance modbusTCPInstance, hub *semhub.Hub, contr
 		})
 	}
 	if instance.family != modbusTCPFamilySunSpec {
-		return newHuaweiInstanceDriverAdapter(instance, hub)
+		return newHuaweiInstanceDriverAdapter(instance, hub, contributions)
 	}
 	work := func(ctx context.Context, adapter *modbusadapter.Adapter) modbusManagedWork {
 		var generation uint64

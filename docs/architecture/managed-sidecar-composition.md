@@ -574,7 +574,9 @@ readiness remain **Unknown**.
 Refs [gateway issue 1363](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1363).
 This is the admitted SmartLogger/S-Dongle slice. EMMA acquisition remains blocked
 by [the native prerequisite](https://github.com/Project-Helianthus/helianthus-modbusreg/issues/199).
-It adds no storage, meter, Portal, control or all-family readiness claim.
+It adds no storage, meter, control or all-family readiness claim. Storage and
+meter withholding and the per-instance Portal contribution are specified in the
+next section.
 
 The registry owns identity, catalogue selection, native decoding, per-child
 backoff, retry bounds and partial last-known-good group readings. The gateway
@@ -656,3 +658,57 @@ fetches the pinned public docs-semantic commit carrying the merged identity
 companion, refuses the older identity form, executes the public mapping
 vectors, checks that the pinned SemReg runtime is selected and runs the
 focused gateway, adapter and MCP tests.
+
+### Huawei storage, meter and Portal contribution
+
+Refs [gateway issue 1364](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1364).
+The [Huawei storage mapping gate](https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/main/api/v1/mappings/huawei-luna2000-storage-v1.md)
+and the [gateway-meter mapping gate](https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/main/api/v1/mappings/huawei-gateway-meter-infrastructure-v1.md)
+are accepted as withheld-only gates. No battery profile is admitted, no meter is
+decoded, and both gates publish nothing until a revision admits one. The pinned
+registry reads no battery offset and no meter register, and every child reading
+reports that it admits neither battery nor meter facts. The gateway therefore
+publishes no `helianthus.pack.storage` or `helianthus.pack.infrastructure`
+asset, fact or retained observation for any Huawei instance. An absent battery
+group or meter is unknown, never zero. Capacity is not converted from any other
+quantity. The instance status names the explicit native losses
+`BATTERY_NOT_ADMITTED` and `METER_NOT_ADMITTED`. No meter role configuration
+exists, so every role-dependent dimension stays withheld. The existing Growatt
+storage outputs and machine-to-machine root are unchanged and are not reused.
+
+Each running Huawei instance contributes one Portal descriptor,
+`portal.huawei.instance`, under its own managed DriverID through the existing
+contribution registry. The descriptor carries native diagnostics only. Its
+members are fields of the typed native contract
+`helianthus-ebusgateway/huawei-instance-status@1.0.0`, which is the instance
+status: gateway identity class, cycle disposition, child routing (routed unit and
+class), child freshness, child withheld reason and publication refusal, asset
+IDs and categorical losses. The Portal index admits exactly these members, as
+`field` diagnostics of that contract, and refuses every other native member. The
+descriptor declares no semantic field and renders no product resource. The PV
+assets stay SemReg assets, read through the generic semantic snapshot.
+
+The contribution is admitted when the work generation starts and only while its
+publication scope is active. STOP, the manager's withdrawal fence and a failed
+startup's retirement withdraw it through the managed attempt's contribution hook
+before the publication scope closes, so no catalog request sees a descriptor
+whose status and assets are already withdrawn; the semantic fence and native
+close withdraw it again as a no-op. A withdrawal before
+admission closes the lease, so a late start never reopens it. Every work
+generation of an instance uses a strictly later Portal generation, and the
+registry keeps the withdrawn generation fenced. A refused admission fails the
+START like any other startup failure. A withheld instance, such as EMMA, is
+never constructed and contributes nothing.
+
+`TestH11ComposedHuaweiPathOffline` runs one composed fixture through
+`prepareManagedSidecars` and the managed lifecycle. The fixture has synthetic
+SmartLogger and S-Dongle instances, a withheld EMMA instance, the existing
+SunSpec instance, and two instances whose declared family faces the other
+family's synthetic fixture. The cross-family instances run the real registry
+provider of their declared family. The provider establishes no gateway
+identity, so they publish nothing, while their contribution and status report
+the closed disposition. The test checks lifecycle state, published assets, MCP
+status, GraphQL/MCP snapshot parity, the Portal registry and catalog, STOP
+isolation and RESTART under a successor epoch and Portal generation. It
+establishes this bounded software chain only. It establishes no family support,
+physical qualification or hardware acceptance.

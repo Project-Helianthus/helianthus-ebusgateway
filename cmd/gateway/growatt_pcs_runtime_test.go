@@ -214,6 +214,13 @@ func TestCX19SelectedFlavorsAndCachedEvidence(t *testing.T) {
 			if len(got.Current) == 0 {
 				t.Fatal("native decoder not reached")
 			}
+			// The first Receive consumed the record; the loop's next Receive is
+			// the one that stays blocked, so sample only once it has started.
+			for deadline := time.Now().Add(time.Second); r.reads.Load() < 2; time.Sleep(time.Millisecond) {
+				if time.Now().After(deadline) {
+					t.Fatal("receive loop did not re-block")
+				}
+			}
 			reads := r.reads.Load()
 			for range 10 {
 				_ = d.Snapshot(time.Second)

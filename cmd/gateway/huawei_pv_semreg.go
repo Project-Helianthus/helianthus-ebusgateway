@@ -532,10 +532,18 @@ func (p *huaweiPVPublication) facts(asset semreg.AssetID, binding semreg.NativeB
 		var receipt time.Time
 		groupStale := native.Retained
 		for _, g := range child.Groups {
-			if g.Offset == group && g.Cycle == native.Cycle && g.Generation == cycle.Generation {
-				receipt = g.ReadAt
-				groupStale = groupStale || g.Retained || g.Cycle != cycle.Cycle
+			if g.Offset != group || g.Cycle != native.Cycle {
+				continue
 			}
+			// A retained group keeps the cycle and transport generation at which
+			// it was last answered, so after a reconnect it carries an earlier
+			// generation than the cycle and is published stale. A group that is
+			// not retained must belong to the cycle's generation.
+			if g.Generation != cycle.Generation && (!g.Retained || g.Generation >= cycle.Generation) {
+				continue
+			}
+			receipt = g.ReadAt
+			groupStale = groupStale || g.Retained || g.Cycle != cycle.Cycle
 		}
 		if receipt.IsZero() || receipt.After(cycle.CompletedAt) {
 			return nil, errors.New("huawei native receipt lineage missing")

@@ -650,6 +650,12 @@ func (adapter *Adapter) executeReadLocked(ctx context.Context, plan ReadPlan) (m
 		}
 		defer func() { adapter.completedAt = time.Now() }()
 	}
+	return adapter.executeReadTransactionLocked(ctx, plan)
+}
+
+// executeReadTransactionLocked runs one admitted read without pacing. The
+// caller holds executeMu and has already completed any pacing wait.
+func (adapter *Adapter) executeReadTransactionLocked(ctx context.Context, plan ReadPlan) (modbus.TCPReadBatch, error) {
 	handle, err := adapter.EnqueueRead(plan)
 	if err != nil {
 		return modbus.TCPReadBatch{}, err

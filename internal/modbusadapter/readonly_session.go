@@ -69,13 +69,18 @@ func (s *ReadOnlySession) ReadHolding(ctx context.Context, unit byte, request mo
 	if err := s.check(); err != nil {
 		return modbus.ReadRegistersResponse{}, err
 	}
-	if s.adapter.config.Pacing != nil {
+	if pacing := s.adapter.config.Pacing; pacing != nil {
+		// A wait canceled by the caller sends nothing and leaves the previous
+		// completion time in place.
+		if err := s.adapter.awaitPacingLocked(ctx, *pacing); err != nil {
+			return modbus.ReadRegistersResponse{}, err
+		}
 		// The gap is measured from the end of the whole session read, including
 		// any quarantined late responses consumed before the actual response.
 		defer func() { s.adapter.completedAt = time.Now() }()
 	}
 	n := s.sequence.Add(1)
-	batch, err := s.adapter.executeReadLocked(ctx, ReadPlan{UnitID: unit, AuthorizationScope: "huawei.readonly", PollGeneration: s.generation, DeadlineIdentity: n, Timeout: sessionTimeout(ctx), Reads: []modbus.TCPLogicalRead{{LogicalViewID: n, Request: request}}})
+	batch, err := s.adapter.executeReadTransactionLocked(ctx, ReadPlan{UnitID: unit, AuthorizationScope: "huawei.readonly", PollGeneration: s.generation, DeadlineIdentity: n, Timeout: sessionTimeout(ctx), Reads: []modbus.TCPLogicalRead{{LogicalViewID: n, Request: request}}})
 	if err != nil {
 		return modbus.ReadRegistersResponse{}, sessionReadError(err)
 	}

@@ -96,3 +96,31 @@ func TestH10ReadHoldingPacingCompletesAfterLateResponses(t *testing.T) {
 		t.Fatalf("completion stamped %v before the read ended", since)
 	}
 }
+
+// A caller whose deadline expires during the pacing wait sent nothing, so the
+// completion time must stay at the previous transaction; otherwise repeated
+// short-deadline attempts keep postponing the next wire request.
+func TestH10ReadHoldingCanceledPacingWaitKeepsCompletion(t *testing.T) {
+	endpoint := &fakeEndpoint{}
+	previous := time.Now()
+	adapter := &Adapter{endpoint: endpoint, config: Config{Pacing: &Pacing{Gap: time.Second}}, completedAt: previous}
+	session, err := NewReadOnlySession(adapter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, _ := modbus.NewReadRegistersRequest(modbus.FunctionReadHoldingRegisters, 0, 1)
+	for i := 0; i < 3; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+		_, err := session.ReadHolding(ctx, 1, request)
+		cancel()
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("attempt %d: err = %v; want deadline", i, err)
+		}
+	}
+	if endpoint.enqueueCalls != 0 {
+		t.Fatalf("canceled pacing wait enqueued %d requests", endpoint.enqueueCalls)
+	}
+	if !adapter.completedAt.Equal(previous) {
+		t.Fatalf("canceled pacing wait advanced completion by %v", adapter.completedAt.Sub(previous))
+	}
+}

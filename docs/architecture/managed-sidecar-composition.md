@@ -607,6 +607,13 @@ failures preserve the original group receipt coordinates; a lost identity or
 confirmed inventory departure withdraws that child's facts and identity link.
 STOP fences the complete instance source before acquisition joins. Successor
 publication uses a newer hub generation and refuses the predecessor handle.
+Each PV asset keeps retained observations from at most two generations: the
+current one and the one before it. When a restart inside the retention window
+would admit a third, the admitting batch first withdraws the oldest
+generation's retained observations through the registry's fact-withdrawal
+path and the instance status lists each withdrawal (asset, source epoch,
+generation, count, reason `capacity`). The per-asset retained reservation is
+never raised and nothing is removed implicitly.
 The generic MCP snapshot and GraphQL snapshot share the existing hub; the
 SunSpec single-asset outputs keep their existing contracts.
 

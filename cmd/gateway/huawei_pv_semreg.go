@@ -58,6 +58,105 @@ type huaweiPVPublication struct {
 	latest       modbusreg.HuaweiProviderCycle
 	published    map[byte]semreg.AssetID
 	incarnations map[byte]uint64
+	// predecessor is the epoch this publication succeeded, the only earlier
+	// generation whose retained observations an asset keeps.
+	predecessor semreg.SourceEpochID
+	// capacity records each explicit withdrawal of an older generation's
+	// retained observations, in commit order, for the driver status.
+	capacity []huaweiRetainedWithdrawal
+}
+
+// huaweiRetainedGenerations is the number of generations an asset keeps:
+// the current generation and the one before it.
+const huaweiRetainedGenerations = 2
+
+// huaweiRetainedWithdrawal is one committed withdrawal of an older
+// generation's retained observations from one asset.
+type huaweiRetainedWithdrawal struct {
+	AssetID       semreg.AssetID
+	SourceEpochID semreg.SourceEpochID
+	Generation    semreg.Uint64
+	Count         int
+	Reason        string
+}
+
+func (p *huaweiPVPublication) retainedWithdrawals() []huaweiRetainedWithdrawal {
+	return append([]huaweiRetainedWithdrawal(nil), p.capacity...)
+}
+
+// capacityWithdrawals selects the retained observations of every generation
+// older than the one before the publishing generation. Admitting a third
+// generation inside the retention window would otherwise exceed the
+// per-asset retained reservation, so those observations are withdrawn
+// explicitly in the admitting batch; the reservation is never raised.
+func (p *huaweiPVPublication) capacityWithdrawals(asset semreg.AssetID, current semreg.Snapshot, epoch semreg.SourceEpochID, generation semreg.Uint64) ([]semreg.CandidateID, []huaweiRetainedWithdrawal) {
+	type key struct {
+		epoch      semreg.SourceEpochID
+		generation semreg.Uint64
+	}
+	groups := map[key][]semreg.CandidateID{}
+	for _, record := range current.Retained {
+		candidate := record.Candidate
+		if candidate.SourceEpochID == nil || candidate.DriverGeneration == nil {
+			continue
+		}
+		k := key{*candidate.SourceEpochID, *candidate.DriverGeneration}
+		if k.epoch == epoch && k.generation == generation {
+			continue
+		}
+		groups[k] = append(groups[k], candidate.CandidateID)
+	}
+	if len(groups)+1 <= huaweiRetainedGenerations {
+		return nil, nil
+	}
+	started := map[semreg.SourceEpochID]int64{}
+	for _, source := range current.Sources {
+		if source.SourceID == p.handle.Source() {
+			started[source.SourceEpochID], _ = strconv.ParseInt(string(source.StartedAt.UnixNanoseconds), 10, 64)
+		}
+	}
+	order := make([]key, 0, len(groups))
+	for k := range groups {
+		order = append(order, k)
+	}
+	// Newest first: the predecessor epoch, then later epoch start, then the
+	// higher generation inside one epoch.
+	sort.Slice(order, func(i, j int) bool {
+		a, b := order[i], order[j]
+		if (a.epoch == p.predecessor) != (b.epoch == p.predecessor) {
+			return a.epoch == p.predecessor
+		}
+		if started[a.epoch] != started[b.epoch] {
+			return started[a.epoch] > started[b.epoch]
+		}
+		if a.epoch != b.epoch {
+			return a.epoch > b.epoch
+		}
+		ga, _ := strconv.ParseUint(string(a.generation), 10, 64)
+		gb, _ := strconv.ParseUint(string(b.generation), 10, 64)
+		return ga > gb
+	})
+	var ids []semreg.CandidateID
+	var records []huaweiRetainedWithdrawal
+	seen := map[semreg.CandidateID]bool{}
+	for _, k := range order[huaweiRetainedGenerations-1:] {
+		count := 0
+		for _, id := range groups[k] {
+			count++
+			if !seen[id] {
+				seen[id] = true
+				ids = append(ids, id)
+			}
+		}
+		records = append(records, huaweiRetainedWithdrawal{AssetID: asset, SourceEpochID: k.epoch, Generation: k.generation, Count: count, Reason: "capacity"})
+	}
+	sort.Slice(records, func(i, j int) bool {
+		if records[i].SourceEpochID != records[j].SourceEpochID {
+			return records[i].SourceEpochID < records[j].SourceEpochID
+		}
+		return records[i].Generation < records[j].Generation
+	})
+	return ids, records
 }
 
 func newHuaweiPVPublication(hub *semhub.Hub, driver, source, label string, previous *semhub.Handle, active func() bool) (*huaweiPVPublication, error) {
@@ -82,7 +181,11 @@ func newHuaweiPVPublication(hub *semhub.Hub, driver, source, label string, previ
 	if err != nil {
 		return nil, err
 	}
-	return &huaweiPVPublication{hub: hub, class: class, handle: handle, label: label, active: active, origin: time.Now(), published: map[byte]semreg.AssetID{}, incarnations: map[byte]uint64{}}, nil
+	publication := &huaweiPVPublication{hub: hub, class: class, handle: handle, label: label, active: active, origin: time.Now(), published: map[byte]semreg.AssetID{}, incarnations: map[byte]uint64{}}
+	if previous != nil {
+		publication.predecessor = previous.Epoch()
+	}
+	return publication, nil
 }
 func (p *huaweiPVPublication) point(at time.Time) semreg.MonotonicPoint {
 	elapsed := at.Sub(huaweiMonotonicOrigin)
@@ -222,6 +325,8 @@ func (p *huaweiPVPublication) publishChild(asset semreg.AssetID, child modbusreg
 	for _, old := range tx.GenerationFences() {
 		batch.GenerationFences = append(batch.GenerationFences, semreg.GenerationFence{SourceID: source, SourceEpochID: epoch, DriverGeneration: old, Reason: "lifecycle.driver_generation_replaced", Evidence: []semreg.EvidenceRef{evidence}, Revision: "1"})
 	}
+	var retainedIDs []semreg.CandidateID
+	var capacity []huaweiRetainedWithdrawal
 	if !withdraw {
 		if !growattStorageHasSourceEpoch(current, source, epoch) {
 			batch.SourceUpserts = append(batch.SourceUpserts, semreg.SourceDescriptor{SourceID: source, SourceEpochID: epoch, ProtocolID: "modbus_tcp", ProfileID: "huawei.readonly.pv", ProfileVersion: "1", RegistryEvidence: huaweiEvidence("registry.huawei.mapping", "huawei-sun2000-pv-v1"), StartedAt: growattWall(p.origin), State: semreg.SourceCurrent, Revision: "1"})
@@ -257,6 +362,8 @@ func (p *huaweiPVPublication) publishChild(asset semreg.AssetID, child modbusreg
 		if err != nil {
 			return err
 		}
+		retainedIDs, capacity = p.capacityWithdrawals(asset, current, epoch, generation)
+		batch.FactWithdrawals = append(batch.FactWithdrawals, retainedIDs...)
 	}
 	if withdraw {
 		for _, old := range current.IdentityLinks {
@@ -293,6 +400,7 @@ func (p *huaweiPVPublication) publishChild(asset semreg.AssetID, child modbusreg
 	_, err = tx.Commit(nil)
 	if err == nil && !withdraw {
 		p.incarnations[child.UnitID] = incarnation
+		p.capacity = append(p.capacity, capacity...)
 	}
 	return err
 }

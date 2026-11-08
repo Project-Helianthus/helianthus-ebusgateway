@@ -88,6 +88,20 @@ type HuaweiInstanceStatus struct {
 	Children          []HuaweiInstanceChildStatus `json:"children"`
 	PublishedAssetIDs []string                    `json:"published_asset_ids"`
 	Loss              []string                    `json:"loss"`
+	// RetainedWithdrawals lists retained observations of an older generation
+	// that this generation withdrew explicitly to stay inside the per-asset
+	// retained reservation. It is absent until such a withdrawal happens.
+	RetainedWithdrawals []HuaweiRetainedWithdrawalStatus `json:"retained_withdrawals,omitempty"`
+}
+
+// HuaweiRetainedWithdrawalStatus records one explicit withdrawal of an older
+// generation's retained observations from one published asset.
+type HuaweiRetainedWithdrawalStatus struct {
+	AssetID       string `json:"asset_id"`
+	SourceEpochID string `json:"source_epoch_id"`
+	Generation    string `json:"generation"`
+	Count         int    `json:"count"`
+	Reason        string `json:"reason"`
 }
 
 var huaweiInstanceProviders = struct {

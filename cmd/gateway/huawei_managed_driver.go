@@ -245,7 +245,18 @@ func (p *managedModbusMCPProvider) HuaweiInstanceStatus(ctx context.Context, fam
 			out.Loss = append(out.Loss, string(loss.Kind))
 		}
 		sort.Strings(out.Loss)
+		out.RetainedWithdrawals = huaweiStatusRetainedWithdrawals(publication)
 		return nil
 	})
 	return out, err
+}
+
+// huaweiStatusRetainedWithdrawals reports the capacity withdrawals this
+// generation committed. The caller holds the publication lock.
+func huaweiStatusRetainedWithdrawals(p *huaweiPVPublication) []mcp.HuaweiRetainedWithdrawalStatus {
+	var out []mcp.HuaweiRetainedWithdrawalStatus
+	for _, record := range p.capacity {
+		out = append(out, mcp.HuaweiRetainedWithdrawalStatus{AssetID: string(record.AssetID), SourceEpochID: string(record.SourceEpochID), Generation: string(record.Generation), Count: record.Count, Reason: record.Reason})
+	}
+	return out
 }

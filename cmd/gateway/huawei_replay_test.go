@@ -669,6 +669,134 @@ func TestH10ManagedDriverStopRestartFencesHuaweiWork(t *testing.T) {
 	}
 }
 
+// Three publish/STOP/START cycles inside the retention window keep only the
+// two most recent generations per inverter. The third START withdraws the
+// oldest generation's retained observations explicitly and records it.
+func TestH10ThirdGenerationWithdrawsOldestRetainedForCapacity(t *testing.T) {
+	native, _, _, clock := h10Native(t, h10Load(t, "smartlogger"))
+	cycle := h10Refresh(t, native, clock)
+	hub := newTestSemanticHub(t)
+	var mu sync.Mutex
+	var previous *semhub.Handle
+	var publications []*huaweiPVPublication
+	driver := m03Driver(t, true, func(modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) {
+		return &m03Endpoint{}, nil
+	}, func(ctx context.Context, adapter *modbusadapter.Adapter) modbusManagedWork {
+		run, cancel := context.WithCancel(ctx)
+		mu.Lock()
+		defer mu.Unlock()
+		publication, err := newHuaweiPVPublication(hub, "pv.primary", "pv.configured", "alpha", previous, adapter.PublicationActive)
+		if err == nil {
+			previous = publication.handle
+			publications = append(publications, publication)
+		}
+		return &huaweiManagedWork{ctx: run, cancel: cancel, adapter: adapter, instance: modbusTCPInstance{label: "alpha", family: modbusTCPFamilyHuaweiSmartLogger, cycle: time.Hour}, publication: publication, provider: &h10SingleCycleProvider{cycle: cycle}, err: err, done: make(chan struct{})}
+	})
+	var assets []semreg.AssetID
+	for _, child := range cycle.Children {
+		if child.Evidence != modbusreg.HuaweiProviderEvidenceWithheld {
+			assets = append(assets, huaweiAssetID("alpha", "pv", child.UnitID))
+		}
+	}
+	if len(assets) < 2 {
+		t.Fatal("fixture needs sibling inverters")
+	}
+	epochOf := func(n int) semreg.SourceEpochID {
+		mu.Lock()
+		defer mu.Unlock()
+		return publications[n].handle.Epoch()
+	}
+	retainedByEpoch := func(asset semreg.AssetID) map[semreg.SourceEpochID]int {
+		view, err := hub.Inspect(asset)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[semreg.SourceEpochID]int{}
+		for _, record := range view.Snapshot.Retained {
+			out[*record.Candidate.SourceEpochID]++
+		}
+		return out
+	}
+	oldest := map[semreg.AssetID]int{}
+	for gen := 1; gen <= 3; gen++ {
+		if _, err := driver.Start(context.Background()); err != nil {
+			t.Fatalf("START %d: %v", gen, err)
+		}
+		m03Eventually(t, fmt.Sprintf("generation %d publications", gen), func() bool {
+			mu.Lock()
+			count := len(publications)
+			mu.Unlock()
+			if count != gen {
+				return false
+			}
+			epoch := epochOf(gen - 1)
+			for _, asset := range assets {
+				view, err := hub.Inspect(asset)
+				if err != nil || len(view.Snapshot.Facts) == 0 {
+					return false
+				}
+				for _, envelope := range view.Snapshot.Facts {
+					for _, candidate := range envelope.Candidates {
+						if candidate.SourceEpochID == nil || *candidate.SourceEpochID != epoch {
+							return false
+						}
+					}
+				}
+			}
+			return true
+		})
+		if gen == 3 {
+			first, second := epochOf(0), epochOf(1)
+			for _, asset := range assets {
+				retained := retainedByEpoch(asset)
+				if retained[first] != 0 || retained[second] == 0 || len(retained) != 1 {
+					t.Fatalf("third START must keep only the predecessor's retained observations: %v", retained)
+				}
+			}
+			mu.Lock()
+			third := publications[2]
+			mu.Unlock()
+			third.mu.Lock()
+			records := third.retainedWithdrawals()
+			third.mu.Unlock()
+			if len(records) != len(assets) {
+				t.Fatalf("capacity withdrawals not recorded per asset: %+v", records)
+			}
+			for _, record := range records {
+				if record.Reason != "capacity" || record.SourceEpochID != first || record.Generation != "1" || record.Count == 0 || record.Count != oldest[record.AssetID] {
+					t.Fatalf("capacity withdrawal record=%+v want count %d", record, oldest[record.AssetID])
+				}
+			}
+		}
+		if err := driver.Stop(context.Background()); err != nil {
+			t.Fatalf("STOP %d must retain the two most recent generations: %v", gen, err)
+		}
+		if gen == 2 {
+			first := epochOf(0)
+			for _, asset := range assets {
+				oldest[asset] = retainedByEpoch(asset)[first]
+			}
+		}
+	}
+	second, third := epochOf(1), epochOf(2)
+	for _, asset := range assets {
+		h10AssertWithdrawn(t, hub, asset)
+		retained := retainedByEpoch(asset)
+		if len(retained) != 2 || retained[second] == 0 || retained[third] == 0 {
+			t.Fatalf("two most recent generations must survive: %v", retained)
+		}
+	}
+	mu.Lock()
+	last := publications[2]
+	mu.Unlock()
+	last.mu.Lock()
+	status := huaweiStatusRetainedWithdrawals(last)
+	last.mu.Unlock()
+	if len(status) != len(assets) || status[0].Reason != "capacity" || status[0].Generation != "1" || status[0].Count == 0 || status[0].SourceEpochID == "" {
+		t.Fatalf("driver status omits the capacity withdrawal: %+v", status)
+	}
+}
+
 func h10AssertWithdrawn(t *testing.T, hub *semhub.Hub, asset semreg.AssetID) {
 	t.Helper()
 	view, err := hub.Inspect(asset)

@@ -187,6 +187,7 @@ func parse(line int, raw string) Frame {
 			if n := len(f.Payload); n >= 2 && f.Payload[n-2] == '_' && strings.ContainsRune("9ABCDEFabcdef", rune(f.Payload[n-1])) {
 				f.RawDLC = f.Payload[n-1:]
 				f.Payload = f.Payload[:n-2]
+				// A remote request is judged by its length below; a data frame must carry eight bytes.
 				if len(f.Payload) != 16 && !strings.HasPrefix(f.Payload, "R") && !strings.HasPrefix(f.Payload, "r") {
 					f.Diagnostics = append(f.Diagnostics, "raw DLC suffix requires eight data bytes")
 				}
@@ -217,6 +218,10 @@ func parse(line int, raw string) Frame {
 		}
 		if rtrLength >= 0 {
 			f.DLC = rtrLength
+			// The raw DLC of a remote request is only meaningful for an eight-byte remote length.
+			if f.RawDLC != "" && rtrLength != 8 {
+				f.Diagnostics = append(f.Diagnostics, "raw DLC suffix requires an eight-byte remote length")
+			}
 		} else {
 			f.DLC = len(f.Payload) / 2
 			if containsFlag(f.Flags, "FD") && f.DLC > 64 {
@@ -255,6 +260,15 @@ func parse(line int, raw string) Frame {
 			return reject("invalid DLC syntax")
 		}
 		digits := token[1 : len(token)-1]
+		// candump prints exactly one digit for Classical CAN and two for CAN FD; anything else is not a DLC field.
+		if len(digits) != 1 && len(digits) != 2 {
+			return reject("invalid DLC syntax")
+		}
+		for _, r := range digits {
+			if r < '0' || r > '9' {
+				return reject("invalid DLC syntax")
+			}
+		}
 		n, err := strconv.Atoi(digits)
 		if err != nil || n < 0 || n > 64 {
 			return reject("invalid DLC")

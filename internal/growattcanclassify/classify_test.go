@@ -432,3 +432,31 @@ func TestCX02CompactSuffixAndFDBounds(t *testing.T) {
 		t.Fatal(ok.Diagnostics)
 	}
 }
+
+// Catches: a compact RTR record keeping a raw-DLC suffix for a remote length other than eight, and a bracket DLC
+// token that is not one or two ASCII digits being classified by its width instead of rejected.
+func TestCX02RTRSuffixAndBracketDigitRules(t *testing.T) {
+	short := classify(t, "can0 123#R3_9", Options{}).Frames[0]
+	if !strings.Contains(strings.Join(short.Diagnostics, ";"), "raw DLC suffix requires an eight-byte remote length") || short.DLC != 3 {
+		t.Fatalf("short RTR with raw suffix: dlc=%d %v", short.DLC, short.Diagnostics)
+	}
+	full := classify(t, "can0 123#R8_9", Options{}).Frames[0]
+	if strings.Contains(strings.Join(full.Diagnostics, ";"), "raw DLC suffix") || full.RawDLC != "9" || full.DLC != 8 {
+		t.Fatalf("eight-byte RTR with raw suffix: raw=%q dlc=%d %v", full.RawDLC, full.DLC, full.Diagnostics)
+	}
+	for name, line := range map[string]string{
+		"three-digits": "can0 123 [008] 00 11 22 33 44 55 66 77",
+		"signed":       "can0 123 [+8] 00 11 22 33 44 55 66 77",
+		"space":        "can0 123 [ 8] 00 11 22 33 44 55 66 77",
+	} {
+		f := classify(t, line, Options{}).Frames[0]
+		joined := strings.Join(f.Diagnostics, ";")
+		if !strings.Contains(joined, "invalid DLC syntax") || strings.Contains(joined, "FD is not telemetry") || len(f.Candidates) != 0 {
+			t.Fatalf("%s: %v", name, f.Diagnostics)
+		}
+	}
+	classical := classify(t, "can0 123 [8] 00 11 22 33 44 55 66 77", Options{}).Frames[0]
+	if strings.Contains(strings.Join(classical.Diagnostics, ";"), "invalid DLC") || classical.DLC != 8 {
+		t.Fatalf("one-digit classical DLC: dlc=%d %v", classical.DLC, classical.Diagnostics)
+	}
+}

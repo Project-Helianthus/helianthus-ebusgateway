@@ -38,11 +38,19 @@ func newGrowattLINKManagedDriverFactory(config ebusgateway.GrowattLINKConfig, op
 			in := associate(s, e)
 			d.metadataMu.Lock()
 			history := d.counts[s]
+			for _, c := range history {
+				if c.evidence == e {
+					// The first association for an exact observation is the one
+					// native admission saw; a replay of it cannot rebind the count.
+					d.metadataMu.Unlock()
+					return in
+				}
+			}
 			if len(history) == 256 {
 				copy(history, history[1:])
 				history = history[:255]
 			}
-			d.counts[s] = append(history, growattLINKCount{s, e.Sequence, in.CellCount, in.CellCountValid})
+			d.counts[s] = append(history, growattLINKCount{s, e, in.CellCount, in.CellCountValid})
 			d.metadataMu.Unlock()
 			return in
 		})
@@ -76,7 +84,7 @@ func (r *growattLINKReceiver) Receive(ctx context.Context) (growattProjectRecord
 
 type growattLINKCount struct {
 	selection canbusreg.CXSelection
-	sequence  uint64
+	evidence  canbusreg.Evidence
 	count     int
 	valid     bool
 }
@@ -302,7 +310,7 @@ func (d *growattLINKManagedDriver) Snapshot(now time.Duration) growattLINKSnapsh
 			history := d.counts[p.Selection]
 			for k := len(history) - 1; k >= 0; k-- {
 				c := history[k]
-				if c.selection == p.Selection && c.sequence == r.Input.Evidence.Sequence {
+				if c.selection == p.Selection && c.evidence == r.Input.Evidence {
 					v.ConfiguredCount = c.count
 					v.CountValid = c.valid && c.count >= 1 && c.count <= 16
 					break

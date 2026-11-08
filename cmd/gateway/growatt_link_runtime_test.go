@@ -560,3 +560,28 @@ func TestCX20CancelledStartIsInertAfterOpen(t *testing.T) {
 		t.Fatal("cancelled start published")
 	}
 }
+
+func TestCX20DuplicateSequenceCannotRebindCount(t *testing.T) {
+	c := cx20Config(t, "synthetic0", 7)
+	r := cx20NewReceiver(c)
+	var calls atomic.Int32
+	d, _ := cx20Driver(t, c, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.CX16ReplayInput {
+		in := cx20Association(s, e)
+		in.CellCount = 8
+		if calls.Add(1) > 1 {
+			in.CellCount = 4
+		}
+		return in
+	}, r)
+	cx20Start(t, d)
+	defer cx20Stop(t, d)
+	record := cx20Record(c.Native.Interface, 1, 0x1810, 1, time.Second)
+	cx20Send(t, r, record)
+	cx20Wait(t, d, time.Second, cx20Received(1))
+	cx20Send(t, r, record)
+	got := cx20Wait(t, d, time.Second, cx20Received(2))
+	v := got.Cells[0]
+	if v.ConfiguredCount != 8 || v.CompleteCoverage || len(v.ValidIndices) != 4 {
+		t.Fatal(v.ConfiguredCount, v.CompleteCoverage, v.ValidIndices)
+	}
+}

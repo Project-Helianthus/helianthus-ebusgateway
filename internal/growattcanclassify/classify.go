@@ -158,13 +158,14 @@ func parse(line int, raw string) Frame {
 		}
 	}
 	fields := strings.Fields(raw)
-	if len(fields) > 0 && strings.HasPrefix(fields[0], "(") {
-		f.Timestamp = fields[0]
-		token := strings.TrimSuffix(strings.TrimPrefix(fields[0], "("), ")")
-		if !strings.HasSuffix(fields[0], ")") || !decimalTimestamp(token) {
+	if trimmed := strings.TrimLeft(raw, " \t"); strings.HasPrefix(trimmed, "(") {
+		end := strings.IndexByte(trimmed, ')')
+		if end < 0 || !validTimestamp(trimmed[1:end]) {
+			f.Timestamp = strings.Fields(trimmed)[0]
 			return reject("invalid timestamp")
 		}
-		fields = fields[1:]
+		f.Timestamp = trimmed[:end+1]
+		fields = strings.Fields(trimmed[end+1:])
 	}
 	if len(fields) < 2 {
 		return reject("unrecognized line")
@@ -223,6 +224,25 @@ func parse(line int, raw string) Frame {
 		f.RawDLC = fields[2]
 		f.Payload = strings.Join(fields[3:], " ")
 		token := fields[2]
+		if len(token) == 3 && token[0] == '{' && token[2] == '}' && strings.ContainsRune("9ABCDEFabcdef", rune(token[1])) {
+			// Long-form raw DLC of an eight-byte classical frame (candump -8).
+			f.RawDLC = token[1:2]
+			f.DLC = 8
+			f.Payload = strings.Join(fields[3:], " ")
+			for _, b := range fields[3:] {
+				if len(b) != 2 {
+					f.Diagnostics = append(f.Diagnostics, "invalid byte width")
+					break
+				}
+			}
+			data, err := hex.DecodeString(strings.ReplaceAll(f.Payload, " ", ""))
+			if err != nil {
+				f.Diagnostics = append(f.Diagnostics, "invalid payload hex or length")
+			} else if len(data) != 8 {
+				f.Diagnostics = append(f.Diagnostics, "payload length does not match classical DLC")
+			}
+			return f
+		}
 		if len(token) < 3 || token[0] != '[' || token[len(token)-1] != ']' {
 			return reject("invalid DLC syntax")
 		}
@@ -278,6 +298,24 @@ func hasFlag(flags []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// validTimestamp accepts the decimal form and the date-time form (candump -t A).
+func validTimestamp(s string) bool {
+	if date, clock, ok := strings.Cut(s, " "); ok {
+		if len(date) != 10 || date[4] != '-' || date[7] != '-' {
+			return false
+		}
+		if !decimalTimestamp(strings.ReplaceAll(date, "-", "")) || strings.Contains(date, ".") {
+			return false
+		}
+		sec, _, _ := strings.Cut(clock, ".")
+		if len(sec) != 8 || sec[2] != ':' || sec[5] != ':' {
+			return false
+		}
+		return decimalTimestamp(strings.ReplaceAll(clock, ":", ""))
+	}
+	return decimalTimestamp(s)
 }
 
 func decimalTimestamp(s string) bool {

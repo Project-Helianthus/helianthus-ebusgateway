@@ -376,3 +376,20 @@ func TestCX02RTRLengthAndBracketForm(t *testing.T) {
 		}
 	}
 }
+
+func TestCX02DateTimestampAndBraceDLC(t *testing.T) {
+	f := parse(1, "(2026-11-07 12:34:56.123456) can0 311 {B} 11 22 33 44 55 66 77 88")
+	if len(f.Diagnostics) != 0 || f.Timestamp != "(2026-11-07 12:34:56.123456)" || f.Interface != "can0" || f.RawDLC != "B" || f.DLC != 8 || f.Payload != "11 22 33 44 55 66 77 88" {
+		t.Fatalf("unexpected frame: %+v", f)
+	}
+	for _, line := range []string{
+		"(2026-11-07 12:34) can0 311 [1] 11",
+		"(2026-11-07 12:34:56.1 can0 311 [1] 11",
+		"(1.5) can0 311 {B} 11 22",
+		"(1.5) can0 311 {8} 11 22 33 44 55 66 77 88",
+	} {
+		if g := parse(1, line); len(g.Diagnostics) == 0 {
+			t.Fatalf("expected diagnostics for %q", line)
+		}
+	}
+}

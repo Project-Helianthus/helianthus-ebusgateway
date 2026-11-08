@@ -63,6 +63,9 @@ type huaweiPVPublication struct {
 	latest       modbusreg.HuaweiProviderCycle
 	published    map[byte]semreg.AssetID
 	incarnations map[byte]uint64
+	// refused names, per routed unit, why the publication refused a child the
+	// provider admitted; a later successful admission clears the entry.
+	refused map[byte]string
 	// predecessor is the epoch this publication succeeded, the only earlier
 	// generation whose retained observations an asset keeps.
 	predecessor semreg.SourceEpochID
@@ -171,6 +174,21 @@ const huaweiMaxAssetSources = 32
 
 var errHuaweiSourceCapacityExhausted = errors.New("huawei semantic source epoch capacity exhausted")
 
+// huaweiMaxAssetBindings and huaweiMaxAssetIdentityLinks are the pinned
+// kernel's per-asset bounds. Every re-admission of a child whose identity was
+// lost adds one binding incarnation and one identity link, and neither is
+// removed within the epoch.
+const (
+	huaweiMaxAssetBindings      = 128
+	huaweiMaxAssetIdentityLinks = 128
+)
+
+var errHuaweiBindingCapacityExhausted = errors.New("huawei semantic binding capacity exhausted")
+
+// huaweiRefusalBindingCapacity names, in the instance status, a child the
+// publication refused because its re-admission would exceed the asset's bound.
+const huaweiRefusalBindingCapacity = "binding_capacity"
+
 // huaweiSourceCapacity refuses a new epoch when an asset of this source already
 // holds the kernel's source-descriptor bound: that epoch could never publish
 // on the asset, so the START fails instead of running without publication.
@@ -217,7 +235,7 @@ func newHuaweiPVPublication(hub *semhub.Hub, driver, source, label string, previ
 	if err != nil {
 		return nil, err
 	}
-	publication := &huaweiPVPublication{hub: hub, class: class, handle: handle, label: label, active: active, origin: time.Now(), published: map[byte]semreg.AssetID{}, incarnations: map[byte]uint64{}}
+	publication := &huaweiPVPublication{hub: hub, class: class, handle: handle, label: label, active: active, origin: time.Now(), published: map[byte]semreg.AssetID{}, incarnations: map[byte]uint64{}, refused: map[byte]string{}}
 	if previous != nil {
 		publication.predecessor = previous.Epoch()
 	}
@@ -385,6 +403,12 @@ func (p *huaweiPVPublication) publishChild(asset semreg.AssetID, child modbusreg
 			}
 		}
 		if !hasBinding {
+			// A new incarnation must fit the kernel's bounds; refuse before any
+			// batch is applied so the asset and the siblings are left untouched.
+			if len(current.Bindings) >= huaweiMaxAssetBindings || len(current.IdentityLinks) >= huaweiMaxAssetIdentityLinks {
+				p.refused[child.UnitID] = huaweiRefusalBindingCapacity
+				return fmt.Errorf("unit %d: %w", child.UnitID, errHuaweiBindingCapacityExhausted)
+			}
 			batch.BindingUpserts = append(batch.BindingUpserts, semreg.NativeBinding{BindingID: binding, AssetID: asset, SourceID: source, SourceEpochID: epoch, DriverGeneration: generation, NativeResource: huaweiEvidence("native.huawei.binding", struct {
 				Asset   semreg.AssetID
 				Source  semreg.SourceID
@@ -444,6 +468,7 @@ func (p *huaweiPVPublication) publishChild(asset semreg.AssetID, child modbusreg
 	_, err = tx.Commit(nil)
 	if err == nil && !withdraw {
 		p.incarnations[child.UnitID] = incarnation
+		delete(p.refused, child.UnitID)
 		p.capacity = append(p.capacity, capacity...)
 	}
 	return err

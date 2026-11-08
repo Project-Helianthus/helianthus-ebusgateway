@@ -622,6 +622,11 @@ A retired epoch keeps its source descriptor on every asset it published, and
 the semantic kernel bounds an asset at 32 source descriptors. A START whose
 new epoch could no longer publish on an asset of the instance source fails
 before any epoch is admitted, so the instance never runs without publication.
+Each re-admission of a child whose identity was lost adds a binding
+incarnation and an identity link, and the kernel bounds an asset at 128 of
+each. A re-admission that would exceed the bound is refused before any batch
+is applied: the child stays unpublished with the refusal `binding_capacity`
+in the instance status while its siblings keep publishing.
 The native status of an instance withheld for a reason other than its family
 (Portal record, descriptor collision, construction failure) is unavailable;
 only a family-level withholding reports a closed disposition.

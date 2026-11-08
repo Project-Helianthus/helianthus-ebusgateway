@@ -232,13 +232,7 @@ func (p *managedModbusMCPProvider) HuaweiInstanceStatus(ctx context.Context, fam
 			out.Disposition = string(modbusreg.HuaweiProviderCycleIncomplete)
 		}
 		out.Qualified = cycle.Gateway.State == modbusreg.HuaweiProviderGatewayIdentified
-		for _, child := range cycle.Children {
-			status := mcp.HuaweiInstanceChildStatus{Unit: child.UnitID, Family: child.Family, Profile: child.ProfileID, Evidence: string(child.Evidence), Reason: string(child.Reason)}
-			if id, ok := publication.published[child.UnitID]; ok {
-				status.AssetID = string(id)
-			}
-			out.Children = append(out.Children, status)
-		}
+		out.Children = huaweiStatusChildren(publication, cycle)
 		// Published assets are enumerated from the publication itself so an
 		// incomplete cycle still reports the retained last-known assets.
 		for _, id := range publication.published {
@@ -254,6 +248,23 @@ func (p *managedModbusMCPProvider) HuaweiInstanceStatus(ctx context.Context, fam
 		return nil
 	})
 	return out, err
+}
+
+// huaweiStatusChildren reports the latest cycle's children with the asset each
+// published child holds and the refusal, if any, the publication recorded for
+// a child the provider admitted. The caller holds the publication lock.
+func huaweiStatusChildren(p *huaweiPVPublication, cycle modbusreg.HuaweiProviderCycle) []mcp.HuaweiInstanceChildStatus {
+	var out []mcp.HuaweiInstanceChildStatus
+	for _, child := range cycle.Children {
+		status := mcp.HuaweiInstanceChildStatus{Unit: child.UnitID, Family: child.Family, Profile: child.ProfileID, Evidence: string(child.Evidence), Reason: string(child.Reason)}
+		if id, ok := p.published[child.UnitID]; ok {
+			status.AssetID = string(id)
+		} else if refusal, ok := p.refused[child.UnitID]; ok {
+			status.Refusal = refusal
+		}
+		out = append(out, status)
+	}
+	return out
 }
 
 // huaweiStatusRetainedWithdrawals reports the capacity withdrawals this

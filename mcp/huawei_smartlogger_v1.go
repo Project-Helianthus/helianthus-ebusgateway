@@ -77,6 +77,10 @@ type HuaweiInstanceChildStatus struct {
 	Evidence string `json:"evidence"`
 	Reason   string `json:"reason"`
 	AssetID  string `json:"asset_id,omitempty"`
+	// Refusal names why the gateway publication refused a child the provider
+	// admitted (for example binding_capacity). It is absent for published
+	// children and for children the provider withheld.
+	Refusal string `json:"refusal,omitempty"`
 }
 type HuaweiInstanceStatus struct {
 	Instance          string                      `json:"instance"`

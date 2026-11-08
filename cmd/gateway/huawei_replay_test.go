@@ -949,6 +949,113 @@ func TestH10NonFamilyWithholdingReportsUnavailable(t *testing.T) {
 	}
 }
 
+// Every re-admission of a child whose identity was lost adds a binding
+// incarnation and an identity link, and the pinned kernel bounds an asset at
+// 128 of each. A re-admission beyond the bound is refused before any batch is
+// applied: the child stays unpublished with the refusal in the instance
+// status while its sibling keeps publishing. The 127 loss and re-admission
+// cycles run in the full race suite rather than the time-bounded H10 mapping
+// run; the middle cycles carry the victim alone as incomplete enumerations so
+// the sibling stays published without being republished every cycle.
+func TestHuaweiRepeatedReadmissionRefusesBeyondBindingCapacity(t *testing.T) {
+	provider, _, _, clock := h10Native(t, h10Load(t, "smartlogger"))
+	cycle := h10Refresh(t, provider, clock)
+	var admitted []modbusreg.HuaweiProviderChildObservation
+	for _, child := range cycle.Children {
+		if child.Evidence != modbusreg.HuaweiProviderEvidenceWithheld {
+			admitted = append(admitted, child)
+		}
+	}
+	if len(admitted) < 2 {
+		t.Fatal("fixture needs two admitted children")
+	}
+	cycle.Children = admitted[:2]
+	victim, sibling := cycle.Children[0].UnitID, cycle.Children[1].UnitID
+	complete := cycle.Outcome
+	hub := newTestSemanticHub(t)
+	publication, err := newHuaweiPVPublication(hub, "capacity-test", "source:synthetic", "alpha", nil, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := publication.Publish(cycle); err != nil {
+		t.Fatal(err)
+	}
+	advance := func(withheld, full bool) error {
+		cycle.Cycle++
+		cycle.CompletedAt = cycle.CompletedAt.Add(time.Second)
+		cycle.Children, cycle.Outcome = []modbusreg.HuaweiProviderChildObservation{admitted[0]}, modbusreg.HuaweiProviderCycleIncomplete
+		if full {
+			cycle.Children, cycle.Outcome = append(cycle.Children, admitted[1]), complete
+		}
+		if withheld {
+			cycle.Children[0].Evidence = modbusreg.HuaweiProviderEvidenceWithheld
+			cycle.Children[0].Reason = modbusreg.HuaweiProviderReasonIdentityMismatch
+		}
+		return publication.Publish(cycle)
+	}
+	asset := huaweiAssetID("alpha", "pv", victim)
+	for incarnation := 2; incarnation <= huaweiMaxAssetBindings; incarnation++ {
+		if err := advance(true, false); err != nil {
+			t.Fatalf("withdrawal before incarnation %d: %v", incarnation, err)
+		}
+		if err := advance(false, false); err != nil {
+			t.Fatalf("re-admission %d: %v", incarnation, err)
+		}
+	}
+	view, err := hub.Inspect(asset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(view.Snapshot.Bindings) != huaweiMaxAssetBindings || len(view.Snapshot.IdentityLinks) != huaweiMaxAssetIdentityLinks {
+		t.Fatalf("asset holds %d bindings and %d links, want %d each", len(view.Snapshot.Bindings), len(view.Snapshot.IdentityLinks), huaweiMaxAssetBindings)
+	}
+	if err := advance(true, true); err != nil {
+		t.Fatalf("final withdrawal: %v", err)
+	}
+	for attempt := 1; attempt <= 2; attempt++ {
+		if err := advance(false, true); !errors.Is(err, errHuaweiBindingCapacityExhausted) {
+			t.Fatalf("re-admission beyond the binding bound (attempt %d) = %v, want capacity exhaustion", attempt, err)
+		}
+	}
+	if _, ok := publication.published[victim]; ok {
+		t.Fatal("refused child was published")
+	}
+	if _, ok := publication.published[sibling]; !ok {
+		t.Fatal("sibling lost its publication")
+	}
+	view, err = hub.Inspect(asset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(view.Snapshot.Bindings) != huaweiMaxAssetBindings || len(view.Snapshot.IdentityLinks) != huaweiMaxAssetIdentityLinks || len(view.Snapshot.Facts) != 0 {
+		t.Fatalf("refused re-admission changed the asset: %d bindings, %d links, %d facts", len(view.Snapshot.Bindings), len(view.Snapshot.IdentityLinks), len(view.Snapshot.Facts))
+	}
+	for _, link := range view.Snapshot.IdentityLinks {
+		if link.State == semreg.LinkQualified {
+			t.Fatal("refused re-admission qualified an identity link")
+		}
+	}
+	siblingView, err := hub.Inspect(huaweiAssetID("alpha", "pv", sibling))
+	if err != nil || len(siblingView.Snapshot.Facts) == 0 {
+		t.Fatalf("sibling facts missing after the refusal: %v", err)
+	}
+	publication.mu.Lock()
+	children := huaweiStatusChildren(publication, publication.latest)
+	publication.mu.Unlock()
+	var refused, published bool
+	for _, child := range children {
+		switch child.Unit {
+		case victim:
+			refused = child.Refusal == huaweiRefusalBindingCapacity && child.AssetID == ""
+		case sibling:
+			published = child.Refusal == "" && child.AssetID != ""
+		}
+	}
+	if !refused || !published {
+		t.Fatalf("status children = %+v", children)
+	}
+}
+
 func h10AssertWithdrawn(t *testing.T, hub *semhub.Hub, asset semreg.AssetID) {
 	t.Helper()
 	view, err := hub.Inspect(asset)

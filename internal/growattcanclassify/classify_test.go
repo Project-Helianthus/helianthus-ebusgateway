@@ -396,3 +396,24 @@ func TestCX02DateTimestampAndBraceDLC(t *testing.T) {
 		}
 	}
 }
+
+func TestCX02CompactFDRequiresFlagsNibble(t *testing.T) {
+	for _, line := range []string{"can0 123##", "can0 123##G0011223344556677"} {
+		f := parse(1, line)
+		found := false
+		for _, d := range f.Diagnostics {
+			if d == "invalid FD flags nibble" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("%q: missing nibble diagnostic: %v", line, f.Diagnostics)
+		}
+	}
+	f := parse(1, "can0 123##0")
+	for _, d := range f.Diagnostics {
+		if strings.Contains(d, "invalid") {
+			t.Fatalf("unexpected %q", d)
+		}
+	}
+}

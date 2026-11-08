@@ -193,10 +193,11 @@ func parse(line int, raw string) Frame {
 			f.Flags = append(f.Flags, "FD")
 			f.Diagnostics = append(f.Diagnostics, "FD is not telemetry")
 			// The character after the FD marker is the flags nibble, not payload.
-			if len(f.Payload) > 1 {
-				f.Payload = f.Payload[2:]
+			if len(f.Payload) < 2 || !strings.ContainsRune("0123456789abcdefABCDEF", rune(f.Payload[1])) {
+				f.Diagnostics = append(f.Diagnostics, "invalid FD flags nibble")
+				f.Payload = strings.TrimPrefix(f.Payload, "#")
 			} else {
-				f.Payload = ""
+				f.Payload = f.Payload[2:]
 			}
 		} else if strings.HasPrefix(f.Payload, "R") || strings.HasPrefix(f.Payload, "r") {
 			f.Flags = append(f.Flags, "RTR")

@@ -110,7 +110,6 @@ type growattLINKManagedDriver struct {
 	generation, revision uint64
 	active               bool
 	operation            chan struct{}
-	operationErr         error
 	cleanupErr           error
 	quarantine           bool
 	lifetime             context.Context
@@ -166,6 +165,7 @@ func (d *growattLINKManagedDriver) Start(ctx context.Context) (uint64, error) {
 	fence := &growattLINKFence{cancel: cancel}
 	d.fence.Store(fence)
 	done := make(chan struct{})
+	var result error
 	d.operation = done
 	d.mu.Unlock()
 	go func() {
@@ -189,7 +189,7 @@ func (d *growattLINKManagedDriver) Start(ctx context.Context) (uint64, error) {
 		} else {
 			d.active = true
 		}
-		d.operationErr = err
+		result = err
 		d.operation = nil
 		d.revision++
 		close(done)
@@ -197,9 +197,8 @@ func (d *growattLINKManagedDriver) Start(ctx context.Context) (uint64, error) {
 	}()
 	select {
 	case <-done:
-		d.mu.Lock()
-		defer d.mu.Unlock()
-		return generation, d.operationErr
+		// result is written before done closes; later operations cannot alter it.
+		return generation, result
 	case <-ctx.Done():
 		d.mu.Lock()
 		fence.fenced.Store(true)
@@ -242,13 +241,11 @@ func (d *growattLINKManagedDriver) Stop(ctx context.Context) error {
 		d.mu.Unlock()
 		return err
 	}
-	done := d.beginStopLocked()
+	done, result := d.beginStopLocked()
 	d.mu.Unlock()
 	select {
 	case <-done:
-		d.mu.Lock()
-		defer d.mu.Unlock()
-		return d.operationErr
+		return *result
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -256,22 +253,23 @@ func (d *growattLINKManagedDriver) Stop(ctx context.Context) error {
 
 // beginStopLocked assigns cleanup to this generation before releasing mu.
 // A delayed cancellation can therefore never stop a successor generation.
-func (d *growattLINKManagedDriver) beginStopLocked() chan struct{} {
+func (d *growattLINKManagedDriver) beginStopLocked() (chan struct{}, *error) {
 	d.active = false
 	done := make(chan struct{})
 	d.operation = done
+	result := new(error)
 	go func() {
 		err := d.provider.Stop()
 		d.mu.Lock()
 		defer d.mu.Unlock()
-		d.operationErr = err
+		*result = err
 		d.cleanupErr = err
 		d.quarantine = err != nil
 		d.operation = nil
 		d.revision++
 		close(done)
 	}()
-	return done
+	return done, result
 }
 func (d *growattLINKManagedDriver) Replace(ctx context.Context) (uint64, error) {
 	if err := d.Stop(ctx); err != nil {

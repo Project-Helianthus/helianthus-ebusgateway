@@ -627,6 +627,11 @@ incarnation and an identity link, and the kernel bounds an asset at 128 of
 each. A re-admission that would exceed the bound is refused before any batch
 is applied: the child stays unpublished with the refusal `binding_capacity`
 in the instance status while its siblings keep publishing.
+A retained group keeps the cycle and transport generation at which it was
+last answered. After a reconnect the publication accepts a retained group of
+an earlier generation and publishes its facts stale with the child-stale
+reason; a group that is not retained must belong to the cycle's generation,
+or the child's publication is refused for a missing receipt lineage.
 The native status of an instance withheld for a reason other than its family
 (Portal record, descriptor collision, construction failure) is unavailable;
 only a family-level withholding reports a closed disposition.

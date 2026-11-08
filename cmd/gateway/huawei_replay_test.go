@@ -1056,6 +1056,117 @@ func TestHuaweiRepeatedReadmissionRefusesBeyondBindingCapacity(t *testing.T) {
 	}
 }
 
+// A retained group keeps the cycle and transport generation at which it was
+// last answered. After a reconnect the child is identified again in the new
+// generation while the retained group still carries the earlier one; its facts
+// are published stale instead of failing the whole child's lineage check.
+func TestH10RetainedGroupFromEarlierGenerationPublishesStale(t *testing.T) {
+	provider, _, _, clock := h10Native(t, h10Load(t, "smartlogger"))
+	cycle := h10Refresh(t, provider, clock)
+	hub := newTestSemanticHub(t)
+	publication, err := newHuaweiPVPublication(hub, "retained-test", "source:synthetic", "alpha", nil, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := publication.Publish(cycle); err != nil {
+		t.Fatal(err)
+	}
+	index := -1
+	for i, child := range cycle.Children {
+		if _, ok := publication.published[child.UnitID]; ok {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		t.Fatal("fixture needs a published child")
+	}
+	child := cycle.Children[index]
+	var profile modbusreg.HuaweiSUN2000MonitoringProfile
+	for _, candidate := range modbusreg.HuaweiSUN2000MonitoringProfiles() {
+		if candidate.ID() == child.ProfileID {
+			profile = candidate
+		}
+	}
+	if profile.ID() == "" {
+		t.Fatalf("profile %q not found", child.ProfileID)
+	}
+	// The energy group fails in the first cycle after the reconnect; every other
+	// group answers again in the new generation.
+	const failed uint16 = 32106
+	next := cycle
+	next.Cycle++
+	next.Generation++
+	next.StartedAt = cycle.CompletedAt.Add(time.Second)
+	next.CompletedAt = cycle.CompletedAt.Add(2 * time.Second)
+	next.Outcome = modbusreg.HuaweiProviderCycleIncomplete
+	var readings []modbusreg.HuaweiSUN2000GroupReading
+	for _, group := range child.Reading.Groups() {
+		if group.Outcome != modbusreg.HuaweiSUN2000GroupAnswered {
+			continue
+		}
+		reading := group
+		reading.Retained, reading.Cycle = false, next.Cycle
+		if group.Offset == failed {
+			reading = modbusreg.HuaweiSUN2000GroupReading{Offset: group.Offset, Quantity: group.Quantity, Outcome: modbusreg.HuaweiSUN2000GroupFailed, Cycle: next.Cycle}
+		}
+		readings = append(readings, reading)
+	}
+	current, err := profile.Decode(child.UnitID, readings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retained := modbusreg.RetainHuaweiSUN2000Monitoring(child.Reading, current)
+	kept := false
+	for _, group := range retained.Groups() {
+		kept = kept || group.Offset == failed && group.Retained
+	}
+	if !kept {
+		t.Fatal("fixture did not retain the failed group")
+	}
+	child.Reading = retained
+	child.IdentifiedGeneration = next.Generation
+	child.Groups = append([]modbusreg.HuaweiProviderGroupEvidence(nil), child.Groups...)
+	for i := range child.Groups {
+		g := &child.Groups[i]
+		switch {
+		case g.Offset == failed:
+			g.Outcome, g.Retained = modbusreg.HuaweiSUN2000GroupFailed, true
+		case g.Outcome == modbusreg.HuaweiSUN2000GroupAnswered:
+			g.Cycle, g.Generation, g.ReadAt = next.Cycle, next.Generation, next.StartedAt.Add(time.Millisecond)
+		}
+	}
+	next.Children = []modbusreg.HuaweiProviderChildObservation{child}
+	if err := publication.Publish(next); err != nil {
+		t.Fatalf("publication after the reconnect: %v", err)
+	}
+	view, err := hub.Inspect(huaweiAssetID("alpha", "pv", child.UnitID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stale, fresh int
+	for _, envelope := range view.Snapshot.Facts {
+		for _, candidate := range envelope.Candidates {
+			retainedFact := envelope.Key.FactID == "pv.energy.generated"
+			hasReason := false
+			for _, reason := range candidate.Quality.Reasons {
+				hasReason = hasReason || reason == "native.huawei.child_stale"
+			}
+			switch {
+			case retainedFact && candidate.Quality.Freshness == semreg.FreshnessStale && hasReason:
+				stale++
+			case !retainedFact && candidate.Quality.Freshness != semreg.FreshnessStale && !hasReason:
+				fresh++
+			default:
+				t.Fatalf("fact %s freshness %v reasons %v", envelope.Key.FactID, candidate.Quality.Freshness, candidate.Quality.Reasons)
+			}
+		}
+	}
+	if stale == 0 || fresh == 0 {
+		t.Fatalf("expected stale retained facts and fresh re-read facts, got %d stale and %d fresh", stale, fresh)
+	}
+}
+
 func h10AssertWithdrawn(t *testing.T, hub *semhub.Hub, asset semreg.AssetID) {
 	t.Helper()
 	view, err := hub.Inspect(asset)

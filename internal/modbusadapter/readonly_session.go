@@ -69,6 +69,11 @@ func (s *ReadOnlySession) ReadHolding(ctx context.Context, unit byte, request mo
 	if err := s.check(); err != nil {
 		return modbus.ReadRegistersResponse{}, err
 	}
+	if s.adapter.config.Pacing != nil {
+		// The gap is measured from the end of the whole session read, including
+		// any quarantined late responses consumed before the actual response.
+		defer func() { s.adapter.completedAt = time.Now() }()
+	}
 	n := s.sequence.Add(1)
 	batch, err := s.adapter.executeReadLocked(ctx, ReadPlan{UnitID: unit, AuthorizationScope: "huawei.readonly", PollGeneration: s.generation, DeadlineIdentity: n, Timeout: sessionTimeout(ctx), Reads: []modbus.TCPLogicalRead{{LogicalViewID: n, Request: request}}})
 	if err != nil {

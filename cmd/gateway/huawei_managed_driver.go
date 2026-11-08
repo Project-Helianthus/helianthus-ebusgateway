@@ -50,17 +50,18 @@ func huaweiWait(ctx context.Context, duration time.Duration) error {
 }
 
 type huaweiManagedWork struct {
-	ctx         context.Context
-	cancel      context.CancelFunc
-	adapter     *modbusadapter.Adapter
-	instance    modbusTCPInstance
-	provider    huaweiRegistryProvider
-	publication *huaweiPVPublication
-	err         error
-	done        chan struct{}
-	started     bool
-	mu          sync.RWMutex
-	cycle       modbusreg.HuaweiProviderCycle
+	ctx           context.Context
+	cancel        context.CancelFunc
+	adapter       *modbusadapter.Adapter
+	instance      modbusTCPInstance
+	provider      huaweiRegistryProvider
+	publication   *huaweiPVPublication
+	err           error
+	done          chan struct{}
+	started       bool
+	rebindPending bool
+	mu            sync.RWMutex
+	cycle         modbusreg.HuaweiProviderCycle
 }
 
 func newHuaweiInstanceDriverAdapter(instance modbusTCPInstance, hub *semhub.Hub) runtimecontrol.LifecycleAdapter {
@@ -144,18 +145,34 @@ func (w *huaweiManagedWork) Start() {
 			if next.Before(time.Now()) {
 				next = time.Now().Add(w.instance.cycle)
 			}
-			if w.adapter.Snapshot().ReconnectRequired {
-				if err := w.adapter.Reconnect(w.ctx); err == nil {
-					if session, err := modbusadapter.NewReadOnlySession(w.adapter); err == nil {
-						_ = w.provider.Reconnect(session)
-					}
-				}
-			}
+			w.rebind()
 			if huaweiWait(w.ctx, time.Until(next)) != nil {
 				return
 			}
 		}
 	}()
+}
+
+// rebind reconnects the endpoint when required and rebinds the provider to the
+// new generation. A failed rebind stays pending and is retried each cycle,
+// because the reopened endpoint no longer reports ReconnectRequired.
+func (w *huaweiManagedWork) rebind() {
+	if w.adapter.Snapshot().ReconnectRequired {
+		if err := w.adapter.Reconnect(w.ctx); err != nil {
+			return
+		}
+		w.rebindPending = true
+	}
+	if !w.rebindPending {
+		return
+	}
+	session, err := modbusadapter.NewReadOnlySession(w.adapter)
+	if err == nil {
+		err = w.provider.Reconnect(session)
+	}
+	if err == nil {
+		w.rebindPending = false
+	}
 }
 
 // FenceSemantic is retained independently from native Close so a semantic

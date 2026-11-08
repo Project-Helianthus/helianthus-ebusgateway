@@ -781,3 +781,48 @@ func TestH10PartialGroupFailurePreservesFactFreshness(t *testing.T) {
 		t.Fatal("mixed current and retained group facts missing")
 	}
 }
+
+type h10FlakyRebindProvider struct {
+	h10SingleCycleProvider
+	failures int
+	calls    int
+}
+
+func (p *h10FlakyRebindProvider) Reconnect(modbusreg.HuaweiProviderSession) error {
+	p.calls++
+	if p.calls <= p.failures {
+		return errors.New("rebind refused")
+	}
+	return nil
+}
+
+// A failed provider rebind must stay pending and be retried on later cycles
+// even though the endpoint no longer reports ReconnectRequired.
+func TestH10FailedProviderRebindIsRetried(t *testing.T) {
+	provider := &h10FlakyRebindProvider{failures: 1}
+	var work *huaweiManagedWork
+	var captured *modbusadapter.Adapter
+	driver := m03Driver(t, true, func(modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) {
+		return &m03Endpoint{}, nil
+	}, func(ctx context.Context, adapter *modbusadapter.Adapter) modbusManagedWork {
+		captured = adapter
+		return h10NoopWork{}
+	})
+	if _, err := driver.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	work = &huaweiManagedWork{ctx: context.Background(), adapter: captured, provider: provider, rebindPending: true}
+	work.rebind()
+	if !work.rebindPending || provider.calls != 1 {
+		t.Fatalf("failed rebind dropped: pending=%v calls=%d", work.rebindPending, provider.calls)
+	}
+	work.rebind()
+	if work.rebindPending || provider.calls != 2 {
+		t.Fatalf("rebind not retried: pending=%v calls=%d", work.rebindPending, provider.calls)
+	}
+}
+
+type h10NoopWork struct{}
+
+func (h10NoopWork) Start()       {}
+func (h10NoopWork) Close() error { return nil }

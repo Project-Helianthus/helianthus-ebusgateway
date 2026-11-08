@@ -6,6 +6,7 @@ import (
 	"os"
 	"reflect"
 	"testing"
+	"time"
 
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
@@ -58,5 +59,40 @@ func TestH10ReadOnlySessionMethodSetAndAdmission(t *testing.T) {
 func TestH10SessionDeadlineClassification(t *testing.T) {
 	if !errors.Is(sessionReadError(os.ErrDeadlineExceeded), context.DeadlineExceeded) {
 		t.Fatal("native timeout lost")
+	}
+}
+
+type h10LateEndpoint struct {
+	fakeEndpoint
+	reads int
+	delay time.Duration
+}
+
+func (*h10LateEndpoint) Dispatch() (modbus.TCPDispatch, bool) { return modbus.TCPDispatch{}, true }
+func (e *h10LateEndpoint) Read(context.Context, modbus.TCPConnectionHandle) (modbus.TCPReadBatch, error) {
+	e.reads++
+	if e.reads == 1 {
+		return modbus.TCPReadBatch{}, nil
+	}
+	time.Sleep(e.delay)
+	return modbus.TCPReadBatch{}, errors.New("h10 stop")
+}
+
+// A read that first consumes a non-deliverable batch must stamp the pacing
+// completion time when the whole session read ends, not after the first batch.
+func TestH10ReadHoldingPacingCompletesAfterLateResponses(t *testing.T) {
+	endpoint := &h10LateEndpoint{delay: 80 * time.Millisecond}
+	adapter := &Adapter{endpoint: endpoint, config: Config{Pacing: &Pacing{Gap: time.Second}}}
+	session, err := NewReadOnlySession(adapter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, _ := modbus.NewReadRegistersRequest(modbus.FunctionReadHoldingRegisters, 0, 1)
+	_, _ = session.ReadHolding(context.Background(), 1, request)
+	if endpoint.reads < 2 {
+		t.Fatalf("late-response path not exercised: reads=%d", endpoint.reads)
+	}
+	if since := time.Since(adapter.completedAt); since > 40*time.Millisecond {
+		t.Fatalf("completion stamped %v before the read ended", since)
 	}
 }

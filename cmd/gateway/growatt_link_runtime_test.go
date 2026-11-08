@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"runtime"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -725,5 +727,103 @@ func TestCX20RetainedCountAdmissionAndValidity(t *testing.T) {
 				t.Fatal("raw evidence lost")
 			}
 		})
+	}
+}
+
+// Neither observation has complete coverage: eight configured cells have only
+// four values, and four configured cells have an invalid first value.
+func TestCX20ConcurrentSnapshotCountMatchesNativeObservation(t *testing.T) {
+	c := cx20Config(t, "synthetic0", 7)
+	r := cx20NewReceiver(c)
+	d, _ := cx20Driver(t, c, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.CX16ReplayInput {
+		in := cx20Association(s, e)
+		if e.Sequence%2 == 0 {
+			in.CellCount = 4
+			in.CellGates[0].Valid = false
+		}
+		return in
+	}, r)
+	cx20Start(t, d)
+	defer cx20Stop(t, d)
+	cx20Send(t, r, cx20Record(c.Native.Interface, 1, 0x1810, 1, time.Second))
+	cx20Wait(t, d, time.Second, cx20Received(1))
+	done := make(chan struct{})
+	result := make(chan *growattLINKSnapshot, 1)
+	go func() {
+		var bad *growattLINKSnapshot
+		for {
+			s := d.Snapshot(time.Second)
+			if len(s.Cells) > 0 && s.Cells[0].CompleteCoverage {
+				bad = &s
+			}
+			select {
+			case <-done:
+				result <- bad
+				return
+			default:
+			}
+		}
+	}()
+	// Keep the reader running through both count transitions and the following
+	// callback, which retains the preceding native admission's count.
+	for seq := uint64(2); seq <= 4000; seq++ {
+		cx20Send(t, r, cx20Record(c.Native.Interface, 1, 0x1810, seq, time.Second))
+	}
+	close(done)
+	bad := <-result
+	if bad != nil {
+		t.Fatalf("mixed native observation and count reported complete coverage: %+v", bad.Cells[0])
+	}
+	got := cx20Wait(t, d, time.Second, func(s growattLINKSnapshot) bool {
+		raw := s.Native.Providers[0].Raw
+		return len(raw) > 0 && raw[len(raw)-1].Input.Evidence.Sequence == 4000
+	})
+	v := got.Cells[0]
+	if v.ConfiguredCount != 4 || !v.CountValid || v.CompleteCoverage || len(v.ValidIndices) != 3 || v.Fields[1].Status != "invalid" {
+		t.Fatal(v)
+	}
+}
+
+func TestCX20SnapshotLocksCountBeforeNativeRead(t *testing.T) {
+	c := cx20Config(t, "synthetic0", 7)
+	r := cx20NewReceiver(c)
+	d, _ := cx20Driver(t, c, cx20Association, r)
+	cx20Start(t, d)
+	defer cx20Stop(t, d)
+	cx20Send(t, r, cx20Record(c.Native.Interface, 1, 0x1810, 1, time.Second))
+	cx20Wait(t, d, time.Second, cx20Received(1))
+
+	// Stall the native read at the provider mutex. Inspect the blocked stack so
+	// this assertion does not depend on a sleep or the goroutine's scheduling.
+	d.provider.mu.Lock()
+	done := make(chan growattLINKSnapshot, 1)
+	go func() { done <- d.Snapshot(time.Second) }()
+	deadline := time.Now().Add(time.Second)
+	entered := false
+	for time.Now().Before(deadline) {
+		stacks := make([]byte, 1<<20)
+		n := runtime.Stack(stacks, true)
+		for _, stack := range strings.Split(string(stacks[:n]), "\n\n") {
+			if strings.Contains(stack, "(*growattProjectProvider).Snapshot(") && strings.Contains(stack, "(*growattLINKManagedDriver).Snapshot(") {
+				entered = true
+				break
+			}
+		}
+		if entered {
+			break
+		}
+		runtime.Gosched()
+	}
+	unlocked := d.metadataMu.TryLock()
+	if unlocked {
+		d.metadataMu.Unlock()
+	}
+	d.provider.mu.Unlock()
+	<-done
+	if !entered {
+		t.Fatal("snapshot did not enter the native read")
+	}
+	if unlocked {
+		t.Fatal("native read allowed concurrent admitted-count advancement")
 	}
 }

@@ -316,6 +316,10 @@ func (d *growattLINKManagedDriver) Snapshot(now time.Duration) growattLINKSnapsh
 		s.State = "transitioning"
 		return s
 	}
+	// Freeze retained counts before capturing native fields so callbacks cannot
+	// combine a later admitted count with an earlier native observation.
+	d.metadataMu.Lock()
+	defer d.metadataMu.Unlock()
 	s.Native = d.provider.Snapshot(now)
 	f := d.fence.Load()
 	usable := d.active && f != nil && !f.fenced.Load() && s.Native.ReceiveError == nil
@@ -327,8 +331,6 @@ func (d *growattLINKManagedDriver) Snapshot(now time.Duration) growattLINKSnapsh
 	if d.quarantine {
 		s.State = "quarantined"
 	}
-	d.metadataMu.Lock()
-	defer d.metadataMu.Unlock()
 	for n := range s.Native.Providers {
 		p := &s.Native.Providers[n]
 		if !usable {

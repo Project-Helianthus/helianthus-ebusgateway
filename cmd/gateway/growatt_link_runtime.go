@@ -51,6 +51,15 @@ func newGrowattLINKManagedDriverFactory(config ebusgateway.GrowattLINKConfig, op
 				history = history[:255]
 			}
 			d.counts[s] = append(history, growattLINKCount{s, e, in.CellCount, in.CellCountValid})
+			// Native admission rejects an observation that is not newer than the
+			// last one, so only a newer one can become the retained count. This
+			// keeps the count independent of when a snapshot is taken.
+			if a, ok := d.admitted[s]; !ok || (e.Sequence > a.sequence && e.Monotonic >= a.monotonic) {
+				if d.admitted == nil {
+					d.admitted = map[canbusreg.CXSelection]growattLINKAdmitted{}
+				}
+				d.admitted[s] = growattLINKAdmitted{sequence: e.Sequence, monotonic: e.Monotonic, count: in.CellCount, valid: in.CellCountValid}
+			}
 			d.metadataMu.Unlock()
 			return in
 		})
@@ -111,9 +120,10 @@ type growattLINKManagedDriver struct {
 // record. It outlives eviction from the bounded diagnostic ring so duplicate
 // observations cannot invalidate coverage of unchanged accepted cells.
 type growattLINKAdmitted struct {
-	generation uint64
-	count      int
-	valid      bool
+	sequence  uint64
+	monotonic time.Duration
+	count     int
+	valid     bool
 }
 
 var _ drivermanager.Runtime = (*growattLINKManagedDriver)(nil)
@@ -143,6 +153,7 @@ func (d *growattLINKManagedDriver) Start(ctx context.Context) (uint64, error) {
 	}
 	d.metadataMu.Lock()
 	d.counts = make(map[canbusreg.CXSelection][]growattLINKCount)
+	d.admitted = make(map[canbusreg.CXSelection]growattLINKAdmitted)
 	d.metadataMu.Unlock()
 	d.generation++
 	generation := d.generation
@@ -327,7 +338,7 @@ func (d *growattLINKManagedDriver) Snapshot(now time.Duration) growattLINKSnapsh
 					if d.admitted == nil {
 						d.admitted = map[canbusreg.CXSelection]growattLINKAdmitted{}
 					}
-					d.admitted[p.Selection] = growattLINKAdmitted{d.generation, v.ConfiguredCount, v.CountValid}
+					d.admitted[p.Selection] = growattLINKAdmitted{r.Input.Evidence.Sequence, r.Input.Evidence.Monotonic, v.ConfiguredCount, v.CountValid}
 					found = true
 					break
 				}
@@ -335,7 +346,7 @@ func (d *growattLINKManagedDriver) Snapshot(now time.Duration) growattLINKSnapsh
 			break
 		}
 		if !found {
-			if a, ok := d.admitted[p.Selection]; ok && a.generation == d.generation {
+			if a, ok := d.admitted[p.Selection]; ok {
 				v.ConfiguredCount, v.CountValid = a.count, a.valid
 			}
 		}

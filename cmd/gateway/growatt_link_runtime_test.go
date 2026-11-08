@@ -611,3 +611,23 @@ func TestCX20CountSurvivesDiagnosticRingEviction(t *testing.T) {
 		t.Fatal(v)
 	}
 }
+
+func TestCX20CountSurvivesEvictionWithoutIntermediateSnapshot(t *testing.T) {
+	c := cx20Config(t, "synthetic0", 7)
+	r := cx20NewReceiver(c)
+	d, _ := cx20Driver(t, c, cx20Association, r)
+	cx20Start(t, d)
+	defer cx20Stop(t, d)
+	cx20Send(t, r, cx20Record(c.Native.Interface, 1, 0x1810, 1, time.Second))
+	cx20Send(t, r, cx20Record(c.Native.Interface, 1, 0x1811, 2, 2*time.Second))
+	for seq := uint64(3); seq < 3+300; seq++ {
+		cx20Send(t, r, cx20Record(c.Native.Interface, 1, 0x1811, seq, 2*time.Second))
+	}
+	got := cx20Wait(t, d, 2*time.Second, func(s growattLINKSnapshot) bool {
+		raw := s.Native.Providers[0].Raw
+		return len(raw) > 0 && raw[0].Input.Evidence.Sequence > 2
+	})
+	if v := got.Cells[0]; v.ConfiguredCount != 8 || !v.CountValid || !v.CompleteCoverage {
+		t.Fatal(v)
+	}
+}

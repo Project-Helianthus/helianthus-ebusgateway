@@ -47,10 +47,31 @@ func (s *ReadOnlySession) check() error {
 	return nil
 }
 
+// sessionDeadlineMargin keeps one wire transaction's deadline strictly inside
+// the caller's context deadline. The endpoint expires and tombstones a silent
+// transaction on its own timer; when the caller's context fires first instead,
+// the endpoint only learns of the expiry on its next read, records a
+// quarantine transition and the connection is lost for the rest of the cycle,
+// so every later attempt fails as a protocol error. With both deadlines equal
+// the two timers raced on every silent reply.
+const sessionDeadlineMargin = 250 * time.Millisecond
+
 func sessionTimeout(ctx context.Context) time.Duration {
 	timeout := 5 * time.Second
-	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < timeout {
-		timeout = time.Until(deadline)
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return timeout
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return time.Millisecond
+	}
+	inside := remaining - sessionDeadlineMargin
+	if inside < remaining/2 {
+		inside = remaining / 2
+	}
+	if inside < timeout {
+		timeout = inside
 	}
 	return timeout
 }

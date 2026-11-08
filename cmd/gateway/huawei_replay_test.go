@@ -533,9 +533,29 @@ func TestH10LostChildIdentityWithdrawsOnlyThatChild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var lostBinding semreg.NativeBindingID
 	for _, link := range view.Snapshot.IdentityLinks {
 		if link.State == semreg.LinkQualified {
 			t.Fatal("lost identity still qualified")
+		}
+		if link.State == semreg.LinkWithdrawn {
+			lostBinding = link.BindingID
+		}
+	}
+	if lostBinding == "" {
+		t.Fatal("lost identity link not withdrawn")
+	}
+	// The pinned kernel lets a publisher withdraw only links and facts: the
+	// incarnation's binding stays current, unqualified and without candidates.
+	epoch, generation := publication.handle.Epoch(), publication.handle.GenerationID()
+	if !huaweiCurrentBinding(view.Snapshot, lostBinding, epoch, generation) {
+		t.Fatal("withdrawn identity must keep its current binding")
+	}
+	for _, envelope := range view.Snapshot.Facts {
+		for _, candidate := range envelope.Candidates {
+			if candidate.BindingID != nil && *candidate.BindingID == lostBinding {
+				t.Fatal("withdrawn incarnation still carries a candidate")
+			}
 		}
 	}
 	for _, asset := range publication.published {
@@ -563,6 +583,30 @@ func TestH10LostChildIdentityWithdrawsOnlyThatChild(t *testing.T) {
 	}
 	if _, ok := publication.published[victim]; !ok {
 		t.Fatal("admitted child not restored")
+	}
+	// Re-admission qualifies exactly one new binding incarnation; the old one
+	// keeps its current state and withdrawn link because the kernel never
+	// requalifies a withdrawn link.
+	view, err = hub.Inspect(huaweiAssetID("alpha", "pv", victim))
+	if err != nil {
+		t.Fatal(err)
+	}
+	qualified := 0
+	var successor semreg.NativeBindingID
+	for _, link := range view.Snapshot.IdentityLinks {
+		if link.State == semreg.LinkQualified {
+			qualified++
+			successor = link.BindingID
+		}
+		if link.BindingID == lostBinding && link.State != semreg.LinkWithdrawn {
+			t.Fatalf("old incarnation link requalified: %s", link.State)
+		}
+	}
+	if qualified != 1 || successor == lostBinding {
+		t.Fatalf("re-admission must qualify exactly one new incarnation (qualified %d)", qualified)
+	}
+	if !huaweiCurrentBinding(view.Snapshot, lostBinding, epoch, generation) || !huaweiCurrentBinding(view.Snapshot, successor, epoch, generation) {
+		t.Fatal("old and new incarnations must both stay current bindings")
 	}
 }
 

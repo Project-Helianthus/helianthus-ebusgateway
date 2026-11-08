@@ -594,8 +594,12 @@ DriverID and owner identity supply the single instance source. Native model,
 serial, firmware and endpoint text never select semantic identity. Binding keys
 use asset, source and admitted profile as stable material, with the existing
 hub epoch/generation minting required for immutable native binding incarnations.
-A child that loses and later regains admission keeps its configured asset key but
-receives a new binding incarnation; a withdrawn binding is never revived.
+A child that loses qualified identity keeps its native binding `current` with
+its identity link withdrawn and no facts or capabilities: the kernel lets a
+publisher withdraw only links and facts, and a withdrawn link is never
+requalified. A child that later regains admission keeps its configured asset
+key but receives a new binding incarnation. Consumers decide whether to act
+through the identity link, never through binding state alone.
 
 The [Huawei PV mapping companion](https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/main/api/v1/mappings/huawei-sun2000-pv-v1.md)
 owns decimal mapping, bounds, state vocabulary, input membership and loss.

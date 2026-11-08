@@ -124,3 +124,31 @@ func TestH10ReadHoldingCanceledPacingWaitKeepsCompletion(t *testing.T) {
 		t.Fatalf("canceled pacing wait advanced completion by %v", adapter.completedAt.Sub(previous))
 	}
 }
+
+func TestH10SessionTimeoutStaysInsideCallerDeadline(t *testing.T) {
+	t.Parallel()
+	if got := sessionTimeout(context.Background()); got != 5*time.Second {
+		t.Fatalf("no caller deadline: %v", got)
+	}
+	cases := []struct{ remaining, min, max time.Duration }{
+		{5 * time.Second, 4 * time.Second, 5*time.Second - sessionDeadlineMargin},
+		{2 * time.Second, time.Second, 2*time.Second - sessionDeadlineMargin},
+		{300 * time.Millisecond, 100 * time.Millisecond, 150 * time.Millisecond},
+	}
+	for _, tc := range cases {
+		ctx, cancel := context.WithTimeout(context.Background(), tc.remaining)
+		got := sessionTimeout(ctx)
+		cancel()
+		if got < tc.min || got > tc.max {
+			t.Fatalf("remaining %v: transaction timeout %v outside [%v, %v]", tc.remaining, got, tc.min, tc.max)
+		}
+		if got >= tc.remaining {
+			t.Fatalf("remaining %v: transaction timeout %v is not strictly inside the caller deadline", tc.remaining, got)
+		}
+	}
+	expired, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	if got := sessionTimeout(expired); got != time.Millisecond {
+		t.Fatalf("expired caller deadline: %v", got)
+	}
+}

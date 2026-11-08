@@ -845,6 +845,17 @@ func (p *managedModbusMCPProvider) GrowattStoragePortalAvailable() bool {
 }
 func (p *managedModbusMCPProvider) ModbusV1OptionalToolAvailable(tool string) bool {
 	switch tool {
+	case mcp.HuaweiSmartLoggerV1StatusGetTool, mcp.HuaweiSDongleV1StatusGetTool, mcp.HuaweiEMMAV1StatusGetTool:
+		family := map[string]modbusTCPFamily{mcp.HuaweiSmartLoggerV1StatusGetTool: modbusTCPFamilyHuaweiSmartLogger, mcp.HuaweiSDongleV1StatusGetTool: modbusTCPFamilyHuaweiSDongle, mcp.HuaweiEMMAV1StatusGetTool: modbusTCPFamilyHuaweiEMMA}[tool]
+		if p.bindings == nil || p.bindings.sidecars == nil {
+			return false
+		}
+		for _, entry := range p.bindings.sidecars.entries {
+			if entry.modbusTCP != nil && entry.modbusTCP.family == family {
+				return true
+			}
+		}
+		return false
 	case mcp.GrowattBMSRS485V202StatusGetTool, mcp.SemanticV1GrowattStorageCurrentGetTool:
 		return p.cfg.GrowattBMSRS485.Enabled
 	case mcp.TeslaGen3EVSECurrentLimitV1GetTool, mcp.SemanticV1EVSECurrentGetTool:
@@ -966,6 +977,9 @@ func modbusTCPInstanceAdapter(instance modbusTCPInstance, hub *semhub.Hub, contr
 		return runtimecontrol.NewAdapter(func(context.Context, runtimecontrol.Construction) (*modbusManagedDriver, error) {
 			return nil, errModbusTCPFamilyNotAdmitted
 		})
+	}
+	if instance.family != modbusTCPFamilySunSpec {
+		return newHuaweiInstanceDriverAdapter(instance, hub)
 	}
 	work := func(ctx context.Context, adapter *modbusadapter.Adapter) modbusManagedWork {
 		var generation uint64

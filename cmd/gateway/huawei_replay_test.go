@@ -1,0 +1,1215 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/binary"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"os"
+	"reflect"
+	"sync"
+	"testing"
+	"time"
+
+	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimecontrol"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semanticview"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
+	modbus "github.com/Project-Helianthus/helianthus-modbus"
+	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
+)
+
+type h10Step struct {
+	Unit     byte   `json:"unit"`
+	Request  []byte `json:"request"`
+	Response []byte `json:"response"`
+}
+type h10Cycle struct {
+	Name  string    `json:"name"`
+	Steps []h10Step `json:"steps"`
+}
+type h10Replay struct {
+	Family       string     `json:"family"`
+	AllowedUnits []byte     `json:"allowed_units"`
+	Cycles       []h10Cycle `json:"cycles"`
+}
+
+func h10Load(t *testing.T, name string) h10Replay {
+	t.Helper()
+	data, err := os.ReadFile("testdata/huawei/" + name + "_replay.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out h10Replay
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// This replay serves a test-only local TCP stream. Every
+// emitted PDU is compared with the independent public-fixture replay order.
+type h10Conn struct {
+	mu       sync.Mutex
+	steps    []h10Step
+	recorded [][]byte
+	response []byte
+	timeout  bool
+	clock    *h10Clock
+	closed   bool
+}
+
+func (c *h10Conn) Write(raw []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return 0, net.ErrClosed
+	}
+	if len(raw) < 8 || len(c.steps) == 0 {
+		return 0, errors.New("unexpected fake TCP request")
+	}
+	step := c.steps[0]
+	c.steps = c.steps[1:]
+	pdu := append([]byte(nil), raw[7:]...)
+	c.recorded = append(c.recorded, pdu)
+	if raw[6] != step.Unit || !bytes.Equal(pdu, step.Request) {
+		return 0, errors.New("fake TCP PDU mismatch")
+	}
+	if pdu[0] != 3 && (pdu[0] != 43 || len(pdu) != 4 || pdu[1] != 14) {
+		return 0, errors.New("unsafe function")
+	}
+	if len(step.Response) == 0 {
+		c.timeout = true
+		return len(raw), nil
+	}
+	c.response = append([]byte(nil), raw[:7]...)
+	binary.BigEndian.PutUint16(c.response[4:6], uint16(len(step.Response)+1))
+	c.response = append(c.response, step.Response...)
+	return len(raw), nil
+}
+func (c *h10Conn) Read(dst []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return 0, net.ErrClosed
+	}
+	if c.timeout {
+		c.timeout = false
+		c.mu.Unlock()
+		_ = c.clock.Wait(context.Background(), 5*time.Second)
+		c.mu.Lock()
+		return 0, os.ErrDeadlineExceeded
+	}
+	if len(c.response) == 0 {
+		return 0, io.EOF
+	}
+	n := copy(dst, c.response)
+	c.response = c.response[n:]
+	return n, nil
+}
+func (c *h10Conn) Close() error                     { c.mu.Lock(); defer c.mu.Unlock(); c.closed = true; return nil }
+func (c *h10Conn) LocalAddr() net.Addr              { return nil }
+func (c *h10Conn) RemoteAddr() net.Addr             { return nil }
+func (c *h10Conn) SetDeadline(time.Time) error      { return nil }
+func (c *h10Conn) SetReadDeadline(time.Time) error  { return nil }
+func (c *h10Conn) SetWriteDeadline(time.Time) error { return nil }
+
+type h10Clock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *h10Clock) Now() time.Time { c.mu.Lock(); defer c.mu.Unlock(); return c.now }
+func (c *h10Clock) Wait(ctx context.Context, d time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	c.now = c.now.Add(d)
+	c.mu.Unlock()
+	return nil
+}
+
+func h10Loopback(t *testing.T, replay *h10Conn) string {
+	t.Helper()
+	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	go func() {
+		peer, err := listener.AcceptTCP()
+		if err != nil {
+			return
+		}
+		defer func() { _ = peer.Close() }()
+		t.Cleanup(func() { _ = peer.Close() })
+		for {
+			header := make([]byte, 7)
+			if _, err := io.ReadFull(peer, header); err != nil {
+				return
+			}
+			size := int(binary.BigEndian.Uint16(header[4:6])) - 1
+			if size < 1 || size > modbus.MaxTolerantPDUSize {
+				t.Error("invalid replay request size")
+				return
+			}
+			raw := append(header, make([]byte, size)...)
+			if _, err := io.ReadFull(peer, raw[7:]); err != nil {
+				return
+			}
+			if _, err := replay.Write(raw); err != nil {
+				t.Error(err)
+				return
+			}
+			response := make([]byte, 7+modbus.MaxTolerantPDUSize)
+			n, err := replay.Read(response)
+			if errors.Is(err, os.ErrDeadlineExceeded) {
+				continue
+			}
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			if _, err := peer.Write(response[:n]); err != nil {
+				return
+			}
+		}
+	}()
+	return "tcp://" + listener.Addr().String()
+}
+
+func h10Native(t *testing.T, fixture h10Replay) (huaweiRegistryProvider, *modbusadapter.Adapter, *h10Conn, *h10Clock) {
+	t.Helper()
+	clock := &h10Clock{now: time.Now().Add(time.Second)}
+	conn := &h10Conn{clock: clock}
+	for _, cycle := range fixture.Cycles {
+		conn.steps = append(conn.steps, cycle.Steps...)
+	}
+	// The native endpoint requires a real TCP connection; only the local replay listener is dialed.
+	config, err := mapModbusRuntimeConfig(ebusgateway.ModbusTCPConfig{Enabled: true, Endpoint: h10Loopback(t, conn), DialTimeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.Clock = clock.Now
+	config.SemanticPV, err = modbusadapter.NewSemanticPVClass(newTestSemanticHub(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.Endpoint.Framing = modbus.TCPFramingTolerant
+	config.Endpoint.MaxBufferedBytes = 7 + modbus.MaxTolerantPDUSize
+	adapter, err := modbusadapter.Start(context.Background(), config, func(ctx context.Context, network, address string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, address)
+	}, func(config modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) {
+		return modbus.NewTCPEndpoint(config)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = adapter.Close() })
+	session, err := modbusadapter.NewReadOnlySession(adapter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	typ := reflect.TypeOf(session)
+	for i := 0; i < typ.NumMethod(); i++ {
+		if typ.Method(i).Name == "Write" || typ.Method(i).Name == "WriteHolding" {
+			t.Fatal("session exposes write")
+		}
+	}
+	family := modbusTCPFamilyHuaweiSmartLogger
+	if fixture.Family == "S-Dongle" {
+		family = modbusTCPFamilyHuaweiSDongle
+	}
+	provider, err := newHuaweiRegistryProvider(family, modbusreg.HuaweiProviderConfig{Source: "alpha", AllowedUnits: fixture.AllowedUnits, Clock: clock.Now, Wait: clock.Wait})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.Start(session); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = provider.Close() })
+	return provider, adapter, conn, clock
+}
+func h10Refresh(t *testing.T, provider huaweiRegistryProvider, clock *h10Clock) modbusreg.HuaweiProviderCycle {
+	t.Helper()
+	if next := provider.NextRefreshAt(); next.After(clock.Now()) {
+		_ = clock.Wait(context.Background(), next.Sub(clock.Now()))
+	}
+	cycle, err := provider.Refresh(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cycle
+}
+func TestH10TCPProviderPVSnapshotParity(t *testing.T) {
+	for _, name := range []string{"smartlogger", "sdongle"} {
+		t.Run(name, func(t *testing.T) {
+			fixture := h10Load(t, name)
+			provider, _, conn, clock := h10Native(t, fixture)
+			hub := newTestSemanticHub(t)
+			publication, err := newHuaweiPVPublication(hub, "huawei-test", "source:huawei-alpha", "alpha", nil, func() bool { return true })
+			if err != nil {
+				t.Fatal(err)
+			}
+			cycle := h10Refresh(t, provider, clock)
+			if cycle.Outcome != modbusreg.HuaweiProviderCycleComplete {
+				t.Fatalf("identity: %+v", cycle)
+			}
+			if err := publication.Publish(cycle); err != nil {
+				t.Fatal(err)
+			}
+			if len(publication.published) == 0 {
+				t.Fatal("provider published no PV assets")
+			}
+			snapshotProvider := newGatewaySemanticSnapshotProvider(&gatewayRuntimeControl{hub: hub})
+			snapshotProvider.now = clock.Now
+			gql, mcp := m11Handlers(t, snapshotProvider)
+			for _, asset := range publication.published {
+				selection := m11Selection(reflect.TypeOf(semanticview.View{}))
+				query := fmt.Sprintf("{a:semanticSnapshot(assetIds:[%q])%s b:semanticSnapshot(assetIds:[%q])%s}", asset, selection, asset, selection)
+				response := mcpRPC(t, mcp, fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"semantic.v1.snapshot.get","arguments":{"asset_ids":[%q]}}}`, asset))
+				if response.Error != nil {
+					t.Fatal(response.Error)
+				}
+				var envelope map[string]any
+				if err := json.Unmarshal([]byte(response.Result["content"].([]any)[0].(map[string]any)["text"].(string)), &envelope); err != nil {
+					t.Fatal(err)
+				}
+				m11AssertParity(t, m11GraphQL(t, gql, query), envelope)
+			}
+			baselineReceipts := map[semreg.CandidateID]semreg.TimePoint{}
+			for unit, asset := range publication.published {
+				view, err := hub.Inspect(asset)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(view.Snapshot.Facts) == 0 {
+					t.Fatal("empty PV facts")
+				}
+				for _, envelope := range view.Snapshot.Facts {
+					for _, candidate := range envelope.Candidates {
+						baselineReceipts[candidate.CandidateID] = candidate.Times.ReceivedAt
+					}
+					if envelope.Key.PackID != huaweiPVPack {
+						t.Fatal("foreign pack")
+					}
+				}
+				if asset != huaweiAssetID("alpha", "pv", unit) {
+					t.Fatal("asset identity drift")
+				}
+			}
+			second := h10Refresh(t, provider, clock)
+			last := second
+			if err := publication.Publish(second); err != nil {
+				t.Fatal(err)
+			}
+			if name == "smartlogger" {
+				stale, fresh := false, false
+				for _, child := range second.Children {
+					asset, ok := publication.published[child.UnitID]
+					if !ok {
+						continue
+					}
+					view, _ := hub.Inspect(asset)
+					for _, env := range view.Snapshot.Facts {
+						for _, fact := range env.Candidates {
+							if child.Evidence == modbusreg.HuaweiProviderEvidenceStale {
+								stale = stale || fact.Quality.Freshness == semreg.FreshnessStale
+								if fact.Times.ReceivedAt != baselineReceipts[fact.CandidateID] {
+									t.Fatal("retained child fact received a new receipt time")
+								}
+							} else {
+								fresh = fresh || fact.Quality.Freshness == semreg.FreshnessFresh
+							}
+						}
+					}
+				}
+				if !stale || !fresh {
+					t.Fatal("child timeout did not preserve isolated stale/fresh facts")
+				}
+			}
+			for _, raw := range conn.recorded {
+				if raw[0] != 3 && (raw[0] != 43 || raw[1] != 14) {
+					t.Fatal("unsafe PDU recorded")
+				}
+			}
+			if name == "sdongle" {
+				third := h10Refresh(t, provider, clock)
+				last = third
+				if err := publication.Publish(third); err != nil {
+					t.Fatal(err)
+				}
+			}
+			conn.mu.Lock()
+			remaining := append([]h10Step(nil), conn.steps...)
+			conn.mu.Unlock()
+			if len(remaining) != 0 {
+				// A caller deadline can stop an attempt before a socket write, or
+				// fence the native generation. All four failed native attempts are
+				// still required; only an identical timeout-only wire suffix may
+				// remain. A successful response can never be skipped.
+				if len(remaining) > 3 || len(last.Exchanges) < 4 {
+					t.Fatalf("unreplayed PDUs without bounded failed attempts: %d", len(remaining))
+				}
+				for i, exchange := range last.Exchanges[len(last.Exchanges)-4:] {
+					if exchange.Attempt != i+1 || exchange.UnitID != remaining[0].Unit || exchange.Outcome == modbusreg.HuaweiProviderExchangeAnswered || exchange.Outcome == modbusreg.HuaweiProviderExchangeException {
+						t.Fatal("missing wire requests lack native failure evidence")
+					}
+				}
+				for _, step := range remaining {
+					if len(step.Response) != 0 || step.Unit != remaining[0].Unit || !bytes.Equal(step.Request, remaining[0].Request) {
+						t.Fatal("non-timeout replay step omitted")
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestH10FenceIsolationSuccessorAndLatePublication(t *testing.T) {
+	fixture := h10Load(t, "smartlogger")
+	provider, _, _, clock := h10Native(t, fixture)
+	cycle := h10Refresh(t, provider, clock)
+	hub := newTestSemanticHub(t)
+	active := true
+	first, err := newHuaweiPVPublication(hub, "huawei-first", "source:huawei-first", "alpha", nil, func() bool { return active })
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := newHuaweiPVPublication(hub, "huawei-other", "source:huawei-other", "beta", nil, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Publish(cycle); err != nil {
+		t.Fatal(err)
+	}
+	otherCycle := cycle
+	otherCycle.Source = "beta"
+	if err := other.Publish(otherCycle); err != nil {
+		t.Fatal(err)
+	}
+	active = false
+	if err := first.Fence(); err != nil {
+		t.Fatal(err)
+	}
+	for _, asset := range first.published {
+		h10AssertWithdrawn(t, hub, asset)
+	}
+	for _, asset := range other.published {
+		if !hub.Readable(asset) {
+			t.Fatal("other instance withdrawn")
+		}
+	}
+	successor, err := newHuaweiPVPublication(hub, "huawei-first", "source:huawei-first", "alpha", first.handle, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if successor.handle.Epoch() == first.handle.Epoch() {
+		t.Fatal("restart preserved the predecessor epoch")
+	}
+	// A restart re-identifies through a fresh native session and connection.
+	freshProvider, _, _, freshClock := h10Native(t, fixture)
+	if !freshClock.Now().After(cycle.CompletedAt) {
+		_ = freshClock.Wait(context.Background(), cycle.CompletedAt.Sub(freshClock.Now())+time.Second)
+	}
+	next := h10Refresh(t, freshProvider, freshClock)
+	if err := successor.Publish(next); err != nil {
+		t.Fatal(err)
+	}
+	late := next
+	late.Cycle++
+	if err := first.Publish(late); err == nil {
+		t.Fatal("late predecessor publication admitted")
+	}
+	for _, asset := range successor.published {
+		if !hub.Readable(asset) {
+			t.Fatal("successor not readable")
+		}
+	}
+}
+
+func TestH10MappingValuesAndWithheldFacts(t *testing.T) {
+	for _, name := range []string{"smartlogger", "sdongle"} {
+		t.Run(name, func(t *testing.T) {
+			provider, _, _, clock := h10Native(t, h10Load(t, name))
+			cycle := h10Refresh(t, provider, clock)
+			hub := newTestSemanticHub(t)
+			publication, err := newHuaweiPVPublication(hub, "mapping-test", "source:synthetic", "alpha", nil, func() bool { return true })
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := publication.Publish(cycle); err != nil {
+				t.Fatal(err)
+			}
+			asset := huaweiAssetID("alpha", "pv", 1)
+			view, err := hub.Inspect(asset)
+			if err != nil {
+				t.Fatal(err)
+			}
+			quantities := map[semreg.DefinitionID]map[string]semreg.Decimal{}
+			for _, envelope := range view.Snapshot.Facts {
+				for _, candidate := range envelope.Candidates {
+					if candidate.Value == nil || candidate.Value.Quantity == nil {
+						continue
+					}
+					if quantities[envelope.Key.FactID] == nil {
+						quantities[envelope.Key.FactID] = map[string]semreg.Decimal{}
+					}
+					dimension := *envelope.Key.Dimensions[0].Value.Text
+					quantities[envelope.Key.FactID][dimension] = candidate.Value.Quantity.Number
+				}
+			}
+			suffix := string(asset)[len("pv-asset-"):]
+			wantVoltage := semreg.Decimal{Coefficient: "6128", Exponent10: -1}
+			wantEnergy := semreg.Decimal{Coefficient: "42", Exponent10: 3}
+			if name == "sdongle" {
+				wantVoltage = semreg.Decimal{Coefficient: "655"}
+				wantEnergy = semreg.Decimal{Coefficient: "15", Exponent10: 3}
+			}
+			if got := quantities["pv.dc.voltage"]["input:1"]; got != wantVoltage {
+				t.Fatalf("voltage=%+v", got)
+			}
+			if got := quantities["pv.energy.generated"]["system:"+suffix]; got != wantEnergy {
+				t.Fatalf("counter=%+v", got)
+			}
+			if name == "sdongle" {
+				if got := quantities["pv.ac.aggregate_active_power"]["inverter:"+suffix]; got != (semreg.Decimal{Coefficient: "466"}) {
+					t.Fatalf("power conversion=%+v", got)
+				}
+			} else if len(quantities["pv.ac.aggregate_active_power"]) != 0 {
+				t.Fatal("refused power fabricated")
+			}
+			for _, id := range []semreg.DefinitionID{"pv.ac.voltage", "pv.ac.current", "pv.ac.frequency", "pv.temperature.inverter"} {
+				if len(quantities[id]) != 0 {
+					t.Fatal("unconsumed native word promoted")
+				}
+			}
+		})
+	}
+}
+
+func TestH10LostChildIdentityWithdrawsOnlyThatChild(t *testing.T) {
+	provider, _, _, clock := h10Native(t, h10Load(t, "smartlogger"))
+	cycle := h10Refresh(t, provider, clock)
+	hub := newTestSemanticHub(t)
+	publication, err := newHuaweiPVPublication(hub, "withdraw-test", "source:synthetic", "alpha", nil, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := publication.Publish(cycle); err != nil {
+		t.Fatal(err)
+	}
+	var victim byte
+	for unit := range publication.published {
+		victim = unit
+		break
+	}
+	if len(publication.published) < 2 {
+		t.Fatal("fixture needs sibling")
+	}
+	originalCycle := cycle
+	cycle.Cycle++
+	cycle.CompletedAt = cycle.CompletedAt.Add(time.Second)
+	cycle.Children = append([]modbusreg.HuaweiProviderChildObservation(nil), cycle.Children...)
+	for i := range cycle.Children {
+		if cycle.Children[i].UnitID == victim {
+			cycle.Children[i].Evidence = modbusreg.HuaweiProviderEvidenceWithheld
+			cycle.Children[i].Reason = modbusreg.HuaweiProviderReasonIdentityMismatch
+		}
+	}
+	if err := publication.Publish(cycle); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := publication.published[victim]; ok {
+		t.Fatal("lost identity remains published")
+	}
+	view, err := hub.Inspect(huaweiAssetID("alpha", "pv", victim))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lostBinding semreg.NativeBindingID
+	for _, link := range view.Snapshot.IdentityLinks {
+		if link.State == semreg.LinkQualified {
+			t.Fatal("lost identity still qualified")
+		}
+		if link.State == semreg.LinkWithdrawn {
+			lostBinding = link.BindingID
+		}
+	}
+	if lostBinding == "" {
+		t.Fatal("lost identity link not withdrawn")
+	}
+	// The pinned kernel lets a publisher withdraw only links and facts: the
+	// incarnation's binding stays current, unqualified and without candidates.
+	epoch, generation := publication.handle.Epoch(), publication.handle.GenerationID()
+	if !huaweiCurrentBinding(view.Snapshot, lostBinding, epoch, generation) {
+		t.Fatal("withdrawn identity must keep its current binding")
+	}
+	for _, envelope := range view.Snapshot.Facts {
+		for _, candidate := range envelope.Candidates {
+			if candidate.BindingID != nil && *candidate.BindingID == lostBinding {
+				t.Fatal("withdrawn incarnation still carries a candidate")
+			}
+		}
+	}
+	for _, asset := range publication.published {
+		if !hub.Readable(asset) {
+			t.Fatal("sibling lost")
+		}
+	}
+	// An incomplete listing is not evidence of an empty inventory.
+	cycle.Cycle++
+	cycle.CompletedAt = cycle.CompletedAt.Add(time.Second)
+	cycle.Outcome = modbusreg.HuaweiProviderCycleIncomplete
+	cycle.Children = nil
+	count := len(publication.published)
+	if err := publication.Publish(cycle); err != nil {
+		t.Fatal(err)
+	}
+	if len(publication.published) != count {
+		t.Fatal("incomplete listing withdrew valid sibling")
+	}
+	// A later completed cycle can restore the same admitted child.
+	originalCycle.Cycle = cycle.Cycle + 1
+	originalCycle.CompletedAt = cycle.CompletedAt.Add(time.Second)
+	if err := publication.Publish(originalCycle); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := publication.published[victim]; !ok {
+		t.Fatal("admitted child not restored")
+	}
+	// Re-admission qualifies exactly one new binding incarnation; the old one
+	// keeps its current state and withdrawn link because the kernel never
+	// requalifies a withdrawn link.
+	view, err = hub.Inspect(huaweiAssetID("alpha", "pv", victim))
+	if err != nil {
+		t.Fatal(err)
+	}
+	qualified := 0
+	var successor semreg.NativeBindingID
+	for _, link := range view.Snapshot.IdentityLinks {
+		if link.State == semreg.LinkQualified {
+			qualified++
+			successor = link.BindingID
+		}
+		if link.BindingID == lostBinding && link.State != semreg.LinkWithdrawn {
+			t.Fatalf("old incarnation link requalified: %s", link.State)
+		}
+	}
+	if qualified != 1 || successor == lostBinding {
+		t.Fatalf("re-admission must qualify exactly one new incarnation (qualified %d)", qualified)
+	}
+	if !huaweiCurrentBinding(view.Snapshot, lostBinding, epoch, generation) || !huaweiCurrentBinding(view.Snapshot, successor, epoch, generation) {
+		t.Fatal("old and new incarnations must both stay current bindings")
+	}
+}
+
+type h10SingleCycleProvider struct{ cycle modbusreg.HuaweiProviderCycle }
+
+func (p *h10SingleCycleProvider) Start(modbusreg.HuaweiProviderSession) error     { return nil }
+func (p *h10SingleCycleProvider) Reconnect(modbusreg.HuaweiProviderSession) error { return nil }
+func (p *h10SingleCycleProvider) Close() error                                    { return nil }
+func (p *h10SingleCycleProvider) NextRefreshAt() time.Time                        { return time.Now().Add(time.Hour) }
+func (p *h10SingleCycleProvider) Refresh(ctx context.Context) (modbusreg.HuaweiProviderCycle, error) {
+	return p.cycle, ctx.Err()
+}
+
+func TestH10ManagedDriverStopRestartFencesHuaweiWork(t *testing.T) {
+	native, _, _, clock := h10Native(t, h10Load(t, "smartlogger"))
+	cycle := h10Refresh(t, native, clock)
+	hub := newTestSemanticHub(t)
+	var previous *semhub.Handle
+	var publications []*huaweiPVPublication
+	var endpoints []*m03Endpoint
+	driver := m03Driver(t, true, func(modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) {
+		endpoint := &m03Endpoint{}
+		endpoints = append(endpoints, endpoint)
+		return endpoint, nil
+	}, func(ctx context.Context, adapter *modbusadapter.Adapter) modbusManagedWork {
+		run, cancel := context.WithCancel(ctx)
+		publication, err := newHuaweiPVPublication(hub, "pv.primary", "pv.configured", "alpha", previous, adapter.PublicationActive)
+		if err == nil {
+			previous = publication.handle
+			publications = append(publications, publication)
+		}
+		return &huaweiManagedWork{ctx: run, cancel: cancel, adapter: adapter, instance: modbusTCPInstance{label: "alpha", family: modbusTCPFamilyHuaweiSmartLogger, cycle: time.Hour}, publication: publication, provider: &h10SingleCycleProvider{cycle: cycle}, err: err, done: make(chan struct{})}
+	})
+	if _, err := driver.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	asset := huaweiAssetID("alpha", "pv", 1)
+	m03Eventually(t, "all Huawei publications", func() bool {
+		for _, child := range cycle.Children {
+			if child.Evidence == modbusreg.HuaweiProviderEvidenceWithheld {
+				continue
+			}
+			view, err := hub.Inspect(huaweiAssetID("alpha", "pv", child.UnitID))
+			if err != nil || len(view.Snapshot.Facts) == 0 {
+				return false
+			}
+		}
+		return true
+	})
+	if err := driver.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	retainedAcrossAssets := 0
+	for _, child := range cycle.Children {
+		if child.Evidence == modbusreg.HuaweiProviderEvidenceWithheld {
+			continue
+		}
+		childAsset := huaweiAssetID("alpha", "pv", child.UnitID)
+		h10AssertWithdrawn(t, hub, childAsset)
+		view, err := hub.Inspect(childAsset)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(view.Snapshot.Retained) <= 16 || len(view.Snapshot.Retained) > 32 {
+			t.Fatal("fixture must establish a per-asset second-generation retention overflow")
+		}
+		retainedAcrossAssets += len(view.Snapshot.Retained)
+	}
+	if retainedAcrossAssets <= 32 {
+		t.Fatal("first generation must retain more than 32 observations across separate inverter assets")
+	}
+	if endpoints[0].closes.Load() != 1 {
+		t.Fatal("STOP failed to withdraw assets and close once")
+	}
+	if _, err := driver.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	m03Eventually(t, "all Huawei successor publications", func() bool {
+		for _, child := range cycle.Children {
+			if child.Evidence == modbusreg.HuaweiProviderEvidenceWithheld {
+				continue
+			}
+			view, err := hub.Inspect(huaweiAssetID("alpha", "pv", child.UnitID))
+			if err != nil || len(view.Snapshot.Facts) == 0 {
+				return false
+			}
+		}
+		return true
+	})
+	if len(publications) != 2 || publications[1].handle.Epoch() == publications[0].handle.Epoch() {
+		t.Fatal("successor epoch not replaced")
+	}
+	late := cycle
+	late.Cycle++
+	if err := publications[0].Publish(late); err == nil {
+		t.Fatal("late predecessor published after RESTART")
+	}
+	if err := driver.Stop(context.Background()); err != nil {
+		t.Fatalf("second STOP must retain both generations within each inverter snapshot: %v", err)
+	}
+	h10AssertWithdrawn(t, hub, asset)
+	if endpoints[1].closes.Load() != 1 {
+		t.Fatal("successor STOP failed")
+	}
+}
+
+// Three publish/STOP/START cycles inside the retention window keep only the
+// two most recent generations per inverter. The third START withdraws the
+// oldest generation's retained observations explicitly and records it.
+func TestH10ThirdGenerationWithdrawsOldestRetainedForCapacity(t *testing.T) {
+	native, _, _, clock := h10Native(t, h10Load(t, "smartlogger"))
+	cycle := h10Refresh(t, native, clock)
+	hub := newTestSemanticHub(t)
+	var mu sync.Mutex
+	var previous *semhub.Handle
+	var publications []*huaweiPVPublication
+	driver := m03Driver(t, true, func(modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) {
+		return &m03Endpoint{}, nil
+	}, func(ctx context.Context, adapter *modbusadapter.Adapter) modbusManagedWork {
+		run, cancel := context.WithCancel(ctx)
+		mu.Lock()
+		defer mu.Unlock()
+		publication, err := newHuaweiPVPublication(hub, "pv.primary", "pv.configured", "alpha", previous, adapter.PublicationActive)
+		if err == nil {
+			previous = publication.handle
+			publications = append(publications, publication)
+		}
+		return &huaweiManagedWork{ctx: run, cancel: cancel, adapter: adapter, instance: modbusTCPInstance{label: "alpha", family: modbusTCPFamilyHuaweiSmartLogger, cycle: time.Hour}, publication: publication, provider: &h10SingleCycleProvider{cycle: cycle}, err: err, done: make(chan struct{})}
+	})
+	var assets []semreg.AssetID
+	for _, child := range cycle.Children {
+		if child.Evidence != modbusreg.HuaweiProviderEvidenceWithheld {
+			assets = append(assets, huaweiAssetID("alpha", "pv", child.UnitID))
+		}
+	}
+	if len(assets) < 2 {
+		t.Fatal("fixture needs sibling inverters")
+	}
+	epochOf := func(n int) semreg.SourceEpochID {
+		mu.Lock()
+		defer mu.Unlock()
+		return publications[n].handle.Epoch()
+	}
+	retainedByEpoch := func(asset semreg.AssetID) map[semreg.SourceEpochID]int {
+		view, err := hub.Inspect(asset)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[semreg.SourceEpochID]int{}
+		for _, record := range view.Snapshot.Retained {
+			out[*record.Candidate.SourceEpochID]++
+		}
+		return out
+	}
+	oldest := map[semreg.AssetID]int{}
+	for gen := 1; gen <= 3; gen++ {
+		if _, err := driver.Start(context.Background()); err != nil {
+			t.Fatalf("START %d: %v", gen, err)
+		}
+		m03Eventually(t, fmt.Sprintf("generation %d publications", gen), func() bool {
+			mu.Lock()
+			count := len(publications)
+			mu.Unlock()
+			if count != gen {
+				return false
+			}
+			epoch := epochOf(gen - 1)
+			for _, asset := range assets {
+				view, err := hub.Inspect(asset)
+				if err != nil || len(view.Snapshot.Facts) == 0 {
+					return false
+				}
+				for _, envelope := range view.Snapshot.Facts {
+					for _, candidate := range envelope.Candidates {
+						if candidate.SourceEpochID == nil || *candidate.SourceEpochID != epoch {
+							return false
+						}
+					}
+				}
+			}
+			return true
+		})
+		if gen == 3 {
+			first, second := epochOf(0), epochOf(1)
+			for _, asset := range assets {
+				retained := retainedByEpoch(asset)
+				if retained[first] != 0 || retained[second] == 0 || len(retained) != 1 {
+					t.Fatalf("third START must keep only the predecessor's retained observations: %v", retained)
+				}
+			}
+			mu.Lock()
+			third := publications[2]
+			mu.Unlock()
+			third.mu.Lock()
+			records := third.retainedWithdrawals()
+			third.mu.Unlock()
+			if len(records) != len(assets) {
+				t.Fatalf("capacity withdrawals not recorded per asset: %+v", records)
+			}
+			for _, record := range records {
+				if record.Reason != "capacity" || record.SourceEpochID != first || record.Generation != "1" || record.Count == 0 || record.Count != oldest[record.AssetID] {
+					t.Fatalf("capacity withdrawal record=%+v want count %d", record, oldest[record.AssetID])
+				}
+			}
+		}
+		if err := driver.Stop(context.Background()); err != nil {
+			t.Fatalf("STOP %d must retain the two most recent generations: %v", gen, err)
+		}
+		if gen == 2 {
+			first := epochOf(0)
+			for _, asset := range assets {
+				oldest[asset] = retainedByEpoch(asset)[first]
+			}
+		}
+	}
+	second, third := epochOf(1), epochOf(2)
+	for _, asset := range assets {
+		h10AssertWithdrawn(t, hub, asset)
+		retained := retainedByEpoch(asset)
+		if len(retained) != 2 || retained[second] == 0 || retained[third] == 0 {
+			t.Fatalf("two most recent generations must survive: %v", retained)
+		}
+	}
+	mu.Lock()
+	last := publications[2]
+	mu.Unlock()
+	last.mu.Lock()
+	status := huaweiStatusRetainedWithdrawals(last)
+	last.mu.Unlock()
+	if len(status) != len(assets) || status[0].Reason != "capacity" || status[0].Generation != "1" || status[0].Count == 0 || status[0].SourceEpochID == "" {
+		t.Fatalf("driver status omits the capacity withdrawal: %+v", status)
+	}
+}
+
+// Every published epoch keeps its retired source descriptor on each asset, and
+// the pinned kernel bounds an asset at 32 descriptors. Restarts beyond that
+// bound fail START explicitly instead of running a generation that can never
+// publish, and the refusal admits no epoch. Its 33 restarts run in the full
+// race suite rather than the focused, time-bounded H10 mapping run.
+func TestHuaweiSourceEpochCapacityExhaustionFailsStart(t *testing.T) {
+	native, _, _, clock := h10Native(t, h10Load(t, "smartlogger"))
+	cycle := h10Refresh(t, native, clock)
+	// One admitted inverter keeps 33 restarts affordable; the bound is per asset.
+	for _, child := range cycle.Children {
+		if child.Evidence != modbusreg.HuaweiProviderEvidenceWithheld {
+			cycle.Children = []modbusreg.HuaweiProviderChildObservation{child}
+			break
+		}
+	}
+	assets := []semreg.AssetID{huaweiAssetID("alpha", "pv", cycle.Children[0].UnitID)}
+	hub := newTestSemanticHub(t)
+	var mu sync.Mutex
+	var previous *semhub.Handle
+	var publications []*huaweiPVPublication
+	driver := m03Driver(t, true, func(modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) {
+		return &m03Endpoint{}, nil
+	}, func(ctx context.Context, adapter *modbusadapter.Adapter) modbusManagedWork {
+		run, cancel := context.WithCancel(ctx)
+		mu.Lock()
+		defer mu.Unlock()
+		publication, err := newHuaweiPVPublication(hub, "pv.primary", "pv.configured", "alpha", previous, adapter.PublicationActive)
+		if err == nil {
+			previous = publication.handle
+			publications = append(publications, publication)
+		}
+		return &huaweiManagedWork{ctx: run, cancel: cancel, adapter: adapter, instance: modbusTCPInstance{label: "alpha", family: modbusTCPFamilyHuaweiSmartLogger, cycle: time.Hour}, publication: publication, provider: &h10SingleCycleProvider{cycle: cycle}, err: err, done: make(chan struct{})}
+	})
+	for epoch := 1; epoch <= huaweiMaxAssetSources; epoch++ {
+		if _, err := driver.Start(context.Background()); err != nil {
+			t.Fatalf("START %d: %v", epoch, err)
+		}
+		var current *huaweiPVPublication
+		m03Eventually(t, fmt.Sprintf("epoch %d publication", epoch), func() bool {
+			mu.Lock()
+			defer mu.Unlock()
+			if len(publications) != epoch {
+				return false
+			}
+			current = publications[epoch-1]
+			current.mu.Lock()
+			defer current.mu.Unlock()
+			return len(current.published) == len(assets)
+		})
+		for _, asset := range assets {
+			view, err := hub.Inspect(asset)
+			if err != nil || len(view.Snapshot.Facts) == 0 {
+				t.Fatalf("epoch %d did not publish facts: %v", epoch, err)
+			}
+			for _, envelope := range view.Snapshot.Facts {
+				for _, candidate := range envelope.Candidates {
+					if candidate.SourceEpochID == nil || *candidate.SourceEpochID != current.handle.Epoch() {
+						t.Fatalf("epoch %d published a fact of another epoch", epoch)
+					}
+				}
+			}
+		}
+		if err := driver.Stop(context.Background()); err != nil {
+			t.Fatalf("STOP %d: %v", epoch, err)
+		}
+	}
+	for _, asset := range assets {
+		view, err := hub.Inspect(asset)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(view.Snapshot.Sources) != huaweiMaxAssetSources {
+			t.Fatalf("asset holds %d source descriptors, want %d", len(view.Snapshot.Sources), huaweiMaxAssetSources)
+		}
+	}
+	for attempt := 1; attempt <= 2; attempt++ {
+		if _, err := driver.Start(context.Background()); !errors.Is(err, errHuaweiSourceCapacityExhausted) {
+			t.Fatalf("START beyond the source bound (attempt %d) = %v, want capacity exhaustion", attempt, err)
+		}
+		mu.Lock()
+		admitted := len(publications)
+		mu.Unlock()
+		if admitted != huaweiMaxAssetSources {
+			t.Fatalf("refused START admitted an epoch: %d publications", admitted)
+		}
+	}
+	for _, asset := range assets {
+		h10AssertWithdrawn(t, hub, asset)
+	}
+}
+
+// A Huawei sidecar withheld for a non-family reason (Portal record, descriptor
+// collision or construction failure) is unavailable; only a family-level
+// withholding reports a closed instance disposition.
+func TestH10NonFamilyWithholdingReportsUnavailable(t *testing.T) {
+	sidecar := &managedSidecar{descriptor: runtimecontrol.Descriptor{DriverID: "modbus.huawei.smartlogger.alpha"}, withheld: errPortalConfigWithheld, modbusTCP: &modbusTCPInstance{label: "alpha", family: modbusTCPFamilyHuaweiSmartLogger}}
+	provider := newManagedModbusMCPProvider(&managedSidecarBindings{sidecars: &managedSidecars{entries: []*managedSidecar{sidecar}}}, ebusgateway.ModbusTCPConfig{}, nil)
+	if status, err := provider.HuaweiInstanceStatus(context.Background(), "huawei.smartlogger", "alpha"); err == nil {
+		t.Fatalf("non-family withholding reported as a successful disposition %q", status.Disposition)
+	}
+	sidecar.modbusTCP.withheld = "NO_ADMITTED_CHILD_PROFILE"
+	status, err := provider.HuaweiInstanceStatus(context.Background(), "huawei.smartlogger", "alpha")
+	if err != nil || status.Disposition != "NO_ADMITTED_CHILD_PROFILE" {
+		t.Fatalf("family withholding disposition = %q, %v", status.Disposition, err)
+	}
+}
+
+// Every re-admission of a child whose identity was lost adds a binding
+// incarnation and an identity link, and the pinned kernel bounds an asset at
+// 128 of each. A re-admission beyond the bound is refused before any batch is
+// applied: the child stays unpublished with the refusal in the instance
+// status while its sibling keeps publishing. The 127 loss and re-admission
+// cycles run in the full race suite rather than the time-bounded H10 mapping
+// run; the middle cycles carry the victim alone as incomplete enumerations so
+// the sibling stays published without being republished every cycle.
+func TestHuaweiRepeatedReadmissionRefusesBeyondBindingCapacity(t *testing.T) {
+	provider, _, _, clock := h10Native(t, h10Load(t, "smartlogger"))
+	cycle := h10Refresh(t, provider, clock)
+	var admitted []modbusreg.HuaweiProviderChildObservation
+	for _, child := range cycle.Children {
+		if child.Evidence != modbusreg.HuaweiProviderEvidenceWithheld {
+			admitted = append(admitted, child)
+		}
+	}
+	if len(admitted) < 2 {
+		t.Fatal("fixture needs two admitted children")
+	}
+	cycle.Children = admitted[:2]
+	victim, sibling := cycle.Children[0].UnitID, cycle.Children[1].UnitID
+	complete := cycle.Outcome
+	hub := newTestSemanticHub(t)
+	publication, err := newHuaweiPVPublication(hub, "capacity-test", "source:synthetic", "alpha", nil, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := publication.Publish(cycle); err != nil {
+		t.Fatal(err)
+	}
+	advance := func(withheld, full bool) error {
+		cycle.Cycle++
+		cycle.CompletedAt = cycle.CompletedAt.Add(time.Second)
+		cycle.Children, cycle.Outcome = []modbusreg.HuaweiProviderChildObservation{admitted[0]}, modbusreg.HuaweiProviderCycleIncomplete
+		if full {
+			cycle.Children, cycle.Outcome = append(cycle.Children, admitted[1]), complete
+		}
+		if withheld {
+			cycle.Children[0].Evidence = modbusreg.HuaweiProviderEvidenceWithheld
+			cycle.Children[0].Reason = modbusreg.HuaweiProviderReasonIdentityMismatch
+		}
+		return publication.Publish(cycle)
+	}
+	asset := huaweiAssetID("alpha", "pv", victim)
+	for incarnation := 2; incarnation <= huaweiMaxAssetBindings; incarnation++ {
+		if err := advance(true, false); err != nil {
+			t.Fatalf("withdrawal before incarnation %d: %v", incarnation, err)
+		}
+		if err := advance(false, false); err != nil {
+			t.Fatalf("re-admission %d: %v", incarnation, err)
+		}
+	}
+	view, err := hub.Inspect(asset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(view.Snapshot.Bindings) != huaweiMaxAssetBindings || len(view.Snapshot.IdentityLinks) != huaweiMaxAssetIdentityLinks {
+		t.Fatalf("asset holds %d bindings and %d links, want %d each", len(view.Snapshot.Bindings), len(view.Snapshot.IdentityLinks), huaweiMaxAssetBindings)
+	}
+	if err := advance(true, true); err != nil {
+		t.Fatalf("final withdrawal: %v", err)
+	}
+	for attempt := 1; attempt <= 2; attempt++ {
+		if err := advance(false, true); !errors.Is(err, errHuaweiBindingCapacityExhausted) {
+			t.Fatalf("re-admission beyond the binding bound (attempt %d) = %v, want capacity exhaustion", attempt, err)
+		}
+	}
+	if _, ok := publication.published[victim]; ok {
+		t.Fatal("refused child was published")
+	}
+	if _, ok := publication.published[sibling]; !ok {
+		t.Fatal("sibling lost its publication")
+	}
+	view, err = hub.Inspect(asset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(view.Snapshot.Bindings) != huaweiMaxAssetBindings || len(view.Snapshot.IdentityLinks) != huaweiMaxAssetIdentityLinks || len(view.Snapshot.Facts) != 0 {
+		t.Fatalf("refused re-admission changed the asset: %d bindings, %d links, %d facts", len(view.Snapshot.Bindings), len(view.Snapshot.IdentityLinks), len(view.Snapshot.Facts))
+	}
+	for _, link := range view.Snapshot.IdentityLinks {
+		if link.State == semreg.LinkQualified {
+			t.Fatal("refused re-admission qualified an identity link")
+		}
+	}
+	siblingView, err := hub.Inspect(huaweiAssetID("alpha", "pv", sibling))
+	if err != nil || len(siblingView.Snapshot.Facts) == 0 {
+		t.Fatalf("sibling facts missing after the refusal: %v", err)
+	}
+	publication.mu.Lock()
+	children := huaweiStatusChildren(publication, publication.latest)
+	publication.mu.Unlock()
+	var refused, published bool
+	for _, child := range children {
+		switch child.Unit {
+		case victim:
+			refused = child.Refusal == huaweiRefusalBindingCapacity && child.AssetID == ""
+		case sibling:
+			published = child.Refusal == "" && child.AssetID != ""
+		}
+	}
+	if !refused || !published {
+		t.Fatalf("status children = %+v", children)
+	}
+}
+
+func h10AssertWithdrawn(t *testing.T, hub *semhub.Hub, asset semreg.AssetID) {
+	t.Helper()
+	view, err := hub.Inspect(asset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(view.Snapshot.Facts) != 0 || len(view.Snapshot.Retained) == 0 {
+		t.Fatal("stopped asset did not withdraw live facts and retain evidence")
+	}
+	for _, binding := range view.Snapshot.Bindings {
+		if binding.State == semreg.BindingCurrent {
+			t.Fatal("stopped asset kept a live binding")
+		}
+	}
+}
+
+func TestH10PartialGroupFailurePreservesFactFreshness(t *testing.T) {
+	fixture := h10Load(t, "smartlogger")
+	groups := map[uint16]h10Step{}
+	for _, step := range fixture.Cycles[0].Steps {
+		if step.Unit == 2 && len(step.Request) == 5 && step.Request[0] == 3 {
+			groups[binary.BigEndian.Uint16(step.Request[1:3])] = step
+		}
+	}
+	for _, offset := range []uint16{32000, 32016, 32106} {
+		if len(groups[offset].Response) == 0 {
+			t.Fatal("missing synthetic monitoring group")
+		}
+	}
+	// Refresh the child's status and input groups, then fail its counter read.
+	// The real native provider must retain only the failed group's old words.
+	var steps []h10Step
+	inserted := false
+	for _, step := range fixture.Cycles[1].Steps {
+		if step.Unit != 2 {
+			steps = append(steps, step)
+			continue
+		}
+		if inserted {
+			continue
+		}
+		steps = append(steps, groups[32000], groups[32016])
+		failed := groups[32106]
+		failed.Response = nil
+		for i := 0; i < 4; i++ {
+			steps = append(steps, failed)
+		}
+		inserted = true
+	}
+	if !inserted {
+		t.Fatal("missing child timeout fixture")
+	}
+	fixture.Cycles[1].Steps = steps
+	provider, _, _, clock := h10Native(t, fixture)
+	hub := newTestSemanticHub(t)
+	publication, err := newHuaweiPVPublication(hub, "group-freshness", "source:group-freshness", "alpha", nil, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := h10Refresh(t, provider, clock)
+	if err := publication.Publish(first); err != nil {
+		t.Fatal(err)
+	}
+	asset := huaweiAssetID("alpha", "pv", 2)
+	before, err := hub.Inspect(asset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipts := map[semreg.CandidateID]semreg.TimePoint{}
+	for _, envelope := range before.Snapshot.Facts {
+		for _, fact := range envelope.Candidates {
+			receipts[fact.CandidateID] = fact.Times.ReceivedAt
+		}
+	}
+	second := h10Refresh(t, provider, clock)
+	childStale := false
+	for _, child := range second.Children {
+		if child.UnitID == 2 {
+			childStale = child.Evidence == modbusreg.HuaweiProviderEvidenceStale
+		}
+	}
+	if !childStale {
+		t.Fatal("native partial failure did not mark the child stale")
+	}
+	if err := publication.Publish(second); err != nil {
+		t.Fatal(err)
+	}
+	after, err := hub.Inspect(asset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh, retained := 0, 0
+	for _, envelope := range after.Snapshot.Facts {
+		for _, fact := range envelope.Candidates {
+			switch envelope.Key.FactID {
+			case "pv.dc.voltage", "pv.dc.current":
+				fresh++
+				if fact.Quality.Freshness != semreg.FreshnessFresh || fact.Times.ReceivedAt == receipts[fact.CandidateID] {
+					t.Fatal("newly acquired input fact was made stale by a later group failure")
+				}
+			case "pv.energy.generated":
+				retained++
+				if fact.Quality.Freshness != semreg.FreshnessStale || fact.Times.ReceivedAt != receipts[fact.CandidateID] {
+					t.Fatal("failed counter group lost its stale original receipt")
+				}
+			}
+		}
+	}
+	if fresh == 0 || retained == 0 {
+		t.Fatal("mixed current and retained group facts missing")
+	}
+}
+
+type h10FlakyRebindProvider struct {
+	h10SingleCycleProvider
+	failures int
+	calls    int
+}
+
+func (p *h10FlakyRebindProvider) Reconnect(modbusreg.HuaweiProviderSession) error {
+	p.calls++
+	if p.calls <= p.failures {
+		return errors.New("rebind refused")
+	}
+	return nil
+}
+
+// A failed provider rebind must stay pending and be retried on later cycles
+// even though the endpoint no longer reports ReconnectRequired.
+func TestH10FailedProviderRebindIsRetried(t *testing.T) {
+	provider := &h10FlakyRebindProvider{failures: 1}
+	var work *huaweiManagedWork
+	var captured *modbusadapter.Adapter
+	driver := m03Driver(t, true, func(modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) {
+		return &m03Endpoint{}, nil
+	}, func(ctx context.Context, adapter *modbusadapter.Adapter) modbusManagedWork {
+		captured = adapter
+		return h10NoopWork{}
+	})
+	if _, err := driver.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	work = &huaweiManagedWork{ctx: context.Background(), adapter: captured, provider: provider, rebindPending: true}
+	work.rebind()
+	if !work.rebindPending || provider.calls != 1 {
+		t.Fatalf("failed rebind dropped: pending=%v calls=%d", work.rebindPending, provider.calls)
+	}
+	work.rebind()
+	if work.rebindPending || provider.calls != 2 {
+		t.Fatalf("rebind not retried: pending=%v calls=%d", work.rebindPending, provider.calls)
+	}
+}
+
+type h10NoopWork struct{}
+
+func (h10NoopWork) Start()       {}
+func (h10NoopWork) Close() error { return nil }

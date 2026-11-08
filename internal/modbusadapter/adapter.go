@@ -650,6 +650,12 @@ func (adapter *Adapter) executeReadLocked(ctx context.Context, plan ReadPlan) (m
 		}
 		defer func() { adapter.completedAt = time.Now() }()
 	}
+	return adapter.executeReadTransactionLocked(ctx, plan)
+}
+
+// executeReadTransactionLocked runs one admitted read without pacing. The
+// caller holds executeMu and has already completed any pacing wait.
+func (adapter *Adapter) executeReadTransactionLocked(ctx context.Context, plan ReadPlan) (modbus.TCPReadBatch, error) {
 	handle, err := adapter.EnqueueRead(plan)
 	if err != nil {
 		return modbus.TCPReadBatch{}, err
@@ -1191,4 +1197,10 @@ func (adapter *Adapter) WithdrawSemantic() error {
 // semantic withdrawal.
 func (adapter *Adapter) NativeCloseUnconfirmed() bool {
 	return adapter != nil && adapter.nativeCloseFailed.Load()
+}
+
+// PublicationActive reports generation admission without granting publication
+// authority. A managed worker must also commit through its source handle.
+func (adapter *Adapter) PublicationActive() bool {
+	return adapter != nil && adapter.config.Publication.valid()
 }

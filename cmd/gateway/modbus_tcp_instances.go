@@ -41,9 +41,9 @@ type modbusTCPFamilySpec struct {
 
 var modbusTCPFamilyTable = map[modbusTCPFamily]modbusTCPFamilySpec{
 	modbusTCPFamilySunSpec:           {base: managedSunSpecID, composed: true, cycle: sunSpecLiveSmokeCycleInterval},
-	modbusTCPFamilyHuaweiSmartLogger: {base: "modbus.huawei.smartlogger", cycle: modbusTCPDefaultCycle},
+	modbusTCPFamilyHuaweiSmartLogger: {base: "modbus.huawei.smartlogger", composed: true, cycle: 60 * time.Second},
 	modbusTCPFamilyHuaweiEMMA:        {base: "modbus.huawei.emma", cycle: modbusTCPDefaultCycle},
-	modbusTCPFamilyHuaweiSDongle:     {base: "modbus.huawei.sdongle", cycle: modbusTCPDefaultCycle},
+	modbusTCPFamilyHuaweiSDongle:     {base: "modbus.huawei.sdongle", composed: true, cycle: 60 * time.Second},
 }
 
 // modbusTCPWithheldReason is a closed instance qualification reason.
@@ -79,6 +79,7 @@ type modbusTCPInstance struct {
 	enabled  bool
 	config   ebusgateway.ModbusTCPConfig
 	pacing   *ebusgateway.ModbusTCPPacing
+	units    []byte
 	unit     byte
 	cycle    time.Duration
 	// v1Slot marks the instance that the single-endpoint surfaces address:
@@ -153,9 +154,13 @@ func modbusTCPInstancesFor(cfg ebusgateway.ModbusTCPConfig) ([]modbusTCPInstance
 		}
 		if len(entry.Units) > 0 {
 			instance.unit = entry.Units[0]
+			instance.units = append([]byte(nil), entry.Units...)
 		}
 		if !modbusTCPFamilyTable[family].composed {
 			instance.withheld = modbusTCPReasonFamilyNotAdmitted
+			if family == modbusTCPFamilyHuaweiEMMA {
+				instance.withheld = "NO_ADMITTED_CHILD_PROFILE"
+			}
 		}
 		instances = append(instances, instance)
 	}

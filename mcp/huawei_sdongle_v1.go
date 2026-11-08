@@ -29,6 +29,9 @@ var huaweiSDongleV1Providers = struct {
 }{byServer: map[*Server]HuaweiSDongleV1Provider{}}
 
 func registerHuaweiSDongleV1Tool(s *Server, p ModbusV1Provider) {
+	if registerHuaweiInstanceTool(s, p, HuaweiSDongleV1StatusGetTool, "huawei.sdongle") {
+		return
+	}
 	v, ok := p.(HuaweiSDongleV1Provider)
 	if !ok || v == nil {
 		return
@@ -41,6 +44,9 @@ func registerHuaweiSDongleV1Tool(s *Server, p ModbusV1Provider) {
 func (s *Server) handleHuaweiSDongleV1Call(ctx context.Context, n string, a map[string]any) (map[string]any, bool) {
 	if n != HuaweiSDongleV1StatusGetTool {
 		return nil, false
+	}
+	if result, handled := s.handleHuaweiInstanceCall(ctx, n, "huawei.sdongle", a); handled {
+		return result, true
 	}
 	if len(a) != 0 {
 		return callToolResultText(mustJSON(newModbusV1Envelope(nil, errors.New("invalid Huawei S-Dongle status arguments"), false, "RETAINED_PROFILE", "")), true), true

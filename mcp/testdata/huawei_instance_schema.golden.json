@@ -1,0 +1,1 @@
+{"type":"object","properties":{"instance":{"type":"string","minLength":1}},"required":["instance"],"additionalProperties":false}

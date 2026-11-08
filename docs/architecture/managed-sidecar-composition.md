@@ -684,8 +684,11 @@ descriptor declares no semantic field and renders no product resource. The PV
 assets stay SemReg assets, read through the generic semantic snapshot.
 
 The contribution is admitted when the work generation starts and only while its
-publication scope is active. STOP, a failed startup's retirement and the
-semantic fence withdraw it before the assets are fenced. A withdrawal before
+publication scope is active. STOP, the manager's withdrawal fence and a failed
+startup's retirement withdraw it through the managed attempt's contribution hook
+before the publication scope closes, so no catalog request sees a descriptor
+whose status and assets are already withdrawn; the semantic fence and native
+close withdraw it again as a no-op. A withdrawal before
 admission closes the lease, so a late start never reopens it. Every work
 generation of an instance uses a strictly later Portal generation, and the
 registry keeps the withdrawn generation fenced. A refused admission fails the

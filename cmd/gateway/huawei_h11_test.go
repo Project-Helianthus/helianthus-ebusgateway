@@ -316,6 +316,104 @@ func TestH11PortalContributionValidatesAndWithdrawsWithGeneration(t *testing.T) 
 	}
 }
 
+// h11ContributionWork contributes like the Huawei work and records, at the
+// contribution withdrawal, whether the publication scope was still active.
+type h11ContributionWork struct {
+	adapter   *modbusadapter.Adapter
+	lease     *huaweiPortalLease
+	failStart error
+	startErr  error
+	// withdrawnActive is 0 before the contribution withdrawal, then 1 when the
+	// scope was still active and 2 when it had already closed.
+	withdrawnActive atomic.Int32
+}
+
+func (w *h11ContributionWork) Start() {
+	if w.startErr = w.lease.publish(w.adapter); w.startErr == nil {
+		w.startErr = w.failStart
+	}
+}
+func (w *h11ContributionWork) StartError() error { return w.startErr }
+func (w *h11ContributionWork) Close() error      { w.lease.withdraw(); return nil }
+func (w *h11ContributionWork) WithdrawContribution() {
+	state := int32(2)
+	if w.adapter.PublicationActive() {
+		state = 1
+	}
+	w.withdrawnActive.CompareAndSwap(0, state)
+	w.lease.withdraw()
+}
+
+var _ modbusManagedContributionWork = (*huaweiManagedWork)(nil)
+
+// STOP, the manager's withdrawal fence and failed-startup retirement withdraw
+// the Portal contribution while the publication scope is still active, so no
+// catalog request can see a descriptor whose status and assets are withdrawn.
+func TestH11PortalContributionWithdrawnBeforePublicationScopeCloses(t *testing.T) {
+	const driverID = "modbus.huawei.smartlogger.alpha"
+	for _, path := range []string{"Stop", "FenceWithdrawal", "FailedStartup"} {
+		t.Run(path, func(t *testing.T) {
+			contributions, err := newGatewayPortalCatalogContributions()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var work *h11ContributionWork
+			driver := m03Driver(t, true, func(modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) { return &m03Endpoint{}, nil },
+				func(_ context.Context, adapter *modbusadapter.Adapter) modbusManagedWork {
+					work = &h11ContributionWork{adapter: adapter, lease: &huaweiPortalLease{contributions: contributions, owner: contributionv1.DriverGeneration{DriverID: driverID, Generation: 1}}}
+					if path == "FailedStartup" {
+						work.failStart = errors.New("synthetic startup failure after contribution")
+					}
+					return work
+				})
+			ctx, cancel := context.WithTimeout(context.Background(), m03Watchdog)
+			defer cancel()
+			_, startErr := driver.Start(ctx)
+			switch path {
+			case "FailedStartup":
+				if startErr == nil {
+					t.Fatal("startup did not fail")
+				}
+			default:
+				if startErr != nil {
+					t.Fatal(startErr)
+				}
+				if !contributions.accepts(driverID, huaweiPortalManifestID) {
+					t.Fatal("running generation did not contribute")
+				}
+				if path == "FenceWithdrawal" {
+					driver.FenceWithdrawal()
+					if contributions.accepts(driverID, huaweiPortalManifestID) {
+						t.Fatal("withdrawal fence left the contribution admitted")
+					}
+				}
+				if err := driver.Stop(ctx); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := work.withdrawnActive.Load(); got != 1 {
+				t.Fatalf("contribution withdrawal before scope close = %d, want 1 (withdrawn while the scope was active)", got)
+			}
+			if contributions.accepts(driverID, huaweiPortalManifestID) {
+				t.Fatal("contribution outlived its generation")
+			}
+		})
+	}
+	// The Huawei work withdraws its own lease through the same hook.
+	contributions, err := newGatewayPortalCatalogContributions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := &huaweiPortalLease{contributions: contributions, owner: contributionv1.DriverGeneration{DriverID: driverID, Generation: 1}}
+	if err := lease.publishActive(true); err != nil || !contributions.accepts(driverID, huaweiPortalManifestID) {
+		t.Fatalf("lease not admitted: %v", err)
+	}
+	(&huaweiManagedWork{portal: lease}).WithdrawContribution()
+	if contributions.accepts(driverID, huaweiPortalManifestID) {
+		t.Fatal("Huawei work hook left the contribution admitted")
+	}
+}
+
 // h11Provider serves one recorded registry cycle to the managed lifecycle.
 func h11InstallProviders(t *testing.T, cycles map[string]modbusreg.HuaweiProviderCycle) *atomic.Int32 {
 	t.Helper()

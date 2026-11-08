@@ -185,6 +185,11 @@ func (w *huaweiManagedWork) rebind() {
 	}
 }
 
+// WithdrawContribution withdraws the Portal contribution before the managed
+// attempt closes the publication scope, so the descriptor never outlives the
+// status and assets of its generation. Later withdrawals are no-ops.
+func (w *huaweiManagedWork) WithdrawContribution() { w.portal.withdraw() }
+
 // FenceSemantic is retained independently from native Close so a semantic
 // cleanup failure can be retried without misclassifying a healthy endpoint.
 func (w *huaweiManagedWork) FenceSemantic() error {

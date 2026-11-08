@@ -16,6 +16,12 @@ import (
 
 type modbusManagedSemanticWork interface{ FenceSemantic() error }
 
+// modbusManagedContributionWork is optional work whose Portal contribution
+// describes the generation's publication. It is withdrawn before the
+// publication scope closes, so a descriptor never outlives the status and
+// assets it describes.
+type modbusManagedContributionWork interface{ WithdrawContribution() }
+
 type modbusManagedWork interface {
 	Start()
 	Close() error
@@ -63,6 +69,7 @@ type modbusManagedAttempt struct {
 
 	prepared             chan struct{} // inert work and its separate semantic owner are final
 	semanticWork         modbusManagedSemanticWork
+	contributionWork     modbusManagedContributionWork
 	semanticFenceStarted atomic.Bool
 	semanticFenced       atomic.Bool
 	opened               chan struct{} // native open returned; adapter and openErr are final
@@ -280,6 +287,7 @@ func (driver *modbusManagedDriver) open(ctx context.Context, a *modbusManagedAtt
 	if a.adapter != nil && driver.workFactory != nil && a.admissible(ctx) {
 		a.work = driver.workFactory(ctx, a.adapter)
 		a.semanticWork, _ = a.work.(modbusManagedSemanticWork)
+		a.contributionWork, _ = a.work.(modbusManagedContributionWork)
 	}
 	// Publish the semantic owner before installing any worker effects. Stop
 	// can fence it without joining a blocked Start or acquisition goroutine.
@@ -322,6 +330,7 @@ func (a *modbusManagedAttempt) commitStartup(ctx context.Context) error {
 // retire settles a failed startup. Publication admission is revoked before
 // the fence starts, and the fence runs concurrently with native cleanup.
 func (a *modbusManagedAttempt) retire() (nativeErr, semanticErr error) {
+	a.withdrawContribution()
 	a.scope.Withdraw()
 	semantic := a.fenceAsync()
 	nativeErr = a.retireNative()
@@ -380,8 +389,23 @@ func (a *modbusManagedAttempt) fenceAsync() <-chan error {
 // may finish late, but cannot claim installation after this gate closes.
 func (a *modbusManagedAttempt) withdraw() {
 	a.admission.Store(modbusWorkWithdrawn)
+	a.withdrawContribution()
 	a.scope.Withdraw()
 	a.cancel()
+}
+
+// withdrawContribution withdraws the work's Portal contribution while the
+// publication scope is still active. Work that is not yet prepared cannot have
+// contributed: admission is revoked first, so it can no longer install.
+func (a *modbusManagedAttempt) withdrawContribution() {
+	select {
+	case <-a.prepared:
+	default:
+		return
+	}
+	if a.contributionWork != nil {
+		a.contributionWork.WithdrawContribution()
+	}
 }
 
 // FenceWithdrawal only revokes admission and signals cancellation. Stop owns

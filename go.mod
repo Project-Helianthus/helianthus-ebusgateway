@@ -14,11 +14,13 @@ require (
 	github.com/graphql-go/handler v0.2.4
 	github.com/machinebox/graphql v0.2.2
 	golang.org/x/mod v0.21.0
-	golang.org/x/sys v0.25.0
+	golang.org/x/sys v0.30.0
 	golang.org/x/text v0.22.0
 )
 
 require (
+	github.com/Project-Helianthus/helianthus-canbus v0.0.0-20260823184549-cb4c25a1a389 // indirect
+	github.com/Project-Helianthus/helianthus-canbusreg v0.0.0-20261108095356-eab34ceb18f6 // indirect
 	github.com/Project-Helianthus/helianthus-eebus-go v0.7.1-helianthus.21 // indirect
 	github.com/Project-Helianthus/helianthus-ship-go v0.6.1-helianthus.19 // indirect
 	github.com/Project-Helianthus/helianthus-spine-go v0.7.1-helianthus.9 // indirect

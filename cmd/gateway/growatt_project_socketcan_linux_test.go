@@ -144,7 +144,7 @@ func TestCX18ReopenKeepsOneClock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer second.Close()
+	defer func() { _ = second.Close() }()
 	b, err := second.Receive(context.Background())
 	if err != nil {
 		t.Fatal(err)

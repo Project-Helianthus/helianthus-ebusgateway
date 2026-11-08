@@ -15,6 +15,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimecontrol"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 )
 
 func TestH10AssetIdentity(t *testing.T) {
@@ -132,5 +133,29 @@ func TestH10CompositionAdmitsOnlyNativeProviderPaths(t *testing.T) {
 	}
 	if transport.totalDials() != 0 || transport.factories.Load() != 0 {
 		t.Fatal("inert composition performed endpoint I/O")
+	}
+}
+
+// The status cycle and the published assets share one lock, so a concurrent
+// reader never pairs one cycle with the assets of another.
+func TestH10StatusCycleSharesPublicationLock(t *testing.T) {
+	p := &huaweiPVPublication{label: "alpha", active: func() bool { return false }, published: map[byte]semreg.AssetID{}, incarnations: map[byte]uint64{}}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := uint64(1); i <= 200; i++ {
+			_ = p.Publish(modbusreg.HuaweiProviderCycle{Source: "alpha", Cycle: i})
+		}
+	}()
+	for i := 0; i < 200; i++ {
+		p.mu.Lock()
+		_ = p.latest.Cycle
+		p.mu.Unlock()
+	}
+	<-done
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.latest.Cycle != 200 {
+		t.Fatalf("latest cycle not recorded under publication lock: %d", p.latest.Cycle)
 	}
 }

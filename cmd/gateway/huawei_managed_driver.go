@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"sort"
-	"sync"
 	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/drivermanager"
@@ -60,8 +59,6 @@ type huaweiManagedWork struct {
 	done          chan struct{}
 	started       bool
 	rebindPending bool
-	mu            sync.RWMutex
-	cycle         modbusreg.HuaweiProviderCycle
 }
 
 func newHuaweiInstanceDriverAdapter(instance modbusTCPInstance, hub *semhub.Hub) runtimecontrol.LifecycleAdapter {
@@ -131,9 +128,6 @@ func (w *huaweiManagedWork) Start() {
 			cycle, err := w.provider.Refresh(w.ctx)
 			if err == nil && w.adapter.PublicationActive() {
 				publishErr := w.publication.Publish(cycle)
-				w.mu.Lock()
-				w.cycle = cycle
-				w.mu.Unlock()
 				if publishErr != nil {
 					modbusTCPLogf(w.instance)("Huawei PV publication refused")
 				}
@@ -221,12 +215,10 @@ func (p *managedModbusMCPProvider) HuaweiInstanceStatus(ctx context.Context, fam
 		if !ok || work.publication == nil {
 			return errors.New("huawei provider unavailable")
 		}
-		work.mu.RLock()
-		cycle := work.cycle
-		work.mu.RUnlock()
 		publication := work.publication
 		publication.mu.Lock()
 		defer publication.mu.Unlock()
+		cycle := publication.latest
 		if publication.fenced || !publication.active() {
 			return errors.New("huawei generation withdrawn")
 		}

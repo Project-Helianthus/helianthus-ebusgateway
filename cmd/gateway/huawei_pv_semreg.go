@@ -44,15 +44,18 @@ func huaweiEvidence(kind string, value any) semreg.EvidenceRef {
 // Native observations remain in memory with their original group evidence.
 // The public status adapter exposes only categorical routing and asset IDs.
 type huaweiPVPublication struct {
-	mu           sync.Mutex
-	hub          *semhub.Hub
-	class        *semhub.Class
-	handle       *semhub.Handle
-	label        string
-	active       func() bool
-	fenced       bool
-	origin       time.Time
-	native       modbusreg.HuaweiProviderCycle
+	mu     sync.Mutex
+	hub    *semhub.Hub
+	class  *semhub.Class
+	handle *semhub.Handle
+	label  string
+	active func() bool
+	fenced bool
+	origin time.Time
+	native modbusreg.HuaweiProviderCycle
+	// latest is the most recent cycle offered to Publish. It is stored under
+	// mu with the published assets so status reads one coherent pair.
+	latest       modbusreg.HuaweiProviderCycle
 	published    map[byte]semreg.AssetID
 	incarnations map[byte]uint64
 }
@@ -104,6 +107,7 @@ func (p *huaweiPVPublication) Fence() error {
 func (p *huaweiPVPublication) Publish(cycle modbusreg.HuaweiProviderCycle) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.latest = cycle
 	if p.fenced || !p.active() {
 		return errors.New("huawei publication generation withdrawn")
 	}

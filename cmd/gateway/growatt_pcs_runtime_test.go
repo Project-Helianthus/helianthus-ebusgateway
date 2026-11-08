@@ -482,6 +482,9 @@ func TestCX19StopFencesJoinsLateInputAndHonorsDeadline(t *testing.T) {
 	if err := d.Stop(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	if lg := d.Snapshot(time.Second).Providers[0].LastGood["core/voltage"]; lg.Evidence.Sequence != 1 {
+		t.Fatal("canceled-session input overwrote last-good", lg)
+	}
 	if g, err := d.Start(context.Background()); err != nil || g != 2 {
 		t.Fatal(g, err)
 	}

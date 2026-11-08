@@ -51,6 +51,10 @@ func (r *growattPCSReceiver) Receive(ctx context.Context) (growattProjectRecord,
 	stop := context.AfterFunc(ctx, r.session.cancel)
 	defer stop()
 	record, err := r.growattProjectReceiver.Receive(r.session.ctx)
+	if cancelErr := errors.Join(ctx.Err(), r.session.ctx.Err()); cancelErr != nil {
+		// Input that completes after withdrawal must not reach the provider.
+		return growattProjectRecord{}, cancelErr
+	}
 	if err != nil && ctx.Err() == nil && r.session.ctx.Err() == nil {
 		r.session.once.Do(func() { close(r.session.failed) })
 	}

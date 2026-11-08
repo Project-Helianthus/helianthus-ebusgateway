@@ -24,10 +24,12 @@ import (
 )
 
 const (
-	managedGrowattCANID runtimecontrol.DriverID = "growatt.bms.can"
-	managedSunSpecID    runtimecontrol.DriverID = "modbus.sunspec"
-	managedGrowattID    runtimecontrol.DriverID = "growatt.bms.rs485"
-	managedEEBusID      runtimecontrol.DriverID = "eebus.primary"
+	managedGrowattCANID  runtimecontrol.DriverID = "growatt.bms.can"
+	managedGrowattPCSID  runtimecontrol.DriverID = "growatt.bms.pcs.can"
+	managedGrowattLINKID runtimecontrol.DriverID = "growatt.bms.link.can"
+	managedSunSpecID     runtimecontrol.DriverID = "modbus.sunspec"
+	managedGrowattID     runtimecontrol.DriverID = "growatt.bms.rs485"
+	managedEEBusID       runtimecontrol.DriverID = "eebus.primary"
 )
 
 type managedSidecars struct {
@@ -108,6 +110,24 @@ func prepareManagedSidecars(ctx context.Context, cfg ebusgateway.Config, hub *se
 	if growattSource == "" {
 		growattSource = source(managedGrowattID)
 	}
+	pcs, pcsErr := admitGrowattProject(cfg.GrowattPCSCANConfig, false)
+	link, linkErr := admitGrowattProject(cfg.GrowattLINKCANConfig, true)
+	if pcsErr != nil {
+		pcsErr = fmt.Errorf("growatt-bms-pcs-can: %w", pcsErr)
+	}
+	if linkErr != nil {
+		linkErr = fmt.Errorf("growatt-bms-link-can: %w", linkErr)
+	}
+	canConfigErr := errors.Join(validateGrowattCANInterfaces(cfg), pcsErr, linkErr)
+	if canConfigErr != nil {
+		log.Printf("Growatt CAN configuration refused: %v", canConfigErr)
+	}
+	if cfg.GrowattPCSCANConfig != (ebusgateway.GrowattProjectCANConfig{}) {
+		descriptors = append(descriptors, descriptor(managedGrowattPCSID, cfg.GrowattPCSCANConfig.Enabled, source(managedGrowattPCSID), sidecarNativeContract("github.com/Project-Helianthus/helianthus-canbusreg", "CX17PCSReceiveOnly"), newGrowattProjectCompositionAdapter(pcs, false)))
+	}
+	if cfg.GrowattLINKCANConfig != (ebusgateway.GrowattProjectCANConfig{}) {
+		descriptors = append(descriptors, descriptor(managedGrowattLINKID, cfg.GrowattLINKCANConfig.Enabled, source(managedGrowattLINKID), sidecarNativeContract("github.com/Project-Helianthus/helianthus-canbusreg", "CX17LINKReceiveOnly"), newGrowattProjectCompositionAdapter(link, true)))
+	}
 	descriptors = gatewayManagedSidecarDescriptorsFor(append(descriptors,
 		descriptor(managedGrowattID, cfg.ModbusTCPConfig.GrowattBMSRS485.Enabled, growattSource, sidecarNativeContract("github.com/Project-Helianthus/helianthus-modbus", "RTUProductionEndpoint"), newGrowattManagedDriverFactory(cfg.ModbusTCPConfig.GrowattBMSRS485, modbusProviderGrowattBMS, hub, openGrowattBMSRTUEndpoint)),
 		descriptor(managedGrowattCANID, cfg.GrowattBMSCANConfig.Enabled, source(managedGrowattCANID), sidecarNativeContract("github.com/Project-Helianthus/helianthus-ebusgateway", "GrowattBMSCANReceiveOnly"), newGrowattBMSCANManagedFactory(cfg.GrowattBMSCANConfig, nil)),
@@ -120,7 +140,7 @@ func prepareManagedSidecars(ctx context.Context, cfg ebusgateway.Config, hub *se
 	for i := range descriptors {
 		// CAN is configured only by the host and is not a member of the
 		// closed Portal record. A failed record cannot select or withhold it.
-		if descriptors[i].DriverID == managedGrowattCANID {
+		if isGrowattCANDescriptor(descriptors[i].DriverID) {
 			continue
 		}
 		enabled, withheld := portalConfig.configure(descriptors[i].DriverID, descriptors[i].Disposition == runtimecontrol.DispositionEnabled)
@@ -165,7 +185,7 @@ func prepareManagedSidecars(ctx context.Context, cfg ebusgateway.Config, hub *se
 			registrationErrors[d.DriverID] = err
 		}
 	}
-	for _, id := range []runtimecontrol.DriverID{managedEEBusID, managedGrowattCANID, managedGrowattID} {
+	for _, id := range []runtimecontrol.DriverID{managedEEBusID, managedGrowattCANID, managedGrowattPCSID, managedGrowattLINKID, managedGrowattID} {
 		for _, d := range descriptors {
 			if d.DriverID == id {
 				registrationErrors[id] = registry.Register(d)
@@ -178,6 +198,9 @@ func prepareManagedSidecars(ctx context.Context, cfg ebusgateway.Config, hub *se
 			withheld = errors.Join(withheld, portal)
 		}
 		sidecar := &managedSidecar{descriptor: d, withheld: withheld}
+		if isGrowattCANDescriptor(d.DriverID) && canConfigErr != nil {
+			sidecar.withheld = errors.Join(sidecar.withheld, &managedSidecarStartError{reason: drivermanager.ReasonConfigInvalid}, canConfigErr)
+		}
 		if instance, ok := tcpInstances[d.DriverID]; ok {
 			sidecar.modbusTCP = &instance
 			if sidecar.withheld == nil && d.Disposition == runtimecontrol.DispositionEnabled && instance.withheld != "" {
@@ -237,8 +260,12 @@ func (sidecars *managedSidecars) driverConfigs() []drivermanager.DriverConfig {
 		if s.runtime == nil {
 			continue
 		}
+		capabilities := []drivermanager.Capability{drivermanager.CapabilityRead, drivermanager.CapabilityRawEvidence, drivermanager.CapabilitySemanticProjection}
+		if s.descriptor.DriverID == managedGrowattPCSID || s.descriptor.DriverID == managedGrowattLINKID {
+			capabilities = capabilities[:2]
+		}
 		configs = append(configs, drivermanager.DriverConfig{ID: string(s.descriptor.DriverID), Enabled: true, Runtime: s.runtime,
-			Capabilities:  []drivermanager.Capability{drivermanager.CapabilityRead, drivermanager.CapabilityRawEvidence, drivermanager.CapabilitySemanticProjection},
+			Capabilities:  capabilities,
 			ClassifyError: s.classifyStartFailure,
 			Retry:         drivermanager.RetryPolicy{Budget: 0},
 		})
@@ -330,25 +357,29 @@ func (sidecars *managedSidecars) bindNativeObservations(service *runtimecontrol.
 		if sidecar.runtime == nil || sidecar.manager == nil {
 			continue
 		}
-		if can, ok := sidecar.runtime.Runtime.(*growattBMSCANManagedDriver); ok {
-			can.reportFailure = func(native drivermanager.Correlation, lifecycle runtimecontrol.LifecycleCorrelation) {
-				// BindCorrelation follows manager admission but precedes the
-				// executor's START result. Let that result settle before reporting
-				// a post-admission failure, even if Receive failed immediately.
-				sidecar.mu.Lock()
-				started, current := sidecar.started, sidecar.key == lifecycle
-				sidecar.mu.Unlock()
-				if !current || started == nil {
-					return
-				}
-				<-started
-				failure := drivermanager.Failure{Reason: drivermanager.Reason{Code: drivermanager.ReasonProviderUnavailable}}
-				if sidecar.manager.ReportFailure(string(sidecar.descriptor.DriverID), native, failure) {
-					service.ObserveNative(lifecycle, runtimecontrol.NativeObservation{
-						State: drivermanager.ObservedFailed, Reason: failure.Reason.Code,
-					})
-				}
+		report := func(native drivermanager.Correlation, lifecycle runtimecontrol.LifecycleCorrelation) {
+			// BindCorrelation follows manager admission but precedes the
+			// executor's START result. Let that result settle before reporting
+			// a post-admission failure, even if Receive failed immediately.
+			sidecar.mu.Lock()
+			started, current := sidecar.started, sidecar.key == lifecycle
+			sidecar.mu.Unlock()
+			if !current || started == nil {
+				return
 			}
+			<-started
+			failure := drivermanager.Failure{Reason: drivermanager.Reason{Code: drivermanager.ReasonProviderUnavailable}}
+			if sidecar.manager.ReportFailure(string(sidecar.descriptor.DriverID), native, failure) {
+				service.ObserveNative(lifecycle, runtimecontrol.NativeObservation{
+					State: drivermanager.ObservedFailed, Reason: failure.Reason.Code,
+				})
+			}
+		}
+		if can, ok := sidecar.runtime.Runtime.(*growattBMSCANManagedDriver); ok {
+			can.reportFailure = report
+		}
+		if project, ok := sidecar.runtime.Runtime.(*growattProjectManagedRuntime); ok {
+			project.reportFailure = report
 		}
 	}
 }
@@ -989,4 +1020,180 @@ func modbusTCPInstanceAdapter(instance modbusTCPInstance, hub *semhub.Hub, contr
 		return newManagedSunSpecInstanceWork(ctx, adapter, contributions, generation, instance)
 	}
 	return newModbusInstanceDriverAdapter(instance.config, instance.pacing, hub, dialModbusEndpointFn, newModbusEndpointFn, work)
+}
+
+func isGrowattCANDescriptor(id runtimecontrol.DriverID) bool {
+	return id == managedGrowattCANID || id == managedGrowattPCSID || id == managedGrowattLINKID
+}
+
+// The wrapper reports receive termination through the existing manager/service
+// seams. It adds no operation, semantic producer or frame interpretation.
+type growattProjectManagedRuntime struct {
+	drivermanager.Runtime
+	open          growattProjectOpen
+	mu            sync.Mutex
+	session       *growattProjectManagedSession
+	lifecycle     runtimecontrol.LifecycleCorrelation
+	reportFailure func(drivermanager.Correlation, runtimecontrol.LifecycleCorrelation)
+}
+type growattProjectManagedSession struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	failed chan struct{}
+	once   sync.Once
+	bound  bool
+}
+type growattProjectObservedReceiver struct {
+	growattProjectReceiver
+	session *growattProjectManagedSession
+}
+
+func (r *growattProjectObservedReceiver) Receive(ctx context.Context) (growattProjectRecord, error) {
+	record, err := r.growattProjectReceiver.Receive(ctx)
+	if err != nil && ctx.Err() == nil && r.session.ctx.Err() == nil {
+		r.session.once.Do(func() { close(r.session.failed) })
+	}
+	return record, err
+}
+func newGrowattProjectCompositionAdapter(a growattProjectAdmission, link bool) runtimecontrol.LifecycleAdapter {
+	return runtimecontrol.NewAdapter(func(ctx context.Context, c runtimecontrol.Construction) (*growattProjectManagedRuntime, error) {
+		w := &growattProjectManagedRuntime{open: openGrowattProjectSocket}
+		open := func(name string) (growattProjectReceiver, error) {
+			w.mu.Lock()
+			session := w.session
+			w.mu.Unlock()
+			if session == nil || session.ctx.Err() != nil {
+				return nil, context.Canceled
+			}
+			r, err := w.open(name)
+			if r == nil {
+				return nil, err
+			}
+			return &growattProjectObservedReceiver{r, session}, err
+		}
+		adapter := newGrowattPCSManagedFactory(a.pcs, open, a.associate)
+		if link {
+			adapter = newGrowattLINKManagedDriverFactory(a.link, open, a.associate)
+		}
+		native, err := adapter.Construct(ctx, c)
+		if err != nil {
+			return nil, err
+		}
+		w.Runtime = native
+		return w, nil
+	})
+}
+func (w *growattProjectManagedRuntime) Start(ctx context.Context) (uint64, error) {
+	w.mu.Lock()
+	if w.session != nil {
+		w.mu.Unlock()
+		return 0, drivermanager.ErrUnavailable
+	}
+	lifetime, cancel := context.WithCancel(context.Background())
+	session := &growattProjectManagedSession{ctx: lifetime, cancel: cancel, failed: make(chan struct{})}
+	w.session = session
+	w.mu.Unlock()
+	generation, err := w.Runtime.Start(ctx)
+	if err != nil {
+		cancel()
+		w.mu.Lock()
+		if w.session == session {
+			w.session = nil
+		}
+		w.mu.Unlock()
+	}
+	return generation, err
+}
+func (w *growattProjectManagedRuntime) FenceWithdrawal() {
+	w.mu.Lock()
+	if w.session != nil {
+		w.session.cancel()
+	}
+	w.mu.Unlock()
+	if f, ok := w.Runtime.(interface{ FenceWithdrawal() }); ok {
+		f.FenceWithdrawal()
+	}
+}
+func (w *growattProjectManagedRuntime) Stop(ctx context.Context) error {
+	w.FenceWithdrawal()
+	err := w.Runtime.Stop(ctx)
+	if err == nil {
+		w.mu.Lock()
+		w.session = nil
+		w.mu.Unlock()
+	}
+	return err
+}
+func (w *growattProjectManagedRuntime) Replace(ctx context.Context) (uint64, error) {
+	if err := w.Stop(ctx); err != nil {
+		return 0, err
+	}
+	return w.Start(ctx)
+}
+func (w *growattProjectManagedRuntime) BindLifecycle(c runtimecontrol.LifecycleCorrelation) error {
+	w.mu.Lock()
+	w.lifecycle = c
+	w.mu.Unlock()
+	if b, ok := w.Runtime.(interface {
+		BindLifecycle(runtimecontrol.LifecycleCorrelation) error
+	}); ok {
+		return b.BindLifecycle(c)
+	}
+	return nil
+}
+func (w *growattProjectManagedRuntime) BindCorrelation(c drivermanager.Correlation) {
+	w.mu.Lock()
+	session, lifecycle, report := w.session, w.lifecycle, w.reportFailure
+	if session == nil || session.bound || session.ctx.Err() != nil || c.Generation != w.Generation() || report == nil {
+		w.mu.Unlock()
+		return
+	}
+	session.bound = true
+	w.mu.Unlock()
+	go func() {
+		select {
+		case <-session.failed:
+		case <-session.ctx.Done():
+			return
+		}
+		w.mu.Lock()
+		current := w.session == session && session.ctx.Err() == nil
+		w.mu.Unlock()
+		if current {
+			report(c, lifecycle)
+		}
+	}()
+}
+
+// Both bindings read detached native caches under the admitted generation's
+// existing sidecar lease. They never open an interface or register MCP tools.
+func (b *managedSidecarBindings) growattPCS(ctx context.Context, now time.Duration) (out growattProjectSnapshot, err error) {
+	err = b.entry(managedGrowattPCSID).with(ctx, func(native drivermanager.Runtime) error {
+		w, ok := native.(*growattProjectManagedRuntime)
+		if !ok {
+			return drivermanager.ErrUnavailable
+		}
+		d, ok := w.Runtime.(*growattPCSManagedDriver)
+		if !ok {
+			return drivermanager.ErrUnavailable
+		}
+		out = d.Snapshot(now)
+		return nil
+	})
+	return
+}
+func (b *managedSidecarBindings) growattLINK(ctx context.Context, now time.Duration) (out growattLINKSnapshot, err error) {
+	err = b.entry(managedGrowattLINKID).with(ctx, func(native drivermanager.Runtime) error {
+		w, ok := native.(*growattProjectManagedRuntime)
+		if !ok {
+			return drivermanager.ErrUnavailable
+		}
+		d, ok := w.Runtime.(*growattLINKManagedDriver)
+		if !ok {
+			return drivermanager.ErrUnavailable
+		}
+		out = d.Snapshot(now)
+		return nil
+	})
+	return
 }

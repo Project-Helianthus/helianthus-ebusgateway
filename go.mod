@@ -3,6 +3,8 @@ module github.com/Project-Helianthus/helianthus-ebusgateway
 go 1.22.0
 
 require (
+	github.com/Project-Helianthus/helianthus-canbus v0.0.0-20260823184549-cb4c25a1a389
+	github.com/Project-Helianthus/helianthus-canbusreg v0.0.0-20261108095356-eab34ceb18f6
 	github.com/Project-Helianthus/helianthus-ebusgo v0.5.1-0.20261027131913-af6c5843b1e3
 	github.com/Project-Helianthus/helianthus-ebusreg v0.0.0-20261016182529-f90a3e330da7
 	github.com/Project-Helianthus/helianthus-eebusreg v0.1.36
@@ -19,8 +21,6 @@ require (
 )
 
 require (
-	github.com/Project-Helianthus/helianthus-canbus v0.0.0-20260823184549-cb4c25a1a389 // indirect
-	github.com/Project-Helianthus/helianthus-canbusreg v0.0.0-20261108095356-eab34ceb18f6 // indirect
 	github.com/Project-Helianthus/helianthus-eebus-go v0.7.1-helianthus.21 // indirect
 	github.com/Project-Helianthus/helianthus-ship-go v0.6.1-helianthus.19 // indirect
 	github.com/Project-Helianthus/helianthus-spine-go v0.7.1-helianthus.9 // indirect

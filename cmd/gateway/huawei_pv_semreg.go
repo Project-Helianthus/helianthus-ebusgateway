@@ -51,8 +51,13 @@ type huaweiPVPublication struct {
 	label  string
 	active func() bool
 	fenced bool
-	origin time.Time
-	native modbusreg.HuaweiProviderCycle
+	// retireMu serializes epoch retirement. Stop and a failed startup's
+	// retirement can fence one generation concurrently, and Stop retries the
+	// fence; retired records the single successful retirement they share.
+	retireMu sync.Mutex
+	retired  bool
+	origin   time.Time
+	native   modbusreg.HuaweiProviderCycle
 	// latest is the most recent cycle offered to Publish. It is stored under
 	// mu with the published assets so status reads one coherent pair.
 	latest       modbusreg.HuaweiProviderCycle
@@ -195,6 +200,8 @@ func (p *huaweiPVPublication) point(at time.Time) semreg.MonotonicPoint {
 	return semreg.MonotonicPoint{ClockEpochID: semreg.ClockEpochID("clock:huawei:" + huaweiHash(string(p.handle.Epoch()))[:32]), Nanoseconds: semreg.Uint64(strconv.FormatInt(elapsed.Nanoseconds(), 10))}
 }
 func (p *huaweiPVPublication) Fence() error {
+	p.retireMu.Lock()
+	defer p.retireMu.Unlock()
 	p.mu.Lock()
 	p.fenced = true
 	observed := time.Now()
@@ -202,9 +209,15 @@ func (p *huaweiPVPublication) Fence() error {
 		observed = p.native.CompletedAt
 	}
 	p.mu.Unlock()
+	if p.retired {
+		return nil
+	}
 	// Retiring the stopped epoch withdraws its assets and lets a restart be
 	// admitted under a successor epoch rather than inheriting this one.
 	_, err := p.hub.RetireEpoch(semhub.RetireRequest{Source: p.handle.Source(), Epoch: p.handle.Epoch(), Reason: "lifecycle.source_stopped", Evidence: []semreg.EvidenceRef{huaweiEvidence("native.huawei.lifecycle", "managed epoch retirement")}, ObservedAt: growattWall(observed), Monotonic: p.point(observed)})
+	if err == nil {
+		p.retired = true
+	}
 	return err
 }
 func (p *huaweiPVPublication) Publish(cycle modbusreg.HuaweiProviderCycle) error {

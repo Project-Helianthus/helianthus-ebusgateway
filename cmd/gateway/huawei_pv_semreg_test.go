@@ -159,3 +159,49 @@ func TestH10StatusCycleSharesPublicationLock(t *testing.T) {
 		t.Fatalf("latest cycle not recorded under publication lock: %d", p.latest.Cycle)
 	}
 }
+
+// Stop and a failed startup's retirement can fence the same generation
+// concurrently, and Stop retries the fence after a native failure. Every pass
+// shares the single epoch retirement, so none of them reports the already
+// retired epoch as a failure.
+func TestH10ConcurrentSemanticFencesShareOneRetirement(t *testing.T) {
+	fixture := h10Load(t, "smartlogger")
+	provider, _, _, clock := h10Native(t, fixture)
+	cycle := h10Refresh(t, provider, clock)
+	hub := newTestSemanticHub(t)
+	var active atomic.Bool
+	active.Store(true)
+	publication, err := newHuaweiPVPublication(hub, "huawei-fence", "source:huawei-fence", "alpha", nil, active.Load)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := publication.Publish(cycle); err != nil {
+		t.Fatal(err)
+	}
+	active.Store(false)
+	work := &huaweiManagedWork{publication: publication}
+	const passes = 8
+	start := make(chan struct{})
+	results := make(chan error, passes)
+	for i := 0; i < passes; i++ {
+		go func() {
+			<-start
+			results <- work.FenceSemantic()
+		}()
+	}
+	close(start)
+	for i := 0; i < passes; i++ {
+		if err := <-results; err != nil {
+			t.Fatalf("concurrent fence pass failed: %v", err)
+		}
+	}
+	if err := work.FenceSemantic(); err != nil {
+		t.Fatalf("retried fence after retirement failed: %v", err)
+	}
+	for _, asset := range publication.published {
+		h10AssertWithdrawn(t, hub, asset)
+	}
+	if _, err := newHuaweiPVPublication(hub, "huawei-fence", "source:huawei-fence", "alpha", publication.handle, func() bool { return true }); err != nil {
+		t.Fatalf("successor refused after shared retirement: %v", err)
+	}
+}

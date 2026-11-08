@@ -618,6 +618,13 @@ generation's retained observations through the registry's fact-withdrawal
 path and the instance status lists each withdrawal (asset, source epoch,
 generation, count, reason `capacity`). The per-asset retained reservation is
 never raised and nothing is removed implicitly.
+A retired epoch keeps its source descriptor on every asset it published, and
+the semantic kernel bounds an asset at 32 source descriptors. A START whose
+new epoch could no longer publish on an asset of the instance source fails
+before any epoch is admitted, so the instance never runs without publication.
+The native status of an instance withheld for a reason other than its family
+(Portal record, descriptor collision, construction failure) is unavailable;
+only a family-level withholding reports a closed disposition.
 The generic MCP snapshot and GraphQL snapshot share the existing hub; the
 SunSpec single-asset outputs keep their existing contracts.
 

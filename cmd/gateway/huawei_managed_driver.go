@@ -199,6 +199,11 @@ func (p *managedModbusMCPProvider) HuaweiInstanceStatus(ctx context.Context, fam
 		return out, errors.New("huawei instance unavailable")
 	}
 	if entry.withheld != nil {
+		// Only a family-level withholding is a closed instance disposition.
+		// Portal, descriptor or construction withholding is a lifecycle failure.
+		if entry.modbusTCP.withheld == "" {
+			return out, errors.New("huawei instance unavailable")
+		}
 		out.Disposition = string(entry.modbusTCP.withheld)
 		return out, nil
 	}

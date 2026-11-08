@@ -164,9 +164,40 @@ func (p *huaweiPVPublication) capacityWithdrawals(asset semreg.AssetID, current 
 	return ids, records
 }
 
+// huaweiMaxAssetSources is the pinned kernel's per-asset bound on source
+// descriptors. A retired epoch keeps its descriptor, so every managed epoch
+// that published on an asset holds one slot of it for the asset's lifetime.
+const huaweiMaxAssetSources = 32
+
+var errHuaweiSourceCapacityExhausted = errors.New("huawei semantic source epoch capacity exhausted")
+
+// huaweiSourceCapacity refuses a new epoch when an asset of this source already
+// holds the kernel's source-descriptor bound: that epoch could never publish
+// on the asset, so the START fails instead of running without publication.
+func huaweiSourceCapacity(hub *semhub.Hub, source semreg.SourceID) error {
+	for _, id := range hub.AssetIDs() {
+		view, err := hub.Inspect(id)
+		if err != nil {
+			continue
+		}
+		for _, descriptor := range view.Snapshot.Sources {
+			if descriptor.SourceID == source {
+				if len(view.Snapshot.Sources) >= huaweiMaxAssetSources {
+					return errHuaweiSourceCapacityExhausted
+				}
+				break
+			}
+		}
+	}
+	return nil
+}
+
 func newHuaweiPVPublication(hub *semhub.Hub, driver, source, label string, previous *semhub.Handle, active func() bool) (*huaweiPVPublication, error) {
 	if hub == nil || !validModbusTCPLabel(label) || semhub.ValidateOpaque(source) != nil || active == nil {
 		return nil, errors.New("huawei semantic identity unavailable")
+	}
+	if err := huaweiSourceCapacity(hub, semreg.SourceID(source)); err != nil {
+		return nil, err
 	}
 	class, err := hub.DeclareClass(semhub.ClassSpec{Name: "huawei_pv", Driver: driver, Validators: func() []semreg.PackValidator { return []semreg.PackValidator{pv.New()} }, OnControl: func(semhub.ControlEvent) error { return nil }})
 	if err != nil {

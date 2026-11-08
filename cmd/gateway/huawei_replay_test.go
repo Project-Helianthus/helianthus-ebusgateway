@@ -17,6 +17,7 @@ import (
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimecontrol"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semanticview"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
@@ -838,6 +839,113 @@ func TestH10ThirdGenerationWithdrawsOldestRetainedForCapacity(t *testing.T) {
 	last.mu.Unlock()
 	if len(status) != len(assets) || status[0].Reason != "capacity" || status[0].Generation != "1" || status[0].Count == 0 || status[0].SourceEpochID == "" {
 		t.Fatalf("driver status omits the capacity withdrawal: %+v", status)
+	}
+}
+
+// Every published epoch keeps its retired source descriptor on each asset, and
+// the pinned kernel bounds an asset at 32 descriptors. Restarts beyond that
+// bound fail START explicitly instead of running a generation that can never
+// publish, and the refusal admits no epoch. Its 33 restarts run in the full
+// race suite rather than the focused, time-bounded H10 mapping run.
+func TestHuaweiSourceEpochCapacityExhaustionFailsStart(t *testing.T) {
+	native, _, _, clock := h10Native(t, h10Load(t, "smartlogger"))
+	cycle := h10Refresh(t, native, clock)
+	// One admitted inverter keeps 33 restarts affordable; the bound is per asset.
+	for _, child := range cycle.Children {
+		if child.Evidence != modbusreg.HuaweiProviderEvidenceWithheld {
+			cycle.Children = []modbusreg.HuaweiProviderChildObservation{child}
+			break
+		}
+	}
+	assets := []semreg.AssetID{huaweiAssetID("alpha", "pv", cycle.Children[0].UnitID)}
+	hub := newTestSemanticHub(t)
+	var mu sync.Mutex
+	var previous *semhub.Handle
+	var publications []*huaweiPVPublication
+	driver := m03Driver(t, true, func(modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) {
+		return &m03Endpoint{}, nil
+	}, func(ctx context.Context, adapter *modbusadapter.Adapter) modbusManagedWork {
+		run, cancel := context.WithCancel(ctx)
+		mu.Lock()
+		defer mu.Unlock()
+		publication, err := newHuaweiPVPublication(hub, "pv.primary", "pv.configured", "alpha", previous, adapter.PublicationActive)
+		if err == nil {
+			previous = publication.handle
+			publications = append(publications, publication)
+		}
+		return &huaweiManagedWork{ctx: run, cancel: cancel, adapter: adapter, instance: modbusTCPInstance{label: "alpha", family: modbusTCPFamilyHuaweiSmartLogger, cycle: time.Hour}, publication: publication, provider: &h10SingleCycleProvider{cycle: cycle}, err: err, done: make(chan struct{})}
+	})
+	for epoch := 1; epoch <= huaweiMaxAssetSources; epoch++ {
+		if _, err := driver.Start(context.Background()); err != nil {
+			t.Fatalf("START %d: %v", epoch, err)
+		}
+		var current *huaweiPVPublication
+		m03Eventually(t, fmt.Sprintf("epoch %d publication", epoch), func() bool {
+			mu.Lock()
+			defer mu.Unlock()
+			if len(publications) != epoch {
+				return false
+			}
+			current = publications[epoch-1]
+			current.mu.Lock()
+			defer current.mu.Unlock()
+			return len(current.published) == len(assets)
+		})
+		for _, asset := range assets {
+			view, err := hub.Inspect(asset)
+			if err != nil || len(view.Snapshot.Facts) == 0 {
+				t.Fatalf("epoch %d did not publish facts: %v", epoch, err)
+			}
+			for _, envelope := range view.Snapshot.Facts {
+				for _, candidate := range envelope.Candidates {
+					if candidate.SourceEpochID == nil || *candidate.SourceEpochID != current.handle.Epoch() {
+						t.Fatalf("epoch %d published a fact of another epoch", epoch)
+					}
+				}
+			}
+		}
+		if err := driver.Stop(context.Background()); err != nil {
+			t.Fatalf("STOP %d: %v", epoch, err)
+		}
+	}
+	for _, asset := range assets {
+		view, err := hub.Inspect(asset)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(view.Snapshot.Sources) != huaweiMaxAssetSources {
+			t.Fatalf("asset holds %d source descriptors, want %d", len(view.Snapshot.Sources), huaweiMaxAssetSources)
+		}
+	}
+	for attempt := 1; attempt <= 2; attempt++ {
+		if _, err := driver.Start(context.Background()); !errors.Is(err, errHuaweiSourceCapacityExhausted) {
+			t.Fatalf("START beyond the source bound (attempt %d) = %v, want capacity exhaustion", attempt, err)
+		}
+		mu.Lock()
+		admitted := len(publications)
+		mu.Unlock()
+		if admitted != huaweiMaxAssetSources {
+			t.Fatalf("refused START admitted an epoch: %d publications", admitted)
+		}
+	}
+	for _, asset := range assets {
+		h10AssertWithdrawn(t, hub, asset)
+	}
+}
+
+// A Huawei sidecar withheld for a non-family reason (Portal record, descriptor
+// collision or construction failure) is unavailable; only a family-level
+// withholding reports a closed instance disposition.
+func TestH10NonFamilyWithholdingReportsUnavailable(t *testing.T) {
+	sidecar := &managedSidecar{descriptor: runtimecontrol.Descriptor{DriverID: "modbus.huawei.smartlogger.alpha"}, withheld: errPortalConfigWithheld, modbusTCP: &modbusTCPInstance{label: "alpha", family: modbusTCPFamilyHuaweiSmartLogger}}
+	provider := newManagedModbusMCPProvider(&managedSidecarBindings{sidecars: &managedSidecars{entries: []*managedSidecar{sidecar}}}, ebusgateway.ModbusTCPConfig{}, nil)
+	if status, err := provider.HuaweiInstanceStatus(context.Background(), "huawei.smartlogger", "alpha"); err == nil {
+		t.Fatalf("non-family withholding reported as a successful disposition %q", status.Disposition)
+	}
+	sidecar.modbusTCP.withheld = "NO_ADMITTED_CHILD_PROFILE"
+	status, err := provider.HuaweiInstanceStatus(context.Background(), "huawei.smartlogger", "alpha")
+	if err != nil || status.Disposition != "NO_ADMITTED_CHILD_PROFILE" {
+		t.Fatalf("family withholding disposition = %q, %v", status.Disposition, err)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 )
@@ -313,7 +314,11 @@ func validTimestamp(s string) bool {
 		if len(sec) != 8 || sec[2] != ':' || sec[5] != ':' {
 			return false
 		}
-		return decimalTimestamp(strings.ReplaceAll(clock, ":", ""))
+		if !decimalTimestamp(strings.ReplaceAll(clock, ":", "")) {
+			return false
+		}
+		_, err := time.Parse("2006-01-02 15:04:05", date+" "+sec)
+		return err == nil
 	}
 	return decimalTimestamp(s)
 }

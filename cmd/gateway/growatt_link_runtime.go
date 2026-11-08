@@ -104,6 +104,16 @@ type growattLINKManagedDriver struct {
 	fence                atomic.Pointer[growattLINKFence]
 	metadataMu           sync.Mutex
 	counts               map[canbusreg.CXSelection][]growattLINKCount
+	admitted             map[canbusreg.CXSelection]growattLINKAdmitted
+}
+
+// growattLINKAdmitted is the latest count seen on an admitted descriptive
+// record. It outlives eviction from the bounded diagnostic ring so duplicate
+// observations cannot invalidate coverage of unchanged accepted cells.
+type growattLINKAdmitted struct {
+	generation uint64
+	count      int
+	valid      bool
 }
 
 var _ drivermanager.Runtime = (*growattLINKManagedDriver)(nil)
@@ -302,6 +312,7 @@ func (d *growattLINKManagedDriver) Snapshot(now time.Duration) growattLINKSnapsh
 			p.Promotable = false
 		}
 		v := canbusreg.CX12VectorSnapshot{Selection: p.Selection, Kind: "cells", AddressableSlots: 16, AsOf: now, MaxAge: d.provider.staleAfter, Fields: map[int]canbusreg.CXNativeField{}, LastGood: map[int]canbusreg.CXNativeField{}}
+		found := false
 		for j := len(p.Raw) - 1; j >= 0; j-- {
 			r := p.Raw[j]
 			if r.Generation != d.generation || r.Status != "descriptive" {
@@ -313,10 +324,20 @@ func (d *growattLINKManagedDriver) Snapshot(now time.Duration) growattLINKSnapsh
 				if c.selection == p.Selection && c.evidence == r.Input.Evidence {
 					v.ConfiguredCount = c.count
 					v.CountValid = c.valid && c.count >= 1 && c.count <= 16
+					if d.admitted == nil {
+						d.admitted = map[canbusreg.CXSelection]growattLINKAdmitted{}
+					}
+					d.admitted[p.Selection] = growattLINKAdmitted{d.generation, v.ConfiguredCount, v.CountValid}
+					found = true
 					break
 				}
 			}
 			break
+		}
+		if !found {
+			if a, ok := d.admitted[p.Selection]; ok && a.generation == d.generation {
+				v.ConfiguredCount, v.CountValid = a.count, a.valid
+			}
 		}
 		var minAge, maxAge, first, last time.Duration
 		for i := 1; i <= 16; i++ {

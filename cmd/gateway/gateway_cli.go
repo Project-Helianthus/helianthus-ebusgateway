@@ -39,6 +39,7 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) *gatewayFlagInputs {
 		return inputs
 	}
 	bindModbusTCPFlagInputs(&cfg.ModbusTCPConfig, inputs)
+	bindGrowattProjectFlags(fs, cfg)
 
 	fs.StringVar((*string)(&cfg.TransportConfig.Protocol), "transport", string(cfg.TransportConfig.Protocol), "transport protocol: enh, ens, udp-plain, tcp-plain, or ebusd-tcp")
 	fs.StringVar(&cfg.TransportConfig.Network, "network", cfg.TransportConfig.Network, "transport network: unix, tcp, or udp")

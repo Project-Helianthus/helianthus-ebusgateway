@@ -74,6 +74,17 @@ type TransportConfig struct {
 	Dial         func(ctx context.Context, network, address string, timeout time.Duration) (net.Conn, error)
 }
 
+// GrowattProjectCANConfig carries explicit PCS or LINK admission inputs. It is
+// inert until the managed composition validates the complete selection.
+// Context is strict JSON; no route or association is inferred from traffic.
+type GrowattProjectCANConfig struct {
+	Enabled, ListenOnlyConfirmed                                     bool
+	Interface                                                        string
+	StaleAfter                                                       time.Duration
+	ProjectCode, Release, NativeProfile, Scope, Bank, NativeContract string
+	SourceSelectors, Context                                         string
+}
+
 // GrowattBMSCANConfig carries the disabled-by-default receive-only CAN options.
 // ListenOnlyConfirmed records operator confirmation; it does not configure or
 // verify the controller's physical mode. StaleAfter must be positive when enabled.
@@ -312,6 +323,8 @@ type Config struct {
 	ProxyListenAddr          string                 // TCP listen address for ENH proxy clients (empty disables)
 	TransportConfig          TransportConfig
 	GrowattBMSCANConfig      GrowattBMSCANConfig
+	GrowattPCSCANConfig      GrowattProjectCANConfig
+	GrowattLINKCANConfig     GrowattProjectCANConfig
 	EEBusConfig              EEBusConfig
 	M2MGraphQL               M2MGraphQLConfig
 	PortalPV                 PortalPVConfig

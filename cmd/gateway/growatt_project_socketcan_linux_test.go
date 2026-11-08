@@ -8,6 +8,7 @@ import (
 	"golang.org/x/sys/unix"
 	"net"
 	"testing"
+	"time"
 )
 
 func TestCX18LinuxInjected(t *testing.T) {
@@ -114,5 +115,44 @@ func TestCX18LinuxInjected(t *testing.T) {
 				t.Fatal("close repeated")
 			}
 		})
+	}
+}
+
+func TestCX18ReopenKeepsOneClock(t *testing.T) {
+	ops := growattProjectSyscalls{
+		lookup: func(name string) (*net.Interface, error) { return &net.Interface{Name: name, Index: 7}, nil },
+		socket: func(int, int, int) (int, error) { return 9, nil },
+		bind:   func(int, unix.Sockaddr) error { return nil },
+		poll: func(fds []unix.PollFd, _ int) (int, error) {
+			fds[0].Revents = unix.POLLIN
+			return 1, nil
+		},
+		read:  func(_ int, b []byte) (int, error) { b[4] = 8; return 16, nil },
+		close: func(int) error { return nil },
+	}
+	first, err := openGrowattProjectSocketWith("can0", ops)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := first.Receive(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(5 * time.Millisecond)
+	_ = first.Close()
+	second, err := openGrowattProjectSocketWith("can0", ops)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	b, err := second.Receive(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Monotonic <= a.Monotonic {
+		t.Fatalf("clock restarted: %v then %v", a.Monotonic, b.Monotonic)
+	}
+	if now := growattProjectNow(); now < b.Monotonic {
+		t.Fatalf("snapshot clock behind receive clock: %v < %v", now, b.Monotonic)
 	}
 }

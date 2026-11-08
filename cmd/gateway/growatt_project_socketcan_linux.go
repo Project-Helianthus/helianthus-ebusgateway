@@ -24,11 +24,17 @@ type growattProjectSyscalls struct {
 	close  func(int) error
 }
 
+// growattProjectClockOrigin is shared by every receiver and by snapshot callers,
+// so receive timestamps stay on one continuing clock across reopen.
+var growattProjectClockOrigin = time.Now()
+
+// growattProjectNow returns the current time on the shared receive clock.
+func growattProjectNow() time.Duration { return time.Since(growattProjectClockOrigin) }
+
 type growattProjectSocket struct {
 	identity canbus.InterfaceIdentity
 	fd       int
 	ops      growattProjectSyscalls
-	start    time.Time
 	sequence uint64
 	once     sync.Once
 	closeErr error
@@ -56,7 +62,7 @@ func openGrowattProjectSocketWith(name string, ops growattProjectSyscalls) (grow
 	if err != nil {
 		return nil, err
 	}
-	socket := &growattProjectSocket{identity: identity, fd: fd, ops: ops, start: time.Now()}
+	socket := &growattProjectSocket{identity: identity, fd: fd, ops: ops}
 	if err := ops.bind(fd, &unix.SockaddrCAN{Ifindex: device.Index}); err != nil {
 		if closeErr := socket.Close(); closeErr != nil {
 			return socket, errors.Join(err, closeErr)
@@ -97,7 +103,7 @@ func (s *growattProjectSocket) Receive(ctx context.Context) (growattProjectRecor
 			return growattProjectRecord{}, errors.New("invalid SocketCAN read length")
 		}
 		s.sequence++
-		return growattProjectRecord{Interface: s.identity, Raw: append([]byte(nil), raw[:n]...), Sequence: s.sequence, Monotonic: time.Since(s.start)}, nil
+		return growattProjectRecord{Interface: s.identity, Raw: append([]byte(nil), raw[:n]...), Sequence: s.sequence, Monotonic: growattProjectNow()}, nil
 	}
 }
 func (s *growattProjectSocket) Close() error {

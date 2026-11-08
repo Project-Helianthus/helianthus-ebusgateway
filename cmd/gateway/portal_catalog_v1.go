@@ -92,10 +92,11 @@ func (i *gatewayPortalSemanticIndex) OperationMatches(o, c, s, a, e contribution
 	return i != nil && i.metadata != nil && i.metadata.OperationMatches(semanticRef(o), semanticRef(c), semanticRef(s), semanticRef(a), semanticRef(e))
 }
 
-// No Portal descriptor currently exposes native diagnostics.  Failing closed
-// here prevents a future descriptor from inventing a native member.
-func (*gatewayPortalSemanticIndex) HasNativeMember(contributionv1.NativeContractRef, string, string) bool {
-	return false
+// Only the Huawei instance contribution exposes native diagnostics, and only
+// its closed status members. Every other member fails closed, so a descriptor
+// cannot invent a native member.
+func (*gatewayPortalSemanticIndex) HasNativeMember(contract contributionv1.NativeContractRef, kind, member string) bool {
+	return huaweiPortalNativeMember(contract, kind, member)
 }
 
 func gatewayPortalPVDescriptor() contributionv1.Manifest {

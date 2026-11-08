@@ -239,23 +239,27 @@ EMMA remains withheld (`NO_ADMITTED_CHILD_PROFILE`) until its native contract
 admits acquisition. Every physical row remains **Not run** until the separately
 authorized hardware session supplies evidence. The
 per-row evidence record rule above applies to each row; a family summary
-cannot replace its four rows. The governing references are completed by the
-issues that compose and publish each family.
+cannot replace its four rows. Each row names its governing references: the
+[PV composition][huawei-pv-composition], the [PV mapping][huawei-pv], the
+withheld-only [storage][huawei-storage] and [gateway-meter][huawei-meter]
+gates, and the [storage, meter and Portal composition][huawei-h11] with its
+offline composed fixture. Those references govern the procedure only. Offline
+fixtures fill no result cell.
 
 | Case / family | Governing reference and scope | Result | Evidence grade | Qualification | Admission |
 |---|---|---|---|---|---|
-| HUAWEI-SMARTLOGGER identity | [Multi-endpoint contract][modbus-multi], family `huawei.smartlogger`: the declared family's own bounded identity reads on one configured instance; no other family's reads | Not run | Unknown | Unassessed | Unassessed |
-| HUAWEI-SMARTLOGGER monitoring publication | [Multi-endpoint contract][modbus-multi], family `huawei.smartlogger`: per-instance publication under the instance source and asset rule; withheld instances publish nothing | Not run | Unknown | Unassessed | Unassessed |
-| HUAWEI-SMARTLOGGER degraded and reconnect | [Multi-endpoint contract][modbus-multi], family `huawei.smartlogger`: per-instance failure isolation, one request in flight with the configured gap and settle wait, reconnect backoff; other instances, eBUS, HTTP and MCP unaffected | Not run | Unknown | Unassessed | Unassessed |
-| HUAWEI-SMARTLOGGER negative cross-family | [Multi-endpoint contract][modbus-multi], family `huawei.smartlogger`: an instance facing another family's identity is withheld and never switches family | Not run | Unknown | Unassessed | Unassessed |
-| HUAWEI-EMMA identity | [Multi-endpoint contract][modbus-multi], family `huawei.emma`: the declared family's own bounded identity reads on one configured instance; no other family's reads | Not run | Unknown | Unassessed | Unassessed |
-| HUAWEI-EMMA monitoring publication | [Multi-endpoint contract][modbus-multi], family `huawei.emma`: per-instance publication under the instance source and asset rule; withheld instances publish nothing | Not run | Unknown | Unassessed | Unassessed |
-| HUAWEI-EMMA degraded and reconnect | [Multi-endpoint contract][modbus-multi], family `huawei.emma`: per-instance failure isolation, one request in flight with the configured gap and settle wait, reconnect backoff; other instances, eBUS, HTTP and MCP unaffected | Not run | Unknown | Unassessed | Unassessed |
-| HUAWEI-EMMA negative cross-family | [Multi-endpoint contract][modbus-multi], family `huawei.emma`: an instance facing another family's identity is withheld and never switches family | Not run | Unknown | Unassessed | Unassessed |
-| HUAWEI-SDONGLE identity | [Multi-endpoint contract][modbus-multi], family `huawei.sdongle`: the declared family's own bounded identity reads on one configured instance; no other family's reads | Not run | Unknown | Unassessed | Unassessed |
-| HUAWEI-SDONGLE monitoring publication | [Multi-endpoint contract][modbus-multi], family `huawei.sdongle`: per-instance publication under the instance source and asset rule; withheld instances publish nothing | Not run | Unknown | Unassessed | Unassessed |
-| HUAWEI-SDONGLE degraded and reconnect | [Multi-endpoint contract][modbus-multi], family `huawei.sdongle`: per-instance failure isolation, one request in flight with the configured gap and settle wait, reconnect backoff; other instances, eBUS, HTTP and MCP unaffected | Not run | Unknown | Unassessed | Unassessed |
-| HUAWEI-SDONGLE negative cross-family | [Multi-endpoint contract][modbus-multi], family `huawei.sdongle`: an instance facing another family's identity is withheld and never switches family | Not run | Unknown | Unassessed | Unassessed |
+| HUAWEI-SMARTLOGGER identity | [Multi-endpoint contract][modbus-multi] and [PV composition][huawei-pv-composition], family `huawei.smartlogger`: the declared family's own bounded identity reads on one configured instance; no other family's reads | Not run | Unknown | Unassessed | Unassessed |
+| HUAWEI-SMARTLOGGER monitoring publication | [Multi-endpoint contract][modbus-multi], [PV mapping][huawei-pv], [storage gate][huawei-storage], [gateway-meter gate][huawei-meter] and [Portal contribution][huawei-h11], family `huawei.smartlogger`: per-instance publication under the instance source and asset rule; withheld instances publish nothing; no storage or meter fact is published while both gates are withheld-only | Not run | Unknown | Unassessed | Unassessed |
+| HUAWEI-SMARTLOGGER degraded and reconnect | [Multi-endpoint contract][modbus-multi] and [PV composition][huawei-pv-composition], family `huawei.smartlogger`: per-instance failure isolation, one request in flight with the configured gap and settle wait, reconnect backoff; other instances, eBUS, HTTP and MCP unaffected | Not run | Unknown | Unassessed | Unassessed |
+| HUAWEI-SMARTLOGGER negative cross-family | [Multi-endpoint contract][modbus-multi] and [composed fixture][huawei-h11], family `huawei.smartlogger`: an instance facing another family's identity is withheld and never switches family | Not run | Unknown | Unassessed | Unassessed |
+| HUAWEI-EMMA identity | [Multi-endpoint contract][modbus-multi] and [registry issue 199][registry-199] (withheld `NO_ADMITTED_CHILD_PROFILE`), family `huawei.emma`: the declared family's own bounded identity reads on one configured instance; no other family's reads | Not run | Unknown | Unassessed | Unassessed |
+| HUAWEI-EMMA monitoring publication | [Multi-endpoint contract][modbus-multi] and [registry issue 199][registry-199] (withheld `NO_ADMITTED_CHILD_PROFILE`), family `huawei.emma`: per-instance publication under the instance source and asset rule; withheld instances publish nothing | Not run | Unknown | Unassessed | Unassessed |
+| HUAWEI-EMMA degraded and reconnect | [Multi-endpoint contract][modbus-multi] and [registry issue 199][registry-199] (withheld `NO_ADMITTED_CHILD_PROFILE`), family `huawei.emma`: per-instance failure isolation, one request in flight with the configured gap and settle wait, reconnect backoff; other instances, eBUS, HTTP and MCP unaffected | Not run | Unknown | Unassessed | Unassessed |
+| HUAWEI-EMMA negative cross-family | [Multi-endpoint contract][modbus-multi] and [registry issue 199][registry-199] (withheld `NO_ADMITTED_CHILD_PROFILE`), family `huawei.emma`: an instance facing another family's identity is withheld and never switches family | Not run | Unknown | Unassessed | Unassessed |
+| HUAWEI-SDONGLE identity | [Multi-endpoint contract][modbus-multi] and [PV composition][huawei-pv-composition], family `huawei.sdongle`: the declared family's own bounded identity reads on one configured instance; no other family's reads | Not run | Unknown | Unassessed | Unassessed |
+| HUAWEI-SDONGLE monitoring publication | [Multi-endpoint contract][modbus-multi], [PV mapping][huawei-pv], [storage gate][huawei-storage], [gateway-meter gate][huawei-meter] and [Portal contribution][huawei-h11], family `huawei.sdongle`: per-instance publication under the instance source and asset rule; withheld instances publish nothing; no storage or meter fact is published while both gates are withheld-only | Not run | Unknown | Unassessed | Unassessed |
+| HUAWEI-SDONGLE degraded and reconnect | [Multi-endpoint contract][modbus-multi] and [PV composition][huawei-pv-composition], family `huawei.sdongle`: per-instance failure isolation, one request in flight with the configured gap and settle wait, reconnect backoff; other instances, eBUS, HTTP and MCP unaffected | Not run | Unknown | Unassessed | Unassessed |
+| HUAWEI-SDONGLE negative cross-family | [Multi-endpoint contract][modbus-multi] and [composed fixture][huawei-h11], family `huawei.sdongle`: an instance facing another family's identity is withheld and never switches family | Not run | Unknown | Unassessed | Unassessed |
 
 ### Prior RTU evidence and its limits
 
@@ -300,6 +304,12 @@ offline RTU gate.
 [rtu]: https://github.com/Project-Helianthus/helianthus-modbus/pull/40
 [rtu-pin]: https://github.com/Project-Helianthus/helianthus-ebusgateway/pull/1092
 [modbus-multi]: https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/api/modbus-multi-endpoint-runtime.md
+[huawei-pv-composition]: ../architecture/managed-sidecar-composition.md#huawei-read-only-pv-composition
+[huawei-h11]: ../architecture/managed-sidecar-composition.md#huawei-storage-meter-and-portal-contribution
+[huawei-pv]: https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/main/api/v1/mappings/huawei-sun2000-pv-v1.md
+[huawei-storage]: https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/main/api/v1/mappings/huawei-luna2000-storage-v1.md
+[huawei-meter]: https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/main/api/v1/mappings/huawei-gateway-meter-infrastructure-v1.md
+[registry-199]: https://github.com/Project-Helianthus/helianthus-modbusreg/issues/199
 
 
 ## Huawei managed PV slice
@@ -316,3 +326,16 @@ A completed focused/full gate result remains necessary before shipping.
 EMMA stays withheld as `NO_ADMITTED_CHILD_PROFILE`, pending
 [registry issue 199](https://github.com/Project-Helianthus/helianthus-modbusreg/issues/199).
 Storage, meter, Portal and live-device acceptance remain outside this slice.
+
+## Huawei storage, meter and Portal slice
+
+Refs [gateway issue 1364](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1364).
+`TestH11` covers one composed offline fixture through the managed setup
+entrypoint and lifecycle. The fixture has synthetic SmartLogger and S-Dongle
+instances, a withheld EMMA instance, two cross-family instances and the existing
+SunSpec instance. The test covers lifecycle, publication, GraphQL, MCP, the
+per-instance Portal contribution, STOP and RESTART. The storage and gateway-meter
+gates are withheld-only, so no storage or meter fact is published, and the
+instance status names both explicit native losses. These fixtures establish
+this bounded software chain only, not family support, physical qualification or
+hardware acceptance. Every physical row above remains **Not run**.

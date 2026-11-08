@@ -417,3 +417,18 @@ func TestCX02CompactFDRequiresFlagsNibble(t *testing.T) {
 		}
 	}
 }
+
+func TestCX02CompactSuffixAndFDBounds(t *testing.T) {
+	short := classify(t, "can0 311#1122_E", Options{}).Frames[0]
+	if !strings.Contains(strings.Join(short.Diagnostics, ";"), "raw DLC suffix requires eight data bytes") {
+		t.Fatal(short.Diagnostics)
+	}
+	long := classify(t, "can0 123##1"+strings.Repeat("00", 65), Options{}).Frames[0]
+	if !strings.Contains(strings.Join(long.Diagnostics, ";"), "FD payload exceeds 64 bytes") {
+		t.Fatal(long.Diagnostics)
+	}
+	ok := classify(t, "can0 123##1"+strings.Repeat("00", 64), Options{}).Frames[0]
+	if strings.Contains(strings.Join(ok.Diagnostics, ";"), "exceeds") {
+		t.Fatal(ok.Diagnostics)
+	}
+}

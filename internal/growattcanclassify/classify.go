@@ -187,6 +187,9 @@ func parse(line int, raw string) Frame {
 			if n := len(f.Payload); n >= 2 && f.Payload[n-2] == '_' && strings.ContainsRune("9ABCDEFabcdef", rune(f.Payload[n-1])) {
 				f.RawDLC = f.Payload[n-1:]
 				f.Payload = f.Payload[:n-2]
+				if len(f.Payload) != 16 && !strings.HasPrefix(f.Payload, "R") && !strings.HasPrefix(f.Payload, "r") {
+					f.Diagnostics = append(f.Diagnostics, "raw DLC suffix requires eight data bytes")
+				}
 			}
 		}
 		if strings.HasPrefix(f.Payload, "#") {
@@ -216,6 +219,9 @@ func parse(line int, raw string) Frame {
 			f.DLC = rtrLength
 		} else {
 			f.DLC = len(f.Payload) / 2
+			if containsFlag(f.Flags, "FD") && f.DLC > 64 {
+				f.Diagnostics = append(f.Diagnostics, "FD payload exceeds 64 bytes")
+			}
 		}
 	} else {
 		id = entry
@@ -489,4 +495,13 @@ func setIdentifier(f *Frame, id string) {
 	if value > 0x1fffffff {
 		f.Diagnostics = append(f.Diagnostics, "identifier outside classical range")
 	}
+}
+
+func containsFlag(flags []string, want string) bool {
+	for _, flag := range flags {
+		if flag == want {
+			return true
+		}
+	}
+	return false
 }

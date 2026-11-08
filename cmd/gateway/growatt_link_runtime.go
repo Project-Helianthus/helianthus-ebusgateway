@@ -51,15 +51,9 @@ func newGrowattLINKManagedDriverFactory(config ebusgateway.GrowattLINKConfig, op
 				history = history[:255]
 			}
 			d.counts[s] = append(history, growattLINKCount{s, e, in.CellCount, in.CellCountValid})
-			// Native admission rejects an observation that is not newer than the
-			// last one, so only a newer one can become the retained count. This
-			// keeps the count independent of when a snapshot is taken.
-			if a, ok := d.admitted[s]; !ok || (e.Sequence > a.sequence && e.Monotonic >= a.monotonic) {
-				if d.admitted == nil {
-					d.admitted = map[canbusreg.CXSelection]growattLINKAdmitted{}
-				}
-				d.admitted[s] = growattLINKAdmitted{sequence: e.Sequence, monotonic: e.Monotonic, count: in.CellCount, valid: in.CellCountValid}
-			}
+			// Retained counts are recorded only by Snapshot, from a record native
+			// admission confirmed as descriptive; an unconfirmed association never
+			// becomes the retained count.
 			d.metadataMu.Unlock()
 			return in
 		})
@@ -215,14 +209,21 @@ func (d *growattLINKManagedDriver) FenceWithdrawal() {
 func (d *growattLINKManagedDriver) Stop(ctx context.Context) error {
 	d.FenceWithdrawal()
 	d.mu.Lock()
-	if d.operation != nil {
+	for d.operation != nil {
 		done := d.operation
+		waited := d.generation
 		d.mu.Unlock()
 		select {
 		case <-done:
-			return d.Stop(ctx)
 		case <-ctx.Done():
 			return ctx.Err()
+		}
+		d.mu.Lock()
+		if d.generation != waited {
+			// A restart began after the awaited operation; the successor
+			// generation is not this caller's to stop.
+			d.mu.Unlock()
+			return nil
 		}
 	}
 	if !d.active {

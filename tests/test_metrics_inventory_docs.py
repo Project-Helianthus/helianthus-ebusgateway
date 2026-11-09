@@ -217,8 +217,16 @@ def test_inventory_and_documentation(analysis):
     validate(json.loads((ROOT / "docs/metrics-inventory.json").read_text()), (ROOT / PAGE).read_text(), analysis)
 
 
-@pytest.mark.parametrize("mutation", ["missing_family", "expvar_promotion", "wrong_type", "missing_enablement", "wrong_labels", "missing_dynamic_field"])
-def test_independent_negative_inventory_mutations(analysis, mutation):
+@pytest.mark.parametrize(("mutation", "rejection"), [
+    ("missing_family", "rendered family inventory mismatch"),
+    ("expvar_promotion", "rendered family inventory mismatch"),
+    ("wrong_type", "ebus_frames_observed_total: wrong type"),
+    ("missing_enablement", "ebus_bus_busy_ratio: missing enablement"),
+    ("wrong_labels", "ebus_errors_total: wrong labels"),
+    ("missing_dynamic_field", "rendered family inventory mismatch"),
+    ("wrong_source", "ebus_frames_observed_total: wrong source"),
+])
+def test_independent_negative_inventory_mutations(analysis, mutation, rejection):
     inventory = json.loads((ROOT / "docs/metrics-inventory.json").read_text())
     if mutation == "missing_family":
         inventory["families"] = [r for r in inventory["families"] if r["name"] != "ebus_frames_observed_total"]
@@ -227,13 +235,25 @@ def test_independent_negative_inventory_mutations(analysis, mutation):
     elif mutation == "wrong_type":
         next(r for r in inventory["families"] if r["name"] == "ebus_frames_observed_total")["type"] = "gauge"
     elif mutation == "missing_enablement":
-        del next(r for r in inventory["families"] if r["name"] == "ebus_bus_busy_ratio")["enablement"]
+        next(r for r in inventory["families"] if r["name"] == "ebus_bus_busy_ratio")["enablement"] = ""
     elif mutation == "wrong_labels":
         next(r for r in inventory["families"] if r["name"] == "ebus_errors_total")["labels"] = []
-    else:
+    elif mutation == "missing_dynamic_field":
         inventory["families"] = [r for r in inventory["families"] if r["name"] != "helianthus_thermal_action_state"]
-    with pytest.raises((AssertionError, KeyError)):
-        validate(inventory, (ROOT / PAGE).read_text(), analysis)
+    else:
+        next(r for r in inventory["families"] if r["name"] == "ebus_frames_observed_total")["source"] = "runtime_transport_metrics.go"
+    # Keep documentation parity valid so it cannot mask a missing validator check.
+    page = (ROOT / PAGE).read_text()
+    before, section = page.split("## Complete composed route inventory", 1)
+    section, after = section.split("## Adapter telemetry is expvar-only", 1)
+    section = re.sub(r"(?m)^\| `[^\n]*\n?", "", section)
+    section += "\n".join(table_row(row) for row in inventory["families"]) + "\n\n"
+    page = before + "## Complete composed route inventory" + section + "## Adapter telemetry is expvar-only" + after
+    assert {line for line in section.splitlines() if line.startswith("| `")} == {
+        table_row(row) for row in inventory["families"]
+    }
+    with pytest.raises(AssertionError, match="^" + re.escape(rejection) + r"(?:\n|$)"):
+        validate(inventory, page, analysis)
 
 
 def test_dynamic_writer_fails_closed(analysis):

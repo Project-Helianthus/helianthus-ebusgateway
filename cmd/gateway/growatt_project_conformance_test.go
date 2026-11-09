@@ -348,6 +348,15 @@ func TestCX22ClassificationDoesNotAdmit(t *testing.T) {
 			if !reflect.DeepEqual(cfg, before) || cfg.GrowattPCSCANConfig.Enabled || cfg.GrowattLINKCANConfig.Enabled || cfg.GrowattBMSCANConfig.Enabled || result.RuntimeAdmission || result.PhysicalQualified {
 				t.Fatal("classification selected runtime")
 			}
+			wantFrames := 0
+			for _, line := range strings.Split(input, "\n") {
+				if strings.TrimSpace(line) != "" {
+					wantFrames++
+				}
+			}
+			if wantFrames == 0 || len(result.Frames) != wantFrames {
+				t.Fatalf("classification returned %d frames, want %d", len(result.Frames), wantFrames)
+			}
 			for _, f := range result.Frames {
 				if !strings.Contains(input, f.Raw) || f.RawHex == "" || f.PhysicalQualified || f.RuntimeAdmission {
 					t.Fatal("raw or qualification")

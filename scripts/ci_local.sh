@@ -11,6 +11,10 @@ if git grep -nIwiE 'm[a]ster|s[l]ave'; then
 fi
 python3 scripts/source_selection_m4_gate.py
 
+echo "==> semantic import boundary"
+python3 scripts/check_semantic_imports.py
+python3 -m unittest discover -s tests -p test_semantic_imports.py -v
+
 echo "==> gofmt"
 unformatted="$(
   git ls-files --cached --others --exclude-standard '*.go' |

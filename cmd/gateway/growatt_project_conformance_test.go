@@ -195,9 +195,13 @@ func cx22New(t *testing.T, cfg ebusgateway.Config) *cx22Harness {
 		t.Fatal(err)
 	}
 	sidecars.bind(h.manager, nil)
+	// Production binding: failures withdraw the manager state through the
+	// same callback the gateway installs. A nil service keeps the harness
+	// free of a control loop; the manager state is asserted by the tests.
+	sidecars.bindNativeObservations(nil)
 	for id, w := range h.wrappers {
-		w.reportFailure = func(native drivermanager.Correlation, _ runtimecontrol.LifecycleCorrelation) {
-			h.manager.ReportFailure(string(id), native, drivermanager.Failure{Reason: drivermanager.Reason{Code: drivermanager.ReasonProviderUnavailable}})
+		if w.reportFailure == nil {
+			t.Fatalf("production failure binding missing for %s", id)
 		}
 	}
 	t.Cleanup(func() {

@@ -114,6 +114,31 @@ class SemanticImportsTest(unittest.TestCase):
         self.write("go.mod", f"module {guard.MODULE}\n\nreplace example.org/helper => ./helper\n")
         self.assertEqual([], self.errors())
 
+    def test_vendored_semreg_fails_closed(self):
+        semreg = guard.ALLOWED_EXTERNAL[0]
+        self.write("internal/semhub/base.go", f'package neutral\nimport "{semreg}/semreg/v1"\n')
+        self.write(f"vendor/{semreg}/semreg/v1/base.go",
+                   f'package neutral\nimport "{NATIVE}"\n')
+        with self.assertRaisesRegex(ValueError, "vendored SemReg is not allowed"):
+            self.errors()
+        result = subprocess.run([sys.executable, str(ROOT / "scripts/check_semantic_imports.py"),
+                                 "--root", str(self.root)], capture_output=True, text=True, timeout=160)
+        self.assertEqual(1, result.returncode)
+        self.assertIn("vendored SemReg is not allowed", result.stderr)
+
+    def test_symlinked_vendored_semreg_fails_closed(self):
+        semreg = guard.ALLOWED_EXTERNAL[0]
+        self.write("replacement/base.go", "package neutral\n")
+        target = self.root / "vendor" / semreg
+        target.parent.mkdir(parents=True)
+        target.symlink_to(self.root / "replacement", target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, "vendored SemReg is not allowed"):
+            self.errors()
+
+    def test_unrelated_vendored_package_is_allowed(self):
+        self.write("vendor/example.org/helper/base.go", f'package helper\nimport "{NATIVE}"\n')
+        self.assertEqual([], self.errors())
+
     def test_exact_test_helper_rule_checks_its_production_sources(self):
         helper = next(iter(guard.ALLOWED_TEST_LOCAL))
         self.write("internal/semanticoperations/semoptest/base.go", "package fixture_test\n")

@@ -49,6 +49,12 @@ def under(path, prefix):
 
 def parse_sources(root):
     """Stage the non-shipped Go parser under scratch and use cached Go only."""
+    # Vendored sources can override the external owner without a replace rule.
+    # The parser skips vendor trees, so reject them for every trusted owner.
+    for owner in ALLOWED_EXTERNAL:
+        vendored = root / "vendor" / owner
+        if vendored.exists() or vendored.is_symlink():
+            raise ValueError(f"vendored SemReg is not allowed: {owner}")
     scratch = Path(__file__).resolve().parents[1] / ".tmp"
     scratch.mkdir(exist_ok=True)
     env = dict(os.environ, GOWORK="off", GOPROXY="off", GOSUMDB="off",

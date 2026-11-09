@@ -1,0 +1,21 @@
+{
+  "contracts": [
+    "helianthus-docs-canbus/protocols/growatt/growatt-low-voltage-bms-can-pcs-protocol-v1.md — Data validity and consumer obligations; Measurement conversions",
+    "helianthus-docs-canbus/protocols/growatt/growatt-low-voltage-bms-can-link-protocol-v1.md — Transport, addressing and data validity; Cell and sensor counts",
+    "helianthus-docs-canbus/protocols/growatt/low-voltage-bms-can-v104.md — Registry Admission"
+  ],
+  "classification": "synthetic-pcs 311#0000000000000000\nsynthetic-pcs 312#0000000000000000\nsynthetic-pcs 313#0000000000000000\n",
+  "voltages": [
+    {"release":"0006", "payload":"14be000000000000", "numerator":5310, "denominator":100, "meaning":"pack voltage"},
+    {"release":"0011", "payload":"14be000000000000", "numerator":5310, "denominator":100, "meaning":"output-port voltage"}
+  ],
+  "cells": {"payload":"e40c480dac0d100e", "numerators":[3300,3400,3500,3600], "denominator":1},
+  "dtc": [
+    {"name":"legacy-big-endian", "project":"QAAA", "release":"0011", "payload":"0101110000000000", "status":"accepted", "index":100},
+    {"name":"modern-binary", "project":"QAAa", "release":"9011", "payload":"010104a100000000", "status":"accepted", "index":131},
+    {"name":"wrong-member-dictionary", "project":"QAAa", "release":"9011", "payload":"0101110000000000", "status":"raw", "index":0},
+    {"name":"wrong-endianness", "project":"QAAA", "release":"0011", "payload":"0101001100000000", "status":"raw", "index":0},
+    {"name":"unknown-word", "project":"QAAA", "release":"0011", "payload":"0101ffff00000000", "status":"raw", "index":0},
+    {"name":"empty-word", "project":"QAAA", "release":"0011", "payload":"0101000000000000", "status":"empty", "index":0}
+  ]
+}

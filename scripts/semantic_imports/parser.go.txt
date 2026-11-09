@@ -1,0 +1,99 @@
+// Parse source syntax without applying host platform or build constraints.
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"go/parser"
+	"go/token"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
+)
+
+type source struct {
+	File    string
+	Imports []string
+}
+
+type result struct {
+	Sources  []source
+	Standard []string
+}
+
+func main() {
+	if len(os.Args) != 2 {
+		fmt.Fprintln(os.Stderr, "expected source root")
+		os.Exit(2)
+	}
+	out := result{Sources: []source{}, Standard: []string{}}
+	err := filepath.WalkDir(os.Args[1], func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			switch d.Name() {
+			case ".git", ".tmp", "node_modules", "vendor":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+		if d.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("symlink source: %s", path)
+		}
+		f, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.AllErrors)
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(os.Args[1], path)
+		if err != nil {
+			return err
+		}
+		s := source{File: filepath.ToSlash(rel), Imports: []string{}}
+		for _, imp := range f.Imports {
+			name, err := strconv.Unquote(imp.Path.Value)
+			if err != nil {
+				return err
+			}
+			s.Imports = append(s.Imports, name)
+		}
+		out.Sources = append(out.Sources, s)
+		return nil
+	})
+	if err == nil {
+		stdRoot := filepath.Join(runtime.GOROOT(), "src")
+		err = filepath.WalkDir(stdRoot, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				if d.Name() == "cmd" || d.Name() == "vendor" || d.Name() == "testdata" {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if strings.HasSuffix(path, ".go") && !strings.HasSuffix(path, "_test.go") {
+				rel, err := filepath.Rel(stdRoot, filepath.Dir(path))
+				if err != nil {
+					return err
+				}
+				out.Standard = append(out.Standard, filepath.ToSlash(rel))
+			}
+			return nil
+		})
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(out); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}

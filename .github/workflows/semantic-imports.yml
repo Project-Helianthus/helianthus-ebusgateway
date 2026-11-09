@@ -1,0 +1,33 @@
+name: Semantic import boundary
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  semantic-imports:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GOWORK: 'off'
+      GOPROXY: 'off'
+      GOSUMDB: 'off'
+      GOTOOLCHAIN: local
+      GOFLAGS: '-buildvcs=false'
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python3 scripts/check_semantic_imports.py
+      - run: python3 -m unittest discover -s tests -p test_semantic_imports.py -v

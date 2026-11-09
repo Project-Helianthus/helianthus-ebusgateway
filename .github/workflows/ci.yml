@@ -72,6 +72,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - run: python3 -m pip install pytest
+      - run: python3 -m pytest tests/test_metrics_inventory_docs.py -q -p no:cacheprovider
       # cmd/gateway runs at about 600 s under -race here, right at Go's 10-minute
       # default; 20 minutes keeps a margin inside the 45-minute job limit.
       - run: go test -race -count=1 -timeout 20m ./...

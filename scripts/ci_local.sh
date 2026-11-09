@@ -52,6 +52,9 @@ echo "==> validating source-selection artifact schema coverage"
 go test ./... -run "TestSourceSelectionArtifact_EmitValidatesAgainstSchema" -count=1
 
 echo "==> python script tests"
+python3 -m venv .tmp/metrics-inventory-venv
+.tmp/metrics-inventory-venv/bin/python -m pip install pytest
+.tmp/metrics-inventory-venv/bin/python -m pytest tests/test_metrics_inventory_docs.py -q -p no:cacheprovider
 python3 scripts/passive_canary_verifier_test.py
 python3 scripts/source_selection_m4_gate_test.py
 python3 scripts/transport_gate_test.py

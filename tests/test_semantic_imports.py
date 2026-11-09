@@ -1,11 +1,13 @@
 """Synthetic import mutations exercise syntax, source placement and graph edges."""
 
 import importlib.util
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("semantic_imports", ROOT / "scripts/check_semantic_imports.py")
@@ -186,6 +188,60 @@ class SemanticImportsTest(unittest.TestCase):
         self.write("go.work", "replace (\n")
         with self.assertRaises(subprocess.CalledProcessError):
             self.errors()
+
+    def workspace_clone(self):
+        self.write("gateway/go.mod", f"module {guard.MODULE}\n")
+        for owner in guard.PROTECTED:
+            self.write(f"gateway/{owner}/base.go", "package neutral\n")
+        return self.root / "gateway"
+
+    def test_selected_workspace_semreg_use_fails_closed(self):
+        clone = self.workspace_clone()
+        semreg = guard.ALLOWED_EXTERNAL[0]
+        self.write("local-semreg/go.mod", f"module {semreg}\n")
+        self.write("local-semreg/base.go", f'package neutral\nimport "{NATIVE}"\n')
+        for selection in ("", str(self.root / "external.work")):
+            with self.subTest(selection=selection):
+                filename = "external.work" if selection else "go.work"
+                self.write(filename, "go 1.25.0\nuse (\n ./gateway\n ./local-semreg\n)\n")
+                with mock.patch.dict(os.environ, GOWORK=selection):
+                    with self.assertRaisesRegex(ValueError, "SemReg workspace module is not allowed"):
+                        guard.parse_sources(clone)
+
+    def test_ancestor_workspace_semreg_replacement_fails_closed(self):
+        clone = self.workspace_clone()
+        semreg = guard.ALLOWED_EXTERNAL[0]
+        self.write("go.work", f"go 1.25.0\nuse ./gateway\nreplace {semreg} => ./replacement\n")
+        with mock.patch.dict(os.environ, GOWORK=""):
+            with self.assertRaisesRegex(ValueError, "SemReg replacement is not allowed"):
+                guard.parse_sources(clone)
+
+    def test_selected_workspace_use_module_replacement_fails_closed(self):
+        clone = self.workspace_clone()
+        semreg = guard.ALLOWED_EXTERNAL[0]
+        self.write("helper/go.mod", f"module example.org/helper\nreplace {semreg} => ../replacement\n")
+        self.write("go.work", "go 1.25.0\nuse (\n ./gateway\n ./helper\n)\n")
+        with mock.patch.dict(os.environ, GOWORK=""):
+            with self.assertRaisesRegex(ValueError, "SemReg replacement is not allowed"):
+                guard.parse_sources(clone)
+
+    def test_unrelated_ancestor_workspace_is_allowed(self):
+        clone = self.workspace_clone()
+        self.write("helper/go.mod", "module example.org/helper\n")
+        self.write("go.work", "go 1.25.0\nuse (\n ./gateway\n ./helper\n)\n")
+        with mock.patch.dict(os.environ, GOWORK=""):
+            self.assertEqual([], guard.violations(guard.parse_sources(clone)))
+
+    def test_disabled_ancestor_workspace_is_ignored(self):
+        clone = self.workspace_clone()
+        self.write("go.work", f"go 1.25.0\nuse ./gateway\nreplace {guard.ALLOWED_EXTERNAL[0]} => ./replacement\n")
+        with mock.patch.dict(os.environ, GOWORK="off"):
+            self.assertEqual([], guard.violations(guard.parse_sources(clone)))
+
+    def test_missing_explicit_workspace_fails_closed(self):
+        with mock.patch.dict(os.environ, GOWORK=str(self.root / "missing.work")):
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.errors()
 
     def test_vendored_semreg_fails_closed(self):
         semreg = guard.ALLOWED_EXTERNAL[0]

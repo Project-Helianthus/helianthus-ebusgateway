@@ -66,6 +66,20 @@ def parse_sources(root):
         module_files = [(root / filename, command)
                         for filename, command in (("go.mod", "mod"), ("go.work", "work"))
                         if (root / filename).exists()]
+        # Match the workspace selected by subsequent Go commands, including
+        # ancestor discovery and an explicit GOWORK outside the checked root.
+        workspace_env = dict(env)
+        workspace_env.pop("GOWORK")
+        if "GOWORK" in os.environ:
+            workspace_env["GOWORK"] = os.environ["GOWORK"]
+        selected = subprocess.run(
+            ["go", "env", "GOWORK"], cwd=root, env=workspace_env,
+            capture_output=True, text=True, timeout=30, check=True,
+        ).stdout.strip()
+        if selected and selected != "off":
+            active_workspace = Path(selected).resolve()
+            if active_workspace != (root / "go.work").resolve():
+                module_files.append((active_workspace, "work"))
         for module_file, command in module_files:
             module = subprocess.run(
                 ["go", command, "edit", "-json", str(module_file)], cwd=work, env=env,

@@ -55,6 +55,16 @@ def parse_sources(root):
                GOTOOLCHAIN="local", GOFLAGS="-buildvcs=false",
                TMPDIR=str(scratch), GOCACHE=str(scratch / "gocache"))
     with tempfile.TemporaryDirectory(prefix="semantic-imports-", dir=scratch) as work:
+        module_file = root / "go.mod"
+        if module_file.exists():
+            module = subprocess.run(
+                ["go", "mod", "edit", "-json", str(module_file)], cwd=work, env=env,
+                capture_output=True, text=True, timeout=30, check=True,
+            )
+            for replacement in json.loads(module.stdout).get("Replace") or []:
+                name = replacement["Old"]["Path"]
+                if any(under(name, owner) for owner in ALLOWED_EXTERNAL):
+                    raise ValueError(f"SemReg replacement is not allowed: {name}")
         parser = Path(work) / "parser.go"
         parser.write_bytes((Path(__file__).parent / "semantic_imports/parser.go.txt").read_bytes())
         completed = subprocess.run(

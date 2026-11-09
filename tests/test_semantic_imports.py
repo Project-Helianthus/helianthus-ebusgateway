@@ -90,6 +90,30 @@ class SemanticImportsTest(unittest.TestCase):
                    "\n".join(f'"{imp}"' for imp in imports) + '\n)\n')
         self.assertEqual([], self.errors())
 
+    def test_semreg_replacements_fail_closed(self):
+        semreg = guard.ALLOWED_EXTERNAL[0]
+        self.write("internal/semhub/base.go", f'package neutral\nimport "{semreg}/semreg/v1"\n')
+        self.write("replacement/native.go", f'package replacement\nimport "{NATIVE}"\n')
+        for directive in (
+            f"replace {semreg} => ./replacement",
+            f"replace (\n {semreg} v0.0.0 => ./replacement\n)",
+            f'replace "{semreg}" => "./replacement"',
+            f"replace {semreg} => example.org/replacement v0.0.0",
+            f"replace {semreg}/submodule => ./replacement",
+        ):
+            with self.subTest(directive=directive):
+                self.write("go.mod", f"module {guard.MODULE}\n\n{directive}\n")
+                with self.assertRaisesRegex(ValueError, "SemReg replacement is not allowed"):
+                    self.errors()
+        result = subprocess.run([sys.executable, str(ROOT / "scripts/check_semantic_imports.py"),
+                                 "--root", str(self.root)], capture_output=True, text=True, timeout=160)
+        self.assertEqual(1, result.returncode)
+        self.assertIn("SemReg replacement is not allowed", result.stderr)
+
+    def test_unrelated_module_replacement_is_allowed(self):
+        self.write("go.mod", f"module {guard.MODULE}\n\nreplace example.org/helper => ./helper\n")
+        self.assertEqual([], self.errors())
+
     def test_exact_test_helper_rule_checks_its_production_sources(self):
         helper = next(iter(guard.ALLOWED_TEST_LOCAL))
         self.write("internal/semanticoperations/semoptest/base.go", "package fixture_test\n")

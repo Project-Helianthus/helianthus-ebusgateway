@@ -11,3 +11,6 @@ portal/web/node_modules/
 # Python bytecode caches
 __pycache__/
 *.pyc
+
+# Local validation scratch and Go build cache
+/.tmp/

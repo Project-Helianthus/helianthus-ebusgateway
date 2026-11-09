@@ -573,7 +573,23 @@ func TestCX22TransportNegativeVectors(t *testing.T) {
 				r.Monotonic = -1
 			}
 			h.receivers[managedGrowattLINKID].put(t, r)
+			// The receive loop only re-enters Receive after outer retention and filtering
+			// of this record. Rows that pass the outer filter are also handed to the
+			// native provider asynchronously, so wait for its retained diagnostic of
+			// this exact record before asserting that nothing was interpreted.
 			cx22Wait(t, func() bool { return h.receivers[managedGrowattLINKID].reads.Load() >= 2 })
+			if name == "wrong-destination" {
+				cx22Wait(t, func() bool {
+					for _, p := range h.project(managedGrowattLINKID, time.Second).Providers {
+						for _, raw := range p.Raw {
+							if raw.Input.Evidence.Sequence == r.Sequence {
+								return true
+							}
+						}
+					}
+					return false
+				})
+			}
 			s := h.project(managedGrowattLINKID, time.Second)
 			cx22Raw(t, s, r)
 			if len(s.Providers[0].Current) != 0 || s.Providers[0].Promotable {

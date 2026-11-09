@@ -16,7 +16,9 @@ NATIVE = "github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 
 class SemanticImportsTest(unittest.TestCase):
     def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory(dir=ROOT / ".tmp")
+        scratch = ROOT / ".tmp"
+        scratch.mkdir(parents=True, exist_ok=True)
+        self.temporary = tempfile.TemporaryDirectory(dir=scratch)
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         for owner in guard.PROTECTED:

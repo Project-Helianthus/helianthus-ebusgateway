@@ -2,6 +2,7 @@
 import copy
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -92,6 +93,42 @@ def expected_families(analysis):
     return families
 
 
+def semantic_fact_base_labels():
+    """Read the fixed label keys from the production helper body."""
+    text = (ROOT / "semantic_prometheus.go").read_text()
+    start = text.index("func semanticFactLabels(")
+    body = text[start:text.index("\nfunc ", start + 1)]
+    call = re.search(r"labelMap\(([^\n]*)\)", body)
+    assert call, "semanticFactLabels no longer builds labels with labelMap"
+    keys = {literal(x) for x in split_top_level(call.group(1))[::2] if x.startswith('"')}
+    keys |= set(re.findall(r'labels\["([a-z_]+)"\]\s*=', body))
+    assert {"domain", "pack", "fact_id", "dimension"} <= keys, "unexpected semanticFactLabels shape"
+    return keys
+
+
+def split_top_level(value):
+    result, start, depth, quoted, escaped = [], 0, 0, False, False
+    for i, char in enumerate(value):
+        if quoted:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                quoted = False
+        elif char == '"':
+            quoted = True
+        elif char in "({[":
+            depth += 1
+        elif char in ")}]":
+            depth -= 1
+        elif char == "," and depth == 0:
+            result.append(value[start:i].strip()); start = i + 1
+    if value[start:].strip():
+        result.append(value[start:].strip())
+    return result
+
+
 def sample_labels(expr, name):
     if expr == "nil":
         return set()
@@ -121,7 +158,7 @@ def sample_labels(expr, name):
         args = split_args(expr[len("labelMap("):-1])
         assert len(args) % 2 == 0
         return {literal(x) for x in args[::2]}
-    base = {"domain", "pack", "fact_id", "dimension", "connector"}
+    base = semantic_fact_base_labels()
     if expr == "labels":
         assert name == "helianthus_semantic_fact_state"
         return base | {"qualification", "promotion", "quality", "availability", "freshness"}

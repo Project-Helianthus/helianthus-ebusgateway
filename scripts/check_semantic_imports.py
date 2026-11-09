@@ -61,10 +61,14 @@ def parse_sources(root):
                GOTOOLCHAIN="local", GOFLAGS="-buildvcs=false",
                TMPDIR=str(scratch), GOCACHE=str(scratch / "gocache"))
     with tempfile.TemporaryDirectory(prefix="semantic-imports-", dir=scratch) as work:
-        module_file = root / "go.mod"
-        if module_file.exists():
+        # Workspace replacements override module replacements during ordinary
+        # builds, even though the standalone source parser uses GOWORK=off.
+        for filename, command in (("go.mod", "mod"), ("go.work", "work")):
+            module_file = root / filename
+            if not module_file.exists():
+                continue
             module = subprocess.run(
-                ["go", "mod", "edit", "-json", str(module_file)], cwd=work, env=env,
+                ["go", command, "edit", "-json", str(module_file)], cwd=work, env=env,
                 capture_output=True, text=True, timeout=30, check=True,
             )
             for replacement in json.loads(module.stdout).get("Replace") or []:

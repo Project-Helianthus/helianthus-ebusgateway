@@ -114,6 +114,37 @@ class SemanticImportsTest(unittest.TestCase):
         self.write("go.mod", f"module {guard.MODULE}\n\nreplace example.org/helper => ./helper\n")
         self.assertEqual([], self.errors())
 
+    def test_semreg_workspace_replacements_fail_closed(self):
+        semreg = guard.ALLOWED_EXTERNAL[0]
+        self.write("go.mod", f"module {guard.MODULE}\n")
+        self.write("internal/semhub/base.go", f'package neutral\nimport "{semreg}/semreg/v1"\n')
+        self.write("replacement/native.go", f'package replacement\nimport "{NATIVE}"\n')
+        for directive in (
+            f"replace {semreg} => ./replacement",
+            f"replace (\n {semreg} v0.0.0 => ./replacement\n)",
+            f'replace "{semreg}" => "./replacement"',
+            f"replace {semreg} => example.org/replacement v0.0.0",
+            f"replace {semreg}/submodule => ./replacement",
+        ):
+            with self.subTest(directive=directive):
+                self.write("go.work", f"go 1.25.0\nuse .\n{directive}\n")
+                with self.assertRaisesRegex(ValueError, "SemReg replacement is not allowed"):
+                    self.errors()
+        result = subprocess.run([sys.executable, str(ROOT / "scripts/check_semantic_imports.py"),
+                                 "--root", str(self.root)], capture_output=True, text=True, timeout=160)
+        self.assertEqual(1, result.returncode)
+        self.assertIn("SemReg replacement is not allowed", result.stderr)
+
+    def test_unrelated_workspace_replacement_is_allowed(self):
+        self.write("go.mod", f"module {guard.MODULE}\n")
+        self.write("go.work", "go 1.25.0\nuse .\nreplace example.org/helper => ./helper\n")
+        self.assertEqual([], self.errors())
+
+    def test_malformed_workspace_fails_closed(self):
+        self.write("go.work", "replace (\n")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.errors()
+
     def test_vendored_semreg_fails_closed(self):
         semreg = guard.ALLOWED_EXTERNAL[0]
         self.write("internal/semhub/base.go", f'package neutral\nimport "{semreg}/semreg/v1"\n')

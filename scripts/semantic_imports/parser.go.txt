@@ -35,8 +35,13 @@ func main() {
 			return err
 		}
 		if d.IsDir() {
-			switch d.Name() {
-			case ".git", ".tmp", "node_modules", "vendor":
+			rel, err := filepath.Rel(os.Args[1], path)
+			if err != nil {
+				return err
+			}
+			// Exclude only known repository metadata and asset locations.
+			switch filepath.ToSlash(rel) {
+			case ".git", ".tmp", "portal/web/node_modules", "vendor":
 				return filepath.SkipDir
 			}
 			return nil

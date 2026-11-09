@@ -116,6 +116,72 @@ class SemanticImportsTest(unittest.TestCase):
         self.write("go.mod", f"module {guard.MODULE}\n\nreplace example.org/helper => ./helper\n")
         self.assertEqual([], self.errors())
 
+    def test_buildable_semreg_overrides_fail_closed(self):
+        semreg = guard.ALLOWED_EXTERNAL[0]
+        ancestor = semreg.rsplit("/", 1)[0]
+        native_module = NATIVE.rsplit("/", 1)[0]
+        cases_root = self.root
+        for mode, supplied in (
+            ("module-replace", ancestor),
+            ("root-replace", semreg),
+            ("root-use", semreg),
+            ("ancestor-replace", semreg),
+            ("ancestor-use", semreg),
+            ("root-replace", ancestor),
+            ("ancestor-replace", ancestor),
+            ("root-use", ancestor),
+            ("ancestor-use", ancestor),
+        ):
+            with self.subTest(mode=mode, supplied=supplied):
+                # Each case discovers only its own root or ancestor workspace.
+                self.root = cases_root / f"{mode}-{supplied.rsplit('/', 1)[-1]}"
+                clone = self.workspace_clone()
+                self.write("native/go.mod", f"module {native_module}\ngo 1.22.0\n")
+                self.write("native/protocol/base.go", "package protocol\n")
+                self.write("gateway/internal/semhub/base.go",
+                           f'package neutral\nimport _ "{semreg}/semreg/v1"\n')
+                relative = semreg.removeprefix(supplied).lstrip("/")
+                candidate = "candidate"
+                self.write(f"{candidate}/go.mod", f"module {supplied}\ngo 1.22.0\n")
+                self.write(f"{candidate}/{relative}/semreg/v1/base.go",
+                           f'package neutral\nimport _ "{NATIVE}"\n')
+                module = (f"module {guard.MODULE}\ngo 1.22.0\n"
+                          f"require {supplied} v0.0.0\n")
+                if mode == "module-replace":
+                    module += (f"require {native_module} v0.0.0\n"
+                               f"replace {supplied} => ../{candidate}\n"
+                               f"replace {native_module} => ../native\n")
+                    selected = "off"
+                else:
+                    workspace = clone / "go.work" if mode.startswith("root-") else self.root / "go.work"
+                    gateway_path = "." if mode.startswith("root-") else "./gateway"
+                    prefix = "../" if mode.startswith("root-") else "./"
+                    work = f"go 1.22.0\nuse (\n {gateway_path}\n {prefix}native\n"
+                    if mode.endswith("use"):
+                        work += f" {prefix}{candidate}\n)\n"
+                    else:
+                        work += f")\nreplace {supplied} => {prefix}{candidate}\n"
+                    workspace.write_text(work)
+                    selected = ""  # Exercise Go's root/ancestor workspace discovery.
+                self.write("gateway/go.mod", module)
+                env = dict(os.environ, GOWORK=selected, GOPROXY="off", GOSUMDB="off",
+                           GOTOOLCHAIN="local", GOFLAGS="-buildvcs=false",
+                           GOCACHE=str(ROOT / ".tmp/gocache"))
+                built = subprocess.run(
+                    ["go", "build", "./internal/semhub/..."], cwd=clone, env=env,
+                    capture_output=True, text=True, timeout=150,
+                )
+                self.assertEqual(0, built.returncode, built.stderr)
+                listed = subprocess.run(
+                    ["go", "list", "-deps", "./internal/semhub/..."], cwd=clone, env=env,
+                    capture_output=True, text=True, timeout=30,
+                )
+                self.assertEqual(0, listed.returncode, listed.stderr)
+                self.assertIn(NATIVE, listed.stdout.splitlines())
+                with mock.patch.dict(os.environ, GOWORK=selected):
+                    with self.assertRaisesRegex(ValueError, "SemReg .* is not allowed"):
+                        guard.parse_sources(clone)
+
     def test_semreg_workspace_replacements_fail_closed(self):
         semreg = guard.ALLOWED_EXTERNAL[0]
         self.write("go.mod", f"module {guard.MODULE}\n")
@@ -284,6 +350,37 @@ class SemanticImportsTest(unittest.TestCase):
                    f'// import "{NATIVE}"\n/* import "{NATIVE}" */\n' +
                    f'const example = `import "{NATIVE}"`\n')
         self.assertEqual([], self.errors())
+
+    def test_directory_exclusions_are_repository_relative(self):
+        for directory in ("node_modules", "vendor", ".tmp", ".git"):
+            with self.subTest(directory=directory):
+                filename = f"internal/semhub/{directory}/base.go"
+                self.write(filename, f'package neutral\nimport _ "{NATIVE}"\n')
+                self.assertIn(filename, "\n".join(self.errors()))
+        for directory in (".git", ".tmp", "portal/web/node_modules", "vendor"):
+            self.write(f"{directory}/broken.go", "not Go syntax\n")
+        # Known asset locations remain excluded, but the protected paths above
+        # must still be visited even when they have the same directory names.
+        self.assertIn(NATIVE, "\n".join(self.errors()))
+
+    def test_buildable_protected_node_modules_subpackage_is_checked(self):
+        native_module = NATIVE.rsplit("/", 1)[0]
+        self.write("go.mod", f"module {guard.MODULE}\ngo 1.22.0\n"
+                   f"require {native_module} v0.0.0\n"
+                   f"replace {native_module} => ./native\n")
+        self.write("native/go.mod", f"module {native_module}\ngo 1.22.0\n")
+        self.write("native/protocol/base.go", "package protocol\n")
+        filename = "internal/semhub/node_modules/base.go"
+        self.write(filename, f'package neutral\nimport _ "{NATIVE}"\n')
+        env = dict(os.environ, GOWORK="off", GOPROXY="off", GOSUMDB="off",
+                   GOTOOLCHAIN="local", GOFLAGS="-buildvcs=false",
+                   GOCACHE=str(ROOT / ".tmp/gocache"))
+        built = subprocess.run(
+            ["go", "build", "./internal/semhub/..."], cwd=self.root, env=env,
+            capture_output=True, text=True, timeout=150,
+        )
+        self.assertEqual(0, built.returncode, built.stderr)
+        self.assertIn(filename, "\n".join(self.errors()))
 
     def test_unknown_external_and_prefix_impostor_fail_closed(self):
         for imp in ("example.org/neutral", "fictionalstdlib", "C",

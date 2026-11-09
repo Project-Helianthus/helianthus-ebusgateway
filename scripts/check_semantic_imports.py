@@ -47,6 +47,12 @@ def under(path, prefix):
     return path == prefix or path.startswith(prefix + "/")
 
 
+def can_supply_semreg(module):
+    # An ancestor module can contain the trusted import beneath its module root.
+    return any(under(module, owner) or under(owner, module)
+               for owner in ALLOWED_EXTERNAL)
+
+
 def parse_sources(root):
     """Stage the non-shipped Go parser under scratch and use cached Go only."""
     # Vendored sources can override the external owner without a replace rule.
@@ -92,11 +98,11 @@ def parse_sources(root):
                     module_files.append((used_root / "go.mod", "mod"))
             else:
                 name = metadata["Module"]["Path"]
-                if any(under(name, owner) for owner in ALLOWED_EXTERNAL):
+                if can_supply_semreg(name):
                     raise ValueError(f"SemReg workspace module is not allowed: {name}")
             for replacement in metadata.get("Replace") or []:
                 name = replacement["Old"]["Path"]
-                if any(under(name, owner) for owner in ALLOWED_EXTERNAL):
+                if can_supply_semreg(name):
                     raise ValueError(f"SemReg replacement is not allowed: {name}")
         parser = Path(work) / "parser.go"
         parser.write_bytes((Path(__file__).parent / "semantic_imports/parser.go.txt").read_bytes())

@@ -55,8 +55,7 @@ The defensive non-send Tesla Gen3 HSC completed-outcome owner is documented in
 ## Status and Maturity
 
 - Active gateway service with repository CI and race-enabled tests.
-- The accepted Gateway baseline pins SemReg at
-  [`089ed6ae9004`](https://github.com/Project-Helianthus/helianthus-semreg/commit/089ed6ae9004cfba8aff27f1e54d579aeccc0b4c).
+- The exact SemReg dependency is owned by [go.mod](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/go.mod).
 - Current accepted SemReg composition covers PV, Storage, and EVSE domain paths;
   Thermal/HVAC ([issue #952](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/952)),
   Infrastructure, complete EEBUS output, Matter output, packaging, and physical

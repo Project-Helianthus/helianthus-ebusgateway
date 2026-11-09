@@ -1,29 +1,29 @@
 package main
 
-// M6_DISPATCHER_BRIDGE (execution-plans#19, amendment-1) — production
-// raw-frame dispatcher for the Vaillant B503 selector family.
+// The B503 raw-frame dispatcher sends through the b503Bus interface.
+// Production supplies the gateway bus backed by the generation-bound substrate;
+// wiring falls back to a stub when the bus or source provider is unavailable.
+// The source provider must admit a nonzero source before dispatch and is
+// checked again after acquiring the dispatcher lock, before emission.
+// A pending operation also requires the Manager's emission admission.
+// Entering bus.Send is the conservative may-have-emitted boundary.
+// The transport handles per-frame arbitration with other bus traffic.
 //
-// This file is the production replacement for `b503StubDispatcher{}`
-// previously injected in `installVaillantB503`. Routing is single-substrate:
-// every B503 request goes through the gateway's existing `*protocol.Bus.Send`
-// path (the same substrate used for B524/B525 — see
-// `cmd/gateway/semantic_vaillant.go::writeB555Frame`). No parallel transport
-// is opened (AD16).
+// The Manager owns liveMonitorMu for the applicable SERVICE_WRITE operation.
+// The dispatcher acquires readMu, which production dedicates to serializing
+// B503 dispatches; it does not acquire liveMonitorMu or the poller's mutex.
 //
-// Doc-gate companion: helianthus-docs-ebus protocols/vaillant/ebus-vaillant-B503.md
-// §12 (Production dispatcher contract). Plan canonical SHA
-// `86495340799be9340dc191c371a49a958f65c357c76a1e0a2974502c8489b508`.
+// Each request captures its transport epoch before admission. A completion
+// from a stale epoch is discarded before its response or error is classified;
+// it cannot become a successful payload or replace last-known capability state.
 //
-// Lock acquisition order is INVARIANT: liveMonitorMu → readMu (§12.6).
-// `b503session.Manager` already holds liveMonitorMu when the SERVICE_WRITE
-// (00 03) selector flows through here. The dispatcher only acquires readMu
-// (the B524 poll mutex) — never liveMonitorMu — to preserve the order.
-//
-// Epoch-tagged in-flight requests (§12.7 / AD18 row 8): each Invoke captures
-// the Manager's transport epoch at issue-time and re-checks it against the
-// current epoch at completion. A stale-epoch reply (epoch advanced between
-// issue and completion) is silently discarded — the late frame MUST NOT
-// satisfy any post-reconnect waiter or mutate capability state.
+// Source admission and the transport epoch are distinct checks: admission
+// controls whether this request may proceed, while epoch comparison prevents
+// a completion from an earlier transport generation being accepted.
+// Context cancellation is also checked before the send boundary.
+// Transport loss requests a disconnect correlated to the captured generation.
+// Successful responses preserve the data delivered by the bus.
+// The dispatcher does not open a separate transport.
 
 import (
 	"context"
@@ -39,9 +39,8 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 )
 
-// b503Bus is the minimal *protocol.Bus surface the dispatcher uses. The
-// production gateway hands in a real *protocol.Bus; tests inject a mock
-// satisfying this interface.
+// b503Bus is the send interface used by the dispatcher. Production supplies
+// the gateway bus; tests may supply another implementation.
 type b503Bus interface {
 	Send(ctx context.Context, frame protocol.Frame) (*protocol.Frame, error)
 }
@@ -113,18 +112,17 @@ type rawFrameDispatcher struct {
 
 // newRawFrameDispatcher constructs a production dispatcher.
 //
-//   - bus: the gateway's *protocol.Bus (or a test mock). The single
-//     bus-access primitive — §12.3 / AD16.
+//   - bus: the gateway bus or another b503Bus implementation.
+//     Send is the dispatcher's bus-access primitive.
 //   - source: the gateway's admitted eBUS initiator address. Populates
 //     Frame.Source.
-//   - readMu: the B524 read mutex. Acquired around bus.Send to serialise
-//     B503 frames with B524 polling. May be nil for tests that don't
-//     care about B524 contention. The Manager has already grabbed
-//     liveMonitorMu for SERVICE_WRITE selectors; the dispatcher only
-//     acquires readMu, preserving the AD16 lock-order invariant.
-//   - mgr: the b503session.Manager — needed to capture the epoch at
-//     issue-time (AD18) and to call OnTransportDisconnect on
-//     transport-loss (AD04 quiesce-release fires).
+//   - readMu: an optional lock acquired around bus.Send. Production uses
+//     a dedicated mutex to serialize B503 dispatches. The Manager owns
+//     liveMonitorMu for the applicable SERVICE_WRITE operation; the
+//     dispatcher does not acquire that lock.
+//   - mgr: the b503session.Manager captures the epoch at issue time and
+//     participates in a generation-correlated disconnect on transport loss.
+//     It also controls pending-operation emission admission.
 //   - requestTimeout: the per-Invoke timeout. Zero or negative means
 //     "use ctx as-is"; a positive value bounds bus.Send via a derived
 //     context.
@@ -166,7 +164,7 @@ func newRawFrameDispatcherWithSourceProvider(bus b503Bus, sourceProvider func() 
 //     bus.Send (no B503-specific stripping).
 //   - On ctx.Done before bus turnaround → wraps errRawFrameUpstreamTimeout.
 //   - On bus / transport disconnect → wraps errRawFrameTransportDown
-//     AND fires mgr.OnTransportDisconnect() to release any held session.
+//     and requests a generation-correlated disconnect for an owned session.
 //     The wrapped error chain ALSO matches errors.Is(_,
 //     b503session.ErrTransportDown) so the existing capability probe in
 //     mcp/vaillant_b503.go classifies it correctly without modification.
@@ -234,10 +232,9 @@ func (d *rawFrameDispatcher) invokeB503Outcome(ctx context.Context, target byte,
 		defer cancel()
 	}
 
-	// Acquire readMu to serialise with B524 polling. AD16 + §12.6: the
-	// dispatcher only takes readMu here. liveMonitorMu was already
-	// acquired by Manager.Enable for the SERVICE_WRITE 00 03 selector,
-	// preserving the lock order liveMonitorMu → readMu.
+	// Acquire readMu to serialize dispatcher sends. For the applicable
+	// SERVICE_WRITE operation the Manager owns liveMonitorMu; the dispatcher
+	// does not acquire it. Production uses a dedicated dispatcher mutex.
 	if d.readMu != nil {
 		d.readMu.Lock()
 	}
@@ -247,7 +244,7 @@ func (d *rawFrameDispatcher) invokeB503Outcome(ctx context.Context, target byte,
 		}
 	}
 	// A context or admitted source can become invalid while this operation
-	// waits for B524 polling to quiesce. Revalidate both at the final
+	// waits for the dispatcher lock. Revalidate both at the final
 	// pre-emission boundary so terminal disconnect never drains a stale queued
 	// B503 write after readMu becomes available. Check the caller first: a
 	// derived request-timeout context can observe parent cancellation slightly

@@ -140,6 +140,48 @@ class SemanticImportsTest(unittest.TestCase):
         self.write("go.work", "go 1.25.0\nuse .\nreplace example.org/helper => ./helper\n")
         self.assertEqual([], self.errors())
 
+    def test_semreg_workspace_use_modules_fail_closed(self):
+        semreg = guard.ALLOWED_EXTERNAL[0]
+        self.write("go.mod", f"module {guard.MODULE}\n")
+        self.write("internal/semhub/base.go", f'package neutral\nimport "{semreg}/semreg/v1"\n')
+        self.write("workspace-semreg/semreg/v1/base.go",
+                   f'package neutral\nimport "{NATIVE}"\n')
+        for module in (semreg, semreg + "/submodule"):
+            for path in ("./workspace-semreg", str(self.root / "workspace-semreg")):
+                with self.subTest(module=module, path=path):
+                    self.write("workspace-semreg/go.mod", f"module {module}\n")
+                    self.write("go.work", f'go 1.25.0\nuse (\n .\n "{path}"\n)\n')
+                    with self.assertRaisesRegex(ValueError, "SemReg workspace module is not allowed"):
+                        self.errors()
+        result = subprocess.run([sys.executable, str(ROOT / "scripts/check_semantic_imports.py"),
+                                 "--root", str(self.root)], capture_output=True, text=True, timeout=160)
+        self.assertEqual(1, result.returncode)
+        self.assertIn("SemReg workspace module is not allowed", result.stderr)
+
+    def test_unrelated_workspace_use_module_is_allowed(self):
+        self.write("go.mod", f"module {guard.MODULE}\n")
+        self.write("workspace-helper/go.mod", "module example.org/helper\n")
+        self.write("go.work", "go 1.25.0\nuse (\n .\n ./workspace-helper\n)\n")
+        self.assertEqual([], self.errors())
+
+    def test_workspace_use_module_replacement_fails_closed(self):
+        semreg = guard.ALLOWED_EXTERNAL[0]
+        self.write("go.mod", f"module {guard.MODULE}\n")
+        self.write("workspace-helper/go.mod",
+                   f"module example.org/helper\nreplace {semreg} => ../replacement\n")
+        self.write("go.work", "go 1.25.0\nuse (\n .\n ./workspace-helper\n)\n")
+        with self.assertRaisesRegex(ValueError, "SemReg replacement is not allowed"):
+            self.errors()
+
+    def test_workspace_use_missing_or_malformed_module_fails_closed(self):
+        self.write("go.work", "go 1.25.0\nuse ./workspace-helper\n")
+        for content in (None, "module (\n"):
+            with self.subTest(content=content):
+                if content is not None:
+                    self.write("workspace-helper/go.mod", content)
+                with self.assertRaises(subprocess.CalledProcessError):
+                    self.errors()
+
     def test_malformed_workspace_fails_closed(self):
         self.write("go.work", "replace (\n")
         with self.assertRaises(subprocess.CalledProcessError):

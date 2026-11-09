@@ -61,17 +61,26 @@ def parse_sources(root):
                GOTOOLCHAIN="local", GOFLAGS="-buildvcs=false",
                TMPDIR=str(scratch), GOCACHE=str(scratch / "gocache"))
     with tempfile.TemporaryDirectory(prefix="semantic-imports-", dir=scratch) as work:
-        # Workspace replacements override module replacements during ordinary
-        # builds, even though the standalone source parser uses GOWORK=off.
-        for filename, command in (("go.mod", "mod"), ("go.work", "work")):
-            module_file = root / filename
-            if not module_file.exists():
-                continue
+        # Workspace use modules and replacements can override trusted owners
+        # during builds, even though the source parser uses GOWORK=off.
+        module_files = [(root / filename, command)
+                        for filename, command in (("go.mod", "mod"), ("go.work", "work"))
+                        if (root / filename).exists()]
+        for module_file, command in module_files:
             module = subprocess.run(
                 ["go", command, "edit", "-json", str(module_file)], cwd=work, env=env,
                 capture_output=True, text=True, timeout=30, check=True,
             )
-            for replacement in json.loads(module.stdout).get("Replace") or []:
+            metadata = json.loads(module.stdout)
+            if command == "work":
+                for used in metadata.get("Use") or []:
+                    used_root = module_file.parent / used["DiskPath"]
+                    module_files.append((used_root / "go.mod", "mod"))
+            else:
+                name = metadata["Module"]["Path"]
+                if any(under(name, owner) for owner in ALLOWED_EXTERNAL):
+                    raise ValueError(f"SemReg workspace module is not allowed: {name}")
+            for replacement in metadata.get("Replace") or []:
                 name = replacement["Old"]["Path"]
                 if any(under(name, owner) for owner in ALLOWED_EXTERNAL):
                     raise ValueError(f"SemReg replacement is not allowed: {name}")

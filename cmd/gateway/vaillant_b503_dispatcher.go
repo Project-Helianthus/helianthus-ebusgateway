@@ -21,7 +21,10 @@ package main
 // controls whether this request may proceed, while epoch comparison prevents
 // a completion from an earlier transport generation being accepted.
 // Context cancellation is also checked before the send boundary.
-// Transport loss requests a disconnect correlated to the captured generation.
+// Source withdrawal or bus-reported transport loss requests a disconnect
+// correlated to the captured generation. An epoch-advance cancellation
+// (b503session.ErrTransportDown from the Manager) is returned without a
+// disconnect: an existing owner is retained for bounded refresh.
 // Successful responses preserve the data delivered by the bus.
 // The dispatcher does not open a separate transport.
 

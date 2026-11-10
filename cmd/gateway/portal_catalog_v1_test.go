@@ -775,5 +775,4 @@ func TestCharacterizationConsumersOfAllThreeFamilies(t *testing.T) {
 		}
 	}
 	characterizationGolden(t, dir, "prometheus_semantic.txt", []byte(strings.Join(metrics, "\n")+"\n"))
-
 }

@@ -27,7 +27,7 @@ def check(root):
     closures = {}
     default_packages = set()
     for profile, tags in (("default", []), ("nomatter", ["-tags", "nomatter"])):
-        command = ["go", "list", "-mod=readonly", "-buildvcs=false", "-deps", *tags, "./cmd/gateway"]
+        command = ["go", "list", "-mod=readonly", "-buildvcs=false", "-deps", "-test", *tags, "./cmd/gateway"]
         result = subprocess.run(command, cwd=root, env=env, text=True,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=80)
         if result.returncode:

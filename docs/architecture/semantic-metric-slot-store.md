@@ -17,8 +17,8 @@ and store instances. It must bound reads, return detached bytes, and neither
 retain nor mutate committed bytes. A successful commit means the whole document
 has been atomically replaced and durably completed, including any required
 filesystem metadata durability. Partial writes, uncertain acknowledgements and
-lost writer fencing must return errors. These guarantees are adapter obligations;
-this slice supplies no concrete filesystem implementation or path.
+lost writer fencing must return errors. `SlotFileStore` implements these adapter obligations on Linux and Darwin; no
+deployment path is selected.
 
 `O21Create` explicitly provisions a definitely absent target. Only
 `fs.ErrNotExist` permits creation; corruption and other read errors never reset
@@ -63,30 +63,82 @@ native owner or turn stored identities into qualified observations. The renderer
 still requires current admitted, qualified, fresh and valid semantic evidence
 for each field and preserves its existing independent missing-value behavior.
 
+## Filesystem adapter
+
+`NewSlotFileStore(directory, target)` requires an existing caller-selected
+local directory and an explicit target. It does not load, create or repair a
+document. Targets must be valid UTF-8, nonempty, at most 256 bytes, contain no
+control characters or path separators, and differ from `.` and `..`. A computed
+target fingerprint maps each identity to a bounded filename; document identity
+is still checked by `O21Open`. The target never becomes a metric label.
+
+On Linux and Darwin the adapter opens the directory without following a final
+symlink, then uses directory-relative operations. Other platforms reject
+construction explicitly. Lock/document opens, temporary-file creation, rename and
+cleanup resolve names against the held directory descriptor, so replacing the
+directory pathname cannot redirect those operations into its replacement. The
+caller must control the directory and its ancestor directories, use a local
+filesystem supporting advisory exclusive locks, atomic same-directory rename and file/directory sync, and ensure every writer uses the
+adapter. Network/distributed filesystems are outside this contract. Lock files
+are persistent and must never be removed or replaced, even after Close.
+
+A nonblocking exclusive per-target lock fences other instances and processes.
+Operations verify the directory and regular lock inode still match their held
+descriptors; lost fencing latches uncertainty. Different targets have independent
+locks and documents. `Close` waits for an operation in progress, releases file
+descriptors and fencing, is idempotent, and permanently rejects later reads and
+commits. The caller must close the adapter before reopening for recovery and
+must not use a previously exported registry after closing its persistence owner.
+
+Reads reject symlinks, nonregular objects and documents above 256 KiB. Reads are
+bounded even if a file grows and return detached bytes. Only an absent document
+returns `fs.ErrNotExist`; invalid objects and other errors never permit
+`O21Create` to repair state. JSON and binding validation remain owned by
+`O21Open`, rather than being duplicated in the filesystem layer.
+
+Commit checks the target and size, writes a private temporary regular file in
+the held directory, syncs the file, closes it, rechecks fencing, atomically
+renames over the document, syncs the directory, then rechecks fencing before
+acknowledging success. It does not retain the input buffer. Temporary files are
+cleaned up on ordinary error paths; a process crash may leave unused temporary
+files, which are never loaded as documents. No cleanup of unrelated files is
+performed. After persistence starts, every error latches uncertainty, including
+rename errors and errors after rename. Reopening discovers the document that
+actually survived; an error never implies that replacement did not happen.
+Target mismatch and an oversized input are rejected before persistence starts.
+
 ## Composition still required
 
-`gatewaySemanticMetricRegistry` remains empty. A later slice must supply durable
-storage, exclusive ownership, explicit target lifecycle and missing-store policy,
+`gatewaySemanticMetricRegistry` remains empty. Production binding selection,
+deployment state directory, explicit provisioning and missing-store policy,
 current-owner revalidation, and registry refresh/invalidation at the renderer
-boundary. It must serialize transitions with consumption of exported registry
-snapshots. No configuration, metrics route, automatic repair, acquisition,
-filesystem path, deployment wiring, dependency or public API is added here.
+boundary remain separate composition work. Composition must serialize transitions
+with consumption of exported registry snapshots. No configuration, metrics
+route, automatic repair, acquisition, dependency or public API is added.
 MCP compatibility, GraphQL parity, native evidence and per-field last-known-good
 state remain unchanged.
 
 ## Evidence classification
 
-**Proven** by focused synthetic `TestO21` fixtures when run successfully:
-durable-before-return behavior, withholding during transitions and uncertainty,
-full identity comparisons, detached output, permanent retirement, domain
-capacity, corrupt-load refusal, unvalidated restart and a zero-valued sample
-only after explicit synthetic owner revalidation.
+**Proven** by focused synthetic `TestO21` and `TestSlotFileStore` fixtures when
+run successfully: bounded detached reads, refusal of unsafe objects, explicit
+absence and provisioning, cross-target isolation, exclusive instance/process
+fencing, mid-commit directory replacement containment and cleanup, close/reopen
+behavior, ordered file-write/sync/close/rename/directory-sync acknowledgement,
+individual injected operation failures, post-rename uncertainty,
+last accepted assignment retention, unvalidated restart, full identity rejection
+and persistent retirement. These are durable-adapter evidence only.
 
-**Hypothesis**: a future adapter can satisfy atomic durable replacement and
-exclusive-writer requirements on the selected deployment filesystem. No concrete
-adapter is qualified by these tests.
+**Hypothesis**: operating-system sync acknowledgements provide the required
+power-loss durability on a selected deployment filesystem. Offline fault seams
+exercise acknowledged operation ordering and failure policy, rather than power
+interruption or storage-controller behavior.
 
-**Unknown**: production composition, crash/filesystem fault behavior, live owner
-reattachment, device behavior and physical acceptance. Proven/Hypothesis/Unknown
-are evidence grades, separate from qualification, freshness and physical
-acceptance. Full repository CI and committed-change review remain separate gates.
+**Unknown**: production composition, actual filesystem power-loss qualification,
+live owner reattachment, device behavior and physical acceptance.
+Proven/Hypothesis/Unknown are evidence grades, separate from qualification,
+freshness and physical acceptance. This structural runtime change can alter
+release binaries and requires renewal of affected release, security and hardware
+evidence. Full repository CI, applicable transport/conformance gates and
+independent committed-change review remain shipping obligations. Offline fixtures
+do not establish deployed acceptance, physical qualification or binary neutrality.

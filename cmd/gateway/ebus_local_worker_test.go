@@ -245,8 +245,15 @@ func TestAA27DispatchIsSelectedByArgvOneOnlyAndIndependentOfTheMatterOption(t *t
 	cfg := ebusgateway.DefaultConfig()
 	bindFlags(fs, &cfg)
 	bindMatterProfile(fs)
-	if err := fs.Parse([]string{localworkerhost.ChildFlag}); err == nil {
+	args := []string{localworkerhost.ChildFlag}
+	if matterProfileEnabled {
+		args = append([]string{"-matter-library-enabled"}, args...)
+	}
+	if err := fs.Parse(args); err == nil {
 		t.Fatal("the gateway flag set accepted the worker selector")
+	}
+	if matterProfileEnabled && fs.Lookup("matter-library-enabled").Value.String() != "true" {
+		t.Fatal("the Matter option was not parsed before the worker selector refusal")
 	}
 }
 

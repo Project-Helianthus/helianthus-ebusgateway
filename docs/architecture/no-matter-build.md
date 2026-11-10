@@ -15,7 +15,10 @@ configured default cache when `GOMODCACHE` is not exported; an explicit override
 is also supported. It rejects a Matter dependency in the excluded profile and
 requires Matter in the default profile. Local CI and the GitHub CI test job run this guard after testing
 both profiles; both CI suites also build and test the gateway with `nomatter`. The guard
-checks production and test dependency closures. This covers package dependencies; symbol inspection is supplementary.
+requires Matter in the default production dependency closure, independently of
+test imports, and excludes Matter from the `nomatter` closure including tests.
+It also lists the default closure including tests. This covers package
+dependencies; symbol inspection is supplementary.
 
 The excluded profile registers no Matter flag, host, feed route or projection.
 The Portal reports Matter unavailable even when ordinary M2M GraphQL is enabled.

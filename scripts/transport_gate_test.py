@@ -34,6 +34,7 @@ class NoMatterProfileCacheTests(unittest.TestCase):
                 env = {"GOMODCACHE": "/configured/cache"} if exported else {}
                 results = [
                     subprocess.CompletedProcess([], 0, packages, ""),
+                    subprocess.CompletedProcess([], 0, packages, ""),
                     subprocess.CompletedProcess([], 0, checker.MODULE + "/cmd/gateway", ""),
                 ]
                 with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(
@@ -42,7 +43,11 @@ class NoMatterProfileCacheTests(unittest.TestCase):
                     self.assertEqual(checker.check(REPO_ROOT), {
                         "default_matter_packages": 3, "nomatter_matter_packages": 0
                     })
-                self.assertEqual(run.call_count, 2)
+                self.assertEqual(run.call_count, 3)
+                self.assertNotIn("-test", run.call_args_list[0].args[0])
+                self.assertIn("-test", run.call_args_list[1].args[0])
+                self.assertIn("-test", run.call_args_list[2].args[0])
+                self.assertIn("nomatter", run.call_args_list[2].args[0])
                 for call in run.call_args_list:
                     actual = call.kwargs["env"]
                     self.assertEqual(actual.get("GOMODCACHE"), env.get("GOMODCACHE"))
@@ -50,6 +55,28 @@ class NoMatterProfileCacheTests(unittest.TestCase):
                                        "GOSUMDB": "off", "GOTOOLCHAIN": "local"}.items():
                         self.assertEqual(actual[key], value)
                     self.assertIn("-mod=readonly", call.args[0])
+
+    def test_default_matter_required_in_production_even_when_tests_import_it(self) -> None:
+        spec = importlib.util.spec_from_file_location(
+            "check_no_matter_profile", SCRIPT_DIR / "check_no_matter_profile.py"
+        )
+        checker = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(checker)
+        required = [checker.MODULE + suffix for suffix in (
+            "/matter", "/matter/feedv1", "/matter/libraryhost"
+        )]
+        gateway = checker.MODULE + "/cmd/gateway"
+        for missing in required:
+            with self.subTest(missing=missing):
+                production = "\n".join([gateway] + [p for p in required if p != missing])
+                tests = "\n".join([gateway] + required)
+                def listing(command, **kwargs):
+                    packages = gateway if "nomatter" in command else tests if "-test" in command else production
+                    return subprocess.CompletedProcess(command, 0, packages, "")
+
+                with mock.patch.object(checker.subprocess, "run", side_effect=listing):
+                    with self.assertRaisesRegex(RuntimeError, "default profile lost its Matter dependency closure"):
+                        checker.check(REPO_ROOT)
 
 
 class TransportGateTests(unittest.TestCase):

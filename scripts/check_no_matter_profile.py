@@ -24,8 +24,9 @@ def check(root):
     env.update(GOWORK="off", GOPROXY="off", GOSUMDB="off", GOTOOLCHAIN="local")
     closures = {}
     default_packages = set()
-    for profile, tags in (("default", []), ("nomatter", ["-tags", "nomatter"])):
-        command = ["go", "list", "-mod=readonly", "-buildvcs=false", "-deps", "-test", *tags, "./cmd/gateway"]
+    for profile, flags in (("default-production", []), ("default", ["-test"]),
+                           ("nomatter", ["-test", "-tags", "nomatter"])):
+        command = ["go", "list", "-mod=readonly", "-buildvcs=false", "-deps", *flags, "./cmd/gateway"]
         result = subprocess.run(command, cwd=root, env=env, text=True,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=80)
         if result.returncode:
@@ -33,7 +34,7 @@ def check(root):
         packages = result.stdout.splitlines()
         if MODULE + "/cmd/gateway" not in packages:
             raise RuntimeError(f"{profile} command missing from dependency listing")
-        if profile == "default":
+        if profile == "default-production":
             default_packages = set(packages)
         closures[profile] = sorted(p for p in packages if matter_dependency(p))
     required = {MODULE + suffix for suffix in ("/matter", "/matter/feedv1", "/matter/libraryhost")}

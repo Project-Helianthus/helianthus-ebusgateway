@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import os
+import json
+import runpy
 import pathlib
 import shutil
 import subprocess
@@ -52,6 +54,38 @@ class SourceSelectionM4GateTests(unittest.TestCase):
             check=False,
         )
 
+    def test_inventory_scope_checks_committed_delta_against_merge_base(self) -> None:
+        inventory = json.loads((REPO_ROOT / "docs/architecture/naming-inventory.json").read_text())
+        repo = self._create_temp_repo("runtime.txt", "original\n")
+        subprocess.run(["git", "update-ref", "refs/remotes/origin/main", "HEAD"], cwd=repo, check=True)
+        scripts = repo / ".tmp"
+        scripts.mkdir()
+        scope = scripts / "check_scope.py"
+        scope.write_text("\n".join(inventory["bounded_validation_programs"]["check_scope.py"]) + "\n")
+        validator = runpy.run_path(str(scope))
+        before = validator["baseline"]()
+        gate = repo / "scripts/source_selection_m4_gate.py"
+        gate.write_text(gate.read_text() + "\n# authorized change\n")
+        subprocess.run(["git", "add", "scripts/source_selection_m4_gate.py"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-m", "authorized gate edit"], cwd=repo, check=True, capture_output=True)
+        self.assertEqual(validator["check_scope"](before, validator["inputs"]()), {"scripts/source_selection_m4_gate.py"})
+        for fault in ("modified", "deleted", "added"):
+            with self.subTest(fault=fault):
+                after = validator["inputs"]()
+                if fault == "modified":
+                    after["runtime.txt"] = "changed"
+                elif fault == "deleted":
+                    del after["runtime.txt"]
+                else:
+                    after["extra-runtime.txt"] = "added"
+                with self.assertRaises(AssertionError):
+                    validator["check_scope"](before, after)
+        (repo / "runtime.txt").write_text("committed unauthorized change\n")
+        subprocess.run(["git", "add", "runtime.txt"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-m", "unauthorized edit"], cwd=repo, check=True, capture_output=True)
+        with self.assertRaises(AssertionError):
+            validator["check_scope"](validator["baseline"](), validator["inputs"]())
+
     def test_allows_retained_status_mirror_aliases(self) -> None:
         text = (
             "# retained status mirrors\n"
@@ -59,6 +93,35 @@ class SourceSelectionM4GateTests(unittest.TestCase):
         )
         result = self._run_gate(self._create_temp_repo("docs/status.md", text))
         self.assertEqual(result.returncode, 0, msg=result.stderr)
+
+    def test_retains_exact_source_filename_values_in_naming_inventories(self) -> None:
+        filename = "join" + "bus.go"
+        for path in ("naming-inventory.json", "naming-consumers.json"):
+            for text in (f'{{"owning_file": "{filename}"}}', f'["{filename}"]'):
+                with self.subTest(path=path, text=text):
+                    result = self._run_gate(self._create_temp_repo(f"docs/architecture/{path}", text))
+                    self.assertEqual(result.returncode, 0, msg=result.stderr)
+                    self.assertIn("retained", result.stdout)
+
+    def test_rejects_other_legacy_uses_in_naming_inventories(self) -> None:
+        term = "join" + "bus"
+        for path in ("naming-inventory.json", "naming-consumers.json"):
+            for text in (
+                f'{{"owning_file": "{term}"}}',
+                f'{{"owning_file": "src/{term}.go"}}',
+                f'{{"{term}.go": "file"}}',
+                f'{{"owning_file": "{term}.go", "description": "{term}"}}',
+                f'{{"description": "quoted \\"{term}.go\\""}}',
+                '{"owning_file": "' + term + '.go", "description": "Join' + 'Bus"}',
+            ):
+                with self.subTest(path=path, text=text):
+                    result = self._run_gate(self._create_temp_repo(f"docs/architecture/{path}", text))
+                    self.assertNotEqual(result.returncode, 0)
+
+    def test_rejects_source_filename_value_outside_naming_inventories(self) -> None:
+        filename = "join" + "bus.go"
+        result = self._run_gate(self._create_temp_repo("docs/other.json", f'["{filename}"]'))
+        self.assertNotEqual(result.returncode, 0)
 
     def test_blocks_legacy_admission_public_surface(self) -> None:
         legacy = "admission" + "_path_selected"

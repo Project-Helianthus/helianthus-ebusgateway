@@ -1,4 +1,24 @@
 {
+  "atomic_adoption_barrier": {
+    "accepted_limitations": "Incomplete enumeration, unresolved rows and lexical-only consumer matches are follow-up work; a newly discovered actual consumer requires ownership planning.",
+    "exact_token_matches_prove_completeness": false,
+    "inventory": "docs/architecture/naming-inventory.json",
+    "library_repins_same_pull_request": true,
+    "negative_result_requirement": "Record searched declaration identities, dynamic/reflection entry points, indirect imports and packaging; a zero exact-token count is insufficient.",
+    "new_consumer_action": "Block adoption until ownership is planned.",
+    "other_public_names": "unchanged",
+    "ready_rows_only": true,
+    "required_chains": [
+      "Gateway GraphQL/MCP -> HA queries, coordinator, subscriptions, semantic snapshot and fact tables",
+      "Gateway GraphQL -> vdev zone datasource",
+      "Gateway semantic snapshot -> Matter semantic feed",
+      "Canonical value declarations -> Explorer consumers",
+      "Gateway API -> Portal GraphQL, reflected objects and web assets",
+      "Native registry and driver declarations -> ebusgo, Modbus and tinyebus indirect/negative review",
+      "Dependency BOM -> add-on packaging, with packaging unchanged"
+    ],
+    "status": "bounded"
+  },
   "consumer_paths": {
     "AdapterHardwareInfo": [
       "ha-integration/custom_components/helianthus/coordinator.py",
@@ -19186,8 +19206,27 @@
       "vrc-explorer/tests/test_system_information_ui.py"
     ]
   },
-  "coverage_status": "unverified",
-  "purpose": "Incomplete exact-token discovery; dynamic, reflection and indirect bindings remain unverified.",
+  "coverage": {
+    "bounded_declarations": 123,
+    "discovery_rows": 2857,
+    "follow_up_issues": [
+      "https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1470",
+      "https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1471",
+      "https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1487"
+    ],
+    "limits": [
+      "The existing discovery rows do not cover all public fields, returned map keys and dynamic/reflection declarations.",
+      "The external file lists and exact-token matches do not establish consumer completeness.",
+      "The complete custom metric renderer, boiler setters, owned GraphQL type/enum tokens and full context-qualified value map remain to be reconciled.",
+      "Merged library inventories and external source snapshots are not present in this worktree; no additional library meaning is asserted.",
+      "Consumer matches are lexical candidates, not verified semantic bindings.",
+      "Discovery identities identify source occurrences only; native_semantic_identity is not declared unless a bounded declaration supplies it."
+    ],
+    "scope": "Existing bounded declarations and static discovery occurrences; partial coverage accepted for this naming wave.",
+    "target_representation": "A rename target is an exact name. A removal target is an action object with no replacement name; it never creates a new public spelling."
+  },
+  "coverage_status": "partial",
+  "purpose": "Non-shipped partial consumer discovery for the bounded atomic adoption contract. Exact-token matches are candidates and do not establish complete bindings.",
   "reference_source_files": {
     "ebus-vdev": [
       ".github/workflows/ci.yml",

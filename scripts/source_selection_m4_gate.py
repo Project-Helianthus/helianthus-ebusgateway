@@ -165,7 +165,24 @@ RETAINED_PUBLIC = {
 }
 
 
-def retained_rationale(path: pathlib.Path, pattern: LegacyPattern) -> str | None:
+def retained_rationale(path: pathlib.Path, pattern: LegacyPattern, line: str = "") -> str | None:
+    if pattern.name == "joinbus" and path in {
+        pathlib.Path("docs/architecture/naming-inventory.json"),
+        pathlib.Path("docs/architecture/naming-consumers.json"),
+    }:
+        # Retain exact source-file values, never keys or other uses on the line.
+        remaining = re.sub(
+            r'"(?:[^"\\]|\\.)*"',
+            lambda match: (
+                '""'
+                if match.group() == '"joinbus.go"'
+                and not line[match.end():].lstrip().startswith(":")
+                else match.group()
+            ),
+            line,
+        )
+        if pattern.regex.search(line) and not pattern.regex.search(remaining):
+            return "naming inventory retains the existing source-file name as a JSON value"
     return RETAINED_PUBLIC.get(path, {}).get(pattern.name)
 
 
@@ -271,7 +288,7 @@ def main() -> int:
                     failures.append(f"{rel}:{lineno}: legacy selector call .Join(...): {line.strip()}")
                 for pattern in ACTIVE_CODE_PATTERNS:
                     if pattern.regex.search(line):
-                        rationale = retained_rationale(rel, pattern)
+                        rationale = retained_rationale(rel, pattern, line)
                         if rationale is not None:
                             retained.append(f"{rel}:{lineno}: retained {pattern.name}: {rationale}")
                             continue

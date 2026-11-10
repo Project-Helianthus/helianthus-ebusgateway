@@ -60,6 +60,35 @@ class SourceSelectionM4GateTests(unittest.TestCase):
         result = self._run_gate(self._create_temp_repo("docs/status.md", text))
         self.assertEqual(result.returncode, 0, msg=result.stderr)
 
+    def test_retains_exact_source_filename_values_in_naming_inventories(self) -> None:
+        filename = "join" + "bus.go"
+        for path in ("naming-inventory.json", "naming-consumers.json"):
+            for text in (f'{{"owning_file": "{filename}"}}', f'["{filename}"]'):
+                with self.subTest(path=path, text=text):
+                    result = self._run_gate(self._create_temp_repo(f"docs/architecture/{path}", text))
+                    self.assertEqual(result.returncode, 0, msg=result.stderr)
+                    self.assertIn("retained", result.stdout)
+
+    def test_rejects_other_legacy_uses_in_naming_inventories(self) -> None:
+        term = "join" + "bus"
+        for path in ("naming-inventory.json", "naming-consumers.json"):
+            for text in (
+                f'{{"owning_file": "{term}"}}',
+                f'{{"owning_file": "src/{term}.go"}}',
+                f'{{"{term}.go": "file"}}',
+                f'{{"owning_file": "{term}.go", "description": "{term}"}}',
+                f'{{"description": "quoted \\"{term}.go\\""}}',
+                '{"owning_file": "' + term + '.go", "description": "Join' + 'Bus"}',
+            ):
+                with self.subTest(path=path, text=text):
+                    result = self._run_gate(self._create_temp_repo(f"docs/architecture/{path}", text))
+                    self.assertNotEqual(result.returncode, 0)
+
+    def test_rejects_source_filename_value_outside_naming_inventories(self) -> None:
+        filename = "join" + "bus.go"
+        result = self._run_gate(self._create_temp_repo("docs/other.json", f'["{filename}"]'))
+        self.assertNotEqual(result.returncode, 0)
+
     def test_blocks_legacy_admission_public_surface(self) -> None:
         legacy = "admission" + "_path_selected"
         result = self._run_gate(self._create_temp_repo("docs/status.md", f"Old field: {legacy}\n"))

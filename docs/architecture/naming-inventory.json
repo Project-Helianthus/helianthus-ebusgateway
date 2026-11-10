@@ -3266,14 +3266,14 @@
   ],
   "bounded_validation_programs": {
     "check_evidence.py": [
-      "from check_scope import ROOT,ALLOWED,inputs",
+      "from check_scope import ROOT,ALLOWED,inputs,baseline",
       "import json,copy",
       "",
       "def check_evidence(before,after):",
       " assert before and set(before)==set(after),'missing original or proof'",
       " assert all(before[p]==after[p] for p in before if p not in ALLOWED),'changed shipped input'",
       "if __name__=='__main__':",
-      " before=json.loads((ROOT/'.tmp/codex-fix-r2/before-inputs.json').read_text());after=inputs()",
+      " before={p:v for p,v in baseline().items() if p not in ALLOWED};after={p:v for p,v in inputs().items() if p not in ALLOWED}",
       " check_evidence(before,after)",
       " for fault in ['changed_runtime','missing_proof','empty_original']:",
       "  bad=copy.deepcopy(after);key=next(p for p in bad if p not in ALLOWED)",
@@ -3282,7 +3282,7 @@
       "  try:check_evidence({} if fault=='empty_original' else before,bad)",
       "  except AssertionError:continue",
       "  raise AssertionError('neutrality negative control escaped')",
-      " print('PASS: all',len(before)-len(ALLOWED),'non-inventory inputs byte-identical to round-start originals; three neutrality negative controls rejected')"
+      " print('PASS: all',len(before),'tracked inputs outside the four authorized files byte-identical to merge base; three neutrality negative controls rejected')"
     ],
     "check_inventory.py": [
       "import copy,json,pathlib,sys",
@@ -3359,37 +3359,47 @@
       " print('PASS: explicit row metadata, bounded targets, unique identities, atomic adoption and partial coverage')"
     ],
     "check_scope.py": [
-      "import copy,json,pathlib,sys,hashlib",
+      "import copy,pathlib,subprocess,hashlib",
       "ROOT=pathlib.Path(__file__).resolve().parents[1]",
-      "ALLOWED={'docs/architecture/naming-inventory.json','docs/architecture/naming-consumers.json'}",
-      "def inputs():",
+      "ALLOWED={'docs/architecture/naming-inventory.json','docs/architecture/naming-consumers.json','scripts/source_selection_m4_gate.py','scripts/source_selection_m4_gate_test.py'}",
+      "def git(*args):",
+      " return subprocess.check_output(['git',*args],cwd=ROOT)",
+      "def inputs(revision=None):",
+      " paths=git('ls-tree','-r','--name-only','-z',revision) if revision else git('ls-files','-z')",
       " result={}",
-      " for p in ROOT.rglob('*'):",
-      "  rel=p.relative_to(ROOT)",
-      "  if any(part in {'.git','.tmp'} for part in rel.parts) or rel.name.startswith(('.REPORT-','.pr-body-')):continue",
-      "  if p.is_file():result[rel.as_posix()]=hashlib.sha256(p.read_bytes()).hexdigest()",
+      " for path in paths.decode().split('\\0'):",
+      "  if not path:continue",
+      "  p=ROOT/path",
+      "  if revision is None and not p.exists():continue",
+      "  data=git('show',f'{revision}:{path}') if revision else p.read_bytes()",
+      "  result[path]=hashlib.sha256(data).hexdigest()",
       " return result",
-      "",
+      "def baseline():",
+      " return inputs(git('merge-base','HEAD','origin/main').decode().strip())",
       "def check_scope(before,after):",
-      " assert before and set(before)==set(after),'missing or added product input'",
-      " changed={p for p in before if before[p]!=after[p]}",
-      " assert changed<=ALLOWED,'unauthorized product delta'",
+      " assert before,'missing original input proof'",
+      " changed={p for p in set(before)|set(after) if before.get(p)!=after.get(p)}",
+      " assert changed<=ALLOWED,'unauthorized product delta: '+str(sorted(changed-ALLOWED))",
       " return changed",
       "if __name__=='__main__':",
-      " before=json.loads((ROOT/'.tmp/codex-fix-r2/before-inputs.json').read_text());after=inputs()",
+      " before=baseline();after=inputs()",
       " changed=check_scope(before,after)",
-      " for fault in ['changed_runtime','missing_original']:",
-      "  bad=copy.deepcopy(after);key=next(p for p in bad if p not in ALLOWED)",
+      " for fault in ['changed_runtime','missing_original','added_runtime']:",
+      "  bad=copy.deepcopy(after);key=next(p for p in before if p not in ALLOWED)",
       "  if fault=='changed_runtime':bad[key]='changed'",
-      "  else:del bad[key]",
+      "  elif fault=='missing_original':bad.pop(key,None)",
+      "  else:bad['unauthorized-product-input']='added'",
       "  try:check_scope(before,bad)",
       "  except AssertionError:continue",
       "  raise AssertionError('scope negative control escaped')",
+      " untracked=set(git('ls-files','--others','--exclude-standard').decode().splitlines())",
+      " assert untracked<={'.rfix-summary-1516.txt'},'unclassified untracked inputs: '+str(sorted(untracked))",
       " for path in changed:",
+      "  if path not in after:continue",
       "  text=(ROOT/path).read_text()",
       "  assert all(line.rstrip()==line for line in text.splitlines()),'trailing whitespace'",
       "  assert not any(line.startswith(('<<<<<<< ','=======','>>>>>>> ')) for line in text.splitlines()),'conflict marker'",
-      " print('PASS: only two allowed inventories changed; scope negative controls rejected; whitespace and conflict checks clean')"
+      " print('PASS: merge-base delta confined to four authorized files; three scope negative controls rejected; whitespace and conflict checks clean')"
     ]
   },
   "coverage": {
@@ -140610,7 +140620,7 @@
     "check_evidence.py": [
       "import pathlib,subprocess,hashlib,copy",
       "ROOT=pathlib.Path(__file__).resolve().parents[1]",
-      "ALLOWED={'docs/architecture/naming-inventory.json','docs/architecture/naming-consumers.json'}",
+      "ALLOWED={'docs/architecture/naming-inventory.json','docs/architecture/naming-consumers.json','scripts/source_selection_m4_gate.py','scripts/source_selection_m4_gate_test.py'}",
       "def verify(before,after):",
       " assert before and set(before)==set(after),'missing input proof'",
       " assert all(before[p]==after[p] for p in before),'changed shipped input'",
@@ -140634,7 +140644,7 @@
       " try:verify(before,bad)",
       " except AssertionError:pass",
       " else:raise AssertionError('negative control escaped: '+fault)",
-      "print(f'PASS: all {len(before)} original non-inventory tracked inputs byte-identical; changed-input and missing-proof negative controls rejected')"
+      "print(f'PASS: all {len(before)} tracked inputs outside the four authorized files byte-identical; changed-input and missing-proof negative controls rejected')"
     ],
     "check_inventory.py": [
       "import copy,json,pathlib,subprocess,sys,os",
@@ -140703,13 +140713,13 @@
     "check_scope.py": [
       "import pathlib,subprocess",
       "ROOT=pathlib.Path(__file__).resolve().parents[1]",
-      "ALLOWED={'docs/architecture/naming-inventory.json','docs/architecture/naming-consumers.json'}",
+      "ALLOWED={'docs/architecture/naming-inventory.json','docs/architecture/naming-consumers.json','scripts/source_selection_m4_gate.py','scripts/source_selection_m4_gate_test.py'}",
       "base=subprocess.check_output(['git','merge-base','HEAD','origin/main'],cwd=ROOT,text=True).strip()",
       "changed=set(subprocess.check_output(['git','diff','--name-only',base,'--'],cwd=ROOT,text=True).splitlines())",
       "assert changed<=ALLOWED, 'out-of-scope tracked changes: '+str(sorted(changed-ALLOWED))",
       "untracked=set(subprocess.check_output(['git','ls-files','--others','--exclude-standard'],cwd=ROOT,text=True).splitlines())",
       "assert untracked<={'.rfix-summary-1516.txt'}, 'unclassified untracked inputs: '+str(sorted(untracked))",
-      "print('PASS: tracked changes are confined to the two non-shipped inventory files')"
+      "print('PASS: tracked changes are confined to the four authorized files')"
     ],
     "naming_extract.go": [
       "package main",
@@ -140862,5 +140872,5 @@
       "}"
     ]
   },
-  "validation_scope": "The original exhaustive-coverage validators are retained without weakening their assertions. The bounded validators enforce this partial inventory contract; they do not claim exhaustive coverage. Original validators invoke Git and are not run in this offline round."
+  "validation_scope": "The exhaustive-coverage assertions remain unchanged; partial coverage is accepted by owner decision. Bounded validators enforce explicit row status and bounded targets. Both scope and byte-neutrality validators compare tracked inputs against the PR merge base and permit changes only in the two inventories and the source-selection gate and its tests. They do not claim exhaustive coverage."
 }

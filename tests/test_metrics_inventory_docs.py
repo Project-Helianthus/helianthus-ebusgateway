@@ -11,6 +11,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 PAGE = "docs/observability/semantic-prometheus-coverage.md"
+PUBLIC_MAIN = "https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/"
 SOURCES = [
     "bus_observability_store.go", "runtime_transport_metrics.go",
     "baud_observation_metrics.go", "semantic_prometheus.go",
@@ -43,7 +44,13 @@ func main() {
     if n==nil {stack=stack[:len(stack)-1]; return false}; stack=append(stack,n)
     c,ok:=n.(*ast.CallExpr); if !ok {return true}; method:=text(c.Fun)
     args:=[]string{}; for _,a:=range c.Args {args=append(args,text(a))}
-    guards:=[]string{}; for _,parent:=range stack {if branch,ok:=parent.(*ast.IfStmt); ok {guards=append(guards,text(branch.Cond))}}
+    guards:=[]string{}; for i,parent:=range stack[:len(stack)-1] {
+     if branch,ok:=parent.(*ast.IfStmt); ok {
+      child:=stack[i+1]
+      if child==branch.Body {guards=append(guards,text(branch.Cond))}
+      if child==branch.Else {guards=append(guards,"!("+text(branch.Cond)+")")}
+     }
+    }
     r.Calls=append(r.Calls,Call{path,fn.Name.Name,method,args,guards}); return true
    })
   }
@@ -77,7 +84,12 @@ def expected_families(analysis):
                 continue
             name = literal(args[0])
             samples.setdefault(name, []).append(args[2])
-            guards.setdefault(name, set()).update(c["Guards"])
+            # Only conditions shared by every alternative emission are guards.
+            path_guards = set(c["Guards"])
+            if name in guards:
+                guards[name].intersection_update(path_guards)
+            else:
+                guards[name] = path_guards
     assert set(samples) == set(families), "sample without a declared family"
     for name, row in families.items():
         assert name in samples, f"declaration without resolved sample: {name}"
@@ -168,7 +180,7 @@ def sample_labels(expr, name):
 
 
 @pytest.fixture(scope="module")
-def analysis():
+def inspect_go():
     scratch = ROOT / ".tmp"
     scratch.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(dir=scratch) as directory:
@@ -179,9 +191,50 @@ def analysis():
         exe = Path(directory) / "inspect"
         built = subprocess.run(["go", "build", "-o", str(exe), str(helper)], cwd=ROOT, env=env, capture_output=True, text=True, timeout=90)
         assert built.returncode == 0, built.stderr
-        parsed = subprocess.run([str(exe), *SOURCES, "cmd/gateway/semantic_vaillant_adapter_info.go"], cwd=ROOT, env=env, capture_output=True, text=True, timeout=30)
-        assert parsed.returncode == 0, parsed.stderr
-        return json.loads(parsed.stdout)
+        def inspect(paths):
+            parsed = subprocess.run([str(exe), *map(str, paths)], cwd=ROOT, env=env, capture_output=True, text=True, timeout=30)
+            assert parsed.returncode == 0, parsed.stderr
+            return json.loads(parsed.stdout)
+        yield inspect
+
+
+@pytest.fixture(scope="module")
+def analysis(inspect_go):
+    return inspect_go([*SOURCES, "cmd/gateway/semantic_vaillant_adapter_info.go"])
+
+
+def test_guards_require_every_emission_path(inspect_go, tmp_path):
+    source = tmp_path / "guards.go"
+    source.write_text('''package fixture
+func render() {
+ w.writeType("branches", "gauge")
+ w.writeType("unconditional", "gauge")
+ w.writeType("nested", "gauge")
+ w.writeType("negative", "gauge")
+ if connected {
+  w.writeGaugeSample("branches", 1, nil)
+  w.writeGaugeSample("unconditional", 0, nil)
+ } else {
+  w.writeGaugeSample("branches", 0, nil)
+  w.writeGaugeSample("negative", 1, nil)
+ }
+ w.writeGaugeSample("unconditional", 1, nil)
+ if enabled {
+  if connected { w.writeGaugeSample("nested", 1, nil) } else { w.writeGaugeSample("nested", 0, nil) }
+ }
+}
+''')
+    families = expected_families(inspect_go([source]))
+    assert families["branches"]["source_guards"] == []
+    assert families["unconditional"]["source_guards"] == []
+    assert families["nested"]["source_guards"] == ["enabled"]
+    assert families["negative"]["source_guards"] == ["!(connected)"]
+
+
+def test_current_alternative_emissions_have_no_common_guard(analysis):
+    families = expected_families(analysis)
+    assert families["ebus_passive_tap_connected"]["source_guards"] == []
+    assert families["helianthus_semantic_projection_available"]["source_guards"] == []
 
 
 def validate(inventory, page, analysis):
@@ -210,7 +263,7 @@ def validate(inventory, page, analysis):
 
 def table_row(row):
     labels = ", ".join(f"`{x}`" for x in row["labels"]) or "none"
-    return f"| `{row['name']}` | {row['type']} | {labels} | {row['enablement']} | {row['omission']} | {row['production']} | [{Path(row['source']).name}](../../{row['source']}) |"
+    return f"| `{row['name']}` | {row['type']} | {labels} | {row['enablement']} | {row['omission']} | {row['production']} | [{Path(row['source']).name}]({PUBLIC_MAIN}{row['source']}) |"
 
 
 def test_inventory_and_documentation(analysis):
@@ -263,15 +316,40 @@ def test_dynamic_writer_fails_closed(analysis):
         expected_families(changed)
 
 
-# These output roots and finite dynamic sites are reviewed together. An added
-# call requires retracing its renderer rather than silently scanning more names.
-OUTPUT_ROOTS = {"RenderPrometheus", "writeTransportRuntimeMetrics", "writeBaudObservationMetrics", "writeSemanticMetrics", "renderSemanticFact", "Render", "text", "writeSample", "writeGaugeSample", "writeCounterSample", "writeType", "writeHelp", "newGatewayMetricsHandler", "MetricsHandler", "startHTTPServer", "registerHTTPControlPlaneCoreRoutes", "newHTTPControlPlaneRoutePlan", "RenderSemanticPrometheus"}
+# Restrict the graph to metrics composition and output operations. Data
+# preparation, validation, sorting and unrelated HTTP routes are not exposition.
+OUTPUT_ROOTS = {"RenderPrometheus", "writeTransportRuntimeMetrics", "writeBaudObservationMetrics", "writeSemanticMetrics", "renderSemanticFact", "Render", "text", "writeSample", "writeGaugeSample", "writeCounterSample", "writeType", "writeHelp", "newGatewayMetricsHandler", "MetricsHandler", "startHTTPServer", "registerHTTPControlPlaneCoreRoutes", "RenderSemanticPrometheus"}
+COMPOSITION_CALLS = {
+    "newGatewayMetricsHandler", "newGatewaySemanticMetrics", "gatewaySemanticMetricRegistry",
+    "store.MetricsHandler", "store.RenderPrometheus", "transport.ServeHTTP",
+    "semantic.text", "huaweiWireCounters.text", "semanticmetrics.Render",
+    "newPrometheusWriter", "writeSemanticMetrics", "renderSemanticFact",
+    "writeTransportRuntimeMetrics", "writeBaudObservationMetrics", "emit",
+}
+OUTPUT_RECEIVERS = {"writer", "w", "writer.buffer", "buffer", "availability", "samples", "values"}
+OUTPUT_METHODS = {"writeHelp", "writeType", "writeSample", "writeGaugeSample", "writeCounterSample", "Write", "WriteString", "WriteByte", "String"}
+
+
+def is_metrics_call(call):
+    method, args = call["Method"], call["Args"]
+    if method in COMPOSITION_CALLS:
+        return True
+    if method == "mux.Handle":
+        return args == ["plan.metricsPath", "metricsHandler"]
+    if method == "io.WriteString":
+        return args[0] == "w"
+    if method == "fmt.Fprintf":
+        return args[0] in {"writer.buffer", "&availability", "&samples", "&values"}
+    if method == "fmt.Sprintf":
+        return call["Source"] == "cmd/gateway/huawei_transport_metrics.go" and call["Function"] == "text"
+    receiver, _, name = method.rpartition(".")
+    return receiver in OUTPUT_RECEIVERS and name in OUTPUT_METHODS
 
 
 def renderer_calls(analysis):
     result = {}
     for call in analysis["Calls"]:
-        if call["Function"] in OUTPUT_ROOTS:
+        if call["Function"] in OUTPUT_ROOTS and is_metrics_call(call):
             key = call["Source"] + ":" + call["Function"]
             result.setdefault(key, set()).add(call["Method"])
     return {key: sorted(value) for key, value in sorted(result.items())}
@@ -306,3 +384,17 @@ def test_finite_format_renderers_and_route_composition(analysis):
         source = (ROOT / path).read_text()
         for snippet in snippets:
             assert snippet in source, f"retrace composition: {path}: {snippet}"
+
+
+def test_renderer_snapshot_ignores_unrelated_calls(analysis):
+    changed = copy.deepcopy(analysis)
+    for source, function, method in [
+        ("cmd/gateway/gateway_http_server.go", "startHTTPServer", "configurePortal"),
+        ("internal/semanticmetrics/metrics.go", "Render", "validateBinding"),
+        ("internal/semanticmetrics/metrics.go", "Render", "sort.SliceStable"),
+    ]:
+        changed["Calls"].append(dict(Source=source, Function=function, Method=method, Args=[], Guards=[]))
+    changed["Calls"].append(dict(Source="cmd/gateway/gateway_http_control_plane.go", Function="registerHTTPControlPlaneCoreRoutes", Method="mux.Handle", Args=['"/unrelated"', "otherHandler"], Guards=[]))
+    assert renderer_calls(changed) == renderer_calls(analysis)
+    changed["Calls"] = [c for c in changed["Calls"] if c["Method"] != "semanticmetrics.Render"]
+    assert renderer_calls(changed) != renderer_calls(analysis)

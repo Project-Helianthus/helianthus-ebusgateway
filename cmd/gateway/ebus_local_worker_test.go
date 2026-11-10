@@ -17,7 +17,6 @@ import (
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/localworkerhost"
-	"github.com/Project-Helianthus/helianthus-ebusgateway/matter/libraryhost"
 )
 
 var aa27Self = localworkerhost.Identity{
@@ -245,12 +244,9 @@ func TestAA27DispatchIsSelectedByArgvOneOnlyAndIndependentOfTheMatterOption(t *t
 	fs.SetOutput(io.Discard)
 	cfg := ebusgateway.DefaultConfig()
 	bindFlags(fs, &cfg)
-	option := bindMatterLibraryFlags(fs)
-	if err := fs.Parse([]string{"-matter-library-enabled", localworkerhost.ChildFlag}); err == nil {
+	bindMatterProfile(fs)
+	if err := fs.Parse([]string{localworkerhost.ChildFlag}); err == nil {
 		t.Fatal("the gateway flag set accepted the worker selector")
-	}
-	if !option.enabled {
-		t.Fatal("matter option was not parsed before the refusal")
 	}
 }
 
@@ -574,36 +570,18 @@ func TestAA27ExecLauncherBuildsAnExplicitCommandWithoutAShell(t *testing.T) {
 	}
 }
 
-func TestAA27NormalPathUsesTheMatterLibraryHelpersAndStaysUnavailable(t *testing.T) {
+func TestAA27NormalPathDispatchPrecedesProfileBinding(t *testing.T) {
 	source, err := os.ReadFile("main.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(source)
 	last := -1
-	for _, label := range []string{"dispatchEBusLocalWorker(", "ebusgateway.DefaultConfig()", "bindFlags(flag.CommandLine, &cfg)", "bindMatterLibraryFlags(flag.CommandLine)", "flag.Parse()", "newMatterLibraryComposition(matterLibrary, nil)", "run(ctx, cfg)"} {
+	for _, label := range []string{"dispatchEBusLocalWorker(", "ebusgateway.DefaultConfig()", "bindFlags(flag.CommandLine, &cfg)", "bindMatterProfile(flag.CommandLine)", "flag.Parse()", "profile(run)", "run(ctx, cfg)"} {
 		next := strings.Index(text, label)
 		if next <= last {
 			t.Fatalf("main.go order changed at %q", label)
 		}
 		last = next
-	}
-	for _, enabled := range []bool{false, true} {
-		composition := newMatterLibraryComposition(&matterLibraryOption{enabled: enabled}, nil)
-		active, startErr := composition.Start(context.Background())
-		if active {
-			t.Fatalf("enabled=%v: library became active without a factory", enabled)
-		}
-		want := libraryhost.StateDisabled
-		if enabled {
-			want = libraryhost.StateUnavailable
-			var unavailable *libraryhost.UnavailableError
-			if !errors.As(startErr, &unavailable) {
-				t.Fatalf("enabled start = %v", startErr)
-			}
-		}
-		if got := composition.Status().State; got != want {
-			t.Fatalf("enabled=%v: state %s, want %s", enabled, got, want)
-		}
 	}
 }

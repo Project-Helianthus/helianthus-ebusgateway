@@ -720,21 +720,6 @@ func startCharacterizationFamilies(t *testing.T) characterizationFamilies {
 	return characterizationFamilies{pv: adapter, pvProfile: qualified.Capability().ProfileID(), pvSample: qualified.SampleID(), pvAsset: string(current.Snapshot.AssetID), growatt: growatt, tesla: tesla, clock: clock}
 }
 
-// characterizationFixedSource evaluates every capture at one fixed instant,
-// because the Matter feed captures at the process wall clock.
-type characterizationFixedSource struct {
-	source catalogv1.SourceCapture
-	at     time.Time
-}
-
-func (s characterizationFixedSource) Capture(time.Time) ([]catalogv1.Resource, []catalogv1.Field, error) {
-	return s.source.Capture(s.at)
-}
-
-func (s characterizationFixedSource) PortalCatalogContributions() *gatewayPortalCatalogContributions {
-	return s.source.(gatewayPortalCatalogContributionOwner).PortalCatalogContributions()
-}
-
 func TestCharacterizationConsumersOfAllThreeFamilies(t *testing.T) {
 	families := startCharacterizationFamilies(t)
 	at := characterizationAnchor.Add(10 * time.Second)
@@ -791,13 +776,4 @@ func TestCharacterizationConsumersOfAllThreeFamilies(t *testing.T) {
 	}
 	characterizationGolden(t, dir, "prometheus_semantic.txt", []byte(strings.Join(metrics, "\n")+"\n"))
 
-	feed, err := newGatewayMatterBindingFeedProvider(characterizationFixedSource{source: source, at: at}, []string{families.pvAsset, string(families.growatt.storage.assetID), families.tesla.cfg.AssetID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	snapshot, err := feed.Capture(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	characterizationGolden(t, dir, "matter_feed.json", characterizationJSON(t, snapshot))
 }

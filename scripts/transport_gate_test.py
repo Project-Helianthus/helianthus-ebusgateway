@@ -2,6 +2,7 @@
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import tempfile
@@ -191,12 +192,6 @@ type Config struct {
         return repo_path, report_path
 
     def _create_matter_feed_api_repo(self) -> pathlib.Path:
-        paths = (
-            "cmd/gateway/gateway_run_lifecycle.go",
-            "cmd/gateway/m2m_graphql_config.go",
-            "cmd/gateway/m2m_graphql_runtime.go",
-            "config.go",
-        )
         temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(temp_dir.cleanup)
         repo_path = pathlib.Path(temp_dir.name)
@@ -206,20 +201,41 @@ type Config struct {
         (repo_path / "scripts").mkdir(parents=True)
         for source in (TRANSPORT_GATE_SCRIPT, CONFIG_CLASSIFIER, PROMETHEUS_LIFECYCLE_CLASSIFIER, MATTER_FEED_CLASSIFIER):
             shutil.copy2(source, repo_path / "scripts" / source.name)
-        for path in paths:
+        # These are diff-classifier fixtures, not compilable gateway sources.
+        # Reconstruct the old side of the immutable zero-context patch with
+        # unique unchanged lines between hunks. Never reverse-apply it to live
+        # sources: later profile extraction can legitimately move its code.
+        sources: dict[str, list[str]] = {}
+        source: list[str] | None = None
+        for line in MATTER_FEED_API_PATCH.read_text(encoding="utf-8").splitlines():
+            if line.startswith("--- a/"):
+                path = line.removeprefix("--- a/")
+                source = sources[path] = []
+            elif line.startswith("@@"):
+                hunk = re.match(r"@@ -(\d+)(?:,(\d+))? \+\d+(?:,\d+)? @@", line)
+                self.assertIsNotNone(hunk, line)
+                self.assertIsNotNone(source)
+                old_start = int(hunk[1])
+                old_count = int(hunk[2]) if hunk[2] is not None else 1
+                unchanged_end = old_start if old_count == 0 else old_start - 1
+                self.assertLessEqual(len(source), unchanged_end)
+                while len(source) < unchanged_end:
+                    source.append(f"// unchanged fixture line {len(source) + 1}")
+            elif line.startswith("-") and not line.startswith("---"):
+                self.assertIsNotNone(source)
+                source.append(line[1:])
+        self.assertEqual(len(sources), 4)
+        # Keep the unchanged closing brace immediately before route insertion.
+        # difflib aligns that brace with the route block's closing brace, which
+        # is part of the exact classifier contract exercised by this fixture.
+        sources["cmd/gateway/m2m_graphql_runtime.go"][148] = "\t}"
+        for path, lines in sources.items():
             target = repo_path / path
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(REPO_ROOT / path, target)
-        reverse_check = subprocess.run(
-            ["git", "apply", "--unidiff-zero", "-R", "--check", str(MATTER_FEED_API_PATCH)],
-            cwd=repo_path, text=True, capture_output=True, check=False,
-        )
-        self.assertEqual(reverse_check.returncode, 0, msg=reverse_check.stdout + reverse_check.stderr)
-        subprocess.run(["git", "apply", "--unidiff-zero", "-R", str(MATTER_FEED_API_PATCH)], cwd=repo_path, check=True, capture_output=True, text=True)
+            target.write_text("\n".join(lines) + "\n", encoding="utf-8")
         subprocess.run(["git", "add", "."], cwd=repo_path, check=True, capture_output=True, text=True)
         subprocess.run(["git", "commit", "-m", "base"], cwd=repo_path, check=True, capture_output=True, text=True)
-        for path in paths:
-            shutil.copy2(REPO_ROOT / path, repo_path / path)
+        subprocess.run(["git", "apply", "--unidiff-zero", str(MATTER_FEED_API_PATCH)], cwd=repo_path, check=True, capture_output=True, text=True)
         self.assertEqual(subprocess.run(["git", "remote"], cwd=repo_path, check=True, capture_output=True, text=True).stdout, "")
         self.assertEqual(subprocess.run(["git", "rev-list", "--count", "HEAD"], cwd=repo_path, check=True, capture_output=True, text=True).stdout.strip(), "1")
         return repo_path

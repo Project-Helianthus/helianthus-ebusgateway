@@ -16,6 +16,11 @@ func TestVaillantSemanticSplitKeepsThematicContractsDiscoverable(t *testing.T) {
 			required: []string{
 				"type vaillantZoneSnapshot struct",
 				"type semanticFieldFreshness struct",
+			},
+		},
+		{
+			file: "semantic_snapshot_merge.go",
+			required: []string{
 				"func mergeZoneSnapshotFields(",
 				"func mergeDhwSnapshotFields(",
 			},

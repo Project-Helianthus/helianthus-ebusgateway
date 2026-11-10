@@ -17,7 +17,8 @@ SOURCES = [
     "baud_observation_metrics.go", "semantic_prometheus.go",
     "internal/semanticmetrics/metrics.go", "cmd/gateway/huawei_transport_metrics.go",
     "cmd/gateway/semantic_metrics_runtime.go", "cmd/gateway/gateway_http_server.go",
-    "cmd/gateway/gateway_http_control_plane.go", "semantic_prometheus_text.go",
+    "cmd/gateway/gateway_http_control_plane.go", "cmd/gateway/gateway_http_providers.go",
+    "semantic_prometheus_text.go",
 ]
 
 # Parse Go syntax rather than treating literal name matches as an output graph.
@@ -318,9 +319,9 @@ def test_dynamic_writer_fails_closed(analysis):
 
 # Restrict the graph to metrics composition and output operations. Data
 # preparation, validation, sorting and unrelated HTTP routes are not exposition.
-OUTPUT_ROOTS = {"RenderPrometheus", "writeTransportRuntimeMetrics", "writeBaudObservationMetrics", "writeSemanticMetrics", "renderSemanticFact", "Render", "text", "writeSample", "writeGaugeSample", "writeCounterSample", "writeType", "writeHelp", "newGatewayMetricsHandler", "MetricsHandler", "startHTTPServer", "registerHTTPControlPlaneCoreRoutes", "RenderSemanticPrometheus"}
+OUTPUT_ROOTS = {"RenderPrometheus", "writeTransportRuntimeMetrics", "writeBaudObservationMetrics", "writeSemanticMetrics", "renderSemanticFact", "Render", "text", "writeSample", "writeGaugeSample", "writeCounterSample", "writeType", "writeHelp", "newGatewayMetricsHandler", "MetricsHandler", "startHTTPServer", "newHTTPControlPlaneProviders", "registerHTTPControlPlaneCoreRoutes", "RenderSemanticPrometheus"}
 COMPOSITION_CALLS = {
-    "newGatewayMetricsHandler", "newGatewaySemanticMetrics", "gatewaySemanticMetricRegistry",
+    "newHTTPControlPlaneProviders", "newGatewayMetricsHandler", "newGatewaySemanticMetrics", "gatewaySemanticMetricRegistry",
     "store.MetricsHandler", "store.RenderPrometheus", "transport.ServeHTTP",
     "semantic.text", "huaweiWireCounters.text", "semanticmetrics.Render",
     "newPrometheusWriter", "writeSemanticMetrics", "renderSemanticFact",
@@ -371,7 +372,17 @@ def test_finite_format_renderers_and_route_composition(analysis):
     # Follow the entry point and both appended renderers. No expvar forwarding
     # is composed here; the distinct debug route uses expvar.Handler.
     evidence = {
-        "cmd/gateway/gateway_http_server.go": ["newGatewayMetricsHandler(busObservability, semanticMetrics)", "newGatewaySemanticMetrics(sharedSemanticProvider, gatewaySemanticMetricRegistry())"],
+        "cmd/gateway/gateway_http_server.go": [
+            "providers, err := newHTTPControlPlaneProviders(",
+            "sharedSemanticProvider := providers.sharedSemanticProvider",
+            "mcpServer, semanticMetrics := providers.mcpServer, providers.semanticMetrics",
+            "newGatewayMetricsHandler(busObservability, semanticMetrics)",
+        ],
+        "cmd/gateway/gateway_http_providers.go": [
+            "newGatewaySemanticMetrics(sharedSemanticProvider, gatewaySemanticMetricRegistry())",
+            "sharedSemanticProvider: sharedSemanticProvider,",
+            "semanticMetrics:        semanticMetrics,",
+        ],
         "cmd/gateway/semantic_metrics_runtime.go": ["transport := store.MetricsHandler()", "transport.ServeHTTP(w, r)", "semanticmetrics.Render(view, m.registry)", "io.WriteString(w, semantic.text(r.Context()))", "io.WriteString(w, huaweiWireCounters.text())", "return semanticmetrics.Registry{}"],
         "cmd/gateway/gateway_http_control_plane.go": ['mux.Handle("/debug/vars", expvar.Handler())', "mux.Handle(plan.metricsPath, metricsHandler)", "if hasBusObservability {"],
         "runtime_transport_metrics.go": ["writeBaudObservationMetrics(writer, ebusConfigured)"],
@@ -397,4 +408,16 @@ def test_renderer_snapshot_ignores_unrelated_calls(analysis):
     changed["Calls"].append(dict(Source="cmd/gateway/gateway_http_control_plane.go", Function="registerHTTPControlPlaneCoreRoutes", Method="mux.Handle", Args=['"/unrelated"', "otherHandler"], Guards=[]))
     assert renderer_calls(changed) == renderer_calls(analysis)
     changed["Calls"] = [c for c in changed["Calls"] if c["Method"] != "semanticmetrics.Render"]
+    assert renderer_calls(changed) != renderer_calls(analysis)
+
+
+@pytest.mark.parametrize(("source", "function", "method"), [
+    ("cmd/gateway/gateway_http_server.go", "startHTTPServer", "newHTTPControlPlaneProviders"),
+    ("cmd/gateway/gateway_http_providers.go", "newHTTPControlPlaneProviders", "newGatewaySemanticMetrics"),
+    ("cmd/gateway/gateway_http_providers.go", "newHTTPControlPlaneProviders", "gatewaySemanticMetricRegistry"),
+])
+def test_renderer_snapshot_requires_provider_composition(analysis, source, function, method):
+    changed = copy.deepcopy(analysis)
+    changed["Calls"] = [c for c in changed["Calls"] if
+                        (c["Source"], c["Function"], c["Method"]) != (source, function, method)]
     assert renderer_calls(changed) != renderer_calls(analysis)

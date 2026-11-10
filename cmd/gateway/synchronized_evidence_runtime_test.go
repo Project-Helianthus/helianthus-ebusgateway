@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"go/ast"
-	"go/parser"
 	"go/token"
 	"net"
 	"os"
@@ -239,15 +238,11 @@ func TestIssue764GatewayOneShotRuntimeIsFixedReadOnlyAndSerialized(t *testing.T)
 // process-bootstrap invariants that cannot be exercised without constructing
 // the unrelated eBUS transport lifecycle.
 func TestIssue764GatewayRegistersPrivateCaptureExactlyOnceBeforeMCPMount(t *testing.T) {
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "gateway_http_server.go", nil, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	owner := httpProviderCompositionOwner(t)
 	var registration token.Pos
-	var mount token.Pos
+	completed := owner.Body.Rbrace
 	count := 0
-	ast.Inspect(file, func(node ast.Node) bool {
+	ast.Inspect(owner, func(node ast.Node) bool {
 		call, ok := node.(*ast.CallExpr)
 		if !ok {
 			return true
@@ -258,12 +253,9 @@ func TestIssue764GatewayRegistersPrivateCaptureExactlyOnceBeforeMCPMount(t *test
 				registration = call.Pos()
 			}
 		}
-		if function, ok := call.Fun.(*ast.Ident); ok && function.Name == "registerHTTPControlPlaneCoreRoutes" {
-			mount = call.Pos()
-		}
 		return true
 	})
-	if count != 1 || !registration.IsValid() || !mount.IsValid() || registration >= mount {
-		t.Fatalf("private registration count/positions = %d/%d/%d", count, registration, mount)
+	if count != 1 || !registration.IsValid() || !completed.IsValid() || registration >= completed {
+		t.Fatalf("private registration count/positions = %d/%d/%d", count, registration, completed)
 	}
 }

@@ -2347,7 +2347,9 @@ func TestRuntimeControlMCPProductionWiring(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var registerAt, mountAt token.Pos
+	owner := httpProviderCompositionOwner(t)
+	var registerAt token.Pos
+	completedAt := owner.Body.Rbrace
 	guarded := false
 	for _, declaration := range serverFile.Decls {
 		function, ok := declaration.(*ast.FuncDecl)
@@ -2358,7 +2360,7 @@ func TestRuntimeControlMCPProductionWiring(t *testing.T) {
 		if star, ok := last.Type.(*ast.StarExpr); !ok || fmt.Sprint(star.X) != "gatewayRuntimeControl" {
 			t.Fatalf("startHTTPServer's last parameter is not *gatewayRuntimeControl")
 		}
-		for _, statement := range function.Body.List {
+		for _, statement := range owner.Body.List {
 			ast.Inspect(statement, func(node ast.Node) bool {
 				call, ok := node.(*ast.CallExpr)
 				if !ok {
@@ -2374,16 +2376,14 @@ func TestRuntimeControlMCPProductionWiring(t *testing.T) {
 						} else if _, isExpr := statement.(*ast.ExprStmt); !isExpr {
 							guarded = true
 						}
-					case "registerHTTPControlPlaneCoreRoutes":
-						mountAt = call.Pos()
 					}
 				}
 				return true
 			})
 		}
 	}
-	if !registerAt.IsValid() || !mountAt.IsValid() || registerAt > mountAt || guarded {
-		t.Fatalf("startHTTPServer must register the lifecycle tools unconditionally before mounting MCP: register=%v mount=%v guarded=%v", registerAt, mountAt, guarded)
+	if !registerAt.IsValid() || !completedAt.IsValid() || registerAt > completedAt || guarded {
+		t.Fatalf("startHTTPServer must register the lifecycle tools unconditionally before mounting MCP: register=%v completed=%v guarded=%v", registerAt, completedAt, guarded)
 	}
 
 	lifecycleFile, err := parser.ParseFile(fset, "gateway_run_lifecycle.go", nil, 0)

@@ -125,7 +125,8 @@ func TestM56GatewayHTTPServerInstallsRouteBeforeHandlers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	functions := map[string]*ast.FuncDecl{}
+	owner := httpProviderCompositionOwner(t)
+	functions := map[string]*ast.FuncDecl{owner.Name.Name: owner}
 	for _, declaration := range file.Decls {
 		if function, ok := declaration.(*ast.FuncDecl); ok {
 			functions[function.Name.Name] = function
@@ -143,7 +144,7 @@ func TestM56GatewayHTTPServerInstallsRouteBeforeHandlers(t *testing.T) {
 	}
 	render := types.ExprString
 	install, handlers := -1, -1
-	for index, call := range callsIn("startHTTPServer") {
+	for index, call := range callsIn("newHTTPControlPlaneProviders") {
 		name := render(call.Fun)
 		if name == "installGatewaySemanticOperationRoute" && install < 0 {
 			install = index

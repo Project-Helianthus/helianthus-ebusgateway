@@ -47,6 +47,7 @@ jobs:
       - run: ./scripts/check_portal_assets.sh
       - run: go vet ./...
       - run: go build ./...
+      - run: go build -tags nomatter -o /dev/null ./cmd/gateway
       - name: Compile Linux 32-bit gateway
         run: |
           GOOS=linux GOARCH=386 go build -o /dev/null ./cmd/gateway
@@ -77,6 +78,8 @@ jobs:
       # cmd/gateway runs at about 600 s under -race here, right at Go's 10-minute
       # default; 20 minutes keeps a margin inside the 45-minute job limit.
       - run: go test -race -count=1 -timeout 20m ./...
+      - run: go test -race -short -count=1 -timeout 20m -tags nomatter ./cmd/gateway
+      - run: GOMODCACHE="$(go env GOMODCACHE)" python3 scripts/check_no_matter_profile.py
       - name: SemReg PV public integration
         run: GOWORK=off go test -race -count=1 ./internal/modbusadapter ./m2mgraphql ./mcp ./portal ./cmd/gateway -run 'TestPVPublication|TestAdapterPublishesOneSemRegPVProjection|TestSemanticPV|TestPortalPV|TestM2MGraphQLRuntime'
       - run: python3 scripts/passive_canary_verifier_test.py

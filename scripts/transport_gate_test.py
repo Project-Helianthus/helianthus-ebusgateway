@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import importlib.util
 import json
 import os
 import pathlib
@@ -6,6 +7,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
@@ -15,6 +17,66 @@ CONFIG_CLASSIFIER = REPO_ROOT / "scripts" / "semreg_public_config_classifier.py"
 PROMETHEUS_LIFECYCLE_CLASSIFIER = REPO_ROOT / "scripts" / "semreg_prometheus_transport_classifier.py"
 MATTER_FEED_CLASSIFIER = REPO_ROOT / "scripts" / "matter_feed_transport_classifier.py"
 MATTER_FEED_API_PATCH = SCRIPT_DIR / "testdata" / "matter_feed_api_composition.patch"
+
+
+class NoMatterProfileCacheTests(unittest.TestCase):
+    def test_configured_cache_does_not_require_export(self) -> None:
+        spec = importlib.util.spec_from_file_location(
+            "check_no_matter_profile", SCRIPT_DIR / "check_no_matter_profile.py"
+        )
+        checker = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(checker)
+        packages = "\n".join(checker.MODULE + suffix for suffix in (
+            "/cmd/gateway", "/matter", "/matter/feedv1", "/matter/libraryhost"
+        ))
+        for exported in (False, True):
+            with self.subTest(exported=exported):
+                env = {"GOMODCACHE": "/configured/cache"} if exported else {}
+                results = [
+                    subprocess.CompletedProcess([], 0, packages, ""),
+                    subprocess.CompletedProcess([], 0, packages, ""),
+                    subprocess.CompletedProcess([], 0, checker.MODULE + "/cmd/gateway", ""),
+                ]
+                with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(
+                    checker.subprocess, "run", side_effect=results
+                ) as run:
+                    self.assertEqual(checker.check(REPO_ROOT), {
+                        "default_matter_packages": 3, "nomatter_matter_packages": 0
+                    })
+                self.assertEqual(run.call_count, 3)
+                self.assertNotIn("-test", run.call_args_list[0].args[0])
+                self.assertIn("-test", run.call_args_list[1].args[0])
+                self.assertIn("-test", run.call_args_list[2].args[0])
+                self.assertIn("nomatter", run.call_args_list[2].args[0])
+                for call in run.call_args_list:
+                    actual = call.kwargs["env"]
+                    self.assertEqual(actual.get("GOMODCACHE"), env.get("GOMODCACHE"))
+                    for key, value in {"GOWORK": "off", "GOPROXY": "off",
+                                       "GOSUMDB": "off", "GOTOOLCHAIN": "local"}.items():
+                        self.assertEqual(actual[key], value)
+                    self.assertIn("-mod=readonly", call.args[0])
+
+    def test_default_matter_required_in_production_even_when_tests_import_it(self) -> None:
+        spec = importlib.util.spec_from_file_location(
+            "check_no_matter_profile", SCRIPT_DIR / "check_no_matter_profile.py"
+        )
+        checker = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(checker)
+        required = [checker.MODULE + suffix for suffix in (
+            "/matter", "/matter/feedv1", "/matter/libraryhost"
+        )]
+        gateway = checker.MODULE + "/cmd/gateway"
+        for missing in required:
+            with self.subTest(missing=missing):
+                production = "\n".join([gateway] + [p for p in required if p != missing])
+                tests = "\n".join([gateway] + required)
+                def listing(command, **kwargs):
+                    packages = gateway if "nomatter" in command else tests if "-test" in command else production
+                    return subprocess.CompletedProcess(command, 0, packages, "")
+
+                with mock.patch.object(checker.subprocess, "run", side_effect=listing):
+                    with self.assertRaisesRegex(RuntimeError, "default profile lost its Matter dependency closure"):
+                        checker.check(REPO_ROOT)
 
 
 class TransportGateTests(unittest.TestCase):
@@ -190,13 +252,63 @@ type Config struct {
         )
         return repo_path, report_path
 
-    def _create_matter_feed_api_repo(self) -> pathlib.Path:
+    def _matter_feed_live_sources(self) -> dict[str, str]:
+        # Undo only the profile extraction in memory. The historical classifier
+        # patch must still reverse-apply to real code, including moved bodies.
         paths = (
             "cmd/gateway/gateway_run_lifecycle.go",
             "cmd/gateway/m2m_graphql_config.go",
             "cmd/gateway/m2m_graphql_runtime.go",
             "config.go",
         )
+        sources = {path: (REPO_ROOT / path).read_text(encoding="utf-8") for path in paths}
+        profile = (REPO_ROOT / "cmd/gateway/matter_profile_enabled.go").read_text(encoding="utf-8")
+
+        def replace_once(text: str, old: str, new: str) -> str:
+            self.assertEqual(text.count(old), 1, msg=f"live profile anchor changed: {old}")
+            return text.replace(old, new, 1)
+
+        def function_body(name: str) -> str:
+            start = profile.index(f"func {name}(")
+            start = profile.index(" {\n", start) + 3
+            end = profile.index("\n}\n", start)
+            return profile[start:end]
+
+        lifecycle = sources[paths[0]]
+        body = function_body("newProfileM2MRuntime")
+        body = replace_once(body, "source, cfg.M2MGraphQL.AllowedAssets", "portalCatalogSource, cfg.M2MGraphQL.AllowedAssets")
+        body = replace_once(body, "provider, err :=", "matterFeedProvider, err :=")
+        body = replace_once(body, ", provider, bindings)", ", matterFeedProvider, bindings)")
+        body = replace_once(body, "nil, nil, tesla,", "nil, nil, teslaHSCRetained,")
+        body = replace_once(body, "return nil, fmt.Errorf", "return fmt.Errorf")
+        body = replace_once(body, "return newM2MGraphQLRuntimeWithMatter", "m2mRuntime, err := newM2MGraphQLRuntimeWithMatter")
+        sources[paths[0]] = replace_once(lifecycle,
+            "\tm2mRuntime, err := newProfileM2MRuntime(cfg, teslaHSCRetained, portalCatalogSource, bindings)", body)
+
+        runtime = sources[paths[2]]
+        for anchor, addition in (
+            ('\t"context"\n', '\t"crypto/rand"\n'),
+            ('\t"crypto/x509"\n', '\t"encoding/hex"\n'),
+            ('\t"github.com/Project-Helianthus/helianthus-ebusgateway/m2mgraphql"\n',
+             '\t"github.com/Project-Helianthus/helianthus-ebusgateway/matter/feedv1"\n'),
+        ):
+            self.assertIn(addition.strip(), profile)
+            runtime = replace_once(runtime, anchor, anchor + addition)
+        runtime = runtime.replace("newM2MGraphQLRuntimeWithRoutes", "newM2MGraphQLRuntimeWithMatter")
+        runtime = replace_once(runtime, "routes func(http.Handler) (http.Handler, error)", "matterProvider feedv1.Provider")
+        routes = function_body("matterProfileRoutes")
+        routes = replace_once(routes, "\treturn mux, nil", "\thandler = mux")
+        routes = "\n".join("\t" + line for line in routes.splitlines())
+        runtime = replace_once(runtime,
+            "\tif routes != nil {\n\t\thandler, err = routes(graphqlHandler)\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t}",
+            "\tif matterProvider != nil {\n" + routes + "\n\t}")
+        instance = "func newMatterBindingFeedInstanceID() (string, error) {\n" + function_body("newMatterBindingFeedInstanceID") + "\n}\n\n"
+        runtime = replace_once(runtime, "func currentTeslaEVSEPublic(", instance + "func currentTeslaEVSEPublic(")
+        sources[paths[2]] = runtime
+        return sources
+
+    def _create_matter_feed_api_repo(self) -> pathlib.Path:
+        sources = self._matter_feed_live_sources()
         temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(temp_dir.cleanup)
         repo_path = pathlib.Path(temp_dir.name)
@@ -206,10 +318,10 @@ type Config struct {
         (repo_path / "scripts").mkdir(parents=True)
         for source in (TRANSPORT_GATE_SCRIPT, CONFIG_CLASSIFIER, PROMETHEUS_LIFECYCLE_CLASSIFIER, MATTER_FEED_CLASSIFIER):
             shutil.copy2(source, repo_path / "scripts" / source.name)
-        for path in paths:
+        for path, text in sources.items():
             target = repo_path / path
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(REPO_ROOT / path, target)
+            target.write_text(text, encoding="utf-8")
         reverse_check = subprocess.run(
             ["git", "apply", "--unidiff-zero", "-R", "--check", str(MATTER_FEED_API_PATCH)],
             cwd=repo_path, text=True, capture_output=True, check=False,
@@ -218,11 +330,32 @@ type Config struct {
         subprocess.run(["git", "apply", "--unidiff-zero", "-R", str(MATTER_FEED_API_PATCH)], cwd=repo_path, check=True, capture_output=True, text=True)
         subprocess.run(["git", "add", "."], cwd=repo_path, check=True, capture_output=True, text=True)
         subprocess.run(["git", "commit", "-m", "base"], cwd=repo_path, check=True, capture_output=True, text=True)
-        for path in paths:
-            shutil.copy2(REPO_ROOT / path, repo_path / path)
+        for path, text in sources.items():
+            (repo_path / path).write_text(text, encoding="utf-8")
         self.assertEqual(subprocess.run(["git", "remote"], cwd=repo_path, check=True, capture_output=True, text=True).stdout, "")
         self.assertEqual(subprocess.run(["git", "rev-list", "--count", "HEAD"], cwd=repo_path, check=True, capture_output=True, text=True).stdout.strip(), "1")
         return repo_path
+
+    def test_matter_feed_fixture_rejects_drift_in_live_composition(self) -> None:
+        mutations = (
+            ("cmd/gateway/matter_profile_enabled.go", "ReplayLimit: 64", "ReplayLimit: 65"),
+            ("cmd/gateway/gateway_run_lifecycle.go", "teslaHSCRetained, portalCatalogSource, bindings)", "nil, portalCatalogSource, bindings)"),
+            ("cmd/gateway/m2m_graphql_runtime.go", "handler := graphqlHandler", "handler := http.NotFoundHandler()"),
+        )
+        for path, old, new in mutations:
+            with self.subTest(path=path), tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                for source in (*self._matter_feed_live_sources(), "cmd/gateway/matter_profile_enabled.go"):
+                    target = root / source
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(REPO_ROOT / source, target)
+                target = root / path
+                text = target.read_text(encoding="utf-8")
+                self.assertEqual(text.count(old), 1)
+                target.write_text(text.replace(old, new), encoding="utf-8")
+                with mock.patch(__name__ + ".REPO_ROOT", root):
+                    with self.assertRaises(AssertionError):
+                        self._create_matter_feed_api_repo()
 
     def test_matter_feed_api_composition_exemption_is_exact(self) -> None:
         repo_path = self._create_matter_feed_api_repo()

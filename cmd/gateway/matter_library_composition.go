@@ -1,3 +1,5 @@
+//go:build !nomatter
+
 package main
 
 import (

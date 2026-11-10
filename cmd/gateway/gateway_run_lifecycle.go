@@ -162,11 +162,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 		}()
 	}
 	portalCatalogSource := newGatewayPortalCatalogSource(nil, nil, teslaHSCRetained, portalContributions, bindings)
-	matterFeedProvider, err := newGatewayMatterBindingFeedProvider(portalCatalogSource, cfg.M2MGraphQL.AllowedAssets)
-	if err != nil {
-		return fmt.Errorf("matter binding feed provider: %w", err)
-	}
-	m2mRuntime, err := newM2MGraphQLRuntimeWithMatter(cfg, nil, nil, teslaHSCRetained, matterFeedProvider, bindings)
+	m2mRuntime, err := newProfileM2MRuntime(cfg, teslaHSCRetained, portalCatalogSource, bindings)
 	if err != nil {
 		return fmt.Errorf("M2M GraphQL sidecar: %w", err)
 	}

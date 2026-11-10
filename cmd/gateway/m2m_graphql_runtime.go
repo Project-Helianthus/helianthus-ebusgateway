@@ -2,10 +2,8 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -18,7 +16,6 @@ import (
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/m2mgraphql"
-	"github.com/Project-Helianthus/helianthus-ebusgateway/matter/feedv1"
 )
 
 type m2mGraphQLRuntime struct {
@@ -81,10 +78,10 @@ func newM2MGraphQLRuntime(config ebusgateway.Config, adapter *modbusadapter.Adap
 }
 
 func newM2MGraphQLRuntimeWithTesla(config ebusgateway.Config, adapter *modbusadapter.Adapter, growatt *growattBMSRS485ProductionProvider, tesla *teslaHSCRetainedOwner) (*m2mGraphQLRuntime, error) {
-	return newM2MGraphQLRuntimeWithMatter(config, adapter, growatt, tesla, nil)
+	return newM2MGraphQLRuntimeWithRoutes(config, adapter, growatt, tesla, nil)
 }
 
-func newM2MGraphQLRuntimeWithMatter(config ebusgateway.Config, adapter *modbusadapter.Adapter, growatt *growattBMSRS485ProductionProvider, tesla *teslaHSCRetainedOwner, matterProvider feedv1.Provider, managed ...*managedSidecarBindings) (*m2mGraphQLRuntime, error) {
+func newM2MGraphQLRuntimeWithRoutes(config ebusgateway.Config, adapter *modbusadapter.Adapter, growatt *growattBMSRS485ProductionProvider, tesla *teslaHSCRetainedOwner, routes func(http.Handler) (http.Handler, error), managed ...*managedSidecarBindings) (*m2mGraphQLRuntime, error) {
 	if config.M2MGraphQL.Disabled() {
 		return nil, nil
 	}
@@ -154,25 +151,11 @@ func newM2MGraphQLRuntimeWithMatter(config ebusgateway.Config, adapter *modbusad
 		return nil, errors.New("M2M GraphQL handler configuration is invalid")
 	}
 	handler := graphqlHandler
-	if matterProvider != nil {
-		instance, err := newMatterBindingFeedInstanceID()
+	if routes != nil {
+		handler, err = routes(graphqlHandler)
 		if err != nil {
-			return nil, errors.New("matter binding feed instance identity is unavailable")
+			return nil, err
 		}
-		matterHandler, err := feedv1.New(matterProvider, feedv1.Options{InstanceID: instance, ReplayLimit: 64})
-		if err != nil {
-			return nil, errors.New("matter binding feed handler configuration is invalid")
-		}
-		// The Matter routes spend the same per-host request budget as GraphQL
-		// before the serialized capture; a refusal is the feed's own error.
-		budgetedMatter, err := m2mgraphql.RequestBudget(graphqlHandler, http.StripPrefix("/matter-binding", matterHandler), feedv1.WriteUnavailable)
-		if err != nil {
-			return nil, errors.New("matter binding feed request budget is unavailable")
-		}
-		mux := http.NewServeMux()
-		mux.Handle("/graphql/m2m/v1", graphqlHandler)
-		mux.Handle("/matter-binding/", budgetedMatter)
-		handler = mux
 	}
 	rawListener, err := net.Listen("tcp", config.M2MGraphQL.ListenAddr)
 	if err != nil {
@@ -186,14 +169,6 @@ func newM2MGraphQLRuntimeWithMatter(config ebusgateway.Config, adapter *modbusad
 	runtime.server = &http.Server{TLSConfig: tlsConfig, ErrorLog: log.New(io.Discard, "", 0), ReadHeaderTimeout: m2mHTTPHeaderTimeout, ReadTimeout: m2mHTTPBodyTimeout, WriteTimeout: m2mHTTPBodyTimeout, IdleTimeout: m2mHTTPBodyTimeout, Handler: newM2MRequestDeadlineHandler(handler, m2mRequestTimeout)}
 	go func() { _ = runtime.server.Serve(tls.NewListener(listener, tlsConfig)) }()
 	return runtime, nil
-}
-
-func newMatterBindingFeedInstanceID() (string, error) {
-	var value [16]byte
-	if _, err := rand.Read(value[:]); err != nil {
-		return "", err
-	}
-	return "matter-" + hex.EncodeToString(value[:]), nil
 }
 
 func currentTeslaEVSEPublic(ctx context.Context, asset string, tesla *teslaHSCRetainedOwner) (json.RawMessage, error) {

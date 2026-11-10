@@ -43,7 +43,7 @@ func portalConfigConstraints(cfg ebusgateway.Config, drivers []portalconfig.Driv
 	plan := newHTTPControlPlaneRoutePlan(cfg, false)
 	constraints := portalconfig.Constraints{
 		GraphQL: plan.graphqlPath != "", MCP: plan.mcpPath != "",
-		AdapterProxy: cfg.ProxyListenAddr != "", Matter: !cfg.M2MGraphQL.Disabled(),
+		AdapterProxy: cfg.ProxyListenAddr != "", Matter: matterProfileAvailable(cfg),
 	}
 	for _, driver := range drivers {
 		constraints.Drivers = append(constraints.Drivers, driver.ID)

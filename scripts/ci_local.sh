@@ -43,6 +43,7 @@ go vet ./...
 
 echo "==> go build"
 go build ./...
+go build -tags nomatter -o /dev/null ./cmd/gateway
 
 echo "==> linux 32-bit build"
 GOOS=linux GOARCH=386 go build -o /dev/null ./cmd/gateway
@@ -51,6 +52,8 @@ GOOS=linux GOARCH=arm GOARM=6 go build -o /dev/null ./cmd/gateway
 
 echo "==> go test (race)"
 go test -race -short -count=1 -timeout 40m ./...
+go test -race -short -count=1 -timeout 20m -tags nomatter ./cmd/gateway
+GOMODCACHE="$(go env GOMODCACHE)" python3 scripts/check_no_matter_profile.py
 
 echo "==> validating source-selection artifact schema coverage"
 go test ./... -run "TestSourceSelectionArtifact_EmitValidatesAgainstSchema" -count=1

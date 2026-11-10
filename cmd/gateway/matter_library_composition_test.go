@@ -1,3 +1,5 @@
+//go:build !nomatter
+
 package main
 
 import (
@@ -450,6 +452,27 @@ func TestAA17CompositionHasNoInitRegistrationOrGlobalBinding(t *testing.T) {
 	} {
 		if got := aa17CompositionViolations(t, tc.source); len(got) != 1 || got[0] != tc.want {
 			t.Fatalf("control %q violations=%v", tc.want, got)
+		}
+	}
+}
+
+func TestMatterLibraryNormalPathStaysUnavailable(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		composition := newMatterLibraryComposition(&matterLibraryOption{enabled: enabled}, nil)
+		active, startErr := composition.Start(context.Background())
+		if active {
+			t.Fatalf("enabled=%v: library became active without a factory", enabled)
+		}
+		want := libraryhost.StateDisabled
+		if enabled {
+			want = libraryhost.StateUnavailable
+			var unavailable *libraryhost.UnavailableError
+			if !errors.As(startErr, &unavailable) {
+				t.Fatalf("enabled start = %v", startErr)
+			}
+		}
+		if got := composition.Status().State; got != want {
+			t.Fatalf("enabled=%v: state %s, want %s", enabled, got, want)
 		}
 	}
 }

@@ -1,3 +1,5 @@
+//go:build !nomatter
+
 package main
 
 import (
@@ -17,6 +19,7 @@ import (
 	"time"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/m2mgraphql"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/matter"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/matter/feedv1"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal/catalogv1"
@@ -389,5 +392,120 @@ func TestM2MRuntimeMatterRoutesShareThePerHostRequestBudget(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Fatalf("%s Matter request did not complete", name)
 		}
+	}
+}
+
+func TestMatterProfileCharacterizationFeed(t *testing.T) {
+	families := startCharacterizationFamilies(t)
+	at := characterizationAnchor.Add(10 * time.Second)
+	families.clock.set(at, 9*time.Second)
+	const dir = "consumers"
+	contributions, err := newGatewayPortalCatalogContributions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := startGatewayPortalPVContribution(families.pv, contributions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(lease.Stop)
+	if err := attachGatewayPortalStorageContribution(families.growatt, contributions); err != nil {
+		t.Fatal(err)
+	}
+	if err := attachGatewayPortalEVSEContribution(families.tesla, contributions); err != nil {
+		t.Fatal(err)
+	}
+	source := newGatewayPortalCatalogSource(families.pv, gatewayPortalStoragePublication(families.growatt), families.tesla, contributions)
+	feed, err := newGatewayMatterBindingFeedProvider(characterizationFixedSource{source: source, at: at}, []string{families.pvAsset, string(families.growatt.storage.assetID), families.tesla.cfg.AssetID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := feed.Capture(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	characterizationGolden(t, dir, "matter_feed.json", characterizationJSON(t, snapshot))
+}
+
+// characterizationFixedSource evaluates every capture at one fixed instant,
+// because the Matter feed captures at the process wall clock.
+type characterizationFixedSource struct {
+	source catalogv1.SourceCapture
+	at     time.Time
+}
+
+func (s characterizationFixedSource) Capture(time.Time) ([]catalogv1.Resource, []catalogv1.Field, error) {
+	return s.source.Capture(s.at)
+}
+
+func (s characterizationFixedSource) PortalCatalogContributions() *gatewayPortalCatalogContributions {
+	return s.source.(gatewayPortalCatalogContributionOwner).PortalCatalogContributions()
+}
+
+func TestMatterProfileRoutesUseSharedBudgetOffline(t *testing.T) {
+	graphqlHandler, err := m2mgraphql.NewHandler(m2mgraphql.Config{AllowedAssets: map[string]struct{}{"asset:synthetic": {}}, SemanticPVCurrent: func(context.Context, string) (json.RawMessage, bool) { return nil, false }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := blockingMatterFeedProvider{
+		matterFeedRuntimeFixture: matterFeedRuntimeFixture{snapshot: matterFeedRuntimeEmptySnapshot()},
+		once:                     &sync.Once{}, entered: make(chan struct{}), release: make(chan struct{}),
+	}
+	handler, err := matterProfileRoutes(graphqlHandler, provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var release sync.Once
+	t.Cleanup(func() { release.Do(func() { close(provider.release) }) })
+	serve := func(method, path, body string) *httptest.ResponseRecorder {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(method, path, strings.NewReader(body))
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	first := make(chan *httptest.ResponseRecorder, 1)
+	go func() { first <- serve(http.MethodGet, "/matter-binding/v1/snapshot", "") }()
+	select {
+	case <-provider.entered:
+	case <-time.After(time.Second):
+		t.Fatal("feed route did not capture")
+	}
+	// Both routes must refuse before the feed's serialized capture is entered.
+	for _, route := range []struct {
+		method, path, body string
+		status             int
+		contains           string
+	}{
+		{http.MethodGet, "/matter-binding/v1/snapshot", "", http.StatusServiceUnavailable, `"error":"unavailable"`},
+		{http.MethodPost, "/graphql/m2m/v1", `{}`, http.StatusOK, `"REQUEST_LIMIT_EXCEEDED"`},
+	} {
+		result := make(chan *httptest.ResponseRecorder, 1)
+		go func() { result <- serve(route.method, route.path, route.body) }()
+		select {
+		case response := <-result:
+			if response.Code != route.status || !strings.Contains(response.Body.String(), route.contains) {
+				t.Fatalf("route %s: status=%d body=%s", route.path, response.Code, response.Body.String())
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("route %s bypassed the shared budget", route.path)
+		}
+	}
+	release.Do(func() { close(provider.release) })
+	select {
+	case response := <-first:
+		if response.Code != http.StatusOK {
+			t.Fatalf("snapshot status=%d body=%s", response.Code, response.Body.String())
+		}
+		var decoded feedv1.SnapshotResponse
+		if err := json.NewDecoder(response.Body).Decode(&decoded); err != nil {
+			t.Fatal(err)
+		}
+		want, _ := json.Marshal(provider.snapshot)
+		got, _ := json.Marshal(decoded.Snapshot)
+		if !bytes.Equal(got, want) {
+			t.Fatal("snapshot changed during route composition")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("feed route did not release")
 	}
 }

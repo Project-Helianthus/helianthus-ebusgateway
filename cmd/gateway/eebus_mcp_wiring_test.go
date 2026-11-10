@@ -111,21 +111,22 @@ func TestIssue749GatewayCommandRouterUsesAdapterRuntime(t *testing.T) {
 }
 
 // This AST check is retained because registration count, conditionality, and
-// ordering belong to process bootstrap, which cannot be exercised without the
-// unrelated eBUS transport lifecycle.
+// ordering belong to process bootstrap. The reachability guard establishes that
+// the caller completes delegation before mounting MCP.
 func TestMSP06GatewayRegistersProviderConditionallyBeforeMCPMount(t *testing.T) {
 	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "gateway_http_server.go", nil, parser.ParseComments)
+	_, err := parser.ParseFile(fset, "gateway_http_providers.go", nil, parser.ParseComments)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	var registerPosition token.Pos
 	var commandRegisterPosition token.Pos
-	var mountPosition token.Pos
+	owner := httpProviderCompositionOwner(t)
+	completedPosition := owner.Body.Rbrace
 	registrationGuarded := false
 	commandRegistrationGuarded := false
-	ast.Inspect(file, func(node ast.Node) bool {
+	ast.Inspect(owner, func(node ast.Node) bool {
 		switch value := node.(type) {
 		case *ast.CallExpr:
 			if selector, ok := value.Fun.(*ast.SelectorExpr); ok {
@@ -141,9 +142,6 @@ func TestMSP06GatewayRegistersProviderConditionallyBeforeMCPMount(t *testing.T) 
 					}
 					commandRegisterPosition = value.Pos()
 				}
-			}
-			if function, ok := value.Fun.(*ast.Ident); ok && function.Name == "registerHTTPControlPlaneCoreRoutes" {
-				mountPosition = value.Pos()
 			}
 		case *ast.IfStmt:
 			containsRegistration := false
@@ -167,14 +165,14 @@ func TestMSP06GatewayRegistersProviderConditionallyBeforeMCPMount(t *testing.T) 
 				if err := printer.Fprint(&condition, fset, value.Cond); err != nil {
 					t.Fatal(err)
 				}
-				registrationGuarded = strings.Contains(condition.String(), "!= nil")
+				registrationGuarded = condition.String() == "eebusProvider != nil"
 			}
 			if containsCommandRegistration {
 				var condition strings.Builder
 				if err := printer.Fprint(&condition, fset, value.Cond); err != nil {
 					t.Fatal(err)
 				}
-				commandRegistrationGuarded = strings.Contains(condition.String(), "!= nil")
+				commandRegistrationGuarded = condition.String() == "eebusCommandRouter != nil"
 			}
 		}
 		return true
@@ -183,21 +181,24 @@ func TestMSP06GatewayRegistersProviderConditionallyBeforeMCPMount(t *testing.T) 
 	if !registerPosition.IsValid() {
 		t.Fatal("gateway bootstrap does not register the enabled eeBUS runtime with MCP")
 	}
-	if !mountPosition.IsValid() {
-		t.Fatal("gateway MCP mount was not found")
+	if !completedPosition.IsValid() {
+		t.Fatal("gateway provider composition return was not found")
 	}
 	if !commandRegisterPosition.IsValid() {
 		t.Fatal("gateway bootstrap does not register the enabled eeBUS command router with MCP")
 	}
-	if registerPosition >= mountPosition {
-		t.Fatalf("eeBUS provider registration at %s must complete before MCP mount at %s", fset.Position(registerPosition), fset.Position(mountPosition))
+	if registerPosition >= completedPosition {
+		t.Fatalf("eeBUS provider registration at %s must complete before provider composition return at %s", fset.Position(registerPosition), fset.Position(completedPosition))
+	}
+	if registerPosition >= commandRegisterPosition {
+		t.Fatal("eeBUS provider must register before its command router")
 	}
 	if !registrationGuarded {
 		t.Fatal("eeBUS MCP provider registration is not guarded by a non-nil enabled runtime")
 	}
-	if commandRegisterPosition >= mountPosition {
-		t.Fatalf("eeBUS command router registration at %s must complete before MCP mount at %s",
-			fset.Position(commandRegisterPosition), fset.Position(mountPosition))
+	if commandRegisterPosition >= completedPosition {
+		t.Fatalf("eeBUS command router registration at %s must complete before provider composition return at %s",
+			fset.Position(commandRegisterPosition), fset.Position(completedPosition))
 	}
 	if !commandRegistrationGuarded {
 		t.Fatal("eeBUS MCP command router registration is not guarded by a non-nil enabled runtime")
@@ -335,7 +336,7 @@ func TestMSP06ProviderRegistrationDoesNotEscapeMCPBootstrap(t *testing.T) {
 			return walkErr
 		}
 		if entry.IsDir() {
-			if entry.Name() == ".git" || entry.Name() == "vendor" {
+			if entry.Name() == ".git" || entry.Name() == ".tmp" || entry.Name() == "vendor" {
 				return filepath.SkipDir
 			}
 			return nil
@@ -356,7 +357,7 @@ func TestMSP06ProviderRegistrationDoesNotEscapeMCPBootstrap(t *testing.T) {
 		}
 		clean := filepath.Clean(relative)
 		allowedMCP := strings.HasPrefix(clean, filepath.Clean("../../mcp")+string(filepath.Separator))
-		allowedGateway := clean == filepath.Clean("../../cmd/gateway/main.go") || clean == filepath.Clean("../../cmd/gateway/gateway_run_lifecycle.go") || clean == filepath.Clean("../../cmd/gateway/gateway_http_server.go") || clean == filepath.Clean("../../cmd/gateway/gateway_http_control_plane.go") || clean == filepath.Clean("../../cmd/gateway/eebus_runtime_adapter.go")
+		allowedGateway := clean == filepath.Clean("../../cmd/gateway/main.go") || clean == filepath.Clean("../../cmd/gateway/gateway_run_lifecycle.go") || clean == filepath.Clean("../../cmd/gateway/gateway_http_server.go") || clean == filepath.Clean("../../cmd/gateway/gateway_http_providers.go") || clean == filepath.Clean("../../cmd/gateway/gateway_http_control_plane.go") || clean == filepath.Clean("../../cmd/gateway/eebus_runtime_adapter.go")
 		if !allowedMCP && !allowedGateway {
 			t.Errorf("MSP-06 provider registration escaped MCP/bootstrap boundary into %s", relative)
 		}

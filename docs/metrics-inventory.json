@@ -1461,10 +1461,13 @@
     "cmd/gateway/gateway_http_control_plane.go:registerHTTPControlPlaneCoreRoutes": [
       "mux.Handle"
     ],
-    "cmd/gateway/gateway_http_server.go:startHTTPServer": [
+    "cmd/gateway/gateway_http_providers.go:newHTTPControlPlaneProviders": [
       "gatewaySemanticMetricRegistry",
-      "newGatewayMetricsHandler",
       "newGatewaySemanticMetrics"
+    ],
+    "cmd/gateway/gateway_http_server.go:startHTTPServer": [
+      "newGatewayMetricsHandler",
+      "newHTTPControlPlaneProviders"
     ],
     "cmd/gateway/huawei_transport_metrics.go:text": [
       "fmt.Sprintf"

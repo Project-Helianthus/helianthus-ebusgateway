@@ -5,8 +5,6 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"go/ast"
-	"go/parser"
-	"go/token"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -821,19 +819,9 @@ func TestM38MalformedRegistryFailsComposition(t *testing.T) {
 // wiring of startHTTPServer is a process-bootstrap invariant that cannot be
 // exercised without opening a listener and the unrelated transport lifecycle.
 func TestM38StartHTTPServerSharesProviderWithScrapeRoute(t *testing.T) {
-	file, err := parser.ParseFile(token.NewFileSet(), "gateway_http_server.go", nil, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var body *ast.BlockStmt
-	for _, declaration := range file.Decls {
-		if function, ok := declaration.(*ast.FuncDecl); ok && function.Name.Name == "startHTTPServer" {
-			body = function.Body
-		}
-	}
-	if body == nil {
-		t.Fatal("startHTTPServer not found")
-	}
+	owner := httpProviderCompositionOwner(t)
+	caller := httpProviderFunction(t, "gateway_http_server.go", "startHTTPServer")
+	body := owner.Body
 	ident := func(expression ast.Expr) string {
 		if id, ok := expression.(*ast.Ident); ok {
 			return id.Name
@@ -877,13 +865,23 @@ func TestM38StartHTTPServerSharesProviderWithScrapeRoute(t *testing.T) {
 		}
 		return arg >= 0 && arg < len(args) && ident(args[arg]) == provider
 	}
-	if !shared("newHTTPControlPlaneSemanticHandlers", -1) || !shared("configureGatewayPortalSemanticRead", -1) || !shared("newGatewaySemanticMetrics", 0) {
+	if !shared("newHTTPControlPlaneSemanticHandlers", -1) || !shared("newGatewaySemanticMetrics", 0) {
 		t.Fatal("GraphQL, MCP, Portal and the scrape route must read the same provider instance")
 	}
 	if callName(calls["newGatewaySemanticMetrics"][0].Args[1]) != "gatewaySemanticMetricRegistry" {
 		t.Fatal("the scrape route must use the production binding registry")
 	}
-	routes := calls["registerHTTPControlPlaneCoreRoutes"]
+	callerCalls, aliases := httpProviderCallerBindings(caller)
+	for name, field := range map[string]string{"sharedSemanticProvider": "sharedSemanticProvider", "semanticMetrics": "semanticMetrics", "queryHandler": "queryHandler", "snapshotHandler": "snapshotHandler", "subscriptionHandler": "subscriptionHandler", "mcpServer": "mcpServer"} {
+		if aliases[name] != "providers."+field {
+			t.Fatalf("caller does not use delegated %s", field)
+		}
+	}
+	portalCalls := callerCalls["configureGatewayPortalSemanticRead"]
+	if len(portalCalls) != 1 || len(portalCalls[0].Args) != 2 || ident(portalCalls[0].Args[1]) != provider {
+		t.Fatal("Portal must consume the delegated shared provider")
+	}
+	routes := callerCalls["registerHTTPControlPlaneCoreRoutes"]
 	if len(routes) != 1 || len(routes[0].Args) < 4 || callName(routes[0].Args[3]) != "newGatewayMetricsHandler" {
 		t.Fatal("the core routes must mount the composed scrape handler")
 	}

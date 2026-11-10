@@ -83,67 +83,17 @@ func startHTTPServer(
 		portalStorageClient = nil
 	}
 
-	sharedSemanticProvider := newGatewaySemanticSnapshotProvider(runtimeControl)
-	if err := installGatewaySemanticOperationRoute(builder, sharedSemanticProvider); err != nil {
-		return nil, nil, err
-	}
-	queryHandler, snapshotHandler, subscriptionHandler, mcpServer, err := newHTTPControlPlaneSemanticHandlers(gateway, builder, hub, sharedSemanticProvider)
-	if err != nil {
-		return nil, nil, err
-	}
-	// The scrape route reads the same provider instance as GraphQL, MCP and
-	// Portal; its transport exposition stays owned by the bus store.
-	semanticMetrics, err := newGatewaySemanticMetrics(sharedSemanticProvider, gatewaySemanticMetricRegistry())
-	if err != nil {
-		return nil, nil, err
-	}
-	if err := mcpServer.SetServerVersion(buildInfo.ReleaseVersion); err != nil {
-		return nil, nil, fmt.Errorf("configure MCP build identity: %w", err)
-	}
-	if err := registerRuntimeControlMCPTools(mcpServer, runtimeControl); err != nil {
-		return nil, nil, fmt.Errorf("register runtime control MCP tools: %w", err)
-	}
-	if eebusProvider != nil {
-		if err := mcpServer.RegisterEEBusV1Provider(eebusProvider); err != nil {
-			return nil, nil, fmt.Errorf("register eeBUS MCP provider: %w", err)
-		}
-	}
-	if eebusCommandRouter != nil {
-		if err := mcpServer.RegisterEEBusV1CommandRouter(eebusCommandRouter); err != nil {
-			return nil, nil, fmt.Errorf("register eeBUS MCP command router: %w", err)
-		}
-	}
-	mcp.RegisterModbusV1Tools(mcpServer, modbusProvider)
-	if source, ok := eebusProvider.(mcp.LeafPromotionCaptureSource); ok {
-		if capture := source.LeafPromotionCapture(); capture != nil {
-			if err := mcpServer.RegisterLeafPromotionCapture(capture); err != nil {
-				return nil, nil, fmt.Errorf("register leaf promotion capture: %w", err)
-			}
-		}
-	}
-	oneShotRuntime, err := newSynchronizedEvidenceOneShotRuntime(
-		cfg.EvidenceOneShotEnabled,
-		eebusProvider,
-		eebusCommandRouter,
-		buildInfo,
+	providers, err := newHTTPControlPlaneProviders(
+		cfg, gateway, builder, hub, semanticProvider, eebusProvider, eebusCommandRouter,
+		modbusProvider, busObservability, watchSummaryProvider, ebusSourceProvider,
+		buildInfo, daemonUpdatesAvailable, ebusDriver, runtimeControl,
 	)
 	if err != nil {
 		return nil, nil, err
 	}
-	if oneShotRuntime != nil {
-		if err := mcpServer.RegisterSynchronizedEvidenceCapture(oneShotRuntime); err != nil {
-			return nil, nil, fmt.Errorf("register synchronized evidence capture: %w", err)
-		}
-	}
-	mcpServer.SetAdmittedRPCSourceProvider(ebusSourceProvider)
-	mcpServer.SetStatusProvider(newMCPRuntimeStatusProviderForControl(semanticProvider, ebusSourceProvider, buildInfo, daemonUpdatesAvailable, ebusAdapterLifecycleStatus(ebusDriver), ebusAdapterConditionFor(ebusDriver)))
-	if busObservability != nil {
-		mcpServer.SetBusObservabilityProvider(newMCPBusObservabilityProvider(busObservability))
-	}
-	if watchSummaryProvider != nil {
-		mcpServer.SetWatchSummaryProvider(watchSummaryProvider)
-	}
-	mcpServer.SetSemanticProvider(newMCPSemanticProvider(semanticProvider))
+	sharedSemanticProvider := providers.sharedSemanticProvider
+	queryHandler, snapshotHandler, subscriptionHandler := providers.queryHandler, providers.snapshotHandler, providers.subscriptionHandler
+	mcpServer, semanticMetrics := providers.mcpServer, providers.semanticMetrics
 
 	// M2a_GATEWAY_MCP (execution-plans#19): install Vaillant B503 MCP tool
 	// surface. Uses a deferred dispatcher stub — production B524-style raw

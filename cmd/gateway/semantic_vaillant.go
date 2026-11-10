@@ -428,99 +428,15 @@ var b524CapabilityProbes = []b524ProbeSpec{
 }
 
 func (p *vaillantSemanticPoller) Start(ctx context.Context) {
-	if p == nil {
-		return
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	go p.tasks.run(ctx)
-
-	// When a startup barrier is set, defer all bus traffic until the startup
-	// scan first pass completes.  This prevents semantic bootstrap (B5.24
-	// discovery) from racing ahead of the active scan on proxy-single paths.
-	if p.startupBarrier != nil {
-		go func() {
-			select {
-			case <-ctx.Done():
-				return
-			case <-p.startupBarrier:
-			}
-			log.Printf("semantic poller: startup barrier cleared, starting polling loops")
-			p.startPollingLoops(ctx)
-		}()
-		return
-	}
-
-	p.startPollingLoops(ctx)
-}
-
-func (p *vaillantSemanticPoller) startPollingLoops(ctx context.Context) {
-	// Discovery owns downstream startup/controller/boiler priming and avoids duplicate startup bursts.
-	p.enqueueTask(semanticTaskRefreshDiscovery, semanticTaskPriorityHigh, p.refreshDiscovery)
-	p.enqueueTask(semanticTaskRefreshSchedules, semanticTaskPriorityLow, p.refreshSchedules)
-
-	go p.runLoop(ctx, p.regulatorRecheckInterval, semanticTaskRefreshRegulatorCapability, semanticTaskPriorityLow, p.refreshRegulatorCapability)
-	go p.runLoop(ctx, p.discoveryInterval, semanticTaskRefreshDiscovery, semanticTaskPriorityLow, p.refreshDiscovery)
-	go p.runLoop(ctx, p.configInterval, semanticTaskRefreshConfig, semanticTaskPriorityMedium, p.refreshConfig)
-	go p.runLoop(ctx, p.stateInterval, semanticTaskRefreshState, semanticTaskPriorityHigh, p.refreshState)
-	go p.runLoop(ctx, p.configInterval, semanticTaskRefreshCircuits, semanticTaskPriorityLow, p.refreshCircuits)
-	go p.runLoop(ctx, p.configInterval, semanticTaskRefreshSystem, semanticTaskPriorityLow, p.refreshSystem)
-	go p.runLoop(ctx, p.configInterval, semanticTaskRefreshRadioDevices, semanticTaskPriorityLow, p.refreshRadioDevices)
-	go p.runLoop(ctx, p.energyInterval, semanticTaskRefreshEnergy, semanticTaskPriorityMedium, p.refreshEnergy)
-	go p.runLoop(ctx, p.scheduleInterval, semanticTaskRefreshSchedules, semanticTaskPriorityLow, p.refreshSchedules)
-	go p.adapterInfo.run(ctx)
-	for _, schedule := range p.boilerStatusTierSchedules() {
-		go p.runLoop(ctx, schedule.interval, boilerStatusTierTaskKey(schedule.tier), schedule.priority, p.boilerStatusTierTask(schedule.tier))
-	}
-}
-
-func (p *vaillantSemanticPoller) runLoop(ctx context.Context, interval time.Duration, key semanticTaskKey, priority semanticTaskPriority, fn func(context.Context)) {
-	if interval <= 0 {
-		return
-	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			p.enqueueTask(key, priority, fn)
-		}
-	}
+	p.pollSchedule().Start(ctx)
 }
 
 func (p *vaillantSemanticPoller) enqueueTask(key semanticTaskKey, priority semanticTaskPriority, fn func(context.Context)) {
-	if p == nil || fn == nil {
-		return
-	}
-	scheduler := p.tasks
-	if scheduler == nil {
-		fn(context.Background())
-		return
-	}
-	err := scheduler.submitCoalesced(key, priority, func(taskCtx context.Context) {
-		p.withPollLock(taskCtx, fn)
-	})
-	if errors.Is(err, errSemanticTaskQueueOverloaded) {
-		log.Printf("semantic poll scheduler overloaded: skipping task key=%s priority=%d", key, priority)
-		return
-	}
-	if err != nil {
-		log.Printf("semantic poll scheduler submit failed key=%s err=%v", key, err)
-	}
+	p.pollSchedule().enqueueTask(key, priority, fn)
 }
 
 func (p *vaillantSemanticPoller) withPollLock(ctx context.Context, fn func(context.Context)) {
-	if p == nil || fn == nil {
-		return
-	}
-	p.pollMu.Lock()
-	defer p.pollMu.Unlock()
-	fn(ctx)
+	p.pollSchedule().withPollLock(ctx, fn)
 }
 
 func (p *vaillantSemanticPoller) refreshRegulatorCapability(_ context.Context) {

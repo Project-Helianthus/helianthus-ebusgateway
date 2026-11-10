@@ -224,49 +224,44 @@ func (a *arbitrator) selectAtSYN(busIdle bool) (*startRequest, []*startRequest) 
 func (a *arbitrator) selectBidsAtSYN(busIdle bool, bids map[*startRequest]chan startResult) (*startRequest, []*startRequest) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.hasOwner || !busIdle {
-		return nil, nil
+	requests := make([]*startRequest, 0, len(a.pendingExternal)+1)
+	if a.pendingGateway != nil {
+		requests = append(requests, a.pendingGateway)
 	}
-	eligible := func(req *startRequest) bool {
-		return req != nil && (bids == nil || bids[req] == req.notify)
-	}
-	var winner *startRequest
-	if eligible(a.pendingGateway) {
-		winner = a.pendingGateway
-	}
-	for _, req := range a.pendingExternal {
-		if eligible(req) && (winner == nil || higherPriority(req, winner)) {
-			winner = req
+	requests = append(requests, a.pendingExternal...)
+	snapshot := arbitrationSnapshot{hasOwner: a.hasOwner, busIdle: busIdle, bids: make([]arbitrationBid, len(requests))}
+	for i, req := range requests {
+		if req != nil {
+			snapshot.bids[i] = arbitrationBid{sessionID: req.sessionID, initiator: req.initiator,
+				eligible: bids == nil || bids[req] == req.notify}
 		}
 	}
-	if winner == nil {
+	decision := decideArbitration(snapshot)
+	if decision.winner < 0 {
 		return nil, nil
 	}
 	var losers []*startRequest
-	lose := func(req *startRequest) {
-		if eligible(req) && req != winner {
-			losers = append(losers, req)
-			if req.sessionID == gatewaySessionID {
-				a.deferredGatewayLoser = req
-			}
+	for _, i := range decision.losers {
+		req := requests[i]
+		losers = append(losers, req)
+		if req.sessionID == gatewaySessionID {
+			a.deferredGatewayLoser = req
 		}
 	}
-	lose(a.pendingGateway)
-	for _, req := range a.pendingExternal {
-		lose(req)
-	}
-	if eligible(a.pendingGateway) {
-		a.pendingGateway = nil
-	}
+	gateway := a.pendingGateway
+	a.pendingGateway = nil
 	remaining := a.pendingExternal[:0]
-	for _, req := range a.pendingExternal {
-		if !eligible(req) {
+	for _, i := range decision.retained {
+		req := requests[i]
+		if gateway != nil && i == 0 {
+			a.pendingGateway = req
+		} else {
 			remaining = append(remaining, req)
 		}
 	}
 	clear(a.pendingExternal[len(remaining):])
 	a.pendingExternal = remaining
-	return winner, losers
+	return requests[decision.winner], losers
 }
 
 // takeDeferredGatewayLoser removes req from deferred tracking. It reports true
@@ -279,16 +274,6 @@ func (a *arbitrator) takeDeferredGatewayLoser(req *startRequest) bool {
 	}
 	a.deferredGatewayLoser = nil
 	return true
-}
-
-func higherPriority(a, b *startRequest) bool {
-	if a.initiator&0x0f != b.initiator&0x0f {
-		return a.initiator&0x0f < b.initiator&0x0f
-	}
-	if a.initiator != b.initiator {
-		return a.initiator>>4 < b.initiator>>4
-	}
-	return a.sessionID < b.sessionID
 }
 
 // confirmOwnership sets bus ownership after the adapter's

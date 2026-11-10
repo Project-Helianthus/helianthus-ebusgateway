@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import importlib.util
 import json
 import os
 import pathlib
@@ -16,6 +17,39 @@ CONFIG_CLASSIFIER = REPO_ROOT / "scripts" / "semreg_public_config_classifier.py"
 PROMETHEUS_LIFECYCLE_CLASSIFIER = REPO_ROOT / "scripts" / "semreg_prometheus_transport_classifier.py"
 MATTER_FEED_CLASSIFIER = REPO_ROOT / "scripts" / "matter_feed_transport_classifier.py"
 MATTER_FEED_API_PATCH = SCRIPT_DIR / "testdata" / "matter_feed_api_composition.patch"
+
+
+class NoMatterProfileCacheTests(unittest.TestCase):
+    def test_configured_cache_does_not_require_export(self) -> None:
+        spec = importlib.util.spec_from_file_location(
+            "check_no_matter_profile", SCRIPT_DIR / "check_no_matter_profile.py"
+        )
+        checker = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(checker)
+        packages = "\n".join(checker.MODULE + suffix for suffix in (
+            "/cmd/gateway", "/matter", "/matter/feedv1", "/matter/libraryhost"
+        ))
+        for exported in (False, True):
+            with self.subTest(exported=exported):
+                env = {"GOMODCACHE": "/configured/cache"} if exported else {}
+                results = [
+                    subprocess.CompletedProcess([], 0, packages, ""),
+                    subprocess.CompletedProcess([], 0, checker.MODULE + "/cmd/gateway", ""),
+                ]
+                with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(
+                    checker.subprocess, "run", side_effect=results
+                ) as run:
+                    self.assertEqual(checker.check(REPO_ROOT), {
+                        "default_matter_packages": 3, "nomatter_matter_packages": 0
+                    })
+                self.assertEqual(run.call_count, 2)
+                for call in run.call_args_list:
+                    actual = call.kwargs["env"]
+                    self.assertEqual(actual.get("GOMODCACHE"), env.get("GOMODCACHE"))
+                    for key, value in {"GOWORK": "off", "GOPROXY": "off",
+                                       "GOSUMDB": "off", "GOTOOLCHAIN": "local"}.items():
+                        self.assertEqual(actual[key], value)
+                    self.assertIn("-mod=readonly", call.args[0])
 
 
 class TransportGateTests(unittest.TestCase):

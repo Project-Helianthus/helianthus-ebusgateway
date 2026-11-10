@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"flag"
+
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal/catalogv1"
 )

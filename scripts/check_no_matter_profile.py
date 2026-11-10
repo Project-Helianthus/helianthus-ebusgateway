@@ -21,8 +21,6 @@ def matter_dependency(path):
 
 def check(root):
     env = os.environ.copy()
-    if not env.get("GOMODCACHE"):
-        raise RuntimeError("pre-provisioned GOMODCACHE is required")
     env.update(GOWORK="off", GOPROXY="off", GOSUMDB="off", GOTOOLCHAIN="local")
     closures = {}
     default_packages = set()

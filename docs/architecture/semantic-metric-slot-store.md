@@ -74,9 +74,11 @@ is still checked by `O21Open`. The target never becomes a metric label.
 
 On Linux and Darwin the adapter opens the directory without following a final
 symlink, then uses directory-relative operations. Other platforms reject
-construction explicitly. The caller must control the directory and its ancestor
-directories, use a local filesystem supporting advisory exclusive locks, atomic
-same-directory rename and file/directory sync, and ensure every writer uses the
+construction explicitly. Lock/document opens, temporary-file creation, rename and
+cleanup resolve names against the held directory descriptor, so replacing the
+directory pathname cannot redirect those operations into its replacement. The
+caller must control the directory and its ancestor directories, use a local
+filesystem supporting advisory exclusive locks, atomic same-directory rename and file/directory sync, and ensure every writer uses the
 adapter. Network/distributed filesystems are outside this contract. Lock files
 are persistent and must never be removed or replaced, even after Close.
 
@@ -121,8 +123,9 @@ state remain unchanged.
 **Proven** by focused synthetic `TestO21` and `TestSlotFileStore` fixtures when
 run successfully: bounded detached reads, refusal of unsafe objects, explicit
 absence and provisioning, cross-target isolation, exclusive instance/process
-fencing, close/reopen behavior, ordered file-write/sync/close/rename/directory-sync
-acknowledgement, individual injected operation failures, post-rename uncertainty,
+fencing, mid-commit directory replacement containment and cleanup, close/reopen
+behavior, ordered file-write/sync/close/rename/directory-sync acknowledgement,
+individual injected operation failures, post-rename uncertainty,
 last accepted assignment retention, unvalidated restart, full identity rejection
 and persistent retirement. These are durable-adapter evidence only.
 

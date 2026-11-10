@@ -30,6 +30,12 @@ ALLOWED_LOCAL = frozenset(f"{MODULE}/{name}" for name in PROTECTED)
 ALLOWED_TEST_LOCAL = frozenset({f"{MODULE}/internal/semanticoperations/semoptest"})
 # SemReg owns protocol-neutral contracts. No other external owner is implicit.
 ALLOWED_EXTERNAL = ("github.com/Project-Helianthus/helianthus-semreg",)
+# Platform syscalls support descriptor-relative durable storage, not native
+# protocol or gateway implementation coupling. Only this exact owner may use
+# this exact package; other semantic owners and subpackages remain fail-closed.
+ALLOWED_OWNER_EXTERNAL = {
+    f"{MODULE}/internal/semanticmetrics": frozenset({"golang.org/x/sys/unix"}),
+}
 # Native libraries and all gateway implementation outside the semantic owners
 # must stay behind the composition boundary. Unknown dependencies also fail.
 FORBIDDEN_PREFIXES = tuple(
@@ -163,7 +169,8 @@ def violations(parsed):
                     elif (dependency in ALLOWED_LOCAL or dependency in standard
                           or (filename.endswith("_test.go") and dependency in ALLOWED_TEST_LOCAL)):
                         pass
-                    elif any(under(dependency, p) for p in ALLOWED_EXTERNAL):
+                    elif (any(under(dependency, p) for p in ALLOWED_EXTERNAL)
+                          or dependency in ALLOWED_OWNER_EXTERNAL.get(package, ())):
                         pass
                     else:
                         errors.add(f"{filename}: dependency requires reviewed rule: {route}")

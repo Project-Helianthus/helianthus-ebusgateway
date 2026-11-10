@@ -176,7 +176,7 @@ func TestSlotFileStoreInvalidData(t *testing.T) {
 }
 
 func TestSlotFileStoreFaults(t *testing.T) {
-	for _, failure := range []string{"write", "file-sync", "file-close", "rename", "directory-sync", "post-rename-fence"} {
+	for _, failure := range []string{"temp-create", "write", "file-sync", "file-close", "rename", "directory-sync", "post-rename-fence"} {
 		t.Run(failure, func(t *testing.T) {
 			p := slotFileFixture(t, t.TempDir(), "target")
 			s, err := O21Create(p, "target")
@@ -212,7 +212,7 @@ func TestSlotFileStoreFaults(t *testing.T) {
 			if err = p.Commit("target", nil); err == nil {
 				t.Fatal("uncertain adapter writable")
 			}
-			order := []string{"write", "file-sync", "file-close", "rename", "directory-sync"}
+			order := []string{"temp-create", "write", "file-sync", "file-close", "rename", "directory-sync"}
 			count := len(order)
 			for i, op := range order {
 				if op == failure {
@@ -377,7 +377,7 @@ func TestSlotFileStoreAcknowledgementAndReadErrors(t *testing.T) {
 	if err := p.Commit("target", []byte("accepted")); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"write", "file-sync", "file-close", "rename", "directory-sync"}
+	want := []string{"temp-create", "write", "file-sync", "file-close", "rename", "directory-sync"}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("acknowledgement order: %v", calls)
 	}
@@ -423,6 +423,97 @@ func TestSlotFileStoreDirectoryFencing(t *testing.T) {
 	}
 	if _, err := p.Load("target"); err == nil {
 		t.Fatal("directory fencing recovered implicitly")
+	}
+}
+
+func TestSlotFileStoreMidCommitDirectorySwap(t *testing.T) {
+	for _, stage := range []string{"temp-create", "write", "rename", "directory-sync"} {
+		t.Run(stage, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "state")
+			if err := os.Mkdir(dir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			p := slotFileFixture(t, dir, "target")
+			if err := p.Commit("target", []byte("accepted")); err != nil {
+				t.Fatal(err)
+			}
+			swapped := false
+			replacement := map[string]string{p.name + ".json": "replacement document"}
+			p.fault = func(op string) error {
+				if swapped && op == "write" {
+					// Observe containment before error cleanup can hide a misplaced open.
+					entries, err := os.ReadDir(dir)
+					if err != nil || len(entries) != len(replacement) {
+						t.Fatalf("temporary file created outside held directory: %v, %v", entries, err)
+					}
+				}
+				if op != stage {
+					return nil
+				}
+				if err := os.Rename(dir, dir+"-old"); err != nil {
+					return err
+				}
+				if err := os.Mkdir(dir, 0700); err != nil {
+					return err
+				}
+				entries, err := os.ReadDir(dir + "-old")
+				if err != nil {
+					return err
+				}
+				// A same-named decoy must survive deferred temporary-file cleanup.
+				for _, entry := range entries {
+					if strings.Contains(entry.Name(), ".tmp-") {
+						replacement[entry.Name()] = "replacement temporary file"
+					}
+				}
+				for name, content := range replacement {
+					if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0600); err != nil {
+						return err
+					}
+				}
+				swapped = true
+				return nil
+			}
+			if err := p.Commit("target", []byte("proposed")); !errors.Is(err, ErrSlotFileFencing) {
+				t.Fatalf("directory swap acknowledged: %v", err)
+			}
+			if !swapped {
+				t.Fatal("swap seam not reached")
+			}
+			entries, err := os.ReadDir(dir)
+			if err != nil || len(entries) != len(replacement) {
+				t.Fatalf("replacement directory changed: %v, %v", entries, err)
+			}
+			for name, want := range replacement {
+				raw, err := os.ReadFile(filepath.Join(dir, name))
+				if err != nil || string(raw) != want {
+					t.Fatalf("replacement file %s changed: %q, %v", name, raw, err)
+				}
+			}
+			entries, err = os.ReadDir(dir + "-old")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, entry := range entries {
+				if strings.Contains(entry.Name(), ".tmp-") {
+					t.Fatal("temporary file leaked in held directory")
+				}
+			}
+			want := "accepted"
+			if stage == "rename" || stage == "directory-sync" {
+				want = "proposed"
+			}
+			raw, err := os.ReadFile(filepath.Join(dir+"-old", p.name+".json"))
+			if err != nil || string(raw) != want {
+				t.Fatalf("unexpected held document: %q, %v", raw, err)
+			}
+			if _, err := p.Load("target"); !errors.Is(err, ErrSlotFileUncertain) {
+				t.Fatalf("uncertainty not latched: %v", err)
+			}
+			if err := p.Commit("target", nil); !errors.Is(err, ErrSlotFileUncertain) {
+				t.Fatalf("uncertain commit accepted: %v", err)
+			}
+		})
 	}
 }
 

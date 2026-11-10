@@ -11,7 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 // SlotFileStore holds one advisory exclusive writer lock until Close. The
@@ -42,18 +43,18 @@ func NewSlotFileStore(directory, target string) (*SlotFileStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	fd, err := syscall.Open(directory, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	fd, err := unix.Open(directory, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, err
 	}
 	s := &SlotFileStore{dir: os.NewFile(uintptr(fd), directory), directory: directory, target: target, name: name}
-	lockfd, err := syscall.Open(filepath.Join(directory, name+".lock"), syscall.O_RDWR|syscall.O_CREAT|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0600)
+	lockfd, err := unix.Openat(fd, name+".lock", unix.O_RDWR|unix.O_CREAT|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0600)
 	if err != nil {
 		_ = s.dir.Close()
 		return nil, err
 	}
 	s.lock = os.NewFile(uintptr(lockfd), name+".lock")
-	if err = syscall.Flock(lockfd, syscall.LOCK_EX|syscall.LOCK_NB); err == nil {
+	if err = unix.Flock(lockfd, unix.LOCK_EX|unix.LOCK_NB); err == nil {
 		err = s.check(target)
 	}
 	if err != nil {
@@ -86,20 +87,18 @@ func (s *SlotFileStore) check(target string) (err error) {
 	if err != nil || !os.SameFile(d, path) {
 		return ErrSlotFileFencing
 	}
-	var held, named syscall.Stat_t
-	if syscall.Fstat(int(s.lock.Fd()), &held) != nil || syscall.Lstat(s.path(".lock"), &named) != nil || held.Mode&syscall.S_IFMT != syscall.S_IFREG || named.Mode&syscall.S_IFMT != syscall.S_IFREG || held.Nlink != 1 || held.Dev != named.Dev || held.Ino != named.Ino {
+	var held, named unix.Stat_t
+	if unix.Fstat(int(s.lock.Fd()), &held) != nil || unix.Fstatat(int(s.dir.Fd()), s.name+".lock", &named, unix.AT_SYMLINK_NOFOLLOW) != nil || held.Mode&unix.S_IFMT != unix.S_IFREG || named.Mode&unix.S_IFMT != unix.S_IFREG || held.Nlink != 1 || held.Dev != named.Dev || held.Ino != named.Ino {
 		return ErrSlotFileFencing
 	}
-	if syscall.Flock(int(s.lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) != nil {
+	if unix.Flock(int(s.lock.Fd()), unix.LOCK_EX|unix.LOCK_NB) != nil {
 		return ErrSlotFileFencing
 	}
 	return nil
 }
 
-func (s *SlotFileStore) path(suffix string) string { return filepath.Join(s.directory, s.name+suffix) }
-
 func (s *SlotFileStore) openData() (*os.File, error) {
-	fd, err := syscall.Open(s.path(".json"), syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
+	fd, err := unix.Openat(int(s.dir.Fd()), s.name+".json", unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -125,7 +124,7 @@ func (s *SlotFileStore) Load(target string) ([]byte, error) {
 	}
 	f, err := s.openData()
 	if err != nil {
-		if errors.Is(err, syscall.ENOENT) {
+		if errors.Is(err, unix.ENOENT) {
 			if fenceErr := s.check(target); fenceErr != nil {
 				return nil, fenceErr
 			}
@@ -179,7 +178,7 @@ func (s *SlotFileStore) Commit(target string, document []byte) (err error) {
 	if err == nil {
 		err = existing.Close()
 	}
-	if err != nil && !errors.Is(err, syscall.ENOENT) {
+	if err != nil && !errors.Is(err, unix.ENOENT) {
 		return err
 	}
 	var nonce [16]byte
@@ -187,12 +186,17 @@ func (s *SlotFileStore) Commit(target string, document []byte) (err error) {
 		return err
 	}
 	tempName := fmt.Sprintf("%s.tmp-%x", s.name, nonce)
-	fd, err := syscall.Open(filepath.Join(s.directory, tempName), syscall.O_WRONLY|syscall.O_CREAT|syscall.O_EXCL|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0600)
+	var fd int
+	err = s.step("temp-create", func() error {
+		var openErr error
+		fd, openErr = unix.Openat(int(s.dir.Fd()), tempName, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0600)
+		return openErr
+	})
 	if err != nil {
 		return err
 	}
 	temp := os.NewFile(uintptr(fd), tempName)
-	defer func() { _ = temp.Close(); _ = syscall.Unlink(filepath.Join(s.directory, tempName)) }()
+	defer func() { _ = temp.Close(); _ = unix.Unlinkat(int(s.dir.Fd()), tempName, 0) }()
 	if err = s.step("write", func() error {
 		n, e := temp.Write(document)
 		if e == nil && n != len(document) {
@@ -211,7 +215,7 @@ func (s *SlotFileStore) Commit(target string, document []byte) (err error) {
 	if err = s.check(target); err != nil {
 		return err
 	}
-	if err = s.step("rename", func() error { return syscall.Rename(filepath.Join(s.directory, tempName), s.path(".json")) }); err != nil {
+	if err = s.step("rename", func() error { return unix.Renameat(int(s.dir.Fd()), tempName, int(s.dir.Fd()), s.name+".json") }); err != nil {
 		return err
 	}
 	if err = s.step("directory-sync", s.dir.Sync); err != nil {

@@ -92,6 +92,23 @@ class SemanticImportsTest(unittest.TestCase):
                    "\n".join(f'"{imp}"' for imp in imports) + '\n)\n')
         self.assertEqual([], self.errors())
 
+    def test_platform_syscalls_allowed_only_for_semanticmetrics(self):
+        self.write("internal/semanticmetrics/base.go",
+                   'package neutral\nimport "golang.org/x/sys/unix"\n')
+        self.assertEqual([], self.errors())
+
+    def test_platform_syscalls_rejected_for_other_semantic_packages(self):
+        for owner in (*guard.PROTECTED, "internal/semanticmetrics/helper"):
+            if owner == "internal/semanticmetrics":
+                continue
+            with self.subTest(owner=owner):
+                self.write(f"{owner}/base.go",
+                           'package neutral\nimport "golang.org/x/sys/unix"\n')
+                errors = "\n".join(self.errors())
+                self.assertIn("dependency requires reviewed rule", errors)
+                self.assertIn(f"{guard.MODULE}/{owner} -> golang.org/x/sys/unix", errors)
+                self.write(f"{owner}/base.go", "package neutral\n")
+
     def test_semreg_replacements_fail_closed(self):
         semreg = guard.ALLOWED_EXTERNAL[0]
         self.write("internal/semhub/base.go", f'package neutral\nimport "{semreg}/semreg/v1"\n')

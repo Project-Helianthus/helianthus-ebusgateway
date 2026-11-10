@@ -124,14 +124,24 @@ func TestMainStartsControlPlaneBeforeWarmupAndRetiresItInLIFOOrder(t *testing.T)
 		t.Fatalf("control-plane start must precede the generation-owned post-start tasks, with no WaitRunning gate: start=%d tasks=%d", start, warmup)
 	}
 
+	delegate := strings.Index(text, "defer consumerShutdown.shutdown()")
+	join := strings.LastIndex(text, "control.CloseAdmission(closeCtx)")
+	if delegate < start || join < delegate {
+		t.Fatal("consumer shutdown must be registered after HTTP acquisition and before generation join")
+	}
+	source, err = os.ReadFile("gateway_consumer_shutdown.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text = string(source)
 	last := -1
 	for _, closeCall := range []string{
-		"listener.Close()",
-		"deduplicator.Close()",
-		"reconstructor.Close()",
-		"busObservability.Close()",
-		"advertiser.Close()",
-		"shutdownHTTPControlPlane(server)",
+		"s.stopTransportWatch()", "s.publishRetirement()", "s.drainHTTP()",
+		`s.close("broadcast listener close", surface.listener)`,
+		`s.close("deduplicator close", s.deduplicator)`,
+		`s.close("reconstructor close", surface.reconstructor)`,
+		`s.close("bus observability close", s.busObservability)`,
+		`s.close("mdns close", s.advertiser)`,
 	} {
 		next := strings.Index(text, closeCall)
 		if next < 0 || next < last {
@@ -199,7 +209,7 @@ func TestRunOrchestrationKeepsDeferredShutdownStackInAcquisitionOrder(t *testing
 		"m2mRuntime.Close()",
 		"artifactBuilder.EmitToFile(artifactPath)",
 		"gateway.Close()",
-		"shutdownHTTPControlPlane(server)",
+		"defer consumerShutdown.shutdown()",
 	} {
 		next := strings.Index(text, closeCall)
 		if next < 0 || next < last {

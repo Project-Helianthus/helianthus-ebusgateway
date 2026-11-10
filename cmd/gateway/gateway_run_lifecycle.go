@@ -630,50 +630,40 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 	if err != nil {
 		return err
 	}
-	defer func() {
-		// After HTTP admission has stopped and active requests have drained,
-		// preserve the historical native-consumer cleanup order.
-		surfaceMu.Lock()
-		listener, reconstructor := listener, reconstructor
-		surfaceMu.Unlock()
-		if listener != nil {
-			if err := listener.Close(); err != nil {
-				log.Printf("broadcast listener close: %v", err)
+	consumerShutdown := gatewayConsumerShutdown{
+		stopTransportWatch: stopTransportWatch,
+		publishRetirement: func() {
+			publishManagedTransportRetirement(busObservability, cfg)
+		},
+		drainHTTP: func() error {
+			if server != nil {
+				return shutdownHTTPControlPlane(server)
 			}
-		}
-		if deduplicator != nil {
-			if err := deduplicator.Close(); err != nil {
-				log.Printf("deduplicator close: %v", err)
+			return nil
+		},
+		surface: func() gatewayConsumerSurface {
+			surfaceMu.Lock()
+			defer surfaceMu.Unlock()
+			var surface gatewayConsumerSurface
+			if listener != nil {
+				surface.listener = listener
 			}
-		}
-		if reconstructor != nil {
-			if err := reconstructor.Close(); err != nil {
-				log.Printf("reconstructor close: %v", err)
+			if reconstructor != nil {
+				surface.reconstructor = reconstructor
 			}
-		}
-		if busObservability != nil {
-			if err := busObservability.Close(); err != nil {
-				log.Printf("bus observability close: %v", err)
-			}
-		}
-		if advertiser != nil {
-			if err := advertiser.Close(); err != nil {
-				log.Printf("mdns close: %v", err)
-			}
-		}
-	}()
-	defer func() {
-		// This defer is registered after control-plane teardown, so LIFO makes
-		// the final bounded runtime statuses observable before HTTP immediately
-		// stops admitting new work and drains already-admitted requests.
-		stopTransportWatch()
-		publishManagedTransportRetirement(busObservability, cfg)
-		if server != nil {
-			if err := shutdownHTTPControlPlane(server); err != nil {
-				log.Printf("http server shutdown: %v", err)
-			}
-		}
-	}()
+			return surface
+		},
+	}
+	if deduplicator != nil {
+		consumerShutdown.deduplicator = deduplicator
+	}
+	if busObservability != nil {
+		consumerShutdown.busObservability = busObservability
+	}
+	if advertiser != nil {
+		consumerShutdown.advertiser = advertiser
+	}
+	defer consumerShutdown.shutdown()
 
 	// The control plane is already serving through stable fail-closed
 	// bindings. Every post-start eBUS step (current-session source

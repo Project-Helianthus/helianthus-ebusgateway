@@ -309,6 +309,79 @@ class SemanticImportsTest(unittest.TestCase):
             with self.assertRaises(subprocess.CalledProcessError):
                 self.errors()
 
+    def test_buildable_selected_workspace_vendor_fails_closed(self):
+        clone = self.workspace_clone()
+        semreg = guard.ALLOWED_EXTERNAL[0]
+        native_module = NATIVE.rsplit("/", 1)[0]
+        self.write("gateway/go.mod", f"module {guard.MODULE}\ngo 1.22.0\n"
+                   f"require (\n {semreg} v0.0.0\n {native_module} v0.0.0\n)\n")
+        self.write("gateway/internal/semhub/base.go",
+                   f'package neutral\nimport _ "{semreg}/semreg/v1"\n')
+        self.write(f"vendor/{semreg}/semreg/v1/base.go",
+                   f'package neutral\nimport _ "{NATIVE}"\n')
+        self.write(f"vendor/{NATIVE}/base.go", "package protocol\n")
+        self.write("vendor/modules.txt", "## workspace\n"
+                   f"# {semreg} v0.0.0\n## explicit; go 1.22.0\n{semreg}/semreg/v1\n"
+                   f"# {native_module} v0.0.0\n## explicit; go 1.22.0\n{NATIVE}\n")
+        for selection in ("", str(self.root / "external.work")):
+            with self.subTest(selection=selection):
+                self.write("external.work" if selection else "go.work",
+                           "go 1.22.0\nuse ./gateway\n")
+                env = dict(os.environ, GOWORK=selection, GOPROXY="off", GOSUMDB="off",
+                           GOTOOLCHAIN="local", GOFLAGS="-buildvcs=false",
+                           GOCACHE=str(ROOT / ".tmp/gocache"))
+                built = subprocess.run(
+                    ["go", "build", "./internal/semhub/..."], cwd=clone, env=env,
+                    capture_output=True, text=True, timeout=150,
+                )
+                self.assertEqual(0, built.returncode, built.stderr)
+                with mock.patch.dict(os.environ, GOWORK=selection, GOFLAGS="-buildvcs=false"):
+                    with self.assertRaisesRegex(ValueError, "vendored SemReg is not allowed"):
+                        guard.parse_sources(clone)
+
+    def test_disabled_workspace_vendor_is_ignored(self):
+        clone = self.workspace_clone()
+        self.write("go.work", "go 1.22.0\nuse ./gateway\n")
+        self.write(f"vendor/{guard.ALLOWED_EXTERNAL[0]}/semreg/v1/base.go",
+                   f'package neutral\nimport _ "{NATIVE}"\n')
+        with mock.patch.dict(os.environ, GOWORK="off"):
+            self.assertEqual([], guard.violations(guard.parse_sources(clone)))
+
+    def test_buildable_alternate_module_file_fails_closed(self):
+        semreg = guard.ALLOWED_EXTERNAL[0]
+        native_module = NATIVE.rsplit("/", 1)[0]
+        self.write("go.mod", f"module {guard.MODULE}\ngo 1.22.0\n")
+        self.write("alternate.mod", f"module {guard.MODULE}\ngo 1.22.0\n"
+                   f"require (\n {semreg} v0.0.0\n {native_module} v0.0.0\n)\n"
+                   f"replace {semreg} => ./candidate\n"
+                   f"replace {native_module} => ./native\n")
+        self.write("candidate/go.mod", f"module {semreg}\ngo 1.22.0\n")
+        self.write("candidate/semreg/v1/base.go", f'package neutral\nimport _ "{NATIVE}"\n')
+        self.write("native/go.mod", f"module {native_module}\ngo 1.22.0\n")
+        self.write("native/protocol/base.go", "package protocol\n")
+        self.write("internal/semhub/base.go", f'package neutral\nimport _ "{semreg}/semreg/v1"\n')
+        for modfile in ("alternate.mod", str(self.root / "alternate.mod")):
+            with self.subTest(modfile=modfile):
+                flags = f'-buildvcs=false "-modfile={modfile}"'
+                env = dict(os.environ, GOWORK="off", GOPROXY="off", GOSUMDB="off",
+                           GOTOOLCHAIN="local", GOFLAGS=flags,
+                           GOCACHE=str(ROOT / ".tmp/gocache"))
+                built = subprocess.run(
+                    ["go", "build", "./internal/semhub/..."], cwd=self.root, env=env,
+                    capture_output=True, text=True, timeout=150,
+                )
+                self.assertEqual(0, built.returncode, built.stderr)
+                with mock.patch.dict(os.environ, GOWORK="off", GOFLAGS=flags):
+                    with self.assertRaisesRegex(ValueError, "GOFLAGS -modfile is not allowed"):
+                        self.errors()
+                result = subprocess.run(
+                    [sys.executable, str(ROOT / "scripts/check_semantic_imports.py"),
+                     "--root", str(self.root)], env=env,
+                    capture_output=True, text=True, timeout=160,
+                )
+                self.assertEqual(1, result.returncode)
+                self.assertIn("GOFLAGS -modfile is not allowed", result.stderr)
+
     def test_vendored_semreg_fails_closed(self):
         semreg = guard.ALLOWED_EXTERNAL[0]
         self.write("internal/semhub/base.go", f'package neutral\nimport "{semreg}/semreg/v1"\n')

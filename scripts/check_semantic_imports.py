@@ -10,6 +10,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -57,10 +58,7 @@ def parse_sources(root):
     """Stage the non-shipped Go parser under scratch and use cached Go only."""
     # Vendored sources can override the external owner without a replace rule.
     # The parser skips vendor trees, so reject them for every trusted owner.
-    for owner in ALLOWED_EXTERNAL:
-        vendored = root / "vendor" / owner
-        if vendored.exists() or vendored.is_symlink():
-            raise ValueError(f"vendored SemReg is not allowed: {owner}")
+    reject_vendored_semreg(root)
     scratch = Path(__file__).resolve().parents[1] / ".tmp"
     scratch.mkdir(exist_ok=True)
     env = dict(os.environ, GOWORK="off", GOPROXY="off", GOSUMDB="off",
@@ -76,14 +74,22 @@ def parse_sources(root):
         # ancestor discovery and an explicit GOWORK outside the checked root.
         workspace_env = dict(env)
         workspace_env.pop("GOWORK")
+        workspace_env.pop("GOFLAGS")
         if "GOWORK" in os.environ:
             workspace_env["GOWORK"] = os.environ["GOWORK"]
-        selected = subprocess.run(
-            ["go", "env", "GOWORK"], cwd=root, env=workspace_env,
+        if "GOFLAGS" in os.environ:
+            workspace_env["GOFLAGS"] = os.environ["GOFLAGS"]
+        settings = json.loads(subprocess.run(
+            ["go", "env", "-json", "GOWORK", "GOFLAGS"], cwd=root, env=workspace_env,
             capture_output=True, text=True, timeout=30, check=True,
-        ).stdout.strip()
+        ).stdout)
+        if any(flag == "-modfile" or flag.startswith("-modfile=")
+               for flag in shlex.split(settings["GOFLAGS"])):
+            raise ValueError("GOFLAGS -modfile is not allowed by the semantic import guard")
+        selected = settings["GOWORK"]
         if selected and selected != "off":
             active_workspace = Path(selected).resolve()
+            reject_vendored_semreg(active_workspace.parent)
             if active_workspace != (root / "go.work").resolve():
                 module_files.append((active_workspace, "work"))
         for module_file, command in module_files:
@@ -111,6 +117,13 @@ def parse_sources(root):
             capture_output=True, text=True, timeout=150, check=True,
         )
     return json.loads(completed.stdout)
+
+
+def reject_vendored_semreg(root):
+    for owner in ALLOWED_EXTERNAL:
+        vendored = root / "vendor" / owner
+        if vendored.exists() or vendored.is_symlink():
+            raise ValueError(f"vendored SemReg is not allowed: {owner}")
 
 
 def violations(parsed):

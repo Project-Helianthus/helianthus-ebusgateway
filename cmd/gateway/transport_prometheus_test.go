@@ -104,45 +104,40 @@ func TestGatewayPublishesRetirementBeforeObservabilityClose(t *testing.T) {
 		}
 	}
 
-	source, err := os.ReadFile("gateway_run_lifecycle.go")
+	source, err := os.ReadFile("gateway_consumer_shutdown.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(source)
-	retire := strings.Index(text, "publishManagedTransportRetirement(busObservability, cfg)")
-	close := strings.Index(text, "busObservability.Close()")
-	if retire < 0 || close < 0 {
-		t.Fatalf("missing retirement or observability close: retire=%d close=%d", retire, close)
-	}
-	retireDefer := strings.LastIndex(text[:retire], "defer func() {")
-	watchJoin := strings.LastIndex(text[:retire], "stopTransportWatch()")
-	if watchJoin < 0 || watchJoin < retireDefer || watchJoin > retire {
-		t.Fatalf("transport watchers must join in the retirement defer before final publication: join=%d defer=%d retire=%d", watchJoin, retireDefer, retire)
-	}
-	if retireDefer < 0 || close > retireDefer {
-		t.Fatalf("retirement defer must be registered after control-plane close defer: retire=%d close=%d defer=%d", retire, close, retireDefer)
+	watchJoin := strings.Index(text, "s.stopTransportWatch()")
+	retire := strings.Index(text, "s.publishRetirement()")
+	close := strings.Index(text, `s.close("bus observability close", s.busObservability)`)
+	if watchJoin < 0 || retire < watchJoin || close < retire {
+		t.Fatalf("watch join, retirement and observability close must stay ordered: join=%d retire=%d close=%d", watchJoin, retire, close)
 	}
 }
 
 func TestGatewayStopsHTTPAdmissionImmediatelyAfterRetirementPublication(t *testing.T) {
-	source, err := os.ReadFile("gateway_run_lifecycle.go")
+	source, err := os.ReadFile("gateway_consumer_shutdown.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(source)
-	retire := strings.Index(text, "publishManagedTransportRetirement(busObservability, cfg)")
-	shutdown := strings.Index(text, "shutdownHTTPControlPlane(server)")
-	if retire < 0 || shutdown < 0 || shutdown < retire {
+	retire := strings.Index(text, "s.publishRetirement()")
+	shutdown := strings.Index(text, "s.drainHTTP()")
+	if retire < 0 || shutdown < retire {
 		t.Fatalf("retirement must precede HTTP admission stop: retire=%d shutdown=%d", retire, shutdown)
 	}
-	deferEnd := strings.Index(text[retire:], "\n\t}()")
-	if deferEnd < 0 || shutdown >= retire+deferEnd {
-		t.Fatalf("retirement and HTTP admission stop must share the first teardown defer: retire=%d shutdown=%d end=%d", retire, shutdown, retire+deferEnd)
-	}
-	for _, laterCleanup := range []string{"listener.Close()", "deduplicator.Close()", "reconstructor.Close()", "busObservability.Close()", "advertiser.Close()"} {
+	for _, laterCleanup := range []string{
+		`s.close("broadcast listener close", surface.listener)`,
+		`s.close("deduplicator close", s.deduplicator)`,
+		`s.close("reconstructor close", surface.reconstructor)`,
+		`s.close("bus observability close", s.busObservability)`,
+		`s.close("mdns close", s.advertiser)`,
+	} {
 		cleanup := strings.Index(text, laterCleanup)
-		if cleanup < 0 || cleanup > retire {
-			t.Fatalf("cleanup %q must be registered before the LIFO retirement/HTTP defer: cleanup=%d retire=%d", laterCleanup, cleanup, retire)
+		if cleanup < shutdown {
+			t.Fatalf("cleanup %q must follow HTTP drain: cleanup=%d shutdown=%d", laterCleanup, cleanup, shutdown)
 		}
 	}
 }

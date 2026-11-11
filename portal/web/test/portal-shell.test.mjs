@@ -299,12 +299,12 @@ test("PortalShell reattachment rejects semantic Refresh until bootstrap succeeds
     if (url === "api/v1/bootstrap" && failBootstrap) throw new Error("synthetic bootstrap failure");
     return Promise.resolve({ ok: true, json: async () => url === "api/v1/health" ? { status: "ok" } : {
       capabilities: {}, endpoints: { graphql: "/fixture/graphql", portal_catalog: "/fixture/catalog" },
-      portal_read: { snapshot_operation: "semanticSnapshot", unavailable_operations: [] },
+      portal_read: { snapshot_operation: "semantic_snapshot", unavailable_operations: [] },
     } });
   } });
   shell.beginBootstrapLifecycle();
   await shell.loadStatus();
-  assert.equal(shell._portalRead.snapshot_operation, "semanticSnapshot");
+  assert.equal(shell._portalRead.snapshot_operation, "semantic_snapshot");
   shell.endBootstrapLifecycle();
   shell.beginBootstrapLifecycle();
   const list = { innerHTML: "<li>historical fixture</li>" };
@@ -317,7 +317,7 @@ test("PortalShell reattachment rejects semantic Refresh until bootstrap succeeds
   assert.equal(list.innerHTML, "<li>historical fixture</li>");
   failBootstrap = false;
   await shell.loadStatus();
-  assert.equal(shell._portalRead.snapshot_operation, "semanticSnapshot");
+  assert.equal(shell._portalRead.snapshot_operation, "semantic_snapshot");
   await shell.loadSemanticPreview(list);
   assert.equal(fetchRequests.at(-1), "/fixture/catalog", "successful new bootstrap restores shared-read admission");
 });
@@ -369,7 +369,7 @@ async function renderSemanticContributionFixture(fixture) {
   const sourcePath = fileURLToPath(new URL("../src/app.js", import.meta.url));
   const source = await readFile(sourcePath, "utf8");
   const catalog = createDeferredResponse({ data: { portalCatalogV1: fixture.catalog } });
-  const snapshot = createDeferredResponse({ data: { semanticSnapshot: { assets: fixture.assets } } });
+  const snapshot = createDeferredResponse({ data: { semantic_snapshot: { assets: fixture.assets } } });
   const semanticList = { innerHTML: "" };
   const { shell, fetchRequests } = createPortalShellHarness({
     source, sourcePath, elements: new Map(),
@@ -382,7 +382,7 @@ async function renderSemanticContributionFixture(fixture) {
   shell._portalCatalogEndpoint = "/fixture/catalog";
   shell._semanticGraphqlEndpoint = "/fixture/graphql";
   const token = shell.beginBootstrapLifecycle();
-  shell._portalRead = { snapshot_operation: "semanticSnapshot", unavailable_operations: [] };
+  shell._portalRead = { snapshot_operation: "semantic_snapshot", unavailable_operations: [] };
   const render = shell.loadSemanticPreview(semanticList, token, shell.bootstrapLifecycleAbort);
   catalog.resolve();
   snapshot.resolve();

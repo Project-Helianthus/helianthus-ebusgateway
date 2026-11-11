@@ -10,7 +10,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/projection"
 )
 
-const thermalDhwTarget semreg.DefinitionID = "thermal.setpoint.dhw_temperature"
+const thermalDhwTarget semreg.DefinitionID = "thermal.setpoint.dhw_temperature_setpoint"
 
 // These adapter records describe caller-decoded evidence, never acquisition or
 // qualification discovery. Native roles follow the public DHW cutover contract:

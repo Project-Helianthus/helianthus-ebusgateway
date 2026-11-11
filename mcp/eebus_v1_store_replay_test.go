@@ -347,7 +347,7 @@ func (issue743FailingReader) Read([]byte) (int, error) {
 }
 
 func msp06ConcurrentCapture(handler http.Handler) msp06CallResult {
-	request := httptestRequest(http.MethodPost, "/mcp", []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"eebus.v1.snapshot.capture","arguments":{}}}`))
+	request := httptestRequest(http.MethodPost, "/mcp", []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"eebus_v1_snapshot_capture","arguments":{}}}`))
 	recorder := &issue743Recorder{header: make(http.Header)}
 	handler.ServeHTTP(recorder, request)
 	var response rpcResponse

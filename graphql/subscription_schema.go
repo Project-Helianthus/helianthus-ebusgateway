@@ -10,7 +10,7 @@ import (
 
 func buildBroadcastType() *graphqlgo.Object {
 	return graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "BroadcastEvent",
+		Name: "broadcast_event",
 		Fields: graphqlgo.Fields{
 			"source": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.Int),
@@ -76,7 +76,7 @@ func buildSubscriptionType(hub *BroadcastHub, types graphqlSchemaTypes) *graphql
 	}
 
 	return graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "Subscription",
+		Name: "subscription",
 		Fields: graphqlgo.Fields{
 			"broadcast": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(types.broadcastType),
@@ -112,22 +112,6 @@ func buildSubscriptionType(hub *BroadcastHub, types graphqlSchemaTypes) *graphql
 					return params.Source, nil
 				},
 			},
-			"zoneUpdate": &graphqlgo.Field{
-				Type: graphqlgo.NewNonNull(types.zoneType),
-				Subscribe: func(params graphqlgo.ResolveParams) (any, error) {
-					ctx := params.Context
-					if ctx == nil {
-						ctx = context.Background()
-					}
-					return hub.SubscribeZones(ctx)
-				},
-				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
-					if params.Source == nil {
-						return nil, fmt.Errorf("graphql subscription missing zone payload: %w", ebuserrors.ErrInvalidPayload)
-					}
-					return params.Source, nil
-				},
-			},
 			"zone_update": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(types.zoneType),
 				Subscribe: func(params graphqlgo.ResolveParams) (any, error) {
@@ -144,22 +128,7 @@ func buildSubscriptionType(hub *BroadcastHub, types graphqlSchemaTypes) *graphql
 					return params.Source, nil
 				},
 			},
-			"dhwUpdate": &graphqlgo.Field{
-				Type: types.dhwType,
-				Subscribe: func(params graphqlgo.ResolveParams) (any, error) {
-					ctx := params.Context
-					if ctx == nil {
-						ctx = context.Background()
-					}
-					return hub.SubscribeDHW(ctx)
-				},
-				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
-					if params.Source == nil {
-						return nil, fmt.Errorf("graphql subscription missing dhw payload: %w", ebuserrors.ErrInvalidPayload)
-					}
-					return params.Source, nil
-				},
-			},
+
 			"dhw_update": &graphqlgo.Field{
 				Type: types.dhwType,
 				Subscribe: func(params graphqlgo.ResolveParams) (any, error) {
@@ -176,22 +145,7 @@ func buildSubscriptionType(hub *BroadcastHub, types graphqlSchemaTypes) *graphql
 					return params.Source, nil
 				},
 			},
-			"energyUpdate": &graphqlgo.Field{
-				Type: types.energyTotals,
-				Subscribe: func(params graphqlgo.ResolveParams) (any, error) {
-					ctx := params.Context
-					if ctx == nil {
-						ctx = context.Background()
-					}
-					return hub.SubscribeEnergy(ctx)
-				},
-				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
-					if params.Source == nil {
-						return nil, fmt.Errorf("graphql subscription missing energy payload: %w", ebuserrors.ErrInvalidPayload)
-					}
-					return params.Source, nil
-				},
-			},
+
 			"energy_update": &graphqlgo.Field{
 				Type: types.energyTotals,
 				Subscribe: func(params graphqlgo.ResolveParams) (any, error) {
@@ -208,22 +162,7 @@ func buildSubscriptionType(hub *BroadcastHub, types graphqlSchemaTypes) *graphql
 					return params.Source, nil
 				},
 			},
-			"boilerStatusUpdate": &graphqlgo.Field{
-				Type: types.boilerStatusType,
-				Subscribe: func(params graphqlgo.ResolveParams) (any, error) {
-					ctx := params.Context
-					if ctx == nil {
-						ctx = context.Background()
-					}
-					return hub.SubscribeBoiler(ctx)
-				},
-				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
-					if params.Source == nil {
-						return nil, fmt.Errorf("graphql subscription missing boiler status payload: %w", ebuserrors.ErrInvalidPayload)
-					}
-					return params.Source, nil
-				},
-			},
+
 			"boiler_status_update": &graphqlgo.Field{
 				Type: types.boilerStatusType,
 				Subscribe: func(params graphqlgo.ResolveParams) (any, error) {
@@ -240,22 +179,7 @@ func buildSubscriptionType(hub *BroadcastHub, types graphqlSchemaTypes) *graphql
 					return params.Source, nil
 				},
 			},
-			"radioDevicesUpdate": &graphqlgo.Field{
-				Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(types.radioDeviceType))),
-				Subscribe: func(params graphqlgo.ResolveParams) (any, error) {
-					ctx := params.Context
-					if ctx == nil {
-						ctx = context.Background()
-					}
-					return hub.SubscribeRadioDevices(ctx)
-				},
-				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
-					if params.Source == nil {
-						return nil, fmt.Errorf("graphql subscription missing radio devices payload: %w", ebuserrors.ErrInvalidPayload)
-					}
-					return params.Source, nil
-				},
-			},
+
 			"radio_devices_update": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(types.radioDeviceType))),
 				Subscribe: func(params graphqlgo.ResolveParams) (any, error) {

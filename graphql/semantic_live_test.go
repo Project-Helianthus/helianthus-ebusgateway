@@ -15,7 +15,7 @@ func TestLiveSemanticProvider_StartupPhaseAndEpochTransitions(t *testing.T) {
 		t.Fatalf("phase = %s; want %s", got, SemanticStartupPhaseBootInit)
 	}
 
-	provider.SetZonesFromCache([]Zone{{ID: "zone-1", Name: "Zone 1"}})
+	provider.SetZonesFromCache([]Zone{{ID: "zone-1", Name: "zone 1"}})
 	if got := provider.StartupPhase(); got != SemanticStartupPhaseCacheLoadedStale {
 		t.Fatalf("phase after cache = %s; want %s", got, SemanticStartupPhaseCacheLoadedStale)
 	}
@@ -24,7 +24,7 @@ func TestLiveSemanticProvider_StartupPhaseAndEpochTransitions(t *testing.T) {
 		t.Fatalf("epochs after cache = (%d,%d); want (1,0)", cacheEpoch, liveEpoch)
 	}
 
-	provider.SetZones([]Zone{{ID: "zone-1", Name: "Zone 1"}})
+	provider.SetZones([]Zone{{ID: "zone-1", Name: "zone 1"}})
 	if got := provider.StartupPhase(); got != SemanticStartupPhaseLiveWarmup {
 		t.Fatalf("phase after first live update = %s; want %s", got, SemanticStartupPhaseLiveWarmup)
 	}
@@ -46,7 +46,7 @@ func TestLiveSemanticProvider_StartupPhaseAndEpochTransitions(t *testing.T) {
 func TestLiveSemanticProvider_LiveReadyRequiresLiveForPublishedStreams(t *testing.T) {
 	provider := NewLiveSemanticProvider()
 
-	provider.SetZonesFromCache([]Zone{{ID: "zone-1", Name: "Zone 1"}})
+	provider.SetZonesFromCache([]Zone{{ID: "zone-1", Name: "zone 1"}})
 	provider.SetDHW(&DhwStatus{Config: DhwConfig{OperatingMode: "auto"}})
 	if got := provider.StartupPhase(); got != SemanticStartupPhaseLiveWarmup {
 		t.Fatalf("phase after first DHW live = %s; want %s", got, SemanticStartupPhaseLiveWarmup)
@@ -57,7 +57,7 @@ func TestLiveSemanticProvider_LiveReadyRequiresLiveForPublishedStreams(t *testin
 		t.Fatalf("phase after second DHW live with zones cache-only = %s; want %s", got, SemanticStartupPhaseLiveWarmup)
 	}
 
-	provider.SetZones([]Zone{{ID: "zone-1", Name: "Zone 1"}})
+	provider.SetZones([]Zone{{ID: "zone-1", Name: "zone 1"}})
 	if got := provider.StartupPhase(); got != SemanticStartupPhaseLiveReady {
 		t.Fatalf("phase after zones live = %s; want %s", got, SemanticStartupPhaseLiveReady)
 	}
@@ -66,7 +66,7 @@ func TestLiveSemanticProvider_LiveReadyRequiresLiveForPublishedStreams(t *testin
 func TestLiveSemanticProvider_EmptyZoneLivePublishCountsForReadiness(t *testing.T) {
 	provider := NewLiveSemanticProvider()
 
-	provider.SetZonesFromCache([]Zone{{ID: "zone-1", Name: "Zone 1"}})
+	provider.SetZonesFromCache([]Zone{{ID: "zone-1", Name: "zone 1"}})
 	provider.SetDHW(&DhwStatus{Config: DhwConfig{OperatingMode: "auto"}})
 	if got := provider.StartupPhase(); got != SemanticStartupPhaseLiveWarmup {
 		t.Fatalf("phase after DHW live with cache zones = %s; want %s", got, SemanticStartupPhaseLiveWarmup)
@@ -110,16 +110,16 @@ func TestLiveSemanticProvider_EmptyCircuitLivePublishCountsForReadiness(t *testi
 func TestLiveSemanticProvider_CacheRefreshAfterLiveReadyKeepsPhase(t *testing.T) {
 	provider := NewLiveSemanticProvider()
 
-	provider.SetZonesFromCache([]Zone{{ID: "zone-1", Name: "Zone 1"}})
+	provider.SetZonesFromCache([]Zone{{ID: "zone-1", Name: "zone 1"}})
 	provider.SetDHWFromCache(&DhwStatus{Config: DhwConfig{OperatingMode: "auto"}})
-	provider.SetZones([]Zone{{ID: "zone-1", Name: "Zone 1"}})
+	provider.SetZones([]Zone{{ID: "zone-1", Name: "zone 1"}})
 	provider.SetDHW(&DhwStatus{Config: DhwConfig{OperatingMode: "auto"}})
 	if got := provider.StartupPhase(); got != SemanticStartupPhaseLiveReady {
 		t.Fatalf("phase after live warmup = %s; want %s", got, SemanticStartupPhaseLiveReady)
 	}
 	cacheEpochBefore, liveEpochBefore := provider.StartupEpochs()
 
-	provider.SetZonesFromCache([]Zone{{ID: "zone-1", Name: "Zone 1", Config: ZoneConfig{OperatingMode: "heat"}}})
+	provider.SetZonesFromCache([]Zone{{ID: "zone-1", Name: "zone 1", Config: ZoneConfig{OperatingMode: "heat"}}})
 	provider.SetDHWFromCache(&DhwStatus{Config: DhwConfig{OperatingMode: "auto", Preset: "schedule"}})
 
 	if got := provider.StartupPhase(); got != SemanticStartupPhaseLiveReady {
@@ -152,7 +152,7 @@ func TestLiveSemanticProvider_CacheUpdateDoesNotExitDegradedWithoutLive(t *testi
 	provider.StartBootFSM(ctx, 20*time.Millisecond, func(string, ...any) {})
 	waitForPhase(t, provider, SemanticStartupPhaseDegraded, 500*time.Millisecond)
 
-	provider.SetZonesFromCache([]Zone{{ID: "zone-1", Name: "Zone 1"}})
+	provider.SetZonesFromCache([]Zone{{ID: "zone-1", Name: "zone 1"}})
 
 	if got := provider.StartupPhase(); got != SemanticStartupPhaseDegraded {
 		t.Fatalf("phase after cache update = %s; want %s", got, SemanticStartupPhaseDegraded)
@@ -169,7 +169,7 @@ func TestLiveSemanticProvider_StartBootFSMDoesNotDegradeAfterLiveReady(t *testin
 	defer cancel()
 
 	provider.StartBootFSM(ctx, 60*time.Millisecond, func(string, ...any) {})
-	provider.SetZones([]Zone{{ID: "zone-1", Name: "Zone 1"}})
+	provider.SetZones([]Zone{{ID: "zone-1", Name: "zone 1"}})
 	provider.SetDHW(&DhwStatus{Config: DhwConfig{OperatingMode: "auto"}})
 	time.Sleep(120 * time.Millisecond)
 
@@ -236,7 +236,7 @@ func TestLiveSemanticProvider_PhaseLoggerCanReadProviderState(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		provider.SetZonesFromCache([]Zone{{ID: "zone-1", Name: "Zone 1"}})
+		provider.SetZonesFromCache([]Zone{{ID: "zone-1", Name: "zone 1"}})
 		close(done)
 	}()
 

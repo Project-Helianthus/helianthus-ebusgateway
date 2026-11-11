@@ -98,12 +98,12 @@ type portalReadBootstrap struct {
 
 // portalRead reports base, the Portal directory as served to this requester.
 func (h *handler) portalRead(base string) portalReadBootstrap {
-	out := portalReadBootstrap{BasePath: base, SnapshotOperation: "semanticSnapshot", UnavailableOperations: []string{}}
+	out := portalReadBootstrap{BasePath: base, SnapshotOperation: "semantic_snapshot", UnavailableOperations: []string{}}
 	if !h.opts.PortalCatalogAvailable && !h.contributionAvailable() {
 		out.UnavailableOperations = append(out.UnavailableOperations, "PortalCatalogV1")
 	}
 	if h.opts.SharedSemanticView == nil || !h.opts.SemanticSnapshotAvailable {
-		out.UnavailableOperations = append(out.UnavailableOperations, "semanticSnapshot")
+		out.UnavailableOperations = append(out.UnavailableOperations, "semantic_snapshot")
 	}
 	return out
 }

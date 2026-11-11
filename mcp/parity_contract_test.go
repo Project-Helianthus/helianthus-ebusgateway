@@ -1,7 +1,9 @@
 package mcp
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"sort"
 	"testing"
@@ -65,40 +67,20 @@ func TestToolInventoryGoldenSignatures(t *testing.T) {
 	}
 	sort.Slice(actual, func(i, j int) bool { return actual[i].Name < actual[j].Name })
 
-	expected := []toolSchemaSignature{
-		{Name: "ebus.devices", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
-		{Name: "ebus.invoke", SchemaHash: "2e6b78e869aed69fa5d7fb3722c476a3d2b04767a1f2d9e0e64e8bd456d072f7"},
-		{Name: "ebus.v1.ebus_standard.command.get", SchemaHash: "7717dd85c2e5ff939b47bf9369acc9c59e449e42f2f3bff74058dcd2eea9242d"},
-		{Name: "ebus.v1.ebus_standard.commands.list", SchemaHash: "4342fe50b88400d1c88845f8791f8de0b35b8ec739a3e3cda1b0ded353d94211"},
-		{Name: "ebus.v1.ebus_standard.decode", SchemaHash: "f88f9d5456a45ea13ff724f109458a5672f231c07bda461130a9f29c04a8bf35"},
-		{Name: "ebus.v1.ebus_standard.services.list", SchemaHash: "99334726611ccf58a148b0814696bfa6fe08c1b2d027e946beccf5a74331c9aa"},
-		{Name: "ebus.v1.registry.devices.get", SchemaHash: "da78278884d60ad8b0f1d272acde9ea9aa0d407993039a2b39dbf584d95f0757"},
-		{Name: "ebus.v1.registry.devices.list", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
-		{Name: "ebus.v1.registry.methods.list", SchemaHash: "97aa07b78405c1f77e2c3845a083b088db13019ca0a3ea83dba4206088d3bcf8"},
-		{Name: "ebus.v1.registry.planes.list", SchemaHash: "da78278884d60ad8b0f1d272acde9ea9aa0d407993039a2b39dbf584d95f0757"},
-		{Name: "ebus.v1.rpc.invoke", SchemaHash: "2fd0b7f73114101025e127ceafcfca4de2f8ea864236b5f211184f0cef7c6326"},
-		{Name: "ebus.v1.runtime.status.get", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
-		{Name: "ebus.v1.semantic.adapter_info.get", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
-		{Name: "ebus.v1.semantic.boiler_status.get", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
-		{Name: "ebus.v1.semantic.boiler_status.set_config", SchemaHash: "f9a6de612e50ceab75c989c18cae88fb5d65cd96671b2b17b71da73331531f85"},
-		{Name: "ebus.v1.semantic.circuits.get", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
-		{Name: "ebus.v1.semantic.cylinders.get", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
-		{Name: "ebus.v1.semantic.dhw.get", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
-		{Name: "ebus.v1.semantic.energy_totals.get", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
-		{Name: "ebus.v1.semantic.fm5_interpretation.get", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
-		{Name: "ebus.v1.semantic.fm5_mode.get", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
-		{Name: "ebus.v1.semantic.radio_devices.get", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
-		{Name: "ebus.v1.semantic.schedules.get", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
-		{Name: "ebus.v1.semantic.schedules.set_dhw_time_program", SchemaHash: "955bfe655aa44c535bf2f72fa93fce71e92f1c84232c60f871e03bdf96562786"},
-		{Name: "ebus.v1.semantic.schedules.set_zone_time_program", SchemaHash: "f97fba96e7f2255451a21a120529c7cc3eff902459ea8f4233118dac7449d19a"},
-		{Name: "ebus.v1.semantic.snapshot.get", SchemaHash: "cdac27d9f9d955a8e868b798202dd4b77c55a491ec4047d99898a21cef69267c"},
-		{Name: "ebus.v1.semantic.solar.get", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
-		{Name: "ebus.v1.semantic.system.get", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
-		{Name: "ebus.v1.semantic.system.set_config", SchemaHash: "b34238f3488b512fb86e20c2fabc8dd54f11fe8f1e34ba5d6ee6e043da46a053"},
-		{Name: "ebus.v1.semantic.zones.get", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
-		{Name: "ebus.v1.snapshot.capture", SchemaHash: "cd1a463c46d6264134447db17a8c3c7abe5b9a2488c6d759fea66da1f96b133e"},
-		{Name: "ebus.v1.snapshot.drop", SchemaHash: "3f2e89bf3346421daa820ec5cd5bf9b4a06815aebd32c0bd8758b90043d69f88"},
+	// Pin schemas to the separately published descriptor contract, computing hashes from its exact schemas.
+	var documented []map[string]any
+	if err := json.Unmarshal(namingDocumentedTools(t, "## Current default registration contract"), &documented); err != nil {
+		t.Fatal(err)
 	}
+	expected := make([]toolSchemaSignature, 0, len(documented))
+	for _, tool := range documented {
+		blob, err := json.Marshal(tool["inputSchema"])
+		if err != nil {
+			t.Fatal(err)
+		}
+		expected = append(expected, toolSchemaSignature{Name: tool["name"].(string), SchemaHash: fmt.Sprintf("%x", sha256.Sum256(blob))})
+	}
+	sort.Slice(expected, func(i, j int) bool { return expected[i].Name < expected[j].Name })
 
 	if len(expected) == 0 {
 		blob, _ := json.MarshalIndent(actual, "", "  ")

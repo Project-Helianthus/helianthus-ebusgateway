@@ -257,7 +257,7 @@ func TestInvokeMutation_Integration(t *testing.T) {
 
 	client := graphqlclient.NewClient(server.URL)
 	request := graphqlclient.NewRequest(`
-		mutation($address: Int!, $plane: String!, $method: String!, $params: JSON) {
+		mutation($address: Int!, $plane: String!, $method: String!, $params: json) {
 			invoke(address: $address, plane: $plane, method: $method, params: $params) {
 				ok
 				error {

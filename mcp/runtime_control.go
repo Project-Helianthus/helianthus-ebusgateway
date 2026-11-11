@@ -17,11 +17,11 @@ import (
 // MCP surface, not driver contributions, and carry no principal, authority,
 // idempotency key or receipt.
 const (
-	RuntimeControlListTool    = "helianthus.runtime.list"
-	RuntimeControlGetTool     = "helianthus.runtime.get"
-	RuntimeControlStartTool   = "helianthus.runtime.start"
-	RuntimeControlStopTool    = "helianthus.runtime.stop"
-	RuntimeControlRestartTool = "helianthus.runtime.restart"
+	RuntimeControlListTool    = "helianthus_runtime_list"
+	RuntimeControlGetTool     = "helianthus_runtime_get"
+	RuntimeControlStartTool   = "helianthus_runtime_start"
+	RuntimeControlStopTool    = "helianthus_runtime_stop"
+	RuntimeControlRestartTool = "helianthus_runtime_restart"
 )
 
 // runtimeControlCallTimeout bounds a mutation whose transport context has no

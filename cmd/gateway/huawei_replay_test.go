@@ -273,8 +273,8 @@ func TestH10TCPProviderPVSnapshotParity(t *testing.T) {
 			gql, mcp := m11Handlers(t, snapshotProvider)
 			for _, asset := range publication.published {
 				selection := m11Selection(reflect.TypeOf(semanticview.View{}))
-				query := fmt.Sprintf("{a:semanticSnapshot(assetIds:[%q])%s b:semanticSnapshot(assetIds:[%q])%s}", asset, selection, asset, selection)
-				response := mcpRPC(t, mcp, fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"semantic.v1.snapshot.get","arguments":{"asset_ids":[%q]}}}`, asset))
+				query := fmt.Sprintf("{a:semantic_snapshot(asset_ids:[%q])%s b:semantic_snapshot(asset_ids:[%q])%s}", asset, selection, asset, selection)
+				response := mcpRPC(t, mcp, fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"semantic_v1_snapshot_get","arguments":{"asset_ids":[%q]}}}`, asset))
 				if response.Error != nil {
 					t.Fatal(response.Error)
 				}

@@ -57,19 +57,18 @@ func toolClassificationPolicy() map[string]toolClass {
 		toolPlanesListV1Name:                  toolClassCoreStable,
 		toolMethodsListV1Name:                 toolClassCoreStable,
 		toolInvokeV1Name:                      toolClassCoreStable,
-		toolDevicesLegacyName:                 toolClassLegacy,
-		toolInvokeLegacyName:                  toolClassLegacy,
-		estd.ToolServicesList:                 toolClassCoreStable,
-		estd.ToolCommandsList:                 toolClassCoreStable,
-		estd.ToolCommandGet:                   toolClassCoreStable,
-		estd.ToolDecode:                       toolClassCoreStable,
+
+		estd.ToolServicesList: toolClassCoreStable,
+		estd.ToolCommandsList: toolClassCoreStable,
+		estd.ToolCommandGet:   toolClassCoreStable,
+		estd.ToolDecode:       toolClassCoreStable,
 
 		// Owner-only raw eeBUS command surface (execution-plans#71).
-		string(eebusraw.ToolV1FeaturesGet):       toolClassCoreStable,
-		string(eebusraw.ToolV1FeaturesDataGet):   toolClassCoreStable,
-		string(eebusraw.ToolV1FeaturesDataSet):   toolClassCoreStable,
-		string(eebusraw.ToolV1MutationsGet):      toolClassCoreStable,
-		string(eebusraw.ToolV1MutationsRollback): toolClassCoreStable,
+		strings.ReplaceAll(string(eebusraw.ToolV1FeaturesGet), ".", "_"):       toolClassCoreStable,
+		strings.ReplaceAll(string(eebusraw.ToolV1FeaturesDataGet), ".", "_"):   toolClassCoreStable,
+		strings.ReplaceAll(string(eebusraw.ToolV1FeaturesDataSet), ".", "_"):   toolClassCoreStable,
+		strings.ReplaceAll(string(eebusraw.ToolV1MutationsGet), ".", "_"):      toolClassCoreStable,
+		strings.ReplaceAll(string(eebusraw.ToolV1MutationsRollback), ".", "_"): toolClassCoreStable,
 		// Vaillant B503 surface (M2a_GATEWAY_MCP / execution-plans#19).
 		// Provider-scoped namespace parallel to ebus_standard; tools surface
 		// a dedicated capability signal (meta.capabilities.vaillant_b503).
@@ -216,8 +215,8 @@ func TestToolClassificationPolicy(t *testing.T) {
 			}
 			experimentalCount++
 		}
-		if strings.HasPrefix(name, "helianthus.") {
-			if !strings.HasPrefix(name, "helianthus.runtime.") || class != toolClassCoreStable {
+		if strings.HasPrefix(name, "helianthus_") {
+			if !strings.HasPrefix(name, "helianthus_runtime_") || class != toolClassCoreStable {
 				t.Fatalf("host tool %q classified %q; want a core stable helianthus.runtime tool", name, class)
 			}
 			runtimeControlCount++

@@ -113,14 +113,14 @@ func TestVaillantB503GraphQL_ErrorsGet_Schema(t *testing.T) {
 	qt, _ := sch["queryType"].(map[string]any)
 	fields, _ := qt["fields"].([]any)
 	want := map[string]bool{
-		"vaillantErrors":             false,
-		"vaillantErrorHistory":       false,
-		"vaillantErrorsHistory":      false,
-		"vaillantServiceCurrent":     false,
-		"vaillantServiceHistory":     false,
-		"vaillantLiveMonitor":        false,
-		"vaillantCapabilities":       false,
-		"vaillantLiveMonitorSession": false,
+		"vaillant_errors":               false,
+		"vaillant_error_history":        false,
+		"vaillant_errors_history":       false,
+		"vaillant_service_current":      false,
+		"vaillant_service_history":      false,
+		"vaillant_live_monitor":         false,
+		"vaillant_capabilities":         false,
+		"vaillant_live_monitor_session": false,
 	}
 	for _, f := range fields {
 		m, _ := f.(map[string]any)
@@ -138,12 +138,12 @@ func TestVaillantB503GraphQL_ErrorsGet_Schema(t *testing.T) {
 	// Confirm types present.
 	types, _ := sch["types"].([]any)
 	neededTypes := map[string]bool{
-		"B503Availability":          false,
-		"VaillantB503Errors":        false,
-		"VaillantB503HistoryRecord": false,
-		"VaillantB503LiveMonitor":   false,
-		"VaillantB503Capability":    false,
-		"VaillantCapabilities":      false,
+		"b503_availability":            false,
+		"vaillant_b503_errors":         false,
+		"vaillant_b503_history_record": false,
+		"vaillant_b503_live_monitor":   false,
+		"vaillant_b503_capability":     false,
+		"vaillant_capabilities":        false,
 	}
 	for _, tEntry := range types {
 		m, _ := tEntry.(map[string]any)
@@ -162,7 +162,7 @@ func TestVaillantB503GraphQL_ErrorsGet_Schema(t *testing.T) {
 func TestVaillantB503GraphQL_NoExpiredInEnum(t *testing.T) {
 	schema := newB503TestSchema(t, &fakeB503Provider{})
 	res := doGraphQL(t, schema, `{
-		__type(name: "B503Availability") { enumValues { name } }
+		__type(name: "b503_availability") { enumValues { name } }
 	}`)
 	if len(res.Errors) > 0 {
 		t.Fatalf("introspection errors = %+v", res.Errors)
@@ -184,7 +184,7 @@ func TestVaillantB503GraphQL_NoExpiredInEnum(t *testing.T) {
 		m, _ := e.(map[string]any)
 		name, _ := m["name"].(string)
 		if name == "EXPIRED" {
-			t.Fatalf("EXPIRED MUST NOT be a member of B503Availability enum")
+			t.Fatalf("EXPIRED MUST NOT be a member of b503_availability enum")
 		}
 		if _, ok := want[name]; ok {
 			want[name] = true
@@ -240,8 +240,8 @@ func TestVaillantB503GraphQL_ErrorsGet_DecodesSpecFixture(t *testing.T) {
 	}
 	schema := newB503TestSchema(t, provider)
 	res := doGraphQL(t, schema, `{
-		vaillantErrors {
-			firstActiveError
+		vaillant_errors {
+			first_active_error
 			slots
 		}
 	}`)
@@ -249,12 +249,12 @@ func TestVaillantB503GraphQL_ErrorsGet_DecodesSpecFixture(t *testing.T) {
 		t.Fatalf("query errors = %+v", res.Errors)
 	}
 	data, _ := res.Data.(map[string]any)
-	errs, _ := data["vaillantErrors"].(map[string]any)
+	errs, _ := data["vaillant_errors"].(map[string]any)
 	if errs == nil {
-		t.Fatalf("vaillantErrors payload nil; data=%+v", data)
+		t.Fatalf("vaillant_errors payload nil; data=%+v", data)
 	}
-	if got, _ := errs["firstActiveError"].(int); got != 281 {
-		t.Fatalf("firstActiveError = %v; want 281", errs["firstActiveError"])
+	if got, _ := errs["first_active_error"].(int); got != 281 {
+		t.Fatalf("first_active_error = %v; want 281", errs["first_active_error"])
 	}
 	slots, _ := errs["slots"].([]any)
 	if len(slots) != 5 {
@@ -276,8 +276,8 @@ func TestVaillantB503GraphQL_Capability_Available(t *testing.T) {
 	}
 	schema := newB503TestSchema(t, provider)
 	res := doGraphQL(t, schema, `{
-		vaillantCapabilities {
-			vaillantB503 {
+		vaillant_capabilities {
+			vaillant_b503 {
 				reason
 				available
 			}
@@ -287,8 +287,8 @@ func TestVaillantB503GraphQL_Capability_Available(t *testing.T) {
 		t.Fatalf("query errors = %+v", res.Errors)
 	}
 	data, _ := res.Data.(map[string]any)
-	caps, _ := data["vaillantCapabilities"].(map[string]any)
-	b503, _ := caps["vaillantB503"].(map[string]any)
+	caps, _ := data["vaillant_capabilities"].(map[string]any)
+	b503, _ := caps["vaillant_b503"].(map[string]any)
 	if b503["reason"] != "AVAILABLE" {
 		t.Fatalf("reason = %v; want AVAILABLE", b503["reason"])
 	}
@@ -316,16 +316,16 @@ func TestVaillantB503GraphQL_TargetBoundHistoryAndSession(t *testing.T) {
 			return VaillantB503Session{State: "Active", Owned: true}, nil
 		},
 	}
-	res := doGraphQL(t, newB503TestSchema(t, provider), `{ vaillantErrorsHistory(targetAddress: 21, limit: 2) { records { index firstActiveError } failure { index code message } } vaillantLiveMonitorSession(targetAddress: 21) { state owned } }`)
+	res := doGraphQL(t, newB503TestSchema(t, provider), `{ vaillant_errors_history(target_address: 21, limit: 2) { records { index first_active_error } failure { index code message } } vaillant_live_monitor_session(target_address: 21) { state owned } }`)
 	if len(res.Errors) > 0 {
 		t.Fatalf("query errors = %+v", res.Errors)
 	}
 	data := res.Data.(map[string]any)
-	history := data["vaillantErrorsHistory"].(map[string]any)["records"].([]any)
+	history := data["vaillant_errors_history"].(map[string]any)["records"].([]any)
 	if len(history) != 2 {
 		t.Fatalf("history length=%d; want 2", len(history))
 	}
-	session := data["vaillantLiveMonitorSession"].(map[string]any)
+	session := data["vaillant_live_monitor_session"].(map[string]any)
 	if session["state"] != "Active" || session["owned"] != true {
 		t.Fatalf("session=%+v; want active owned", session)
 	}
@@ -343,8 +343,8 @@ func TestVaillantB503GraphQL_ErrorsHistoryPartialFailureIsStructured(t *testing.
 		availabilityFn: func(context.Context, *byte) string { return "AVAILABLE" },
 	}
 	res := doGraphQL(t, newB503TestSchema(t, provider), `{
-		vaillantErrorsHistory(limit: 2) { records { index firstActiveError } failure { index code message } }
-		vaillantCapabilities { vaillantB503 { reason available } }
+		vaillant_errors_history(limit: 2) { records { index first_active_error } failure { index code message } }
+		vaillant_capabilities { vaillant_b503 { reason available } }
 	}`)
 	if len(res.Errors) != 0 {
 		t.Fatalf("history partial failure must remain typed data, errors = %+v", res.Errors)
@@ -353,9 +353,9 @@ func TestVaillantB503GraphQL_ErrorsHistoryPartialFailureIsStructured(t *testing.
 	if !ok {
 		t.Fatalf("data=%#v; want root object with preserved sibling", res.Data)
 	}
-	history, ok := data["vaillantErrorsHistory"].(map[string]any)
+	history, ok := data["vaillant_errors_history"].(map[string]any)
 	if !ok {
-		t.Fatalf("history data=%#v; want typed partial result", data["vaillantErrorsHistory"])
+		t.Fatalf("history data=%#v; want typed partial result", data["vaillant_errors_history"])
 	}
 	records := history["records"].([]any)
 	if len(records) != 1 || records[0].(map[string]any)["index"] != 0 {
@@ -365,7 +365,7 @@ func TestVaillantB503GraphQL_ErrorsHistoryPartialFailureIsStructured(t *testing.
 	if failure["index"] != 1 || failure["code"] != "UPSTREAM_RPC_FAILED" {
 		t.Fatalf("history failure=%#v; want structured index 1 upstream failure", failure)
 	}
-	caps := data["vaillantCapabilities"].(map[string]any)["vaillantB503"].(map[string]any)
+	caps := data["vaillant_capabilities"].(map[string]any)["vaillant_b503"].(map[string]any)
 	if caps["reason"] != "AVAILABLE" || caps["available"] != true {
 		t.Fatalf("sibling capability=%#v; want preserved AVAILABLE", caps)
 	}
@@ -379,22 +379,22 @@ func TestVaillantB503GraphQL_InvalidCapabilityTargetIsFieldLocal(t *testing.T) {
 		},
 	}
 	res := doGraphQL(t, newB503TestSchema(t, provider), `{
-		vaillantCapabilities(targetAddress: 256) { vaillantB503 { reason available } }
-		vaillantErrors { firstActiveError }
+		vaillant_capabilities(target_address: 256) { vaillant_b503 { reason available } }
+		vaillant_errors { first_active_error }
 	}`)
-	if len(res.Errors) != 1 || !strings.Contains(res.Errors[0].Message, "INVALID_ARGUMENT: targetAddress must be 0-255") {
+	if len(res.Errors) != 1 || !strings.Contains(res.Errors[0].Message, "INVALID_ARGUMENT: target_address must be 0-255") {
 		t.Fatalf("invalid capability target errors = %+v; want one structured validation error", res.Errors)
 	}
 	data, ok := res.Data.(map[string]any)
 	if !ok {
 		t.Fatalf("invalid capability target discarded root data: %#v", res.Data)
 	}
-	if data["vaillantCapabilities"] != nil {
-		t.Fatalf("invalid capability target data=%#v; want field-local null", data["vaillantCapabilities"])
+	if data["vaillant_capabilities"] != nil {
+		t.Fatalf("invalid capability target data=%#v; want field-local null", data["vaillant_capabilities"])
 	}
-	errors, ok := data["vaillantErrors"].(map[string]any)
-	if !ok || errors["firstActiveError"] != 281 {
-		t.Fatalf("invalid capability target lost sibling errors data: %#v", data["vaillantErrors"])
+	errors, ok := data["vaillant_errors"].(map[string]any)
+	if !ok || errors["first_active_error"] != 281 {
+		t.Fatalf("invalid capability target lost sibling errors data: %#v", data["vaillant_errors"])
 	}
 }
 
@@ -404,11 +404,11 @@ func TestVaillantB503GraphQL_RefreshingSessionIsOwnedAndTyped(t *testing.T) {
 			return VaillantB503Session{State: "Refreshing", Owned: true}, nil
 		},
 	}
-	res := doGraphQL(t, newB503TestSchema(t, provider), `{ vaillantLiveMonitorSession { state owned } }`)
+	res := doGraphQL(t, newB503TestSchema(t, provider), `{ vaillant_live_monitor_session { state owned } }`)
 	if len(res.Errors) != 0 {
 		t.Fatalf("query errors = %+v", res.Errors)
 	}
-	session := res.Data.(map[string]any)["vaillantLiveMonitorSession"].(map[string]any)
+	session := res.Data.(map[string]any)["vaillant_live_monitor_session"].(map[string]any)
 	if session["state"] != "Refreshing" || session["owned"] != true {
 		t.Fatalf("session=%#v; want Refreshing with ownership held", session)
 	}
@@ -416,8 +416,8 @@ func TestVaillantB503GraphQL_RefreshingSessionIsOwnedAndTyped(t *testing.T) {
 
 func TestVaillantB503GraphQL_SessionWithoutProviderFailsClosed(t *testing.T) {
 	res := doGraphQL(t, newB503TestSchema(t, nil), `{
-		vaillantLiveMonitorSession { state owned }
-		vaillantCapabilities { vaillantB503 { reason available } }
+		vaillant_live_monitor_session { state owned }
+		vaillant_capabilities { vaillant_b503 { reason available } }
 	}`)
 	if len(res.Errors) != 1 || !strings.Contains(res.Errors[0].Message, "NOT_SUPPORTED") {
 		t.Fatalf("session without provider errors = %+v; want NOT_SUPPORTED", res.Errors)
@@ -426,10 +426,10 @@ func TestVaillantB503GraphQL_SessionWithoutProviderFailsClosed(t *testing.T) {
 	if !ok {
 		t.Fatalf("session without provider discarded root data: %#v", res.Data)
 	}
-	if data["vaillantLiveMonitorSession"] != nil {
-		t.Fatalf("session without provider fabricated data: %#v", data["vaillantLiveMonitorSession"])
+	if data["vaillant_live_monitor_session"] != nil {
+		t.Fatalf("session without provider fabricated data: %#v", data["vaillant_live_monitor_session"])
 	}
-	capability := data["vaillantCapabilities"].(map[string]any)["vaillantB503"].(map[string]any)
+	capability := data["vaillant_capabilities"].(map[string]any)["vaillant_b503"].(map[string]any)
 	if capability["reason"] != "NOT_SUPPORTED" || capability["available"] != false {
 		t.Fatalf("session failure lost structured sibling capability: %#v", capability)
 	}
@@ -444,16 +444,16 @@ func TestVaillantB503GraphQL_EXPIREDAlwaysMasked(t *testing.T) {
 	}
 	schema := newB503TestSchema(t, provider)
 	res := doGraphQL(t, schema, `{
-		vaillantCapabilities {
-			vaillantB503 { reason available }
+		vaillant_capabilities {
+			vaillant_b503 { reason available }
 		}
 	}`)
 	if len(res.Errors) > 0 {
 		t.Fatalf("query errors = %+v", res.Errors)
 	}
 	data, _ := res.Data.(map[string]any)
-	caps, _ := data["vaillantCapabilities"].(map[string]any)
-	b503, _ := caps["vaillantB503"].(map[string]any)
+	caps, _ := data["vaillant_capabilities"].(map[string]any)
+	b503, _ := caps["vaillant_b503"].(map[string]any)
 	if b503["reason"] != "SESSION_BUSY" {
 		t.Fatalf("reason = %v; want SESSION_BUSY (EXPIRED must never leak)", b503["reason"])
 	}

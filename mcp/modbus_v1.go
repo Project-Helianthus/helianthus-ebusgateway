@@ -10,9 +10,9 @@ import (
 )
 
 const (
-	ModbusV1RawReadTool               = "modbus.v1.raw.read"
-	ModbusV1ProfileObservationGetTool = "modbus.v1.profile.observation.get"
-	SemanticV1PVCurrentGetTool        = "semantic.v1.pv.current.get"
+	ModbusV1RawReadTool               = "modbus_v1_raw_read"
+	ModbusV1ProfileObservationGetTool = "modbus_v1_profile_observation_get"
+	SemanticV1PVCurrentGetTool        = "semantic_v1_pv_current_get"
 	modbusV1MaxReadWords              = 125
 	modbusV1MaxIdentityBytes          = 128
 	ModbusV1MaxRawReadsPerWindow      = 4

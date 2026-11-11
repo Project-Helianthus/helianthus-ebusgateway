@@ -7,7 +7,7 @@
         "properties": {},
         "type": "object"
       },
-      "name": "helianthus.runtime.list"
+      "name": "helianthus_runtime_list"
     },
     {
       "description": "Get one registered runtime driver from the coherent cached view.",
@@ -26,7 +26,7 @@
         ],
         "type": "object"
       },
-      "name": "helianthus.runtime.get"
+      "name": "helianthus_runtime_get"
     },
     {
       "description": "Request desired RUNNING for one driver. Answers after durable acceptance with desired state and revision only; observe completion through list or get.",
@@ -51,7 +51,7 @@
         ],
         "type": "object"
       },
-      "name": "helianthus.runtime.start"
+      "name": "helianthus_runtime_start"
     },
     {
       "description": "Request desired STOPPED for one driver. Answers after durable acceptance with desired state and revision only; observe completion through list or get.",
@@ -76,7 +76,7 @@
         ],
         "type": "object"
       },
-      "name": "helianthus.runtime.stop"
+      "name": "helianthus_runtime_stop"
     },
     {
       "description": "Request one replacement of a driver whose desired state is RUNNING. Every accepted call takes a new desired revision; after a lost response, read back before retrying.",
@@ -101,7 +101,7 @@
         ],
         "type": "object"
       },
-      "name": "helianthus.runtime.restart"
+      "name": "helianthus_runtime_restart"
     }
   ]
 }

@@ -375,7 +375,7 @@ func TestIssue469MCPRuntimeStatusSerializesCachedDaemonReleaseGolden(t *testing.
 		func() bool { return true },
 	))
 
-	envelope := mcpCallToolEnvelope(t, server.Handler(), "ebus.v1.runtime.status.get", `{}`)
+	envelope := mcpCallToolEnvelope(t, server.Handler(), "ebus_v1_runtime_status_get", `{}`)
 	meta, ok := envelope["meta"].(map[string]any)
 	if !ok {
 		t.Fatalf("runtime status meta = %T; want object", envelope["meta"])
@@ -398,7 +398,7 @@ func TestIssue469MCPRuntimeStatusSerializesCachedDaemonReleaseGolden(t *testing.
 	}
 }
 
-func TestIssue469GraphQLDaemonStatusAliasesMatchMCPRuntimeStatus(t *testing.T) {
+func TestIssue469GraphQLDaemonStatusMatchesMCPRuntimeStatus(t *testing.T) {
 	buildInfo := gatewayBuildInfo{ReleaseVersion: "0.6.56", BuildID: "test-build"}
 	updatesAvailable := func() bool { return true }
 
@@ -408,7 +408,7 @@ func TestIssue469GraphQLDaemonStatusAliasesMatchMCPRuntimeStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("graphql.NewHandler() error = %v", err)
 	}
-	graphQLRequest := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":"{ daemonStatus { firmwareVersion updatesAvailable } daemon_status { firmware_version updates_available } }"}`))
+	graphQLRequest := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":"{ daemon_status { firmware_version updates_available } }"}`))
 	graphQLRequest.Header.Set("Content-Type", "application/json")
 	graphQLResponse := httptest.NewRecorder()
 	graphQLHandler.ServeHTTP(graphQLResponse, graphQLRequest)
@@ -439,10 +439,6 @@ func TestIssue469GraphQLDaemonStatusAliasesMatchMCPRuntimeStatus(t *testing.T) {
 	if !ok {
 		t.Fatalf("GraphQL data = %T; want object", graphQLPayload["data"])
 	}
-	camel, ok := data["daemonStatus"].(map[string]any)
-	if !ok {
-		t.Fatalf("GraphQL daemonStatus = %T; want object", data["daemonStatus"])
-	}
 	snake, ok := data["daemon_status"].(map[string]any)
 	if !ok {
 		t.Fatalf("GraphQL daemon_status = %T; want object", data["daemon_status"])
@@ -453,7 +449,7 @@ func TestIssue469GraphQLDaemonStatusAliasesMatchMCPRuntimeStatus(t *testing.T) {
 		t.Fatalf("mcp.NewServer() error = %v", err)
 	}
 	mcpServer.SetStatusProvider(newMCPRuntimeStatusProviderForBuild(nil, nil, buildInfo, updatesAvailable))
-	mcpEnvelope := mcpCallToolEnvelope(t, mcpServer.Handler(), "ebus.v1.runtime.status.get", `{}`)
+	mcpEnvelope := mcpCallToolEnvelope(t, mcpServer.Handler(), "ebus_v1_runtime_status_get", `{}`)
 	mcpData, ok := mcpEnvelope["data"].(map[string]any)
 	if !ok {
 		t.Fatalf("MCP runtime data = %T; want object", mcpEnvelope["data"])
@@ -463,18 +459,33 @@ func TestIssue469GraphQLDaemonStatusAliasesMatchMCPRuntimeStatus(t *testing.T) {
 		t.Fatalf("MCP daemon_status = %T; want object", mcpData["daemon_status"])
 	}
 
-	if got, want := camel["firmwareVersion"], mcpDaemon["firmware_version"]; got != want {
-		t.Fatalf("GraphQL daemonStatus firmwareVersion = %#v; MCP firmware_version = %#v", got, want)
-	}
-	if got, want := camel["updatesAvailable"], mcpDaemon["updates_available"]; got != want {
-		t.Fatalf("GraphQL daemonStatus updatesAvailable = %#v; MCP updates_available = %#v", got, want)
-	}
 	if got, want := snake["firmware_version"], mcpDaemon["firmware_version"]; got != want {
 		t.Fatalf("GraphQL daemon_status firmware_version = %#v; MCP firmware_version = %#v", got, want)
 	}
 	if got, want := snake["updates_available"], mcpDaemon["updates_available"]; got != want {
 		t.Fatalf("GraphQL daemon_status updates_available = %#v; MCP updates_available = %#v", got, want)
 	}
+	for _, query := range []string{
+		`{ daemonStatus { __typename } }`,
+		`{ daemon_status { firmwareVersion } }`,
+		`{ daemon_status { updatesAvailable } }`,
+	} {
+		body, err := json.Marshal(map[string]string{"query": query})
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(string(body)))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		graphQLHandler.ServeHTTP(response, request)
+		var rejected struct {
+			Errors []json.RawMessage `json:"errors"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &rejected); err != nil || len(rejected.Errors) == 0 {
+			t.Fatalf("withdrawn name accepted: query=%s response=%s error=%v", query, response.Body.String(), err)
+		}
+	}
+
 }
 
 func TestRuntimeGatewayIdentityProviderExposesConfiguredGUID(t *testing.T) {
@@ -589,7 +600,7 @@ func TestMCPRuntimeStatusProviderReadsLiveAdmissionThroughEarlyHTTPHandler(t *te
 	server.SetStatusProvider(provider)
 
 	initiatorAddress := func() string {
-		envelope := mcpCallToolEnvelope(t, server.Handler(), "ebus.v1.runtime.status.get", `{}`)
+		envelope := mcpCallToolEnvelope(t, server.Handler(), "ebus_v1_runtime_status_get", `{}`)
 		data, ok := envelope["data"].(map[string]any)
 		if !ok {
 			t.Fatalf("runtime status data = %T, want object", envelope["data"])

@@ -34,7 +34,7 @@ func TestBroadcastHub_SubscribeAndBroadcast(t *testing.T) {
 	case value := <-ch:
 		event, ok := value.(BroadcastEvent)
 		if !ok {
-			t.Fatalf("event type = %T; want BroadcastEvent", value)
+			t.Fatalf("event type = %T; want broadcast_event", value)
 		}
 		if event.Source != 0x10 || event.Primary != 0xB5 || event.Secondary != 0x16 {
 			t.Fatalf("event = %+v; want source=0x10 primary=0xB5 secondary=0x16", event)
@@ -112,7 +112,7 @@ func TestBroadcastHub_SemanticUpdates(t *testing.T) {
 		t.Fatalf("SubscribeRadioDevices error = %v", err)
 	}
 
-	hub.PublishZoneUpdate(Zone{ID: "zone-1", Name: "Zone 1"})
+	hub.PublishZoneUpdate(Zone{ID: "zone-1", Name: "zone 1"})
 	hub.PublishDHWUpdate(&DhwStatus{Config: DhwConfig{OperatingMode: "auto"}})
 	hub.PublishEnergyUpdate(&EnergyTotals{})
 	hub.PublishRadioDevicesUpdate([]RadioDevice{{Group: 0x09, Instance: 0x01}})
@@ -131,7 +131,7 @@ func TestBroadcastHub_SemanticUpdates(t *testing.T) {
 	case value := <-dhwCh:
 		status, ok := value.(*DhwStatus)
 		if !ok || status.Config.OperatingMode != "auto" {
-			t.Fatalf("dhw = %#v; want operatingMode=auto", value)
+			t.Fatalf("dhw = %#v; want operating_mode=auto", value)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for dhw update")
@@ -140,7 +140,7 @@ func TestBroadcastHub_SemanticUpdates(t *testing.T) {
 	select {
 	case value := <-energyCh:
 		if _, ok := value.(*EnergyTotals); !ok {
-			t.Fatalf("energy = %#v; want EnergyTotals", value)
+			t.Fatalf("energy = %#v; want energy_totals", value)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for energy update")

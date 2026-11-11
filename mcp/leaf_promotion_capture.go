@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const leafPromotionCaptureToolName = "helianthus.experimental.leaf_promotion.capture"
+const leafPromotionCaptureToolName = "helianthus_experimental_leaf_promotion_capture"
 
 var leafPromotionCampaignID = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 

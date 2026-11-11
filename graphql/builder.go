@@ -13,14 +13,14 @@ type Builder struct {
 	identity               GatewayIdentityProvider
 	semantic               SemanticProvider
 	semanticSnapshot       SemanticSnapshotProvider
-	semanticOperation      SemanticOperationRouter
+	semantic_operation     SemanticOperationRouter
 	bus                    BusObservabilityProvider
 	identificationEvidence IdentificationEvidenceProvider
 	watch                  WatchSummaryProvider
 	boiler                 BoilerConfigWriter
 	system                 SystemConfigWriter
 	schedule               ScheduleWriter
-	vaillantB503           VaillantB503Provider
+	vaillant_b503          VaillantB503Provider
 	mutationSource         byte
 	mutationSourceAdmitted bool
 	mutationSourceProvider func() (byte, bool)
@@ -396,7 +396,7 @@ func (b *Builder) systemConfigBound() *ConfigBound {
 }
 
 // SetSemanticOperationRouter installs the bounded dispatcher of the one
-// semanticOperation mutation. Nil routers, including typed nils, clear the
+// semantic_operation mutation. Nil routers, including typed nils, clear the
 // registration; the mutation then answers UNAVAILABLE without dispatch.
 func (b *Builder) SetSemanticOperationRouter(router SemanticOperationRouter) {
 	if b == nil {
@@ -412,7 +412,7 @@ func (b *Builder) SetSemanticOperationRouter(router SemanticOperationRouter) {
 		}
 	}
 	b.mu.Lock()
-	b.semanticOperation = router
+	b.semantic_operation = router
 	b.mu.Unlock()
 }
 
@@ -422,5 +422,5 @@ func (b *Builder) semanticOperationRouter() SemanticOperationRouter {
 	}
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	return b.semanticOperation
+	return b.semantic_operation
 }

@@ -95,7 +95,7 @@ func TestO21DurabilityRestartAndZero(t *testing.T) {
 	}
 	snapshot, _ := m36Fixture(t, "thermal.measurement.air_temperature", m36Quantity("0", "unit.celsius"))
 	view := m36View(t, snapshot)
-	name := "helianthus_thermal_air_temperature_celsius{slot=\"0\"} 0\n"
+	name := "helianthus_thermal_air_temperature{slot=\"0\",unit=\"celsius\"} 0\n"
 	if restarted.Export().Validated || strings.Contains(m36Render(t, view, restarted.Export()), name) {
 		t.Fatal("loaded store trusted")
 	}

@@ -123,7 +123,7 @@ func TestRun_WiresBusObservabilityIntoGraphQLQueries(t *testing.T) {
 			t.Fatalf("NewInvokeHandler error = %v", err)
 		}
 
-		body := bytes.NewBufferString(`{"query":"{ busSummary { lastUpdatedAt messages { count capacity } status { lastUpdatedAt transportClass publisherCadenceSec publisherCadenceSource capability { activeSupported } bus_admission { source_selection { state outcome selected_source companion_target reason active_probe { target status } retryable automatic_retry_scheduled next_action } } startup { lastUpdatedAt phase cacheEpoch liveEpoch } featureFlags { lastUpdatedAt } } } busMessages(limit: 1) { count items { family sourceAddress targetAddress } } }"}`)
+		body := bytes.NewBufferString(`{"query":"{ bus_summary { last_updated_at messages { count capacity } status { last_updated_at transport_class publisher_cadence_sec publisher_cadence_source capability { active_supported } bus_admission { source_selection { state outcome selected_source companion_target reason active_probe { target status } retryable automatic_retry_scheduled next_action } } startup { last_updated_at phase cache_epoch live_epoch } feature_flags { last_updated_at } } } bus_messages(limit: 1) { count items { family source_address target_address } } }"}`)
 		req := httptest.NewRequest(http.MethodPost, cfg.GraphQLPath, body)
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
@@ -136,18 +136,18 @@ func TestRun_WiresBusObservabilityIntoGraphQLQueries(t *testing.T) {
 		var response struct {
 			Data struct {
 				BusSummary struct {
-					LastUpdatedAt string `json:"lastUpdatedAt"`
+					LastUpdatedAt string `json:"last_updated_at"`
 					Messages      struct {
 						Count    int `json:"count"`
 						Capacity int `json:"capacity"`
 					} `json:"messages"`
 					Status struct {
-						LastUpdatedAt          string  `json:"lastUpdatedAt"`
-						TransportClass         string  `json:"transportClass"`
-						PublisherCadenceSec    float64 `json:"publisherCadenceSec"`
-						PublisherCadenceSource string  `json:"publisherCadenceSource"`
+						LastUpdatedAt          string  `json:"last_updated_at"`
+						TransportClass         string  `json:"transport_class"`
+						PublisherCadenceSec    float64 `json:"publisher_cadence_sec"`
+						PublisherCadenceSource string  `json:"publisher_cadence_source"`
 						Capability             struct {
-							ActiveSupported bool `json:"activeSupported"`
+							ActiveSupported bool `json:"active_supported"`
 						} `json:"capability"`
 						BusAdmission struct {
 							SourceSelection struct {
@@ -166,24 +166,24 @@ func TestRun_WiresBusObservabilityIntoGraphQLQueries(t *testing.T) {
 							} `json:"source_selection"`
 						} `json:"bus_admission"`
 						Startup struct {
-							LastUpdatedAt string `json:"lastUpdatedAt"`
+							LastUpdatedAt string `json:"last_updated_at"`
 							Phase         string `json:"phase"`
-							CacheEpoch    string `json:"cacheEpoch"`
-							LiveEpoch     string `json:"liveEpoch"`
+							CacheEpoch    string `json:"cache_epoch"`
+							LiveEpoch     string `json:"live_epoch"`
 						} `json:"startup"`
 						FeatureFlags struct {
-							LastUpdatedAt string `json:"lastUpdatedAt"`
-						} `json:"featureFlags"`
+							LastUpdatedAt string `json:"last_updated_at"`
+						} `json:"feature_flags"`
 					} `json:"status"`
-				} `json:"busSummary"`
+				} `json:"bus_summary"`
 				BusMessages struct {
 					Count int `json:"count"`
 					Items []struct {
 						Family        string `json:"family"`
-						SourceAddress int    `json:"sourceAddress"`
-						TargetAddress int    `json:"targetAddress"`
+						SourceAddress int    `json:"source_address"`
+						TargetAddress int    `json:"target_address"`
 					} `json:"items"`
-				} `json:"busMessages"`
+				} `json:"bus_messages"`
 			} `json:"data"`
 			Errors []any `json:"errors"`
 		}
@@ -194,19 +194,19 @@ func TestRun_WiresBusObservabilityIntoGraphQLQueries(t *testing.T) {
 			t.Fatalf("graphql errors = %#v; want none", response.Errors)
 		}
 		if response.Data.BusSummary.Messages.Count != 1 {
-			t.Fatalf("busSummary.messages.count = %d; want 1", response.Data.BusSummary.Messages.Count)
+			t.Fatalf("bus_summary.messages.count = %d; want 1", response.Data.BusSummary.Messages.Count)
 		}
 		if response.Data.BusSummary.Status.TransportClass == "" {
-			t.Fatal("busSummary.status.transportClass empty; want wired store summary")
+			t.Fatal("bus_summary.status.transport_class empty; want wired store summary")
 		}
 		if response.Data.BusSummary.Status.PublisherCadenceSec != 420 {
-			t.Fatalf("busSummary.status.publisherCadenceSec = %v; want 420", response.Data.BusSummary.Status.PublisherCadenceSec)
+			t.Fatalf("bus_summary.status.publisher_cadence_sec = %v; want 420", response.Data.BusSummary.Status.PublisherCadenceSec)
 		}
 		if response.Data.BusSummary.Status.PublisherCadenceSource != "config.semantic_state_interval" {
-			t.Fatalf("busSummary.status.publisherCadenceSource = %q; want config.semantic_state_interval", response.Data.BusSummary.Status.PublisherCadenceSource)
+			t.Fatalf("bus_summary.status.publisher_cadence_source = %q; want config.semantic_state_interval", response.Data.BusSummary.Status.PublisherCadenceSource)
 		}
 		if !response.Data.BusSummary.Status.Capability.ActiveSupported {
-			t.Fatal("busSummary.status.capability.activeSupported = false; want true")
+			t.Fatal("bus_summary.status.capability.active_supported = false; want true")
 		}
 		sourceSelection := response.Data.BusSummary.Status.BusAdmission.SourceSelection
 		if sourceSelection.State != "active" ||
@@ -219,49 +219,49 @@ func TestRun_WiresBusObservabilityIntoGraphQLQueries(t *testing.T) {
 			sourceSelection.Retryable ||
 			sourceSelection.AutomaticRetryScheduled ||
 			sourceSelection.NextAction != "" {
-			t.Fatalf("busSummary.status.bus_admission.source_selection = %+v; want active admitted source-selection parity", sourceSelection)
+			t.Fatalf("bus_summary.status.bus_admission.source_selection = %+v; want active admitted source-selection parity", sourceSelection)
 		}
 		if response.Data.BusSummary.Status.Startup.Phase != string(graphql.SemanticStartupPhaseBootInit) {
-			t.Fatalf("busSummary.status.startup.phase = %q; want BOOT_INIT", response.Data.BusSummary.Status.Startup.Phase)
+			t.Fatalf("bus_summary.status.startup.phase = %q; want BOOT_INIT", response.Data.BusSummary.Status.Startup.Phase)
 		}
 		if response.Data.BusSummary.Status.Startup.CacheEpoch != "0" || response.Data.BusSummary.Status.Startup.LiveEpoch != "0" {
-			t.Fatalf("busSummary.status.startup epochs = (%s,%s); want (0,0)", response.Data.BusSummary.Status.Startup.CacheEpoch, response.Data.BusSummary.Status.Startup.LiveEpoch)
+			t.Fatalf("bus_summary.status.startup epochs = (%s,%s); want (0,0)", response.Data.BusSummary.Status.Startup.CacheEpoch, response.Data.BusSummary.Status.Startup.LiveEpoch)
 		}
 		if response.Data.BusSummary.Status.Startup.LastUpdatedAt == "" {
-			t.Fatal("busSummary.status.startup.lastUpdatedAt empty; want timestamp")
+			t.Fatal("bus_summary.status.startup.last_updated_at empty; want timestamp")
 		}
 		if _, err := time.Parse(time.RFC3339Nano, response.Data.BusSummary.Status.Startup.LastUpdatedAt); err != nil {
-			t.Fatalf("busSummary.status.startup.lastUpdatedAt parse: %v", err)
+			t.Fatalf("bus_summary.status.startup.last_updated_at parse: %v", err)
 		}
 		if response.Data.BusSummary.LastUpdatedAt == "" {
-			t.Fatal("busSummary.lastUpdatedAt empty; want timestamp")
+			t.Fatal("bus_summary.last_updated_at empty; want timestamp")
 		}
 		if _, err := time.Parse(time.RFC3339Nano, response.Data.BusSummary.LastUpdatedAt); err != nil {
-			t.Fatalf("busSummary.lastUpdatedAt parse: %v", err)
+			t.Fatalf("bus_summary.last_updated_at parse: %v", err)
 		}
 		if response.Data.BusSummary.Status.LastUpdatedAt == "" {
-			t.Fatal("busSummary.status.lastUpdatedAt empty; want timestamp")
+			t.Fatal("bus_summary.status.last_updated_at empty; want timestamp")
 		}
 		if _, err := time.Parse(time.RFC3339Nano, response.Data.BusSummary.Status.LastUpdatedAt); err != nil {
-			t.Fatalf("busSummary.status.lastUpdatedAt parse: %v", err)
+			t.Fatalf("bus_summary.status.last_updated_at parse: %v", err)
 		}
 		if response.Data.BusSummary.Status.FeatureFlags.LastUpdatedAt == "" {
-			t.Fatal("busSummary.status.featureFlags.lastUpdatedAt empty; want timestamp")
+			t.Fatal("bus_summary.status.feature_flags.last_updated_at empty; want timestamp")
 		}
 		if _, err := time.Parse(time.RFC3339Nano, response.Data.BusSummary.Status.FeatureFlags.LastUpdatedAt); err != nil {
-			t.Fatalf("busSummary.status.featureFlags.lastUpdatedAt parse: %v", err)
+			t.Fatalf("bus_summary.status.feature_flags.last_updated_at parse: %v", err)
 		}
 		if response.Data.BusMessages.Count != 1 || len(response.Data.BusMessages.Items) != 1 {
-			t.Fatalf("busMessages = %+v; want one wired item", response.Data.BusMessages)
+			t.Fatalf("bus_messages = %+v; want one wired item", response.Data.BusMessages)
 		}
 		if response.Data.BusMessages.Items[0].Family != "B509" {
-			t.Fatalf("busMessages.items[0].family = %q; want B509", response.Data.BusMessages.Items[0].Family)
+			t.Fatalf("bus_messages.items[0].family = %q; want B509", response.Data.BusMessages.Items[0].Family)
 		}
 
 		legacyAlias := "bus" + "Admission"
 		legacyCompanion := "companion" + "Target"
 		legacyBody := bytes.NewBufferString(
-			`{"query":"{ busSummary { status { ` + legacyAlias + ` { state source ` + legacyCompanion + ` reason } } } }"}`,
+			`{"query":"{ bus_summary { status { ` + legacyAlias + ` { state source ` + legacyCompanion + ` reason } } } }"}`,
 		)
 		legacyReq := httptest.NewRequest(http.MethodPost, cfg.GraphQLPath, legacyBody)
 		legacyReq.Header.Set("Content-Type", "application/json")

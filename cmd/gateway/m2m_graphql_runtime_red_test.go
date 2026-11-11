@@ -185,8 +185,8 @@ func TestM2MGraphQLRuntime_RateLimitIsKeyedByRemoteAddressNotCertificate(t *test
 func m2mPVErrorCode(t *testing.T, addr string, roots *x509.CertPool, certificate tls.Certificate, asset string) string {
 	t.Helper()
 	body, err := json.Marshal(map[string]any{
-		"operationName": "SemanticPVCurrent", "query": "query SemanticPVCurrent($request: M2MCurrentSnapshotRequest!) { semanticPVCurrent(request: $request) { snapshot evaluation selections projection } }",
-		"variables": map[string]any{"request": map[string]string{"contractId": "PUBLIC_GRAPHQL_SEMANTIC_PV_V1", "assetRef": asset}},
+		"operationName": "SemanticPVCurrent", "query": "query SemanticPVCurrent($request: m2m_current_snapshot_request!) { semantic_pv_current(request: $request) { snapshot evaluation selections projection } }",
+		"variables": map[string]any{"request": map[string]string{"contract_id": "PUBLIC_GRAPHQL_SEMANTIC_PV_V1", "asset_ref": asset}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -268,7 +268,7 @@ func TestM2MGraphQLRuntime_BoundsStorageProviderContextBelowWriteDeadline(t *tes
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = runtime.Close() })
-	body := []byte(`{"operationName":"SemanticStorageCurrent","query":"query SemanticStorageCurrent($request: M2MCurrentSnapshotRequest!) { semanticStorageCurrent(request: $request) { snapshot evaluation selections projection } }","variables":{"request":{"contractId":"PUBLIC_GRAPHQL_SEMANTIC_STORAGE_V1","assetRef":"asset:growatt-bms-a"}}}`)
+	body := []byte(`{"operationName":"SemanticStorageCurrent","query":"query SemanticStorageCurrent($request: m2m_current_snapshot_request!) { semantic_storage_current(request: $request) { snapshot evaluation selections projection } }","variables":{"request":{"contract_id":"PUBLIC_GRAPHQL_SEMANTIC_STORAGE_V1","asset_ref":"asset:growatt-bms-a"}}}`)
 	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: certs.pool, ServerName: "m2m.gateway.test", MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{certs.goodClient}}}}
 	result := make(chan error, 1)
 	go func() {
@@ -312,7 +312,7 @@ func TestM2MRequestDeadlineLeavesProcessingReserveBeforeStorageProvider(t *testi
 		if err != nil {
 			t.Fatal(err)
 		}
-		request := httptest.NewRequest(http.MethodPost, "/graphql/m2m/v1", strings.NewReader(`{"operationName":"SemanticStorageCurrent","query":"query SemanticStorageCurrent($request: M2MCurrentSnapshotRequest!) { semanticStorageCurrent(request: $request) { snapshot evaluation selections projection } }","variables":{"request":{"contractId":"PUBLIC_GRAPHQL_SEMANTIC_STORAGE_V1","assetRef":"asset:storage-o14"}}}`)).WithContext(parent)
+		request := httptest.NewRequest(http.MethodPost, "/graphql/m2m/v1", strings.NewReader(`{"operationName":"SemanticStorageCurrent","query":"query SemanticStorageCurrent($request: m2m_current_snapshot_request!) { semantic_storage_current(request: $request) { snapshot evaluation selections projection } }","variables":{"request":{"contract_id":"PUBLIC_GRAPHQL_SEMANTIC_STORAGE_V1","asset_ref":"asset:storage-o14"}}}`)).WithContext(parent)
 		response := httptest.NewRecorder()
 		before := time.Now()
 		newM2MRequestDeadlineHandler(handler, m2mRequestTimeout).ServeHTTP(response, request)
@@ -324,7 +324,7 @@ func TestM2MRequestDeadlineLeavesProcessingReserveBeforeStorageProvider(t *testi
 		if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
 			t.Fatal(err)
 		}
-		want := map[string]any{"data": map[string]any{"semanticStorageCurrent": map[string]any{
+		want := map[string]any{"data": map[string]any{"semantic_storage_current": map[string]any{
 			"snapshot": map[string]any{}, "evaluation": map[string]any{}, "selections": []any{}, "projection": map[string]any{},
 		}}}
 		if !reflect.DeepEqual(got, want) {
@@ -469,8 +469,8 @@ func TestM2MGraphQLRuntime_AllowedAssetWithoutPublicationReturnsSourceUnavailabl
 	}
 	t.Cleanup(func() { _ = runtime.Close() })
 	body, err := json.Marshal(map[string]any{
-		"operationName": "SemanticPVCurrent", "query": "query SemanticPVCurrent($request: M2MCurrentSnapshotRequest!) { semanticPVCurrent(request: $request) { snapshot evaluation selections projection } }",
-		"variables": map[string]any{"request": map[string]string{"contractId": "PUBLIC_GRAPHQL_SEMANTIC_PV_V1", "assetRef": "pv-asset-known"}},
+		"operationName": "SemanticPVCurrent", "query": "query SemanticPVCurrent($request: m2m_current_snapshot_request!) { semantic_pv_current(request: $request) { snapshot evaluation selections projection } }",
+		"variables": map[string]any{"request": map[string]string{"contract_id": "PUBLIC_GRAPHQL_SEMANTIC_PV_V1", "asset_ref": "pv-asset-known"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -539,7 +539,7 @@ func TestGrowattStorageGraphQLAndPortalPublishWithoutMCPPriming(t *testing.T) {
 	if !ok {
 		t.Fatalf("Portal storage GraphQL response lacks data=%s", response.Body.String())
 	}
-	if _, ok := data["semanticStorageCurrent"]; !ok {
+	if _, ok := data["semantic_storage_current"]; !ok {
 		t.Fatalf("Portal storage GraphQL parity response=%s", response.Body.String())
 	}
 	before, ok := growatt.storage.Current("asset:growatt-bms-a")
@@ -582,7 +582,7 @@ func TestGrowattStoragePublicReadInMemory(t *testing.T) {
 		t.Fatal(err)
 	}
 	forward := func(ctx context.Context) (portal.ForwardedResponse, error) {
-		request := httptest.NewRequest(http.MethodPost, "/graphql/m2m/v1", strings.NewReader(`{"operationName":"SemanticStorageCurrent","query":"query SemanticStorageCurrent($request: M2MCurrentSnapshotRequest!) { semanticStorageCurrent(request: $request) { snapshot evaluation selections projection } }","variables":{"request":{"contractId":"PUBLIC_GRAPHQL_SEMANTIC_STORAGE_V1","assetRef":"asset:growatt-bms-a"}}}`))
+		request := httptest.NewRequest(http.MethodPost, "/graphql/m2m/v1", strings.NewReader(`{"operationName":"SemanticStorageCurrent","query":"query SemanticStorageCurrent($request: m2m_current_snapshot_request!) { semantic_storage_current(request: $request) { snapshot evaluation selections projection } }","variables":{"request":{"contract_id":"PUBLIC_GRAPHQL_SEMANTIC_STORAGE_V1","asset_ref":"asset:growatt-bms-a"}}}`))
 		request.Header.Set("Content-Type", "application/json")
 		request = request.WithContext(m2mgraphql.WithMTLSPrincipal(ctx, "synthetic-principal"))
 		response := httptest.NewRecorder()
@@ -604,7 +604,7 @@ func TestGrowattStoragePublicReadInMemory(t *testing.T) {
 	}
 	var public struct {
 		Data struct {
-			Storage map[string]json.RawMessage `json:"semanticStorageCurrent"`
+			Storage map[string]json.RawMessage `json:"semantic_storage_current"`
 		} `json:"data"`
 		Errors []json.RawMessage `json:"errors"`
 	}
@@ -612,12 +612,12 @@ func TestGrowattStoragePublicReadInMemory(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(public.Errors) != 0 || len(public.Data.Storage) != 4 {
-		t.Fatalf("public semanticStorageCurrent content missing: %s", response.Body.String())
+		t.Fatalf("public semantic_storage_current content missing: %s", response.Body.String())
 	}
 	for _, field := range []string{"snapshot", "evaluation", "selections", "projection"} {
 		value := bytes.TrimSpace(public.Data.Storage[field])
 		if len(value) == 0 || bytes.Equal(value, []byte("null")) {
-			t.Fatalf("public semanticStorageCurrent lacks %s: %s", field, response.Body.String())
+			t.Fatalf("public semantic_storage_current lacks %s: %s", field, response.Body.String())
 		}
 	}
 	before, ok := growatt.storage.Current(asset)

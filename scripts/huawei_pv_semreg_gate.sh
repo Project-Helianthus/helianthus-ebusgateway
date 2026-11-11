@@ -8,7 +8,7 @@ set -euo pipefail
 # clone exactly like the storage and EVSE mapping gates.
 docs_repo="https://github.com/Project-Helianthus/helianthus-docs-semantic.git"
 docs_commit="35e1a0e05383e0abf6a3c6f61f05845adb0d0808"
-semreg_commit="b3e8cdfc4a6047daa56b31c61fac680b52a8c0ee"
+semreg_commit="5fe3a96fd9aea2cfcc276db87c58019b2f60949d"
 if [[ $# -ne 0 ]]; then
   echo 'usage: bash scripts/huawei_pv_semreg_gate.sh (no arguments; the pinned public docs-semantic commit is fetched)' >&2
   exit 2

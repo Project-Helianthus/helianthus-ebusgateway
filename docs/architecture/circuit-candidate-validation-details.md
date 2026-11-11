@@ -9,7 +9,7 @@ here is stable before Helianthus 1.0.
 ## Sources and claims
 
 The public native contract comes first: the
-[B524 register catalog](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/protocols/vaillant/ebus-vaillant-B524-register-map.md)
+[B524 register catalog](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/protocols/vaillant/ebus-vaillant-b524-register-map.md)
 sections on circuit discovery, circuit registers and `mctype` bound native
 interpretation. The
 [circuit cutover contract](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/architecture/circuit-capability-semreg-cutover.md)

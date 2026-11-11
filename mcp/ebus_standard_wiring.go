@@ -30,10 +30,10 @@ type EbusStandardSubServer interface {
 // surfaces into s. Safe to call once during gateway bootstrap.
 //
 // Surfaces added:
-//   - ebus.v1.ebus_standard.services.list
-//   - ebus.v1.ebus_standard.commands.list
-//   - ebus.v1.ebus_standard.command.get
-//   - ebus.v1.ebus_standard.decode
+//   - ebus_v1_ebus_standard_services_list
+//   - ebus_v1_ebus_standard_commands_list
+//   - ebus_v1_ebus_standard_command_get
+//   - ebus_v1_ebus_standard_decode
 //
 // The catalog is consumed read-only. All safety-class gating for catalog
 // invocations is performed by internal/execution_policy at the provider

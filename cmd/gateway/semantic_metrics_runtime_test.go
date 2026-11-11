@@ -49,15 +49,15 @@ func m38Symbol(field semreg.DefinitionID, token string) semreg.Value {
 var m38Inventory = []m38Series{
 	{"thermal.action.state", "helianthus_thermal_action_state", m38Symbol("thermal.action.state", "heating"), "1"},
 	{"thermal.demand.level", "helianthus_thermal_demand_ratio", m38Quantity("25", 0, "unit.percent"), "0.25"},
-	{"thermal.measurement.air_temperature", "helianthus_thermal_air_temperature_celsius", m38Quantity("21", 0, "unit.celsius"), "21"},
+	{"thermal.measurement.air_temperature", "helianthus_thermal_air_temperature", m38Quantity("21", 0, "unit.celsius"), "21"},
 	{"thermal.measurement.flow_rate", "helianthus_thermal_flow_cubic_meters_per_second", m38Quantity("12", 0, "unit.litre_per_minute"), "0.0002"},
-	{"thermal.measurement.humidity_relative", "helianthus_thermal_relative_humidity_ratio", m38Quantity("4", 1, "unit.percent"), "0.4"},
+	{"thermal.measurement.humidity", "helianthus_thermal_relative_humidity_ratio", m38Quantity("4", 1, "unit.percent"), "0.4"},
 	{"thermal.measurement.power", "helianthus_thermal_power_watts", m38Quantity("-15", 2, "unit.watt"), "-1500"},
 	{"thermal.measurement.water_temperature", "helianthus_thermal_water_temperature_celsius", m38Quantity("45", 0, "unit.celsius"), "45"},
 	{"thermal.mode.system", "helianthus_thermal_system_mode", m38Symbol("thermal.mode.system", "heat"), "2"},
 	{"thermal.mode.zone", "helianthus_thermal_zone_mode", m38Symbol("thermal.mode.zone", "eco"), "3"},
-	{"thermal.setpoint.dhw_temperature", "helianthus_thermal_dhw_setpoint_celsius", m38Quantity("5", 1, "unit.celsius"), "50"},
-	{"thermal.setpoint.temperature", "helianthus_thermal_setpoint_celsius", m38Quantity("215", -1, "unit.celsius"), "21.5"},
+	{"thermal.setpoint.dhw_temperature_setpoint", "helianthus_thermal_dhw_setpoint_celsius", m38Quantity("5", 1, "unit.celsius"), "50"},
+	{"thermal.setpoint.temperature_setpoint", "helianthus_thermal_temperature_setpoint", m38Quantity("215", -1, "unit.celsius"), "21.5"},
 	{"thermal.status.fault", "helianthus_thermal_fault_present", m38Symbol("thermal.status.fault", "clear"), "0"},
 	{"thermal.status.operation", "helianthus_thermal_operation_active", m38Symbol("thermal.status.operation", "active"), "1"},
 	{"infrastructure.ac.active_power", "helianthus_infrastructure_ac_active_power_watts", m38Quantity("-12", 2, "unit.watt"), "-1200"},
@@ -470,7 +470,7 @@ func TestM38ScrapeRouteServesTransportAndSemanticInventory(t *testing.T) {
 
 	var want []string
 	for _, entry := range m38Inventory {
-		want = append(want, "# TYPE "+entry.name+" gauge", fmt.Sprintf("%s{slot=\"%d\"} %s", entry.name, m38Slot(t, entry), entry.sample))
+		want = append(want, "# TYPE "+entry.name+" gauge", fmt.Sprintf("%s{%s} %s", entry.name, m38ValueLabels(entry.name, m38Slot(t, entry)), entry.sample))
 	}
 	want = append(want, "# TYPE "+m38AvailabilityName+" gauge")
 	for _, entry := range m38Inventory {
@@ -531,7 +531,7 @@ func TestM38EachScrapeUsesOneCoherentCapture(t *testing.T) {
 		f.publish(t, domains[1], []m38Series{update["infrastructure.ac.voltage"]}, int64(500*time.Millisecond))
 	}
 	sample := func(entry m38Series, value string) string {
-		return fmt.Sprintf("%s{slot=\"%d\"} %s\n", entry.name, m38Slot(t, entry), value)
+		return fmt.Sprintf("%s{%s} %s\n", entry.name, m38ValueLabels(entry.name, m38Slot(t, entry)), value)
 	}
 	first := m38Scrape(t, handler)
 	second := m38Scrape(t, handler)
@@ -703,7 +703,7 @@ func TestM38RetiredSlotsLeaveSiblingsExported(t *testing.T) {
 	body := m38Scrape(t, newGatewayMetricsHandler(f.store, f.metrics(t)))
 	for _, entry := range m38Inventory {
 		thermalField := strings.HasPrefix(string(entry.field), "thermal.")
-		exported := strings.Contains(body, fmt.Sprintf("%s{slot=\"%d\"} %s\n", entry.name, m38Slot(t, entry), entry.sample))
+		exported := strings.Contains(body, fmt.Sprintf("%s{%s} %s\n", entry.name, m38ValueLabels(entry.name, m38Slot(t, entry)), entry.sample))
 		available := 1
 		if thermalField {
 			available = 0
@@ -756,7 +756,14 @@ func TestM38LabelsStayBoundedWithManyHubAssets(t *testing.T) {
 		}
 		switch {
 		case names[match[1]]:
-			if len(labels) != 1 {
+			expected := 1
+			if match[1] == "helianthus_thermal_air_temperature" || match[1] == "helianthus_thermal_temperature_setpoint" {
+				expected = 2
+				if labels["unit"] != "celsius" {
+					t.Fatalf("nonconstant unit: %q", line)
+				}
+			}
+			if len(labels) != expected {
 				t.Fatalf("value series %q carries labels beyond slot", line)
 			}
 		case match[1] == m38AvailabilityName:
@@ -907,4 +914,12 @@ func TestM38NilStoreComposesWithoutMetricsRoute(t *testing.T) {
 	}
 	mux := http.NewServeMux()
 	registerHTTPControlPlaneCoreRoutes(mux, plan, t.TempDir(), newGatewayMetricsHandler(nil, f.metrics(t)), query, snapshot, subscription, server, http.NotFoundHandler())
+}
+
+func m38ValueLabels(name string, slot int) string {
+	labels := fmt.Sprintf("slot=%q", strconv.Itoa(slot))
+	if name == "helianthus_thermal_air_temperature" || name == "helianthus_thermal_temperature_setpoint" {
+		labels += `,unit="celsius"`
+	}
+	return labels
 }

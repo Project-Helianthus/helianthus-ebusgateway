@@ -102,13 +102,13 @@ const (
 )
 
 var circuitConfigFieldSpecs = map[string]configFieldSpec{
-	"heatingCurve":    {group: 0x02, addr: 0x000F, valueType: configValueFloat32, min: 0.1, max: 4.0},
-	"flowTempMaxC":    {group: 0x02, addr: 0x0010, valueType: configValueFloat32, min: 15.0, max: 80.0},
-	"flowTempMinC":    {group: 0x02, addr: 0x0012, valueType: configValueFloat32, min: 5.0, max: 30.0},
-	"summerLimitC":    {group: 0x02, addr: 0x0014, valueType: configValueFloat32, min: 15.0, max: 30.0},
-	"frostProtC":      {group: 0x02, addr: 0x001D, valueType: configValueFloat32, min: -20.0, max: 10.0},
-	"roomTempControl": {group: 0x02, addr: 0x0015, valueType: configValueEnumU16, enum: map[string]uint16{"off": 0, "modulating": 1, "thermostat": 2}},
-	"coolingEnabled":  {group: 0x02, addr: 0x0006, valueType: configValueBoolU8},
+	"circuit_heating_curve_factor":                      {group: 0x02, addr: 0x000F, valueType: configValueFloat32, min: 0.1, max: 4.0},
+	"heating_circuit_flow_temperature_setpoint_maximum": {group: 0x02, addr: 0x0010, valueType: configValueFloat32, min: 15.0, max: 80.0},
+	"circuit_flow_temperature_setpoint_minimum":         {group: 0x02, addr: 0x0012, valueType: configValueFloat32, min: 5.0, max: 30.0},
+	"heating_circuit_outdoor_temperature_limit_maximum": {group: 0x02, addr: 0x0014, valueType: configValueFloat32, min: 15.0, max: 30.0},
+
+	"circuit_room_temperature_influence_mode": {group: 0x02, addr: 0x0015, valueType: configValueEnumU16, enum: map[string]uint16{"off": 0, "modulating": 1, "thermostat": 2}},
+	"circuit_cooling_enabled":                 {group: 0x02, addr: 0x0006, valueType: configValueBoolU8},
 }
 
 var zoneConfigFieldSpecs = map[string]configFieldSpec{
@@ -154,11 +154,11 @@ func NewSchema(builder *Builder, registry InvokeRegistry, invoker Invoker, hub *
 	return buildSchema(builder, registry, invoker, hub, true)
 }
 
-// buildSchema builds the gateway schema; semanticOperation adds the one
+// buildSchema builds the gateway schema; semantic_operation adds the one
 // generic semantic operation mutation and the extension that keeps the
 // supplied request variables for it. Without it the schema is the one that
 // existed before the route.
-func buildSchema(builder *Builder, registry InvokeRegistry, invoker Invoker, hub *BroadcastHub, semanticOperation bool) (graphqlgo.Schema, error) {
+func buildSchema(builder *Builder, registry InvokeRegistry, invoker Invoker, hub *BroadcastHub, semantic_operation bool) (graphqlgo.Schema, error) {
 	if builder == nil {
 		return graphqlgo.Schema{}, fmt.Errorf("graphql schema missing builder: %w", ebuserrors.ErrInvalidPayload)
 	}
@@ -170,7 +170,7 @@ func buildSchema(builder *Builder, registry InvokeRegistry, invoker Invoker, hub
 	var mutationType *graphqlgo.Object
 	if registry != nil && invoker != nil {
 		mutationType = buildMutationType(registry, invoker, builder.boilerConfigWriter(), builder.systemConfigWriter(), builder.scheduleWriter(), builder.mutationSourceForRequest, builder.systemConfigBound)
-		if semanticOperation {
+		if semantic_operation {
 			// The one generic semantic operation route; it reads the builder's
 			// injected router per request and never uses the eBUS invoker.
 			mutationType.AddFieldConfig(semanticOperationFieldName, semanticOperationField(builder))
@@ -187,7 +187,7 @@ func buildSchema(builder *Builder, registry InvokeRegistry, invoker Invoker, hub
 		Mutation:     mutationType,
 		Subscription: subscriptionType,
 	})
-	if err == nil && semanticOperation && mutationType != nil {
+	if err == nil && semantic_operation && mutationType != nil {
 		schema.AddExtensions(semanticOperationVariablesExtension{})
 	}
 	return schema, err
@@ -205,7 +205,7 @@ func NewInvokeHandler(builder *Builder, registry InvokeRegistry, invoker Invoker
 		GraphiQL: false,
 		RootObjectFn: func(_ context.Context, r *http.Request) map[string]interface{} {
 			root := newGraphQLRootObject(builder)
-			// Request-line and header facts for the semanticOperation
+			// Request-line and header facts for the semantic_operation
 			// resolver only; the body is never read here.
 			root[semanticOperationTransportRootKey] = semanticOperationTransportOf(r)
 			return root
@@ -219,7 +219,7 @@ func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter Bo
 	}
 	jsonScalar := jsonScalarType()
 	errorType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "InvokeError",
+		Name: "invoke_error",
 		Fields: graphqlgo.Fields{
 			"message": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.String),
@@ -255,7 +255,7 @@ func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter Bo
 	})
 
 	resultType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "InvokeResult",
+		Name: "invoke_result",
 		Fields: graphqlgo.Fields{
 			"ok": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.Boolean),
@@ -291,7 +291,7 @@ func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter Bo
 	})
 
 	boilerConfigResultType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "BoilerConfigMutationResult",
+		Name: "boiler_config_mutation_result",
 		Fields: graphqlgo.Fields{
 			"success": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.Boolean),
@@ -317,7 +317,7 @@ func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter Bo
 	})
 
 	configResultType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "ConfigMutationResult",
+		Name: "config_mutation_result",
 		Fields: graphqlgo.Fields{
 			"success": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.Boolean),
@@ -343,9 +343,9 @@ func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter Bo
 	})
 
 	scheduleSlotResultType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "ScheduleSlotResult",
+		Name: "schedule_slot_result",
 		Fields: graphqlgo.Fields{
-			"slotIndex": &graphqlgo.Field{
+			"slot_index": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.Int),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					result, ok := scheduleSlotResultFromSource(params)
@@ -365,7 +365,7 @@ func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter Bo
 					return result.Accepted, nil
 				},
 			},
-			"errorCode": &graphqlgo.Field{
+			"error_code": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.Int),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					result, ok := scheduleSlotResultFromSource(params)
@@ -375,7 +375,7 @@ func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter Bo
 					return result.ErrorCode, nil
 				},
 			},
-			"errorDescription": &graphqlgo.Field{
+			"error_description": &graphqlgo.Field{
 				Type: graphqlgo.String,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					result, ok := scheduleSlotResultFromSource(params)
@@ -389,7 +389,7 @@ func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter Bo
 	})
 
 	scheduleWriteResultType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "ScheduleWriteResult",
+		Name: "schedule_write_result",
 		Fields: graphqlgo.Fields{
 			"success": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.Boolean),
@@ -401,7 +401,7 @@ func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter Bo
 					return result.Success, nil
 				},
 			},
-			"slotResults": &graphqlgo.Field{
+			"slot_results": &graphqlgo.Field{
 				Type: graphqlgo.NewList(graphqlgo.NewNonNull(scheduleSlotResultType)),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					result, ok := scheduleWriteResultFromSource(params)
@@ -425,7 +425,7 @@ func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter Bo
 	})
 
 	return graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "Mutation",
+		Name: "mutation",
 		Fields: graphqlgo.Fields{
 			"invoke": &graphqlgo.Field{
 				Type: resultType,
@@ -447,21 +447,6 @@ func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter Bo
 					return result, nil
 				},
 			},
-			"setBoilerConfig": &graphqlgo.Field{
-				Type: boilerConfigResultType,
-				Args: graphqlgo.FieldConfigArgument{
-					"field": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
-					"value": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
-				},
-				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
-					if boilerWriter != nil {
-						fieldName, _ := params.Args["field"].(string)
-						fieldValue, _ := params.Args["value"].(string)
-						return boilerWriter.SetBoilerConfig(params.Context, fieldName, fieldValue), nil
-					}
-					return boilerConfigUnsupportedResult(), nil
-				},
-			},
 			"set_boiler_config": &graphqlgo.Field{
 				Type: boilerConfigResultType,
 				Args: graphqlgo.FieldConfigArgument{
@@ -477,18 +462,7 @@ func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter Bo
 					return boilerConfigUnsupportedResult(), nil
 				},
 			},
-			"setCircuitConfig": &graphqlgo.Field{
-				Type: configResultType,
-				Args: graphqlgo.FieldConfigArgument{
-					"index": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.Int)},
-					"field": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
-					"value": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
-				},
-				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
-					mutationSource, mutationSourceAdmitted := mutationSourceProvider()
-					return setCircuitConfigResolve(params, registry, invoker, mutationSource, mutationSourceAdmitted), nil
-				},
-			},
+
 			"set_circuit_config": &graphqlgo.Field{
 				Type: configResultType,
 				Args: graphqlgo.FieldConfigArgument{
@@ -501,17 +475,7 @@ func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter Bo
 					return setCircuitConfigResolve(params, registry, invoker, mutationSource, mutationSourceAdmitted), nil
 				},
 			},
-			"setSystemConfig": &graphqlgo.Field{
-				Type: configResultType,
-				Args: graphqlgo.FieldConfigArgument{
-					"field": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
-					"value": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
-				},
-				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
-					mutationSource, mutationSourceAdmitted := mutationSourceProvider()
-					return setSystemConfigResolve(params, registry, invoker, systemWriter, mutationSource, mutationSourceAdmitted, boundProviders...), nil
-				},
-			},
+
 			"set_system_config": &graphqlgo.Field{
 				Type: configResultType,
 				Args: graphqlgo.FieldConfigArgument{
@@ -523,18 +487,7 @@ func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter Bo
 					return setSystemConfigResolve(params, registry, invoker, systemWriter, mutationSource, mutationSourceAdmitted, boundProviders...), nil
 				},
 			},
-			"setZoneConfig": &graphqlgo.Field{
-				Type: configResultType,
-				Args: graphqlgo.FieldConfigArgument{
-					"index": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.Int)},
-					"field": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
-					"value": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
-				},
-				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
-					mutationSource, mutationSourceAdmitted := mutationSourceProvider()
-					return setZoneConfigResolve(params, registry, invoker, mutationSource, mutationSourceAdmitted), nil
-				},
-			},
+
 			"set_zone_config": &graphqlgo.Field{
 				Type: configResultType,
 				Args: graphqlgo.FieldConfigArgument{
@@ -547,17 +500,7 @@ func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter Bo
 					return setZoneConfigResolve(params, registry, invoker, mutationSource, mutationSourceAdmitted), nil
 				},
 			},
-			"setZoneTimeProgram": &graphqlgo.Field{
-				Type: scheduleWriteResultType,
-				Args: graphqlgo.FieldConfigArgument{
-					"zone":    &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.Int)},
-					"weekday": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.Int)},
-					"slots":   &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
-				},
-				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
-					return setZoneTimeProgramResolve(params, scheduleWriter), nil
-				},
-			},
+
 			"set_zone_time_program": &graphqlgo.Field{
 				Type: scheduleWriteResultType,
 				Args: graphqlgo.FieldConfigArgument{
@@ -569,16 +512,7 @@ func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter Bo
 					return setZoneTimeProgramResolve(params, scheduleWriter), nil
 				},
 			},
-			"setDhwTimeProgram": &graphqlgo.Field{
-				Type: scheduleWriteResultType,
-				Args: graphqlgo.FieldConfigArgument{
-					"weekday": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.Int)},
-					"slots":   &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
-				},
-				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
-					return setDhwTimeProgramResolve(params, scheduleWriter), nil
-				},
-			},
+
 			"set_dhw_time_program": &graphqlgo.Field{
 				Type: scheduleWriteResultType,
 				Args: graphqlgo.FieldConfigArgument{
@@ -1578,7 +1512,7 @@ func jsonScalarType() *graphqlgo.Scalar {
 }
 
 var jsonScalar = graphqlgo.NewScalar(graphqlgo.ScalarConfig{
-	Name: "JSON",
+	Name: "json",
 	Serialize: func(value any) any {
 		return value
 	},

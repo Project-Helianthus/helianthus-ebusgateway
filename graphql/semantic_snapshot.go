@@ -41,9 +41,9 @@ func semanticSnapshotField(builder *Builder) *graphqlgo.Field {
 	types := map[reflect.Type]*graphqlgo.Object{}
 	output := semanticRecordType(reflect.TypeOf(semanticview.View{}), types)
 	return &graphqlgo.Field{Type: output, Args: graphqlgo.FieldConfigArgument{
-		"assetIds": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(graphqlgo.ID)))},
+		"asset_ids": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(graphqlgo.ID)))},
 	}, Resolve: func(p graphqlgo.ResolveParams) (any, error) {
-		ids, err := semanticAssetIDs(p.Args["assetIds"])
+		ids, err := semanticAssetIDs(p.Args["asset_ids"])
 		if err != nil {
 			return nil, err
 		}
@@ -119,7 +119,7 @@ func semanticSnapshotField(builder *Builder) *graphqlgo.Field {
 		if err := json.Unmarshal(raw, &value); err != nil {
 			return nil, semanticReadError("CONFLICT")
 		}
-		return semanticCamelValue(value), nil
+		return semanticJSONValue(value), nil
 	}}
 }
 
@@ -176,12 +176,12 @@ func semanticOperationIDs(info graphqlgo.ResolveInfo) ([]semreg.AssetID, error) 
 		for _, selection := range set.Selections {
 			switch s := selection.(type) {
 			case *ast.Field:
-				if s.Name.Value != "semanticSnapshot" || !active(s.Directives) {
+				if s.Name.Value != "semantic_snapshot" || !active(s.Directives) {
 					continue
 				}
 				var raw any
 				for _, a := range s.Arguments {
-					if a.Name.Value != "assetIds" {
+					if a.Name.Value != "asset_ids" {
 						continue
 					}
 					raw = semanticASTValue(a.Value, info.VariableValues)
@@ -252,26 +252,17 @@ func semanticASTValue(value ast.Value, variables map[string]interface{}) any {
 	return nil
 }
 
-func semanticCamel(s string) string {
-	parts := strings.Split(s, "_")
-	for i := 1; i < len(parts); i++ {
-		if parts[i] != "" {
-			parts[i] = strings.ToUpper(parts[i][:1]) + parts[i][1:]
-		}
-	}
-	return strings.Join(parts, "")
-}
-func semanticCamelValue(v any) any {
+func semanticJSONValue(v any) any {
 	switch x := v.(type) {
 	case map[string]any:
 		out := map[string]any{}
 		for k, v := range x {
-			out[semanticCamel(k)] = semanticCamelValue(v)
+			out[k] = semanticJSONValue(v)
 		}
 		return out
 	case []any:
 		for i := range x {
-			x[i] = semanticCamelValue(x[i])
+			x[i] = semanticJSONValue(x[i])
 		}
 	}
 	return v
@@ -296,12 +287,12 @@ func semanticRecordType(t reflect.Type, objects map[reflect.Type]*graphqlgo.Obje
 		if object := objects[t]; object != nil {
 			return object
 		}
-		name := "Semantic" + t.Name()
+		name := "semantic_" + semanticTypeName(t.Name())
 		if t == reflect.TypeOf(semanticview.View{}) {
-			name = "SemanticSnapshotRead"
+			name = "semantic_snapshot_read"
 		}
 		if t == reflect.TypeOf(semanticview.Asset{}) {
-			name = "AssetSnapshotRead"
+			name = "asset_snapshot_read"
 		}
 		object := graphqlgo.NewObject(graphqlgo.ObjectConfig{Name: name, Fields: graphqlgo.FieldsThunk(func() graphqlgo.Fields {
 			fields := graphqlgo.Fields{}
@@ -316,7 +307,7 @@ func semanticRecordType(t reflect.Type, objects map[reflect.Type]*graphqlgo.Obje
 				if !optional {
 					output = graphqlgo.NewNonNull(output)
 				}
-				fields[semanticCamel(tag[0])] = &graphqlgo.Field{Type: output}
+				fields[tag[0]] = &graphqlgo.Field{Type: output}
 			}
 			return fields
 		})})
@@ -325,4 +316,18 @@ func semanticRecordType(t reflect.Type, objects map[reflect.Type]*graphqlgo.Obje
 	default:
 		panic("unsupported SemReg record scalar: " + t.String())
 	}
+}
+
+func semanticTypeName(s string) string {
+	var out strings.Builder
+	for i, r := range s {
+		if r >= 'A' && r <= 'Z' {
+			if i > 0 {
+				out.WriteByte('_')
+			}
+			r += 'a' - 'A'
+		}
+		out.WriteRune(r)
+	}
+	return out.String()
 }

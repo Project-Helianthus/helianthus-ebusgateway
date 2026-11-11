@@ -19,7 +19,7 @@ probes a device or publishes.
 ## One capture per scrape
 
 The renderer reads the same `hubSemanticSnapshotProvider` instance that HTTP
-composition gives GraphQL `semanticSnapshot`, MCP `semantic.v1.snapshot.get`
+composition gives GraphQL `semantic_snapshot`, MCP `semantic_v1_snapshot_get`
 and the Portal shared-view callback. A scrape captures once: one hub read lock
 over the distinct assets of the configured, non-retired bindings, in bytewise
 order. A registry admits at most 16 slots per domain, so the selection stays

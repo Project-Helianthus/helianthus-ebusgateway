@@ -24,8 +24,8 @@ import (
 	"github.com/graphql-go/handler"
 )
 
-const m56Mutation = `mutation SemanticOperation($input: SemanticOperationInput!) {
-  semanticOperation(input: $input) { status kernelOutcome delivery acknowledgement readbackRelation reason }
+const m56Mutation = `mutation SemanticOperation($input: semantic_operation_input!) {
+  semantic_operation(input: $input) { status kernel_outcome delivery acknowledgement readback_relation reason }
 }`
 
 type m56Registry struct{}
@@ -82,17 +82,17 @@ func m56Camel(t *testing.T, value any) any {
 	if err := decoder.Decode(&decoded); err != nil {
 		t.Fatal(err)
 	}
-	return semanticCamelValue(decoded)
+	return semanticJSONValue(decoded)
 }
 
 func m56Input(t *testing.T, request semanticoperations.Request) map[string]any {
 	return map[string]any{
-		"assetId": string(request.AssetID), "bindingId": string(request.BindingID), "capabilityInstanceId": string(request.CapabilityInstanceID),
+		"asset_id": string(request.AssetID), "binding_id": string(request.BindingID), "capability_instance_id": string(request.CapabilityInstanceID),
 		"operation": m56Camel(t, request.Operation), "arguments": m56Camel(t, request.Arguments),
-		"expectedSemanticRevision": string(request.ExpectedSemanticRevision), "expectedCapabilityRevision": string(request.ExpectedCapabilityRevision),
-		"expectedCapabilityInstanceRevision": string(request.ExpectedCapabilityInstanceRevision), "expectedSourceEpochId": string(request.ExpectedSourceEpochID),
-		"expectedDriverGeneration": string(request.ExpectedDriverGeneration), "preconditions": m56Camel(t, request.Preconditions),
-		"timeoutMs": request.Timeout.Milliseconds(),
+		"expected_semantic_revision": string(request.ExpectedSemanticRevision), "expected_capability_revision": string(request.ExpectedCapabilityRevision),
+		"expected_capability_instance_revision": string(request.ExpectedCapabilityInstanceRevision), "expected_source_epoch_id": string(request.ExpectedSourceEpochID),
+		"expected_driver_generation": string(request.ExpectedDriverGeneration), "preconditions": m56Camel(t, request.Preconditions),
+		"timeout_ms": request.Timeout.Milliseconds(),
 	}
 }
 
@@ -138,7 +138,7 @@ func m56Result(t *testing.T, response m56Response) map[string]any {
 	if len(response.Errors) != 0 {
 		t.Fatalf("errors = %+v", response.Errors)
 	}
-	result, ok := response.Data["semanticOperation"].(map[string]any)
+	result, ok := response.Data["semantic_operation"].(map[string]any)
 	if !ok {
 		t.Fatalf("data = %+v", response.Data)
 	}
@@ -190,7 +190,7 @@ func m56Pad(body []byte, size int) []byte {
 }
 
 func m56Projection(status string, fields ...any) map[string]any {
-	projection := map[string]any{"status": status, "kernelOutcome": nil, "delivery": nil, "acknowledgement": nil, "readbackRelation": nil, "reason": nil}
+	projection := map[string]any{"status": status, "kernel_outcome": nil, "delivery": nil, "acknowledgement": nil, "readback_relation": nil, "reason": nil}
 	for index := 0; index+1 < len(fields); index += 2 {
 		projection[fields[index].(string)] = fields[index+1]
 	}
@@ -198,7 +198,7 @@ func m56Projection(status string, fields ...any) map[string]any {
 }
 
 func m56Refused(reason string) map[string]any {
-	return m56Projection("failed", "kernelOutcome", "rejected", "delivery", "not_sent", "reason", reason)
+	return m56Projection("failed", "kernel_outcome", "rejected", "delivery", "not_sent", "reason", reason)
 }
 
 func m56Equal(t *testing.T, got, want map[string]any) {
@@ -206,7 +206,7 @@ func m56Equal(t *testing.T, got, want map[string]any) {
 	gotJSON, _ := json.Marshal(got)
 	wantJSON, _ := json.Marshal(want)
 	if !bytes.Equal(gotJSON, wantJSON) {
-		t.Fatalf("semanticOperation = %s; want %s", gotJSON, wantJSON)
+		t.Fatalf("semantic_operation = %s; want %s", gotJSON, wantJSON)
 	}
 }
 
@@ -219,14 +219,14 @@ func TestM56GraphQLMutationReachesExactlyOneSelectedExecutor(t *testing.T) {
 		want    map[string]any
 	}{
 		{"protocol ACK", semoptest.Outcome{Kind: operation.OutcomeAcknowledgedUnverified, Delivery: sent, Ack: operation.AckAccepted},
-			false, m56Projection("protocol_ack", "kernelOutcome", "acknowledged_unverified", "delivery", "sent", "acknowledgement", "accepted")},
+			false, m56Projection("protocol_ack", "kernel_outcome", "acknowledged_unverified", "delivery", "sent", "acknowledgement", "accepted")},
 		{"confirming readback", semoptest.Outcome{Kind: operation.OutcomeApplied, Delivery: sent, Readback: operation.ReadbackConfirms},
-			false, m56Projection("readback_confirmed", "kernelOutcome", "applied", "delivery", "sent", "readbackRelation", "confirms")},
+			false, m56Projection("readback_confirmed", "kernel_outcome", "applied", "delivery", "sent", "readback_relation", "confirms")},
 		{"admission only", semoptest.Outcome{}, false, m56Projection("accepted")},
 		{"guard change before invocation", semoptest.Outcome{Kind: operation.OutcomeApplied, Delivery: sent, Readback: operation.ReadbackConfirms},
-			true, m56Projection("failed", "kernelOutcome", "failed_no_contact", "delivery", "not_sent")},
+			true, m56Projection("failed", "kernel_outcome", "failed_no_contact", "delivery", "not_sent")},
 		{"indeterminate delivery", semoptest.Outcome{Kind: operation.OutcomeIndeterminate, Delivery: operation.DeliveryUnknown},
-			false, m56Projection("unknown", "kernelOutcome", "indeterminate", "delivery", "unknown")},
+			false, m56Projection("unknown", "kernel_outcome", "indeterminate", "delivery", "unknown")},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -335,32 +335,32 @@ func TestM56GraphQLStructuralRefusalsNeverDispatch(t *testing.T) {
 	long := "a" + strings.Repeat("b", semanticoperations.MaxOpaqueIDBytes)
 	invalid, exhausted := semanticoperations.CodeInvalidArgument, semanticoperations.CodeResourceExhausted
 	// Each fragment spreads the next one twice: 2^30 selections if expanded.
-	fanOut := `mutation($input: SemanticOperationInput!) { semanticOperation(input: $input) { status } ...F0 }`
+	fanOut := `mutation($input: semantic_operation_input!) { semantic_operation(input: $input) { status } ...F0 }`
 	for level := 0; level < 30; level++ {
 		next := fmt.Sprintf("F%d", level+1)
-		fanOut += fmt.Sprintf(" fragment F%d on Mutation { ...%s ...%s }", level, next, next)
+		fanOut += fmt.Sprintf(" fragment F%d on mutation { ...%s ...%s }", level, next, next)
 	}
-	fanOut += " fragment F30 on Mutation { __typename }"
-	validInline := `assetId: "asset:synthetic", bindingId: "binding:synthetic", capabilityInstanceId: "capability:synthetic", operation: {pack: {id: "fixture.pack.synthetic", version: "1.0.0"}, id: "fixture.operation.synthetic", version: "1.0.0"}, arguments: [{id: "fixture.field.level", value: {kind: "boolean", boolean: true}}], expectedSemanticRevision: "3", expectedCapabilityRevision: "2", expectedCapabilityInstanceRevision: "1", expectedSourceEpochId: "epoch:synthetic", expectedDriverGeneration: "4", preconditions: [], timeoutMs: 1000`
+	fanOut += " fragment F30 on mutation { __typename }"
+	validInline := `asset_id: "asset:synthetic", binding_id: "binding:synthetic", capability_instance_id: "capability:synthetic", operation: {pack: {id: "fixture.pack.synthetic", version: "1.0.0"}, id: "fixture.operation.synthetic", version: "1.0.0"}, arguments: [{id: "fixture.field.level", value: {kind: "boolean", boolean: true}}], expected_semantic_revision: "3", expected_capability_revision: "2", expected_capability_instance_revision: "1", expected_source_epoch_id: "epoch:synthetic", expected_driver_generation: "4", preconditions: [], timeout_ms: 1000`
 	resolverRefusals := []struct {
 		name  string
 		build mutation
 		code  semanticoperations.Code
 	}{
-		{"numeric opaque identifier", withInput(func(in map[string]any) { in["assetId"] = 7 }), invalid},
-		{"numeric revision", withInput(func(in map[string]any) { in["expectedSemanticRevision"] = 3 }), invalid},
-		{"numeric nested revision", withInput(func(in map[string]any) { precondition(in)["candidateRevision"] = 2 }), invalid},
-		{"numeric nested identifier", withInput(func(in map[string]any) { precondition(in)["candidateId"] = 1 }), invalid},
-		{"zero timeout", withInput(func(in map[string]any) { in["timeoutMs"] = 0 }), invalid},
-		{"timeout above bound", withInput(func(in map[string]any) { in["timeoutMs"] = 5001 }), invalid},
-		{"fractional timeout", withInput(func(in map[string]any) { in["timeoutMs"] = 1.5 }), invalid},
-		{"string timeout", withInput(func(in map[string]any) { in["timeoutMs"] = "1000" }), invalid},
-		{"boolean timeout", withInput(func(in map[string]any) { in["timeoutMs"] = true }), invalid},
+		{"numeric opaque identifier", withInput(func(in map[string]any) { in["asset_id"] = 7 }), invalid},
+		{"numeric revision", withInput(func(in map[string]any) { in["expected_semantic_revision"] = 3 }), invalid},
+		{"numeric nested revision", withInput(func(in map[string]any) { precondition(in)["candidate_revision"] = 2 }), invalid},
+		{"numeric nested identifier", withInput(func(in map[string]any) { precondition(in)["candidate_id"] = 1 }), invalid},
+		{"zero timeout", withInput(func(in map[string]any) { in["timeout_ms"] = 0 }), invalid},
+		{"timeout above bound", withInput(func(in map[string]any) { in["timeout_ms"] = 5001 }), invalid},
+		{"fractional timeout", withInput(func(in map[string]any) { in["timeout_ms"] = 1.5 }), invalid},
+		{"string timeout", withInput(func(in map[string]any) { in["timeout_ms"] = "1000" }), invalid},
+		{"boolean timeout", withInput(func(in map[string]any) { in["timeout_ms"] = true }), invalid},
 		{"string boolean value", withInput(func(in map[string]any) { argument(in)["value"] = map[string]any{"kind": "boolean", "boolean": "true"} }), invalid},
 		{"singleton argument list coercion", withInput(func(in map[string]any) { in["arguments"] = in["arguments"].([]any)[0] }), invalid},
 		{"singleton precondition list coercion", withInput(func(in map[string]any) { in["preconditions"] = in["preconditions"].([]any)[0] }), invalid},
-		{"zero revision", withInput(func(in map[string]any) { in["expectedCapabilityRevision"] = "0" }), invalid},
-		{"noncanonical revision", withInput(func(in map[string]any) { in["expectedDriverGeneration"] = "04" }), invalid},
+		{"zero revision", withInput(func(in map[string]any) { in["expected_capability_revision"] = "0" }), invalid},
+		{"noncanonical revision", withInput(func(in map[string]any) { in["expected_driver_generation"] = "04" }), invalid},
 		{"mismatched value arm", withInput(func(in map[string]any) { argument(in)["value"] = map[string]any{"kind": "boolean", "text": "true"} }), invalid},
 		{"unordered arguments", withInput(func(in map[string]any) {
 			first := in["arguments"].([]any)[0]
@@ -376,13 +376,13 @@ func TestM56GraphQLStructuralRefusalsNeverDispatch(t *testing.T) {
 			}
 			in["arguments"] = arguments
 		}), exhausted},
-		{"overlong identifier", withInput(func(in map[string]any) { in["assetId"] = long }), exhausted},
-		{"overlong nested identifier", withInput(func(in map[string]any) { precondition(in)["candidateId"] = long }), exhausted},
-		{"overlong source epoch", withInput(func(in map[string]any) { in["expectedSourceEpochId"] = long }), exhausted},
-		{"two fields through an alias", withQuery(`mutation($input: SemanticOperationInput!) { a: semanticOperation(input: $input) { status } b: semanticOperation(input: $input) { status } }`), invalid},
-		{"two fields through fragments", withQuery(`mutation($input: SemanticOperationInput!) { ...Op ...Op } fragment Op on Mutation { semanticOperation(input: $input) { status } }`), invalid},
+		{"overlong identifier", withInput(func(in map[string]any) { in["asset_id"] = long }), exhausted},
+		{"overlong nested identifier", withInput(func(in map[string]any) { precondition(in)["candidate_id"] = long }), exhausted},
+		{"overlong source epoch", withInput(func(in map[string]any) { in["expected_source_epoch_id"] = long }), exhausted},
+		{"two fields through an alias", withQuery(`mutation($input: semantic_operation_input!) { a: semantic_operation(input: $input) { status } b: semantic_operation(input: $input) { status } }`), invalid},
+		{"two fields through fragments", withQuery(`mutation($input: semantic_operation_input!) { ...Op ...Op } fragment Op on mutation { semantic_operation(input: $input) { status } }`), invalid},
 		{"exponential fragment fan-out", withQuery(fanOut), invalid},
-		{"skipped second field still counts", withQuery(`mutation($input: SemanticOperationInput!) { semanticOperation(input: $input) { status } ... on Mutation @skip(if: true) { again: semanticOperation(input: $input) { status } } }`), invalid},
+		{"skipped second field still counts", withQuery(`mutation($input: semantic_operation_input!) { semantic_operation(input: $input) { status } ... on mutation @skip(if: true) { again: semantic_operation(input: $input) { status } } }`), invalid},
 		{"non-JSON media type", withContentType("text/plain"), invalid},
 		{"non-UTF-8 charset", withContentType("application/json; charset=latin1"), invalid},
 	}
@@ -402,18 +402,18 @@ func TestM56GraphQLStructuralRefusalsNeverDispatch(t *testing.T) {
 		build mutation
 	}{
 		{"unknown member", withInput(func(in map[string]any) { in["route"] = "binding:synthetic" })},
-		{"snake_case nested member", withInput(func(in map[string]any) {
+		{"old camelCase nested member", withInput(func(in map[string]any) {
 			p := precondition(in)
-			p["candidate_id"] = p["candidateId"]
-			delete(p, "candidateId")
+			p["candidateId"] = p["candidate_id"]
+			delete(p, "candidate_id")
 		})},
-		{"missing member", withInput(func(in map[string]any) { delete(in, "expectedDriverGeneration") })},
-		{"null member", withInput(func(in map[string]any) { in["bindingId"] = nil })},
-		{"query operation", withQuery(`query($input: SemanticOperationInput!) { semanticOperation(input: $input) { status } }`)},
-		{"missing variable", withQuery(`mutation($other: SemanticOperationInput!) { semanticOperation(input: $other) { status } }`)},
-		{"extra argument", withQuery(`mutation($input: SemanticOperationInput!) { semanticOperation(input: $input, dryRun: true) { status } }`)},
-		{"inline numeric identifier", withQuery(`mutation { semanticOperation(input: {` + strings.Replace(validInline, `assetId: "asset:synthetic"`, `assetId: 7`, 1) + `}) { status } }`)},
-		{"invalid document", withQuery(`mutation { semanticOperation(input: { }`)},
+		{"missing member", withInput(func(in map[string]any) { delete(in, "expected_driver_generation") })},
+		{"null member", withInput(func(in map[string]any) { in["binding_id"] = nil })},
+		{"query operation", withQuery(`query($input: semantic_operation_input!) { semantic_operation(input: $input) { status } }`)},
+		{"missing variable", withQuery(`mutation($other: semantic_operation_input!) { semantic_operation(input: $other) { status } }`)},
+		{"extra argument", withQuery(`mutation($input: semantic_operation_input!) { semantic_operation(input: $input, dryRun: true) { status } }`)},
+		{"inline numeric identifier", withQuery(`mutation { semantic_operation(input: {` + strings.Replace(validInline, `asset_id: "asset:synthetic"`, `asset_id: 7`, 1) + `}) { status } }`)},
+		{"invalid document", withQuery(`mutation { semantic_operation(input: { }`)},
 	}
 	for _, test := range requestErrors {
 		t.Run(test.name, func(t *testing.T) {
@@ -433,7 +433,7 @@ func TestM56GraphQLStructuralRefusalsNeverDispatch(t *testing.T) {
 	})
 	t.Run("non-JSON transports", func(t *testing.T) {
 		h := newM56Harness(t, semoptest.Outcome{})
-		inline := `mutation { semanticOperation(input: {` + validInline + `}) { status } }`
+		inline := `mutation { semantic_operation(input: {` + validInline + `}) { status } }`
 		requests := []*http.Request{
 			httptest.NewRequest(http.MethodGet, "/graphql?query="+url.QueryEscape(inline), nil),
 			httptest.NewRequest(http.MethodPost, "/graphql?query="+url.QueryEscape(inline), strings.NewReader(`{}`)),
@@ -545,7 +545,7 @@ func TestM56GraphQLParsedInputSizeIsBoundedBeforeAdmission(t *testing.T) {
 	transports := map[string]func(t *testing.T, input map[string]any) []byte{
 		"variables": func(t *testing.T, input map[string]any) []byte { return m56Body(t, m56Mutation, input) },
 		"inline literal": func(t *testing.T, input map[string]any) []byte {
-			body, err := json.Marshal(map[string]any{"query": "mutation { semanticOperation(input: " + m56Literal(t, input) + ") { status reason } }"})
+			body, err := json.Marshal(map[string]any{"query": "mutation { semantic_operation(input: " + m56Literal(t, input) + ") { status reason } }"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -581,13 +581,13 @@ func TestM56GraphQLParsedInputSizeIsBoundedBeforeAdmission(t *testing.T) {
 func TestM56GraphQLAcceptsInlineLiteralsAndDefaults(t *testing.T) {
 	h := newM56Harness(t, semoptest.Outcome{Kind: operation.OutcomeAcknowledgedUnverified, Delivery: operation.DeliverySent, Ack: operation.AckAccepted})
 	request := h.f.Request()
-	query := `mutation($asset: String!) { semanticOperation(input: {assetId: $asset, bindingId: "binding:synthetic", capabilityInstanceId: "capability:synthetic",
+	query := `mutation($asset: String!) { semantic_operation(input: {asset_id: $asset, binding_id: "binding:synthetic", capability_instance_id: "capability:synthetic",
 	  operation: {pack: {id: "fixture.pack.synthetic", version: "1.0.0"}, id: "fixture.operation.synthetic", version: "1.0.0"},
 	  arguments: [{id: "fixture.field.level", value: {kind: "boolean", boolean: true}}],
-	  expectedSemanticRevision: "` + string(request.ExpectedSemanticRevision) + `", expectedCapabilityRevision: "` + string(request.ExpectedCapabilityRevision) + `",
-	  expectedCapabilityInstanceRevision: "1", expectedSourceEpochId: "epoch:synthetic", expectedDriverGeneration: "4",
-	  preconditions: [{fact: {packId: "fixture.pack.synthetic", packVersion: "1.0.0", factId: "fixture.fact.interlock", dimensions: []}, candidateId: "candidate:interlock", candidateRevision: "2", operator: "equal", expected: {kind: "boolean", boolean: true}}],
-	  timeoutMs: 1000}) { status } }`
+	  expected_semantic_revision: "` + string(request.ExpectedSemanticRevision) + `", expected_capability_revision: "` + string(request.ExpectedCapabilityRevision) + `",
+	  expected_capability_instance_revision: "1", expected_source_epoch_id: "epoch:synthetic", expected_driver_generation: "4",
+	  preconditions: [{fact: {pack_id: "fixture.pack.synthetic", pack_version: "1.0.0", fact_id: "fixture.fact.interlock", dimensions: []}, candidate_id: "candidate:interlock", candidate_revision: "2", operator: "equal", expected: {kind: "boolean", boolean: true}}],
+	  timeout_ms: 1000}) { status } }`
 	body, err := json.Marshal(map[string]any{"query": query, "variables": map[string]any{"asset": "asset:synthetic"}, "operationName": nil})
 	if err != nil {
 		t.Fatal(err)
@@ -636,7 +636,7 @@ func TestM56GraphQLExecutionOutsideHTTPFailsClosed(t *testing.T) {
 	h.untouched(t)
 }
 
-// Requests that do not select semanticOperation are served exactly as on main:
+// Requests that do not select semantic_operation are served exactly as on main:
 // each one goes through a handler built the way main built it (the schema
 // without the route or its extension, the original root object) and through
 // NewInvokeHandler, and status, headers and body must be byte-identical. Only
@@ -664,31 +664,31 @@ func TestM56GraphQLNonSemanticRequestsMatchMainHandler(t *testing.T) {
 		return string(encoded)
 	}
 	padding := strings.Repeat(" ", 2*semanticoperations.MaxRequestBytes)
-	comment := strings.Repeat("# semanticOperation(input: {}) { status }\n", 4096)
-	named := "{ __typename } # semanticOperation"
+	comment := strings.Repeat("# semantic_operation(input: {}) { status }\n", 4096)
+	named := "{ __typename } # semantic_operation"
 	requests := []struct {
 		name, method, target, contentType, encoding, body string
 	}{
 		{"plain query", http.MethodPost, "/graphql", "application/json", "", `{"query":"{ __typename }"}`},
-		{"mixed-case query key with a comment naming the field", http.MethodPost, "/graphql", "application/json", "", `{"Query":"{ __typename } # semanticOperation"}`},
+		{"mixed-case query key with a comment naming the field", http.MethodPost, "/graphql", "application/json", "", `{"query":"{ __typename } # semantic_operation"}`},
 		{"upper-case members", http.MethodPost, "/graphql", "application/json", "",
-			`{"QUERY":"query Q { __typename } # semanticOperation","OPERATIONNAME":"Q","VARIABLES":{"v":"semanticOperation"}}`},
-		{"alias named after the field", http.MethodPost, "/graphql", "application/json", "", `{"query":"{ semanticOperation: __typename }"}`},
-		{"duplicate query members", http.MethodPost, "/graphql", "application/json", "", `{"query":"{ semanticSnapshot }","query":"{ __typename } # semanticOperation"}`},
-		{"whitespace-padded body", http.MethodPost, "/graphql", "application/json", "", `{"query":"{ __typename } # semanticOperation"` + padding + `}`},
+			`{"QUERY":"query Q { __typename } # semantic_operation","OPERATIONNAME":"Q","VARIABLES":{"v":"semantic_operation"}}`},
+		{"alias named after the field", http.MethodPost, "/graphql", "application/json", "", `{"query":"{ semantic_operation: __typename }"}`},
+		{"duplicate query members", http.MethodPost, "/graphql", "application/json", "", `{"query":"{ semantic_snapshot }","query":"{ __typename } # semantic_operation"}`},
+		{"whitespace-padded body", http.MethodPost, "/graphql", "application/json", "", `{"query":"{ __typename } # semantic_operation"` + padding + `}`},
 		{"long comment naming the field", http.MethodPost, "/graphql", "application/json", "", jsonBody(map[string]any{"query": "{ __typename }\n" + comment})},
 		{"large variables naming the field", http.MethodPost, "/graphql", "application/json", "",
-			jsonBody(map[string]any{"query": "{ __typename }", "variables": map[string]any{"v": strings.Repeat("semanticOperation", 16384)}})},
-		{"mutation without the field", http.MethodPost, "/graphql", "application/json", "", `{"query":"mutation { __typename } # semanticOperation"}`},
+			jsonBody(map[string]any{"query": "{ __typename }", "variables": map[string]any{"v": strings.Repeat("semantic_operation", 16384)}})},
+		{"mutation without the field", http.MethodPost, "/graphql", "application/json", "", `{"query":"mutation { __typename } # semantic_operation"}`},
 		{"string variables", http.MethodPost, "/graphql", "application/json", "", `{"query":"{ __typename }","variables":"{\"v\":1}"}`},
 		{"batched request", http.MethodPost, "/graphql", "application/json", "", `[{"query":"{ __typename }"}]`},
 		{"trailing JSON value", http.MethodPost, "/graphql", "application/json", "", `{"query":"{ __typename }"} {}`},
 		{"truncated JSON", http.MethodPost, "/graphql", "application/json", "", `{"query":`},
-		{"invalid UTF-8", http.MethodPost, "/graphql", "application/json", "", "{\"query\":\"{ __typename } # semanticOperation \xff\"}"},
+		{"invalid UTF-8", http.MethodPost, "/graphql", "application/json", "", "{\"query\":\"{ __typename } # semantic_operation \xff\"}"},
 		{"syntax error", http.MethodPost, "/graphql", "application/json", "", `{"query":"{ __typename "}`},
 		{"unknown field", http.MethodPost, "/graphql", "application/json", "", `{"query":"{ semanticOperationX }"}`},
 		{"empty body", http.MethodPost, "/graphql", "application/json", "", ""},
-		{"text/plain body", http.MethodPost, "/graphql", "text/plain", "", `{"query":"{ __typename } # semanticOperation"}`},
+		{"text/plain body", http.MethodPost, "/graphql", "text/plain", "", `{"query":"{ __typename } # semantic_operation"}`},
 		{"latin1 charset", http.MethodPost, "/graphql", "application/json; charset=latin1", "", `{"query":"{ __typename }"}`},
 		{"gzip-labelled body", http.MethodPost, "/graphql", "application/json", "gzip", `{"query":"{ __typename }"}`},
 		{"form body", http.MethodPost, "/graphql", "application/x-www-form-urlencoded", "", url.Values{"query": {named}}.Encode()},
@@ -723,10 +723,10 @@ func TestM56GraphQLSchemaDeclaresClosedRoute(t *testing.T) {
 	h := newM56Harness(t, semoptest.Outcome{})
 	query := `{
 	  mutation: __schema { mutationType { fields { name type { kind name } args { name type { kind ofType { name } } } } } }
-	  input: __type(name: "SemanticOperationInput") { inputFields { name type { ...T } } }
-	  result: __type(name: "SemanticOperationResult") { fields { name type { ...T } } }
-	  precondition: __type(name: "SemanticPreconditionInput") { inputFields { name } }
-	  value: __type(name: "SemanticValueInput") { inputFields { name type { ...T } } }
+	  input: __type(name: "semantic_operation_input") { inputFields { name type { ...T } } }
+	  result: __type(name: "semantic_operation_result") { fields { name type { ...T } } }
+	  precondition: __type(name: "semantic_precondition_input") { inputFields { name } }
+	  value: __type(name: "semantic_value_input") { inputFields { name type { ...T } } }
 	}
 	fragment T on __Type { kind name ofType { kind name ofType { kind name ofType { kind name } } } }`
 	body, _ := json.Marshal(map[string]string{"query": query})
@@ -763,39 +763,39 @@ func TestM56GraphQLSchemaDeclaresClosedRoute(t *testing.T) {
 	}
 	found := false
 	for _, field := range response.Data.Mutation.MutationType.Fields {
-		if field.Name != "semanticOperation" {
+		if field.Name != "semantic_operation" {
 			continue
 		}
 		found = true
-		if field.Type.Kind != "OBJECT" || field.Type.Name != "SemanticOperationResult" || len(field.Args) != 1 ||
-			field.Args[0].Name != "input" || field.Args[0].Type.Kind != "NON_NULL" || field.Args[0].Type.OfType.Name != "SemanticOperationInput" {
-			t.Fatalf("semanticOperation field = %+v", field)
+		if field.Type.Kind != "OBJECT" || field.Type.Name != "semantic_operation_result" || len(field.Args) != 1 ||
+			field.Args[0].Name != "input" || field.Args[0].Type.Kind != "NON_NULL" || field.Args[0].Type.OfType.Name != "semantic_operation_input" {
+			t.Fatalf("semantic_operation field = %+v", field)
 		}
 	}
 	if !found {
-		t.Fatal("semanticOperation mutation missing")
+		t.Fatal("semantic_operation mutation missing")
 	}
 	wantInput := map[string]string{
-		"assetId": "String!", "bindingId": "String!", "capabilityInstanceId": "String!", "operation": "SemanticDefinitionRefInput!",
-		"arguments": "[SemanticTypedFieldInput!]!", "expectedSemanticRevision": "String!", "expectedCapabilityRevision": "String!",
-		"expectedCapabilityInstanceRevision": "String!", "expectedSourceEpochId": "String!", "expectedDriverGeneration": "String!",
-		"preconditions": "[SemanticPreconditionInput!]!", "timeoutMs": "Int!",
+		"asset_id": "String!", "binding_id": "String!", "capability_instance_id": "String!", "operation": "semantic_definition_ref_input!",
+		"arguments": "[semantic_typed_field_input!]!", "expected_semantic_revision": "String!", "expected_capability_revision": "String!",
+		"expected_capability_instance_revision": "String!", "expected_source_epoch_id": "String!", "expected_driver_generation": "String!",
+		"preconditions": "[semantic_precondition_input!]!", "timeout_ms": "Int!",
 	}
-	m56RequireTypes(t, "SemanticOperationInput", response.Data.Input.InputFields, wantInput)
-	m56RequireTypes(t, "SemanticOperationResult", response.Data.Result.Fields, map[string]string{
-		"status": "String!", "kernelOutcome": "String", "delivery": "String", "acknowledgement": "String", "readbackRelation": "String", "reason": "String",
+	m56RequireTypes(t, "semantic_operation_input", response.Data.Input.InputFields, wantInput)
+	m56RequireTypes(t, "semantic_operation_result", response.Data.Result.Fields, map[string]string{
+		"status": "String!", "kernel_outcome": "String", "delivery": "String", "acknowledgement": "String", "readback_relation": "String", "reason": "String",
 	})
 	names := []string{}
 	for _, field := range response.Data.Precondition.InputFields {
 		names = append(names, field.Name)
 	}
 	sort.Strings(names)
-	if strings.Join(names, ",") != "candidateId,candidateRevision,expected,fact,operator" {
-		t.Fatalf("SemanticPreconditionInput fields = %v", names)
+	if strings.Join(names, ",") != "candidate_id,candidate_revision,expected,fact,operator" {
+		t.Fatalf("semantic_precondition_input fields = %v", names)
 	}
-	m56RequireTypes(t, "SemanticValueInput", response.Data.Value.InputFields, map[string]string{
-		"kind": "String!", "quantity": "SemanticQuantityInput", "boolean": "Boolean", "text": "String",
-		"symbol": "SemanticSymbolInput", "symbols": "[SemanticSymbolInput!]", "time": "SemanticTimePointInput",
+	m56RequireTypes(t, "semantic_value_input", response.Data.Value.InputFields, map[string]string{
+		"kind": "String!", "quantity": "semantic_quantity_input", "boolean": "Boolean", "text": "String",
+		"symbol": "semantic_symbol_input", "symbols": "[semantic_symbol_input!]", "time": "semantic_time_point_input",
 	})
 }
 

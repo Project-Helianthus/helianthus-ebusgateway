@@ -275,7 +275,7 @@ func TestIssue743FixtureIsExactVR940RawShape(t *testing.T) {
 	if got := len(msp06Slice(t, fixture["services"], "services")); got != 1 {
 		t.Fatalf("services = %d, want 1", got)
 	}
-	for field, want := range map[string]int{"devices": 1, "entities": 11, "features": 20, "usecases": 10} {
+	for field, want := range map[string]int{"devices": 1, "entities": 11, "features": 20, "use_cases": 10} {
 		if got := len(msp06Slice(t, fixture[field], field)); got != want {
 			t.Fatalf("%s = %d, want %d", field, got, want)
 		}
@@ -298,7 +298,7 @@ func TestIssue743FixtureIsExactVR940RawShape(t *testing.T) {
 		}
 	}
 	var names []string
-	for _, raw := range msp06Slice(t, fixture["usecases"], "usecases") {
+	for _, raw := range msp06Slice(t, fixture["use_cases"], "use_cases") {
 		usecase := msp06Map(t, raw, "usecase")
 		names = append(names, usecase["name"].(string))
 		for _, field := range []string{"context_address", "actor", "resolved_role", "scenarios", "version", "availability", "document_subrevision"} {
@@ -339,13 +339,13 @@ func TestIssue743PublicHTTPBoundaryIsAlwaysExplicitRedacted(t *testing.T) {
 
 func TestIssue743BothBoundariesExposeExactlyTheSameNineClosedTools(t *testing.T) {
 	server, _ := msp06TestServer(t, &msp06Provider{snapshot: msp06Snapshot(t, "runtime-a")})
-	publicNames := msp06NamesWithPrefix(msp06Tools(t, server), "eebus.")
+	publicNames := msp06NamesWithPrefix(msp06Tools(t, server), "eebus_")
 	operatorResponse := doRPC(t, issue743OperatorHandler(t, server), rpcRequest{JSONRPC: "2.0", ID: 1, Method: "tools/list"})
 	operatorResult := msp06Map(t, operatorResponse.Result, "operator tools/list")
 	var operatorNames []string
 	for _, raw := range msp06Slice(t, operatorResult["tools"], "operator tools") {
 		name, _ := msp06Map(t, raw, "operator tool")["name"].(string)
-		if strings.HasPrefix(name, "eebus.") {
+		if strings.HasPrefix(name, "eebus_") {
 			operatorNames = append(operatorNames, name)
 		}
 	}
@@ -413,7 +413,7 @@ func TestIssue743RawTopologyPreservesVR940OperationalFields(t *testing.T) {
 	topologyResult := msp06Call(t, operator, msp06TopologyGetTool, map[string]any{})
 	issue743Meta(t, topologyResult, "raw", "eebus.raw.read")
 	topology := msp06Map(t, topologyResult.envelope["data"], "topology")
-	for field, want := range map[string]int{"devices": 1, "entities": 11, "features": 20, "usecases": 10} {
+	for field, want := range map[string]int{"devices": 1, "entities": 11, "features": 20, "use_cases": 10} {
 		if got := len(msp06Slice(t, topology[field], "topology."+field)); got != want {
 			t.Errorf("raw topology %s = %d, want %d", field, got, want)
 		}
@@ -479,7 +479,7 @@ func TestIssue743PublicProjectionIrreversiblyOmitsRawIdentityAddressAndMetadata(
 
 func TestIssue743RawSnapshotNeverLeaksIntoEbusV1Tools(t *testing.T) {
 	server, _ := issue743Server(t)
-	for _, tool := range []string{"ebus.v1.runtime.status.get", "ebus.v1.registry.devices.list", "ebus.v1.semantic.snapshot.get"} {
+	for _, tool := range []string{"ebus_v1_runtime_status_get", "ebus_v1_registry_devices_list", "ebus_v1_semantic_snapshot_get"} {
 		result := msp06Call(t, server.Handler(), tool, map[string]any{})
 		issue743AssertNoRawIdentity(t, result.raw)
 		issue743AssertSecretCorpusAbsent(t, result.raw)

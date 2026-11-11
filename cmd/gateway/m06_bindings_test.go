@@ -469,14 +469,14 @@ func TestM06DisabledEEBusSurfaceIsDiscoverableAndFailsClosed(t *testing.T) {
 	}
 	var got []string
 	for _, tool := range listed.Tools {
-		if strings.HasPrefix(tool.Name, "eebus.v1.") {
+		if strings.HasPrefix(tool.Name, "eebus_v1_") {
 			got = append(got, tool.Name)
 		}
 	}
 	want := []string{
-		"eebus.v1.runtime.status.get", "eebus.v1.services.list", "eebus.v1.services.get",
-		"eebus.v1.sessions.list", "eebus.v1.sessions.get", "eebus.v1.topology.get",
-		"eebus.v1.snapshot.capture", "eebus.v1.snapshot.drop", "eebus.v1.pairing.status.get",
+		"eebus_v1_runtime_status_get", "eebus_v1_services_list", "eebus_v1_services_get",
+		"eebus_v1_sessions_list", "eebus_v1_sessions_get", "eebus_v1_topology_get",
+		"eebus_v1_snapshot_capture", "eebus_v1_snapshot_drop", "eebus_v1_pairing_status_get",
 	}
 	sort.Strings(got)
 	sort.Strings(want)
@@ -490,7 +490,7 @@ func TestM06DisabledEEBusSurfaceIsDiscoverableAndFailsClosed(t *testing.T) {
 			}
 		}
 	}
-	request = httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(rctlRPCBody("tools/call", rctlCallParams("eebus.v1.services.list", `{}`))))
+	request = httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(rctlRPCBody("tools/call", rctlCallParams("eebus_v1_services_list", `{}`))))
 	response = httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
 	result, rpcErr = rctlDecodeRPC(t, response.Body.Bytes())

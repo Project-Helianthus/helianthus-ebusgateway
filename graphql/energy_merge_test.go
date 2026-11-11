@@ -427,7 +427,7 @@ func TestApplyEnergyFromRegister(t *testing.T) {
 
 	totals := provider.EnergyTotals()
 	if totals == nil {
-		t.Fatal("EnergyTotals() = nil; want non-nil")
+		t.Fatal("energy_totals() = nil; want non-nil")
 	}
 	if totals.Gas.Climate.Today != 1.25 {
 		t.Fatalf("Gas.Climate.Today = %f; want 1.25", totals.Gas.Climate.Today)
@@ -458,7 +458,7 @@ func TestApplyEnergyFromRegister_OverwritesBroadcast(t *testing.T) {
 
 	totals := provider.EnergyTotals()
 	if totals == nil {
-		t.Fatal("EnergyTotals() = nil; want non-nil")
+		t.Fatal("energy_totals() = nil; want non-nil")
 	}
 	if totals.Gas.Climate.Today != 2.5 {
 		t.Fatalf("Gas.Climate.Today = %f; want 2.5", totals.Gas.Climate.Today)
@@ -622,7 +622,7 @@ func TestApplyEnergyFromRegister_MetadataFresh(t *testing.T) {
 
 	totals := provider.EnergyTotals()
 	if totals == nil {
-		t.Fatal("EnergyTotals() = nil; want non-nil")
+		t.Fatal("energy_totals() = nil; want non-nil")
 	}
 	if totals.Gas.Climate.TodayMeta.FreshnessState != EnergyFreshnessStateFresh {
 		t.Fatalf("register freshness = %q; want fresh", totals.Gas.Climate.TodayMeta.FreshnessState)
@@ -679,7 +679,7 @@ func TestLiveSemanticProvider_EnergyTotalsVisibleWhenNeverSeen(t *testing.T) {
 
 	totals := provider.EnergyTotals()
 	if totals == nil {
-		t.Fatal("EnergyTotals() = nil; want never-seen energy shape")
+		t.Fatal("energy_totals() = nil; want never-seen energy shape")
 	}
 	if got := totals.Gas.Climate.TodayMeta.FreshnessState; got != EnergyFreshnessStateNeverSeen {
 		t.Fatalf("Gas.Climate.TodayMeta.FreshnessState = %q; want never_seen", got)
@@ -691,7 +691,7 @@ func TestLiveSemanticProvider_EnergyTotalsVisibleWhenNeverSeen(t *testing.T) {
 	provider.SetEnergyPassiveState("unavailable")
 	unavailable := provider.EnergyTotals()
 	if unavailable == nil {
-		t.Fatal("EnergyTotals() unavailable = nil; want visible energy shape")
+		t.Fatal("energy_totals() unavailable = nil; want visible energy shape")
 	}
 	if got := unavailable.Gas.Climate.TodayMeta.FreshnessState; got != EnergyFreshnessStateUnavailable {
 		t.Fatalf("Gas.Climate.TodayMeta.FreshnessState = %q; want unavailable", got)

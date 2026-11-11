@@ -119,7 +119,7 @@ func TestM22RealHandlerSixContributionsAndDetachedDescriptors(t *testing.T) {
 	if err := json.Unmarshal(bootstrap["portal_read"], &read); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(read.UnavailableOperations, []string{"semanticSnapshot"}) {
+	if !reflect.DeepEqual(read.UnavailableOperations, []string{"semantic_snapshot"}) {
 		t.Fatalf("availability: %+v", read)
 	}
 }
@@ -176,7 +176,7 @@ func TestM22BootstrapNilProvidersAndSharedReadFailure(t *testing.T) {
 	if err := json.Unmarshal(bootstrap["portal_read"], &read); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(read.UnavailableOperations, []string{"PortalCatalogV1", "semanticSnapshot"}) {
+	if !reflect.DeepEqual(read.UnavailableOperations, []string{"PortalCatalogV1", "semantic_snapshot"}) {
 		t.Fatalf("availability: %+v", read)
 	}
 	m, index := m22Fixture()
@@ -245,7 +245,7 @@ func TestM22SharedReadAdvertisementRequiresMountedOperation(t *testing.T) {
 		}
 		want := []string{"PortalCatalogV1"}
 		if !mounted {
-			want = append(want, "semanticSnapshot")
+			want = append(want, "semantic_snapshot")
 		}
 		if !reflect.DeepEqual(read.UnavailableOperations, want) {
 			t.Fatalf("mounted=%v: %+v", mounted, read)

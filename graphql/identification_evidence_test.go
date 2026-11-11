@@ -31,7 +31,7 @@ func TestBusIdentificationEvidenceQueryReturnsRawBytesOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewHandler error = %v", err)
 	}
-	query := `{"query":"{ busIdentificationEvidence(limit: 1) { evidenceClass decoded qualification sessionId count items { address sequence sessionId capturedAt requestHex responseHex } } }"}`
+	query := `{"query":"{ bus_identification_evidence(limit: 1) { evidence_class decoded qualification session_id count items { address sequence session_id captured_at request_hex response_hex } } }"}`
 	req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(query))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -42,20 +42,20 @@ func TestBusIdentificationEvidenceQueryReturnsRawBytesOnly(t *testing.T) {
 	var out struct {
 		Data struct {
 			Evidence struct {
-				EvidenceClass string `json:"evidenceClass"`
+				EvidenceClass string `json:"evidence_class"`
 				Decoded       bool   `json:"decoded"`
 				Qualification string `json:"qualification"`
-				SessionID     string `json:"sessionId"`
+				SessionID     string `json:"session_id"`
 				Count         int    `json:"count"`
 				Items         []struct {
 					Address     int    `json:"address"`
 					Sequence    int    `json:"sequence"`
-					SessionID   string `json:"sessionId"`
-					CapturedAt  string `json:"capturedAt"`
-					RequestHex  string `json:"requestHex"`
-					ResponseHex string `json:"responseHex"`
+					SessionID   string `json:"session_id"`
+					CapturedAt  string `json:"captured_at"`
+					RequestHex  string `json:"request_hex"`
+					ResponseHex string `json:"response_hex"`
 				} `json:"items"`
-			} `json:"busIdentificationEvidence"`
+			} `json:"bus_identification_evidence"`
 		} `json:"data"`
 		Errors []any `json:"errors"`
 	}
@@ -76,7 +76,7 @@ func TestBusIdentificationEvidenceQueryWithoutProviderIsEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewHandler error = %v", err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":"{ busIdentificationEvidence { count items { address } } }"}`))
+	req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":"{ bus_identification_evidence { count items { address } } }"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -85,7 +85,7 @@ func TestBusIdentificationEvidenceQueryWithoutProviderIsEmpty(t *testing.T) {
 			Evidence struct {
 				Count int   `json:"count"`
 				Items []any `json:"items"`
-			} `json:"busIdentificationEvidence"`
+			} `json:"bus_identification_evidence"`
 		} `json:"data"`
 		Errors []any `json:"errors"`
 	}

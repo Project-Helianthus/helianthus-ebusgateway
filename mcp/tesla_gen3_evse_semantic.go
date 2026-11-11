@@ -23,7 +23,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/projection"
 )
 
-const SemanticV1EVSECurrentGetTool = "semantic.v1.evse.current.get"
+const SemanticV1EVSECurrentGetTool = "semantic_v1_evse_current_get"
 
 var ErrTeslaGen3EVSESemanticUnavailable = errors.New("tesla Gen3 EVSE semantic publication unavailable")
 

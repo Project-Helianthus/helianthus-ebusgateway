@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	GrowattBMSRS485V202StatusGetTool = "modbus.v1.growatt.bms.rs485.status.get"
+	GrowattBMSRS485V202StatusGetTool = "modbus_v1_growatt_bms_rs485_status_get"
 	GrowattBMSRS485V202Profile       = "growatt.bms.rs485.1xsxxp.v2_02.readonly.v1"
 )
 

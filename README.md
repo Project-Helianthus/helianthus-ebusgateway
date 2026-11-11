@@ -279,3 +279,5 @@ not exist yet. Serial devices are supported on Linux and macOS.
 - Keep PR scope aligned to issue acceptance criteria.
 - Include closing keyword in PR body (example: `Fixes #93`).
 - Request agent review comment after opening the PR (`@codex review`).
+
+Public naming adoption and remaining provisional vocabulary are described in [the changelog](CHANGELOG.md) and [the bounded inventory](docs/architecture/naming-inventory.json). GraphQL uses snake_case; registered MCP tools join their namespace tokens with underscores.

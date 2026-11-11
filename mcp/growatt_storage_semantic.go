@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-const SemanticV1GrowattStorageCurrentGetTool = "semantic.v1.storage.growatt.current.get"
+const SemanticV1GrowattStorageCurrentGetTool = "semantic_v1_storage_growatt_current_get"
 
 var ErrGrowattStorageSemanticProviderUnavailable = errors.New("growatt BMS storage semantic provider unavailable")
 

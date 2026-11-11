@@ -20414,5 +20414,17 @@
     "Inspect GraphQL reflection and dynamically constructed names.",
     "Reconcile registered MCP names, dispatch, scope and emitted inventory.",
     "Verify indirect and negative results for ebusgo, modbus, tinyebus and addon packaging."
-  ]
+  ],
+  "adoption": {
+    "status": "bounded",
+    "evidence_class": "S",
+    "qualification": "not established by synthetic checks",
+    "supported_changes": "Bounded naming maps, structural GraphQL syntax, registered MCP tokens, six circuit setters and explicit control withdrawals. Other vocabulary retains its recorded status.",
+    "remaining_questions": [
+      "Selector-dependent target_temp_c retains its existing snake_case spelling.",
+      "energy_accumulated retains its provisional spelling.",
+      "Other unresolved native value and setter names remain provisional."
+    ],
+    "release_requirement": "Renew affected security, hardware and candidate evidence; complete independent review, full repository gates and affected transport/conformance before release."
+  }
 }

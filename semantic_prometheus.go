@@ -35,8 +35,8 @@ func writeSemanticMetrics(w *prometheusWriter, domains []SemanticMetricsDomain, 
 	w.writeType("helianthus_semantic_fact_state", "gauge")
 	w.writeHelp("helianthus_semantic_fact_value", "Current fresh qualified numeric or boolean SemReg fact value.")
 	w.writeType("helianthus_semantic_fact_value", "gauge")
-	w.writeHelp("helianthus_semantic_evidence_age_seconds", "Age of selected SemReg evidence when wall clocks are comparable.")
-	w.writeType("helianthus_semantic_evidence_age_seconds", "gauge")
+	w.writeHelp("helianthus_semantic_evidence_age", "Age of selected SemReg evidence when wall clocks are comparable.")
+	w.writeType("helianthus_semantic_evidence_age", "gauge")
 	w.writeHelp("helianthus_semantic_open_conflicts", "Open conflicts on the detached SemReg fact envelope.")
 	w.writeType("helianthus_semantic_open_conflicts", "gauge")
 	w.writeHelp("helianthus_semantic_projection_loss", "Loss kinds declared by the detached SemReg projection.")
@@ -171,7 +171,7 @@ func renderSemanticFact(emit func(string, float64, map[string]string) bool, doma
 			emit("helianthus_semantic_fact_state", 1, labels)
 			emit("helianthus_semantic_open_conflicts", float64(len(envelope.Conflicts)), semanticFactLabels(domain, key, dimension, connector))
 			if age, ok := semanticAge(candidate.Times.ReceivedAt, now); ok {
-				emit("helianthus_semantic_evidence_age_seconds", age, semanticFactLabels(domain, key, dimension, connector))
+				emit("helianthus_semantic_evidence_age", age, semanticFactLabels(domain, key, dimension, connector, "unit", "seconds"))
 			}
 			if len(envelope.Candidates) != 1 || len(envelope.Conflicts) != 0 || candidate.Quality.Qualification != semreg.QualificationQualified || candidate.Quality.Promotion != semreg.PromotionPromoted || candidate.Quality.Validity != semreg.ValidityGood || e.EffectiveAvailability != semreg.AvailabilityAvailable || e.Freshness != semreg.FreshnessFresh {
 				return false

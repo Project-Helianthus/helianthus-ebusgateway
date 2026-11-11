@@ -100,25 +100,25 @@ func TestIssue946VaillantRegulatorCapabilityMCPGraphQLParityAndSnapshot(t *testi
 		t.Fatalf("mcp.NewServer() error: %v", err)
 	}
 	server.SetStatusProvider(newMCPRuntimeStatusProvider(provider, nil))
-	live := mcpCallToolEnvelope(t, server.Handler(), "ebus.v1.runtime.status.get", `{}`)
+	live := mcpCallToolEnvelope(t, server.Handler(), "ebus_v1_runtime_status_get", `{}`)
 	liveData := live["data"].(map[string]any)
 	if got := liveData["vaillant_regulator_capability"]; got != graphQLCapability {
 		t.Fatalf("MCP capability = %#v; GraphQL = %#v", got, graphQLCapability)
 	}
 
-	captured := mcpCallToolEnvelope(t, server.Handler(), "ebus.v1.snapshot.capture", `{}`)
+	captured := mcpCallToolEnvelope(t, server.Handler(), "ebus_v1_snapshot_capture", `{}`)
 	snapshotID := captured["data"].(map[string]any)["snapshot_id"].(string)
 	provider.SetVaillantRegulatorCapability(graphql.VaillantRegulatorCapabilityNone)
-	snapshot := mcpCallToolEnvelope(t, server.Handler(), "ebus.v1.runtime.status.get", `{"consistency":{"mode":"SNAPSHOT","snapshot_id":"`+snapshotID+`"}}`)
+	snapshot := mcpCallToolEnvelope(t, server.Handler(), "ebus_v1_runtime_status_get", `{"consistency":{"mode":"SNAPSHOT","snapshot_id":"`+snapshotID+`"}}`)
 	if got := snapshot["data"].(map[string]any)["vaillant_regulator_capability"]; got != "PRESENT" {
 		t.Fatalf("snapshot regulator capability = %#v; want PRESENT", got)
 	}
-	semanticSnapshot := mcpCallToolEnvelope(t, server.Handler(), "ebus.v1.semantic.snapshot.get", `{"planes":["runtime_status"],"consistency":{"mode":"SNAPSHOT","snapshot_id":"`+snapshotID+`"}}`)
+	semanticSnapshot := mcpCallToolEnvelope(t, server.Handler(), "ebus_v1_semantic_snapshot_get", `{"planes":["runtime_status"],"consistency":{"mode":"SNAPSHOT","snapshot_id":"`+snapshotID+`"}}`)
 	semanticRuntime := semanticSnapshot["data"].(map[string]any)["planes"].(map[string]any)["runtime_status"].(map[string]any)
 	if got := semanticRuntime["vaillant_regulator_capability"]; got != "PRESENT" {
 		t.Fatalf("semantic snapshot regulator capability = %#v; want PRESENT", got)
 	}
-	if got := mcpCallToolEnvelope(t, server.Handler(), "ebus.v1.runtime.status.get", `{}`)["data"].(map[string]any)["vaillant_regulator_capability"]; got != "NONE" {
+	if got := mcpCallToolEnvelope(t, server.Handler(), "ebus_v1_runtime_status_get", `{}`)["data"].(map[string]any)["vaillant_regulator_capability"]; got != "NONE" {
 		t.Fatalf("live regulator capability after update = %#v; want NONE", got)
 	}
 }
@@ -181,7 +181,7 @@ func TestIssue946VaillantRegulatorCapabilityMCPGraphQLParityForExternalProviderV
 				t.Fatalf("mcp.NewServer() error: %v", err)
 			}
 			server.SetStatusProvider(newMCPRuntimeStatusProvider(provider, nil))
-			mcpCapability := mcpCallToolEnvelope(t, server.Handler(), "ebus.v1.runtime.status.get", `{}`)["data"].(map[string]any)["vaillant_regulator_capability"]
+			mcpCapability := mcpCallToolEnvelope(t, server.Handler(), "ebus_v1_runtime_status_get", `{}`)["data"].(map[string]any)["vaillant_regulator_capability"]
 			if mcpCapability != tc.want {
 				t.Fatalf("MCP capability = %#v; want %q", mcpCapability, tc.want)
 			}
@@ -216,7 +216,7 @@ func TestIssue946VaillantRegulatorCapabilityOptionalProviderFailsClosed(t *testi
 		t.Fatalf("mcp.NewServer() error: %v", err)
 	}
 	server.SetStatusProvider(newMCPRuntimeStatusProvider(legacy, nil))
-	if got := mcpCallToolEnvelope(t, server.Handler(), "ebus.v1.runtime.status.get", `{}`)["data"].(map[string]any)["vaillant_regulator_capability"]; got != "UNKNOWN" {
+	if got := mcpCallToolEnvelope(t, server.Handler(), "ebus_v1_runtime_status_get", `{}`)["data"].(map[string]any)["vaillant_regulator_capability"]; got != "UNKNOWN" {
 		t.Fatalf("legacy MCP capability = %#v; want UNKNOWN", got)
 	}
 }

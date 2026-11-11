@@ -17,15 +17,15 @@ import (
 )
 
 const (
-	eebusV1RuntimeStatusTool   = "eebus.v1.runtime.status.get"
-	eebusV1ServicesListTool    = "eebus.v1.services.list"
-	eebusV1ServicesGetTool     = "eebus.v1.services.get"
-	eebusV1SessionsListTool    = "eebus.v1.sessions.list"
-	eebusV1SessionsGetTool     = "eebus.v1.sessions.get"
-	eebusV1TopologyGetTool     = "eebus.v1.topology.get"
-	eebusV1SnapshotCaptureTool = "eebus.v1.snapshot.capture"
-	eebusV1SnapshotDropTool    = "eebus.v1.snapshot.drop"
-	eebusV1PairingStatusTool   = "eebus.v1.pairing.status.get"
+	eebusV1RuntimeStatusTool   = "eebus_v1_runtime_status_get"
+	eebusV1ServicesListTool    = "eebus_v1_services_list"
+	eebusV1ServicesGetTool     = "eebus_v1_services_get"
+	eebusV1SessionsListTool    = "eebus_v1_sessions_list"
+	eebusV1SessionsGetTool     = "eebus_v1_sessions_get"
+	eebusV1TopologyGetTool     = "eebus_v1_topology_get"
+	eebusV1SnapshotCaptureTool = "eebus_v1_snapshot_capture"
+	eebusV1SnapshotDropTool    = "eebus_v1_snapshot_drop"
+	eebusV1PairingStatusTool   = "eebus_v1_pairing_status_get"
 
 	eebusV1DefaultLiveTimeout = 3 * time.Second
 	eebusV1MaxLiveWorkers     = 8

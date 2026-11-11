@@ -157,27 +157,27 @@ func TestBuildSchema_ReflectsRegistry(t *testing.T) {
 	}
 	gotProjection := got.Devices[0].Projections[0]
 	if gotProjection.Plane != "Observability" {
-		t.Fatalf("Projection plane = %s; want Observability", gotProjection.Plane)
+		t.Fatalf("projection plane = %s; want Observability", gotProjection.Plane)
 	}
 	if len(gotProjection.Nodes) != 2 {
-		t.Fatalf("Projection nodes = %d; want 2", len(gotProjection.Nodes))
+		t.Fatalf("projection nodes = %d; want 2", len(gotProjection.Nodes))
 	}
 	nodeOut := gotProjection.Nodes[0]
 	if nodeOut.ID != canonical.String() {
-		t.Fatalf("Projection node id = %s; want %s", nodeOut.ID, canonical.String())
+		t.Fatalf("projection node id = %s; want %s", nodeOut.ID, canonical.String())
 	}
 	if nodeOut.Path != path.String() {
-		t.Fatalf("Projection node path = %s; want %s", nodeOut.Path, path.String())
+		t.Fatalf("projection node path = %s; want %s", nodeOut.Path, path.String())
 	}
 	if nodeOut.CanonicalPath != canonical.String() {
-		t.Fatalf("Projection node canonical = %s; want %s", nodeOut.CanonicalPath, canonical.String())
+		t.Fatalf("projection node canonical = %s; want %s", nodeOut.CanonicalPath, canonical.String())
 	}
 	if len(gotProjection.Edges) != 1 {
-		t.Fatalf("Projection edges = %d; want 1", len(gotProjection.Edges))
+		t.Fatalf("projection edges = %d; want 1", len(gotProjection.Edges))
 	}
 	edgeOut := gotProjection.Edges[0]
 	if edgeOut.ID == "" || edgeOut.From != canonical.String() || edgeOut.To != canonicalB.String() {
-		t.Fatalf("Projection edge = %+v; want from=%s to=%s", edgeOut, canonical.String(), canonicalB.String())
+		t.Fatalf("projection edge = %+v; want from=%s to=%s", edgeOut, canonical.String(), canonicalB.String())
 	}
 }
 

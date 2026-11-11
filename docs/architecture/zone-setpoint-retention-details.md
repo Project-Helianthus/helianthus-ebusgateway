@@ -4,7 +4,7 @@ This pure mapper hardening advances [gateway #1220](https://github.com/Project-H
 and partially advances [gateway #952](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/952).
 The [native zone setpoint cutover contract](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/architecture/zone-setpoint-semreg-cutover.md)
 remains the source for roles, qualification and representability; its
-[native catalog](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/protocols/vaillant/ebus-vaillant-B524-register-map.md)
+[native catalog](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/protocols/vaillant/ebus-vaillant-b524-register-map.md)
 precedes protocol claims. This change establishes no new native mapping,
 family qualification, publication path, recovery store or runtime integration.
 Nothing here promises stability before Helianthus 1.0.

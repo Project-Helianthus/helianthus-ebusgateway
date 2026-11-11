@@ -3,10 +3,10 @@
 //
 // Surfaces (canonical plan §4):
 //
-//   - ebus.v1.ebus_standard.services.list
-//   - ebus.v1.ebus_standard.commands.list
-//   - ebus.v1.ebus_standard.command.get
-//   - ebus.v1.ebus_standard.decode
+//   - ebus_v1_ebus_standard_services_list
+//   - ebus_v1_ebus_standard_commands_list
+//   - ebus_v1_ebus_standard_command_get
+//   - ebus_v1_ebus_standard_decode
 //
 // The server consumes the shared provider from helianthus-ebusreg and the
 // shared execution_policy module from internal/execution_policy. It does
@@ -26,10 +26,10 @@ import (
 
 // Tool names exposed over MCP.
 const (
-	ToolServicesList = "ebus.v1.ebus_standard.services.list"
-	ToolCommandsList = "ebus.v1.ebus_standard.commands.list"
-	ToolCommandGet   = "ebus.v1.ebus_standard.command.get"
-	ToolDecode       = "ebus.v1.ebus_standard.decode"
+	ToolServicesList = "ebus_v1_ebus_standard_services_list"
+	ToolCommandsList = "ebus_v1_ebus_standard_commands_list"
+	ToolCommandGet   = "ebus_v1_ebus_standard_command_get"
+	ToolDecode       = "ebus_v1_ebus_standard_decode"
 )
 
 // ErrUnknownCommand is returned by command.get and decode when the catalog

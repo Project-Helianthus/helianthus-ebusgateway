@@ -9,7 +9,7 @@ import (
 	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 )
 
-const toolBusIdentificationEvidenceListName = "ebus.v1.bus.identification_evidence.list"
+const toolBusIdentificationEvidenceListName = "ebus_v1_bus_identification_evidence_list"
 
 const (
 	identificationEvidenceClassRaw      = "raw"

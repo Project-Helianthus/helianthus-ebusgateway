@@ -12,7 +12,7 @@ func TestObservability_StartupPhaseTransitionIncrementsCounter(t *testing.T) {
 	key := "BOOT_INIT->CACHE_LOADED_STALE"
 	before := expvarMapInt64Value(semanticStartupPhaseTransitionsTotal, key)
 
-	provider.SetZonesFromCache([]Zone{{ID: "zone-1", Name: "Zone 1"}})
+	provider.SetZonesFromCache([]Zone{{ID: "zone-1", Name: "zone 1"}})
 
 	after := expvarMapInt64Value(semanticStartupPhaseTransitionsTotal, key)
 	if after != before+1 {

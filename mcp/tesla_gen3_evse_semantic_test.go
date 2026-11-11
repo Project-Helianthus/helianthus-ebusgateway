@@ -1601,7 +1601,7 @@ func teslaGen3EVSEMCPCurrent(t *testing.T, handler http.Handler) []byte {
 
 func teslaGen3EVSEGraphQLCurrent(t *testing.T, handler http.Handler, principal string) []byte {
 	t.Helper()
-	request := `{"operationName":"SemanticEVSECurrent","query":` + strconv.Quote(`query SemanticEVSECurrent($request: M2MCurrentSnapshotRequest!) { semanticEVSECurrent(request: $request) { snapshot evaluation selections projection } }`) + `,"variables":{"request":{"contractId":"PUBLIC_GRAPHQL_SEMANTIC_EVSE_V1","assetRef":"asset:tesla-wc3-a"}}}`
+	request := `{"operationName":"SemanticEVSECurrent","query":` + strconv.Quote(`query SemanticEVSECurrent($request: m2m_current_snapshot_request!) { semantic_evse_current(request: $request) { snapshot evaluation selections projection } }`) + `,"variables":{"request":{"contract_id":"PUBLIC_GRAPHQL_SEMANTIC_EVSE_V1","asset_ref":"asset:tesla-wc3-a"}}}`
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/graphql/m2m/v1", strings.NewReader(request)).WithContext(m2mgraphql.WithMTLSPrincipal(context.Background(), principal)))
 	if response.Code != http.StatusOK {
@@ -1613,7 +1613,7 @@ func teslaGen3EVSEGraphQLCurrent(t *testing.T, handler http.Handler, principal s
 	if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
 		t.Fatal(err)
 	}
-	return decoded.Data["semanticEVSECurrent"]
+	return decoded.Data["semantic_evse_current"]
 }
 
 type teslaGen3EVSESemanticFixtureProvider struct {
@@ -1727,7 +1727,7 @@ func teslaGen3EVSECharacterizationMCP(t *testing.T, handler http.Handler) []byte
 
 func teslaGen3EVSECharacterizationGraphQL(t *testing.T, handler http.Handler, principal string) []byte {
 	t.Helper()
-	request := `{"operationName":"SemanticEVSECurrent","query":` + strconv.Quote(`query SemanticEVSECurrent($request: M2MCurrentSnapshotRequest!) { semanticEVSECurrent(request: $request) { snapshot evaluation selections projection } }`) + `,"variables":{"request":{"contractId":"PUBLIC_GRAPHQL_SEMANTIC_EVSE_V1","assetRef":"asset:tesla-wc3-a"}}}`
+	request := `{"operationName":"SemanticEVSECurrent","query":` + strconv.Quote(`query SemanticEVSECurrent($request: m2m_current_snapshot_request!) { semantic_evse_current(request: $request) { snapshot evaluation selections projection } }`) + `,"variables":{"request":{"contract_id":"PUBLIC_GRAPHQL_SEMANTIC_EVSE_V1","asset_ref":"asset:tesla-wc3-a"}}}`
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/graphql/m2m/v1", strings.NewReader(request)).WithContext(m2mgraphql.WithMTLSPrincipal(context.Background(), principal)))
 	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), `"errors"`) {

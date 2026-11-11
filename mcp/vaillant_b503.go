@@ -115,13 +115,13 @@ type VaillantB503SessionStatus struct {
 
 // Public tool names (spec §3 / plan AD02).
 const (
-	toolVaillantB503ErrorsGetName         = "ebus.v1.vaillant.errors.get"
-	toolVaillantB503ErrorsHistoryGetName  = "ebus.v1.vaillant.errors.history.get"
-	toolVaillantB503ErrorsHistoryListName = "ebus.v1.vaillant.errors.history.list"
-	toolVaillantB503ServiceCurrentGetName = "ebus.v1.vaillant.service.current.get"
-	toolVaillantB503ServiceHistoryGetName = "ebus.v1.vaillant.service.history.get"
-	toolVaillantB503LiveMonitorName       = "ebus.v1.vaillant.live_monitor.get"
-	toolVaillantB503LiveSessionGetName    = "ebus.v1.vaillant.live_monitor.session.get"
+	toolVaillantB503ErrorsGetName         = "ebus_v1_vaillant_errors_get"
+	toolVaillantB503ErrorsHistoryGetName  = "ebus_v1_vaillant_errors_history_get"
+	toolVaillantB503ErrorsHistoryListName = "ebus_v1_vaillant_errors_history_list"
+	toolVaillantB503ServiceCurrentGetName = "ebus_v1_vaillant_service_current_get"
+	toolVaillantB503ServiceHistoryGetName = "ebus_v1_vaillant_service_history_get"
+	toolVaillantB503LiveMonitorName       = "ebus_v1_vaillant_live_monitor_get"
+	toolVaillantB503LiveSessionGetName    = "ebus_v1_vaillant_live_monitor_session_get"
 )
 
 // --- server-side state ----------------------------------------------------

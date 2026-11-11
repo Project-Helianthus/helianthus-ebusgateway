@@ -38,7 +38,7 @@
       }
     },
     "service": "one cached BACKOFF entry with its recovery member",
-    "tool": "helianthus.runtime.get"
+    "tool": "helianthus_runtime_get"
   },
   "get_driver": {
     "arguments": {
@@ -73,7 +73,7 @@
       }
     },
     "service": "one cached entry; its revision is the catalog revision",
-    "tool": "helianthus.runtime.get"
+    "tool": "helianthus_runtime_get"
   },
   "get_noncanonical": {
     "arguments": {
@@ -102,7 +102,7 @@
       }
     },
     "service": "NOT_FOUND row 2",
-    "tool": "helianthus.runtime.get"
+    "tool": "helianthus_runtime_get"
   },
   "get_rejects_additional": {
     "arguments": {
@@ -132,7 +132,7 @@
       }
     },
     "service": "never consulted",
-    "tool": "helianthus.runtime.get"
+    "tool": "helianthus_runtime_get"
   },
   "get_rejects_case": {
     "arguments": {
@@ -161,7 +161,7 @@
       }
     },
     "service": "never consulted",
-    "tool": "helianthus.runtime.get"
+    "tool": "helianthus_runtime_get"
   },
   "get_rejects_duplicate": {
     "arguments": {
@@ -191,7 +191,7 @@
       }
     },
     "service": "never consulted",
-    "tool": "helianthus.runtime.get"
+    "tool": "helianthus_runtime_get"
   },
   "get_rejects_missing": {
     "arguments": {},
@@ -218,7 +218,7 @@
       }
     },
     "service": "never consulted",
-    "tool": "helianthus.runtime.get"
+    "tool": "helianthus_runtime_get"
   },
   "get_rejects_non_string": {
     "arguments": {
@@ -247,7 +247,7 @@
       }
     },
     "service": "never consulted",
-    "tool": "helianthus.runtime.get"
+    "tool": "helianthus_runtime_get"
   },
   "get_running_after_recovery": {
     "arguments": {
@@ -282,7 +282,7 @@
       }
     },
     "service": "the same driver recovered: RUNNING without the member, at catalog revision 30",
-    "tool": "helianthus.runtime.get"
+    "tool": "helianthus_runtime_get"
   },
   "get_unregistered": {
     "arguments": {
@@ -311,7 +311,7 @@
       }
     },
     "service": "NOT_FOUND row 2",
-    "tool": "helianthus.runtime.get"
+    "tool": "helianthus_runtime_get"
   },
   "list_backoff_recovery_other_empty_cause": {
     "arguments": {},
@@ -352,7 +352,7 @@
       }
     },
     "service": "BACKOFF with fractional-second due time, class OTHER and an empty cause",
-    "tool": "helianthus.runtime.list"
+    "tool": "helianthus_runtime_list"
   },
   "list_backoff_with_recovery": {
     "arguments": {},
@@ -393,7 +393,7 @@
       }
     },
     "service": "BACKOFF with a published schedule: the recovery member carries attempt, due time, failure class and cause",
-    "tool": "helianthus.runtime.list"
+    "tool": "helianthus_runtime_list"
   },
   "list_disabled_driver_visible": {
     "arguments": {},
@@ -438,7 +438,7 @@
       }
     },
     "service": "a disabled driver stays listed",
-    "tool": "helianthus.runtime.list"
+    "tool": "helianthus_runtime_list"
   },
   "list_empty_catalog": {
     "arguments": {},
@@ -462,7 +462,7 @@
       }
     },
     "service": "no registered driver: drivers is [] and the unissued revision is 0",
-    "tool": "helianthus.runtime.list"
+    "tool": "helianthus_runtime_list"
   },
   "list_omitted_arguments": {
     "arguments": null,
@@ -507,7 +507,7 @@
       }
     },
     "service": "same view; an omitted arguments member reads as {}",
-    "tool": "helianthus.runtime.list"
+    "tool": "helianthus_runtime_list"
   },
   "list_quarantined_driver": {
     "arguments": {},
@@ -552,7 +552,7 @@
       }
     },
     "service": "unconfirmed close: FAILED/CLOSE_UNCONFIRMED with the safety quarantine",
-    "tool": "helianthus.runtime.list"
+    "tool": "helianthus_runtime_list"
   },
   "list_recovery_absent_outside_backoff": {
     "arguments": {},
@@ -657,7 +657,7 @@
       }
     },
     "service": "every state but BACKOFF has no recovery member, even with a leftover schedule and failure",
-    "tool": "helianthus.runtime.list"
+    "tool": "helianthus_runtime_list"
   },
   "list_rejects_array": {
     "arguments": [],
@@ -684,7 +684,7 @@
       }
     },
     "service": "never consulted",
-    "tool": "helianthus.runtime.list"
+    "tool": "helianthus_runtime_list"
   },
   "list_rejects_duplicate_arguments": {
     "envelope": {
@@ -710,12 +710,12 @@
       }
     },
     "params": {
-      "name": "helianthus.runtime.list",
+      "name": "helianthus_runtime_list",
       "arguments": {},
       "arguments": {}
     },
     "service": "never consulted",
-    "tool": "helianthus.runtime.list"
+    "tool": "helianthus_runtime_list"
   },
   "list_rejects_member": {
     "arguments": {
@@ -744,7 +744,7 @@
       }
     },
     "service": "never consulted",
-    "tool": "helianthus.runtime.list"
+    "tool": "helianthus_runtime_list"
   },
   "list_rejects_null": {
     "arguments": null,
@@ -771,7 +771,7 @@
       }
     },
     "service": "never consulted",
-    "tool": "helianthus.runtime.list"
+    "tool": "helianthus_runtime_list"
   },
   "list_service_unavailable": {
     "arguments": {},
@@ -798,7 +798,7 @@
       }
     },
     "service": "no control service composed",
-    "tool": "helianthus.runtime.list"
+    "tool": "helianthus_runtime_list"
   },
   "list_two_drivers": {
     "arguments": {},
@@ -843,7 +843,7 @@
       }
     },
     "service": "coherent view at catalog revision 29, drivers in bytewise order",
-    "tool": "helianthus.runtime.list"
+    "tool": "helianthus_runtime_list"
   },
   "list_withheld_view": {
     "arguments": {},
@@ -878,7 +878,7 @@
       }
     },
     "service": "control state unreadable: every driver withheld FAILED at revision 0",
-    "tool": "helianthus.runtime.list"
+    "tool": "helianthus_runtime_list"
   },
   "mutation_control_state_unusable": {
     "arguments": {
@@ -908,7 +908,7 @@
       }
     },
     "service": "FAILED_PRECONDITION row 3",
-    "tool": "helianthus.runtime.start"
+    "tool": "helianthus_runtime_start"
   },
   "mutation_counter_exhausted": {
     "arguments": {
@@ -938,7 +938,7 @@
       }
     },
     "service": "COUNTER_EXHAUSTED row 10",
-    "tool": "helianthus.runtime.start"
+    "tool": "helianthus_runtime_start"
   },
   "mutation_deadline_error": {
     "arguments": {
@@ -968,7 +968,7 @@
       }
     },
     "service": "context deadline outside the refusal type",
-    "tool": "helianthus.runtime.start"
+    "tool": "helianthus_runtime_start"
   },
   "mutation_deadline_exceeded": {
     "arguments": {
@@ -998,7 +998,7 @@
       }
     },
     "service": "DEADLINE_EXCEEDED row 5",
-    "tool": "helianthus.runtime.stop"
+    "tool": "helianthus_runtime_stop"
   },
   "mutation_disabled": {
     "arguments": {
@@ -1028,7 +1028,7 @@
       }
     },
     "service": "FAILED_PRECONDITION row 4",
-    "tool": "helianthus.runtime.start"
+    "tool": "helianthus_runtime_start"
   },
   "mutation_not_found": {
     "arguments": {
@@ -1058,7 +1058,7 @@
       }
     },
     "service": "NOT_FOUND row 2",
-    "tool": "helianthus.runtime.start"
+    "tool": "helianthus_runtime_start"
   },
   "mutation_precommit_write_failure": {
     "arguments": {
@@ -1088,7 +1088,7 @@
       }
     },
     "service": "UNAVAILABLE outside the ordered rows: nothing accepted",
-    "tool": "helianthus.runtime.start"
+    "tool": "helianthus_runtime_start"
   },
   "mutation_quarantine": {
     "arguments": {
@@ -1118,7 +1118,7 @@
       }
     },
     "service": "FAILED_PRECONDITION row 7",
-    "tool": "helianthus.runtime.start"
+    "tool": "helianthus_runtime_start"
   },
   "mutation_readback_pending": {
     "arguments": {
@@ -1148,7 +1148,7 @@
       }
     },
     "service": "UNAVAILABLE row 3",
-    "tool": "helianthus.runtime.start"
+    "tool": "helianthus_runtime_start"
   },
   "mutation_rejects_duplicate": {
     "arguments": {
@@ -1179,7 +1179,7 @@
       }
     },
     "service": "duplicate member detected before decoding; never consulted",
-    "tool": "helianthus.runtime.start"
+    "tool": "helianthus_runtime_start"
   },
   "mutation_rejects_idempotency_key": {
     "arguments": {
@@ -1210,7 +1210,7 @@
       }
     },
     "service": "row 1 by the service decoder; no decision",
-    "tool": "helianthus.runtime.start"
+    "tool": "helianthus_runtime_start"
   },
   "mutation_rejects_leading_zero": {
     "arguments": {
@@ -1240,7 +1240,7 @@
       }
     },
     "service": "row 1 by the service decoder; no decision",
-    "tool": "helianthus.runtime.stop"
+    "tool": "helianthus_runtime_stop"
   },
   "mutation_rejects_missing_revision": {
     "arguments": {
@@ -1269,7 +1269,7 @@
       }
     },
     "service": "row 1 by the service decoder; no decision",
-    "tool": "helianthus.runtime.start"
+    "tool": "helianthus_runtime_start"
   },
   "mutation_rejects_non_object": {
     "arguments": "ebus.primary",
@@ -1296,7 +1296,7 @@
       }
     },
     "service": "row 1 by the service decoder; no decision",
-    "tool": "helianthus.runtime.start"
+    "tool": "helianthus_runtime_start"
   },
   "mutation_rejects_number_revision": {
     "arguments": {
@@ -1326,7 +1326,7 @@
       }
     },
     "service": "row 1 by the service decoder; no decision",
-    "tool": "helianthus.runtime.restart"
+    "tool": "helianthus_runtime_restart"
   },
   "mutation_rejects_overflow": {
     "arguments": {
@@ -1356,7 +1356,7 @@
       }
     },
     "service": "row 1 by the service decoder; no decision",
-    "tool": "helianthus.runtime.restart"
+    "tool": "helianthus_runtime_restart"
   },
   "mutation_rejects_zero_revision": {
     "arguments": {
@@ -1386,7 +1386,7 @@
       }
     },
     "service": "row 1 by the service decoder; no decision",
-    "tool": "helianthus.runtime.stop"
+    "tool": "helianthus_runtime_stop"
   },
   "mutation_resource_exhausted": {
     "arguments": {
@@ -1416,7 +1416,7 @@
       }
     },
     "service": "RESOURCE_EXHAUSTED row 9",
-    "tool": "helianthus.runtime.start"
+    "tool": "helianthus_runtime_start"
   },
   "mutation_revision_conflict": {
     "arguments": {
@@ -1449,7 +1449,7 @@
       }
     },
     "service": "REVISION_CONFLICT row 6 with the cached desired view",
-    "tool": "helianthus.runtime.stop"
+    "tool": "helianthus_runtime_stop"
   },
   "mutation_service_unavailable": {
     "arguments": {
@@ -1479,7 +1479,7 @@
       }
     },
     "service": "no control service composed",
-    "tool": "helianthus.runtime.stop"
+    "tool": "helianthus_runtime_stop"
   },
   "mutation_service_unavailable_invalid": {
     "arguments": {
@@ -1508,7 +1508,7 @@
       }
     },
     "service": "row 1 precedes the unavailable service",
-    "tool": "helianthus.runtime.stop"
+    "tool": "helianthus_runtime_stop"
   },
   "mutation_transition_busy": {
     "arguments": {
@@ -1538,7 +1538,7 @@
       }
     },
     "service": "TRANSITION_BUSY row 8",
-    "tool": "helianthus.runtime.restart"
+    "tool": "helianthus_runtime_restart"
   },
   "mutation_unknown_outcome": {
     "arguments": {
@@ -1568,7 +1568,7 @@
       }
     },
     "service": "error outside the refusal table: outcome unknown",
-    "tool": "helianthus.runtime.start"
+    "tool": "helianthus_runtime_start"
   },
   "restart_accepted": {
     "arguments": {
@@ -1595,7 +1595,7 @@
       }
     },
     "service": "durably accepted: RUNNING kept, new revision 8",
-    "tool": "helianthus.runtime.restart"
+    "tool": "helianthus_runtime_restart"
   },
   "restart_while_stopped": {
     "arguments": {
@@ -1625,7 +1625,7 @@
       }
     },
     "service": "FAILED_PRECONDITION row 6",
-    "tool": "helianthus.runtime.restart"
+    "tool": "helianthus_runtime_restart"
   },
   "start_accepted": {
     "arguments": {
@@ -1652,7 +1652,7 @@
       }
     },
     "service": "durably accepted at desired revision 8",
-    "tool": "helianthus.runtime.start"
+    "tool": "helianthus_runtime_start"
   },
   "start_same_desired_noop": {
     "arguments": {
@@ -1679,7 +1679,7 @@
       }
     },
     "service": "desired RUNNING already: no-op at revision 7",
-    "tool": "helianthus.runtime.start"
+    "tool": "helianthus_runtime_start"
   },
   "stop_accepted": {
     "arguments": {
@@ -1706,7 +1706,7 @@
       }
     },
     "service": "durably accepted at desired revision 8",
-    "tool": "helianthus.runtime.stop"
+    "tool": "helianthus_runtime_stop"
   },
   "stop_same_desired_noop": {
     "arguments": {
@@ -1733,6 +1733,6 @@
       }
     },
     "service": "desired STOPPED already: no-op at revision 7",
-    "tool": "helianthus.runtime.stop"
+    "tool": "helianthus_runtime_stop"
   }
 }

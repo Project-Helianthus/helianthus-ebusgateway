@@ -212,10 +212,10 @@ func inventorySource(name string, p inventoryProfile, base map[string]string) st
 	if src := base[name]; src != "" {
 		return src
 	}
-	if strings.HasPrefix(name, "helianthus.runtime.") {
+	if strings.HasPrefix(name, "helianthus_runtime_") {
 		return "mcp/runtime_control.go"
 	}
-	if strings.HasPrefix(name, "ebus.v1.vaillant.") {
+	if strings.HasPrefix(name, "ebus_v1_vaillant_") {
 		return "mcp/vaillant_b503.go"
 	}
 	if name == SemanticSnapshotTool {
@@ -256,7 +256,7 @@ func inventorySource(name string, p inventoryProfile, base map[string]string) st
 	case m8SourceStateToolName:
 		return "mcp/m8_source_state.go"
 	}
-	if strings.HasPrefix(name, "eebus.v1.") {
+	if strings.HasPrefix(name, "eebus_v1_") {
 		for _, tool := range eebusV1Tools() {
 			if tool.Name == name {
 				return "mcp/eebus_v1.go"
@@ -406,7 +406,7 @@ func TestMCPToolInventory(t *testing.T) {
 			case "omit_runtime":
 				filtered := changed.Rows[:0]
 				for _, r := range doc.Rows {
-					if !strings.HasPrefix(r.Name, "helianthus.runtime.") {
+					if !strings.HasPrefix(r.Name, "helianthus_runtime_") {
 						filtered = append(filtered, r)
 					}
 				}

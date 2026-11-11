@@ -29,9 +29,9 @@ and production shell composition (`cmd/gateway`). The hub alone persists
 nothing. Direct publishers keep their in-memory recovery boundary; the
 `ebus.primary` registration declares no managed semantic assets; this does
 not establish the asset or acceptance scope of the managed sidecars.
-The five ordinary host tools are `helianthus.runtime.list`,
-`helianthus.runtime.get`, `helianthus.runtime.start`, `helianthus.runtime.stop`
-and `helianthus.runtime.restart` (`mcp/runtime_control.go`). They are distinct
+The five ordinary host tools are `helianthus_runtime_list`,
+`helianthus_runtime_get`, `helianthus_runtime_start`, `helianthus_runtime_stop`
+and `helianthus_runtime_restart` (`mcp/runtime_control.go`). They are distinct
 from the superseded experimental tools and are not driver-contributed hooks.
 There is no lifecycle GraphQL API; existing daemon/adapter MCP and GraphQL
 status parity remains required.
@@ -903,9 +903,9 @@ It replaces revision 9's kernel operator boundary and experimental tools.
 Where that amendment and the merged S1/D3 rules differ, the merged rules and
 the service behaviour above apply.
 
-**Registration.** Package `mcp` registers `helianthus.runtime.list`,
-`helianthus.runtime.get`, `helianthus.runtime.start`,
-`helianthus.runtime.stop` and `helianthus.runtime.restart`, in that order, on
+**Registration.** Package `mcp` registers `helianthus_runtime_list`,
+`helianthus_runtime_get`, `helianthus_runtime_start`,
+`helianthus_runtime_stop` and `helianthus_runtime_restart`, in that order, on
 the ordinary tool inventory (`RegisterRuntimeControlTools`). The production
 HTTP shell registers them unconditionally while it composes the ordinary MCP
 server, before the MCP route is mounted, so they stay listed for the shell's
@@ -929,11 +929,11 @@ reconciles or polls:
 
 | Tool | Complete arguments | Service call |
 |---|---|---|
-| `helianthus.runtime.list` | `{}` | `List()`: one coherent cached view |
-| `helianthus.runtime.get` | `{"DriverID": ...}` | `Get(DriverID)`: one cached entry |
-| `helianthus.runtime.start` | `{"DriverID": ..., "ExpectedRevision": ...}` | `Control(ctx, START, body)`: the service's closed decoding, then `Decide` |
-| `helianthus.runtime.stop` | same two members | `Control(ctx, STOP, body)` |
-| `helianthus.runtime.restart` | same two members | `Control(ctx, RESTART, body)` |
+| `helianthus_runtime_list` | `{}` | `List()`: one coherent cached view |
+| `helianthus_runtime_get` | `{"DriverID": ...}` | `Get(DriverID)`: one cached entry |
+| `helianthus_runtime_start` | `{"DriverID": ..., "ExpectedRevision": ...}` | `Control(ctx, START, body)`: the service's closed decoding, then `Decide` |
+| `helianthus_runtime_stop` | same two members | `Control(ctx, STOP, body)` |
+| `helianthus_runtime_restart` | same two members | `Control(ctx, RESTART, body)` |
 
 **Closed inputs.** Arguments are closed, case-sensitive objects: list takes
 no member, get exactly `DriverID`, each mutation exactly `DriverID` and
@@ -1032,7 +1032,7 @@ reserved for the table's transient rows.
 **Boundaries.** There is no lifecycle principal, authority adapter or
 authorization check before 0.9, no separate listener or socket and no
 operator-boundary-only registration. The tools never route through
-`ebus.v1.rpc.invoke` and grant no native pairing or device-write authority;
+`ebus_v1_rpc_invoke` and grant no native pairing or device-write authority;
 the eeBUS operator tools and every native-write safeguard are unchanged. The
 tools are classified `core_stable`, which implies no GraphQL face: no
 lifecycle GraphQL field, resolver, mutation or subscription exists, and the
@@ -2533,7 +2533,7 @@ a schedule is accepted only with `BACKOFF`, with both of its fields set. An
 observation changes no desired state, slot, budget or cleanup obligation, so
 a `FAILED` generation is still withdrawn by a later `STOP` or `RESTART`. A
 quarantining observation blocks admission like a service-observed unconfirmed
-close. As a result `helianthus.runtime.list`, `helianthus.runtime.get` and
+close. As a result `helianthus_runtime_list`, `helianthus_runtime_get` and
 the Portal driver readback leave `RUNNING` as soon as the transport is lost.
 They never show `RUNNING` over a closed transport. The service view's
 `DriverStatus` carries the schedule as `NextAttempt` and `NextAttemptUTC`
@@ -2560,7 +2560,7 @@ dotted host names and the host label after `dial`, `lookup`, `resolve` or
 `connect to`) replaced, at most 160 characters. The `helianthus.runtime.*`
 MCP projection renders the `recovery` member from this view only (see "Data."
 above), and so does the Portal driver row. An operator
-`helianthus.runtime.restart` starts a new epoch.
+`helianthus_runtime_restart` starts a new epoch.
 
 Limits of this composition: the service correlation carries no `SourceID`
 and the driver-to-native generation mapping stays process-local.
@@ -2951,12 +2951,12 @@ code that is not connected to that composition stays unavailable.
 
 | Runtime/profile | Current reachable operations | Current boundary and INT-06 disposition |
 |---|---|---|
-| eBUS `ebus.primary` | Discovery, raw evidence, read, semantic projection, and write are declared on the one managed runtime. Stable MCP provides runtime/registry/semantic reads, guarded schedules/config writes, and registry-routed `ebus.v1.rpc.invoke`. B503 exposes seven stable operations: `ebus.v1.vaillant.errors.get`, `ebus.v1.vaillant.errors.history.get`, `ebus.v1.vaillant.errors.history.list`, `ebus.v1.vaillant.service.current.get`, `ebus.v1.vaillant.service.history.get`, `ebus.v1.vaillant.live_monitor.get`, and `ebus.v1.vaillant.live_monitor.session.get`. The evidence/history/session reads are non-mutating; `live_monitor.get` is the bounded session action surface. | Reuse current `DriverManager`, generation admission, selected-source intersection, and registry method mutability. A declared `WRITE` is not universal semantic write authority; the exact current registry method and a nonzero source still decide. An explicit valid nonzero RPC source overrides the startup-admitted source. |
+| eBUS `ebus.primary` | Discovery, raw evidence, read, semantic projection, and write are declared on the one managed runtime. Stable MCP provides runtime/registry/semantic reads, guarded schedules/config writes, and registry-routed `ebus_v1_rpc_invoke`. B503 exposes seven stable operations: `ebus_v1_vaillant_errors_get`, `ebus_v1_vaillant_errors_history_get`, `ebus_v1_vaillant_errors_history_list`, `ebus_v1_vaillant_service_current_get`, `ebus_v1_vaillant_service_history_get`, `ebus_v1_vaillant_live_monitor_get`, and `ebus_v1_vaillant_live_monitor_session_get`. The evidence/history/session reads are non-mutating; `live_monitor.get` is the bounded session action surface. | Reuse current `DriverManager`, generation admission, selected-source intersection, and registry method mutability. A declared `WRITE` is not universal semantic write authority; the exact current registry method and a nonzero source still decide. An explicit valid nonzero RPC source overrides the startup-admitted source. |
 | eeBUS SHIP/SPINE runtime | Public redacted runtime, service, session, topology, pairing, and snapshot reads. Owner-only raw feature and mutation-record reads exist. Raw feature set and rollback exist only through the owner boundary, exact write authorization, configured mutation-lab profile, and a runtime implementing the optional mutation interface. | Adapt the eeBUS runtime slot and command router. Missing mutation interface is `unsupported`, never success. No generic semantic eeBUS write is inferred. Exact normative use-case mappings remain a separate docs/registry dependency. |
 | Modbus TCP and qualified SunSpec/Fronius path | Bounded FC03/FC04 raw read, retained profile observation, and one qualified/promoted `helianthus.pack.pv@1.0.0` SemReg projection through the existing qualify/refresh worker. | Read-only. The projection preserves admitted native observation and counter continuity evidence; generated energy is exact Wh-to-kWh with `counter_continuity_unavailable` as a declared projection loss. Reuse adapter-owned scheduling, one owner-gated reconnect/retry, endpoint sanitization, and full wire/logical/physical/generation provenance. No FC06/FC16 or vendor-private write is permitted by the current gateway provider. |
 | Tesla HSC provider in production composition | One disabled-by-default status snapshot with compatibility `unknown` and registry-derived `outbound_allowed` (currently false). | No serial acquisition or transmission. FC100/101/102 records and current-limit evidence types do not authorize a live route. |
-| Tesla Gen3 WC3 24.44.3 current-limit SemReg projection | Explicit disabled-by-default `tesla-gen3-hsc-*` gateway configuration composes one retained-record owner. After exact completed outcomes are ingested, it exposes evidence-only `modbus.v1.tesla.gen3.evse.current_limit.get`, `semantic.v1.evse.current.get`, mTLS `SemanticEVSECurrent`, and the detached EVSE domain on the configured semantic Prometheus listener. `evse.limit.configured_current` is published only from valid persistent terminal evidence. `evse.limit.allocated_current` is published only from correlated provisional set/ACK/readback evidence with a finite 1..86399 second timeout and `InhibitCharging=false`. | Evidence digests serialize the version, decoded values, every native payload, and captured lifecycle coordinates. The first accepted sequence is `1`; later distinct input must advance by exactly one. An identical accepted `(generation, sequence, input digest)` retry is a no-op; a distinct input at the same sequence and every gap are rejected without mutation. Qualified available read capabilities carry the accepted immutable persistent record evidence and, only when valid, the bounded provisional record evidence; source identity alone never activates them. Freshness and allocation expiry use the injected independent monotonic clock; provisional lifetime starts at the set/ACK receipt while readback advances evaluation. Native receipt/evaluation admission remains independent of consumer reads; a buffered later-correlated outcome keeps its native axes while the aggregate public evaluation clamps to the read high-water. A newer accepted bundle that cannot promote allocation withdraws the prior allocated candidate from SemReg while retaining configured current; its stable candidate revision high-water is retained so later reactivation advances rather than reuses history. Missing, malformed, expired, inhibited, zero-timeout, or correlation-mismatched provisional evidence withholds only allocated current with an explicit projection loss; valid configured current remains. The owner creates no serial listener, acquisition, request, write, operation capability, Portal view, alias, fallback, shadow, or dual publication. |
-| Growatt BMS RS-485 1xSxxP ESS V2.02 | When every `growatt-bms-rs485-*` configuration value is explicit and valid, `modbus.v1.growatt.bms.rs485.status.get` exposes the qualified native status and `semantic.v1.storage.growatt.current.get` publishes the accepted seven-fact Storage projection. The same detached SemReg report is available through mTLS GraphQL `SemanticStorageCurrent` and the Portal Storage endpoint when those surfaces are configured. | The endpoint owns serial opening, FC03 correlation, framing, immutable request/response ADU receipts, recovery, transport generation, and close. Gateway owns exact tuple/unit admission, stable asset/source/driver identity, serialized publication, and public routing; `helianthus-modbusreg` owns the four-slice observer and decoder. The semantic path is read-only, performs no Ah-to-kWh conversion, withholds `soft_starting`, and records explicit current, operating-state, and counter-continuity loss. No TCP dependency, scan, broadcast, retry loop, write, or control is introduced. |
+| Tesla Gen3 WC3 24.44.3 current-limit SemReg projection | Explicit disabled-by-default `tesla-gen3-hsc-*` gateway configuration composes one retained-record owner. After exact completed outcomes are ingested, it exposes evidence-only `modbus_v1_tesla_gen3_evse_current_limit_get`, `semantic_v1_evse_current_get`, mTLS `SemanticEVSECurrent`, and the detached EVSE domain on the configured semantic Prometheus listener. `evse.limit.configured_current` is published only from valid persistent terminal evidence. `evse.limit.allocated_current` is published only from correlated provisional set/ACK/readback evidence with a finite 1..86399 second timeout and `InhibitCharging=false`. | Evidence digests serialize the version, decoded values, every native payload, and captured lifecycle coordinates. The first accepted sequence is `1`; later distinct input must advance by exactly one. An identical accepted `(generation, sequence, input digest)` retry is a no-op; a distinct input at the same sequence and every gap are rejected without mutation. Qualified available read capabilities carry the accepted immutable persistent record evidence and, only when valid, the bounded provisional record evidence; source identity alone never activates them. Freshness and allocation expiry use the injected independent monotonic clock; provisional lifetime starts at the set/ACK receipt while readback advances evaluation. Native receipt/evaluation admission remains independent of consumer reads; a buffered later-correlated outcome keeps its native axes while the aggregate public evaluation clamps to the read high-water. A newer accepted bundle that cannot promote allocation withdraws the prior allocated candidate from SemReg while retaining configured current; its stable candidate revision high-water is retained so later reactivation advances rather than reuses history. Missing, malformed, expired, inhibited, zero-timeout, or correlation-mismatched provisional evidence withholds only allocated current with an explicit projection loss; valid configured current remains. The owner creates no serial listener, acquisition, request, write, operation capability, Portal view, alias, fallback, shadow, or dual publication. |
+| Growatt BMS RS-485 1xSxxP ESS V2.02 | When every `growatt-bms-rs485-*` configuration value is explicit and valid, `modbus_v1_growatt_bms_rs485_status_get` exposes the qualified native status and `semantic_v1_storage_growatt_current_get` publishes the accepted seven-fact Storage projection. The same detached SemReg report is available through mTLS GraphQL `SemanticStorageCurrent` and the Portal Storage endpoint when those surfaces are configured. | The endpoint owns serial opening, FC03 correlation, framing, immutable request/response ADU receipts, recovery, transport generation, and close. Gateway owns exact tuple/unit admission, stable asset/source/driver identity, serialized publication, and public routing; `helianthus-modbusreg` owns the four-slice observer and decoder. The semantic path is read-only, performs no Ah-to-kWh conversion, withholds `soft_starting`, and records explicit current, operating-state, and counter-continuity loss. No TCP dependency, scan, broadcast, retry loop, write, or control is introduced. |
 | Huawei EMMA acquisition, Growatt Protocol II, OutBack AXS, Fronius-specific status, and Tesla FC100/WC optional tools other than the retained current-limit read | Typed read/injected-provider contracts exist in the repository, but the production `gatewayModbusMCPProvider` does not implement their optional provider interfaces. | `unavailable` or `uncomposed` at this baseline. Later INT-07 composition must use exact qualified profile/version evidence. No write is inferred from a decoder, fixture, or provisional ACK/readback record. |
 | Gree CAN and Growatt CAN | No production provider is composed by this gateway baseline. | `unavailable` here. Receive-only registry readiness remains native evidence, not a gateway operation or transmit grant. |
 | Matter output | No production output binding is composed. | No read, write, or conformance claim. INT-13 owns the later versioned target mapping. |
@@ -2964,9 +2964,9 @@ code that is not connected to that composition stays unavailable.
 The exact currently registered profile-facing operation names relevant to this
 contract are:
 
-- eBUS registry and generic route: `ebus.v1.registry.devices.list`,
-  `ebus.v1.registry.devices.get`, `ebus.v1.registry.planes.list`,
-  `ebus.v1.registry.methods.list`, and `ebus.v1.rpc.invoke`. Discover the
+- eBUS registry and generic route: `ebus_v1_registry_devices_list`,
+  `ebus_v1_registry_devices_get`, `ebus_v1_registry_planes_list`,
+  `ebus_v1_registry_methods_list`, and `ebus_v1_rpc_invoke`. Discover the
   address, then plane, then method through those list operations before invoking.
   The invoke schema describes those canonical names; method-specific `params`
   remain native to the selected method. Omitting `params.source` uses the
@@ -2979,7 +2979,7 @@ contract are:
 
 For the current SemReg public-surface cutover, GraphQL
 `Device.verificationState` and MCP `verification_state` on
-`ebus.v1.registry.devices.list`, `ebus.v1.registry.devices.get`, and
+`ebus_v1_registry_devices_list`, `ebus_v1_registry_devices_get`, and
 `ebus.devices` project native `VerificationStateCorroborated` as
 `corroborated`. This is the exact normative lifecycle label in the public
 [Address Table Model](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/architecture/atr/01-address-table-model.md):
@@ -2991,22 +2991,22 @@ semantic namespace for this state. It does not change native verification
 state, discovery provenance, lifecycle transitions, or the separate runtime
 confidence model.
 - eBUS named semantic mutation surfaces:
-  `ebus.v1.semantic.schedules.set_zone_time_program`,
-  `ebus.v1.semantic.schedules.set_dhw_time_program`,
-  `ebus.v1.semantic.system.set_config`, and
-  `ebus.v1.semantic.boiler_status.set_config`. Their presence is not proof that
+  `ebus_v1_semantic_schedules_set_zone_time_program`,
+  `ebus_v1_semantic_schedules_set_dhw_time_program`,
+  `ebus_v1_semantic_system_set_config`, and
+  `ebus_v1_semantic_boiler_status_set_config`. Their presence is not proof that
   every configured device supplies the corresponding writer or native method.
-- eBUS standard catalog reads: `ebus.v1.ebus_standard.services.list`,
-  `ebus.v1.ebus_standard.commands.list`,
-  `ebus.v1.ebus_standard.command.get`, and
-  `ebus.v1.ebus_standard.decode`.
-- Vaillant B503 reads: `ebus.v1.vaillant.errors.get`,
-  `ebus.v1.vaillant.errors.history.get`,
-  `ebus.v1.vaillant.errors.history.list`,
-  `ebus.v1.vaillant.service.current.get`,
-  `ebus.v1.vaillant.service.history.get`, and
-  `ebus.v1.vaillant.live_monitor.session.get`. The bounded
-  `ebus.v1.vaillant.live_monitor.get` session action is separate; no B503
+- eBUS standard catalog reads: `ebus_v1_ebus_standard_services_list`,
+  `ebus_v1_ebus_standard_commands_list`,
+  `ebus_v1_ebus_standard_command_get`, and
+  `ebus_v1_ebus_standard_decode`.
+- Vaillant B503 reads: `ebus_v1_vaillant_errors_get`,
+  `ebus_v1_vaillant_errors_history_get`,
+  `ebus_v1_vaillant_errors_history_list`,
+  `ebus_v1_vaillant_service_current_get`,
+  `ebus_v1_vaillant_service_history_get`, and
+  `ebus_v1_vaillant_live_monitor_session_get`. The bounded
+  `ebus_v1_vaillant_live_monitor_get` session action is separate; no B503
   install-write tool is present. GraphQL singular reads, the bounded
   `vaillantErrorsHistory`, `vaillantLiveMonitorSession`, and
   `vaillantCapabilities` use nullable roots with non-null returned child
@@ -3048,31 +3048,31 @@ confidence model.
   history retention is keyed by resolved target identity (including the
   configured-default identity), while qualification epoch only rejects stale
   responses; returning from B to A can therefore retain A's verified rows.
-- eeBUS public reads: `eebus.v1.runtime.status.get`,
-  `eebus.v1.services.list`, `eebus.v1.services.get`,
-  `eebus.v1.sessions.list`, `eebus.v1.sessions.get`,
-  `eebus.v1.topology.get`, `eebus.v1.snapshot.capture`,
-  `eebus.v1.snapshot.drop`, and `eebus.v1.pairing.status.get`.
+- eeBUS public reads: `eebus_v1_runtime_status_get`,
+  `eebus_v1_services_list`, `eebus_v1_services_get`,
+  `eebus_v1_sessions_list`, `eebus_v1_sessions_get`,
+  `eebus_v1_topology_get`, `eebus_v1_snapshot_capture`,
+  `eebus_v1_snapshot_drop`, and `eebus_v1_pairing_status_get`.
 - eeBUS owner-only raw operations: `eebus.v1.features.get`,
   `eebus.v1.features.data.get`, `eebus.v1.features.data.set`,
   `eebus.v1.mutations.get`, and `eebus.v1.mutations.rollback`. Set and rollback
   remain unavailable without the exact write authorization, mutation-lab
   profile, and optional native mutation interface.
-- Modbus TCP production composition: `modbus.v1.raw.read`,
-  `modbus.v1.profile.observation.get`, `semantic.v1.pv.current.get`, and
-  `modbus.v1.tesla.hsc.status.get`. Only FC03/FC04 raw reads are admitted; the
+- Modbus TCP production composition: `modbus_v1_raw_read`,
+  `modbus_v1_profile_observation_get`, `semantic_v1_pv_current_get`, and
+  `modbus_v1_tesla_hsc_status_get`. Only FC03/FC04 raw reads are admitted; the
   Tesla status is an inert disabled-profile report with outbound disabled.
 - Independent Growatt BMS RTU composition:
-  `modbus.v1.growatt.bms.rs485.status.get` and
-  `semantic.v1.storage.growatt.current.get`, only when the explicit RTU,
+  `modbus_v1_growatt_bms_rs485_status_get` and
+  `semantic_v1_storage_growatt_current_get`, only when the explicit RTU,
   stable asset/source identity, and lifecycle configuration have been admitted.
   Enabling it without Modbus TCP does not advertise the TCP raw, profile, Tesla,
   or SemReg PV tools. A configured M2M listener exposes the same Storage report
   as `SemanticStorageCurrent`; Portal exposes
   `/api/v1/semantic/storage/current` only after the matching producer starts.
 - Independent Tesla Gen3 HSC retained-owner composition:
-  `modbus.v1.tesla.gen3.evse.current_limit.get` and
-  `semantic.v1.evse.current.get`, only when every `tesla-gen3-hsc-*` identity
+  `modbus_v1_tesla_gen3_evse_current_limit_get` and
+  `semantic_v1_evse_current_get`, only when every `tesla-gen3-hsc-*` identity
   and lifecycle value is explicit and valid. It remains available without the
   Modbus TCP core and does not advertise TCP raw/profile/PV, unrelated Tesla,
   or absent Growatt tools. A configured mTLS listener exposes
@@ -3118,7 +3118,7 @@ qualified the typed status. A partial read, malformed or mismatched response,
 stale/fenced endpoint, mixed transport generation, or changed clock epoch
 returns no status and commits no envelope. `outbound_allowed` remains false.
 
-A successful on-demand `modbus.v1.growatt.bms.rs485.status.get` call is `LIVE`.
+A successful on-demand `modbus_v1_growatt_bms_rs485_status_get` call is `LIVE`.
 Its MCP `data_timestamp` is the completed envelope's final receipt wall time,
 formatted as RFC3339Nano; it is never synthesized at the handler. The provider
 must carry that receipt with the qualified status. Missing receipt metadata

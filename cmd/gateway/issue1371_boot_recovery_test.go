@@ -8,7 +8,7 @@ package main
 // in production) bounds only that first attempt. The recovery then has the
 // policy, state reporting and logging of a recovery after a stall: BACKOFF
 // with the next attempt's number and due time in the service view (the
-// source of helianthus.runtime.list and the Portal readback), every attempt
+// source of helianthus_runtime_list and the Portal readback), every attempt
 // logged with its number, phase, reason, error class and cause text, and
 // RUNNING once the endpoint appears, without a restart. A terminal class
 // still fails the START with its own reason, the proxy class behaves the

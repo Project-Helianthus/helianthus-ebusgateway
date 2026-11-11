@@ -64,7 +64,7 @@ The host owns rendering, navigation, accessibility and transport policy.
 ### Catalog and read coherence
 
 The browser issues two independent requests: `PortalCatalogV1` at the catalog
-endpoint, then `semanticSnapshot` at the ordinary GraphQL endpoint. Coherence
+endpoint, then `semantic_snapshot` at the ordinary GraphQL endpoint. Coherence
 between them is never assumed. The shared read is the sole authority for field
 values; catalog `fields[].value` is descriptive only and is never displayed as a
 second value.
@@ -264,8 +264,8 @@ and carries one of these reasons:
 
 **Proven** from `cmd/gateway/semantic_snapshot_provider.go` and
 `cmd/gateway/gateway_http_server.go`: HTTP composition injects the same
-`hubSemanticSnapshotProvider` instance into GraphQL `semanticSnapshot`, MCP
-`semantic.v1.snapshot.get` and the Portal shared-view callback. The scrape
+`hubSemanticSnapshotProvider` instance into GraphQL `semantic_snapshot`, MCP
+`semantic_v1_snapshot_get` and the Portal shared-view callback. The scrape
 route's Thermal and Infrastructure families read the same instance
 ([semantic metrics on the scrape route](../semantic-prometheus-thermal-infrastructure-v1.md)).
 The provider
@@ -307,9 +307,9 @@ additive `portal_read` block is emitted as host-produced transport metadata:
 {
   "portal_read": {
     "base_path": "/console/portal/",
-    "snapshot_operation": "semanticSnapshot",
+    "snapshot_operation": "semantic_snapshot",
     "stream_endpoint": null,
-    "unavailable_operations": ["semanticSnapshot"]
+    "unavailable_operations": ["semantic_snapshot"]
   }
 }
 ```
@@ -337,11 +337,11 @@ shared detached semantic view when supplied; production serves its catalog on
 the outer gateway mux. The host explicitly declares that mounted catalog
 available in bootstrap. Production also supplies `SharedSemanticView` and
 sets `SemanticSnapshotAvailable` through `configureGatewayPortalSemanticRead`,
-so bootstrap no longer lists the mounted `semanticSnapshot` operation as
+so bootstrap no longer lists the mounted `semantic_snapshot` operation as
 unavailable. This advertisement describes wiring, not a promise that every
 capture or asset is available.
 
-Obtain the shared read through ordinary GraphQL `semanticSnapshot(assetIds:)` on `endpoints.graphql`
+Obtain the shared read through ordinary GraphQL `semantic_snapshot(asset_ids:)` on `endpoints.graphql`
 only once M07 exposure and applicable parity gates are accepted. Ask for the
 complete metadata needed above; recursively restore SemReg member names before
 treating GraphQL data as a kernel record. Never recompute source IDs/digests
@@ -352,7 +352,7 @@ Shared endpoints stay advertised whenever any operation on them is usable.
 `endpoints.portal_catalog` has independent consumers, so an unwired snapshot or
 catalog provider never removes them.
 `portal_read.unavailable_operations` is emitted as an operation-level list
-naming unavailable `semanticSnapshot` or `PortalCatalogV1` operations, which
+naming unavailable `semantic_snapshot` or `PortalCatalogV1` operations, which
 consumers consult before issuing them. A configured endpoint alone does not
 establish availability; a host-mounted catalog or the in-process registry/index
 adapter establishes catalog availability. When an operation is unavailable, do not fabricate an empty domain or use the legacy

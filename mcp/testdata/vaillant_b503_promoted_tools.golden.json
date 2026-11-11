@@ -17,7 +17,7 @@
       },
       "type": "object"
     },
-    "name": "ebus.v1.vaillant.errors.history.list"
+    "name": "ebus_v1_vaillant_errors_history_list"
   },
   {
     "description": "Get the gateway-held Vaillant live-monitor session state without exposing authority (READ).",
@@ -32,6 +32,6 @@
       },
       "type": "object"
     },
-    "name": "ebus.v1.vaillant.live_monitor.session.get"
+    "name": "ebus_v1_vaillant_live_monitor_session_get"
   }
 ]

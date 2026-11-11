@@ -192,8 +192,8 @@ func TestTeslaHSCRetainedOwnerPersistentSiblingDoesNotRefreshProvisional(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	query := `query SemanticEVSECurrent($request: M2MCurrentSnapshotRequest!) { semanticEVSECurrent(request: $request) { snapshot evaluation selections projection } }`
-	request := `{"operationName":"SemanticEVSECurrent","query":` + strconv.Quote(query) + `,"variables":{"request":{"contractId":"PUBLIC_GRAPHQL_SEMANTIC_EVSE_V1","assetRef":"asset:tesla-wc3-a"}}}`
+	query := `query SemanticEVSECurrent($request: m2m_current_snapshot_request!) { semantic_evse_current(request: $request) { snapshot evaluation selections projection } }`
+	request := `{"operationName":"SemanticEVSECurrent","query":` + strconv.Quote(query) + `,"variables":{"request":{"contract_id":"PUBLIC_GRAPHQL_SEMANTIC_EVSE_V1","asset_ref":"asset:tesla-wc3-a"}}}`
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/graphql/m2m/v1", strings.NewReader(request)).WithContext(m2mgraphql.WithMTLSPrincipal(context.Background(), "test-principal")))
 	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(`"fact_id":"evse.limit.configured_current"`)) ||
@@ -868,8 +868,8 @@ func teslaOwnerGraphQLCurrent(t *testing.T, owner *teslaHSCRetainedOwner) mcp.Se
 	if err != nil {
 		t.Fatal(err)
 	}
-	query := `query SemanticEVSECurrent($request: M2MCurrentSnapshotRequest!) { semanticEVSECurrent(request: $request) { snapshot evaluation selections projection } }`
-	request := `{"operationName":"SemanticEVSECurrent","query":` + strconv.Quote(query) + `,"variables":{"request":{"contractId":"PUBLIC_GRAPHQL_SEMANTIC_EVSE_V1","assetRef":"asset:tesla-wc3-a"}}}`
+	query := `query SemanticEVSECurrent($request: m2m_current_snapshot_request!) { semantic_evse_current(request: $request) { snapshot evaluation selections projection } }`
+	request := `{"operationName":"SemanticEVSECurrent","query":` + strconv.Quote(query) + `,"variables":{"request":{"contract_id":"PUBLIC_GRAPHQL_SEMANTIC_EVSE_V1","asset_ref":"asset:tesla-wc3-a"}}}`
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/graphql/m2m/v1", strings.NewReader(request)).WithContext(m2mgraphql.WithMTLSPrincipal(context.Background(), "retained-owner-test")))
 	if response.Code != http.StatusOK {
@@ -882,7 +882,7 @@ func teslaOwnerGraphQLCurrent(t *testing.T, owner *teslaHSCRetainedOwner) mcp.Se
 		t.Fatal(err)
 	}
 	var current mcp.SemanticEVSECurrent
-	if err := json.Unmarshal(decoded.Data["semanticEVSECurrent"], &current); err != nil {
+	if err := json.Unmarshal(decoded.Data["semantic_evse_current"], &current); err != nil {
 		t.Fatal(err)
 	}
 	return current

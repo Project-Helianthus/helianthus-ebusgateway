@@ -2,7 +2,7 @@
 
 This bounded read-only mapper follows the public native
 [maintenance and system-off contract](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/architecture/maintenance-system-state-cutover.md)
-and its [B524 register map](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/protocols/vaillant/ebus-vaillant-B524-register-map.md).
+and its [B524 register map](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/protocols/vaillant/ebus-vaillant-b524-register-map.md).
 The controller-family selectors retain their native ownership. The mapper adds
 no call-site registration, acquisition, write route or canonical fault inference.
 Nothing is stable before Helianthus 1.0.

@@ -22,7 +22,7 @@ func TestSemanticPrometheusRendersOnlyFreshQualifiedNumericFacts(t *testing.T) {
 	if strings.Contains(metrics, "asset:private") {
 		t.Fatalf("forbidden asset identifier leaked:\n%s", metrics)
 	}
-	if !strings.Contains(metrics, `helianthus_semantic_evidence_age_seconds{dimension="inverter",domain="pv",fact_id="pv.ac.aggregate_active_power",pack="helianthus.pack.pv"} 1`) {
+	if !strings.Contains(metrics, `helianthus_semantic_evidence_age{dimension="inverter",domain="pv",fact_id="pv.ac.aggregate_active_power",pack="helianthus.pack.pv",unit="seconds"} 1`) {
 		t.Fatalf("missing evidence age:\n%s", metrics)
 	}
 }
@@ -283,7 +283,7 @@ func semanticMetricsFixture(domain string, available bool, freshness semreg.Fres
 		envelope.Conflicts = append(envelope.Conflicts, semreg.Conflict{ConflictID: "conflict:test", Kind: semreg.ConflictValue, Candidates: []semreg.CandidateID{candidate.CandidateID}, State: semreg.ConflictOpen})
 	}
 	snapshot := semreg.Snapshot{SnapshotID: "snapshot:test", Facts: []semreg.FactEnvelope{envelope}}
-	evaluation := semreg.EvaluationView{SnapshotID: snapshot.SnapshotID, Facts: []semreg.EvaluatedFact{{CandidateID: candidate.CandidateID, Freshness: freshness, EffectiveAvailability: availability}}, EvaluationDigest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"}
+	evaluation := semreg.EvaluationView{SnapshotID: snapshot.SnapshotID, Facts: []semreg.EvaluatedFact{{CandidateID: candidate.CandidateID, Freshness: freshness, EffectiveAvailability: availability}}, EvaluationDigest: semreg.Digest("sha256:" + strings.Repeat("0", 64))}
 	item := semreg.DefinitionID("storage.pack.voltage")
 	if domain == "pv" {
 		item = "projection.gateway.pv.inverter.ac.power.active"

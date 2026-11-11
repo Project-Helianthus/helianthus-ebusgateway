@@ -130,7 +130,7 @@ func eebusV1NilCommandRouter(router EEBusV1CommandRouter) bool {
 
 func eebusV1CommandSpecForName(name string) (eebusV1CommandSpec, bool) {
 	for _, spec := range eebusV1CommandSpecs {
-		if string(spec.tool) == name {
+		if strings.ReplaceAll(string(spec.tool), ".", "_") == name {
 			return spec, true
 		}
 	}
@@ -141,7 +141,7 @@ func eebusV1CommandTools() []Tool {
 	tools := make([]Tool, 0, len(eebusV1CommandSpecs))
 	for _, spec := range eebusV1CommandSpecs {
 		tools = append(tools, Tool{
-			Name: string(spec.tool), Description: spec.description, InputSchema: spec.inputSchema,
+			Name: strings.ReplaceAll(string(spec.tool), ".", "_"), Description: spec.description, InputSchema: spec.inputSchema,
 		})
 	}
 	return tools

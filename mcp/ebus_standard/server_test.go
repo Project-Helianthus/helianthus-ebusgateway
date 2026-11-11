@@ -169,10 +169,10 @@ func TestServer_Decode_BadHexReturnsInvalidPayload(t *testing.T) {
 
 func TestToolNames_Canonical(t *testing.T) {
 	cases := map[string]string{
-		estd.ToolServicesList: "ebus.v1.ebus_standard.services.list",
-		estd.ToolCommandsList: "ebus.v1.ebus_standard.commands.list",
-		estd.ToolCommandGet:   "ebus.v1.ebus_standard.command.get",
-		estd.ToolDecode:       "ebus.v1.ebus_standard.decode",
+		estd.ToolServicesList: "ebus_v1_ebus_standard_services_list",
+		estd.ToolCommandsList: "ebus_v1_ebus_standard_commands_list",
+		estd.ToolCommandGet:   "ebus_v1_ebus_standard_command_get",
+		estd.ToolDecode:       "ebus_v1_ebus_standard_decode",
 	}
 	for got, want := range cases {
 		if got != want {

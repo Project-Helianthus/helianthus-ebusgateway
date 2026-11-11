@@ -399,7 +399,7 @@ func (l *ebusRecoveryLog) reset() {
 // ebusNativeForwarder projects DriverManager's own ebus.primary transitions
 // after the opening START (RUNNING, or admitted into the persistent recovery
 // after a failed first attempt) into the runtime control service, the owner of
-// helianthus.runtime.list and of the Portal driver readback, and logs the
+// helianthus_runtime_list and of the Portal driver readback, and logs the
 // visible state with its schedule. It runs on the manager watch only.
 type ebusNativeForwarder struct {
 	bridge  *ebusControlRuntime
@@ -487,7 +487,7 @@ func (f *ebusNativeForwarder) logTransition(corr runtimecontrol.LifecycleCorrela
 	case drivermanager.ObservedDegraded:
 		f.printf("ebus.primary: lifecycle DEGRADED (reason=%s)", obs.Reason)
 	case drivermanager.ObservedFailed:
-		f.printf("ebus.primary: lifecycle FAILED (reason=%s, safety_quarantined=%t); retrying cannot heal this condition, automatic recovery ended, request helianthus.runtime.restart once it is corrected", obs.Reason, obs.Quarantined)
+		f.printf("ebus.primary: lifecycle FAILED (reason=%s, safety_quarantined=%t); retrying cannot heal this condition, automatic recovery ended, request helianthus_runtime_restart once it is corrected", obs.Reason, obs.Quarantined)
 	}
 	return false
 }

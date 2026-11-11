@@ -28,7 +28,7 @@ func TestDeviceGetZeroAliasGoldenEnvelope(t *testing.T) {
 		JSONRPC: "2.0",
 		ID:      1,
 		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"ebus.v1.registry.devices.get","arguments":{"address":0}}`),
+		Params:  json.RawMessage(`{"name":"ebus_v1_registry_devices_get","arguments":{"address":0}}`),
 	})
 	envelope := envelopeFromResult(t, result)
 	meta := envelope["meta"].(map[string]any)

@@ -30,13 +30,13 @@ type SemanticOperationRouter interface {
 }
 
 const (
-	semanticOperationFieldName = "semanticOperation"
+	semanticOperationFieldName = "semantic_operation"
 	semanticOperationMaxDepth  = 32
 	// semanticOperationMaxSelections bounds the selections the resolver visits
-	// while counting semanticOperation fields of the parsed operation.
+	// while counting semantic_operation fields of the parsed operation.
 	semanticOperationMaxSelections = 4096
 	// semanticOperationTransportRootKey holds, in the HTTP root value, the
-	// request-line and header facts the semanticOperation resolver checks.
+	// request-line and header facts the semantic_operation resolver checks.
 	semanticOperationTransportRootKey = "semanticOperationTransport"
 )
 
@@ -82,31 +82,31 @@ func semanticOperationErrorFrom(err error) error {
 func semanticOperationField(builder *Builder) *graphqlgo.Field {
 	inputs := map[reflect.Type]*graphqlgo.InputObject{}
 	input := graphqlgo.NewInputObject(graphqlgo.InputObjectConfig{
-		Name: "SemanticOperationInput",
+		Name: "semantic_operation_input",
 		Fields: graphqlgo.InputObjectConfigFieldMap{
-			"assetId":                            &graphqlgo.InputObjectFieldConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
-			"bindingId":                          &graphqlgo.InputObjectFieldConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
-			"capabilityInstanceId":               &graphqlgo.InputObjectFieldConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
-			"operation":                          &graphqlgo.InputObjectFieldConfig{Type: graphqlgo.NewNonNull(semanticInputType(reflect.TypeOf(semreg.DefinitionRef{}), inputs))},
-			"arguments":                          &graphqlgo.InputObjectFieldConfig{Type: graphqlgo.NewNonNull(semanticInputType(reflect.TypeOf([]semreg.TypedField{}), inputs))},
-			"expectedSemanticRevision":           &graphqlgo.InputObjectFieldConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
-			"expectedCapabilityRevision":         &graphqlgo.InputObjectFieldConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
-			"expectedCapabilityInstanceRevision": &graphqlgo.InputObjectFieldConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
-			"expectedSourceEpochId":              &graphqlgo.InputObjectFieldConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
-			"expectedDriverGeneration":           &graphqlgo.InputObjectFieldConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
-			"preconditions":                      &graphqlgo.InputObjectFieldConfig{Type: graphqlgo.NewNonNull(semanticInputType(reflect.TypeOf([]operation.Precondition{}), inputs))},
-			"timeoutMs":                          &graphqlgo.InputObjectFieldConfig{Type: graphqlgo.NewNonNull(graphqlgo.Int)},
+			"asset_id":                              &graphqlgo.InputObjectFieldConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+			"binding_id":                            &graphqlgo.InputObjectFieldConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+			"capability_instance_id":                &graphqlgo.InputObjectFieldConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+			"operation":                             &graphqlgo.InputObjectFieldConfig{Type: graphqlgo.NewNonNull(semanticInputType(reflect.TypeOf(semreg.DefinitionRef{}), inputs))},
+			"arguments":                             &graphqlgo.InputObjectFieldConfig{Type: graphqlgo.NewNonNull(semanticInputType(reflect.TypeOf([]semreg.TypedField{}), inputs))},
+			"expected_semantic_revision":            &graphqlgo.InputObjectFieldConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+			"expected_capability_revision":          &graphqlgo.InputObjectFieldConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+			"expected_capability_instance_revision": &graphqlgo.InputObjectFieldConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+			"expected_source_epoch_id":              &graphqlgo.InputObjectFieldConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+			"expected_driver_generation":            &graphqlgo.InputObjectFieldConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+			"preconditions":                         &graphqlgo.InputObjectFieldConfig{Type: graphqlgo.NewNonNull(semanticInputType(reflect.TypeOf([]operation.Precondition{}), inputs))},
+			"timeout_ms":                            &graphqlgo.InputObjectFieldConfig{Type: graphqlgo.NewNonNull(graphqlgo.Int)},
 		},
 	})
 	result := graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "SemanticOperationResult",
+		Name: "semantic_operation_result",
 		Fields: graphqlgo.Fields{
-			"status":           &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.String)},
-			"kernelOutcome":    &graphqlgo.Field{Type: graphqlgo.String},
-			"delivery":         &graphqlgo.Field{Type: graphqlgo.String},
-			"acknowledgement":  &graphqlgo.Field{Type: graphqlgo.String},
-			"readbackRelation": &graphqlgo.Field{Type: graphqlgo.String},
-			"reason":           &graphqlgo.Field{Type: graphqlgo.String},
+			"status":            &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+			"kernel_outcome":    &graphqlgo.Field{Type: graphqlgo.String},
+			"delivery":          &graphqlgo.Field{Type: graphqlgo.String},
+			"acknowledgement":   &graphqlgo.Field{Type: graphqlgo.String},
+			"readback_relation": &graphqlgo.Field{Type: graphqlgo.String},
+			"reason":            &graphqlgo.Field{Type: graphqlgo.String},
 		},
 	})
 	return &graphqlgo.Field{
@@ -138,7 +138,7 @@ func semanticOperationField(builder *Builder) *graphqlgo.Field {
 
 // semanticOperationParsedRequest applies the route's request limits to the
 // operation the stock GraphQL handler has already parsed: the transport facts
-// recorded with the HTTP root value, at most one semanticOperation selection
+// recorded with the HTTP root value, at most one semantic_operation selection
 // in the executing operation, the aggregate input size, and the strict typed
 // decode of the input as written. The input is rebuilt from the document's
 // literals and the request variables as the handler decoded them, never from
@@ -167,10 +167,10 @@ func semanticOperationParsedRequest(ctx context.Context, p graphqlgo.ResolvePara
 		return none, semanticOperationInvalid("fragment structure")
 	}
 	if len(collector.fields) != 1 {
-		return none, semanticOperationInvalid("at most one semanticOperation field per request")
+		return none, semanticOperationInvalid("at most one semantic_operation field per request")
 	}
 	if operationDefinition.Operation != ast.OperationTypeMutation {
-		return none, semanticOperationInvalid("semanticOperation is a mutation")
+		return none, semanticOperationInvalid("semantic_operation is a mutation")
 	}
 	variables, ok := ctx.Value(semanticOperationVariablesKey{}).(*semanticOperationVariables)
 	if !ok || variables == nil {
@@ -189,7 +189,7 @@ func semanticOperationParsedRequest(ctx context.Context, p graphqlgo.ResolvePara
 
 // semanticOperationTransport records whether the stock handler took the
 // operation from one UTF-8, identity-encoded JSON POST body. It is derived
-// from the request line and headers alone and only the semanticOperation
+// from the request line and headers alone and only the semantic_operation
 // resolver reads it; every other field ignores it.
 type semanticOperationTransport struct{ err error }
 
@@ -220,7 +220,7 @@ type semanticOperationVariables struct{ values map[string]any }
 type semanticOperationVariablesKey struct{}
 
 // semanticOperationVariablesExtension keeps a reference to the supplied
-// variables in the execution context so the semanticOperation resolver can
+// variables in the execution context so the semantic_operation resolver can
 // decode its input without GraphQL's lenient coercion (numbers to strings,
 // truncated integers, singleton lists). It never reads, rejects or alters a
 // request and adds nothing to any result.
@@ -340,12 +340,12 @@ func semanticIntegerText(raw any) (string, bool) {
 
 func semanticOperationResultValue(result semanticoperations.Result) map[string]interface{} {
 	return map[string]interface{}{
-		"status":           string(result.Status),
-		"kernelOutcome":    semanticOptional(result.KernelOutcome),
-		"delivery":         semanticOptional(result.Delivery),
-		"acknowledgement":  semanticOptional(result.Acknowledgement),
-		"readbackRelation": semanticOptional(result.ReadbackRelation),
-		"reason":           semanticOptional(result.Reason),
+		"status":            string(result.Status),
+		"kernel_outcome":    semanticOptional(result.KernelOutcome),
+		"delivery":          semanticOptional(result.Delivery),
+		"acknowledgement":   semanticOptional(result.Acknowledgement),
+		"readback_relation": semanticOptional(result.ReadbackRelation),
+		"reason":            semanticOptional(result.Reason),
 	}
 }
 
@@ -358,7 +358,7 @@ func semanticOptional[T ~string](value *T) interface{} {
 }
 
 // semanticInputType derives string-only input records from the pinned SemReg
-// types with the same recursive snake_case to camelCase mapping as reads.
+// types retaining the same recursive JSON field tags as reads.
 func semanticInputType(t reflect.Type, objects map[reflect.Type]*graphqlgo.InputObject) graphqlgo.Input {
 	if t.Kind() == reflect.Pointer {
 		return semanticInputType(t.Elem(), objects)
@@ -384,7 +384,7 @@ func semanticInputType(t reflect.Type, objects map[reflect.Type]*graphqlgo.Input
 			}
 			fields[name] = &graphqlgo.InputObjectFieldConfig{Type: input}
 		}
-		object := graphqlgo.NewInputObject(graphqlgo.InputObjectConfig{Name: "Semantic" + t.Name() + "Input", Fields: fields})
+		object := graphqlgo.NewInputObject(graphqlgo.InputObjectConfig{Name: "semantic_" + semanticTypeName(t.Name()) + "_input", Fields: fields})
 		objects[t] = object
 		return object
 	default:
@@ -407,7 +407,7 @@ func semanticInputMembers(t reflect.Type) map[string]semanticInputMember {
 		if name == "" || name == "-" {
 			continue
 		}
-		members[semanticCamel(name)] = semanticInputMember{
+		members[name] = semanticInputMember{
 			tag: name, kind: field.Type,
 			optional: field.Type.Kind() == reflect.Pointer || strings.Contains(tag, ",omitempty"),
 		}
@@ -417,7 +417,7 @@ func semanticInputMembers(t reflect.Type) map[string]semanticInputMember {
 
 var semanticIntegerToken = regexp.MustCompile(`^-?(0|[1-9][0-9]*)$`)
 
-// semanticSnakeValue converts one camelCase input record into its exact SemReg
+// semanticSnakeValue converts one tagged input record into its exact SemReg
 // JSON member names, enforcing string-only identifiers and exact scalar types.
 func semanticSnakeValue(raw any, t reflect.Type) (any, error) {
 	if t.Kind() == reflect.Pointer {
@@ -520,9 +520,9 @@ func decodeSemanticRecord[T semreg.Record](raw any) (T, error) {
 }
 
 var semanticOperationInputMembers = map[string]bool{
-	"assetId": true, "bindingId": true, "capabilityInstanceId": true, "operation": true, "arguments": true,
-	"expectedSemanticRevision": true, "expectedCapabilityRevision": true, "expectedCapabilityInstanceRevision": true,
-	"expectedSourceEpochId": true, "expectedDriverGeneration": true, "preconditions": true, "timeoutMs": true,
+	"asset_id": true, "binding_id": true, "capability_instance_id": true, "operation": true, "arguments": true,
+	"expected_semantic_revision": true, "expected_capability_revision": true, "expected_capability_instance_revision": true,
+	"expected_source_epoch_id": true, "expected_driver_generation": true, "preconditions": true, "timeout_ms": true,
 }
 
 // decodeSemanticOperationInput decodes the closed input member set from the
@@ -559,9 +559,9 @@ func decodeSemanticOperationInput(raw any) (semanticoperations.Request, error) {
 		name       string
 		identifier bool
 	}{
-		{"assetId", true}, {"bindingId", true}, {"capabilityInstanceId", true}, {"expectedSourceEpochId", true},
-		{"expectedSemanticRevision", false}, {"expectedCapabilityRevision", false},
-		{"expectedCapabilityInstanceRevision", false}, {"expectedDriverGeneration", false},
+		{"asset_id", true}, {"binding_id", true}, {"capability_instance_id", true}, {"expected_source_epoch_id", true},
+		{"expected_semantic_revision", false}, {"expected_capability_revision", false},
+		{"expected_capability_instance_revision", false}, {"expected_driver_generation", false},
 	} {
 		value, err := text(member.name, member.identifier)
 		if err != nil {
@@ -569,14 +569,14 @@ func decodeSemanticOperationInput(raw any) (semanticoperations.Request, error) {
 		}
 		members[member.name] = &value
 	}
-	request.AssetID = semreg.AssetID(*members["assetId"])
-	request.BindingID = semreg.NativeBindingID(*members["bindingId"])
-	request.CapabilityInstanceID = semreg.CapabilityInstanceID(*members["capabilityInstanceId"])
-	request.ExpectedSourceEpochID = semreg.SourceEpochID(*members["expectedSourceEpochId"])
-	request.ExpectedSemanticRevision = semreg.Uint64(*members["expectedSemanticRevision"])
-	request.ExpectedCapabilityRevision = semreg.Uint64(*members["expectedCapabilityRevision"])
-	request.ExpectedCapabilityInstanceRevision = semreg.Uint64(*members["expectedCapabilityInstanceRevision"])
-	request.ExpectedDriverGeneration = semreg.Uint64(*members["expectedDriverGeneration"])
+	request.AssetID = semreg.AssetID(*members["asset_id"])
+	request.BindingID = semreg.NativeBindingID(*members["binding_id"])
+	request.CapabilityInstanceID = semreg.CapabilityInstanceID(*members["capability_instance_id"])
+	request.ExpectedSourceEpochID = semreg.SourceEpochID(*members["expected_source_epoch_id"])
+	request.ExpectedSemanticRevision = semreg.Uint64(*members["expected_semantic_revision"])
+	request.ExpectedCapabilityRevision = semreg.Uint64(*members["expected_capability_revision"])
+	request.ExpectedCapabilityInstanceRevision = semreg.Uint64(*members["expected_capability_instance_revision"])
+	request.ExpectedDriverGeneration = semreg.Uint64(*members["expected_driver_generation"])
 
 	definition, err := decodeSemanticRecord[semreg.DefinitionRef](object["operation"])
 	if err != nil {
@@ -616,13 +616,13 @@ func decodeSemanticOperationInput(raw any) (semanticoperations.Request, error) {
 		request.Preconditions = append(request.Preconditions, precondition)
 	}
 
-	timeout, ok := semanticIntegerText(object["timeoutMs"])
+	timeout, ok := semanticIntegerText(object["timeout_ms"])
 	if !ok {
-		return request, semanticOperationInvalid("timeoutMs must be an integer")
+		return request, semanticOperationInvalid("timeout_ms must be an integer")
 	}
 	milliseconds, err := strconv.ParseInt(timeout, 10, 64)
 	if err != nil || milliseconds < 1 || milliseconds > semanticoperations.MaxTimeout.Milliseconds() {
-		return request, semanticOperationInvalid("timeoutMs out of range")
+		return request, semanticOperationInvalid("timeout_ms out of range")
 	}
 	request.Timeout = time.Duration(milliseconds) * time.Millisecond
 	if err := request.Validate(); err != nil {
@@ -714,12 +714,12 @@ func semanticOperationRawInput(field *ast.Field, selected *ast.OperationDefiniti
 	var input ast.Value
 	for _, argument := range field.Arguments {
 		if argument.Name == nil || argument.Name.Value != "input" || input != nil {
-			return nil, semanticOperationInvalid("semanticOperation takes exactly one input argument")
+			return nil, semanticOperationInvalid("semantic_operation takes exactly one input argument")
 		}
 		input = argument.Value
 	}
 	if input == nil {
-		return nil, semanticOperationInvalid("semanticOperation takes exactly one input argument")
+		return nil, semanticOperationInvalid("semantic_operation takes exactly one input argument")
 	}
 	return semanticRawValue(input, selected, variables, 0)
 }

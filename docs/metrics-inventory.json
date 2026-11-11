@@ -1050,9 +1050,10 @@
         "dimension",
         "domain",
         "fact_id",
-        "pack"
+        "pack",
+        "unit"
       ],
-      "name": "helianthus_semantic_evidence_age_seconds",
+      "name": "helianthus_semantic_evidence_age",
       "omission": "Metadata always with provider; selected fact state plus comparable UTC clock and nonnegative age required; omit incomparable/future age.",
       "owner_page": "docs/observability/semantic-prometheus-coverage.md",
       "production": "Provider installed when Modbus TCP, storage RS485 or EVSE Prometheus is enabled; individual domains follow their configuration.",
@@ -1060,7 +1061,8 @@
       "source_guards": [
         "ok"
       ],
-      "type": "gauge"
+      "type": "gauge",
+      "constant_unit": "seconds"
     },
     {
       "enablement": "Detached semantic domain provider is non-nil.",
@@ -1210,14 +1212,16 @@
       "enablement": "Field is configured in a validated, non-retired binding and selection passes exact projection, identity, qualification, promotion, validity, freshness and finite conversion checks.",
       "field": "thermal.measurement.air_temperature",
       "labels": [
-        "slot"
+        "slot",
+        "unit"
       ],
-      "name": "helianthus_thermal_air_temperature_celsius",
+      "name": "helianthus_thermal_air_temperature",
       "omission": "HELP, TYPE and value samples omitted unless at least one slot admits a value; zero is a legitimate admitted measurement.",
       "owner_page": "docs/observability/semantic-prometheus-coverage.md",
       "production": "Declared support only: empty production registry emits none of these value families.",
       "source": "internal/semanticmetrics/metrics.go",
-      "type": "gauge"
+      "type": "gauge",
+      "constant_unit": "celsius"
     },
     {
       "enablement": "Field is configured in a validated, non-retired binding and selection passes exact projection, identity, qualification, promotion, validity, freshness and finite conversion checks.",
@@ -1234,7 +1238,7 @@
     },
     {
       "enablement": "Field is configured in a validated, non-retired binding and selection passes exact projection, identity, qualification, promotion, validity, freshness and finite conversion checks.",
-      "field": "thermal.setpoint.dhw_temperature",
+      "field": "thermal.setpoint.dhw_temperature_setpoint",
       "labels": [
         "slot"
       ],
@@ -1299,7 +1303,7 @@
     },
     {
       "enablement": "Field is configured in a validated, non-retired binding and selection passes exact projection, identity, qualification, promotion, validity, freshness and finite conversion checks.",
-      "field": "thermal.measurement.humidity_relative",
+      "field": "thermal.measurement.humidity",
       "labels": [
         "slot"
       ],
@@ -1312,16 +1316,18 @@
     },
     {
       "enablement": "Field is configured in a validated, non-retired binding and selection passes exact projection, identity, qualification, promotion, validity, freshness and finite conversion checks.",
-      "field": "thermal.setpoint.temperature",
+      "field": "thermal.setpoint.temperature_setpoint",
       "labels": [
-        "slot"
+        "slot",
+        "unit"
       ],
-      "name": "helianthus_thermal_setpoint_celsius",
+      "name": "helianthus_thermal_temperature_setpoint",
       "omission": "HELP, TYPE and value samples omitted unless at least one slot admits a value; zero is a legitimate admitted measurement.",
       "owner_page": "docs/observability/semantic-prometheus-coverage.md",
       "production": "Declared support only: empty production registry emits none of these value families.",
       "source": "internal/semanticmetrics/metrics.go",
-      "type": "gauge"
+      "type": "gauge",
+      "constant_unit": "celsius"
     },
     {
       "enablement": "Field is configured in a validated, non-retired binding and selection passes exact projection, identity, qualification, promotion, validity, freshness and finite conversion checks.",

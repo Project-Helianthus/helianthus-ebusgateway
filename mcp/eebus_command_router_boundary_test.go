@@ -3,9 +3,7 @@ package mcp
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"reflect"
 	"sort"
@@ -17,14 +15,12 @@ import (
 	"github.com/Project-Helianthus/helianthus-eebusreg/eebusraw"
 )
 
-const issue749FrozenM6ManifestSHA256 = "4bbbe92ba4a0294b82092d6b735261725fd45bb1f7b1fef76aca54894ec921b4"
-
 var issue749AdditiveToolNames = []string{
-	"eebus.v1.features.get",
-	"eebus.v1.features.data.get",
-	"eebus.v1.features.data.set",
-	"eebus.v1.mutations.get",
-	"eebus.v1.mutations.rollback",
+	"eebus_v1_features_get",
+	"eebus_v1_features_data_get",
+	"eebus_v1_features_data_set",
+	"eebus_v1_mutations_get",
+	"eebus_v1_mutations_rollback",
 }
 
 type issue749CommandRuntime struct {
@@ -64,10 +60,9 @@ func TestIssue749ExactAdditiveInventoryPreservesPublicM6(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gotDigest := sha256.Sum256(publicManifest)
-	if got := fmt.Sprintf("%x", gotDigest); got != issue749FrozenM6ManifestSHA256 {
-		t.Fatalf("public M6 manifest SHA-256 = %s, want frozen %s\nmanifest: %s",
-			got, issue749FrozenM6ManifestSHA256, publicManifest)
+	expected := namingDocumentedTools(t, "## Current public eeBUS registration contract")
+	if !bytes.Equal(publicManifest, expected) {
+		t.Fatal("public eeBUS registration descriptor drift")
 	}
 
 	operatorM6Manifest, err := json.Marshal(issue749SelectTools(operatorTools, msp06ToolNames))
@@ -112,7 +107,7 @@ func TestIssue749PublicBoundaryDeniesCommandsBeforeProvider(t *testing.T) {
 		t.Run(test.tool, func(t *testing.T) {
 			before := provider.callCount()
 			params, err := json.Marshal(map[string]any{
-				"name":      test.tool,
+				"name":      strings.ReplaceAll(test.tool, ".", "_"),
 				"arguments": test.arguments,
 			})
 			if err != nil {
@@ -246,7 +241,7 @@ func issue749EEBusTools(t *testing.T, handler http.Handler) []map[string]any {
 			t.Fatalf("tool type = %T, want map", rawTool)
 		}
 		name, _ := tool["name"].(string)
-		if strings.HasPrefix(name, "eebus.") {
+		if strings.HasPrefix(name, "eebus_") {
 			tools = append(tools, tool)
 		}
 	}

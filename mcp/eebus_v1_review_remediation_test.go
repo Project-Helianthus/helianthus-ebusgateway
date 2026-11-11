@@ -342,14 +342,14 @@ func issue743AssertClosedBoundaryDTO(t *testing.T, boundaryName, tool string, da
 		}
 	case msp06TopologyGetTool:
 		if boundaryName == "operator" {
-			msp06AssertKeys(t, data, "raw topology", "devices", "entities", "features", "usecases", "opaque")
+			msp06AssertKeys(t, data, "raw topology", "devices", "entities", "features", "use_cases", "opaque")
 			msp06AssertKeys(t, msp06Map(t, msp06Slice(t, data["devices"], "devices")[0], "device"), "raw device",
 				"ski", "ship_id", "address", "type", "description", "metadata", "secondary_digest", "opaque")
 			msp06AssertKeys(t, msp06Map(t, msp06Slice(t, data["entities"], "entities")[0], "entity"), "raw entity",
 				"device_address", "entity_address", "type", "description")
 			msp06AssertKeys(t, msp06Map(t, msp06Slice(t, data["features"], "features")[0], "feature"), "raw feature",
 				"device_address", "entity_address", "feature_address", "type", "role", "description")
-			msp06AssertKeys(t, msp06Map(t, msp06Slice(t, data["usecases"], "usecases")[0], "usecase"), "raw usecase",
+			msp06AssertKeys(t, msp06Map(t, msp06Slice(t, data["use_cases"], "use_cases")[0], "usecase"), "raw usecase",
 				"context_address", "name", "actor", "resolved_role", "scenarios", "version", "availability", "document_subrevision")
 		} else {
 			msp06AssertKeys(t, data, "public topology", "devices")
@@ -357,7 +357,7 @@ func issue743AssertClosedBoundaryDTO(t *testing.T, boundaryName, tool string, da
 	case msp06SnapshotCapture:
 		snapshot := msp06Map(t, data["snapshot"], "snapshot")
 		if boundaryName == "operator" {
-			msp06AssertKeys(t, snapshot, "raw snapshot", "meta", "status", "pairing", "services", "sessions", "devices", "entities", "features", "usecases", "opaque")
+			msp06AssertKeys(t, snapshot, "raw snapshot", "meta", "status", "pairing", "services", "sessions", "devices", "entities", "features", "use_cases", "opaque")
 		} else {
 			msp06AssertKeys(t, snapshot, "public snapshot", "meta", "status", "pairing", "services", "sessions", "topology")
 		}

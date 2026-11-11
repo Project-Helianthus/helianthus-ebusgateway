@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	HuaweiSDongleV1StatusGetTool = "modbus.v1.huawei.sdongle.status.get"
+	HuaweiSDongleV1StatusGetTool = "modbus_v1_huawei_sdongle_status_get"
 	HuaweiSDongleV1Profile       = "huawei.sdongle.readonly.v1"
 )
 

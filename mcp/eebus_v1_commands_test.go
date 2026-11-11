@@ -305,8 +305,8 @@ func TestIssue749DuplicateJSONKeysFailBeforeDispatch(t *testing.T) {
 	)
 
 	for _, rawParams := range []string{
-		`{"name":` + mustJSON(test.tool) + `,"arguments":` + duplicateArguments + `}`,
-		`{"name":` + mustJSON(test.tool) + `,"name":` + mustJSON(test.tool) +
+		`{"name":` + mustJSON(strings.ReplaceAll(test.tool, ".", "_")) + `,"arguments":` + duplicateArguments + `}`,
+		`{"name":` + mustJSON(strings.ReplaceAll(test.tool, ".", "_")) + `,"name":` + mustJSON(strings.ReplaceAll(test.tool, ".", "_")) +
 			`,"arguments":` + string(encodedArguments) + `}`,
 	} {
 		result := issue749RawCommandCall(t, operator, json.RawMessage(rawParams))
@@ -585,7 +585,7 @@ func TestIssue749CommandSchemasAreClosedBoundedAndSecretAware(t *testing.T) {
 		}
 	}
 
-	dataGetProperties := issue749SchemaProperties(t, byName[string(eebusraw.ToolV1FeaturesDataGet)])
+	dataGetProperties := issue749SchemaProperties(t, byName[strings.ReplaceAll(string(eebusraw.ToolV1FeaturesDataGet), ".", "_")])
 	targets := msp06Map(t, dataGetProperties["targets"], "features.data.get.targets")
 	if fmt.Sprint(targets["minItems"]) != "1" || fmt.Sprint(targets["maxItems"]) != "16" {
 		t.Fatalf("features.data.get target bounds = %#v", targets)
@@ -593,7 +593,7 @@ func TestIssue749CommandSchemasAreClosedBoundedAndSecretAware(t *testing.T) {
 	readTarget := msp06Map(t, targets["items"], "features.data.get.target")
 	issue749AssertTargetSchema(t, readTarget, eebusraw.OperationV1Read)
 
-	dataSetProperties := issue749SchemaProperties(t, byName[string(eebusraw.ToolV1FeaturesDataSet)])
+	dataSetProperties := issue749SchemaProperties(t, byName[strings.ReplaceAll(string(eebusraw.ToolV1FeaturesDataSet), ".", "_")])
 	writeTarget := msp06Map(t, dataSetProperties["target"], "features.data.set.target")
 	issue749AssertTargetSchema(t, writeTarget, eebusraw.OperationV1Write)
 	if msp06Map(t, dataSetProperties["read_token"], "features.data.set.read_token")["pattern"] != eebusV1TokenPattern {

@@ -260,7 +260,7 @@ func mapThermalZoneSetpoints(input thermalZoneSetpointInput) (thermalZoneSetpoin
 			d.SourceKeys = append(d.SourceKeys, other.SourceKeys...)
 			d.Loss = append(d.Loss, other.Loss...)
 		}
-		if requested.Kind == projection.ItemFact && requested.ItemID == "thermal.setpoint.temperature" {
+		if requested.Kind == projection.ItemFact && requested.ItemID == "thermal.setpoint.temperature_setpoint" {
 			for _, selection := range out.Selected {
 				if d.Outcome == projection.ProjectionWithheld {
 					d.Reason = nil
@@ -276,7 +276,7 @@ func mapThermalZoneSetpoints(input thermalZoneSetpointInput) (thermalZoneSetpoin
 			}
 			reason := context.Definition.ID
 			d.Reason = &reason
-			if requested.Kind == projection.ItemFact && requested.ItemID == "thermal.setpoint.temperature" {
+			if requested.Kind == projection.ItemFact && requested.ItemID == "thermal.setpoint.temperature_setpoint" {
 				d.Loss = append(d.Loss, projection.LossDetail{Kind: projection.LossPolicy, SourceItems: []semreg.DefinitionID{}, Description: "No current independently qualified role-preserving zone setpoint is selected; native role losses remain separate.", Reversible: true})
 			}
 		} else if transformed || len(d.Loss) > 0 {
@@ -337,7 +337,7 @@ func thermalZoneSetpointAdmission(in thermalZoneSetpointInput, m thermalZoneSetp
 		return "native_range"
 	}
 	pack := thermal.New()
-	ref := semreg.DefinitionRef{Pack: pack.Pack(), ID: "thermal.setpoint.temperature", Version: pack.Pack().Version}
+	ref := semreg.DefinitionRef{Pack: pack.Pack(), ID: "thermal.setpoint.temperature_setpoint", Version: pack.Pack().Version}
 	value := semreg.Value{Kind: semreg.ValueQuantity, Quantity: &o.Value}
 	if m.Field != ref || m.Key.FactID != ref.ID || pack.ValidateFact(m.Key, &value) != nil {
 		return "unrepresentable_key_or_pack_range"

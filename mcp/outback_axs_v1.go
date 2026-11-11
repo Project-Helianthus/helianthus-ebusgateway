@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	OutBackAXSV1StatusGetTool = "modbus.v1.outback.axs.status.get"
+	OutBackAXSV1StatusGetTool = "modbus_v1_outback_axs_status_get"
 	OutBackAXSV1Profile       = "outback.axs.readonly.v1"
 )
 

@@ -30,7 +30,7 @@ func thermalZoneSetpointFixture() thermalZoneSetpointInput {
 			EvaluatedAt:       semreg.TimePoint{UnixNanoseconds: "200", ClockID: "clock.synthetic", UncertaintyNS: "0"},
 			EvaluateMonotonic: semreg.MonotonicPoint{ClockEpochID: "clock:synthetic", Nanoseconds: "200"},
 		},
-		Requested: []projection.RequestedItem{{Kind: projection.ItemFact, ItemID: "thermal.setpoint.temperature"}},
+		Requested: []projection.RequestedItem{{Kind: projection.ItemFact, ItemID: "thermal.setpoint.temperature_setpoint"}},
 	}
 	rows := []struct {
 		role thermalZoneSetpointRole
@@ -53,8 +53,8 @@ func thermalZoneSetpointFixture() thermalZoneSetpointInput {
 		}
 		in.Mappings = append(in.Mappings, thermalZoneSetpointMapping{
 			Identity: id, Role: row.role, Approved: true, Qualification: semreg.QualificationQualified,
-			Field:            semreg.DefinitionRef{Pack: pack, ID: "thermal.setpoint.temperature", Version: "1.0.0"},
-			Key:              semreg.FactKey{PackID: pack.ID, PackVersion: pack.Version, FactID: "thermal.setpoint.temperature", Dimensions: []semreg.Dimension{{ID: "thermal.dimension.temperature", Value: semreg.Value{Kind: semreg.ValueText, Text: &key}}}},
+			Field:            semreg.DefinitionRef{Pack: pack, ID: "thermal.setpoint.temperature_setpoint", Version: "1.0.0"},
+			Key:              semreg.FactKey{PackID: pack.ID, PackVersion: pack.Version, FactID: "thermal.setpoint.temperature_setpoint", Dimensions: []semreg.Dimension{{ID: "thermal.dimension.temperature", Value: semreg.Value{Kind: semreg.ValueText, Text: &key}}}},
 			SemanticRevision: "7", Unit: "unit.celsius", Codec: "f32_le", BoundsKnown: true,
 			Minimum: semreg.Decimal{Coefficient: "0"}, Maximum: semreg.Decimal{Coefficient: "3", Exponent10: 1}, Evidence: []semreg.EvidenceRef{evidence},
 		})
@@ -116,7 +116,7 @@ func TestThermalZoneSetpointMappingRoles(t *testing.T) {
 		thermalZoneSetpointVeto: 0x0008, thermalZoneSetpointHoliday: 0x0005,
 	}
 	for _, selected := range out.Selected {
-		if selected.Observation.Identity.Selector.Register != expected[selected.Observation.Role] || selected.Key.FactID != "thermal.setpoint.temperature" || selected.Observation.Value.Number != (semreg.Decimal{Coefficient: "2", Exponent10: 1}) {
+		if selected.Observation.Identity.Selector.Register != expected[selected.Observation.Role] || selected.Key.FactID != "thermal.setpoint.temperature_setpoint" || selected.Observation.Value.Number != (semreg.Decimal{Coefficient: "2", Exponent10: 1}) {
 			t.Fatalf("role/value/selector changed: %+v", selected)
 		}
 		if selected.Observation.ReceivedAt.UnixNanoseconds != "100" || selected.Observation.Receipt.Nanoseconds != "100" || out.Evaluation.EvaluateMonotonic.Nanoseconds != "200" {
@@ -374,7 +374,7 @@ func TestThermalZoneSetpointMappingAccountingAndDetachment(t *testing.T) {
 		t.Fatalf("requested accounting: %+v", out.Dispositions)
 	}
 	for _, d := range out.Dispositions {
-		if d.ItemID != "thermal.setpoint.temperature" && (d.Outcome != projection.ProjectionWithheld || len(d.SourceKeys) != 0) {
+		if d.ItemID != "thermal.setpoint.temperature_setpoint" && (d.Outcome != projection.ProjectionWithheld || len(d.SourceKeys) != 0) {
 			t.Fatalf("invented write/unsupported support: %+v", d)
 		}
 	}
@@ -421,7 +421,7 @@ func TestThermalZoneSetpointMappingAccountingAndDetachment(t *testing.T) {
 	if !reflect.DeepEqual(inputBefore, inputAfter) {
 		t.Fatal("output aliases input")
 	}
-	other := projection.ProjectionDisposition{Kind: projection.ItemFact, ItemID: "thermal.setpoint.temperature", Outcome: projection.ProjectionExact, SourceKeys: []semreg.FactKey{in.Mappings[0].Key}, Loss: []projection.LossDetail{}}
+	other := projection.ProjectionDisposition{Kind: projection.ItemFact, ItemID: "thermal.setpoint.temperature_setpoint", Outcome: projection.ProjectionExact, SourceKeys: []semreg.FactKey{in.Mappings[0].Key}, Loss: []projection.LossDetail{}}
 	in.OtherDispositions, in.Observations, in.Mappings = []projection.ProjectionDisposition{other}, nil, nil
 	out = thermalZoneSetpointRun(t, in)
 	if len(out.Dispositions) != 1 || !reflect.DeepEqual(out.Dispositions[0], other) {
@@ -442,7 +442,7 @@ func TestThermalZoneSetpointMappingMergedDispositions(t *testing.T) {
 			key.PackID = "test.other.pack"
 			*key.Dimensions[0].Value.Text = "synthetic:zone-0"
 			other := projection.ProjectionDisposition{
-				Kind: projection.ItemFact, ItemID: "thermal.setpoint.temperature", Outcome: outcome,
+				Kind: projection.ItemFact, ItemID: "thermal.setpoint.temperature_setpoint", Outcome: outcome,
 				SourceKeys: []semreg.FactKey{key, in.Mappings[0].Key}, Loss: []projection.LossDetail{},
 			}
 			if outcome == projection.ProjectionTransformed {
@@ -667,7 +667,7 @@ func TestI41AggregateSources(t *testing.T) {
 	in := thermalZoneSetpointFixture()
 	lossA := projection.LossDetail{Kind: projection.LossPrecision, SourceItems: []semreg.DefinitionID{"test.source.a"}, Description: "Synthetic precision loss.", Reversible: true}
 	lossB := projection.LossDetail{Kind: projection.LossTime, SourceItems: []semreg.DefinitionID{"test.source.b"}, Description: "Synthetic time loss."}
-	a := projection.ProjectionDisposition{Kind: projection.ItemFact, ItemID: "thermal.setpoint.temperature", Outcome: projection.ProjectionExact, SourceKeys: []semreg.FactKey{in.Mappings[0].Key}, Loss: []projection.LossDetail{}}
+	a := projection.ProjectionDisposition{Kind: projection.ItemFact, ItemID: "thermal.setpoint.temperature_setpoint", Outcome: projection.ProjectionExact, SourceKeys: []semreg.FactKey{in.Mappings[0].Key}, Loss: []projection.LossDetail{}}
 	b := projection.ProjectionDisposition{Kind: a.Kind, ItemID: a.ItemID, Outcome: projection.ProjectionTransformed, SourceKeys: []semreg.FactKey{in.Mappings[1].Key}, Loss: []projection.LossDetail{lossA, lossB}}
 	for _, local := range []bool{false, true} {
 		for _, reversed := range []bool{false, true} {
@@ -711,7 +711,7 @@ func TestI41AggregateSources(t *testing.T) {
 func TestI41ReasonAndCopyBoundary(t *testing.T) {
 	in := thermalZoneSetpointFixture()
 	in.Previous = thermalZoneSetpointRun(t, in).History
-	in.OtherDispositions = []projection.ProjectionDisposition{{Kind: projection.ItemFact, ItemID: "thermal.setpoint.temperature", Outcome: projection.ProjectionExact, SourceKeys: []semreg.FactKey{in.Mappings[0].Key}, Loss: []projection.LossDetail{}}}
+	in.OtherDispositions = []projection.ProjectionDisposition{{Kind: projection.ItemFact, ItemID: "thermal.setpoint.temperature_setpoint", Outcome: projection.ProjectionExact, SourceKeys: []semreg.FactKey{in.Mappings[0].Key}, Loss: []projection.LossDetail{}}}
 	// Populate every optional SemReg Value payload for the copy-only check;
 	// this deliberately overpopulated value is not an admission fixture.
 	populated, err := thermalZoneSetpointCopy(in)
@@ -769,7 +769,7 @@ func TestI41AggregateMatchingItem(t *testing.T) {
 	for _, axis := range []string{"kind", "item_id"} {
 		t.Run(axis, func(t *testing.T) {
 			in := thermalZoneSetpointFixture()
-			unrelated := projection.ProjectionDisposition{Kind: projection.ItemFact, ItemID: "thermal.setpoint.temperature", Outcome: projection.ProjectionTransformed, SourceKeys: []semreg.FactKey{in.Mappings[0].Key}, Loss: []projection.LossDetail{{Kind: projection.LossPrecision, SourceItems: []semreg.DefinitionID{}, Description: "Unrelated synthetic loss."}}}
+			unrelated := projection.ProjectionDisposition{Kind: projection.ItemFact, ItemID: "thermal.setpoint.temperature_setpoint", Outcome: projection.ProjectionTransformed, SourceKeys: []semreg.FactKey{in.Mappings[0].Key}, Loss: []projection.LossDetail{{Kind: projection.LossPrecision, SourceItems: []semreg.DefinitionID{}, Description: "Unrelated synthetic loss."}}}
 			if axis == "kind" {
 				unrelated.Kind = projection.ItemCapability
 			} else {
@@ -805,7 +805,7 @@ func TestI41AggregateSourceKeyIdentity(t *testing.T) {
 			}
 			variant.mutate(&other)
 			in.Mappings, in.Observations = nil, nil
-			in.OtherDispositions = []projection.ProjectionDisposition{{Kind: projection.ItemFact, ItemID: "thermal.setpoint.temperature", Outcome: projection.ProjectionExact, SourceKeys: []semreg.FactKey{base, other, base}, Loss: []projection.LossDetail{}}}
+			in.OtherDispositions = []projection.ProjectionDisposition{{Kind: projection.ItemFact, ItemID: "thermal.setpoint.temperature_setpoint", Outcome: projection.ProjectionExact, SourceKeys: []semreg.FactKey{base, other, base}, Loss: []projection.LossDetail{}}}
 			got := thermalZoneSetpointRun(t, in).Dispositions[0]
 			if len(got.SourceKeys) != 2 {
 				t.Fatal("full source-key identity collapsed or duplicate survived")
@@ -870,7 +870,7 @@ func TestI41NonprojectedSourceLoss(t *testing.T) {
 	in := thermalZoneSetpointFixture()
 	reason := semreg.DefinitionID("test.reason.other_source")
 	loss := projection.LossDetail{Kind: projection.LossPrecision, SourceItems: []semreg.DefinitionID{"test.source.other"}, Description: "Synthetic rejected-source precision loss."}
-	other := projection.ProjectionDisposition{Kind: projection.ItemFact, ItemID: "thermal.setpoint.temperature", Outcome: projection.ProjectionWithheld, SourceKeys: []semreg.FactKey{in.Mappings[0].Key}, Loss: []projection.LossDetail{loss}, Reason: &reason}
+	other := projection.ProjectionDisposition{Kind: projection.ItemFact, ItemID: "thermal.setpoint.temperature_setpoint", Outcome: projection.ProjectionWithheld, SourceKeys: []semreg.FactKey{in.Mappings[0].Key}, Loss: []projection.LossDetail{loss}, Reason: &reason}
 	in.OtherDispositions = []projection.ProjectionDisposition{other}
 	got := thermalZoneSetpointRun(t, in).Dispositions[0]
 	if got.Outcome != projection.ProjectionTransformed || !reflect.DeepEqual(got.Loss, []projection.LossDetail{loss}) || len(got.SourceKeys) != 6 {
@@ -899,7 +899,7 @@ func TestI41MalformedSourceDispositions(t *testing.T) {
 	in := thermalZoneSetpointFixture()
 	reason := semreg.DefinitionID("test.reason.other_source")
 	loss := projection.LossDetail{Kind: projection.LossPrecision, SourceItems: []semreg.DefinitionID{}, Description: "Synthetic precision loss."}
-	withheld := projection.ProjectionDisposition{Kind: projection.ItemFact, ItemID: "thermal.setpoint.temperature", Outcome: projection.ProjectionWithheld, SourceKeys: []semreg.FactKey{}, Loss: []projection.LossDetail{loss}, Reason: &reason}
+	withheld := projection.ProjectionDisposition{Kind: projection.ItemFact, ItemID: "thermal.setpoint.temperature_setpoint", Outcome: projection.ProjectionWithheld, SourceKeys: []semreg.FactKey{}, Loss: []projection.LossDetail{loss}, Reason: &reason}
 	if err := withheld.Validate(); err != nil {
 		t.Fatal(err)
 	}

@@ -98,7 +98,7 @@ def expected_families(analysis):
         row["labels"] = sorted(set().union(*(sample_labels(x, name) for x in samples[name])))
     for field, name in analysis["Fields"].items():
         assert name not in families
-        families[name] = dict(type="gauge", source="internal/semanticmetrics/metrics.go", labels=["slot"], field=field)
+        families[name] = dict(type="gauge", source="internal/semanticmetrics/metrics.go", labels=["slot", "unit"] if field in {"thermal.measurement.air_temperature", "thermal.setpoint.temperature_setpoint"} else ["slot"], field=field)
     families["helianthus_semantic_field_available"] = dict(
         type="gauge", source="internal/semanticmetrics/metrics.go", labels=["domain", "field", "slot"])
     families["helianthus_huawei_transport_events_total"] = dict(
@@ -361,7 +361,7 @@ def test_finite_format_renderers_and_route_composition(analysis):
     formats = [(c["Source"], c["Function"], c["Args"]) for c in calls if c["Method"] == "fmt.Fprintf" and c["Source"] == "internal/semanticmetrics/metrics.go"]
     expected = [
         ["&availability", json.dumps("# HELP %s Whether a configured semantic field is current, admitted, qualified, valid and fresh (0 or 1).\n# TYPE %s gauge\n"), "availabilityName", "availabilityName"],
-        ["&samples", json.dumps('%s{slot="%d"} %s\n'), "m.name", "b.Slot", "strconv.FormatFloat(value, 'g', -1, 64)"],
+        ["&samples", json.dumps('%s{slot="%d"%s} %s\n'), "m.name", "b.Slot", "unitLabel", "strconv.FormatFloat(value, 'g', -1, 64)"],
         ["&availability", json.dumps('%s{domain="%s",field="%s",slot="%d"} %d\n'), "availabilityName", "b.Domain", "m.field", "b.Slot", "available"],
         ["&values", json.dumps("# HELP %s %s\n# TYPE %s gauge\n%s"), "m.name", "m.help", "m.name", "samples.String()"],
     ]

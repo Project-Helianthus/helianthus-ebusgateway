@@ -35,7 +35,7 @@ function bootstrapFor(prefix, overrides = {}) {
       stream: `${base}api/v1/stream`,
       ...overrides,
     },
-    portal_read: { base_path: base, snapshot_operation: "semanticSnapshot", stream_endpoint: null, unavailable_operations: [] },
+    portal_read: { base_path: base, snapshot_operation: "semantic_snapshot", stream_endpoint: null, unavailable_operations: [] },
   };
 }
 

@@ -10,8 +10,8 @@ import (
 	graphqlgo "github.com/graphql-go/graphql"
 )
 
-// Computed by querySchemaShapeDigest after the additive M09 schema update.
-var querySchemaShapeSHA256 = fmt.Sprintf("%x", [sha256.Size]byte{82, 196, 7, 217, 37, 105, 36, 110, 129, 55, 67, 80, 112, 243, 117, 36, 165, 53, 177, 67, 196, 68, 89, 219, 175, 231, 184, 22, 118, 116, 20, 110})
+// Computed by querySchemaShapeDigest after the coordinated public naming adoption.
+var querySchemaShapeSHA256 = fmt.Sprintf("%x", [sha256.Size]byte{134, 218, 47, 191, 178, 113, 31, 197, 141, 107, 14, 78, 162, 227, 70, 191, 202, 13, 247, 111, 12, 13, 176, 100, 71, 189, 11, 13, 115, 40, 91, 14})
 
 func TestQuerySchemaKeepsIntrospectionShape(t *testing.T) {
 	t.Parallel()
@@ -41,13 +41,41 @@ func TestQuerySchemaKeepsExactRootFieldSet(t *testing.T) {
 	}
 	sort.Strings(got)
 	want := []string{
-		"adapterHardwareInfo", "adapterStatus", "adapter_hardware_info", "adapter_status",
-		"boilerStatus", "boiler_status", "busIdentificationEvidence", "busMessages", "busPeriodicity", "busSummary",
-		"circuits", "cylinders", "daemonStatus", "daemon_status", "device", "devices", "dhw",
-		"energyTotals", "energy_totals", "fm5Interpretation", "fm5SemanticMode", "fm5_semantic_mode",
-		"gatewayIdentity", "gateway_identity", "methods", "planes", "radioDevices", "radio_devices",
-		"schedules", "semanticSnapshot", "solar", "system", "vaillantCapabilities", "vaillantErrorHistory", "vaillantErrors", "vaillantErrorsHistory",
-		"vaillantLiveMonitor", "vaillantLiveMonitorSession", "vaillantServiceCurrent", "vaillantServiceHistory", "vaillant_regulator_capability", "watchSummary", "zones",
+		"adapter_hardware_info",
+		"adapter_status",
+		"boiler_status",
+		"bus_identification_evidence",
+		"bus_messages",
+		"bus_periodicity",
+		"bus_summary",
+		"circuits",
+		"cylinders",
+		"daemon_status",
+		"device",
+		"devices",
+		"dhw",
+		"energy_totals",
+		"fm5_interpretation",
+		"fm5_semantic_mode",
+		"gateway_identity",
+		"methods",
+		"planes",
+		"radio_devices",
+		"schedules",
+		"semantic_snapshot",
+		"solar",
+		"system",
+		"vaillant_capabilities",
+		"vaillant_error_history",
+		"vaillant_errors",
+		"vaillant_errors_history",
+		"vaillant_live_monitor",
+		"vaillant_live_monitor_session",
+		"vaillant_regulator_capability",
+		"vaillant_service_current",
+		"vaillant_service_history",
+		"watch_summary",
+		"zones",
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("query root fields = %v; want %v", got, want)

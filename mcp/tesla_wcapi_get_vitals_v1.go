@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	TeslaWCVitalsV1GetTool                = "modbus.v1.tesla.wcapi.get_vitals.replay.get"
+	TeslaWCVitalsV1GetTool                = "modbus_v1_tesla_wcapi_get_vitals_replay_get"
 	TeslaWCVitalsV1Operation              = "tesla.hsc.fc100.wc_vitals.v1"
 	TeslaWCVitalsV1ProfileVersion         = "tesla_hsc_modbus_v1"
 	TeslaWCVitalsV1OperationVersion       = "wc3_24_44_3"

@@ -12,7 +12,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/syncevidence"
 )
 
-const synchronizedEvidenceCaptureToolName = "helianthus.v1.synchronized_evidence.capture"
+const synchronizedEvidenceCaptureToolName = "helianthus_v1_synchronized_evidence_capture"
 
 type SynchronizedEvidenceCapture interface {
 	CaptureSynchronizedEvidence(context.Context) syncevidence.OneShotReceiptV1

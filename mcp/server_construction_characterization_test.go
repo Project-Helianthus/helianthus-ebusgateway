@@ -1,15 +1,14 @@
 package mcp
 
 import (
-	"crypto/sha256"
+	"bytes"
 	"encoding/json"
-	"fmt"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 )
-
-const publicToolsListManifestSHA256 = "4e4ee916dad4bf48658ddc68c51d7c5144e698d2b5cda61aa1afbd436c8db31a"
 
 func TestNewServerKeepsPublicToolsListManifest(t *testing.T) {
 	t.Parallel()
@@ -31,8 +30,34 @@ func TestNewServerKeepsPublicToolsListManifest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal tools/list manifest: %v", err)
 	}
-	got := fmt.Sprintf("%x", sha256.Sum256(manifest))
-	if got != publicToolsListManifestSHA256 {
-		t.Fatalf("tools/list manifest SHA-256 = %s; want %s", got, publicToolsListManifestSHA256)
+
+	canonical := namingDocumentedTools(t, "## Current default registration contract")
+	if !bytes.Equal(manifest, canonical) {
+		t.Fatal("tools/list differs from documented registration contract")
 	}
+}
+func namingDocumentedTools(t *testing.T, heading string) []byte {
+	t.Helper()
+	document, err := os.ReadFile("../docs/mcp-tool-inventory.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	section := strings.SplitN(string(document), heading, 2)
+	if len(section) != 2 {
+		t.Fatal("missing documented registration contract")
+	}
+	block := strings.SplitN(section[1], "```json\n", 2)
+	if len(block) != 2 {
+		t.Fatal("missing registration snapshot")
+	}
+	raw := strings.SplitN(block[1], "\n```", 2)[0]
+	var expected any
+	if err := json.Unmarshal([]byte(raw), &expected); err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := json.Marshal(expected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return canonical
 }

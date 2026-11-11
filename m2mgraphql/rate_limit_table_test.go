@@ -25,7 +25,7 @@ func newRateLimitTableHandler(t *testing.T, now *atomic.Int64) *handler {
 
 func serveStorageFrom(t *testing.T, h *handler, remote string) string {
 	t.Helper()
-	request := `{"operationName":"SemanticStorageCurrent","query":` + strconv.Quote(semanticStorageFixedQuery) + `,"variables":{"request":{"contractId":"PUBLIC_GRAPHQL_SEMANTIC_STORAGE_V1","assetRef":"asset:storage-test"}}}`
+	request := `{"operationName":"SemanticStorageCurrent","query":` + strconv.Quote(semanticStorageFixedQuery) + `,"variables":{"request":{"contract_id":"PUBLIC_GRAPHQL_SEMANTIC_STORAGE_V1","asset_ref":"asset:storage-test"}}}`
 	r := httptest.NewRequest(http.MethodPost, route, strings.NewReader(request))
 	r.RemoteAddr = remote
 	response := httptest.NewRecorder()

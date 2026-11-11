@@ -11,7 +11,7 @@ import (
 )
 
 // TestSemanticBoilerStatusUnknownGoldenEnvelope pins the
-// ebus.v1.semantic.boiler_status.get output (including data_hash) for the
+// ebus_v1_semantic_boiler_status_get output (including data_hash) for the
 // unknown-status case: the direct boiler read is unavailable, so the boiler
 // central-heating pump and the heating-status diagnostic have no source and
 // both keys are omitted. Circuit 0 is not a boiler source, so its pump status
@@ -38,7 +38,7 @@ func TestSemanticBoilerStatusUnknownGoldenEnvelope(t *testing.T) {
 			JSONRPC: "2.0",
 			ID:      1,
 			Method:  "tools/call",
-			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.boiler_status.get","arguments":{}}`),
+			Params:  json.RawMessage(`{"name":"ebus_v1_semantic_boiler_status_get","arguments":{}}`),
 		}))
 	}
 	first, second := call(), call()

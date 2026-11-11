@@ -57,8 +57,8 @@ restores one retry.
 
 Accepted records feed the existing read-only surfaces:
 
-- MCP `modbus.v1.tesla.gen3.evse.current_limit.get` for native records;
-- MCP `semantic.v1.evse.current.get` for the evaluated SemReg view;
+- MCP `modbus_v1_tesla_gen3_evse_current_limit_get` for native records;
+- MCP `semantic_v1_evse_current_get` for the evaluated SemReg view;
 - authenticated mTLS GraphQL `SemanticEVSECurrent` for the same detached SemReg
   publication;
 - the EVSE domain on the configured semantic Prometheus listener, evaluated at

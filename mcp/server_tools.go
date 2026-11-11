@@ -327,13 +327,13 @@ func defaultServerTools() []Tool {
 		},
 		{
 			Name:        toolInvokeV1Name,
-			Description: "Discover a device with ebus.v1.registry.devices.list, then select its plane with ebus.v1.registry.planes.list and method with ebus.v1.registry.methods.list before invoking it.",
+			Description: "Discover a device with ebus_v1_registry_devices_list, then select its plane with ebus_v1_registry_planes_list and method with ebus_v1_registry_methods_list before invoking it.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"address":         map[string]any{"type": "integer", "minimum": 0, "maximum": 255},
-					"plane":           map[string]any{"type": "string", "description": "Plane name returned by ebus.v1.registry.planes.list for this address."},
-					"method":          map[string]any{"type": "string", "description": "Method name returned by ebus.v1.registry.methods.list for this address and plane."},
+					"plane":           map[string]any{"type": "string", "description": "Plane name returned by ebus_v1_registry_planes_list for this address."},
+					"method":          map[string]any{"type": "string", "description": "Method name returned by ebus_v1_registry_methods_list for this address and plane."},
 					"params":          map[string]any{"type": "object", "description": "Method-specific parameters. Omit source to use the startup-admitted source; an explicit source overrides it when supplied as a nonzero byte."},
 					"intent":          map[string]any{"type": "string", "enum": []string{"READ_ONLY", "MUTATE"}},
 					"allow_dangerous": map[string]any{"type": "boolean"},
@@ -341,32 +341,6 @@ func defaultServerTools() []Tool {
 					"timeout_ms":      map[string]any{"type": "integer", "minimum": 1},
 				},
 				"required":             []string{"address", "plane", "method", "intent", "allow_dangerous"},
-				"additionalProperties": false,
-			},
-		},
-		{
-			Name:        toolDevicesLegacyName,
-			Description: "Compatibility alias for ebus.v1.registry.devices.list.",
-			InputSchema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"consistency": consistencyInputProperty(),
-				},
-				"additionalProperties": false,
-			},
-		},
-		{
-			Name:        toolInvokeLegacyName,
-			Description: "Compatibility alias for ebus.v1.rpc.invoke.",
-			InputSchema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"address": map[string]any{"type": "integer", "minimum": 0, "maximum": 255},
-					"plane":   map[string]any{"type": "string"},
-					"method":  map[string]any{"type": "string"},
-					"params":  map[string]any{"type": "object"},
-				},
-				"required":             []string{"address", "plane", "method"},
 				"additionalProperties": false,
 			},
 		},

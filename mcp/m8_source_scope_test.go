@@ -95,17 +95,17 @@ func issue788DecodeResponse(t *testing.T, raw []byte) rpcResponse {
 }
 
 var m8SourceToolInventoryV1 = []string{
-	"ebus.v1.registry.devices.list",
-	"ebus.v1.semantic.snapshot.get",
-	"eebus.v1.runtime.status.get",
-	"eebus.v1.services.list",
-	"eebus.v1.services.get",
-	"eebus.v1.sessions.list",
-	"eebus.v1.sessions.get",
-	"eebus.v1.topology.get",
-	"eebus.v1.snapshot.capture",
-	"eebus.v1.snapshot.drop",
-	"eebus.v1.pairing.status.get",
+	"ebus_v1_registry_devices_list",
+	"ebus_v1_semantic_snapshot_get",
+	"eebus_v1_runtime_status_get",
+	"eebus_v1_services_list",
+	"eebus_v1_services_get",
+	"eebus_v1_sessions_list",
+	"eebus_v1_sessions_get",
+	"eebus_v1_topology_get",
+	"eebus_v1_snapshot_capture",
+	"eebus_v1_snapshot_drop",
+	"eebus_v1_pairing_status_get",
 }
 
 func TestIssue788M8SourceScopeListsOnlyFrozenReadOnlyInventory(t *testing.T) {
@@ -181,10 +181,10 @@ func TestIssue788M8SourceScopeRejectsToolsOutsideFrozenInventory(t *testing.T) {
 	handler := server.eebusV1OperatorHandler()
 
 	for _, name := range []string{
-		"ebus.v1.runtime.status.get",
-		"eebus.v1.semantic.system.set_config",
+		"ebus_v1_runtime_status_get",
+		"eebus_v1_semantic_system_set_config",
 		"eebus.v1.features.data.get",
-		"helianthus.experimental.leaf_promotion.capture",
+		"helianthus_experimental_leaf_promotion_capture",
 	} {
 		request := httptest.NewRequest(http.MethodPost, "/mcp", issue788RPCBody(t, rpcRequest{
 			JSONRPC: "2.0", ID: 1, Method: "tools/call",
@@ -222,7 +222,7 @@ func TestIssue788M8SourceScopeRejectsSnapshotLifecycleBeforeStoreAccess(t *testi
 		t.Fatalf("scoped lifecycle calls changed active root count: got %d, want %d", got, beforeCapture)
 	}
 
-	duplicateParams := json.RawMessage(`{"name":"eebus.v1.snapshot.capture","arguments":{"nested":{"key":1,"key":2}}}`)
+	duplicateParams := json.RawMessage(`{"name":"eebus_v1_snapshot_capture","arguments":{"nested":{"key":1,"key":2}}}`)
 	request := httptest.NewRequest(http.MethodPost, "/mcp", issue788RPCBody(t, rpcRequest{
 		JSONRPC: "2.0", ID: 1, Method: "tools/call", Params: duplicateParams,
 	}))
@@ -293,12 +293,12 @@ func TestIssue788DirectSourceStateIsOperatorOnlyAndExcludedFromM8Inventory(t *te
 		},
 	}}
 	configOwner := &issue788ConfigWriter{routing: m8sourcestate.CommandRoutingFragment{Routes: []m8sourcestate.CommandRoute{
-		{SemanticPath: "/mcp/ebus.v1.semantic.system.set_config", Source: "ebus", Available: true},
-		{SemanticPath: "/mcp/ebus.v1.semantic.boiler_status.set_config", Source: "ebus", Available: true},
+		{SemanticPath: "/mcp/ebus_v1_semantic_system_set_config", Source: "ebus", Available: true},
+		{SemanticPath: "/mcp/ebus_v1_semantic_boiler_status_set_config", Source: "ebus", Available: true},
 	}}}
 	scheduleOwner := issue788ScheduleWriter{routing: m8sourcestate.CommandRoutingFragment{Routes: []m8sourcestate.CommandRoute{
-		{SemanticPath: "/mcp/ebus.v1.semantic.schedules.set_zone_time_program", Source: "ebus", Available: true},
-		{SemanticPath: "/mcp/ebus.v1.semantic.schedules.set_dhw_time_program", Source: "ebus", Available: true},
+		{SemanticPath: "/mcp/ebus_v1_semantic_schedules_set_zone_time_program", Source: "ebus", Available: true},
+		{SemanticPath: "/mcp/ebus_v1_semantic_schedules_set_dhw_time_program", Source: "ebus", Available: true},
 	}}}
 	server.SetBusObservabilityProvider(debugOwner)
 	server.SetSemanticProvider(semanticOwner)

@@ -286,7 +286,7 @@ func TestHTTPPortalBootstrapMatchesMountedCatalog(t *testing.T) {
 			if bootstrap.Read.BasePath != mount+"/" {
 				t.Fatalf("base_path = %q", bootstrap.Read.BasePath)
 			}
-			if !reflect.DeepEqual(bootstrap.Read.Unavailable, []string{"semanticSnapshot"}) {
+			if !reflect.DeepEqual(bootstrap.Read.Unavailable, []string{"semantic_snapshot"}) {
 				t.Fatalf("unavailable_operations = %v", bootstrap.Read.Unavailable)
 			}
 			catalog := httptest.NewRecorder()

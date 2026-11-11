@@ -201,8 +201,8 @@ test("VaillantB503Pane_Unknown_ShowsProbeFailureHint", async () => {
     source, sourcePath, elements,
     fetchImpl: makeGqlFetchImpl([
       {
-        match: "vaillantCapabilities",
-        reply: { data: { vaillantCapabilities: { vaillant_b503: { available: false, reason: "UNKNOWN" } } } },
+        match: "vaillant_capabilities",
+        reply: { data: { vaillant_capabilities: { vaillant_b503: { available: false, reason: "UNKNOWN" } } } },
       },
     ]),
   });
@@ -235,8 +235,8 @@ test("VaillantB503Pane_Available_ShowsThreeTabs", async () => {
     source, sourcePath, elements,
     fetchImpl: makeGqlFetchImpl([
       {
-        match: "vaillantCapabilities",
-        reply: { data: { vaillantCapabilities: { vaillant_b503: { available: true, reason: "AVAILABLE" } } } },
+        match: "vaillant_capabilities",
+        reply: { data: { vaillant_capabilities: { vaillant_b503: { available: true, reason: "AVAILABLE" } } } },
       },
     ]),
   });
@@ -269,10 +269,10 @@ test("VaillantB503Pane_ErrorsTab_RendersSlots", async () => {
     source, sourcePath, elements,
     fetchImpl: makeGqlFetchImpl([
       {
-        match: "vaillantErrors",
+        match: "vaillant_errors",
         reply: {
           data: {
-            vaillantErrors: {
+            vaillant_errors: {
               first_active_error: 281,
               slots: [281, null, null, null, null],
             },
@@ -340,8 +340,8 @@ test("VaillantB503Pane_NoInstallWriteAffordance", async () => {
     fetchImpl: (url, init) => {
       const body = init && init.body ? JSON.parse(String(init.body)) : {};
       const q = String(body.query || "");
-      if (q.includes("vaillantCapabilities")) {
-        return { ok: true, status: 200, json: async () => ({ data: { vaillantCapabilities: { vaillant_b503: { available: true, reason: "AVAILABLE" } } } }) };
+      if (q.includes("vaillant_capabilities")) {
+        return { ok: true, status: 200, json: async () => ({ data: { vaillant_capabilities: { vaillant_b503: { available: true, reason: "AVAILABLE" } } } }) };
       }
       return { ok: true, status: 200, json: async () => ({ data: {} }) };
     },
@@ -371,15 +371,15 @@ test("VaillantB503Pane_LiveMonitor_AutoDisableOnLeave", async () => {
     source, sourcePath, elements: new Map(),
     fetchImpl: makeGqlFetchImpl([
       {
-        match: "vaillantLiveMonitor",
+        match: "vaillant_live_monitor",
         reply: (vars) => {
           if (vars && vars.action === "enable") {
-            return { data: { vaillantLiveMonitor: { issuer_token: "tok-xyz-123", raw_hex: null, disabled: false } } };
+            return { data: { vaillant_live_monitor: { issuer_token: "tok-xyz-123", raw_hex: null, disabled: false } } };
           }
           if (vars && vars.action === "disable") {
-            return { data: { vaillantLiveMonitor: { issuer_token: null, raw_hex: null, disabled: true } } };
+            return { data: { vaillant_live_monitor: { issuer_token: null, raw_hex: null, disabled: true } } };
           }
-          return { data: { vaillantLiveMonitor: { issuer_token: null, raw_hex: "aabb", disabled: false } } };
+          return { data: { vaillant_live_monitor: { issuer_token: null, raw_hex: "aabb", disabled: false } } };
         },
       },
     ]),
@@ -408,10 +408,10 @@ test("VaillantB503Pane_LiveMonitor_AutoDisableOnLeave", async () => {
   const afterCalls = fetchRequests.slice(beforeCount);
   const disableCall = afterCalls.find((r) => {
     const { query, variables } = parseGqlInit(r.init);
-    return query.includes("vaillantLiveMonitor") && variables && variables.action === "disable";
+    return query.includes("vaillant_live_monitor") && variables && variables.action === "disable";
   });
   assert.ok(disableCall,
-    `a vaillantLiveMonitor(action:"disable") call must fire on nav-away; saw: ${JSON.stringify(afterCalls.map((c) => parseGqlInit(c.init)))}`);
+    `a vaillant_live_monitor(action:"disable") call must fire on nav-away; saw: ${JSON.stringify(afterCalls.map((c) => parseGqlInit(c.init)))}`);
   const { variables: disableVars } = parseGqlInit(disableCall.init);
   assert.equal(disableVars.issuer_token, "tok-xyz-123",
     "disable call must pass the stored issuer_token");
@@ -428,7 +428,7 @@ test("VaillantB503Pane_AutoDisableKeepsTokenOnGraphQLError", async () => {
     elements: new Map([['[data-role="vaillant-b503-live-status"]', status]]),
     // HTTP transport succeeds, but GraphQL rejects the disable request.
     fetchImpl: makeGqlFetchImpl([
-      { match: "vaillantLiveMonitor", reply: { data: { vaillantLiveMonitor: null }, errors: [{ message: "SESSION_BUSY" }] } },
+      { match: "vaillant_live_monitor", reply: { data: { vaillant_live_monitor: null }, errors: [{ message: "SESSION_BUSY" }] } },
     ]),
   });
   shell._vaillantB503LiveToken = "tok-still-needed";
@@ -463,19 +463,19 @@ test("VaillantB503Pane_LateEnable_AtoBRetainsPriorTokenUntilConfirmedCleanup", a
         return new Promise((resolve) => {
           resolveEnable = () => resolve({
             ok: true, status: 200,
-            json: async () => ({ data: { vaillantLiveMonitor: { issuer_token: "token-A", raw_hex: null, disabled: false } } }),
+            json: async () => ({ data: { vaillant_live_monitor: { issuer_token: "token-A", raw_hex: null, disabled: false } } }),
           });
         });
       }
       if (query.includes("VaillantLiveDisable") && variables.action === "disable") {
         disableAttempts += 1;
         const reply = disableAttempts === 1
-          ? { data: { vaillantLiveMonitor: null }, errors: [{ message: "SESSION_BUSY" }] }
-          : { data: { vaillantLiveMonitor: { disabled: true } } };
+          ? { data: { vaillant_live_monitor: null }, errors: [{ message: "SESSION_BUSY" }] }
+          : { data: { vaillant_live_monitor: { disabled: true } } };
         return Promise.resolve({ ok: true, status: 200, json: async () => reply });
       }
 	  if (query.includes("VaillantLiveMonitorSession")) {
-		return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Idle", owned: false } } }) });
+		return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillant_live_monitor_session: { state: "Idle", owned: false } } }) });
 	  }
       throw new Error(`unexpected GraphQL request ${query}`);
     },
@@ -525,14 +525,14 @@ test("VaillantB503Pane_StaleEnableKeepsNewerSessionWhenOldCleanupIsBusy", async 
         return new Promise((resolve) => {
           resolveEnableA = () => resolve({
             ok: true, status: 200,
-            json: async () => ({ data: { vaillantLiveMonitor: { issuer_token: "token-A", raw_hex: null, disabled: false } } }),
+            json: async () => ({ data: { vaillant_live_monitor: { issuer_token: "token-A", raw_hex: null, disabled: false } } }),
           });
         });
       }
       if (query.includes("VaillantLiveDisable") && variables.action === "disable") {
         return Promise.resolve({
           ok: true, status: 200,
-          json: async () => ({ data: { vaillantLiveMonitor: null }, errors: [{ message: "SESSION_BUSY" }] }),
+          json: async () => ({ data: { vaillant_live_monitor: null }, errors: [{ message: "SESSION_BUSY" }] }),
         });
       }
       throw new Error(`unexpected GraphQL request ${query}`);
@@ -584,13 +584,13 @@ test("VaillantB503Pane_DelayedOldCleanupPreservesReplacementToken", async () => 
         return new Promise((resolve) => {
           resolveOldCleanup = () => resolve({
             ok: true, status: 200,
-            json: async () => ({ data: { vaillantLiveMonitor: { disabled: true } } }),
+            json: async () => ({ data: { vaillant_live_monitor: { disabled: true } } }),
           });
         });
       }
       return Promise.resolve({
         ok: true, status: 200,
-        json: async () => ({ data: { vaillantLiveMonitor: { disabled: true } } }),
+        json: async () => ({ data: { vaillant_live_monitor: { disabled: true } } }),
       });
     },
   });
@@ -665,7 +665,7 @@ test("VaillantB503Pane_TargetProbeUnmountsOldLiveControlsBeforeBQualification", 
         return new Promise((resolve) => {
           resolveBProbe = () => resolve({
             ok: true, status: 200,
-            json: async () => ({ data: { vaillantCapabilities: { vaillant_b503: { available: false, reason: "NOT_SUPPORTED" } } } }),
+            json: async () => ({ data: { vaillant_capabilities: { vaillant_b503: { available: false, reason: "NOT_SUPPORTED" } } } }),
           });
         });
       }
@@ -716,7 +716,7 @@ test("VaillantB503Pane_RapidTargetChangesOnlyProbeNewestQualification", async ()
       ['[data-role="vaillant-b503-target"]', target],
     ]),
     fetchImpl: makeGqlFetchImpl([
-      { match: "VaillantB503Cap", reply: { data: { vaillantCapabilities: { vaillant_b503: { reason: "NOT_SUPPORTED" } } } } },
+      { match: "VaillantB503Cap", reply: { data: { vaillant_capabilities: { vaillant_b503: { reason: "NOT_SUPPORTED" } } } } },
     ]),
   });
   const proto = Object.getPrototypeOf(shell);
@@ -785,14 +785,14 @@ test("VaillantB503Pane_stalledQualificationTimesOutAndReentrySupersedesStaleProb
   assert.equal(pendingReplies[1].signal.aborted, true, "re-entry aborts the superseded capability probe");
 
   pendingReplies[2].resolve({ ok: true, status: 200, json: async () => ({
-    data: { vaillantCapabilities: { vaillant_b503: { reason: "AVAILABLE" } } },
+    data: { vaillant_capabilities: { vaillant_b503: { reason: "AVAILABLE" } } },
   }) });
   await flush();
   await flush();
   assert.equal(shell._vaillantB503CapabilityReason, "AVAILABLE", "re-entry result qualifies the current target");
 
   pendingReplies[1].resolve({ ok: true, status: 200, json: async () => ({
-    data: { vaillantCapabilities: { vaillant_b503: { reason: "NOT_SUPPORTED" } } },
+    data: { vaillant_capabilities: { vaillant_b503: { reason: "NOT_SUPPORTED" } } },
   }) });
   await stalled;
   await flush();
@@ -817,7 +817,7 @@ test("VaillantB503Pane_targetQualificationDoesNotWaitForBlockedOldCleanup", asyn
         return new Promise(() => {}); // Simulates a transport that never settles.
       }
       if (query.includes("VaillantB503Cap")) {
-        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantCapabilities: { vaillant_b503: { reason: "NOT_SUPPORTED" } } } }) });
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillant_capabilities: { vaillant_b503: { reason: "NOT_SUPPORTED" } } } }) });
       }
       throw new Error(`unexpected request ${query} ${JSON.stringify(variables)}`);
     },
@@ -850,10 +850,10 @@ test("VaillantB503Pane_targetSwitchCleansRetainedAPairRatherThanPreviousPicker",
     fetchImpl: (_url, init) => {
       const { query } = parseGqlInit(init);
       if (query.includes("VaillantLiveDisable")) {
-        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitor: { disabled: true } } }) });
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillant_live_monitor: { disabled: true } } }) });
       }
       if (query.includes("VaillantB503Cap")) {
-        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantCapabilities: { vaillant_b503: { reason: "NOT_SUPPORTED" } } } }) });
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillant_capabilities: { vaillant_b503: { reason: "NOT_SUPPORTED" } } } }) });
       }
       throw new Error(`unexpected request ${query}`);
     },
@@ -882,10 +882,10 @@ test("VaillantB503ProjectionTargetCleanupPreservesRetainedDefaultPair", async ()
     fetchImpl: (_url, init) => {
       const { query } = parseGqlInit(init);
       if (query.includes("VaillantLiveDisable")) {
-        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitor: { disabled: true } } }) });
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillant_live_monitor: { disabled: true } } }) });
       }
       if (query.includes("VaillantB503Cap")) {
-        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantCapabilities: { vaillant_b503: { reason: "NOT_SUPPORTED" } } } }) });
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillant_capabilities: { vaillant_b503: { reason: "NOT_SUPPORTED" } } } }) });
       }
       throw new Error(`unexpected request ${query}`);
     },
@@ -929,20 +929,20 @@ test("VaillantB503Pane_DelayedExplicitDisablePreservesNewSameTargetEnable", asyn
           return new Promise((resolve) => {
             resolveOldDisable = () => resolve({
               ok: true, status: 200,
-              json: async () => ({ data: { vaillantLiveMonitor: { disabled: true } } }),
+              json: async () => ({ data: { vaillant_live_monitor: { disabled: true } } }),
             });
           });
         }
-        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitor: { disabled: true } } }) });
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillant_live_monitor: { disabled: true } } }) });
       }
       if (query.includes("VaillantLive(") && variables.action === "enable") {
         return Promise.resolve({
           ok: true, status: 200,
-          json: async () => ({ data: { vaillantLiveMonitor: { issuer_token: "token-B", raw_hex: null, disabled: false } } }),
+          json: async () => ({ data: { vaillant_live_monitor: { issuer_token: "token-B", raw_hex: null, disabled: false } } }),
         });
       }
       if (query.includes("VaillantLiveMonitorSession")) {
-        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Active", owned: true } } }) });
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillant_live_monitor_session: { state: "Active", owned: true } } }) });
       }
       throw new Error(`unexpected GraphQL request ${query}`);
     },
@@ -1001,18 +1001,18 @@ test("VaillantB503Pane_StaleExplicitDisableClearsItsStillCurrentPair", async () 
         return new Promise((resolve) => {
           resolveExplicitDisable = () => resolve({
             ok: true, status: 200,
-            json: async () => ({ data: { vaillantLiveMonitor: { disabled: true } } }),
+            json: async () => ({ data: { vaillant_live_monitor: { disabled: true } } }),
           });
         });
       }
       if (query.includes("VaillantLiveDisable")) {
         return Promise.resolve({
           ok: true, status: 200,
-          json: async () => ({ data: { vaillantLiveMonitor: null }, errors: [{ message: "SESSION_BUSY" }] }),
+          json: async () => ({ data: { vaillant_live_monitor: null }, errors: [{ message: "SESSION_BUSY" }] }),
         });
       }
       if (query.includes("VaillantB503Cap")) {
-        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantCapabilities: { vaillant_b503: { reason: "NOT_SUPPORTED" } } } }) });
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillant_capabilities: { vaillant_b503: { reason: "NOT_SUPPORTED" } } } }) });
       }
       throw new Error(`unexpected GraphQL request ${query}`);
     },
@@ -1076,11 +1076,11 @@ test("VaillantB503Pane_empty_target_preserves_configured_default_for_every_reque
   const { shell, fetchRequests } = buildSandbox({
     source, sourcePath, elements,
     fetchImpl: makeGqlFetchImpl([
-      { match: "VaillantErrorsHistory", reply: { data: { vaillantErrorsHistory: [] } } },
-      { match: "VaillantErrors", reply: { data: { vaillantErrors: { first_active_error: null, slots: [] } } } },
-      { match: "VaillantServiceCurrent", reply: { data: { vaillantServiceCurrent: { first_active_error: null, slots: [] } } } },
-      { match: "VaillantLiveMonitorSession", reply: { data: { vaillantLiveMonitorSession: { state: "Idle", owned: false } } } },
-      { match: "VaillantLive", reply: { data: { vaillantLiveMonitor: { raw_hex: "", issuer_token: null, disabled: false } } } },
+      { match: "VaillantErrorsHistory", reply: { data: { vaillant_errors_history: [] } } },
+      { match: "VaillantErrors", reply: { data: { vaillant_errors: { first_active_error: null, slots: [] } } } },
+      { match: "VaillantServiceCurrent", reply: { data: { vaillant_service_current: { first_active_error: null, slots: [] } } } },
+      { match: "VaillantLiveMonitorSession", reply: { data: { vaillant_live_monitor_session: { state: "Idle", owned: false } } } },
+      { match: "VaillantLive", reply: { data: { vaillant_live_monitor: { raw_hex: "", issuer_token: null, disabled: false } } } },
     ]),
   });
   const proto = Object.getPrototypeOf(shell);
@@ -1142,7 +1142,7 @@ test("VaillantB503ProjectionCard_renders_without_projection_planes", async () =>
       ['[data-role="projection-device-select"]', deviceSelect],
     ]),
     fetchImpl: makeGqlFetchImpl([
-      { match: "VaillantB503Projection", reply: { data: { vaillantCapabilities: { vaillant_b503: { reason: "AVAILABLE" } } } } },
+      { match: "VaillantB503Projection", reply: { data: { vaillant_capabilities: { vaillant_b503: { reason: "AVAILABLE" } } } } },
     ]),
   });
   shell.projectionDevices = [{ address: 8, display_name: "Boiler", projections: [] }];
@@ -1244,7 +1244,7 @@ test("VaillantB503Pane_discoveryKeepsActiveResultNodeAttached", async () => {
   shell._vaillantB503CapabilityReason = "AVAILABLE";
   const pending = proto.refreshVaillantErrors.call(shell);
   await proto.loadProjectionPreview.call(shell, makeAuditedElement(), 1, null);
-  resolveErrors({ ok: true, json: async () => ({ data: { vaillantErrors: { first_active_error: 281, slots: [281] } } }) });
+  resolveErrors({ ok: true, json: async () => ({ data: { vaillant_errors: { first_active_error: 281, slots: [281] } } }) });
   await pending;
   assert.match(errorsBody.innerHTML, /281/, "discovery must not detach the active errors result node");
   assert.match(picker.innerHTML, /value="21"/);
@@ -1265,7 +1265,7 @@ test("VaillantB503ProjectionCard_ignores_out_of_order_A_B_A_capability_results",
     fetchImpl: (_url, init) => new Promise((resolve) => {
       pending.push({
         target: parseGqlInit(init).variables.target_address,
-        resolve: () => resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantCapabilities: { vaillant_b503: { reason: "AVAILABLE" } } } }) }),
+        resolve: () => resolve({ ok: true, status: 200, json: async () => ({ data: { vaillant_capabilities: { vaillant_b503: { reason: "AVAILABLE" } } } }) }),
       });
     }),
   });
@@ -1311,9 +1311,9 @@ test("VaillantB503ProjectionCard_target_wins_over_a_stale_hidden_picker", async 
       ['[data-role="vaillant-b503-errors-body"]', makeAuditedElement()],
     ]),
     fetchImpl: makeGqlFetchImpl([
-      { match: "VaillantB503Projection", reply: { data: { vaillantCapabilities: { vaillant_b503: { reason: "AVAILABLE" } } } } },
-      { match: "vaillantCapabilities", reply: { data: { vaillantCapabilities: { vaillant_b503: { reason: "AVAILABLE" } } } } },
-      { match: "VaillantErrors", reply: { data: { vaillantErrors: { first_active_error: null, slots: [] } } } },
+      { match: "VaillantB503Projection", reply: { data: { vaillant_capabilities: { vaillant_b503: { reason: "AVAILABLE" } } } } },
+      { match: "vaillant_capabilities", reply: { data: { vaillant_capabilities: { vaillant_b503: { reason: "AVAILABLE" } } } } },
+      { match: "VaillantErrors", reply: { data: { vaillant_errors: { first_active_error: null, slots: [] } } } },
     ]),
   });
 
@@ -1329,7 +1329,7 @@ test("VaillantB503ProjectionCard_target_wins_over_a_stale_hidden_picker", async 
   await Object.getPrototypeOf(shell).refreshVaillantErrors.call(shell);
   const b503Calls = fetchRequests
     .map((request) => parseGqlInit(request.init))
-    .filter(({ query }) => query.includes("vaillantCapabilities") || query.includes("VaillantErrors"));
+    .filter(({ query }) => query.includes("vaillant_capabilities") || query.includes("VaillantErrors"));
   assert.ok(b503Calls.length >= 2, "card navigation must probe capability and issue later B503 requests");
   for (const call of b503Calls) {
     assert.equal(call.variables.target_address, 21,
@@ -1369,14 +1369,14 @@ test("VaillantB503ProjectionCard_qualifiesTargetBeforeStaleLiveControlsCanRun", 
     fetchImpl: (_url, init) => {
       const { query, variables } = parseGqlInit(init);
       if (query.includes("VaillantB503Projection")) {
-        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantCapabilities: { vaillant_b503: { reason: "AVAILABLE" } } } }) });
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillant_capabilities: { vaillant_b503: { reason: "AVAILABLE" } } } }) });
       }
       if (query.includes("VaillantB503Cap")) {
         assert.equal(variables.target_address, 21, "card target B must be the only target qualified");
         return new Promise((resolve) => {
           resolveBProbe = () => resolve({
             ok: true, status: 200,
-            json: async () => ({ data: { vaillantCapabilities: { vaillant_b503: { reason: "NOT_SUPPORTED" } } } }),
+            json: async () => ({ data: { vaillant_capabilities: { vaillant_b503: { reason: "NOT_SUPPORTED" } } } }),
           });
         });
       }
@@ -1426,7 +1426,7 @@ test("VaillantB503Pane_session_status_does_not_infer_a_foreign_owner", async () 
       ['[data-role="vaillant-b503-target"]', target],
     ]),
     fetchImpl: makeGqlFetchImpl([
-      { match: "VaillantLiveMonitorSession", reply: { data: { vaillantLiveMonitorSession: { state: "Active", owned: true } } } },
+      { match: "VaillantLiveMonitorSession", reply: { data: { vaillant_live_monitor_session: { state: "Active", owned: true } } } },
     ]),
   });
   await Object.getPrototypeOf(shell).refreshVaillantLiveMonitorSession.call(shell);
@@ -1455,15 +1455,15 @@ test("VaillantB503Pane_visibleAndDeferredSessionReadsSerializeAndIgnoreSupersede
           return new Promise((resolve) => {
             resolveFirst = () => {
               inFlight -= 1;
-              resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Idle", owned: false } } }) });
+              resolve({ ok: true, status: 200, json: async () => ({ data: { vaillant_live_monitor_session: { state: "Idle", owned: false } } }) });
             };
           });
         }
         inFlight -= 1;
-        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Active", owned: true } } }) });
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillant_live_monitor_session: { state: "Active", owned: true } } }) });
       }
       if (query.includes("VaillantLiveDisable")) {
-        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitor: { disabled: true } } }) });
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillant_live_monitor: { disabled: true } } }) });
       }
       throw new Error(`unexpected request ${query}`);
     },
@@ -1504,7 +1504,7 @@ test("VaillantB503Pane_sessionStatusTimeoutReleasesTheNextGeneration", async () 
       if (!query.includes("VaillantLiveMonitorSession")) throw new Error(`unexpected request ${query}`);
       sessionCalls += 1;
       if (sessionCalls === 1) return new Promise(() => {});
-      return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Active", owned: true } } }) });
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillant_live_monitor_session: { state: "Active", owned: true } } }) });
     },
   });
   const proto = Object.getPrototypeOf(shell);
@@ -1539,7 +1539,7 @@ test("VaillantB503Pane_disconnectAbortsStalledStatusAndReconnectsWithoutLateWrit
         firstSignal = init.signal;
         return new Promise(() => {});
       }
-      return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Idle", owned: false } } }) });
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillant_live_monitor_session: { state: "Idle", owned: false } } }) });
     },
   });
   const proto = Object.getPrototypeOf(shell);
@@ -1581,7 +1581,7 @@ test("VaillantB503Pane_refreshing_session_holds_gate_and_disables_live_operation
       ['[data-role="vaillant-b503-live-disable"]', controls.get("disable")],
     ]),
     fetchImpl: makeGqlFetchImpl([
-      { match: "VaillantLiveMonitorSession", reply: { data: { vaillantLiveMonitorSession: { state: "Refreshing", owned: true } } } },
+      { match: "VaillantLiveMonitorSession", reply: { data: { vaillant_live_monitor_session: { state: "Refreshing", owned: true } } } },
     ]),
   });
   await Object.getPrototypeOf(shell).refreshVaillantLiveMonitorSession.call(shell);
@@ -1606,7 +1606,7 @@ test("VaillantB503Pane_visibleLiveSessionPollShowsExternalIdleExpiry", async () 
       const session = sessionCalls === 1
         ? { state: "Active", owned: true }
         : { state: "Idle", owned: false };
-      return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: session } }) });
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillant_live_monitor_session: session } }) });
     },
   });
   const proto = Object.getPrototypeOf(shell);
@@ -1630,7 +1630,7 @@ test("VaillantB503Pane_sessionPollStopsHiddenAndOnNavigation", async () => {
   const { source, sourcePath } = await loadShellSource();
   const { shell, fetchRequests, intervalCalls, clearedIntervals, documentState, documentListeners } = buildSandbox({
     source, sourcePath, elements: new Map(),
-    fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Idle", owned: false } } }) }),
+    fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ data: { vaillant_live_monitor_session: { state: "Idle", owned: false } } }) }),
   });
   const proto = Object.getPrototypeOf(shell);
   shell._activeSectionTarget = "section-vaillant-b503";
@@ -1668,10 +1668,10 @@ test("VaillantB503Pane_failedLiveActionRefreshesVisibleSessionStrip", async () =
     fetchImpl: (_url, init) => {
       const { query } = parseGqlInit(init);
       if (query.includes("VaillantLive(")) {
-        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitor: null }, errors: [{ message: "SESSION_BUSY" }] }) });
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillant_live_monitor: null }, errors: [{ message: "SESSION_BUSY" }] }) });
       }
       if (query.includes("VaillantLiveMonitorSession")) {
-        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Idle", owned: false } } }) });
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillant_live_monitor_session: { state: "Idle", owned: false } } }) });
       }
       throw new Error(`unexpected request ${query}`);
     },
@@ -1693,7 +1693,7 @@ test("VaillantB503Pane_refreshingStripRemainsVisibleWithoutOperationsWhenCapabil
   const body = makeAuditedElement();
   const { shell } = buildSandbox({
     source, sourcePath, elements: new Map([['[data-role="vaillant-b503-body"]', body]]),
-    fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Refreshing", owned: true } } }) }),
+    fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ data: { vaillant_live_monitor_session: { state: "Refreshing", owned: true } } }) }),
   });
   const proto = Object.getPrototypeOf(shell);
   shell._activeSectionTarget = "section-vaillant-b503";
@@ -1767,14 +1767,14 @@ test("VaillantB503Pane_successfulEnableRequalifiesAvailableToUnknownOwnerControl
     fetchImpl: (_url, init) => {
       const { query } = parseGqlInit(init);
       if (query.includes("VaillantLive(")) {
-        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitor: { issuer_token: "token-current", raw_hex: null, disabled: false } } }) });
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillant_live_monitor: { issuer_token: "token-current", raw_hex: null, disabled: false } } }) });
       }
       if (query.includes("VaillantLiveMonitorSession")) {
-        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Active", owned: true } } }) });
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillant_live_monitor_session: { state: "Active", owned: true } } }) });
       }
-      if (query.includes("vaillantCapabilities")) {
+      if (query.includes("vaillant_capabilities")) {
         return new Promise((resolve) => {
-          resolveCapabilities.push((reason) => resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantCapabilities: { vaillant_b503: { available: reason === "AVAILABLE", reason } } } }) }));
+          resolveCapabilities.push((reason) => resolve({ ok: true, status: 200, json: async () => ({ data: { vaillant_capabilities: { vaillant_b503: { available: reason === "AVAILABLE", reason } } } }) }));
         });
       }
       throw new Error(`unexpected request ${query}`);
@@ -1818,7 +1818,7 @@ test("VaillantB503Pane_successfulEnableRequalifiesAvailableToUnknownOwnerControl
   assert.doesNotMatch(body.innerHTML, /vaillant-b503-tabs/);
   const calls = fetchRequests.map((request) => parseGqlInit(request.init).query);
   assert.equal(calls.filter((query) => query.includes("VaillantLiveMonitorSession")).length, 1);
-  assert.equal(calls.filter((query) => query.includes("vaillantCapabilities")).length, 2);
+  assert.equal(calls.filter((query) => query.includes("vaillant_capabilities")).length, 2);
 });
 
 test("VaillantB503Pane_successfulDisableRequalifiesAvailableAndUnmountsOperations", async () => {
@@ -1836,13 +1836,13 @@ test("VaillantB503Pane_successfulDisableRequalifiesAvailableAndUnmountsOperation
     fetchImpl: (_url, init) => {
       const { query } = parseGqlInit(init);
       if (query.includes("VaillantLive(")) {
-        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitor: { issuer_token: null, raw_hex: null, disabled: true } } }) });
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillant_live_monitor: { issuer_token: null, raw_hex: null, disabled: true } } }) });
       }
       if (query.includes("VaillantLiveMonitorSession")) {
-        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Idle", owned: false } } }) });
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillant_live_monitor_session: { state: "Idle", owned: false } } }) });
       }
-      if (query.includes("vaillantCapabilities")) {
-        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantCapabilities: { vaillant_b503: { available: false, reason: "UNKNOWN" } } } }) });
+      if (query.includes("vaillant_capabilities")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillant_capabilities: { vaillant_b503: { available: false, reason: "UNKNOWN" } } } }) });
       }
       throw new Error(`unexpected request ${query}`);
     },
@@ -1872,7 +1872,7 @@ test("VaillantB503Pane_successfulDisableRequalifiesAvailableAndUnmountsOperation
   assert.doesNotMatch(body.innerHTML, /vaillant-b503-tabs/);
   const calls = fetchRequests.map((request) => parseGqlInit(request.init).query);
   assert.equal(calls.filter((query) => query.includes("VaillantLiveMonitorSession")).length, 1);
-  assert.equal(calls.filter((query) => query.includes("vaillantCapabilities")).length, 1);
+  assert.equal(calls.filter((query) => query.includes("vaillant_capabilities")).length, 1);
 });
 
 test("VaillantB503Pane_idleExpiryRequalifiesCachedAvailableAndUnmountsOperations", async () => {
@@ -1888,10 +1888,10 @@ test("VaillantB503Pane_idleExpiryRequalifiesCachedAvailableAndUnmountsOperations
     fetchImpl: (_url, init) => {
       const { query } = parseGqlInit(init);
       if (query.includes("VaillantLiveMonitorSession")) {
-        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Idle", owned: false } } }) });
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillant_live_monitor_session: { state: "Idle", owned: false } } }) });
       }
-      if (query.includes("vaillantCapabilities")) {
-        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantCapabilities: { vaillant_b503: { available: false, reason: "UNKNOWN" } } } }) });
+      if (query.includes("vaillant_capabilities")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillant_capabilities: { vaillant_b503: { available: false, reason: "UNKNOWN" } } } }) });
       }
       throw new Error(`unexpected request ${query}`);
     },
@@ -1919,7 +1919,7 @@ test("VaillantB503Pane_idleExpiryRequalifiesCachedAvailableAndUnmountsOperations
   assert.doesNotMatch(body.innerHTML, /vaillant-b503-tabs/);
   const calls = fetchRequests.map((request) => parseGqlInit(request.init).query);
   assert.equal(calls.filter((query) => query.includes("VaillantLiveMonitorSession")).length, 1);
-  assert.equal(calls.filter((query) => query.includes("vaillantCapabilities")).length, 1);
+  assert.equal(calls.filter((query) => query.includes("vaillant_capabilities")).length, 1);
 });
 
 test("VaillantB503Pane_unknownOtherTargetOrNonOwnerGetsNoLiveControls", async () => {
@@ -1963,7 +1963,7 @@ test("VaillantB503Pane_activeUnknownExceptionUnmountsOnOwnershipLoss", async () 
       ['[data-role="vaillant-b503-session-strip"]', strip],
     ]),
     fetchImpl: makeGqlFetchImpl([
-      { match: "VaillantLiveMonitorSession", reply: { data: { vaillantLiveMonitorSession: { state: "Idle", owned: false } } } },
+      { match: "VaillantLiveMonitorSession", reply: { data: { vaillant_live_monitor_session: { state: "Idle", owned: false } } } },
     ]),
   });
   const proto = Object.getPrototypeOf(shell);
@@ -1997,14 +1997,14 @@ test("VaillantB503Pane_refreshingNavigationDefersPairCleanupUntilActive", async 
         const session = sessionReads === 1
           ? { state: "Refreshing", owned: true }
           : { state: "Active", owned: true };
-        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: session } }) });
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillant_live_monitor_session: session } }) });
       }
       if (query.includes("VaillantLiveDisable")) {
         const disables = fetchRequests.map((request) => parseGqlInit(request.init))
           .filter(({ query: candidate }) => candidate.includes("VaillantLiveDisable"));
         const reply = disables.length === 1
-          ? { data: { vaillantLiveMonitor: null }, errors: [{ message: "SESSION_BUSY" }] }
-          : { data: { vaillantLiveMonitor: { disabled: true } } };
+          ? { data: { vaillant_live_monitor: null }, errors: [{ message: "SESSION_BUSY" }] }
+          : { data: { vaillant_live_monitor: { disabled: true } } };
         return Promise.resolve({ ok: true, status: 200, json: async () => reply });
       }
       throw new Error(`unexpected request ${query}`);
@@ -2043,10 +2043,10 @@ test("VaillantB503Pane_navAwayUsesAuthoritativeRefreshingStatusNotCachedActive",
     fetchImpl: (_url, init) => {
       const { query } = parseGqlInit(init);
       if (query.includes("VaillantLiveDisable")) {
-        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitor: null }, errors: [{ message: "SESSION_BUSY" }] }) });
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillant_live_monitor: null }, errors: [{ message: "SESSION_BUSY" }] }) });
       }
       if (query.includes("VaillantLiveMonitorSession")) {
-        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Refreshing", owned: true } } }) });
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillant_live_monitor_session: { state: "Refreshing", owned: true } } }) });
       }
       throw new Error(`unexpected request ${query}`);
     },
@@ -2076,13 +2076,13 @@ test("VaillantB503Pane_navAwayRetriesWhenAuthoritativeStatusAlreadySettledActive
         const disables = fetchRequests.map((request) => parseGqlInit(request.init))
           .filter(({ query: candidate }) => candidate.includes("VaillantLiveDisable"));
         const reply = disables.length === 1
-          ? { data: { vaillantLiveMonitor: null }, errors: [{ message: "SESSION_BUSY" }] }
-          : { data: { vaillantLiveMonitor: { disabled: true } } };
+          ? { data: { vaillant_live_monitor: null }, errors: [{ message: "SESSION_BUSY" }] }
+          : { data: { vaillant_live_monitor: { disabled: true } } };
         return Promise.resolve({ ok: true, status: 200, json: async () => reply });
       }
       if (query.includes("VaillantLiveMonitorSession")) {
         return Promise.resolve({ ok: true, status: 200, json: async () => ({
-          data: { vaillantLiveMonitorSession: { state: "Active", owned: true } },
+          data: { vaillant_live_monitor_session: { state: "Active", owned: true } },
         }) });
       }
       throw new Error(`unexpected request ${query}`);
@@ -2130,7 +2130,7 @@ test("VaillantB503Pane_targetReprobesAfterDetachedCleanupReleasesSession", async
         capabilityReads += 1;
         const reason = capabilityReads === 1 ? "SESSION_BUSY" : "AVAILABLE";
         return Promise.resolve({ ok: true, status: 200, json: async () => ({
-          data: { vaillantCapabilities: { vaillant_b503: { reason } } },
+          data: { vaillant_capabilities: { vaillant_b503: { reason } } },
         }) });
       }
       throw new Error(`unexpected request ${query}`);
@@ -2146,7 +2146,7 @@ test("VaillantB503Pane_targetReprobesAfterDetachedCleanupReleasesSession", async
   assert.equal(shell._vaillantB503CapabilityReason, "SESSION_BUSY",
     "the initial B probe may observe the old A session before detached cleanup reaches the gateway");
   assert.equal(shell._vaillantB503TargetAddress, 21);
-  resolveDisable({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitor: { disabled: true } } }) });
+  resolveDisable({ ok: true, status: 200, json: async () => ({ data: { vaillant_live_monitor: { disabled: true } } }) });
   await flush();
   await flush();
 
@@ -2174,13 +2174,13 @@ test("VaillantB503Pane_pendingCapabilityConsumesEarlierConfirmedCleanup", async 
     fetchImpl: (_url, init) => {
       const { query } = parseGqlInit(init);
       if (query.includes("VaillantLiveDisable")) {
-        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitor: { disabled: true } } }) });
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillant_live_monitor: { disabled: true } } }) });
       }
       if (query.includes("VaillantB503Cap")) {
         capabilityReads += 1;
         if (capabilityReads === 1) return new Promise((resolve) => { resolveBusyCapability = resolve; });
         return Promise.resolve({ ok: true, status: 200, json: async () => ({
-          data: { vaillantCapabilities: { vaillant_b503: { reason: "AVAILABLE" } } },
+          data: { vaillant_capabilities: { vaillant_b503: { reason: "AVAILABLE" } } },
         }) });
       }
       throw new Error(`unexpected request ${query}`);
@@ -2197,7 +2197,7 @@ test("VaillantB503Pane_pendingCapabilityConsumesEarlierConfirmedCleanup", async 
   assert.equal(shell._vaillantB503CapabilityReason, "PENDING", "B remains pending while its first capability response is delayed");
   assert.equal(shell._vaillantB503LiveToken, null, "confirmed detached A cleanup clears only its captured pair before B responds");
   resolveBusyCapability({ ok: true, status: 200, json: async () => ({
-    data: { vaillantCapabilities: { vaillant_b503: { reason: "SESSION_BUSY" } } },
+    data: { vaillant_capabilities: { vaillant_b503: { reason: "SESSION_BUSY" } } },
   }) });
   await switched;
   await flush();
@@ -2258,8 +2258,8 @@ test("VaillantB503Pane_tabSwapConfirmedCleanupRequalifiesCurrentTarget", async (
     ]),
     fetchImpl: (_url, init) => {
       const { query } = parseGqlInit(init);
-      if (query.includes("VaillantLiveDisable")) return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitor: { disabled: true } } }) });
-      if (query.includes("VaillantB503Cap")) return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantCapabilities: { vaillant_b503: { reason: "UNKNOWN" } } } }) });
+      if (query.includes("VaillantLiveDisable")) return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillant_live_monitor: { disabled: true } } }) });
+      if (query.includes("VaillantB503Cap")) return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillant_capabilities: { vaillant_b503: { reason: "UNKNOWN" } } } }) });
       throw new Error(`unexpected request ${query}`);
     },
   });
@@ -2300,14 +2300,14 @@ test("VaillantB503Pane_hiddenDeferredCleanupPollsRefreshingPairUntilActiveOnce",
         const session = sessionReads === 1
           ? { state: "Refreshing", owned: true }
           : { state: "Active", owned: true };
-        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: session } }) });
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillant_live_monitor_session: session } }) });
       }
       if (query.includes("VaillantLiveDisable")) {
         const count = fetchRequests.map((request) => parseGqlInit(request.init))
           .filter(({ query: candidate }) => candidate.includes("VaillantLiveDisable")).length;
         const reply = count === 1
-          ? { data: { vaillantLiveMonitor: null }, errors: [{ message: "SESSION_BUSY" }] }
-          : { data: { vaillantLiveMonitor: { disabled: true } } };
+          ? { data: { vaillant_live_monitor: null }, errors: [{ message: "SESSION_BUSY" }] }
+          : { data: { vaillant_live_monitor: { disabled: true } } };
         return Promise.resolve({ ok: true, status: 200, json: async () => reply });
       }
       throw new Error(`unexpected request ${query}`);
@@ -2352,7 +2352,7 @@ test("VaillantB503Pane_sessionEnvelopeFailureRetainsPairAndBoundsDeferredStatusR
     fetchImpl: (_url, init) => {
       const { query } = parseGqlInit(init);
       if (query.includes("VaillantLiveMonitorSession")) {
-        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: null }, errors: [{ message: "UPSTREAM_RPC_FAILED" }] }) });
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillant_live_monitor_session: null }, errors: [{ message: "UPSTREAM_RPC_FAILED" }] }) });
       }
       throw new Error(`unexpected request ${query}`);
     },
@@ -2395,7 +2395,7 @@ test("VaillantB503Pane_deferredRefreshingStatusLoopHasFiniteAttemptBound", async
     fetchImpl: (_url, init) => {
       const { query } = parseGqlInit(init);
       if (!query.includes("VaillantLiveMonitorSession")) throw new Error(`unexpected request ${query}`);
-      return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Refreshing", owned: true } } }) });
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillant_live_monitor_session: { state: "Refreshing", owned: true } } }) });
     },
   });
   const proto = Object.getPrototypeOf(shell);
@@ -2456,7 +2456,7 @@ test("VaillantB503Pane_disconnectFencesAnInFlightDeferredStatusResult", async ()
   await flush();
   shell._isConnected = false;
   proto.disconnectedCallback.call(shell);
-  resolveStatus({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Active", owned: true } } }) });
+  resolveStatus({ ok: true, status: 200, json: async () => ({ data: { vaillant_live_monitor_session: { state: "Active", owned: true } } }) });
   await flush();
   await flush();
   assert.equal(shell._vaillantB503LiveToken, "token-A");
@@ -2472,7 +2472,7 @@ test("VaillantB503Pane_refreshFailureReleaseClearsDeferredPairWithoutWrite", asy
   const { shell, fetchRequests } = buildSandbox({
     source, sourcePath,
     elements: new Map([['[data-role="vaillant-b503-session-strip"]', strip]]),
-    fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Idle", owned: false } } }) }),
+    fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ data: { vaillant_live_monitor_session: { state: "Idle", owned: false } } }) }),
   });
   const proto = Object.getPrototypeOf(shell);
   shell._activeSectionTarget = "section-vaillant-b503";
@@ -2502,7 +2502,7 @@ test("VaillantB503Pane_threads_target_and_discards_stale_error_response", async 
   const pending = Object.getPrototypeOf(shell).refreshVaillantErrors.call(shell);
   shell._vaillantB503Epoch = 1;
   shell._vaillantB503TargetAddress = 21;
-  resolveOld({ ok: true, status: 200, json: async () => ({ data: { vaillantErrors: { first_active_error: 281, slots: [281] } } }) });
+  resolveOld({ ok: true, status: 200, json: async () => ({ data: { vaillant_errors: { first_active_error: 281, slots: [281] } } }) });
   await pending;
   const { variables } = parseGqlInit(fetchRequests[0].init);
   assert.equal(variables.target_address, 8, "request must bind the target selected at request time");
@@ -2516,7 +2516,7 @@ test("VaillantB503Pane_historyFirstLoadRendersVerifiedPartialPrefix", async () =
     source, sourcePath,
     elements: new Map([['[data-role="vaillant-b503-history-body"]', body]]),
     fetchImpl: makeGqlFetchImpl([
-      { match: "VaillantErrorsHistory", reply: { data: { vaillantErrorsHistory: {
+      { match: "VaillantErrorsHistory", reply: { data: { vaillant_errors_history: {
         records: [{ index: 0, first_active_error: 281, slots: [281, null] }],
         failure: { index: 1, code: "UPSTREAM_RPC_FAILED", message: "history transport failure" },
       } } } },
@@ -2547,7 +2547,7 @@ test("VaillantB503Pane_historyPartialFailureRetainsPriorTableRows", async () => 
         ], failure: null }
         : { records: [{ index: 0, first_active_error: 281, slots: [281] }],
           failure: { index: 1, code: "UPSTREAM_RPC_FAILED", message: "history transport failure" } };
-      return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantErrorsHistory: history } }) });
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillant_errors_history: history } }) });
     },
   });
   const proto = Object.getPrototypeOf(shell);
@@ -2576,7 +2576,7 @@ test("VaillantB503Pane_historyRetentionIsByTargetNotQualificationEpoch", async (
       const { query } = parseGqlInit(init);
       if (!query.includes("VaillantErrorsHistory")) throw new Error(`unexpected request ${query}`);
       const history = replies.shift();
-      return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantErrorsHistory: history } }) });
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillant_errors_history: history } }) });
     },
   });
   const proto = Object.getPrototypeOf(shell);
@@ -2595,10 +2595,25 @@ test("VaillantB503Pane_historyRetentionIsByTargetNotQualificationEpoch", async (
 
 test("VaillantB503Pane_uses_graphql_history_session_and_AD02_contract", async () => {
   const { source } = await loadShellSource();
-  assert.match(source, /vaillantErrorsHistory\(target_address: \$target_address, limit: \$limit\) \{ records/);
+  assert.match(source, /vaillant_errors_history\(target_address: \$target_address, limit: \$limit\) \{ records/);
   assert.match(source, /b503-history-partial/);
-  assert.match(source, /vaillantLiveMonitorSession\(target_address: \$target_address\)/);
+  assert.match(source, /vaillant_live_monitor_session\(target_address: \$target_address\)/);
   assert.match(source, /b503-install-writes-banner/);
   assert.match(source, /b503-ad02-tooltip-anchor/);
   assert.doesNotMatch(source, /api\/v1\/vaillant/);
+});
+
+test("VaillantB503Pane_query_roots_are_registered_in_graphql", async () => {
+  const { source } = await loadShellSource();
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const schema = await readFile(path.resolve(here, "../../../graphql/vaillant_b503.go"), "utf8");
+  const registered = new Set([...schema.matchAll(/fields\["([^"]+)"\]/g)].map((match) => match[1]));
+  const roots = [...source.matchAll(/query Vaillant\w*\([^"\n]*?\) \{ (\w+)\(/g)].map((match) => match[1]);
+  assert.deepEqual([...new Set(roots)].sort(), [
+    "vaillant_capabilities", "vaillant_errors", "vaillant_errors_history",
+    "vaillant_live_monitor", "vaillant_live_monitor_session", "vaillant_service_current",
+  ]);
+  for (const root of roots) {
+    assert.ok(registered.has(root), `Portal B503 root ${root} must exist in GraphQL`);
+  }
 });

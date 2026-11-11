@@ -2002,7 +2002,7 @@ class PortalShell extends HTMLElement {
 	this._capabilityEEBusAdmin = Boolean(cap.eebus_admin);
     // Vaillant B503 nav — stays enabled whenever the pane exists so the
     // operator can navigate in and see an unavailable/placeholder state
-    // surfaced from the GraphQL vaillantCapabilities query. If the whole
+    // surfaced from the GraphQL vaillant_capabilities query. If the whole
     // vaillant surface is gated by a bootstrap-level flag we honor it;
     // otherwise default to enabled (the pane itself fails closed).
     const vaillantFlag = cap.vaillant_b503 === undefined ? true : Boolean(cap.vaillant_b503);
@@ -3287,12 +3287,12 @@ class PortalShell extends HTMLElement {
     const epoch = this._vaillantB503Epoch || 0;
     try {
       const env = await this._gqlRequest(
-        "query VaillantB503Projection($target_address: Int) { vaillantCapabilities(target_address: $target_address) { vaillant_b503 { reason } } }",
+        "query VaillantB503Projection($target_address: Int) { vaillant_capabilities(target_address: $target_address) { vaillant_b503 { reason } } }",
         { target_address },
       );
       // Projection selection may have changed while this request was in flight.
       const selected = Number(this.querySelector('[data-role="projection-device-select"]')?.value);
-      if (loadGeneration !== (this._projectionLoadGeneration || 0) || epoch !== (this._vaillantB503Epoch || 0) || selected !== target_address || env?.data?.vaillantCapabilities?.vaillant_b503?.reason !== "AVAILABLE") return;
+      if (loadGeneration !== (this._projectionLoadGeneration || 0) || epoch !== (this._vaillantB503Epoch || 0) || selected !== target_address || env?.data?.vaillant_capabilities?.vaillant_b503?.reason !== "AVAILABLE") return;
       const card = document.createElement ? document.createElement("button") : null;
       if (!card) return;
       card.type = "button";
@@ -4892,10 +4892,10 @@ class PortalShell extends HTMLElement {
   // M3_PORTAL — Vaillant B503 pane (issue #521)
   //
   // Read-only surface over the GraphQL Vaillant B503 queries:
-  //   - vaillantCapabilities      (availability gate)
-  //   - vaillantErrors            (Errors tab: first_active_error + 5 slots)
-  //   - vaillantServiceCurrent    (Service tab: same shape)
-  //   - vaillantLiveMonitor       (Live-Monitor tab: enable/read/disable)
+  //   - vaillant_capabilities      (availability gate)
+  //   - vaillant_errors            (Errors tab: first_active_error + 5 slots)
+  //   - vaillant_service_current    (Service tab: same shape)
+  //   - vaillant_live_monitor       (Live-Monitor tab: enable/read/disable)
   //
   // Plan invariants enforced in this file:
   //   AD02 — no install-write UI; this pane never contains 'clear',
@@ -5096,7 +5096,7 @@ class PortalShell extends HTMLElement {
 	};
 	this._vaillantB503CapabilityInFlight = inFlight;
 	Promise.resolve(this._gqlRequest(
-	  "query VaillantB503Cap($target_address: Int) { vaillantCapabilities(target_address: $target_address) { vaillant_b503 { available reason } } }",
+	  "query VaillantB503Cap($target_address: Int) { vaillant_capabilities(target_address: $target_address) { vaillant_b503 { available reason } } }",
 	  { target_address: context.target },
 	  controller ? { signal: controller.signal } : undefined,
 	)).then(
@@ -5108,8 +5108,8 @@ class PortalShell extends HTMLElement {
 	  const result = await inFlight.promise;
 	  if (result.cancelled) return;
 	  const env = result.env;
-      const cap = env && env.data && env.data.vaillantCapabilities
-        && env.data.vaillantCapabilities.vaillant_b503;
+      const cap = env && env.data && env.data.vaillant_capabilities
+        && env.data.vaillant_capabilities.vaillant_b503;
       if (cap && typeof cap.reason === "string") {
         reason = cap.reason;
       }
@@ -5377,7 +5377,7 @@ class PortalShell extends HTMLElement {
     const context = this._vaillantB503RequestContext();
     try {
       const env = await this._gqlRequest(
-        "query VaillantErrors($target_address: Int) { vaillantErrors(target_address: $target_address) { first_active_error slots } }",
+        "query VaillantErrors($target_address: Int) { vaillant_errors(target_address: $target_address) { first_active_error slots } }",
         { target_address: context.target },
       );
       if (!this._isCurrentVaillantB503Context(context)) return;
@@ -5385,7 +5385,7 @@ class PortalShell extends HTMLElement {
         if (body) body.innerHTML = `<div class="error">${escapeHtml(env.errors[0].message || "error")}</div>`;
         return;
       }
-      const payload = env && env.data && env.data.vaillantErrors;
+      const payload = env && env.data && env.data.vaillant_errors;
       this._renderB503SlotList(body, payload || { first_active_error: null, slots: [] });
     } catch (err) {
       if (this._isCurrentVaillantB503Context(context) && body) body.innerHTML = `<div class="error">${escapeHtml(String(err))}</div>`;
@@ -5398,7 +5398,7 @@ class PortalShell extends HTMLElement {
     const context = this._vaillantB503RequestContext();
     try {
       const env = await this._gqlRequest(
-        "query VaillantServiceCurrent($target_address: Int) { vaillantServiceCurrent(target_address: $target_address) { first_active_error slots } }",
+        "query VaillantServiceCurrent($target_address: Int) { vaillant_service_current(target_address: $target_address) { first_active_error slots } }",
         { target_address: context.target },
       );
       if (!this._isCurrentVaillantB503Context(context)) return;
@@ -5406,7 +5406,7 @@ class PortalShell extends HTMLElement {
         if (body) body.innerHTML = `<div class="error">${escapeHtml(env.errors[0].message || "error")}</div>`;
         return;
       }
-      const payload = env && env.data && env.data.vaillantServiceCurrent;
+      const payload = env && env.data && env.data.vaillant_service_current;
       this._renderB503SlotList(body, payload || { first_active_error: null, slots: [] });
     } catch (err) {
       if (this._isCurrentVaillantB503Context(context) && body) body.innerHTML = `<div class="error">${escapeHtml(String(err))}</div>`;
@@ -5433,7 +5433,7 @@ class PortalShell extends HTMLElement {
 	let lifecycleChanged = false;
     try {
       const env = await this._gqlRequest(
-        "query VaillantLive($action: String!, $issuer_token: String, $target_address: Int) { vaillantLiveMonitor(action: $action, issuer_token: $issuer_token, target_address: $target_address) { issuer_token raw_hex disabled } }",
+        "query VaillantLive($action: String!, $issuer_token: String, $target_address: Int) { vaillant_live_monitor(action: $action, issuer_token: $issuer_token, target_address: $target_address) { issuer_token raw_hex disabled } }",
         variables,
       );
       if (env && env.errors && env.errors.length) {
@@ -5446,7 +5446,7 @@ class PortalShell extends HTMLElement {
 		if (this._isVaillantB503LiveMonitorSessionVisible()) await this.refreshVaillantLiveMonitorSession();
         return;
       }
-      const payload = env && env.data && env.data.vaillantLiveMonitor;
+      const payload = env && env.data && env.data.vaillant_live_monitor;
       if (!payload) return;
       if (!this._isCurrentVaillantB503Context(context)) {
         if (action === "disable" && payload.disabled === true &&
@@ -5581,7 +5581,7 @@ class PortalShell extends HTMLElement {
 	  finish({ error: new Error("B503 session-status request timed out") });
 	}, vaillantB503SessionStatusTimeoutMs);
 	Promise.resolve(this._gqlRequest(
-	  "query VaillantLiveMonitorSession($target_address: Int) { vaillantLiveMonitorSession(target_address: $target_address) { state owned } }",
+	  "query VaillantLiveMonitorSession($target_address: Int) { vaillant_live_monitor_session(target_address: $target_address) { state owned } }",
 	  { target_address: request.target },
 	  controller ? { signal: controller.signal } : undefined,
 	)).then(
@@ -5637,7 +5637,7 @@ class PortalShell extends HTMLElement {
 
   _vaillantB503LiveMonitorSessionFromEnvelope(env) {
 	if (env?.errors?.length) return null;
-	const session = env?.data?.vaillantLiveMonitorSession;
+	const session = env?.data?.vaillant_live_monitor_session;
 	if (!session || typeof session.state !== "string" || typeof session.owned !== "boolean") return null;
 	return session;
   }
@@ -5773,11 +5773,11 @@ class PortalShell extends HTMLElement {
   async _disableVaillantB503Pair(token, target, status) {
     try {
       const env = await this._gqlRequest(
-        "query VaillantLiveDisable($action: String!, $issuer_token: String, $target_address: Int) { vaillantLiveMonitor(action: $action, issuer_token: $issuer_token, target_address: $target_address) { disabled } }",
+        "query VaillantLiveDisable($action: String!, $issuer_token: String, $target_address: Int) { vaillant_live_monitor(action: $action, issuer_token: $issuer_token, target_address: $target_address) { disabled } }",
         { action: "disable", issuer_token: token, target_address: target },
       );
       const message = env?.errors?.[0]?.message;
-      const disabled = env?.data?.vaillantLiveMonitor?.disabled === true;
+      const disabled = env?.data?.vaillant_live_monitor?.disabled === true;
       if (message || !disabled) {
         if (status) status.textContent = `Disable pending: ${message || "gateway did not confirm session closure."}`;
         return false;
@@ -5863,7 +5863,7 @@ class PortalShell extends HTMLElement {
     const cacheKey = context.target === null ? "default" : String(context.target);
     try {
       const env = await this._gqlRequest(
-        "query VaillantErrorsHistory($target_address: Int, $limit: Int) { vaillantErrorsHistory(target_address: $target_address, limit: $limit) { records { index first_active_error slots } failure { index code message } } }",
+        "query VaillantErrorsHistory($target_address: Int, $limit: Int) { vaillant_errors_history(target_address: $target_address, limit: $limit) { records { index first_active_error slots } failure { index code message } } }",
         { target_address: context.target, limit: 5 },
       );
       if (!this._isCurrentVaillantB503Context(context)) return;
@@ -5872,7 +5872,7 @@ class PortalShell extends HTMLElement {
         this._renderVaillantErrorsHistory(body, prior, { code: "UPSTREAM_RPC_FAILED", message: env.errors[0].message || "History unavailable" });
         return;
       }
-      const result = env?.data?.vaillantErrorsHistory;
+      const result = env?.data?.vaillant_errors_history;
       const rows = Array.isArray(result?.records) ? result.records : [];
       const failure = result?.failure && typeof result.failure === "object" ? result.failure : null;
       const prior = this._vaillantB503HistoryRows(cacheKey);

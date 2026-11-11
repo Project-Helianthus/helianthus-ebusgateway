@@ -16,9 +16,9 @@ import (
 )
 
 const (
-	mcpToolBusSummaryGet      = "ebus.v1.bus.summary.get"
-	mcpToolBusMessagesList    = "ebus.v1.bus.messages.list"
-	mcpToolBusPeriodicityList = "ebus.v1.bus.periodicity.list"
+	mcpToolBusSummaryGet      = "ebus_v1_bus_summary_get"
+	mcpToolBusMessagesList    = "ebus_v1_bus_messages_list"
+	mcpToolBusPeriodicityList = "ebus_v1_bus_periodicity_list"
 )
 
 type emptyMCPRegistry struct{}

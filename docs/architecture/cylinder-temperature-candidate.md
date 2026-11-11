@@ -6,7 +6,7 @@ without completing thermal cutover. Nothing here is stable before Helianthus
 1.0. No acquisition, registration, consumer change or publication is enabled.
 
 The public [cylinder cutover contract](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/architecture/cylinder-temperature-cutover.md)
-and its first native authority, the [B524 register catalog](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/protocols/vaillant/ebus-vaillant-B524-register-map.md),
+and its first native authority, the [B524 register catalog](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/protocols/vaillant/ebus-vaillant-b524-register-map.md),
 bound the implementation. The catalog's candidate cylinder water temperature
 meaning and Celsius unit are **Hypothesis** from value matching. Profile and
 per-instance applicability remain **Unknown** without native qualification.

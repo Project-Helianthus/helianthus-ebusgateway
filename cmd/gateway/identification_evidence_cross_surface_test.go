@@ -46,7 +46,7 @@ func mcpIdentificationEvidence(t *testing.T, limitArg string) (*normalisedEviden
 		t.Fatalf("NewServer: %v", err)
 	}
 	server.SetBusObservabilityProvider(newMCPBusObservabilityProvider(nil))
-	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ebus.v1.bus.identification_evidence.list","arguments":` + limitArg + `}}`
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ebus_v1_bus_identification_evidence_list","arguments":` + limitArg + `}}`
 	response := mcpRPC(t, server.Handler(), body)
 	content, _ := response.Result["content"].([]any)
 	if response.Error != nil || len(content) != 1 {
@@ -87,7 +87,7 @@ func graphqlIdentificationEvidence(t *testing.T, limitArg string) (*normalisedEv
 	if limitArg != "" {
 		args = "(limit: " + limitArg + ")"
 	}
-	query, _ := json.Marshal(map[string]string{"query": "{ busIdentificationEvidence" + args + " { evidenceClass decoded qualification notice sessionId count items { address sequence sessionId capturedAt requestHex responseHex } } }"})
+	query, _ := json.Marshal(map[string]string{"query": "{ bus_identification_evidence" + args + " { evidence_class decoded qualification notice session_id count items { address sequence session_id captured_at request_hex response_hex } } }"})
 	req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(string(query)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -95,14 +95,19 @@ func graphqlIdentificationEvidence(t *testing.T, limitArg string) (*normalisedEv
 	var out struct {
 		Data struct {
 			E *struct {
-				EvidenceClass, Qualification, Notice, SessionID string
-				Decoded                                         bool
-				Count                                           int
-				Items                                           []struct {
-					Address, Sequence                              int
-					SessionID, CapturedAt, RequestHex, ResponseHex string
+				EvidenceClass         string `json:"evidence_class"`
+				Qualification, Notice string
+				SessionID             string `json:"session_id"`
+				Decoded               bool
+				Count                 int
+				Items                 []struct {
+					Address, Sequence int
+					SessionID         string `json:"session_id"`
+					CapturedAt        string `json:"captured_at"`
+					RequestHex        string `json:"request_hex"`
+					ResponseHex       string `json:"response_hex"`
 				}
-			} `json:"busIdentificationEvidence"`
+			} `json:"bus_identification_evidence"`
 		} `json:"data"`
 		Errors []any `json:"errors"`
 	}
@@ -115,7 +120,7 @@ func graphqlIdentificationEvidence(t *testing.T, limitArg string) (*normalisedEv
 	e := out.Data.E
 	n := &normalisedEvidence{
 		Class: e.EvidenceClass, Qualification: e.Qualification, SessionID: e.SessionID, Decoded: e.Decoded, Count: e.Count,
-		Notice: strings.NewReplacer("requestHex", "request_hex", "responseHex", "response_hex").Replace(e.Notice),
+		Notice: strings.NewReplacer("request_hex", "request_hex", "response_hex", "response_hex").Replace(e.Notice),
 	}
 	for _, it := range e.Items {
 		n.Items = append(n.Items, strings.Join([]string{

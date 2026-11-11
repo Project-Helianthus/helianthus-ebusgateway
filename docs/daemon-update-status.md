@@ -1,7 +1,7 @@
 # Daemon update status
 
 The daemon `firmwareVersion` in GraphQL (`daemonStatus` and
-`daemon_status`) and MCP (`ebus.v1.runtime.status.get`) is the validated
+`daemon_status`) and MCP (`ebus_v1_runtime_status_get`) is the validated
 embedded gateway release version supplied at build time.
 
 `updatesAvailable` is a read-only comparison. The gateway's background release

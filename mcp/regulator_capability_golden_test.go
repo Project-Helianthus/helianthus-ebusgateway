@@ -34,7 +34,7 @@ func TestRuntimeStatusRegulatorCapabilityGoldenAndFailClosed(t *testing.T) {
 		JSONRPC: "2.0",
 		ID:      1,
 		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"ebus.v1.runtime.status.get","arguments":{}}`),
+		Params:  json.RawMessage(`{"name":"ebus_v1_runtime_status_get","arguments":{}}`),
 	}))
 	meta, ok := envelope["meta"].(map[string]any)
 	if !ok {
@@ -62,7 +62,7 @@ func TestRuntimeStatusRegulatorCapabilityGoldenAndFailClosed(t *testing.T) {
 		JSONRPC: "2.0",
 		ID:      2,
 		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"ebus.v1.runtime.status.get","arguments":{}}`),
+		Params:  json.RawMessage(`{"name":"ebus_v1_runtime_status_get","arguments":{}}`),
 	}))
 	if got := invalid["data"].(map[string]any)["vaillant_regulator_capability"]; got != "UNKNOWN" {
 		t.Fatalf("invalid capability = %#v; want UNKNOWN", got)

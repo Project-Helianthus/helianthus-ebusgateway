@@ -55,11 +55,11 @@ function harness() {
   shell.querySelectorAll = () => [];
   shell._portalCatalogEndpoint = "/fixture/catalog"; shell._semanticGraphqlEndpoint = "/fixture/graphql";
   shell.beginBootstrapLifecycle();
-  shell._portalRead = { snapshot_operation: "semanticSnapshot", unavailable_operations: [] };
+  shell._portalRead = { snapshot_operation: "semantic_snapshot", unavailable_operations: [] };
   shell.bindEvents();
   const respond = (data) => queue.push({ ok: true, json: async () => ({ data }) });
   return { shell, list, notice, button, search, document, requests, queue, renderCards: sandbox.renderCards, query: sandbox.readQuery, deadline: () => deadlines.at(-1)(),
-    pair(f = fixture()) { respond({ portalCatalogV1: f.catalog }); respond({ semanticSnapshot: { assets: f.assets } }); },
+    pair(f = fixture()) { respond({ portalCatalogV1: f.catalog }); respond({ semantic_snapshot: { assets: f.assets } }); },
     refresh: () => shell.loadSemanticPreview(list),
   };
 }
@@ -73,8 +73,8 @@ test("M23 sixth contribution renders through production preview with the same pa
   assert.match(h.list.innerHTML, /fixture.driver.5\/portal.fixture.5@1.0.0/);
   assert.match(h.list.innerHTML, /Power: 0e0 unit.watt/);
   assert.deepEqual(h.requests.map((request) => request.url), ["/fixture/catalog", "/fixture/graphql"]);
-  assert.deepEqual(h.requests[1].body.variables.assetIds, f.assets.map((asset) => asset.asset_id));
-  assert.match(h.query, /asset_id: assetId/); assert.match(h.query, /retained_observations: retainedObservations/);
+  assert.deepEqual(h.requests[1].body.variables.asset_ids, f.assets.map((asset) => asset.asset_id));
+  assert.match(h.query, /asset_id: asset_id/); assert.match(h.query, /retained_observations: retainedObservations/);
   assert.match(h.query, /evidence \{ \.\.\.ReadSemanticEvidenceRef/);
 });
 
@@ -196,7 +196,7 @@ for (const failure of ["HTTP", "timeout", "malformed response"]) test(`M23 reatt
   } });
   h.shell.endBootstrapLifecycle();
   h.shell.beginBootstrapLifecycle();
-  h.shell._portalRead = { snapshot_operation: "semanticSnapshot", unavailable_operations: [] };
+  h.shell._portalRead = { snapshot_operation: "semantic_snapshot", unavailable_operations: [] };
   h.shell.render();
   assert.equal(h.list.innerHTML, previous);
   assert.equal(h.shell._semanticHasValid, true);
@@ -226,7 +226,7 @@ test("M23 pending and overlapping reads expose busy state and ignore late comple
 
 test("M23 unavailable operations and unsafe endpoints fail closed without native fallback", async () => {
   for (const configure of [
-    (s) => { s._portalRead.unavailable_operations = ["semanticSnapshot"]; },
+    (s) => { s._portalRead.unavailable_operations = ["semantic_snapshot"]; },
     (s) => { s._portalRead.unavailable_operations = ["PortalCatalogV1"]; },
     (s) => { s._portalRead = undefined; },
     (s) => { s._semanticGraphqlEndpoint = "//fixture.invalid/graphql"; },
@@ -364,8 +364,8 @@ for (const field of ["candidate_id", "revision", "key"]) test(`M23 selected cand
 test("M23 GraphQL errors and malformed shared responses retain previous valid cards", async () => {
   for (const response of [
     { errors: [{ message: "synthetic error" }] },
-    { data: { semanticSnapshot: { assets: [] } } },
-    { data: { semanticSnapshot: { assets: [{ asset_id: "asset:fixture:0", selections: [], unavailable_reason: "invented" }] } } },
+    { data: { semantic_snapshot: { assets: [] } } },
+    { data: { semantic_snapshot: { assets: [{ asset_id: "asset:fixture:0", selections: [], unavailable_reason: "invented" }] } } },
   ]) {
     const h = harness(), f = fixture(1); h.pair(f); await h.refresh(); const previous = h.list.innerHTML;
     h.queue.push({ ok: true, json: async () => ({ data: { portalCatalogV1: f.catalog } }) });
@@ -379,7 +379,7 @@ for (const code of ["RESOURCE_EXHAUSTED", "CONFLICT"]) test(`M23 structured ${co
   assert.equal(await h.refresh(), true);
   assert.match(h.list.innerHTML, /Power: 0e0 unit.watt/);
   h.queue.push({ ok: true, json: async () => ({ data: { portalCatalogV1: f.catalog } }) });
-  h.queue.push({ ok: true, json: async () => ({ data: { semanticSnapshot: null }, errors: [{ message: "synthetic read refusal", extensions: { code } }] }) });
+  h.queue.push({ ok: true, json: async () => ({ data: { semantic_snapshot: null }, errors: [{ message: "synthetic read refusal", extensions: { code } }] }) });
   assert.equal(await h.refresh(), false);
   assert.match(h.list.innerHTML, /generation conflict or read limit.*Values withheld/);
   assert.doesNotMatch(h.list.innerHTML, /Power:|portal-catalog-resource/);

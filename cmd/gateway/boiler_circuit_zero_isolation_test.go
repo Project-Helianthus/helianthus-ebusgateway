@@ -278,25 +278,25 @@ func m62AssertSurfaces(t *testing.T, poller *vaillantSemanticPoller, wantBoilerP
 		t.Fatalf("NewQuerySchema: %v", err)
 	}
 	result := graphqlgo.Do(graphqlgo.Params{Schema: schema, RequestString: `{
-		boilerStatus {
-			state { centralHeatingPumpActive central_heating_pump_active }
-			diagnostics { heatingStatusRaw heating_status_raw }
+		boiler_status {
+			state { central_heating_pump_active central_heating_pump_active }
+			diagnostics { heating_status_raw heating_status_raw }
 		}
-		circuits { index state { pumpActive pump_active circuitState } }
+		circuits { index state { pump_active pump_active circuit_state } }
 	}`})
 	if len(result.Errors) != 0 {
 		t.Fatalf("GraphQL errors: %+v", result.Errors)
 	}
 	data := m62JSONObject(t, result.Data)
-	boilerObj := m62Object(t, data, "boilerStatus")
+	boilerObj := m62Object(t, data, "boiler_status")
 	stateObj := m62Object(t, boilerObj, "state")
 	diagObj := m62Object(t, boilerObj, "diagnostics")
-	for _, key := range []string{"centralHeatingPumpActive", "central_heating_pump_active"} {
-		m62AssertJSONBool(t, "GraphQL boilerStatus.state."+key, stateObj, key, true, wantBoilerPump)
+	for _, key := range []string{"central_heating_pump_active", "central_heating_pump_active"} {
+		m62AssertJSONBool(t, "GraphQL boiler_status.state."+key, stateObj, key, true, wantBoilerPump)
 	}
-	for _, key := range []string{"heatingStatusRaw", "heating_status_raw"} {
+	for _, key := range []string{"heating_status_raw", "heating_status_raw"} {
 		if value, present := diagObj[key]; !present || value != nil {
-			t.Errorf("GraphQL boilerStatus.diagnostics.%s = %v (present=%t); want null", key, value, present)
+			t.Errorf("GraphQL boiler_status.diagnostics.%s = %v (present=%t); want null", key, value, present)
 		}
 	}
 	gqlCircuits, _ := data["circuits"].([]any)
@@ -304,11 +304,11 @@ func m62AssertSurfaces(t *testing.T, poller *vaillantSemanticPoller, wantBoilerP
 		t.Fatalf("GraphQL circuits = %v; want one circuit", data["circuits"])
 	}
 	circuitState := m62Object(t, gqlCircuits[0].(map[string]any), "state")
-	for _, key := range []string{"pumpActive", "pump_active"} {
+	for _, key := range []string{"pump_active", "pump_active"} {
 		m62AssertJSONBool(t, "GraphQL circuits[0].state."+key, circuitState, key, true, &wantCircuitPump)
 	}
-	if circuitState["circuitState"] != wantCircuitState {
-		t.Errorf("GraphQL circuits[0].state.circuitState = %v; want %q", circuitState["circuitState"], wantCircuitState)
+	if circuitState["circuit_state"] != wantCircuitState {
+		t.Errorf("GraphQL circuits[0].state.circuit_state = %v; want %q", circuitState["circuit_state"], wantCircuitState)
 	}
 
 	// MCP: omitempty pointers, so an unknown boiler field is an absent key.

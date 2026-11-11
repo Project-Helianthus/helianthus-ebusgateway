@@ -31,7 +31,7 @@ func (p *edgeSnapshotProvider) Capture(ctx context.Context, ids []semreg.AssetID
 	return p.capture(ctx, ids)
 }
 
-const edgeSnapshotQuery = `query($ids:[ID!]!){semanticSnapshot(assetIds:$ids){assets{assetId unavailableReason}}}`
+const edgeSnapshotQuery = `query($ids:[ID!]!){semantic_snapshot(asset_ids:$ids){assets{asset_id unavailable_reason}}}`
 
 func edgeUnknown(id semreg.AssetID) semanticview.Input {
 	return semanticview.Input{AssetID: id, UnavailableReason: "semantic.read.reason.asset_unknown"}
@@ -52,14 +52,14 @@ func edgeFailure(t *testing.T, result map[string]any, code string) {
 	e, _ := errs[0].(map[string]any)
 	ext, _ := e["extensions"].(map[string]any)
 	data, _ := result["data"].(map[string]any)
-	if ext["code"] != code || data == nil || data["semanticSnapshot"] != nil {
+	if ext["code"] != code || data == nil || data["semantic_snapshot"] != nil {
 		t.Fatalf("want %s with null root, got %v", code, result)
 	}
 }
 
 func edgeAssets(t *testing.T, result map[string]any) []any {
 	t.Helper()
-	return m09Success(t, result)["semanticSnapshot"].(map[string]any)["assets"].([]any)
+	return m09Success(t, result)["semantic_snapshot"].(map[string]any)["assets"].([]any)
 }
 
 func TestSemanticSnapshotProviderEdgesCanonicalOrder(t *testing.T) {
@@ -80,7 +80,7 @@ func TestSemanticSnapshotProviderEdgesCanonicalOrder(t *testing.T) {
 			t.Fatalf("assets: %v", assets)
 		}
 		for i, want := range []string{"asset:a", "asset:b", "asset:c"} {
-			if assets[i].(map[string]any)["assetId"] != want {
+			if assets[i].(map[string]any)["asset_id"] != want {
 				t.Fatalf("canonical order: %v", assets)
 			}
 		}
@@ -255,7 +255,7 @@ func TestSemanticSnapshotProviderEdgesCancellation(t *testing.T) {
 				if result["errors"] == nil {
 					t.Fatalf("cancellation succeeded: %v", result)
 				}
-				if data, _ := result["data"].(map[string]any); data != nil && data["semanticSnapshot"] != nil {
+				if data, _ := result["data"].(map[string]any); data != nil && data["semantic_snapshot"] != nil {
 					t.Fatalf("cancellation exposed data: %v", result)
 				}
 			} else if assets := edgeAssets(t, result); len(assets) != 1 {

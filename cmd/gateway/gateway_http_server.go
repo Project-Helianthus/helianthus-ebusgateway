@@ -261,10 +261,10 @@ func startHTTPServer(
 					return portal.SemanticSnapshot{}
 				}
 				verdict := portalFM5Interpretation(semanticProvider)
-				var degradedReason *string
+				var degraded_reason *string
 				if verdict.DegradedReason != "" {
 					reason := string(verdict.DegradedReason)
-					degradedReason = &reason
+					degraded_reason = &reason
 				}
 				return portal.SemanticSnapshot{
 					Zones:               mapPortalZones(semanticProvider.Zones()),
@@ -275,7 +275,7 @@ func startHTTPServer(
 					Circuits:            mapPortalCircuits(semanticProvider.Circuits()),
 					RadioDevices:        mapPortalRadioDevices(semanticProvider.RadioDevices()),
 					FM5Mode:             string(verdict.Mode),
-					FM5DegradedReason:   degradedReason,
+					FM5DegradedReason:   degraded_reason,
 					FM5EvidenceRevision: verdict.EvidenceRevision,
 					Solar:               mapPortalSolarStatus(semanticProvider.Solar()),
 					Cylinders:           mapPortalCylinders(semanticProvider.Cylinders()),
@@ -438,7 +438,7 @@ func portalTCPModbusProvider(provider mcp.ModbusV1Provider) mcp.ModbusV1Provider
 }
 
 // installGatewaySemanticOperationRoute composes the one GraphQL
-// semanticOperation route over the shared current-generation capture and the
+// semantic_operation route over the shared current-generation capture and the
 // SemReg operation kernel, and injects its executor lookup. The default lookup
 // holds no send-capable executor; a qualified driver composition supplies its
 // own. No runtime intent owner is composed yet, so the route answers

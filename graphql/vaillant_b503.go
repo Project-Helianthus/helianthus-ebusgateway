@@ -88,7 +88,7 @@ func (b *Builder) SetVaillantB503Provider(provider VaillantB503Provider) {
 		return
 	}
 	b.mu.Lock()
-	b.vaillantB503 = provider
+	b.vaillant_b503 = provider
 	b.mu.Unlock()
 }
 
@@ -98,7 +98,7 @@ func (b *Builder) vaillantB503Provider() VaillantB503Provider {
 	}
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	return b.vaillantB503
+	return b.vaillant_b503
 }
 
 // sanitizeAvailability enforces the plan AD14 invariant that EXPIRED never
@@ -116,7 +116,7 @@ func sanitizeAvailability(raw string) string {
 }
 
 var b503AvailabilityEnum = graphqlgo.NewEnum(graphqlgo.EnumConfig{
-	Name:        "B503Availability",
+	Name:        "b503_availability",
 	Description: "Capability reason for the Vaillant B503 surface. EXPIRED is internal-only and never a member (plan AD14).",
 	Values: graphqlgo.EnumValueConfigMap{
 		"AVAILABLE":      {Value: "AVAILABLE"},
@@ -131,7 +131,7 @@ var b503AvailabilityEnum = graphqlgo.NewEnum(graphqlgo.EnumConfig{
 // in introspection. Refreshing is ownership-held and operation-busy while an
 // epoch refresh runs; Disabled never owns the gate.
 var b503SessionStateEnum = graphqlgo.NewEnum(graphqlgo.EnumConfig{
-	Name:        "B503SessionState",
+	Name:        "b503_session_state",
 	Description: "Gateway-held Vaillant B503 session state. Refreshing holds ownership while operations are busy.",
 	Values: graphqlgo.EnumValueConfigMap{
 		"Idle":       {Value: "Idle"},
@@ -180,9 +180,9 @@ func buildVaillantB503Types() (
 	sessionType *graphqlgo.Object,
 ) {
 	errorsType = graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "VaillantB503Errors",
+		Name: "vaillant_b503_errors",
 		Fields: graphqlgo.Fields{
-			"firstActiveError": &graphqlgo.Field{
+			"first_active_error": &graphqlgo.Field{
 				Type: graphqlgo.Int,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					s, ok := params.Source.(VaillantB503Errors)
@@ -206,7 +206,7 @@ func buildVaillantB503Types() (
 	})
 
 	historyType = graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "VaillantB503HistoryRecord",
+		Name: "vaillant_b503_history_record",
 		Fields: graphqlgo.Fields{
 			"index": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.Int),
@@ -218,7 +218,7 @@ func buildVaillantB503Types() (
 					return s.Index, nil
 				},
 			},
-			"firstActiveError": &graphqlgo.Field{
+			"first_active_error": &graphqlgo.Field{
 				Type: graphqlgo.Int,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					s, ok := params.Source.(VaillantB503HistoryRecord)
@@ -242,7 +242,7 @@ func buildVaillantB503Types() (
 	})
 
 	historyFailureType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "VaillantB503HistoryFailure",
+		Name: "vaillant_b503_history_failure",
 		Fields: graphqlgo.Fields{
 			"index": &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.Int), Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 				failure, _ := params.Source.(*VaillantB503HistoryFailure)
@@ -269,7 +269,7 @@ func buildVaillantB503Types() (
 	})
 
 	historyListType = graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "VaillantB503HistoryList",
+		Name: "vaillant_b503_history_list",
 		Fields: graphqlgo.Fields{
 			"records": &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(historyType))), Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 				list, ok := params.Source.(VaillantB503HistoryList)
@@ -289,9 +289,9 @@ func buildVaillantB503Types() (
 	})
 
 	liveMonitorType = graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "VaillantB503LiveMonitor",
+		Name: "vaillant_b503_live_monitor",
 		Fields: graphqlgo.Fields{
-			"issuerToken": &graphqlgo.Field{
+			"issuer_token": &graphqlgo.Field{
 				Type: graphqlgo.String,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					s, ok := params.Source.(VaillantB503LiveMonitor)
@@ -301,7 +301,7 @@ func buildVaillantB503Types() (
 					return s.IssuerToken, nil
 				},
 			},
-			"rawHex": &graphqlgo.Field{
+			"raw_hex": &graphqlgo.Field{
 				Type: graphqlgo.String,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					s, ok := params.Source.(VaillantB503LiveMonitor)
@@ -325,7 +325,7 @@ func buildVaillantB503Types() (
 	})
 
 	capabilityType = graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "VaillantB503Capability",
+		Name: "vaillant_b503_capability",
 		Fields: graphqlgo.Fields{
 			"reason": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(b503AvailabilityEnum),
@@ -345,9 +345,9 @@ func buildVaillantB503Types() (
 	})
 
 	capabilitiesType = graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "VaillantCapabilities",
+		Name: "vaillant_capabilities",
 		Fields: graphqlgo.Fields{
-			"vaillantB503": &graphqlgo.Field{
+			"vaillant_b503": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(capabilityType),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					// Source is the parent resolver's return; we expose the
@@ -360,7 +360,7 @@ func buildVaillantB503Types() (
 	})
 
 	sessionType = graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "VaillantB503Session",
+		Name: "vaillant_b503_session",
 		Fields: graphqlgo.Fields{
 			"state": &graphqlgo.Field{Type: graphqlgo.NewNonNull(b503SessionStateEnum), Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 				s, ok := params.Source.(VaillantB503Session)
@@ -380,7 +380,7 @@ func buildVaillantB503Types() (
 }
 
 func parseTargetAddress(args map[string]any) (*byte, error) {
-	raw, ok := args["targetAddress"]
+	raw, ok := args["target_address"]
 	if !ok || raw == nil {
 		return nil, nil
 	}
@@ -395,10 +395,10 @@ func parseTargetAddress(args map[string]any) (*byte, error) {
 	case float64:
 		v = int(typed)
 	default:
-		return nil, fmt.Errorf("INVALID_ARGUMENT: targetAddress must be an integer")
+		return nil, fmt.Errorf("INVALID_ARGUMENT: target_address must be an integer")
 	}
 	if v < 0 || v > 255 {
-		return nil, fmt.Errorf("INVALID_ARGUMENT: targetAddress must be 0-255, got %d", v)
+		return nil, fmt.Errorf("INVALID_ARGUMENT: target_address must be 0-255, got %d", v)
 	}
 	b := byte(v)
 	return &b, nil
@@ -433,22 +433,22 @@ func addVaillantB503Queries(fields graphqlgo.Fields, builder *Builder) {
 	errorsType, historyType, historyListType, liveMonitorType, _, capabilitiesType, sessionType := buildVaillantB503Types()
 
 	targetArg := graphqlgo.FieldConfigArgument{
-		"targetAddress": &graphqlgo.ArgumentConfig{Type: graphqlgo.Int},
+		"target_address": &graphqlgo.ArgumentConfig{Type: graphqlgo.Int},
 	}
 	indexAndTargetArg := graphqlgo.FieldConfigArgument{
-		"index":         &graphqlgo.ArgumentConfig{Type: graphqlgo.Int},
-		"targetAddress": &graphqlgo.ArgumentConfig{Type: graphqlgo.Int},
+		"index":          &graphqlgo.ArgumentConfig{Type: graphqlgo.Int},
+		"target_address": &graphqlgo.ArgumentConfig{Type: graphqlgo.Int},
 	}
 
 	providerOrErr := func() (VaillantB503Provider, error) {
 		p := builder.vaillantB503Provider()
 		if p == nil {
-			return nil, fmt.Errorf("NOT_SUPPORTED: vaillantB503 provider not configured")
+			return nil, fmt.Errorf("NOT_SUPPORTED: vaillant_b503 provider not configured")
 		}
 		return p, nil
 	}
 
-	fields["vaillantErrors"] = &graphqlgo.Field{
+	fields["vaillant_errors"] = &graphqlgo.Field{
 		Type: errorsType,
 		Args: targetArg,
 		Resolve: func(params graphqlgo.ResolveParams) (any, error) {
@@ -464,7 +464,7 @@ func addVaillantB503Queries(fields graphqlgo.Fields, builder *Builder) {
 		},
 	}
 
-	fields["vaillantErrorHistory"] = &graphqlgo.Field{
+	fields["vaillant_error_history"] = &graphqlgo.Field{
 		Type: historyType,
 		Args: indexAndTargetArg,
 		Resolve: func(params graphqlgo.ResolveParams) (any, error) {
@@ -486,14 +486,14 @@ func addVaillantB503Queries(fields graphqlgo.Fields, builder *Builder) {
 
 	// The plural query is intentionally bounded.  It is a browser-facing
 	// history view, not a replacement for native evidence or an unbounded scan.
-	fields["vaillantErrorsHistory"] = &graphqlgo.Field{
+	fields["vaillant_errors_history"] = &graphqlgo.Field{
 		// The root remains nullable for validation/provider failures. Indexed
 		// read failure is represented inside a non-null history-list result so
 		// the verified record prefix and failed index remain visible.
 		Type: historyListType,
 		Args: graphqlgo.FieldConfigArgument{
-			"limit":         &graphqlgo.ArgumentConfig{Type: graphqlgo.Int},
-			"targetAddress": &graphqlgo.ArgumentConfig{Type: graphqlgo.Int},
+			"limit":          &graphqlgo.ArgumentConfig{Type: graphqlgo.Int},
+			"target_address": &graphqlgo.ArgumentConfig{Type: graphqlgo.Int},
 		},
 		Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 			target, err := parseTargetAddress(params.Args)
@@ -517,7 +517,7 @@ func addVaillantB503Queries(fields graphqlgo.Fields, builder *Builder) {
 		},
 	}
 
-	fields["vaillantServiceCurrent"] = &graphqlgo.Field{
+	fields["vaillant_service_current"] = &graphqlgo.Field{
 		Type: errorsType,
 		Args: targetArg,
 		Resolve: func(params graphqlgo.ResolveParams) (any, error) {
@@ -533,7 +533,7 @@ func addVaillantB503Queries(fields graphqlgo.Fields, builder *Builder) {
 		},
 	}
 
-	fields["vaillantServiceHistory"] = &graphqlgo.Field{
+	fields["vaillant_service_history"] = &graphqlgo.Field{
 		Type: historyType,
 		Args: indexAndTargetArg,
 		Resolve: func(params graphqlgo.ResolveParams) (any, error) {
@@ -553,17 +553,17 @@ func addVaillantB503Queries(fields graphqlgo.Fields, builder *Builder) {
 		},
 	}
 
-	fields["vaillantLiveMonitor"] = &graphqlgo.Field{
+	fields["vaillant_live_monitor"] = &graphqlgo.Field{
 		Type: liveMonitorType,
 		Args: graphqlgo.FieldConfigArgument{
-			"action":        &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
-			"issuerToken":   &graphqlgo.ArgumentConfig{Type: graphqlgo.String},
-			"targetAddress": &graphqlgo.ArgumentConfig{Type: graphqlgo.Int},
+			"action":         &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+			"issuer_token":   &graphqlgo.ArgumentConfig{Type: graphqlgo.String},
+			"target_address": &graphqlgo.ArgumentConfig{Type: graphqlgo.Int},
 		},
 		Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 			action, _ := params.Args["action"].(string)
 			var issuerToken *string
-			if raw, ok := params.Args["issuerToken"]; ok && raw != nil {
+			if raw, ok := params.Args["issuer_token"]; ok && raw != nil {
 				if s, ok := raw.(string); ok {
 					issuerToken = &s
 				}
@@ -580,7 +580,7 @@ func addVaillantB503Queries(fields graphqlgo.Fields, builder *Builder) {
 		},
 	}
 
-	fields["vaillantCapabilities"] = &graphqlgo.Field{
+	fields["vaillant_capabilities"] = &graphqlgo.Field{
 		// Invalid target arguments are field-local validation failures. Keep this
 		// root nullable so a malformed capability probe does not discard sibling
 		// reads; capability child fields remain non-null when it resolves.
@@ -600,7 +600,7 @@ func addVaillantB503Queries(fields graphqlgo.Fields, builder *Builder) {
 		},
 	}
 
-	fields["vaillantLiveMonitorSession"] = &graphqlgo.Field{
+	fields["vaillant_live_monitor_session"] = &graphqlgo.Field{
 		// The provider may be absent. Keep that NOT_SUPPORTED result local to
 		// this root field so an operator can still receive sibling capability
 		// data in the same query; the session object's child fields remain

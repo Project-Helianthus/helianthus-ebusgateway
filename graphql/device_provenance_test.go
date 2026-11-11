@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -65,7 +66,7 @@ func queryMCPDeviceTool(t *testing.T, reg *registry.DeviceRegistry, name string,
 
 func queryMCPDeviceProvenance(t *testing.T, reg *registry.DeviceRegistry, address int) map[string]any {
 	t.Helper()
-	data, ok := queryMCPDeviceTool(t, reg, "ebus.v1.registry.devices.get", map[string]any{"address": address}).(map[string]any)
+	data, ok := queryMCPDeviceTool(t, reg, "ebus_v1_registry_devices_get", map[string]any{"address": address}).(map[string]any)
 	if !ok {
 		t.Fatalf("MCP device get data has unexpected type")
 	}
@@ -74,7 +75,7 @@ func queryMCPDeviceProvenance(t *testing.T, reg *registry.DeviceRegistry, addres
 
 func queryMCPDeviceListProvenance(t *testing.T, reg *registry.DeviceRegistry) []any {
 	t.Helper()
-	data, ok := queryMCPDeviceTool(t, reg, "ebus.v1.registry.devices.list", map[string]any{}).([]any)
+	data, ok := queryMCPDeviceTool(t, reg, "ebus_v1_registry_devices_list", map[string]any{}).([]any)
 	if !ok {
 		t.Fatalf("MCP device list data has unexpected type")
 	}
@@ -88,7 +89,7 @@ func TestDeviceProvenance_DevicesExposeCandidatePassiveAndConfirmedStates(t *tes
 	reg.RegisterPassiveObserved(registry.DeviceInfo{Address: 0xF1, Manufacturer: "passive", DeviceID: "observed"}, registry.SlotRoleMaster, now)
 	reg.Register(registry.DeviceInfo{Address: 0x15, Manufacturer: "active", DeviceID: "confirmed", SerialNumber: "active-confirmed-15"})
 
-	result := executeDeviceProvenanceQuery(t, reg, `{ devices { address discoverySource verificationState } }`)
+	result := executeDeviceProvenanceQuery(t, reg, `{ devices { address discovery_source verification_state } }`)
 	data := result.Data.(map[string]any)
 	devices := data["devices"].([]any)
 	want := map[int][2]string{
@@ -104,10 +105,10 @@ func TestDeviceProvenance_DevicesExposeCandidatePassiveAndConfirmedStates(t *tes
 		if !ok {
 			t.Fatalf("unexpected device address = 0x%02X", address)
 		}
-		if device["discoverySource"] != labels[0] || device["verificationState"] != labels[1] {
-			t.Fatalf("device 0x%02X provenance = (%v,%v); want (%s,%s)", address, device["discoverySource"], device["verificationState"], labels[0], labels[1])
+		if device["discovery_source"] != labels[0] || device["verification_state"] != labels[1] {
+			t.Fatalf("device 0x%02X provenance = (%v,%v); want (%s,%s)", address, device["discovery_source"], device["verification_state"], labels[0], labels[1])
 		}
-		if device["verificationState"] == "candidate" {
+		if device["verification_state"] == "candidate" {
 			candidates++
 		}
 	}
@@ -127,19 +128,19 @@ func TestDeviceProvenance_DeviceAddressArgumentSelectsAliasFaceWithoutChangingId
 	alias.Address = 0x08
 	reg.RegisterPassiveObserved(alias, registry.SlotRoleSlave, now.Add(time.Second))
 
-	result := executeDeviceProvenanceQuery(t, reg, `{ primary: device(address: 3) { address addresses deviceId discoverySource verificationState } alias: device(address: 8) { address addresses deviceId discoverySource verificationState } missing: device(address: 153) { address discoverySource verificationState } }`)
+	result := executeDeviceProvenanceQuery(t, reg, `{ primary: device(address: 3) { address addresses device_id discovery_source verification_state } alias: device(address: 8) { address addresses device_id discovery_source verification_state } missing: device(address: 153) { address discovery_source verification_state } }`)
 	data := result.Data.(map[string]any)
 	primaryResult := data["primary"].(map[string]any)
 	aliasResult := data["alias"].(map[string]any)
 	for name, device := range map[string]map[string]any{"primary": primaryResult, "alias": aliasResult} {
-		if device["address"] != 3 || device["deviceId"] != "same-device" {
+		if device["address"] != 3 || device["device_id"] != "same-device" {
 			t.Fatalf("%s stable identity = %+v; want canonical address 3 and same-device", name, device)
 		}
 	}
-	if primaryResult["discoverySource"] != "static_seed" || primaryResult["verificationState"] != "candidate" {
+	if primaryResult["discovery_source"] != "static_seed" || primaryResult["verification_state"] != "candidate" {
 		t.Fatalf("primary provenance = %+v; want static_seed/candidate", primaryResult)
 	}
-	if aliasResult["discoverySource"] != "passive_observed" || aliasResult["verificationState"] != "corroborated" {
+	if aliasResult["discovery_source"] != "passive_observed" || aliasResult["verification_state"] != "corroborated" {
 		t.Fatalf("alias provenance = %+v; want passive_observed/corroborated", aliasResult)
 	}
 	if data["missing"] != nil {
@@ -158,17 +159,17 @@ func TestDeviceProvenance_AddressZeroParityWithMCP(t *testing.T) {
 	zeroAlias.Address = 0x00
 	reg.RegisterStaticSeed(zeroAlias, registry.SlotRoleMaster, now)
 
-	graphqlResult := executeDeviceProvenanceQuery(t, reg, `{ device(address: 0) { address discoverySource verificationState } }`)
+	graphqlResult := executeDeviceProvenanceQuery(t, reg, `{ device(address: 0) { address discovery_source verification_state } }`)
 	graphqlDevice := graphqlResult.Data.(map[string]any)["device"].(map[string]any)
 	mcpDevice := queryMCPDeviceProvenance(t, reg, 0)
 
 	if graphqlDevice["address"].(int) != int(mcpDevice["address"].(float64)) {
 		t.Fatalf("canonical address parity: GraphQL=%v MCP=%v", graphqlDevice["address"], mcpDevice["address"])
 	}
-	if graphqlDevice["discoverySource"] != mcpDevice["discovery_source"] || graphqlDevice["verificationState"] != mcpDevice["verification_state"] {
-		t.Fatalf("zero-alias provenance parity: GraphQL=(%v,%v) MCP=(%v,%v)", graphqlDevice["discoverySource"], graphqlDevice["verificationState"], mcpDevice["discovery_source"], mcpDevice["verification_state"])
+	if graphqlDevice["discovery_source"] != mcpDevice["discovery_source"] || graphqlDevice["verification_state"] != mcpDevice["verification_state"] {
+		t.Fatalf("zero-alias provenance parity: GraphQL=(%v,%v) MCP=(%v,%v)", graphqlDevice["discovery_source"], graphqlDevice["verification_state"], mcpDevice["discovery_source"], mcpDevice["verification_state"])
 	}
-	if graphqlDevice["discoverySource"] != "static_seed" || graphqlDevice["verificationState"] != "candidate" {
+	if graphqlDevice["discovery_source"] != "static_seed" || graphqlDevice["verification_state"] != "candidate" {
 		t.Fatalf("zero-alias provenance = %+v; want static_seed/candidate", graphqlDevice)
 	}
 }
@@ -182,33 +183,41 @@ func TestDeviceProvenance_CorroboratedUsesNormativeLiteralOnEveryPublicWire(t *t
 		now,
 	)
 
-	graphqlDevice := executeDeviceProvenanceQuery(t, reg, `{ device(address: 241) { verificationState } }`).Data.(map[string]any)["device"].(map[string]any)
-	if got := graphqlDevice["verificationState"]; got != "corroborated" {
-		t.Fatalf("GraphQL verificationState = %q; want corroborated", got)
+	graphqlDevice := executeDeviceProvenanceQuery(t, reg, `{ device(address: 241) { verification_state } }`).Data.(map[string]any)["device"].(map[string]any)
+	if got := graphqlDevice["verification_state"]; got != "corroborated" {
+		t.Fatalf("GraphQL verification_state = %q; want corroborated", got)
 	}
 
 	getDevice := queryMCPDeviceProvenance(t, reg, 0xF1)
 	if got := getDevice["verification_state"]; got != "corroborated" {
-		t.Fatalf("ebus.v1.registry.devices.get verification_state = %q; want corroborated", got)
+		t.Fatalf("ebus_v1_registry_devices_get verification_state = %q; want corroborated", got)
 	}
 
 	list := queryMCPDeviceListProvenance(t, reg)
 	if len(list) != 1 {
-		t.Fatalf("ebus.v1.registry.devices.list length = %d; want 1", len(list))
+		t.Fatalf("ebus_v1_registry_devices_list length = %d; want 1", len(list))
 	}
 	listDevice := list[0].(map[string]any)
 	if got := listDevice["verification_state"]; got != "corroborated" {
-		t.Fatalf("ebus.v1.registry.devices.list verification_state = %q; want corroborated", got)
+		t.Fatalf("ebus_v1_registry_devices_list verification_state = %q; want corroborated", got)
 	}
 
-	legacyData, ok := queryMCPDeviceTool(t, reg, "ebus.devices", map[string]any{}).([]any)
-	if !ok || len(legacyData) != 1 {
-		t.Fatalf("ebus.devices data = %#v; want one device", legacyData)
+	// The withdrawn legacy tool must fail closed; retained list/get parity is
+	// asserted above and across every state below.
+	server, err := mcp.NewServer(reg, nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	legacyDevice := legacyData[0].(map[string]any)
-	if got := legacyDevice["verification_state"]; got != "corroborated" {
-		t.Fatalf("ebus.devices verification_state = %q; want corroborated", got)
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ebus.devices","arguments":{}}}`)))
+	var rejected map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &rejected); err != nil {
+		t.Fatal(err)
 	}
+	if rejected["error"] == nil {
+		t.Fatalf("withdrawn legacy tool accepted: %s", recorder.Body.String())
+	}
+
 }
 
 func TestDeviceProvenance_CrossSurfaceParityForListGetAliasesAndAllStates(t *testing.T) {
@@ -232,7 +241,7 @@ func TestDeviceProvenance_CrossSurfaceParityForListGetAliasesAndAllStates(t *tes
 		0x15: {"active_confirmed", "identity_confirmed"},
 		0x21: {"active_confirmed", "identity_confirmed"},
 	}
-	graphqlList := executeDeviceProvenanceQuery(t, reg, `{ devices { address discoverySource verificationState } }`).Data.(map[string]any)["devices"].([]any)
+	graphqlList := executeDeviceProvenanceQuery(t, reg, `{ devices { address discovery_source verification_state } }`).Data.(map[string]any)["devices"].([]any)
 	mcpList := queryMCPDeviceListProvenance(t, reg)
 	mcpByAddress := make(map[int]map[string]any, len(mcpList))
 	for _, raw := range mcpList {
@@ -253,11 +262,11 @@ func TestDeviceProvenance_CrossSurfaceParityForListGetAliasesAndAllStates(t *tes
 		if !ok {
 			t.Fatalf("MCP list missing GraphQL address 0x%02X", address)
 		}
-		if graphqlDevice["discoverySource"] != mcpDevice["discovery_source"] || graphqlDevice["verificationState"] != mcpDevice["verification_state"] {
-			t.Fatalf("list provenance parity at 0x%02X: GraphQL=(%v,%v) MCP=(%v,%v)", address, graphqlDevice["discoverySource"], graphqlDevice["verificationState"], mcpDevice["discovery_source"], mcpDevice["verification_state"])
+		if graphqlDevice["discovery_source"] != mcpDevice["discovery_source"] || graphqlDevice["verification_state"] != mcpDevice["verification_state"] {
+			t.Fatalf("list provenance parity at 0x%02X: GraphQL=(%v,%v) MCP=(%v,%v)", address, graphqlDevice["discovery_source"], graphqlDevice["verification_state"], mcpDevice["discovery_source"], mcpDevice["verification_state"])
 		}
-		if graphqlDevice["discoverySource"] != expected[0] || graphqlDevice["verificationState"] != expected[1] {
-			t.Fatalf("list provenance at 0x%02X = (%v,%v); want (%s,%s)", address, graphqlDevice["discoverySource"], graphqlDevice["verificationState"], expected[0], expected[1])
+		if graphqlDevice["discovery_source"] != expected[0] || graphqlDevice["verification_state"] != expected[1] {
+			t.Fatalf("list provenance at 0x%02X = (%v,%v); want (%s,%s)", address, graphqlDevice["discovery_source"], graphqlDevice["verification_state"], expected[0], expected[1])
 		}
 	}
 
@@ -273,17 +282,17 @@ func TestDeviceProvenance_CrossSurfaceParityForListGetAliasesAndAllStates(t *tes
 		{address: 0x00, canonical: 0x21, want: [2]string{"static_seed", "candidate"}},
 	}
 	for _, tc := range getCases {
-		query := fmt.Sprintf(`{ device(address: %d) { address discoverySource verificationState } }`, tc.address)
+		query := fmt.Sprintf(`{ device(address: %d) { address discovery_source verification_state } }`, tc.address)
 		graphqlDevice := executeDeviceProvenanceQuery(t, reg, query).Data.(map[string]any)["device"].(map[string]any)
 		mcpDevice := queryMCPDeviceProvenance(t, reg, tc.address)
 		if graphqlDevice["address"] != tc.canonical || int(mcpDevice["address"].(float64)) != tc.canonical {
 			t.Fatalf("get canonical address parity for 0x%02X: GraphQL=%v MCP=%v want=%d", tc.address, graphqlDevice["address"], mcpDevice["address"], tc.canonical)
 		}
-		if graphqlDevice["discoverySource"] != mcpDevice["discovery_source"] || graphqlDevice["verificationState"] != mcpDevice["verification_state"] {
-			t.Fatalf("get provenance parity for 0x%02X: GraphQL=(%v,%v) MCP=(%v,%v)", tc.address, graphqlDevice["discoverySource"], graphqlDevice["verificationState"], mcpDevice["discovery_source"], mcpDevice["verification_state"])
+		if graphqlDevice["discovery_source"] != mcpDevice["discovery_source"] || graphqlDevice["verification_state"] != mcpDevice["verification_state"] {
+			t.Fatalf("get provenance parity for 0x%02X: GraphQL=(%v,%v) MCP=(%v,%v)", tc.address, graphqlDevice["discovery_source"], graphqlDevice["verification_state"], mcpDevice["discovery_source"], mcpDevice["verification_state"])
 		}
-		if graphqlDevice["discoverySource"] != tc.want[0] || graphqlDevice["verificationState"] != tc.want[1] {
-			t.Fatalf("get provenance for 0x%02X = (%v,%v); want (%s,%s)", tc.address, graphqlDevice["discoverySource"], graphqlDevice["verificationState"], tc.want[0], tc.want[1])
+		if graphqlDevice["discovery_source"] != tc.want[0] || graphqlDevice["verification_state"] != tc.want[1] {
+			t.Fatalf("get provenance for 0x%02X = (%v,%v); want (%s,%s)", tc.address, graphqlDevice["discovery_source"], graphqlDevice["verification_state"], tc.want[0], tc.want[1])
 		}
 	}
 }
@@ -319,12 +328,12 @@ func TestDeviceProvenance_RetainsOriginalSourceAfterIdentityConfirmation(t *test
 			tc.admit(reg, info, time.Date(2026, time.September, 6, 14, 0, 0, 0, time.UTC))
 			reg.Register(info)
 
-			query := fmt.Sprintf(`{ device(address: %d) { address discoverySource verificationState } }`, tc.address)
+			query := fmt.Sprintf(`{ device(address: %d) { address discovery_source verification_state } }`, tc.address)
 			graphqlDevice := executeDeviceProvenanceQuery(t, reg, query).Data.(map[string]any)["device"].(map[string]any)
 			mcpDevice := queryMCPDeviceProvenance(t, reg, int(tc.address))
 
-			if graphqlDevice["discoverySource"] != tc.wantSource || graphqlDevice["verificationState"] != "identity_confirmed" {
-				t.Fatalf("GraphQL provenance = (%v,%v); want (%s,identity_confirmed)", graphqlDevice["discoverySource"], graphqlDevice["verificationState"], tc.wantSource)
+			if graphqlDevice["discovery_source"] != tc.wantSource || graphqlDevice["verification_state"] != "identity_confirmed" {
+				t.Fatalf("GraphQL provenance = (%v,%v); want (%s,identity_confirmed)", graphqlDevice["discovery_source"], graphqlDevice["verification_state"], tc.wantSource)
 			}
 			if mcpDevice["discovery_source"] != tc.wantSource || mcpDevice["verification_state"] != "identity_confirmed" {
 				t.Fatalf("MCP provenance = (%v,%v); want (%s,identity_confirmed)", mcpDevice["discovery_source"], mcpDevice["verification_state"], tc.wantSource)
@@ -353,7 +362,7 @@ func TestDeviceProvenance_SlotlessEntryReturnsNullableAbsence(t *testing.T) {
 	}
 	result := graphqlgo.Do(graphqlgo.Params{
 		Schema:        schema,
-		RequestString: `{ devices { address discoverySource verificationState } device(address: 16) { address discoverySource verificationState } }`,
+		RequestString: `{ devices { address discovery_source verification_state } device(address: 16) { address discovery_source verification_state } }`,
 	})
 	if len(result.Errors) != 0 {
 		t.Fatalf("GraphQL errors = %v", result.Errors)
@@ -365,8 +374,8 @@ func TestDeviceProvenance_SlotlessEntryReturnsNullableAbsence(t *testing.T) {
 		if device["address"] != 16 {
 			t.Fatalf("%s address = %v; want 16", name, device["address"])
 		}
-		if device["discoverySource"] != nil || device["verificationState"] != nil {
-			t.Fatalf("%s slotless provenance = (%v,%v); want (null,null)", name, device["discoverySource"], device["verificationState"])
+		if device["discovery_source"] != nil || device["verification_state"] != nil {
+			t.Fatalf("%s slotless provenance = (%v,%v); want (null,null)", name, device["discovery_source"], device["verification_state"])
 		}
 	}
 }

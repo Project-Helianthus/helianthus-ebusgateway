@@ -894,38 +894,38 @@ function formatYesNo(value) {
 }
 
 // Typed shared-read selection uses aliases to restore public SemReg member names.
-const PORTAL_SEMANTIC_QUERY = `query PortalSemanticContributions($assetIds: [ID!]!) { semanticSnapshot(assetIds: $assetIds) { assets { ...ReadAssetSnapshotRead } } }
-fragment ReadAssetSnapshotRead on AssetSnapshotRead { asset_id: assetId snapshot { ...ReadSemanticSnapshot } evaluation { ...ReadSemanticEvaluationView } projection { ...ReadSemanticProjectionReport } selections { ...ReadSemanticSelection } unavailable_reason: unavailableReason }
-fragment ReadSemanticSnapshot on SemanticSnapshot { contract snapshot_id: snapshotId asset_id: assetId revisions { ...ReadSemanticRevisionVector } evaluated_at: evaluatedAt { ...ReadSemanticTimePoint } evaluate_monotonic: evaluateMonotonic { ...ReadSemanticMonotonicPoint } sources { ...ReadSemanticSourceDescriptor } bindings { ...ReadSemanticNativeBinding } identity_links: identityLinks { ...ReadSemanticIdentityLink } facts { ...ReadSemanticFactEnvelope } retained_observations: retainedObservations { ...ReadSemanticRetainedObservationRecord } services { ...ReadSemanticServiceInstance } capabilities { ...ReadSemanticCapabilityInstance } fences { ...ReadSemanticGenerationFence } cursors { ...ReadSemanticPublicationCursor } }
+const PORTAL_SEMANTIC_QUERY = `query PortalSemanticContributions($asset_ids: [ID!]!) { semantic_snapshot(asset_ids: $asset_ids) { assets { ...ReadAssetSnapshotRead } } }
+fragment ReadAssetSnapshotRead on AssetSnapshotRead { asset_id: asset_id snapshot { ...ReadSemanticSnapshot } evaluation { ...ReadSemanticEvaluationView } projection { ...ReadSemanticProjectionReport } selections { ...ReadSemanticSelection } unavailable_reason: unavailableReason }
+fragment ReadSemanticSnapshot on SemanticSnapshot { contract snapshot_id: snapshotId asset_id: asset_id revisions { ...ReadSemanticRevisionVector } evaluated_at: evaluatedAt { ...ReadSemanticTimePoint } evaluate_monotonic: evaluateMonotonic { ...ReadSemanticMonotonicPoint } sources { ...ReadSemanticSourceDescriptor } bindings { ...ReadSemanticNativeBinding } identity_links: identityLinks { ...ReadSemanticIdentityLink } facts { ...ReadSemanticFactEnvelope } retained_observations: retainedObservations { ...ReadSemanticRetainedObservationRecord } services { ...ReadSemanticServiceInstance } capabilities { ...ReadSemanticCapabilityInstance } fences { ...ReadSemanticGenerationFence } cursors { ...ReadSemanticPublicationCursor } }
 fragment ReadSemanticRevisionVector on SemanticRevisionVector { semantic identity facts services capabilities }
 fragment ReadSemanticTimePoint on SemanticTimePoint { unix_nanoseconds: unixNanoseconds clock_id: clockId uncertainty_ns: uncertaintyNs }
 fragment ReadSemanticMonotonicPoint on SemanticMonotonicPoint { clock_epoch_id: clockEpochId nanoseconds }
 fragment ReadSemanticSourceDescriptor on SemanticSourceDescriptor { source_id: sourceId source_epoch_id: sourceEpochId protocol_id: protocolId profile_id: profileId profile_version: profileVersion registry_evidence: registryEvidence { ...ReadSemanticEvidenceRef } started_at: startedAt { ...ReadSemanticTimePoint } state revision }
 fragment ReadSemanticEvidenceRef on SemanticEvidenceRef { owner kind digest contract access redaction }
-fragment ReadSemanticNativeBinding on SemanticNativeBinding { binding_id: bindingId asset_id: assetId source_id: sourceId source_epoch_id: sourceEpochId driver_generation: driverGeneration native_resource: nativeResource { ...ReadSemanticEvidenceRef } state revision }
-fragment ReadSemanticIdentityLink on SemanticIdentityLink { asset_id: assetId binding_id: bindingId state basis { ...ReadSemanticEvidenceRef } revision }
-fragment ReadSemanticFactEnvelope on SemanticFactEnvelope { asset_id: assetId key { ...ReadSemanticFactKey } candidates { ...ReadSemanticFactCandidate } conflicts { ...ReadSemanticConflict } revision }
+fragment ReadSemanticNativeBinding on SemanticNativeBinding { binding_id: binding_id asset_id: asset_id source_id: sourceId source_epoch_id: sourceEpochId driver_generation: driverGeneration native_resource: nativeResource { ...ReadSemanticEvidenceRef } state revision }
+fragment ReadSemanticIdentityLink on SemanticIdentityLink { asset_id: asset_id binding_id: binding_id state basis { ...ReadSemanticEvidenceRef } revision }
+fragment ReadSemanticFactEnvelope on SemanticFactEnvelope { asset_id: asset_id key { ...ReadSemanticFactKey } candidates { ...ReadSemanticFactCandidate } conflicts { ...ReadSemanticConflict } revision }
 fragment ReadSemanticFactKey on SemanticFactKey { pack_id: packId pack_version: packVersion fact_id: factId dimensions { ...ReadSemanticDimension } }
 fragment ReadSemanticDimension on SemanticDimension { id value { ...ReadSemanticValue } }
 fragment ReadSemanticValue on SemanticValue { kind quantity { ...ReadSemanticQuantity } boolean text symbol { ...ReadSemanticSymbol } symbols { ...ReadSemanticSymbol } time { ...ReadSemanticTimePoint } }
 fragment ReadSemanticQuantity on SemanticQuantity { number { ...ReadSemanticDecimal } unit }
 fragment ReadSemanticDecimal on SemanticDecimal { coefficient exponent10 }
 fragment ReadSemanticSymbol on SemanticSymbol { namespace token known }
-fragment ReadSemanticFactCandidate on SemanticFactCandidate { candidate_id: candidateId key { ...ReadSemanticFactKey } value { ...ReadSemanticValue } quality { ...ReadSemanticQuality } times { ...ReadSemanticTimes } freshness_policy: freshnessPolicy { ...ReadSemanticFreshnessPolicy } binding_id: bindingId source_epoch_id: sourceEpochId driver_generation: driverGeneration origin { ...ReadSemanticOriginRef } causal { ...ReadSemanticCausalContext } evidence { ...ReadSemanticEvidenceRef } derivation { ...ReadSemanticDerivation } revision }
+fragment ReadSemanticFactCandidate on SemanticFactCandidate { candidate_id: candidateId key { ...ReadSemanticFactKey } value { ...ReadSemanticValue } quality { ...ReadSemanticQuality } times { ...ReadSemanticTimes } freshness_policy: freshnessPolicy { ...ReadSemanticFreshnessPolicy } binding_id: binding_id source_epoch_id: sourceEpochId driver_generation: driverGeneration origin { ...ReadSemanticOriginRef } causal { ...ReadSemanticCausalContext } evidence { ...ReadSemanticEvidenceRef } derivation { ...ReadSemanticDerivation } revision }
 fragment ReadSemanticQuality on SemanticQuality { assertion qualification promotion validity availability freshness reasons }
 fragment ReadSemanticTimes on SemanticTimes { phenomenon_at: phenomenonAt { ...ReadSemanticTimePoint } source_at: sourceAt { ...ReadSemanticTimePoint } received_at: receivedAt { ...ReadSemanticTimePoint } receipt_monotonic: receiptMonotonic { ...ReadSemanticMonotonicPoint } evaluated_at: evaluatedAt { ...ReadSemanticTimePoint } evaluate_monotonic: evaluateMonotonic { ...ReadSemanticMonotonicPoint } }
 fragment ReadSemanticFreshnessPolicy on SemanticFreshnessPolicy { policy_id: policyId version fresh_for_ns: freshForNs retain_for_ns: retainForNs max_wall_uncertainty_ns: maxWallUncertaintyNs }
-fragment ReadSemanticOriginRef on SemanticOriginRef { origin_id: originId kind source_id: sourceId source_epoch_id: sourceEpochId binding_id: bindingId evidence { ...ReadSemanticEvidenceRef } }
+fragment ReadSemanticOriginRef on SemanticOriginRef { origin_id: originId kind source_id: sourceId source_epoch_id: sourceEpochId binding_id: binding_id evidence { ...ReadSemanticEvidenceRef } }
 fragment ReadSemanticCausalContext on SemanticCausalContext { origin { ...ReadSemanticOriginRef } correlation_id: correlationId parent_correlation_id: parentCorrelationId hop_count: hopCount max_hops: maxHops first_seen_at: firstSeenAt { ...ReadSemanticTimePoint } expires_at: expiresAt { ...ReadSemanticTimePoint } path }
 fragment ReadSemanticDerivation on SemanticDerivation { algorithm version inputs { ...ReadSemanticDerivationInput } evidence { ...ReadSemanticEvidenceRef } }
 fragment ReadSemanticDerivationInput on SemanticDerivationInput { candidate_id: candidateId candidate_revision: candidateRevision source_paths: sourcePaths { ...ReadSemanticSourcePathRef } }
-fragment ReadSemanticSourcePathRef on SemanticSourcePathRef { binding_id: bindingId source_id: sourceId source_epoch_id: sourceEpochId driver_generation: driverGeneration }
+fragment ReadSemanticSourcePathRef on SemanticSourcePathRef { binding_id: binding_id source_id: sourceId source_epoch_id: sourceEpochId driver_generation: driverGeneration }
 fragment ReadSemanticConflict on SemanticConflict { conflict_id: conflictId kind candidates evidence { ...ReadSemanticEvidenceRef } state }
 fragment ReadSemanticRetainedObservationRecord on SemanticRetainedObservationRecord { contract candidate { ...ReadSemanticFactCandidate } removal }
-fragment ReadSemanticServiceInstance on SemanticServiceInstance { instance_id: instanceId asset_id: assetId definition { ...ReadSemanticDefinitionRef } binding_id: bindingId source_epoch_id: sourceEpochId driver_generation: driverGeneration qualification availability revision }
+fragment ReadSemanticServiceInstance on SemanticServiceInstance { instance_id: instanceId asset_id: asset_id definition { ...ReadSemanticDefinitionRef } binding_id: binding_id source_epoch_id: sourceEpochId driver_generation: driverGeneration qualification availability revision }
 fragment ReadSemanticDefinitionRef on SemanticDefinitionRef { pack { ...ReadSemanticPackRef } id version }
 fragment ReadSemanticPackRef on SemanticPackRef { id version }
-fragment ReadSemanticCapabilityInstance on SemanticCapabilityInstance { instance_id: instanceId asset_id: assetId service_instance: serviceInstance definition { ...ReadSemanticDefinitionRef } binding_id: bindingId source_epoch_id: sourceEpochId driver_generation: driverGeneration qualification availability constraints { ...ReadSemanticTypedField } activation_evidence: activationEvidence { ...ReadSemanticEvidenceRef } revision }
+fragment ReadSemanticCapabilityInstance on SemanticCapabilityInstance { instance_id: instanceId asset_id: asset_id service_instance: serviceInstance definition { ...ReadSemanticDefinitionRef } binding_id: binding_id source_epoch_id: sourceEpochId driver_generation: driverGeneration qualification availability constraints { ...ReadSemanticTypedField } activation_evidence: activationEvidence { ...ReadSemanticEvidenceRef } revision }
 fragment ReadSemanticTypedField on SemanticTypedField { id value { ...ReadSemanticValue } }
 fragment ReadSemanticGenerationFence on SemanticGenerationFence { source_id: sourceId source_epoch_id: sourceEpochId driver_generation: driverGeneration reason evidence { ...ReadSemanticEvidenceRef } revision }
 fragment ReadSemanticPublicationCursor on SemanticPublicationCursor { source_id: sourceId source_epoch_id: sourceEpochId driver_generation: driverGeneration last_sequence: lastSequence last_batch_digest: lastBatchDigest fenced }
@@ -1148,10 +1148,10 @@ function isValidHex(str, maxNibbles) {
   return /^[0-9a-fA-F]+$/.test(str);
 }
 
-function explorerDecode(rawHex, rawLen, type) {
-  if (!rawHex || rawLen === 0) return "";
-  if (rawHex.length % 2 !== 0) return rawHex;
-  const bytes = new Uint8Array(rawHex.match(/.{1,2}/g).map((b) => parseInt(b, 16)));
+function explorerDecode(raw_hex, rawLen, type) {
+  if (!raw_hex || rawLen === 0) return "";
+  if (raw_hex.length % 2 !== 0) return raw_hex;
+  const bytes = new Uint8Array(raw_hex.match(/.{1,2}/g).map((b) => parseInt(b, 16)));
   const view = new DataView(bytes.buffer);
   try {
     switch (type) {
@@ -1174,10 +1174,10 @@ function explorerDecode(rawHex, rawLen, type) {
       }
       case "hex":
       default:
-        return rawHex;
+        return raw_hex;
     }
   } catch {
-    return rawHex;
+    return raw_hex;
   }
 }
 
@@ -1537,7 +1537,7 @@ class PortalShell extends HTMLElement {
         const errEl = this.querySelector('[data-role="l7-decode-error"]');
         const read = (el) => (el && typeof el.value === "string" ? el.value : "");
         const direction = read(dirInput);
-        const frameType = read(frameInput);
+        const frame_type = read(frameInput);
         // Clear previous inline error.
         if (errEl) {
           errEl.textContent = "";
@@ -1554,9 +1554,9 @@ class PortalShell extends HTMLElement {
           }
           return;
         }
-        if (!L7_DECODE_FRAME_TYPES.has(frameType)) {
+        if (!L7_DECODE_FRAME_TYPES.has(frame_type)) {
           if (errEl) {
-            errEl.textContent = `Invalid frame_type: ${frameType || "(empty)"} (expected one of: ${Array.from(L7_DECODE_FRAME_TYPES).join(", ")})`;
+            errEl.textContent = `Invalid frame_type: ${frame_type || "(empty)"} (expected one of: ${Array.from(L7_DECODE_FRAME_TYPES).join(", ")})`;
             if (errEl.style) errEl.style.display = "";
           }
           return;
@@ -1585,7 +1585,7 @@ class PortalShell extends HTMLElement {
           pb: pbRaw,
           sb: sbRaw,
           direction,
-          frame_type: frameType,
+          frame_type: frame_type,
           payload_hex: read(payloadInput),
         });
       });
@@ -2256,15 +2256,15 @@ class PortalShell extends HTMLElement {
       const capability = status.capability || {};
       const warmup = status.warmup || {};
       const degraded = status.degraded || {};
-      const featureFlags = status.feature_flags || {};
-      const transportClass = String(status.transport_class || "unknown");
-      const passiveState = String(warmup.state || capability.passive_state || "unknown");
-      const warmupState = passiveState === "warming_up";
+      const feature_flags = status.feature_flags || {};
+      const transport_class = String(status.transport_class || "unknown");
+      const passive_state = String(warmup.state || capability.passive_state || "unknown");
+      const warmupState = passive_state === "warming_up";
       const degradedState = !warmupState && degraded.active === true;
       const unavailableState =
         !warmupState &&
         !degradedState &&
-        (passiveState === "unavailable" || capability.passive_supported === false);
+        (passive_state === "unavailable" || capability.passive_supported === false);
       const viewState = warmupState
         ? "warming_up"
         : degradedState
@@ -2283,29 +2283,29 @@ class PortalShell extends HTMLElement {
       const reasons = Array.isArray(degraded.reasons) ? degraded.reasons : [];
       const endpoint = capability.endpoint_state ? ` endpoint=${capability.endpoint_state}` : "";
       const connected = capability.tap_connected === true ? " connected" : " disconnected";
-      let bannerText = `${stateLabel} (${transportClass}${endpoint}${connected})`;
-      if (transportClass === "ebusd-tcp" && (viewState === "degraded" || viewState === "unavailable")) {
+      let bannerText = `${stateLabel} (${transport_class}${endpoint}${connected})`;
+      if (transport_class === "ebusd-tcp" && (viewState === "degraded" || viewState === "unavailable")) {
         bannerText += " | ebusd-tcp transport limits passive observe-first coverage.";
       }
       bannerEl.className = `bus-banner bus-state-${viewState}`;
       bannerEl.textContent = bannerText;
 
-      const elapsedSeconds = Number(warmup.elapsed_seconds);
-      const elapsedLabel = Number.isFinite(elapsedSeconds) ? `${formatFixed(elapsedSeconds, 1)}s` : "n/a";
-      const completedTransactions = formatInteger(warmup.completed_transactions);
-      const requiredTransactions = formatInteger(warmup.required_transactions);
-      const passiveReason = capability.passive_reason ? String(capability.passive_reason) : "none";
+      const elapsed_seconds = Number(warmup.elapsed_seconds);
+      const elapsedLabel = Number.isFinite(elapsed_seconds) ? `${formatFixed(elapsed_seconds, 1)}s` : "n/a";
+      const completed_transactions = formatInteger(warmup.completed_transactions);
+      const required_transactions = formatInteger(warmup.required_transactions);
+      const passive_reason = capability.passive_reason ? String(capability.passive_reason) : "none";
       const warmupBlocker = warmup.blocker ? String(warmup.blocker) : "none";
-      const completionMode = warmup.completion_mode ? String(warmup.completion_mode) : "n/a";
-      const normalization = Array.isArray(featureFlags.normalizations) && featureFlags.normalizations.length > 0
-        ? featureFlags.normalizations.join(", ")
+      const completion_mode = warmup.completion_mode ? String(warmup.completion_mode) : "n/a";
+      const normalization = Array.isArray(feature_flags.normalizations) && feature_flags.normalizations.length > 0
+        ? feature_flags.normalizations.join(", ")
         : "none";
 
       const rows = [
-        `transport=${escapeHtml(transportClass)} passive_supported=${escapeHtml(formatYesNo(capability.passive_supported))} passive_available=${escapeHtml(formatYesNo(capability.passive_available))}`,
-        `passive_state=${escapeHtml(passiveState)} passive_reason=${escapeHtml(passiveReason)}`,
-        `warmup blocker=${escapeHtml(warmupBlocker)} elapsed=${escapeHtml(elapsedLabel)} transactions=${escapeHtml(completedTransactions)}/${escapeHtml(requiredTransactions)} completion_mode=${escapeHtml(completionMode)}`,
-        `feature_flags observe_first_enabled=${escapeHtml(formatYesNo(featureFlags.observe_first_enabled))} state_direct_apply=${escapeHtml(formatYesNo(featureFlags.passive_state_direct_apply))} config_direct_apply=${escapeHtml(formatYesNo(featureFlags.passive_config_direct_apply))} external_write_policy=${escapeHtml(String(featureFlags.external_write_policy || "n/a"))} normalizations=${escapeHtml(normalization)}`,
+        `transport=${escapeHtml(transport_class)} passive_supported=${escapeHtml(formatYesNo(capability.passive_supported))} passive_available=${escapeHtml(formatYesNo(capability.passive_available))}`,
+        `passive_state=${escapeHtml(passive_state)} passive_reason=${escapeHtml(passive_reason)}`,
+        `warmup blocker=${escapeHtml(warmupBlocker)} elapsed=${escapeHtml(elapsedLabel)} transactions=${escapeHtml(completed_transactions)}/${escapeHtml(required_transactions)} completion_mode=${escapeHtml(completion_mode)}`,
+        `feature_flags observe_first_enabled=${escapeHtml(formatYesNo(feature_flags.observe_first_enabled))} state_direct_apply=${escapeHtml(formatYesNo(feature_flags.passive_state_direct_apply))} config_direct_apply=${escapeHtml(formatYesNo(feature_flags.passive_config_direct_apply))} external_write_policy=${escapeHtml(String(feature_flags.external_write_policy || "n/a"))} normalizations=${escapeHtml(normalization)}`,
       ];
       if (reasons.length > 0) {
         rows.push(`degraded_reasons=${escapeHtml(reasons.join(", "))}`);
@@ -2926,8 +2926,8 @@ class PortalShell extends HTMLElement {
     let conflict = false;
     try {
       const unavailable = this._portalRead?.unavailable_operations;
-      if (!Array.isArray(unavailable) || this._portalRead.snapshot_operation !== "semanticSnapshot" ||
-          unavailable.includes("semanticSnapshot") || unavailable.includes("PortalCatalogV1") ||
+      if (!Array.isArray(unavailable) || this._portalRead.snapshot_operation !== "semantic_snapshot" ||
+          unavailable.includes("semantic_snapshot") || unavailable.includes("PortalCatalogV1") ||
           !semanticEndpoint(this._portalCatalogEndpoint) || !semanticEndpoint(this._semanticGraphqlEndpoint)) throw new Error("operation unavailable");
       const read = async (endpoint, body) => {
         const response = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: request.controller.signal });
@@ -2947,7 +2947,7 @@ class PortalShell extends HTMLElement {
         if (!validatePortalCatalog(catalog)) throw new Error("invalid catalog");
         const ids = [...new Set(catalog.resources.map((resource) => resource.source.asset_id))];
         if (ids.length > 32) { conflict = true; throw new Error("asset bound"); }
-        const assets = ids.length ? (await read(this._semanticGraphqlEndpoint, { operationName: "PortalSemanticContributions", query: PORTAL_SEMANTIC_QUERY, variables: { assetIds: ids } }))?.semanticSnapshot?.assets : [];
+        const assets = ids.length ? (await read(this._semanticGraphqlEndpoint, { operationName: "PortalSemanticContributions", query: PORTAL_SEMANTIC_QUERY, variables: { asset_ids: ids } }))?.semantic_snapshot?.assets : [];
         if (!isActive()) return false;
         if (!Array.isArray(assets) || assets.length !== ids.length || new Set(assets.map((asset) => asset?.asset_id)).size !== ids.length || assets.some((asset) => !ids.includes(asset?.asset_id) || !Array.isArray(asset.selections))) throw new Error("invalid shared read");
         for (const asset of assets) {
@@ -3281,17 +3281,17 @@ class PortalShell extends HTMLElement {
     target.innerHTML = `${metaHtml}<div class="uml-grid">${boxesHtml}</div>`;
   }
 
-  async renderVaillantB503ProjectionCard(gridEl, targetAddress, loadGeneration = this._projectionLoadGeneration || 0) {
-    if (!gridEl || !Number.isInteger(targetAddress)) return;
+  async renderVaillantB503ProjectionCard(gridEl, target_address, loadGeneration = this._projectionLoadGeneration || 0) {
+    if (!gridEl || !Number.isInteger(target_address)) return;
     const epoch = this._vaillantB503Epoch || 0;
     try {
       const env = await this._gqlRequest(
-        "query VaillantB503Projection($targetAddress: Int) { vaillantCapabilities(targetAddress: $targetAddress) { vaillantB503 { reason } } }",
-        { targetAddress },
+        "query VaillantB503Projection($target_address: Int) { vaillantCapabilities(target_address: $target_address) { vaillant_b503 { reason } } }",
+        { target_address },
       );
       // Projection selection may have changed while this request was in flight.
       const selected = Number(this.querySelector('[data-role="projection-device-select"]')?.value);
-      if (loadGeneration !== (this._projectionLoadGeneration || 0) || epoch !== (this._vaillantB503Epoch || 0) || selected !== targetAddress || env?.data?.vaillantCapabilities?.vaillantB503?.reason !== "AVAILABLE") return;
+      if (loadGeneration !== (this._projectionLoadGeneration || 0) || epoch !== (this._vaillantB503Epoch || 0) || selected !== target_address || env?.data?.vaillantCapabilities?.vaillant_b503?.reason !== "AVAILABLE") return;
       const card = document.createElement ? document.createElement("button") : null;
       if (!card) return;
       card.type = "button";
@@ -3301,7 +3301,7 @@ class PortalShell extends HTMLElement {
       card.setAttribute("aria-label", "Open Vaillant B503 diagnostics");
       card.textContent = "Vaillant B503: errors, service-current, service-history, live-monitor";
       card.addEventListener("click", () => {
-        void this.openVaillantB503ProjectionTarget(targetAddress);
+        void this.openVaillantB503ProjectionTarget(target_address);
       });
       const grid = gridEl.querySelector?.(".uml-grid");
       if (grid?.append) {
@@ -4775,7 +4775,7 @@ class PortalShell extends HTMLElement {
       const identity = cmd.identity || {};
       const safety = this._l7SafetyClassLabel(cmd.safety_class);
       const direction = this._l7DirectionLabel(identity.direction);
-      const frameType = this._l7FrameTypeLabel(identity.telegram_class);
+      const frame_type = this._l7FrameTypeLabel(identity.telegram_class);
       const req = Array.isArray(cmd.request) ? cmd.request : [];
       const resp2 = Array.isArray(cmd.response) ? cmd.response : [];
       const paramRow = (p, role) =>
@@ -4791,7 +4791,7 @@ class PortalShell extends HTMLElement {
           <dt>Description</dt><dd>${escapeHtml(cmd.description || "")}</dd>
           <dt>Safety class</dt><dd>${safety}</dd>
           <dt>Direction</dt><dd>${direction}</dd>
-          <dt>Frame type</dt><dd>${frameType}</dd>
+          <dt>Frame type</dt><dd>${frame_type}</dd>
           <dt>PB / SB</dt><dd>0x${escapeHtml(Number(identity.pb || 0).toString(16).padStart(2, "0"))} / 0x${escapeHtml(Number(identity.sb || 0).toString(16).padStart(2, "0"))}</dd>
         </dl>
         ${paramTable}
@@ -4892,7 +4892,7 @@ class PortalShell extends HTMLElement {
   //
   // Read-only surface over the GraphQL Vaillant B503 queries:
   //   - vaillantCapabilities      (availability gate)
-  //   - vaillantErrors            (Errors tab: firstActiveError + 5 slots)
+  //   - vaillantErrors            (Errors tab: first_active_error + 5 slots)
   //   - vaillantServiceCurrent    (Service tab: same shape)
   //   - vaillantLiveMonitor       (Live-Monitor tab: enable/read/disable)
   //
@@ -5095,8 +5095,8 @@ class PortalShell extends HTMLElement {
 	};
 	this._vaillantB503CapabilityInFlight = inFlight;
 	Promise.resolve(this._gqlRequest(
-	  "query VaillantB503Cap($targetAddress: Int) { vaillantCapabilities(targetAddress: $targetAddress) { vaillantB503 { available reason } } }",
-	  { targetAddress: context.target },
+	  "query VaillantB503Cap($target_address: Int) { vaillantCapabilities(target_address: $target_address) { vaillant_b503 { available reason } } }",
+	  { target_address: context.target },
 	  controller ? { signal: controller.signal } : undefined,
 	)).then(
 	  (env) => finish({ env }),
@@ -5108,7 +5108,7 @@ class PortalShell extends HTMLElement {
 	  if (result.cancelled) return;
 	  const env = result.env;
       const cap = env && env.data && env.data.vaillantCapabilities
-        && env.data.vaillantCapabilities.vaillantB503;
+        && env.data.vaillantCapabilities.vaillant_b503;
       if (cap && typeof cap.reason === "string") {
         reason = cap.reason;
       }
@@ -5351,8 +5351,8 @@ class PortalShell extends HTMLElement {
 
   _renderB503SlotList(bodyEl, payload) {
     if (!bodyEl) return;
-    const first = payload && payload.firstActiveError !== undefined && payload.firstActiveError !== null
-      ? String(payload.firstActiveError)
+    const first = payload && payload.first_active_error !== undefined && payload.first_active_error !== null
+      ? String(payload.first_active_error)
       : "—";
     const slots = Array.isArray(payload && payload.slots) ? payload.slots : [];
     const slotCells = slots.map((slot) => {
@@ -5376,8 +5376,8 @@ class PortalShell extends HTMLElement {
     const context = this._vaillantB503RequestContext();
     try {
       const env = await this._gqlRequest(
-        "query VaillantErrors($targetAddress: Int) { vaillantErrors(targetAddress: $targetAddress) { firstActiveError slots } }",
-        { targetAddress: context.target },
+        "query VaillantErrors($target_address: Int) { vaillantErrors(target_address: $target_address) { first_active_error slots } }",
+        { target_address: context.target },
       );
       if (!this._isCurrentVaillantB503Context(context)) return;
       if (env && env.errors && env.errors.length) {
@@ -5385,7 +5385,7 @@ class PortalShell extends HTMLElement {
         return;
       }
       const payload = env && env.data && env.data.vaillantErrors;
-      this._renderB503SlotList(body, payload || { firstActiveError: null, slots: [] });
+      this._renderB503SlotList(body, payload || { first_active_error: null, slots: [] });
     } catch (err) {
       if (this._isCurrentVaillantB503Context(context) && body) body.innerHTML = `<div class="error">${escapeHtml(String(err))}</div>`;
     }
@@ -5397,8 +5397,8 @@ class PortalShell extends HTMLElement {
     const context = this._vaillantB503RequestContext();
     try {
       const env = await this._gqlRequest(
-        "query VaillantServiceCurrent($targetAddress: Int) { vaillantServiceCurrent(targetAddress: $targetAddress) { firstActiveError slots } }",
-        { targetAddress: context.target },
+        "query VaillantServiceCurrent($target_address: Int) { vaillantServiceCurrent(target_address: $target_address) { first_active_error slots } }",
+        { target_address: context.target },
       );
       if (!this._isCurrentVaillantB503Context(context)) return;
       if (env && env.errors && env.errors.length) {
@@ -5406,7 +5406,7 @@ class PortalShell extends HTMLElement {
         return;
       }
       const payload = env && env.data && env.data.vaillantServiceCurrent;
-      this._renderB503SlotList(body, payload || { firstActiveError: null, slots: [] });
+      this._renderB503SlotList(body, payload || { first_active_error: null, slots: [] });
     } catch (err) {
       if (this._isCurrentVaillantB503Context(context) && body) body.innerHTML = `<div class="error">${escapeHtml(String(err))}</div>`;
     }
@@ -5420,19 +5420,19 @@ class PortalShell extends HTMLElement {
       return;
     }
     const context = this._vaillantB503RequestContext();
-    const variables = { action: String(action), targetAddress: context.target };
+    const variables = { action: String(action), target_address: context.target };
     if (action === "disable" && this._vaillantB503LiveToken) {
-      variables.issuerToken = this._vaillantB503LiveToken;
+      variables.issuer_token = this._vaillantB503LiveToken;
     }
     // Explicit disable, like nav-away cleanup, owns only the pair submitted
     // with this request. A same-target enable can replace that pair while the
     // disable response is pending.
-    const submittedToken = action === "disable" ? variables.issuerToken : null;
+    const submittedToken = action === "disable" ? variables.issuer_token : null;
     const submittedTarget = action === "disable" ? context.target : null;
 	let lifecycleChanged = false;
     try {
       const env = await this._gqlRequest(
-        "query VaillantLive($action: String!, $issuerToken: String, $targetAddress: Int) { vaillantLiveMonitor(action: $action, issuerToken: $issuerToken, targetAddress: $targetAddress) { issuerToken rawHex disabled } }",
+        "query VaillantLive($action: String!, $issuer_token: String, $target_address: Int) { vaillantLiveMonitor(action: $action, issuer_token: $issuer_token, target_address: $target_address) { issuer_token raw_hex disabled } }",
         variables,
       );
       if (env && env.errors && env.errors.length) {
@@ -5456,29 +5456,29 @@ class PortalShell extends HTMLElement {
           this._vaillantB503LiveToken = null;
           this._vaillantB503LiveTarget = null;
         }
-        if (action === "enable" && typeof payload.issuerToken === "string" && payload.issuerToken !== "") {
+        if (action === "enable" && typeof payload.issuer_token === "string" && payload.issuer_token !== "") {
           // A stale enable still needs token-bound cleanup. Retain its pair
           // only when no newer session is held. Otherwise clean up the old
           // pair directly so its response cannot overwrite or clear the
           // current session's recovery handle.
           if (this._vaillantB503LiveToken) {
-            await this._disableVaillantB503Pair(payload.issuerToken, context.target);
+            await this._disableVaillantB503Pair(payload.issuer_token, context.target);
           } else {
-            this._vaillantB503LiveToken = payload.issuerToken;
+            this._vaillantB503LiveToken = payload.issuer_token;
             this._vaillantB503LiveTarget = context.target;
             await this.handleVaillantB503NavAway(context.target);
           }
         }
         return;
       }
-      if (action === "enable" && typeof payload.issuerToken === "string" && payload.issuerToken !== "") {
-        this._vaillantB503LiveToken = payload.issuerToken;
+      if (action === "enable" && typeof payload.issuer_token === "string" && payload.issuer_token !== "") {
+        this._vaillantB503LiveToken = payload.issuer_token;
         this._vaillantB503LiveTarget = context.target;
 		lifecycleChanged = true;
         if (status) status.textContent = "Live-monitor session active.";
       }
       if (action === "read") {
-        const hex = typeof payload.rawHex === "string" ? payload.rawHex : "";
+        const hex = typeof payload.raw_hex === "string" ? payload.raw_hex : "";
         if (output) output.textContent = hex;
         if (status) status.textContent = hex ? "OK" : "No frame available yet.";
       }
@@ -5580,8 +5580,8 @@ class PortalShell extends HTMLElement {
 	  finish({ error: new Error("B503 session-status request timed out") });
 	}, vaillantB503SessionStatusTimeoutMs);
 	Promise.resolve(this._gqlRequest(
-	  "query VaillantLiveMonitorSession($targetAddress: Int) { vaillantLiveMonitorSession(targetAddress: $targetAddress) { state owned } }",
-	  { targetAddress: request.target },
+	  "query VaillantLiveMonitorSession($target_address: Int) { vaillantLiveMonitorSession(target_address: $target_address) { state owned } }",
+	  { target_address: request.target },
 	  controller ? { signal: controller.signal } : undefined,
 	)).then(
 	  (env) => finish({ env }),
@@ -5772,8 +5772,8 @@ class PortalShell extends HTMLElement {
   async _disableVaillantB503Pair(token, target, status) {
     try {
       const env = await this._gqlRequest(
-        "query VaillantLiveDisable($action: String!, $issuerToken: String, $targetAddress: Int) { vaillantLiveMonitor(action: $action, issuerToken: $issuerToken, targetAddress: $targetAddress) { disabled } }",
-        { action: "disable", issuerToken: token, targetAddress: target },
+        "query VaillantLiveDisable($action: String!, $issuer_token: String, $target_address: Int) { vaillantLiveMonitor(action: $action, issuer_token: $issuer_token, target_address: $target_address) { disabled } }",
+        { action: "disable", issuer_token: token, target_address: target },
       );
       const message = env?.errors?.[0]?.message;
       const disabled = env?.data?.vaillantLiveMonitor?.disabled === true;
@@ -5862,8 +5862,8 @@ class PortalShell extends HTMLElement {
     const cacheKey = context.target === null ? "default" : String(context.target);
     try {
       const env = await this._gqlRequest(
-        "query VaillantErrorsHistory($targetAddress: Int, $limit: Int) { vaillantErrorsHistory(targetAddress: $targetAddress, limit: $limit) { records { index firstActiveError slots } failure { index code message } } }",
-        { targetAddress: context.target, limit: 5 },
+        "query VaillantErrorsHistory($target_address: Int, $limit: Int) { vaillantErrorsHistory(target_address: $target_address, limit: $limit) { records { index first_active_error slots } failure { index code message } } }",
+        { target_address: context.target, limit: 5 },
       );
       if (!this._isCurrentVaillantB503Context(context)) return;
       if (env?.errors?.length) {
@@ -5903,7 +5903,7 @@ class PortalShell extends HTMLElement {
   _renderVaillantErrorsHistory(body, rows, failure) {
     if (!body) return;
     const table = rows.length
-      ? `<table class="table"><thead><tr><th>Index</th><th>First active error</th><th>Slots</th></tr></thead><tbody>${rows.map((record) => `<tr><td>${escapeHtml(record.index)}</td><td>${escapeHtml(record.firstActiveError ?? "—")}</td><td>${escapeHtml((record.slots || []).map((slot) => slot ?? "—").join(", "))}</td></tr>`).join("")}</tbody></table>`
+      ? `<table class="table"><thead><tr><th>Index</th><th>First active error</th><th>Slots</th></tr></thead><tbody>${rows.map((record) => `<tr><td>${escapeHtml(record.index)}</td><td>${escapeHtml(record.first_active_error ?? "—")}</td><td>${escapeHtml((record.slots || []).map((slot) => slot ?? "—").join(", "))}</td></tr>`).join("")}</tbody></table>`
       : "<div class=\"muted-inline\">No history records.</div>";
     const warning = failure
       ? `<div class="error" data-testid="b503-history-partial">History stopped at index ${escapeHtml(failure.index ?? "unknown")}: ${escapeHtml(failure.code || "UPSTREAM_RPC_FAILED")} — ${escapeHtml(failure.message || "unavailable")}</div>`

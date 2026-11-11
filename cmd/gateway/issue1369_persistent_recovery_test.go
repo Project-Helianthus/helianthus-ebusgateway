@@ -5,7 +5,7 @@ package main
 // itself. After the five fast attempts the series continues with capped
 // exponential backoff; every attempt is logged with its number, phase and
 // reason, every failure with its error class and cause text, and the service
-// view (the source of helianthus.runtime.list and the Portal readback) shows
+// view (the source of helianthus_runtime_list and the Portal readback) shows
 // BACKOFF with the next attempt's number and due time. Only a failure that
 // retrying cannot heal ends FAILED, with its own reason; an operator RESTART
 // during the backoff recovers at once and resets the schedule.

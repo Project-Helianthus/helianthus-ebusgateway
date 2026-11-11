@@ -9,7 +9,7 @@ registration, publication, transport or legacy consumer integration.
 
 The public native contract comes first:
 [zone room-temperature cutover](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/architecture/zone-room-temperature-cutover.md),
-[B524 register catalog](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/protocols/vaillant/ebus-vaillant-B524-register-map.md),
+[B524 register catalog](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/protocols/vaillant/ebus-vaillant-b524-register-map.md),
 and [thermal definitions](https://github.com/Project-Helianthus/helianthus-semreg/blob/main/semreg/v1/packs/thermal/definitions.go).
 The implementation is [the detached mapper](../../cmd/gateway/thermal_zone_room_temperature_candidate.go),
 with [synthetic vectors](../../cmd/gateway/thermal_zone_room_temperature_candidate_test.go).

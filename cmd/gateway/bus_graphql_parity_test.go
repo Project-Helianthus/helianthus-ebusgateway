@@ -30,20 +30,20 @@ import (
 // publisher cadence, other capability flags, endpoint/tap state, warmup, timing
 // quality, degraded reasons, admission, startup and feature flags are separate slices.
 // Notice prose uses each surface's field spelling and is checked separately.
-const busParityStatusQuery = `last_updated_at: lastUpdatedAt transport_class: transportClass
- capability { passive_available: passiveAvailable passive_state: passiveState passive_reason: passiveReason }`
+const busParityStatusQuery = `last_updated_at: last_updated_at transport_class: transport_class
+ capability { passive_available: passive_available passive_state: passive_state passive_reason: passive_reason }`
 
 const busParityQuery = `query($limit: Int) {
- summary: busSummary { last_updated_at: lastUpdatedAt messages { count capacity } periodicity { count capacity }
+ summary: bus_summary { last_updated_at: last_updated_at messages { count capacity } periodicity { count capacity }
  status { ` + busParityStatusQuery + ` } }
- messages: busMessages(limit: $limit) { count capacity status { ` + busParityStatusQuery + ` }
- items { scope family frame_type: frameType outcome observed_at: observedAt source_address: sourceAddress
- target_address: targetAddress request_len: requestLen response_len: responseLen } }
- periodicity: busPeriodicity(limit: $limit) { count capacity status { ` + busParityStatusQuery + ` }
- items { source_bucket: sourceBucket target_bucket: targetBucket primary secondary family state last_seen: lastSeen
- sample_count: sampleCount last_interval: lastInterval mean_interval: meanInterval min_interval: minInterval max_interval: maxInterval } }
- identification: busIdentificationEvidence(limit: $limit) { evidence_class: evidenceClass decoded qualification notice
- session_id: sessionId count items { address sequence session_id: sessionId captured_at: capturedAt request_hex: requestHex response_hex: responseHex } }
+ messages: bus_messages(limit: $limit) { count capacity status { ` + busParityStatusQuery + ` }
+ items { scope family frame_type: frame_type outcome observed_at: observed_at source_address: source_address
+ target_address: target_address request_len: request_len response_len: response_len } }
+ periodicity: bus_periodicity(limit: $limit) { count capacity status { ` + busParityStatusQuery + ` }
+ items { source_bucket: source_bucket target_bucket: target_bucket primary secondary family state last_seen: last_seen
+ sample_count: sample_count last_interval: last_interval mean_interval: mean_interval min_interval: min_interval max_interval: max_interval } }
+ identification: bus_identification_evidence(limit: $limit) { evidence_class: evidence_class decoded qualification notice
+ session_id: session_id count items { address sequence session_id: session_id captured_at: captured_at request_hex: request_hex response_hex: response_hex } }
 }`
 
 func busParityJSON(t *testing.T, handler http.Handler, limit int) map[string]any {
@@ -69,7 +69,7 @@ func busParityJSON(t *testing.T, handler http.Handler, limit int) map[string]any
 func busParityMCP(t *testing.T, server *mcp.Server, name string, limit int) map[string]any {
 	t.Helper()
 	args := fmt.Sprintf(`{"name":%q,"arguments":{"limit":%d}}`, name, limit)
-	if name == "ebus.v1.bus.summary.get" {
+	if name == "ebus_v1_bus_summary_get" {
 		args = fmt.Sprintf(`{"name":%q,"arguments":{}}`, name)
 	}
 	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":` + args + `}`
@@ -209,7 +209,7 @@ func TestBusGraphQLParityMissingIdentificationResponse(t *testing.T) {
 		t.Fatal(err)
 	}
 	graph := busParityJSON(t, handler, 1)["identification"]
-	data := busParityMCP(t, server, "ebus.v1.bus.identification_evidence.list", 1)["data"]
+	data := busParityMCP(t, server, "ebus_v1_bus_identification_evidence_list", 1)["data"]
 	if err := busParityCompare("identification", data, graph); err != nil {
 		t.Fatal(err)
 	}
@@ -316,8 +316,8 @@ func TestBusGraphQLParityRetainedEvidence(t *testing.T) {
 			for _, limit := range []int{1, 10} {
 				graph := busParityJSON(t, handler, limit)
 				for _, surface := range []struct{ name, tool string }{
-					{"summary", "ebus.v1.bus.summary.get"}, {"messages", "ebus.v1.bus.messages.list"},
-					{"periodicity", "ebus.v1.bus.periodicity.list"}, {"identification", "ebus.v1.bus.identification_evidence.list"}} {
+					{"summary", "ebus_v1_bus_summary_get"}, {"messages", "ebus_v1_bus_messages_list"},
+					{"periodicity", "ebus_v1_bus_periodicity_list"}, {"identification", "ebus_v1_bus_identification_evidence_list"}} {
 					env := busParityMCP(t, server, surface.tool, limit)
 					if err := busParityCompare(surface.name, env["data"], graph[surface.name]); err != nil {
 						t.Fatal(err)
@@ -325,7 +325,7 @@ func TestBusGraphQLParityRetainedEvidence(t *testing.T) {
 					if surface.name == "identification" {
 						data := env["data"].(map[string]any)
 						other := graph[surface.name].(map[string]any)
-						wantNotice := strings.NewReplacer("request_hex", "requestHex", "response_hex", "responseHex").Replace(busParityNotice)
+						wantNotice := strings.NewReplacer("request_hex", "request_hex", "response_hex", "response_hex").Replace(busParityNotice)
 						if data["notice"] != busParityNotice || other["notice"] != wantNotice {
 							t.Fatal("evidence notice drift")
 						}
@@ -409,7 +409,7 @@ func TestBusGraphQLParityAbsentSummaryDiscrepancy(t *testing.T) {
 		t.Fatal(err)
 	}
 	graph := busParityJSON(t, handler, 1)
-	env := busParityMCP(t, server, "ebus.v1.bus.summary.get", 1)
+	env := busParityMCP(t, server, "ebus_v1_bus_summary_get", 1)
 	if env["data"] != nil {
 		t.Fatal("absent MCP summary no longer null; revisit discrepancy")
 	}
@@ -423,8 +423,8 @@ func TestBusGraphQLParityAbsentSummaryDiscrepancy(t *testing.T) {
 		t.Fatal("oracle concealed null/wrapper discrepancy")
 	}
 	for _, surface := range []struct{ name, tool string }{
-		{"messages", "ebus.v1.bus.messages.list"}, {"periodicity", "ebus.v1.bus.periodicity.list"},
-		{"identification", "ebus.v1.bus.identification_evidence.list"}} {
+		{"messages", "ebus_v1_bus_messages_list"}, {"periodicity", "ebus_v1_bus_periodicity_list"},
+		{"identification", "ebus_v1_bus_identification_evidence_list"}} {
 		data := busParityMCP(t, server, surface.tool, 1)["data"]
 		if err := busParityCompare(surface.name, data, graph[surface.name]); err != nil {
 			t.Fatal(err)

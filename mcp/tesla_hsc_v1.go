@@ -6,7 +6,7 @@ import (
 	"sync"
 )
 
-const TeslaHSCV1StatusGetTool = "modbus.v1.tesla.hsc.status.get"
+const TeslaHSCV1StatusGetTool = "modbus_v1_tesla_hsc_status_get"
 
 const (
 	maxTeslaHSCV1NativeRecords       = 8

@@ -127,7 +127,7 @@ func TestPUBLIC05SunSpecSemRegSurvivesGatewayProvidersAndPortal(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	portalPV := envelope.Data["semanticPVCurrent"]
+	portalPV := envelope.Data["semantic_pv_current"]
 	var portalView modbusadapter.SemanticPVCurrent
 	if len(portalPV) == 0 || json.Unmarshal(portalPV, &portalView) != nil || !reflect.DeepEqual(portalView.Snapshot, direct.Snapshot) || !reflect.DeepEqual(portalView.Projection, direct.Projection) {
 		t.Fatalf("Portal/GraphQL changed the native SemReg snapshot/projection: %s", portalPV)

@@ -20,23 +20,23 @@ import (
 )
 
 var canonicalQueryRootFields = []string{
-	"gatewayIdentity",
+	"gateway_identity",
 	"zones",
 	"dhw",
-	"energyTotals",
+	"energy_totals",
 	"circuits",
-	"radioDevices",
-	"fm5SemanticMode",
+	"radio_devices",
+	"fm5_semantic_mode",
 	"vaillant_regulator_capability",
 	"solar",
 	"cylinders",
-	"boilerStatus",
+	"boiler_status",
 	"system",
 	"schedules",
-	"busSummary",
-	"busMessages",
-	"busPeriodicity",
-	"watchSummary",
+	"bus_summary",
+	"bus_messages",
+	"bus_periodicity",
+	"watch_summary",
 }
 
 type testBusObservabilityProvider struct {
@@ -312,12 +312,12 @@ func TestQueryResolvers_Integration(t *testing.T) {
 					address
 					addresses
 					manufacturer
-					deviceId
+					device_id
 					planes {
 						name
 						methods {
 							name
-							readOnly
+							read_only
 							primary
 							secondary
 							response {
@@ -334,7 +334,7 @@ func TestQueryResolvers_Integration(t *testing.T) {
 						nodes {
 							id
 							path
-							canonicalPath
+							canonical_path
 						}
 						edges {
 							id
@@ -351,12 +351,12 @@ func TestQueryResolvers_Integration(t *testing.T) {
 				Address      int    `json:"address"`
 				Addresses    []int  `json:"addresses"`
 				Manufacturer string `json:"manufacturer"`
-				DeviceID     string `json:"deviceId"`
+				DeviceID     string `json:"device_id"`
 				Planes       []struct {
 					Name    string `json:"name"`
 					Methods []struct {
 						Name      string `json:"name"`
-						ReadOnly  bool   `json:"readOnly"`
+						ReadOnly  bool   `json:"read_only"`
 						Primary   int    `json:"primary"`
 						Secondary int    `json:"secondary"`
 						Response  struct {
@@ -373,7 +373,7 @@ func TestQueryResolvers_Integration(t *testing.T) {
 					Nodes []struct {
 						ID            string `json:"id"`
 						Path          string `json:"path"`
-						CanonicalPath string `json:"canonicalPath"`
+						CanonicalPath string `json:"canonical_path"`
 					} `json:"nodes"`
 					Edges []struct {
 						ID   string `json:"id"`
@@ -391,7 +391,7 @@ func TestQueryResolvers_Integration(t *testing.T) {
 			t.Fatalf("devices = %d; want 1", len(response.Devices))
 		}
 		if response.Devices[0].Address != 16 || response.Devices[0].DeviceID != "device-a" {
-			t.Fatalf("device payload = %+v; want address=16 deviceId=device-a", response.Devices[0])
+			t.Fatalf("device payload = %+v; want address=16 device_id=device-a", response.Devices[0])
 		}
 		if len(response.Devices[0].Addresses) != 2 || response.Devices[0].Addresses[0] != 16 || response.Devices[0].Addresses[1] != 17 {
 			t.Fatalf("addresses = %+v; want [16 17]", response.Devices[0].Addresses)
@@ -440,7 +440,7 @@ func TestQueryResolvers_Integration(t *testing.T) {
 					device(address: $address) {
 						address
 						addresses
-						deviceId
+						device_id
 					}
 				}
 			`)
@@ -450,7 +450,7 @@ func TestQueryResolvers_Integration(t *testing.T) {
 				Device struct {
 					Address   int    `json:"address"`
 					Addresses []int  `json:"addresses"`
-					DeviceID  string `json:"deviceId"`
+					DeviceID  string `json:"device_id"`
 				} `json:"device"`
 			}
 
@@ -458,7 +458,7 @@ func TestQueryResolvers_Integration(t *testing.T) {
 				t.Fatalf("device query error = %v", err)
 			}
 			if response.Device.Address != 16 || response.Device.DeviceID != "device-a" {
-				t.Fatalf("address %d device = %+v; want address=16 deviceId=device-a", address, response.Device)
+				t.Fatalf("address %d device = %+v; want address=16 device_id=device-a", address, response.Device)
 			}
 			if len(response.Device.Addresses) != 2 || response.Device.Addresses[0] != 16 || response.Device.Addresses[1] != 17 {
 				t.Fatalf("address %d addresses = %+v; want [16 17]", address, response.Device.Addresses)
@@ -469,16 +469,16 @@ func TestQueryResolvers_Integration(t *testing.T) {
 	t.Run("service_status", func(t *testing.T) {
 		request := graphqlclient.NewRequest(`
 				query {
-					daemonStatus {
+					daemon_status {
 						status
-						firmwareVersion
-						updatesAvailable
-						initiatorAddress
+						firmware_version
+						updates_available
+						initiator_address
 					}
-					adapterStatus {
+					adapter_status {
 						status
-						firmwareVersion
-						updatesAvailable
+						firmware_version
+						updates_available
 				}
 			}
 		`)
@@ -486,15 +486,15 @@ func TestQueryResolvers_Integration(t *testing.T) {
 		var response struct {
 			DaemonStatus struct {
 				Status           string `json:"status"`
-				FirmwareVersion  string `json:"firmwareVersion"`
-				UpdatesAvailable bool   `json:"updatesAvailable"`
-				InitiatorAddress string `json:"initiatorAddress"`
-			} `json:"daemonStatus"`
+				FirmwareVersion  string `json:"firmware_version"`
+				UpdatesAvailable bool   `json:"updates_available"`
+				InitiatorAddress string `json:"initiator_address"`
+			} `json:"daemon_status"`
 			AdapterStatus struct {
 				Status           string `json:"status"`
-				FirmwareVersion  string `json:"firmwareVersion"`
-				UpdatesAvailable bool   `json:"updatesAvailable"`
-			} `json:"adapterStatus"`
+				FirmwareVersion  string `json:"firmware_version"`
+				UpdatesAvailable bool   `json:"updates_available"`
+			} `json:"adapter_status"`
 		}
 
 		if err := client.Run(context.Background(), request, &response); err != nil {
@@ -505,7 +505,7 @@ func TestQueryResolvers_Integration(t *testing.T) {
 			t.Fatalf("daemon status empty")
 		}
 		if response.DaemonStatus.InitiatorAddress != "" {
-			t.Fatalf("daemon initiatorAddress = %q; want empty for static provider", response.DaemonStatus.InitiatorAddress)
+			t.Fatalf("daemon initiator_address = %q; want empty for static provider", response.DaemonStatus.InitiatorAddress)
 		}
 		if response.AdapterStatus.Status == "" {
 			t.Fatalf("adapter status empty")
@@ -554,38 +554,38 @@ func TestQueryResolvers_Integration(t *testing.T) {
 	t.Run("bus_observability", func(t *testing.T) {
 		request := graphqlclient.NewRequest(`
 			query {
-				busSummary {
-					lastUpdatedAt
+				bus_summary {
+					last_updated_at
 						status {
-							lastUpdatedAt
-							transportClass
-							publisherCadenceSec
-							publisherCadenceSource
+							last_updated_at
+							transport_class
+							publisher_cadence_sec
+							publisher_cadence_source
 							startup {
-							lastUpdatedAt
+							last_updated_at
 							phase
-							cacheEpoch
-							liveEpoch
+							cache_epoch
+							live_epoch
 						}
 						capability {
-							activeSupported
-							passiveSupported
-							broadcastSupported
-							passiveAvailable
-							passiveState
-							passiveReason
-							endpointState
-							tapConnected
+							active_supported
+							passive_supported
+							broadcast_supported
+							passive_available
+							passive_state
+							passive_reason
+							endpoint_state
+							tap_connected
 						}
 						warmup {
 							state
 							blocker
-							elapsedSeconds
-							completedTransactions
-							requiredTransactions
-							completionMode
+							elapsed_seconds
+							completed_transactions
+							required_transactions
+							completion_mode
 						}
-						timingQuality {
+						timing_quality {
 							active
 							passive
 							busy
@@ -611,12 +611,12 @@ func TestQueryResolvers_Integration(t *testing.T) {
 									automatic_retry_scheduled
 								}
 							}
-							featureFlags {
-								lastUpdatedAt
-							observeFirstEnabled
-							passiveStateDirectApply
-							passiveConfigDirectApply
-							externalWritePolicy
+							feature_flags {
+								last_updated_at
+							observe_first_enabled
+							passive_state_direct_apply
+							passive_config_direct_apply
+							external_write_policy
 							normalizations
 						}
 					}
@@ -629,17 +629,17 @@ func TestQueryResolvers_Integration(t *testing.T) {
 						capacity
 					}
 					counters {
-						seriesBudgetOverflowTotal
-						periodicityBudgetOverflowTotal
+						series_budget_overflow_total
+						periodicity_budget_overflow_total
 					}
 				}
-				busMessages(limit: 1) {
+				bus_messages(limit: 1) {
 					status {
 						capability {
-							passiveState
-							passiveReason
+							passive_state
+							passive_reason
 						}
-						timingQuality {
+						timing_quality {
 							passive
 							periodicity
 						}
@@ -649,16 +649,16 @@ func TestQueryResolvers_Integration(t *testing.T) {
 					items {
 						scope
 						family
-						frameType
+						frame_type
 						outcome
-						observedAt
-						sourceAddress
-						targetAddress
-						requestLen
-						responseLen
+						observed_at
+						source_address
+						target_address
+						request_len
+						response_len
 					}
 				}
-				busPeriodicity(limit: 1) {
+				bus_periodicity(limit: 1) {
 					status {
 						warmup {
 							state
@@ -670,18 +670,18 @@ func TestQueryResolvers_Integration(t *testing.T) {
 					count
 					capacity
 					items {
-						sourceBucket
-						targetBucket
+						source_bucket
+						target_bucket
 						primary
 						secondary
 						family
 						state
-						lastSeen
-						sampleCount
-						lastInterval
-						meanInterval
-						minInterval
-						maxInterval
+						last_seen
+						sample_count
+						last_interval
+						mean_interval
+						min_interval
+						max_interval
 					}
 				}
 			}
@@ -689,34 +689,34 @@ func TestQueryResolvers_Integration(t *testing.T) {
 
 		var response struct {
 			BusSummary struct {
-				LastUpdatedAt string `json:"lastUpdatedAt"`
+				LastUpdatedAt string `json:"last_updated_at"`
 				Status        struct {
-					LastUpdatedAt          string  `json:"lastUpdatedAt"`
-					TransportClass         string  `json:"transportClass"`
-					PublisherCadenceSec    float64 `json:"publisherCadenceSec"`
-					PublisherCadenceSource string  `json:"publisherCadenceSource"`
+					LastUpdatedAt          string  `json:"last_updated_at"`
+					TransportClass         string  `json:"transport_class"`
+					PublisherCadenceSec    float64 `json:"publisher_cadence_sec"`
+					PublisherCadenceSource string  `json:"publisher_cadence_source"`
 					Startup                struct {
-						LastUpdatedAt string `json:"lastUpdatedAt"`
+						LastUpdatedAt string `json:"last_updated_at"`
 						Phase         string `json:"phase"`
-						CacheEpoch    string `json:"cacheEpoch"`
-						LiveEpoch     string `json:"liveEpoch"`
+						CacheEpoch    string `json:"cache_epoch"`
+						LiveEpoch     string `json:"live_epoch"`
 					} `json:"startup"`
 					Capability struct {
-						PassiveState  string `json:"passiveState"`
-						PassiveReason string `json:"passiveReason"`
-						EndpointState string `json:"endpointState"`
+						PassiveState  string `json:"passive_state"`
+						PassiveReason string `json:"passive_reason"`
+						EndpointState string `json:"endpoint_state"`
 					} `json:"capability"`
 					Warmup struct {
 						State                 string  `json:"state"`
 						Blocker               string  `json:"blocker"`
-						ElapsedSeconds        float64 `json:"elapsedSeconds"`
-						CompletedTransactions int     `json:"completedTransactions"`
-						RequiredTransactions  int     `json:"requiredTransactions"`
+						ElapsedSeconds        float64 `json:"elapsed_seconds"`
+						CompletedTransactions int     `json:"completed_transactions"`
+						RequiredTransactions  int     `json:"required_transactions"`
 					} `json:"warmup"`
 					TimingQuality struct {
 						Passive     string `json:"passive"`
 						Periodicity string `json:"periodicity"`
-					} `json:"timingQuality"`
+					} `json:"timing_quality"`
 					Degraded struct {
 						Active  bool     `json:"active"`
 						Reasons []string `json:"reasons"`
@@ -738,13 +738,13 @@ func TestQueryResolvers_Integration(t *testing.T) {
 						} `json:"source_selection"`
 					} `json:"bus_admission"`
 					FeatureFlags struct {
-						LastUpdatedAt            string   `json:"lastUpdatedAt"`
-						ObserveFirstEnabled      bool     `json:"observeFirstEnabled"`
-						PassiveStateDirectApply  bool     `json:"passiveStateDirectApply"`
-						PassiveConfigDirectApply bool     `json:"passiveConfigDirectApply"`
-						ExternalWritePolicy      string   `json:"externalWritePolicy"`
+						LastUpdatedAt            string   `json:"last_updated_at"`
+						ObserveFirstEnabled      bool     `json:"observe_first_enabled"`
+						PassiveStateDirectApply  bool     `json:"passive_state_direct_apply"`
+						PassiveConfigDirectApply bool     `json:"passive_config_direct_apply"`
+						ExternalWritePolicy      string   `json:"external_write_policy"`
 						Normalizations           []string `json:"normalizations"`
-					} `json:"featureFlags"`
+					} `json:"feature_flags"`
 				} `json:"status"`
 				Messages struct {
 					Count    int `json:"count"`
@@ -755,30 +755,30 @@ func TestQueryResolvers_Integration(t *testing.T) {
 					Capacity int `json:"capacity"`
 				} `json:"periodicity"`
 				Counters struct {
-					SeriesBudgetOverflowTotal      string `json:"seriesBudgetOverflowTotal"`
-					PeriodicityBudgetOverflowTotal string `json:"periodicityBudgetOverflowTotal"`
+					SeriesBudgetOverflowTotal      string `json:"series_budget_overflow_total"`
+					PeriodicityBudgetOverflowTotal string `json:"periodicity_budget_overflow_total"`
 				} `json:"counters"`
-			} `json:"busSummary"`
+			} `json:"bus_summary"`
 			BusMessages struct {
 				Status struct {
 					Capability struct {
-						PassiveState  string `json:"passiveState"`
-						PassiveReason string `json:"passiveReason"`
+						PassiveState  string `json:"passive_state"`
+						PassiveReason string `json:"passive_reason"`
 					} `json:"capability"`
 					TimingQuality struct {
 						Passive     string `json:"passive"`
 						Periodicity string `json:"periodicity"`
-					} `json:"timingQuality"`
+					} `json:"timing_quality"`
 				} `json:"status"`
 				Count    int `json:"count"`
 				Capacity int `json:"capacity"`
 				Items    []struct {
 					Family        string `json:"family"`
-					ObservedAt    string `json:"observedAt"`
-					SourceAddress int    `json:"sourceAddress"`
-					TargetAddress int    `json:"targetAddress"`
+					ObservedAt    string `json:"observed_at"`
+					SourceAddress int    `json:"source_address"`
+					TargetAddress int    `json:"target_address"`
 				} `json:"items"`
-			} `json:"busMessages"`
+			} `json:"bus_messages"`
 			BusPeriodicity struct {
 				Status struct {
 					Warmup struct {
@@ -791,32 +791,32 @@ func TestQueryResolvers_Integration(t *testing.T) {
 					Family      string `json:"family"`
 					Primary     int    `json:"primary"`
 					Secondary   int    `json:"secondary"`
-					LastSeen    string `json:"lastSeen"`
-					SampleCount int    `json:"sampleCount"`
+					LastSeen    string `json:"last_seen"`
+					SampleCount int    `json:"sample_count"`
 				} `json:"items"`
-			} `json:"busPeriodicity"`
+			} `json:"bus_periodicity"`
 		}
 
 		if err := client.Run(context.Background(), request, &response); err != nil {
 			t.Fatalf("bus observability query error = %v", err)
 		}
 		if response.BusSummary.Status.TransportClass != "ens" {
-			t.Fatalf("transportClass = %q; want ens", response.BusSummary.Status.TransportClass)
+			t.Fatalf("transport_class = %q; want ens", response.BusSummary.Status.TransportClass)
 		}
 		if response.BusSummary.Status.PublisherCadenceSec != 420 {
-			t.Fatalf("publisherCadenceSec = %v; want 420", response.BusSummary.Status.PublisherCadenceSec)
+			t.Fatalf("publisher_cadence_sec = %v; want 420", response.BusSummary.Status.PublisherCadenceSec)
 		}
 		if response.BusSummary.Status.PublisherCadenceSource != "config.semantic_state_interval" {
-			t.Fatalf("publisherCadenceSource = %q; want config.semantic_state_interval", response.BusSummary.Status.PublisherCadenceSource)
+			t.Fatalf("publisher_cadence_source = %q; want config.semantic_state_interval", response.BusSummary.Status.PublisherCadenceSource)
 		}
 		if response.BusSummary.Status.Capability.PassiveState != "warming_up" {
-			t.Fatalf("passiveState = %q; want warming_up", response.BusSummary.Status.Capability.PassiveState)
+			t.Fatalf("passive_state = %q; want warming_up", response.BusSummary.Status.Capability.PassiveState)
 		}
 		if response.BusSummary.Status.Warmup.Blocker != "completed_transactions" {
 			t.Fatalf("warmup.blocker = %q; want completed_transactions", response.BusSummary.Status.Warmup.Blocker)
 		}
 		if response.BusSummary.Status.TimingQuality.Passive != "wire_estimated" {
-			t.Fatalf("timingQuality.passive = %q; want wire_estimated", response.BusSummary.Status.TimingQuality.Passive)
+			t.Fatalf("timing_quality.passive = %q; want wire_estimated", response.BusSummary.Status.TimingQuality.Passive)
 		}
 		if !response.BusSummary.Status.Degraded.Active || len(response.BusSummary.Status.Degraded.Reasons) != 2 {
 			t.Fatalf("degraded = %+v; want active with 2 reasons", response.BusSummary.Status.Degraded)
@@ -835,13 +835,13 @@ func TestQueryResolvers_Integration(t *testing.T) {
 			t.Fatalf("bus_admission.source_selection = %+v; want GraphQL parity admission status", sourceSelection)
 		}
 		if response.BusSummary.Status.FeatureFlags.ExternalWritePolicy != "record_only" {
-			t.Fatalf("featureFlags.externalWritePolicy = %q; want record_only", response.BusSummary.Status.FeatureFlags.ExternalWritePolicy)
+			t.Fatalf("feature_flags.external_write_policy = %q; want record_only", response.BusSummary.Status.FeatureFlags.ExternalWritePolicy)
 		}
 		if response.BusSummary.Status.FeatureFlags.PassiveStateDirectApply {
-			t.Fatal("featureFlags.passiveStateDirectApply = true; want false")
+			t.Fatal("feature_flags.passive_state_direct_apply = true; want false")
 		}
 		if len(response.BusSummary.Status.FeatureFlags.Normalizations) != 2 {
-			t.Fatalf("featureFlags.normalizations = %v; want 2 entries", response.BusSummary.Status.FeatureFlags.Normalizations)
+			t.Fatalf("feature_flags.normalizations = %v; want 2 entries", response.BusSummary.Status.FeatureFlags.Normalizations)
 		}
 		if response.BusSummary.Messages.Count != 2 || response.BusSummary.Messages.Capacity != 1024 {
 			t.Fatalf("messages summary = %+v; want count=2 capacity=1024", response.BusSummary.Messages)
@@ -853,42 +853,42 @@ func TestQueryResolvers_Integration(t *testing.T) {
 			t.Fatalf("counters = %+v; want 1/2 as strings", response.BusSummary.Counters)
 		}
 		if response.BusSummary.LastUpdatedAt != updatedAt.Format(time.RFC3339Nano) {
-			t.Fatalf("busSummary.lastUpdatedAt = %q; want %s", response.BusSummary.LastUpdatedAt, updatedAt.Format(time.RFC3339Nano))
+			t.Fatalf("bus_summary.last_updated_at = %q; want %s", response.BusSummary.LastUpdatedAt, updatedAt.Format(time.RFC3339Nano))
 		}
 		if response.BusSummary.Status.LastUpdatedAt != updatedAt.Format(time.RFC3339Nano) {
-			t.Fatalf("busSummary.status.lastUpdatedAt = %q; want %s", response.BusSummary.Status.LastUpdatedAt, updatedAt.Format(time.RFC3339Nano))
+			t.Fatalf("bus_summary.status.last_updated_at = %q; want %s", response.BusSummary.Status.LastUpdatedAt, updatedAt.Format(time.RFC3339Nano))
 		}
 		if response.BusSummary.Status.Startup.LastUpdatedAt != updatedAt.Format(time.RFC3339Nano) {
-			t.Fatalf("busSummary.status.startup.lastUpdatedAt = %q; want %s", response.BusSummary.Status.Startup.LastUpdatedAt, updatedAt.Format(time.RFC3339Nano))
+			t.Fatalf("bus_summary.status.startup.last_updated_at = %q; want %s", response.BusSummary.Status.Startup.LastUpdatedAt, updatedAt.Format(time.RFC3339Nano))
 		}
 		if response.BusSummary.Status.FeatureFlags.LastUpdatedAt != updatedAt.Format(time.RFC3339Nano) {
-			t.Fatalf("busSummary.status.featureFlags.lastUpdatedAt = %q; want %s", response.BusSummary.Status.FeatureFlags.LastUpdatedAt, updatedAt.Format(time.RFC3339Nano))
+			t.Fatalf("bus_summary.status.feature_flags.last_updated_at = %q; want %s", response.BusSummary.Status.FeatureFlags.LastUpdatedAt, updatedAt.Format(time.RFC3339Nano))
 		}
 
 		if response.BusMessages.Count != 2 || response.BusMessages.Capacity != 1024 {
-			t.Fatalf("busMessages wrapper = %+v; want count=2 capacity=1024", response.BusMessages)
+			t.Fatalf("bus_messages wrapper = %+v; want count=2 capacity=1024", response.BusMessages)
 		}
 		if len(response.BusMessages.Items) != 1 || response.BusMessages.Items[0].Family != "B524" {
-			t.Fatalf("busMessages items = %+v; want trimmed B524 item", response.BusMessages.Items)
+			t.Fatalf("bus_messages items = %+v; want trimmed B524 item", response.BusMessages.Items)
 		}
 		if response.BusMessages.Items[0].ObservedAt != "2026-03-12T18:00:05Z" {
-			t.Fatalf("busMessages observedAt = %q; want 2026-03-12T18:00:05Z", response.BusMessages.Items[0].ObservedAt)
+			t.Fatalf("bus_messages observed_at = %q; want 2026-03-12T18:00:05Z", response.BusMessages.Items[0].ObservedAt)
 		}
 		if response.BusMessages.Status.Capability.PassiveReason != "unsupported_or_misconfigured" {
-			t.Fatalf("busMessages passiveReason = %q; want unsupported_or_misconfigured", response.BusMessages.Status.Capability.PassiveReason)
+			t.Fatalf("bus_messages passive_reason = %q; want unsupported_or_misconfigured", response.BusMessages.Status.Capability.PassiveReason)
 		}
 
 		if response.BusPeriodicity.Count != 2 || response.BusPeriodicity.Capacity != 256 {
-			t.Fatalf("busPeriodicity wrapper = %+v; want count=2 capacity=256", response.BusPeriodicity)
+			t.Fatalf("bus_periodicity wrapper = %+v; want count=2 capacity=256", response.BusPeriodicity)
 		}
 		if len(response.BusPeriodicity.Items) != 1 || response.BusPeriodicity.Items[0].Family != "B524" {
-			t.Fatalf("busPeriodicity items = %+v; want trimmed B524 item", response.BusPeriodicity.Items)
+			t.Fatalf("bus_periodicity items = %+v; want trimmed B524 item", response.BusPeriodicity.Items)
 		}
 		if response.BusPeriodicity.Items[0].LastSeen != "2026-03-12T18:00:06Z" {
-			t.Fatalf("busPeriodicity lastSeen = %q; want 2026-03-12T18:00:06Z", response.BusPeriodicity.Items[0].LastSeen)
+			t.Fatalf("bus_periodicity last_seen = %q; want 2026-03-12T18:00:06Z", response.BusPeriodicity.Items[0].LastSeen)
 		}
 		if response.BusPeriodicity.Status.Warmup.State != "warming_up" {
-			t.Fatalf("busPeriodicity warmup.state = %q; want warming_up", response.BusPeriodicity.Status.Warmup.State)
+			t.Fatalf("bus_periodicity warmup.state = %q; want warming_up", response.BusPeriodicity.Status.Warmup.State)
 		}
 	})
 
@@ -900,7 +900,7 @@ func TestQueryResolvers_Integration(t *testing.T) {
 			t.Fatalf("NewHandler error = %v", err)
 		}
 
-		req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":"{ busSummary { status { transportClass } messages { count capacity } periodicity { count capacity } counters { seriesBudgetOverflowTotal periodicityBudgetOverflowTotal } } busMessages { status { transportClass } count capacity items { family } } busPeriodicity { status { transportClass } count capacity items { family } } }"}`))
+		req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":"{ bus_summary { status { transport_class } messages { count capacity } periodicity { count capacity } counters { series_budget_overflow_total periodicity_budget_overflow_total } } bus_messages { status { transport_class } count capacity items { family } } bus_periodicity { status { transport_class } count capacity items { family } } }"}`))
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
@@ -913,7 +913,7 @@ func TestQueryResolvers_Integration(t *testing.T) {
 			Data struct {
 				BusSummary *struct {
 					Status *struct {
-						TransportClass string `json:"transportClass"`
+						TransportClass string `json:"transport_class"`
 					} `json:"status"`
 					Messages struct {
 						Count    int `json:"count"`
@@ -924,30 +924,30 @@ func TestQueryResolvers_Integration(t *testing.T) {
 						Capacity int `json:"capacity"`
 					} `json:"periodicity"`
 					Counters struct {
-						SeriesBudgetOverflowTotal      string `json:"seriesBudgetOverflowTotal"`
-						PeriodicityBudgetOverflowTotal string `json:"periodicityBudgetOverflowTotal"`
+						SeriesBudgetOverflowTotal      string `json:"series_budget_overflow_total"`
+						PeriodicityBudgetOverflowTotal string `json:"periodicity_budget_overflow_total"`
 					} `json:"counters"`
-				} `json:"busSummary"`
+				} `json:"bus_summary"`
 				BusMessages *struct {
 					Status *struct {
-						TransportClass string `json:"transportClass"`
+						TransportClass string `json:"transport_class"`
 					} `json:"status"`
 					Count    int `json:"count"`
 					Capacity int `json:"capacity"`
 					Items    []struct {
 						Family string `json:"family"`
 					} `json:"items"`
-				} `json:"busMessages"`
+				} `json:"bus_messages"`
 				BusPeriodicity *struct {
 					Status *struct {
-						TransportClass string `json:"transportClass"`
+						TransportClass string `json:"transport_class"`
 					} `json:"status"`
 					Count    int `json:"count"`
 					Capacity int `json:"capacity"`
 					Items    []struct {
 						Family string `json:"family"`
 					} `json:"items"`
-				} `json:"busPeriodicity"`
+				} `json:"bus_periodicity"`
 			} `json:"data"`
 			Errors []any `json:"errors"`
 		}
@@ -958,37 +958,37 @@ func TestQueryResolvers_Integration(t *testing.T) {
 			t.Fatalf("errors = %#v; want none", response.Errors)
 		}
 		if response.Data.BusSummary == nil {
-			t.Fatalf("busSummary = nil; want zero-value wrapper")
+			t.Fatalf("bus_summary = nil; want zero-value wrapper")
 		}
 		if response.Data.BusSummary.Status != nil {
-			t.Fatalf("busSummary.status = %+v; want nil for unwired observability", response.Data.BusSummary.Status)
+			t.Fatalf("bus_summary.status = %+v; want nil for unwired observability", response.Data.BusSummary.Status)
 		}
 		if response.Data.BusSummary.Messages.Count != 0 || response.Data.BusSummary.Messages.Capacity != 0 {
-			t.Fatalf("busSummary.messages = %+v; want zero-value wrapper", response.Data.BusSummary.Messages)
+			t.Fatalf("bus_summary.messages = %+v; want zero-value wrapper", response.Data.BusSummary.Messages)
 		}
 		if response.Data.BusSummary.Periodicity.Count != 0 || response.Data.BusSummary.Periodicity.Capacity != 0 {
-			t.Fatalf("busSummary.periodicity = %+v; want zero-value wrapper", response.Data.BusSummary.Periodicity)
+			t.Fatalf("bus_summary.periodicity = %+v; want zero-value wrapper", response.Data.BusSummary.Periodicity)
 		}
 		if response.Data.BusSummary.Counters.SeriesBudgetOverflowTotal != "0" || response.Data.BusSummary.Counters.PeriodicityBudgetOverflowTotal != "0" {
-			t.Fatalf("busSummary.counters = %+v; want 0/0 as strings", response.Data.BusSummary.Counters)
+			t.Fatalf("bus_summary.counters = %+v; want 0/0 as strings", response.Data.BusSummary.Counters)
 		}
 		if response.Data.BusMessages == nil {
-			t.Fatalf("busMessages = nil; want bounded zero-value wrapper")
+			t.Fatalf("bus_messages = nil; want bounded zero-value wrapper")
 		}
 		if response.Data.BusMessages.Status != nil {
-			t.Fatalf("busMessages.status = %+v; want nil for unwired observability", response.Data.BusMessages.Status)
+			t.Fatalf("bus_messages.status = %+v; want nil for unwired observability", response.Data.BusMessages.Status)
 		}
 		if response.Data.BusMessages.Count != 0 || response.Data.BusMessages.Capacity != 0 || len(response.Data.BusMessages.Items) != 0 {
-			t.Fatalf("busMessages = %+v; want count=0 capacity=0 empty items", response.Data.BusMessages)
+			t.Fatalf("bus_messages = %+v; want count=0 capacity=0 empty items", response.Data.BusMessages)
 		}
 		if response.Data.BusPeriodicity == nil {
-			t.Fatalf("busPeriodicity = nil; want bounded zero-value wrapper")
+			t.Fatalf("bus_periodicity = nil; want bounded zero-value wrapper")
 		}
 		if response.Data.BusPeriodicity.Status != nil {
-			t.Fatalf("busPeriodicity.status = %+v; want nil for unwired observability", response.Data.BusPeriodicity.Status)
+			t.Fatalf("bus_periodicity.status = %+v; want nil for unwired observability", response.Data.BusPeriodicity.Status)
 		}
 		if response.Data.BusPeriodicity.Count != 0 || response.Data.BusPeriodicity.Capacity != 0 || len(response.Data.BusPeriodicity.Items) != 0 {
-			t.Fatalf("busPeriodicity = %+v; want count=0 capacity=0 empty items", response.Data.BusPeriodicity)
+			t.Fatalf("bus_periodicity = %+v; want count=0 capacity=0 empty items", response.Data.BusPeriodicity)
 		}
 	})
 
@@ -1002,7 +1002,7 @@ func TestQueryResolvers_Integration(t *testing.T) {
 			t.Fatalf("NewInvokeHandler error = %v", err)
 		}
 
-		req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":"{ busSummary { messages { count } periodicity { count } } busMessages { count items { family } } busPeriodicity { count items { family } } }"}`))
+		req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":"{ bus_summary { messages { count } periodicity { count } } bus_messages { count items { family } } bus_periodicity { count items { family } } }"}`))
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
@@ -1020,19 +1020,19 @@ func TestQueryResolvers_Integration(t *testing.T) {
 					Periodicity struct {
 						Count int `json:"count"`
 					} `json:"periodicity"`
-				} `json:"busSummary"`
+				} `json:"bus_summary"`
 				BusMessages struct {
 					Count int `json:"count"`
 					Items []struct {
 						Family string `json:"family"`
 					} `json:"items"`
-				} `json:"busMessages"`
+				} `json:"bus_messages"`
 				BusPeriodicity struct {
 					Count int `json:"count"`
 					Items []struct {
 						Family string `json:"family"`
 					} `json:"items"`
-				} `json:"busPeriodicity"`
+				} `json:"bus_periodicity"`
 			} `json:"data"`
 			Errors []any `json:"errors"`
 		}
@@ -1046,13 +1046,13 @@ func TestQueryResolvers_Integration(t *testing.T) {
 			t.Fatalf("Snapshot() calls = %d; want 1 shared snapshot per operation", provider.CallCount())
 		}
 		if response.Data.BusSummary.Messages.Count != 1 || response.Data.BusSummary.Periodicity.Count != 1 {
-			t.Fatalf("busSummary = %+v; want snapshot-1 counts", response.Data.BusSummary)
+			t.Fatalf("bus_summary = %+v; want snapshot-1 counts", response.Data.BusSummary)
 		}
 		if response.Data.BusMessages.Count != 1 || len(response.Data.BusMessages.Items) != 1 || response.Data.BusMessages.Items[0].Family != "snapshot-1" {
-			t.Fatalf("busMessages = %+v; want count=1 family=snapshot-1", response.Data.BusMessages)
+			t.Fatalf("bus_messages = %+v; want count=1 family=snapshot-1", response.Data.BusMessages)
 		}
 		if response.Data.BusPeriodicity.Count != 1 || len(response.Data.BusPeriodicity.Items) != 1 || response.Data.BusPeriodicity.Items[0].Family != "snapshot-1" {
-			t.Fatalf("busPeriodicity = %+v; want count=1 family=snapshot-1", response.Data.BusPeriodicity)
+			t.Fatalf("bus_periodicity = %+v; want count=1 family=snapshot-1", response.Data.BusPeriodicity)
 		}
 	})
 
@@ -1075,25 +1075,25 @@ func TestQueryResolvers_Integration(t *testing.T) {
 					Periodicity struct {
 						Count int `json:"count"`
 					} `json:"periodicity"`
-				} `json:"busSummary"`
+				} `json:"bus_summary"`
 				BusMessages struct {
 					Count int `json:"count"`
 					Items []struct {
 						Family string `json:"family"`
 					} `json:"items"`
-				} `json:"busMessages"`
+				} `json:"bus_messages"`
 				BusPeriodicity struct {
 					Count int `json:"count"`
 					Items []struct {
 						Family string `json:"family"`
 					} `json:"items"`
-				} `json:"busPeriodicity"`
+				} `json:"bus_periodicity"`
 			} `json:"data"`
 			Errors []any `json:"errors"`
 		}
 
 		run := func() operationResponse {
-			req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":"{ busSummary { messages { count } periodicity { count } } busMessages { count items { family } } busPeriodicity { count items { family } } }"}`))
+			req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":"{ bus_summary { messages { count } periodicity { count } } bus_messages { count items { family } } bus_periodicity { count items { family } } }"}`))
 			req.Header.Set("Content-Type", "application/json")
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)
@@ -1117,13 +1117,13 @@ func TestQueryResolvers_Integration(t *testing.T) {
 			t.Fatalf("Snapshot() calls after first request = %d; want 1", provider.CallCount())
 		}
 		if first.Data.BusSummary.Messages.Count != 1 || first.Data.BusSummary.Periodicity.Count != 1 {
-			t.Fatalf("first busSummary = %+v; want snapshot-1 counts", first.Data.BusSummary)
+			t.Fatalf("first bus_summary = %+v; want snapshot-1 counts", first.Data.BusSummary)
 		}
 		if first.Data.BusMessages.Count != 1 || len(first.Data.BusMessages.Items) != 1 || first.Data.BusMessages.Items[0].Family != "snapshot-1" {
-			t.Fatalf("first busMessages = %+v; want count=1 family=snapshot-1", first.Data.BusMessages)
+			t.Fatalf("first bus_messages = %+v; want count=1 family=snapshot-1", first.Data.BusMessages)
 		}
 		if first.Data.BusPeriodicity.Count != 1 || len(first.Data.BusPeriodicity.Items) != 1 || first.Data.BusPeriodicity.Items[0].Family != "snapshot-1" {
-			t.Fatalf("first busPeriodicity = %+v; want count=1 family=snapshot-1", first.Data.BusPeriodicity)
+			t.Fatalf("first bus_periodicity = %+v; want count=1 family=snapshot-1", first.Data.BusPeriodicity)
 		}
 
 		second := run()
@@ -1131,13 +1131,13 @@ func TestQueryResolvers_Integration(t *testing.T) {
 			t.Fatalf("Snapshot() calls after second request = %d; want 2", provider.CallCount())
 		}
 		if second.Data.BusSummary.Messages.Count != 2 || second.Data.BusSummary.Periodicity.Count != 2 {
-			t.Fatalf("second busSummary = %+v; want snapshot-2 counts", second.Data.BusSummary)
+			t.Fatalf("second bus_summary = %+v; want snapshot-2 counts", second.Data.BusSummary)
 		}
 		if second.Data.BusMessages.Count != 2 || len(second.Data.BusMessages.Items) != 1 || second.Data.BusMessages.Items[0].Family != "snapshot-2" {
-			t.Fatalf("second busMessages = %+v; want count=2 family=snapshot-2", second.Data.BusMessages)
+			t.Fatalf("second bus_messages = %+v; want count=2 family=snapshot-2", second.Data.BusMessages)
 		}
 		if second.Data.BusPeriodicity.Count != 2 || len(second.Data.BusPeriodicity.Items) != 1 || second.Data.BusPeriodicity.Items[0].Family != "snapshot-2" {
-			t.Fatalf("second busPeriodicity = %+v; want count=2 family=snapshot-2", second.Data.BusPeriodicity)
+			t.Fatalf("second bus_periodicity = %+v; want count=2 family=snapshot-2", second.Data.BusPeriodicity)
 		}
 	})
 
@@ -1157,23 +1157,23 @@ func TestQueryResolvers_Integration(t *testing.T) {
 		t.Run("gateway_identity", func(t *testing.T) {
 			request := graphqlclient.NewRequest(`
 				query {
-					gatewayIdentity {
-						instanceGuid
+					gateway_identity {
+						instance_guid
 					}
 				}
 			`)
 
 			var response struct {
 				GatewayIdentity struct {
-					InstanceGUID string `json:"instanceGuid"`
-				} `json:"gatewayIdentity"`
+					InstanceGUID string `json:"instance_guid"`
+				} `json:"gateway_identity"`
 			}
 
 			if err := client.Run(context.Background(), request, &response); err != nil {
 				t.Fatalf("gateway identity query error = %v", err)
 			}
 			if response.GatewayIdentity.InstanceGUID != "4d9336aa-f125-4f12-8b07-fcd18dbfcb10" {
-				t.Fatalf("gateway identity instanceGuid = %q; want configured GUID", response.GatewayIdentity.InstanceGUID)
+				t.Fatalf("gateway identity instance_guid = %q; want configured GUID", response.GatewayIdentity.InstanceGUID)
 			}
 		})
 
@@ -1182,7 +1182,7 @@ func TestQueryResolvers_Integration(t *testing.T) {
 			t.Fatalf("NewHandler error = %v", err)
 		}
 
-		req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":"{ busSummary { counters { seriesBudgetOverflowTotal periodicityBudgetOverflowTotal } } }"}`))
+		req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":"{ bus_summary { counters { series_budget_overflow_total periodicity_budget_overflow_total } } }"}`))
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
@@ -1195,10 +1195,10 @@ func TestQueryResolvers_Integration(t *testing.T) {
 			Data struct {
 				BusSummary struct {
 					Counters struct {
-						SeriesBudgetOverflowTotal      string `json:"seriesBudgetOverflowTotal"`
-						PeriodicityBudgetOverflowTotal string `json:"periodicityBudgetOverflowTotal"`
+						SeriesBudgetOverflowTotal      string `json:"series_budget_overflow_total"`
+						PeriodicityBudgetOverflowTotal string `json:"periodicity_budget_overflow_total"`
 					} `json:"counters"`
-				} `json:"busSummary"`
+				} `json:"bus_summary"`
 			} `json:"data"`
 			Errors []any `json:"errors"`
 		}
@@ -1209,10 +1209,10 @@ func TestQueryResolvers_Integration(t *testing.T) {
 			t.Fatalf("errors = %#v; want none", response.Errors)
 		}
 		if response.Data.BusSummary.Counters.SeriesBudgetOverflowTotal != "2147483655" {
-			t.Fatalf("seriesBudgetOverflowTotal = %q; want 2147483655", response.Data.BusSummary.Counters.SeriesBudgetOverflowTotal)
+			t.Fatalf("series_budget_overflow_total = %q; want 2147483655", response.Data.BusSummary.Counters.SeriesBudgetOverflowTotal)
 		}
 		if response.Data.BusSummary.Counters.PeriodicityBudgetOverflowTotal != "1099511627785" {
-			t.Fatalf("periodicityBudgetOverflowTotal = %q; want 1099511627785", response.Data.BusSummary.Counters.PeriodicityBudgetOverflowTotal)
+			t.Fatalf("periodicity_budget_overflow_total = %q; want 1099511627785", response.Data.BusSummary.Counters.PeriodicityBudgetOverflowTotal)
 		}
 	})
 
@@ -1245,127 +1245,127 @@ func TestQueryResolvers_Integration(t *testing.T) {
 					id
 					name
 					state {
-						currentTempC
-						currentHumidityPct
-						hvacAction
-						specialFunction
-						heatingDemandPct
-						valvePositionPct
+						zone_room_temperature
+						zone_room_humidity
+						hvac_action
+						special_function
+						heating_demand_pct
+						valve_position_pct
 					}
 					config {
-						operatingMode
+						operating_mode
 						preset
-						targetTempC
-						allowedModes
-						circuitType
-						associatedCircuit
-						roomTemperatureZoneMapping
+						target_temp_c
+						allowed_modes
+						circuit_type
+						associated_circuit
+						room_temperature_zone_mapping
 					}
 				}
 				dhw {
 					state {
-						currentTempC
-						specialFunction
-						heatingDemandPct
+						current_temp_c
+						special_function
+						heating_demand_pct
 					}
 					config {
-						operatingMode
+						operating_mode
 						preset
-						targetTempC
+						target_temp_c
 					}
 				}
 				circuits {
 					index
-					circuitType
-					hasMixer
+					circuit_type
+					has_mixer
 					state {
-						pumpActive
-						mixerPositionPct
-						flowTemperatureC
-						flowSetpointC
-						calcFlowTempC
-						circuitState
+						pump_active
+						mixer_position_pct
+						flow_temperature_c
+						flow_setpoint_c
+						calc_flow_temp_c
+						circuit_state
 						humidity
-						dewPoint
-						pumpHours
-						pumpStarts
+						dew_point
+						pump_hours
+						pump_starts
 					}
 					config {
-						heatingCurve
-						flowTempMaxC
-						flowTempMinC
-						summerLimitC
-						frostProtC
-						roomTempControl
-						coolingEnabled
+						heating_curve
+						flow_temp_max_c
+						flow_temp_min_c
+						summer_limit_c
+						frost_prot_c
+						room_temp_control
+						cooling_enabled
 					}
-					managingDevice {
+					managing_device {
 						role
-						deviceId
+						device_id
 						address
 					}
 				}
-					radioDevices {
+					radio_devices {
 						group
 						instance
-						slotMode
-					deviceConnected
-					deviceClassAddress
-					deviceModel
-					firmwareVersion
-					hardwareIdentifier
-					remoteControlAddress
-					devicePaired
-					receptionStrength
-					zoneAssignment
-						roomTemperatureC
-						roomHumidityPct
+						slot_mode
+					device_connected
+					device_class_address
+					device_model
+					firmware_version
+					hardware_identifier
+					remote_control_address
+					device_paired
+					reception_strength
+					zone_assignment
+						room_temperature_c
+						room_humidity_pct
 					}
-					fm5SemanticMode
-					fm5Interpretation {
+					fm5_semantic_mode
+					fm5_interpretation {
 						mode
-						degradedReason
-						evidenceRevision
+						degraded_reason
+						evidence_revision
 					}
 					solar {
-						collectorTemperatureC
-						returnTemperatureC
-						pumpActive
-						currentYield
-						pumpHours
-						solarEnabled
-						functionMode
+						collector_temperature_c
+						return_temperature_c
+						pump_active
+						current_yield
+						pump_hours
+						solar_enabled
+						function_mode
 					}
 					cylinders {
 						index
-						temperatureC
-						maxSetpointC
-						chargeHysteresisC
-						chargeOffsetC
+						temperature_c
+						max_setpoint_c
+						charge_hysteresis_c
+						charge_offset_c
 					}
 					system {
 						state {
-							systemOff
-						systemWaterPressure
-						systemFlowTemperature
-						outdoorTemperature
-						outdoorTemperatureAvg24h
-						maintenanceDue
-						hwcCylinderTemperatureTop
-						hwcCylinderTemperatureBottom
+							system_off
+						system_water_pressure
+						system_flow_temperature
+						outdoor_temperature
+						outdoor_temperature_avg24h
+						maintenance_due
+						hwc_cylinder_temperature_top
+						hwc_cylinder_temperature_bottom
 					}
 					config {
-						adaptiveHeatingCurve
-						alternativePoint
-						heatingCircuitBivalencePoint
-						dhwBivalencePoint
-						hcEmergencyTemperature
-						hwcMaxFlowTempDesired
-						maxRoomHumidity
+						adaptive_heating_curve
+						alternative_point
+						heating_circuit_bivalence_point
+						dhw_bivalence_point
+						hc_emergency_temperature
+						hwc_max_flow_temp_desired
+						max_room_humidity
 					}
 					properties {
-						systemScheme
-						moduleConfigurationVR71
+						system_scheme
+						module_configuration_vr71
 					}
 				}
 				schedules {
@@ -1373,24 +1373,24 @@ func TestQueryResolvers_Integration(t *testing.T) {
 						zone
 						hc
 						config {
-							maxSlots
-							timeResolution
-							minDuration
-							hasTemperature
-							tempSlots
-							minTempC
-							maxTempC
+							max_slots
+							time_resolution
+							min_duration
+							has_temperature
+							temp_slots
+							min_temp_c
+							max_temp_c
 						}
-						slotsUsed
+						slots_used
 						days {
 							weekday
 							slots {
-								startHour
-								startMinute
-								endHour
-								endMinute
-								temperatureC
-								temperatureRaw
+								start_hour
+								start_minute
+								end_hour
+								end_minute
+								temperature_c
+								temperature_raw
 							}
 						}
 					}
@@ -1403,127 +1403,127 @@ func TestQueryResolvers_Integration(t *testing.T) {
 				ID    string `json:"id"`
 				Name  string `json:"name"`
 				State struct {
-					CurrentTempC       *float64 `json:"currentTempC"`
-					CurrentHumidityPct *float64 `json:"currentHumidityPct"`
-					HvacAction         *string  `json:"hvacAction"`
-					SpecialFunction    *string  `json:"specialFunction"`
-					HeatingDemandPct   *float64 `json:"heatingDemandPct"`
-					ValvePositionPct   *float64 `json:"valvePositionPct"`
+					CurrentTempC       *float64 `json:"zone_room_temperature"`
+					CurrentHumidityPct *float64 `json:"zone_room_humidity"`
+					HvacAction         *string  `json:"hvac_action"`
+					SpecialFunction    *string  `json:"special_function"`
+					HeatingDemandPct   *float64 `json:"heating_demand_pct"`
+					ValvePositionPct   *float64 `json:"valve_position_pct"`
 				} `json:"state"`
 				Config struct {
-					OperatingMode              *string  `json:"operatingMode"`
+					OperatingMode              *string  `json:"operating_mode"`
 					Preset                     *string  `json:"preset"`
-					TargetTempC                *float64 `json:"targetTempC"`
-					AllowedModes               []string `json:"allowedModes"`
-					CircuitType                *string  `json:"circuitType"`
-					AssociatedCircuit          *int     `json:"associatedCircuit"`
-					RoomTemperatureZoneMapping *int     `json:"roomTemperatureZoneMapping"`
+					TargetTempC                *float64 `json:"target_temp_c"`
+					AllowedModes               []string `json:"allowed_modes"`
+					CircuitType                *string  `json:"circuit_type"`
+					AssociatedCircuit          *int     `json:"associated_circuit"`
+					RoomTemperatureZoneMapping *int     `json:"room_temperature_zone_mapping"`
 				} `json:"config"`
 			} `json:"zones"`
 			DHW *struct {
 				State struct {
-					CurrentTempC     *float64 `json:"currentTempC"`
-					SpecialFunction  *string  `json:"specialFunction"`
-					HeatingDemandPct *float64 `json:"heatingDemandPct"`
+					CurrentTempC     *float64 `json:"current_temp_c"`
+					SpecialFunction  *string  `json:"special_function"`
+					HeatingDemandPct *float64 `json:"heating_demand_pct"`
 				} `json:"state"`
 				Config struct {
-					OperatingMode *string  `json:"operatingMode"`
+					OperatingMode *string  `json:"operating_mode"`
 					Preset        *string  `json:"preset"`
-					TargetTempC   *float64 `json:"targetTempC"`
+					TargetTempC   *float64 `json:"target_temp_c"`
 				} `json:"config"`
 			} `json:"dhw"`
 			Circuits []struct {
 				Index       int    `json:"index"`
-				CircuitType string `json:"circuitType"`
-				HasMixer    bool   `json:"hasMixer"`
+				CircuitType string `json:"circuit_type"`
+				HasMixer    bool   `json:"has_mixer"`
 				State       struct {
-					PumpActive       *bool    `json:"pumpActive"`
-					MixerPositionPct *float64 `json:"mixerPositionPct"`
-					FlowTemperatureC *float64 `json:"flowTemperatureC"`
-					FlowSetpointC    *float64 `json:"flowSetpointC"`
-					CalcFlowTempC    *float64 `json:"calcFlowTempC"`
-					CircuitState     *string  `json:"circuitState"`
+					PumpActive       *bool    `json:"pump_active"`
+					MixerPositionPct *float64 `json:"mixer_position_pct"`
+					FlowTemperatureC *float64 `json:"flow_temperature_c"`
+					FlowSetpointC    *float64 `json:"flow_setpoint_c"`
+					CalcFlowTempC    *float64 `json:"calc_flow_temp_c"`
+					CircuitState     *string  `json:"circuit_state"`
 					Humidity         *float64 `json:"humidity"`
-					DewPoint         *float64 `json:"dewPoint"`
-					PumpHours        *float64 `json:"pumpHours"`
-					PumpStarts       *int     `json:"pumpStarts"`
+					DewPoint         *float64 `json:"dew_point"`
+					PumpHours        *float64 `json:"pump_hours"`
+					PumpStarts       *int     `json:"pump_starts"`
 				} `json:"state"`
 				Config struct {
-					HeatingCurve    *float64 `json:"heatingCurve"`
-					FlowTempMaxC    *float64 `json:"flowTempMaxC"`
-					FlowTempMinC    *float64 `json:"flowTempMinC"`
-					SummerLimitC    *float64 `json:"summerLimitC"`
-					FrostProtC      *float64 `json:"frostProtC"`
-					RoomTempControl *string  `json:"roomTempControl"`
-					CoolingEnabled  *bool    `json:"coolingEnabled"`
+					HeatingCurve    *float64 `json:"heating_curve"`
+					FlowTempMaxC    *float64 `json:"flow_temp_max_c"`
+					FlowTempMinC    *float64 `json:"flow_temp_min_c"`
+					SummerLimitC    *float64 `json:"summer_limit_c"`
+					FrostProtC      *float64 `json:"frost_prot_c"`
+					RoomTempControl *string  `json:"room_temp_control"`
+					CoolingEnabled  *bool    `json:"cooling_enabled"`
 				} `json:"config"`
 				ManagingDevice struct {
 					Role     string  `json:"role"`
-					DeviceID *string `json:"deviceId"`
+					DeviceID *string `json:"device_id"`
 					Address  *int    `json:"address"`
-				} `json:"managingDevice"`
+				} `json:"managing_device"`
 			} `json:"circuits"`
 			RadioDevices []struct {
 				Group                int      `json:"group"`
 				Instance             int      `json:"instance"`
-				SlotMode             string   `json:"slotMode"`
-				DeviceConnected      *bool    `json:"deviceConnected"`
-				DeviceClassAddress   *int     `json:"deviceClassAddress"`
-				DeviceModel          *string  `json:"deviceModel"`
-				FirmwareVersion      *string  `json:"firmwareVersion"`
-				HardwareIdentifier   *int     `json:"hardwareIdentifier"`
-				RemoteControlAddress *int     `json:"remoteControlAddress"`
-				DevicePaired         *bool    `json:"devicePaired"`
-				ReceptionStrength    *int     `json:"receptionStrength"`
-				ZoneAssignment       *int     `json:"zoneAssignment"`
-				RoomTemperatureC     *float64 `json:"roomTemperatureC"`
-				RoomHumidityPct      *float64 `json:"roomHumidityPct"`
-			} `json:"radioDevices"`
-			FM5SemanticMode   string `json:"fm5SemanticMode"`
+				SlotMode             string   `json:"slot_mode"`
+				DeviceConnected      *bool    `json:"device_connected"`
+				DeviceClassAddress   *int     `json:"device_class_address"`
+				DeviceModel          *string  `json:"device_model"`
+				FirmwareVersion      *string  `json:"firmware_version"`
+				HardwareIdentifier   *int     `json:"hardware_identifier"`
+				RemoteControlAddress *int     `json:"remote_control_address"`
+				DevicePaired         *bool    `json:"device_paired"`
+				ReceptionStrength    *int     `json:"reception_strength"`
+				ZoneAssignment       *int     `json:"zone_assignment"`
+				RoomTemperatureC     *float64 `json:"room_temperature_c"`
+				RoomHumidityPct      *float64 `json:"room_humidity_pct"`
+			} `json:"radio_devices"`
+			FM5SemanticMode   string `json:"fm5_semantic_mode"`
 			FM5Interpretation struct {
 				Mode             string  `json:"mode"`
-				DegradedReason   *string `json:"degradedReason"`
-				EvidenceRevision string  `json:"evidenceRevision"`
-			} `json:"fm5Interpretation"`
+				DegradedReason   *string `json:"degraded_reason"`
+				EvidenceRevision string  `json:"evidence_revision"`
+			} `json:"fm5_interpretation"`
 			Solar *struct {
-				CollectorTemperatureC *float64 `json:"collectorTemperatureC"`
-				ReturnTemperatureC    *float64 `json:"returnTemperatureC"`
-				PumpActive            *bool    `json:"pumpActive"`
-				CurrentYield          *float64 `json:"currentYield"`
-				PumpHours             *float64 `json:"pumpHours"`
-				SolarEnabled          *bool    `json:"solarEnabled"`
-				FunctionMode          *bool    `json:"functionMode"`
+				CollectorTemperatureC *float64 `json:"collector_temperature_c"`
+				ReturnTemperatureC    *float64 `json:"return_temperature_c"`
+				PumpActive            *bool    `json:"pump_active"`
+				CurrentYield          *float64 `json:"current_yield"`
+				PumpHours             *float64 `json:"pump_hours"`
+				SolarEnabled          *bool    `json:"solar_enabled"`
+				FunctionMode          *bool    `json:"function_mode"`
 			} `json:"solar"`
 			Cylinders []struct {
 				Index             int      `json:"index"`
-				TemperatureC      *float64 `json:"temperatureC"`
-				MaxSetpointC      *float64 `json:"maxSetpointC"`
-				ChargeHysteresisC *float64 `json:"chargeHysteresisC"`
-				ChargeOffsetC     *float64 `json:"chargeOffsetC"`
+				TemperatureC      *float64 `json:"temperature_c"`
+				MaxSetpointC      *float64 `json:"max_setpoint_c"`
+				ChargeHysteresisC *float64 `json:"charge_hysteresis_c"`
+				ChargeOffsetC     *float64 `json:"charge_offset_c"`
 			} `json:"cylinders"`
 			System *struct {
 				State struct {
-					SystemOff                    *bool    `json:"systemOff"`
-					SystemWaterPressure          *float64 `json:"systemWaterPressure"`
-					SystemFlowTemperature        *float64 `json:"systemFlowTemperature"`
-					OutdoorTemperature           *float64 `json:"outdoorTemperature"`
-					OutdoorTemperatureAvg24h     *float64 `json:"outdoorTemperatureAvg24h"`
-					MaintenanceDue               *bool    `json:"maintenanceDue"`
-					HwcCylinderTemperatureTop    *float64 `json:"hwcCylinderTemperatureTop"`
-					HwcCylinderTemperatureBottom *float64 `json:"hwcCylinderTemperatureBottom"`
+					SystemOff                    *bool    `json:"system_off"`
+					SystemWaterPressure          *float64 `json:"system_water_pressure"`
+					SystemFlowTemperature        *float64 `json:"system_flow_temperature"`
+					OutdoorTemperature           *float64 `json:"outdoor_temperature"`
+					OutdoorTemperatureAvg24h     *float64 `json:"outdoor_temperature_avg24h"`
+					MaintenanceDue               *bool    `json:"maintenance_due"`
+					HwcCylinderTemperatureTop    *float64 `json:"hwc_cylinder_temperature_top"`
+					HwcCylinderTemperatureBottom *float64 `json:"hwc_cylinder_temperature_bottom"`
 				} `json:"state"`
 				Config struct {
-					AdaptiveHeatingCurve         *bool    `json:"adaptiveHeatingCurve"`
-					AlternativePoint             *float64 `json:"alternativePoint"`
-					HeatingCircuitBivalencePoint *float64 `json:"heatingCircuitBivalencePoint"`
-					DhwBivalencePoint            *float64 `json:"dhwBivalencePoint"`
-					HcEmergencyTemperature       *float64 `json:"hcEmergencyTemperature"`
-					HwcMaxFlowTempDesired        *float64 `json:"hwcMaxFlowTempDesired"`
-					MaxRoomHumidity              *int     `json:"maxRoomHumidity"`
+					AdaptiveHeatingCurve         *bool    `json:"adaptive_heating_curve"`
+					AlternativePoint             *float64 `json:"alternative_point"`
+					HeatingCircuitBivalencePoint *float64 `json:"heating_circuit_bivalence_point"`
+					DhwBivalencePoint            *float64 `json:"dhw_bivalence_point"`
+					HcEmergencyTemperature       *float64 `json:"hc_emergency_temperature"`
+					HwcMaxFlowTempDesired        *float64 `json:"hwc_max_flow_temp_desired"`
+					MaxRoomHumidity              *int     `json:"max_room_humidity"`
 				} `json:"config"`
 				Properties struct {
-					SystemScheme            *int `json:"systemScheme"`
-					ModuleConfigurationVR71 *int `json:"moduleConfigurationVR71"`
+					SystemScheme            *int `json:"system_scheme"`
+					ModuleConfigurationVR71 *int `json:"module_configuration_vr71"`
 				} `json:"properties"`
 			} `json:"system"`
 			Schedules *struct {
@@ -1541,10 +1541,10 @@ func TestQueryResolvers_Integration(t *testing.T) {
 			t.Fatalf("zones = %d; want 1", len(response.Zones))
 		}
 		if response.Zones[0].Config.AssociatedCircuit == nil || *response.Zones[0].Config.AssociatedCircuit != 1 {
-			t.Fatalf("associatedCircuit = %#v; want 1", response.Zones[0].Config.AssociatedCircuit)
+			t.Fatalf("associated_circuit = %#v; want 1", response.Zones[0].Config.AssociatedCircuit)
 		}
 		if response.Zones[0].Config.RoomTemperatureZoneMapping == nil || *response.Zones[0].Config.RoomTemperatureZoneMapping != 2 {
-			t.Fatalf("roomTemperatureZoneMapping = %#v; want 2", response.Zones[0].Config.RoomTemperatureZoneMapping)
+			t.Fatalf("room_temperature_zone_mapping = %#v; want 2", response.Zones[0].Config.RoomTemperatureZoneMapping)
 		}
 		if response.DHW != nil {
 			t.Fatalf("dhw expected nil with static provider")
@@ -1553,13 +1553,13 @@ func TestQueryResolvers_Integration(t *testing.T) {
 			t.Fatalf("circuits = %d; want 0", len(response.Circuits))
 		}
 		if len(response.RadioDevices) != 0 {
-			t.Fatalf("radioDevices = %d; want 0", len(response.RadioDevices))
+			t.Fatalf("radio_devices = %d; want 0", len(response.RadioDevices))
 		}
 		if response.FM5SemanticMode != "INTERPRETED" {
-			t.Fatalf("fm5SemanticMode = %q; want INTERPRETED", response.FM5SemanticMode)
+			t.Fatalf("fm5_semantic_mode = %q; want INTERPRETED", response.FM5SemanticMode)
 		}
 		if response.FM5Interpretation.Mode != "INTERPRETED" || response.FM5Interpretation.DegradedReason == nil || *response.FM5Interpretation.DegradedReason != "EVIDENCE_STALE" || response.FM5Interpretation.EvidenceRevision != "fm5-g7-a3" {
-			t.Fatalf("fm5Interpretation = %#v; want INTERPRETED/EVIDENCE_STALE/fm5-g7-a3", response.FM5Interpretation)
+			t.Fatalf("fm5_interpretation = %#v; want INTERPRETED/EVIDENCE_STALE/fm5-g7-a3", response.FM5Interpretation)
 		}
 		if response.Solar != nil {
 			t.Fatalf("solar expected nil with static provider")
@@ -1592,9 +1592,9 @@ func TestQueryResolvers_Integration(t *testing.T) {
 			query {
 				circuits {
 					index
-					managingDevice {
+					managing_device {
 						role
-						deviceId
+						device_id
 						address
 					}
 				}
@@ -1606,9 +1606,9 @@ func TestQueryResolvers_Integration(t *testing.T) {
 				Index          int `json:"index"`
 				ManagingDevice struct {
 					Role     string  `json:"role"`
-					DeviceID *string `json:"deviceId"`
+					DeviceID *string `json:"device_id"`
 					Address  *int    `json:"address"`
-				} `json:"managingDevice"`
+				} `json:"managing_device"`
 			} `json:"circuits"`
 		}
 		if err := client.Run(context.Background(), request, &response); err != nil {
@@ -1618,13 +1618,13 @@ func TestQueryResolvers_Integration(t *testing.T) {
 			t.Fatalf("circuits = %d; want 1", len(response.Circuits))
 		}
 		if response.Circuits[0].ManagingDevice.Role != string(ManagingDeviceRoleFunctionModule) {
-			t.Fatalf("managingDevice.role = %q; want %q", response.Circuits[0].ManagingDevice.Role, ManagingDeviceRoleFunctionModule)
+			t.Fatalf("managing_device.role = %q; want %q", response.Circuits[0].ManagingDevice.Role, ManagingDeviceRoleFunctionModule)
 		}
 		if response.Circuits[0].ManagingDevice.DeviceID == nil || *response.Circuits[0].ManagingDevice.DeviceID != "VR_71" {
-			t.Fatalf("managingDevice.deviceId = %#v; want VR_71", response.Circuits[0].ManagingDevice.DeviceID)
+			t.Fatalf("managing_device.device_id = %#v; want VR_71", response.Circuits[0].ManagingDevice.DeviceID)
 		}
 		if response.Circuits[0].ManagingDevice.Address == nil || *response.Circuits[0].ManagingDevice.Address != 0x26 {
-			t.Fatalf("managingDevice.address = %#v; want 0x26", response.Circuits[0].ManagingDevice.Address)
+			t.Fatalf("managing_device.address = %#v; want 0x26", response.Circuits[0].ManagingDevice.Address)
 		}
 	})
 
@@ -1652,12 +1652,12 @@ func TestQueryResolvers_Integration(t *testing.T) {
 	t.Run("energy_totals_root", func(t *testing.T) {
 		request := graphqlclient.NewRequest(`
 			query {
-				energyTotals {
+				energy_totals {
 					gas {
 						dhw {
 							today
-							todayMeta { freshnessState provenance stale }
-							yearlyMeta { freshnessState provenance stale }
+							today_meta { freshness_state provenance stale }
+							yearly_meta { freshness_state provenance stale }
 						}
 					}
 				}
@@ -1670,37 +1670,37 @@ func TestQueryResolvers_Integration(t *testing.T) {
 					DHW struct {
 						Today     float64 `json:"today"`
 						TodayMeta struct {
-							FreshnessState string `json:"freshnessState"`
+							FreshnessState string `json:"freshness_state"`
 							Provenance     string `json:"provenance"`
 							Stale          bool   `json:"stale"`
-						} `json:"todayMeta"`
+						} `json:"today_meta"`
 						YearlyMeta []struct {
-							FreshnessState string `json:"freshnessState"`
+							FreshnessState string `json:"freshness_state"`
 							Provenance     string `json:"provenance"`
 							Stale          bool   `json:"stale"`
-						} `json:"yearlyMeta"`
+						} `json:"yearly_meta"`
 					} `json:"dhw"`
 				} `json:"gas"`
-			} `json:"energyTotals"`
+			} `json:"energy_totals"`
 		}
 
 		if err := client.Run(context.Background(), request, &response); err != nil {
-			t.Fatalf("energyTotals no-data root query error = %v", err)
+			t.Fatalf("energy_totals no-data root query error = %v", err)
 		}
 		if response.EnergyTotals == nil {
-			t.Fatal("energyTotals = nil; want visible no-data object")
+			t.Fatal("energy_totals = nil; want visible no-data object")
 		}
 		if response.EnergyTotals.Gas.DHW.Today != 0 {
 			t.Fatalf("gas.dhw.today = %v; want 0 when no values were seen", response.EnergyTotals.Gas.DHW.Today)
 		}
 		if response.EnergyTotals.Gas.DHW.TodayMeta.FreshnessState != "never_seen" {
-			t.Fatalf("gas.dhw.todayMeta.freshnessState = %q; want never_seen", response.EnergyTotals.Gas.DHW.TodayMeta.FreshnessState)
+			t.Fatalf("gas.dhw.today_meta.freshness_state = %q; want never_seen", response.EnergyTotals.Gas.DHW.TodayMeta.FreshnessState)
 		}
 		if response.EnergyTotals.Gas.DHW.TodayMeta.Provenance != "none" {
-			t.Fatalf("gas.dhw.todayMeta.provenance = %q; want none", response.EnergyTotals.Gas.DHW.TodayMeta.Provenance)
+			t.Fatalf("gas.dhw.today_meta.provenance = %q; want none", response.EnergyTotals.Gas.DHW.TodayMeta.Provenance)
 		}
 		if len(response.EnergyTotals.Gas.DHW.YearlyMeta) != 2 {
-			t.Fatalf("gas.dhw.yearlyMeta len = %d; want 2", len(response.EnergyTotals.Gas.DHW.YearlyMeta))
+			t.Fatalf("gas.dhw.yearly_meta len = %d; want 2", len(response.EnergyTotals.Gas.DHW.YearlyMeta))
 		}
 	})
 
@@ -1714,8 +1714,8 @@ func TestQueryResolvers_Integration(t *testing.T) {
 
 		request := graphqlclient.NewRequest(`
 			query {
-				energyTotals {
-					gas { dhw { today yearly monthly todayMeta { freshnessState provenance stale } monthlyMeta { freshnessState provenance stale } } climate { today yearly todayMeta { freshnessState provenance stale } } }
+				energy_totals {
+					gas { dhw { today yearly monthly today_meta { freshness_state provenance stale } monthly_meta { freshness_state provenance stale } } climate { today yearly today_meta { freshness_state provenance stale } } }
 					electric { dhw { today yearly } climate { today yearly } }
 					solar { dhw { today yearly } climate { today yearly } }
 				}
@@ -1730,24 +1730,24 @@ func TestQueryResolvers_Integration(t *testing.T) {
 						Yearly    []float64 `json:"yearly"`
 						Monthly   []float64 `json:"monthly"`
 						TodayMeta struct {
-							FreshnessState string `json:"freshnessState"`
+							FreshnessState string `json:"freshness_state"`
 							Provenance     string `json:"provenance"`
 							Stale          bool   `json:"stale"`
-						} `json:"todayMeta"`
+						} `json:"today_meta"`
 						MonthlyMeta []struct {
-							FreshnessState string `json:"freshnessState"`
+							FreshnessState string `json:"freshness_state"`
 							Provenance     string `json:"provenance"`
 							Stale          bool   `json:"stale"`
-						} `json:"monthlyMeta"`
+						} `json:"monthly_meta"`
 					} `json:"dhw"`
 					Climate struct {
 						Today     float64   `json:"today"`
 						Yearly    []float64 `json:"yearly"`
 						TodayMeta struct {
-							FreshnessState string `json:"freshnessState"`
+							FreshnessState string `json:"freshness_state"`
 							Provenance     string `json:"provenance"`
 							Stale          bool   `json:"stale"`
-						} `json:"todayMeta"`
+						} `json:"today_meta"`
 					} `json:"climate"`
 				} `json:"gas"`
 				Electric struct {
@@ -1770,14 +1770,14 @@ func TestQueryResolvers_Integration(t *testing.T) {
 						Yearly []float64 `json:"yearly"`
 					} `json:"climate"`
 				} `json:"solar"`
-			} `json:"energyTotals"`
+			} `json:"energy_totals"`
 		}
 
 		if err := client.Run(context.Background(), request, &response); err != nil {
-			t.Fatalf("energyTotals root query error = %v", err)
+			t.Fatalf("energy_totals root query error = %v", err)
 		}
 		if response.EnergyTotals == nil {
-			t.Fatal("energyTotals = nil; want non-nil")
+			t.Fatal("energy_totals = nil; want non-nil")
 		}
 		if response.EnergyTotals.Gas.DHW.Today != 3.5 {
 			t.Fatalf("gas.dhw.today = %v; want 3.5", response.EnergyTotals.Gas.DHW.Today)
@@ -1789,16 +1789,16 @@ func TestQueryResolvers_Integration(t *testing.T) {
 			t.Fatalf("gas.dhw.monthly = %#v; want [0 15]", response.EnergyTotals.Gas.DHW.Monthly)
 		}
 		if len(response.EnergyTotals.Gas.DHW.MonthlyMeta) != 2 {
-			t.Fatalf("gas.dhw.monthlyMeta len = %d; want 2", len(response.EnergyTotals.Gas.DHW.MonthlyMeta))
+			t.Fatalf("gas.dhw.monthly_meta len = %d; want 2", len(response.EnergyTotals.Gas.DHW.MonthlyMeta))
 		}
 		if got := response.EnergyTotals.Gas.DHW.MonthlyMeta[0]; got.FreshnessState != "never_seen" || got.Provenance != "none" || got.Stale {
-			t.Fatalf("gas.dhw.monthlyMeta[0] = %+v; want never_seen/none/stale=false", got)
+			t.Fatalf("gas.dhw.monthly_meta[0] = %+v; want never_seen/none/stale=false", got)
 		}
 		if got := response.EnergyTotals.Gas.DHW.MonthlyMeta[1]; got.FreshnessState != "fresh" || got.Provenance != "register" || got.Stale {
-			t.Fatalf("gas.dhw.monthlyMeta[1] = %+v; want fresh/register/stale=false", got)
+			t.Fatalf("gas.dhw.monthly_meta[1] = %+v; want fresh/register/stale=false", got)
 		}
 		if response.EnergyTotals.Gas.DHW.TodayMeta.FreshnessState != "fresh" || response.EnergyTotals.Gas.DHW.TodayMeta.Provenance != "register" || response.EnergyTotals.Gas.DHW.TodayMeta.Stale {
-			t.Fatalf("gas.dhw.todayMeta = %+v; want fresh/register/stale=false", response.EnergyTotals.Gas.DHW.TodayMeta)
+			t.Fatalf("gas.dhw.today_meta = %+v; want fresh/register/stale=false", response.EnergyTotals.Gas.DHW.TodayMeta)
 		}
 		if response.EnergyTotals.Electric.Climate.Today != 1.25 {
 			t.Fatalf("electric.climate.today = %v; want 1.25", response.EnergyTotals.Electric.Climate.Today)
@@ -1814,7 +1814,7 @@ func TestQueryResolvers_Integration(t *testing.T) {
 				devices {
 					address
 					role
-					energyTotals {
+					energy_totals {
 						gas { dhw { today yearly } climate { today yearly } }
 						electric { dhw { today yearly } climate { today yearly } }
 						solar { dhw { today yearly } climate { today yearly } }
@@ -1838,16 +1838,16 @@ func TestQueryResolvers_Integration(t *testing.T) {
 							Yearly []float64 `json:"yearly"`
 						} `json:"climate"`
 					} `json:"gas"`
-				} `json:"energyTotals"`
+				} `json:"energy_totals"`
 			} `json:"devices"`
 		}
 
 		if err := client.Run(context.Background(), request, &response); err != nil {
-			t.Fatalf("energyTotals on device query error = %v", err)
+			t.Fatalf("energy_totals on device query error = %v", err)
 		}
 		for _, dev := range response.Devices {
 			if dev.EnergyTotals != nil {
-				t.Fatalf("device %d energyTotals expected nil with no semantic provider", dev.Address)
+				t.Fatalf("device %d energy_totals expected nil with no semantic provider", dev.Address)
 			}
 		}
 	})
@@ -1952,24 +1952,24 @@ func TestQueryResolvers_Integration(t *testing.T) {
 						zone
 						hc
 						config {
-							maxSlots
-							timeResolution
-							minDuration
-							hasTemperature
-							tempSlots
-							minTempC
-							maxTempC
+							max_slots
+							time_resolution
+							min_duration
+							has_temperature
+							temp_slots
+							min_temp_c
+							max_temp_c
 						}
-						slotsUsed
+						slots_used
 						days {
 							weekday
 							slots {
-								startHour
-								startMinute
-								endHour
-								endMinute
-								temperatureC
-								temperatureRaw
+								start_hour
+								start_minute
+								end_hour
+								end_minute
+								temperature_c
+								temperature_raw
 							}
 						}
 					}
@@ -1983,24 +1983,24 @@ func TestQueryResolvers_Integration(t *testing.T) {
 					Zone   int    `json:"zone"`
 					HC     string `json:"hc"`
 					Config *struct {
-						MaxSlots       int      `json:"maxSlots"`
-						TimeResolution int      `json:"timeResolution"`
-						MinDuration    int      `json:"minDuration"`
-						HasTemperature bool     `json:"hasTemperature"`
-						TempSlots      int      `json:"tempSlots"`
-						MinTempC       *float64 `json:"minTempC"`
-						MaxTempC       *float64 `json:"maxTempC"`
+						MaxSlots       int      `json:"max_slots"`
+						TimeResolution int      `json:"time_resolution"`
+						MinDuration    int      `json:"min_duration"`
+						HasTemperature bool     `json:"has_temperature"`
+						TempSlots      int      `json:"temp_slots"`
+						MinTempC       *float64 `json:"min_temp_c"`
+						MaxTempC       *float64 `json:"max_temp_c"`
 					} `json:"config"`
-					SlotsUsed []int `json:"slotsUsed"`
+					SlotsUsed []int `json:"slots_used"`
 					Days      []struct {
 						Weekday string `json:"weekday"`
 						Slots   []struct {
-							StartHour      int      `json:"startHour"`
-							StartMinute    int      `json:"startMinute"`
-							EndHour        int      `json:"endHour"`
-							EndMinute      int      `json:"endMinute"`
-							TemperatureC   *float64 `json:"temperatureC"`
-							TemperatureRaw *int     `json:"temperatureRaw"`
+							StartHour      int      `json:"start_hour"`
+							StartMinute    int      `json:"start_minute"`
+							EndHour        int      `json:"end_hour"`
+							EndMinute      int      `json:"end_minute"`
+							TemperatureC   *float64 `json:"temperature_c"`
+							TemperatureRaw *int     `json:"temperature_raw"`
 						} `json:"slots"`
 					} `json:"days"`
 				} `json:"programs"`
@@ -2021,13 +2021,13 @@ func TestQueryResolvers_Integration(t *testing.T) {
 			t.Fatalf("program zone=%d hc=%q; want 0/heating", prog.Zone, prog.HC)
 		}
 		if prog.Config == nil || prog.Config.MaxSlots != 12 {
-			t.Fatalf("config maxSlots = %v; want 12", prog.Config)
+			t.Fatalf("config max_slots = %v; want 12", prog.Config)
 		}
 		if prog.Config.MinTempC == nil || *prog.Config.MinTempC != 5.0 {
-			t.Fatalf("config minTempC = %v; want 5.0", prog.Config.MinTempC)
+			t.Fatalf("config min_temp_c = %v; want 5.0", prog.Config.MinTempC)
 		}
 		if len(prog.SlotsUsed) != 7 || prog.SlotsUsed[0] != 1 || prog.SlotsUsed[1] != 0 {
-			t.Fatalf("slotsUsed = %v; want [1 0 1 1 1 1 1]", prog.SlotsUsed)
+			t.Fatalf("slots_used = %v; want [1 0 1 1 1 1 1]", prog.SlotsUsed)
 		}
 		if len(prog.Days) != 1 || prog.Days[0].Weekday != "monday" {
 			t.Fatalf("days = %+v; want [monday]", prog.Days)
@@ -2040,10 +2040,10 @@ func TestQueryResolvers_Integration(t *testing.T) {
 			t.Fatalf("slot hours = %d-%d; want 0-24", slot.StartHour, slot.EndHour)
 		}
 		if slot.TemperatureC == nil || *slot.TemperatureC != 22.5 {
-			t.Fatalf("slot temperatureC = %v; want 22.5", slot.TemperatureC)
+			t.Fatalf("slot temperature_c = %v; want 22.5", slot.TemperatureC)
 		}
 		if slot.TemperatureRaw == nil || *slot.TemperatureRaw != 225 {
-			t.Fatalf("slot temperatureRaw = %v; want 225", slot.TemperatureRaw)
+			t.Fatalf("slot temperature_raw = %v; want 225", slot.TemperatureRaw)
 		}
 	})
 }
@@ -2157,7 +2157,7 @@ func TestQueryResolvers_DevicesReflectLateRegistryPopulation(t *testing.T) {
 		query {
 			devices {
 				address
-				deviceId
+				device_id
 			}
 		}
 	`)
@@ -2165,7 +2165,7 @@ func TestQueryResolvers_DevicesReflectLateRegistryPopulation(t *testing.T) {
 	var response struct {
 		Devices []struct {
 			Address  int    `json:"address"`
-			DeviceID string `json:"deviceId"`
+			DeviceID string `json:"device_id"`
 		} `json:"devices"`
 	}
 
@@ -2176,7 +2176,7 @@ func TestQueryResolvers_DevicesReflectLateRegistryPopulation(t *testing.T) {
 		t.Fatalf("devices = %d; want 1", len(response.Devices))
 	}
 	if response.Devices[0].Address != 21 || response.Devices[0].DeviceID != "BASV2" {
-		t.Fatalf("device payload = %+v; want address=21 deviceId=BASV2", response.Devices[0])
+		t.Fatalf("device payload = %+v; want address=21 and the synthetic fixture device identity", response.Devices[0])
 	}
 }
 
@@ -2188,7 +2188,7 @@ func TestQueryResolvers_FM5InterpretationNullBeforeFirstCoherentClassification(t
 		t.Fatalf("NewHandler error = %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":"{ fm5SemanticMode fm5Interpretation { mode degradedReason evidenceRevision } }"}`))
+	req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":"{ fm5_semantic_mode fm5_interpretation { mode degraded_reason evidence_revision } }"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -2206,11 +2206,11 @@ func TestQueryResolvers_FM5InterpretationNullBeforeFirstCoherentClassification(t
 	if len(response.Errors) != 0 {
 		t.Fatalf("errors = %#v; want none", response.Errors)
 	}
-	if got := response.Data["fm5SemanticMode"]; got != string(Fm5SemanticModeAbsent) {
-		t.Fatalf("legacy fm5SemanticMode = %#v; want stable ABSENT", got)
+	if got := response.Data["fm5_semantic_mode"]; got != string(Fm5SemanticModeAbsent) {
+		t.Fatalf("legacy fm5_semantic_mode = %#v; want stable ABSENT", got)
 	}
-	if got, ok := response.Data["fm5Interpretation"]; !ok || got != nil {
-		t.Fatalf("fm5Interpretation = %#v present=%t; want explicit null", got, ok)
+	if got, ok := response.Data["fm5_interpretation"]; !ok || got != nil {
+		t.Fatalf("fm5_interpretation = %#v present=%t; want explicit null", got, ok)
 	}
 }
 
@@ -2225,7 +2225,7 @@ func TestQueryResolvers_FM5InterpretationNullForLegacyScalarOnlyProvider(t *test
 		t.Fatalf("NewHandler error = %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":"{ fm5SemanticMode fm5Interpretation { mode degradedReason evidenceRevision } }"}`))
+	req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":"{ fm5_semantic_mode fm5_interpretation { mode degraded_reason evidence_revision } }"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -2243,10 +2243,10 @@ func TestQueryResolvers_FM5InterpretationNullForLegacyScalarOnlyProvider(t *test
 	if len(response.Errors) != 0 {
 		t.Fatalf("errors = %#v; want none", response.Errors)
 	}
-	if got := response.Data["fm5SemanticMode"]; got != string(Fm5SemanticModeGPIOOnly) {
-		t.Fatalf("legacy fm5SemanticMode = %#v; want stable GPIO_ONLY", got)
+	if got := response.Data["fm5_semantic_mode"]; got != string(Fm5SemanticModeGPIOOnly) {
+		t.Fatalf("legacy fm5_semantic_mode = %#v; want stable GPIO_ONLY", got)
 	}
-	if got, ok := response.Data["fm5Interpretation"]; !ok || got != nil {
-		t.Fatalf("legacy-only fm5Interpretation = %#v present=%t; want explicit null", got, ok)
+	if got, ok := response.Data["fm5_interpretation"]; !ok || got != nil {
+		t.Fatalf("legacy-only fm5_interpretation = %#v present=%t; want explicit null", got, ok)
 	}
 }

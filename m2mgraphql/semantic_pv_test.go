@@ -20,7 +20,7 @@ func TestSemanticPVCurrentUsesOneEvaluatedProjection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := `{"operationName":"SemanticPVCurrent","query":` + strconv.Quote(semanticPVFixedQuery) + `,"variables":{"request":{"contractId":"PUBLIC_GRAPHQL_SEMANTIC_PV_V1","assetRef":"pv-asset-test"}}}`
+	request := `{"operationName":"SemanticPVCurrent","query":` + strconv.Quote(semanticPVFixedQuery) + `,"variables":{"request":{"contract_id":"PUBLIC_GRAPHQL_SEMANTIC_PV_V1","asset_ref":"pv-asset-test"}}}`
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/graphql/m2m/v1", strings.NewReader(request)).WithContext(WithMTLSPrincipal(context.Background(), "test")))
 	if recorder.Code != http.StatusOK {
@@ -32,7 +32,7 @@ func TestSemanticPVCurrentUsesOneEvaluatedProjection(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	current := response.Data["semanticPVCurrent"]
+	current := response.Data["semantic_pv_current"]
 	if len(current) != 4 || current["snapshot"] == nil || current["evaluation"] == nil || current["selections"] == nil || current["projection"] == nil || strings.Contains(recorder.Body.String(), `"snapshotId"`) {
 		t.Fatalf("fixed GraphQL response shape=%s", recorder.Body.String())
 	}
@@ -55,7 +55,7 @@ func TestSemanticPVCurrentRejectsUndeclaredProviderFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := `{"operationName":"SemanticPVCurrent","query":` + strconv.Quote(semanticPVFixedQuery) + `,"variables":{"request":{"contractId":"PUBLIC_GRAPHQL_SEMANTIC_PV_V1","assetRef":"pv-asset-test"}}}`
+	request := `{"operationName":"SemanticPVCurrent","query":` + strconv.Quote(semanticPVFixedQuery) + `,"variables":{"request":{"contract_id":"PUBLIC_GRAPHQL_SEMANTIC_PV_V1","asset_ref":"pv-asset-test"}}}`
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/graphql/m2m/v1", strings.NewReader(request)).WithContext(WithMTLSPrincipal(context.Background(), "test")))
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"SOURCE_UNAVAILABLE"`) {
@@ -70,7 +70,7 @@ func TestSemanticStorageCurrentUsesOneEvaluatedProjection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := `{"operationName":"SemanticStorageCurrent","query":` + strconv.Quote(semanticStorageFixedQuery) + `,"variables":{"request":{"contractId":"PUBLIC_GRAPHQL_SEMANTIC_STORAGE_V1","assetRef":"asset:storage-test"}}}`
+	request := `{"operationName":"SemanticStorageCurrent","query":` + strconv.Quote(semanticStorageFixedQuery) + `,"variables":{"request":{"contract_id":"PUBLIC_GRAPHQL_SEMANTIC_STORAGE_V1","asset_ref":"asset:storage-test"}}}`
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, route, strings.NewReader(request)).WithContext(WithMTLSPrincipal(context.Background(), "test-principal")))
 	if response.Code != http.StatusOK {
@@ -80,7 +80,7 @@ func TestSemanticStorageCurrentUsesOneEvaluatedProjection(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := decoded["data"].(map[string]any)["semanticStorageCurrent"]; !ok {
+	if _, ok := decoded["data"].(map[string]any)["semantic_storage_current"]; !ok {
 		t.Fatalf("storage GraphQL response=%s", response.Body.String())
 	}
 }
@@ -94,7 +94,7 @@ func TestSemanticEVSECurrentUsesOneEvaluatedProjection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := `{"operationName":"SemanticEVSECurrent","query":` + strconv.Quote(semanticEVSEFixedQuery) + `,"variables":{"request":{"contractId":"PUBLIC_GRAPHQL_SEMANTIC_EVSE_V1","assetRef":"asset:evse-test"}}}`
+	request := `{"operationName":"SemanticEVSECurrent","query":` + strconv.Quote(semanticEVSEFixedQuery) + `,"variables":{"request":{"contract_id":"PUBLIC_GRAPHQL_SEMANTIC_EVSE_V1","asset_ref":"asset:evse-test"}}}`
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, route, strings.NewReader(request)).WithContext(WithMTLSPrincipal(context.Background(), "test-principal")))
 	if response.Code != http.StatusOK || called != 1 {
@@ -104,7 +104,7 @@ func TestSemanticEVSECurrentUsesOneEvaluatedProjection(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := decoded["data"].(map[string]any)["semanticEVSECurrent"]; !ok {
+	if _, ok := decoded["data"].(map[string]any)["semantic_evse_current"]; !ok {
 		t.Fatalf("EVSE GraphQL response=%s", response.Body.String())
 	}
 }
@@ -115,19 +115,19 @@ func TestSemanticStorageErrorsUseStoragePathAndPreoperationErrorsAreNeutral(t *t
 		t.Fatal(err)
 	}
 	storageRequest := func(contract, asset string) string {
-		return `{"operationName":"SemanticStorageCurrent","query":` + strconv.Quote(semanticStorageFixedQuery) + `,"variables":{"request":{"contractId":` + strconv.Quote(contract) + `,"assetRef":` + strconv.Quote(asset) + `}}}`
+		return `{"operationName":"SemanticStorageCurrent","query":` + strconv.Quote(semanticStorageFixedQuery) + `,"variables":{"request":{"contract_id":` + strconv.Quote(contract) + `,"asset_ref":` + strconv.Quote(asset) + `}}}`
 	}
-	assertM2MError(t, handler, storageRequest("wrong", "asset:storage-test"), "CONTRACT_INCOMPATIBLE", []string{"semanticStorageCurrent"})
-	assertM2MError(t, handler, storageRequest(semanticStorageContractID, "asset:other"), "ASSET_FORBIDDEN", []string{"semanticStorageCurrent"})
-	assertM2MError(t, handler, storageRequest(semanticStorageContractID, "asset:storage-test"), "SOURCE_UNAVAILABLE", []string{"semanticStorageCurrent"})
+	assertM2MError(t, handler, storageRequest("wrong", "asset:storage-test"), "CONTRACT_INCOMPATIBLE", []string{"semantic_storage_current"})
+	assertM2MError(t, handler, storageRequest(semanticStorageContractID, "asset:other"), "ASSET_FORBIDDEN", []string{"semantic_storage_current"})
+	assertM2MError(t, handler, storageRequest(semanticStorageContractID, "asset:storage-test"), "SOURCE_UNAVAILABLE", []string{"semantic_storage_current"})
 	assertM2MError(t, handler, `{`, "REQUEST_INVALID", []string{})
 
 	pv, err := NewHandler(Config{AllowedAssets: map[string]struct{}{"pv-asset-test": {}}, SemanticPVCurrent: func(context.Context, string) (json.RawMessage, bool) { return nil, false }})
 	if err != nil {
 		t.Fatal(err)
 	}
-	pvRequest := `{"operationName":"SemanticPVCurrent","query":` + strconv.Quote(semanticPVFixedQuery) + `,"variables":{"request":{"contractId":"wrong","assetRef":"pv-asset-test"}}}`
-	assertM2MError(t, pv, pvRequest, "CONTRACT_INCOMPATIBLE", []string{"semanticPVCurrent"})
+	pvRequest := `{"operationName":"SemanticPVCurrent","query":` + strconv.Quote(semanticPVFixedQuery) + `,"variables":{"request":{"contract_id":"wrong","asset_ref":"pv-asset-test"}}}`
+	assertM2MError(t, pv, pvRequest, "CONTRACT_INCOMPATIBLE", []string{"semantic_pv_current"})
 
 	quota, err := NewHandler(Config{AllowedAssets: map[string]struct{}{"asset:storage-test": {}}, MonotonicMilliseconds: func() int64 { return 0 }, SemanticStorageCurrent: func(context.Context, string) (json.RawMessage, bool) {
 		return json.RawMessage(`{"snapshot":{},"evaluation":{},"selections":[],"projection":{}}`), true
@@ -154,13 +154,13 @@ func TestM2MHandlerRequiresNoPrincipal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := `{"operationName":"SemanticStorageCurrent","query":` + strconv.Quote(semanticStorageFixedQuery) + `,"variables":{"request":{"contractId":"PUBLIC_GRAPHQL_SEMANTIC_STORAGE_V1","assetRef":"asset:storage-test"}}}`
+	request := `{"operationName":"SemanticStorageCurrent","query":` + strconv.Quote(semanticStorageFixedQuery) + `,"variables":{"request":{"contract_id":"PUBLIC_GRAPHQL_SEMANTIC_STORAGE_V1","asset_ref":"asset:storage-test"}}}`
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, route, strings.NewReader(request)))
 	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), `"errors"`) {
 		t.Fatalf("request without principal response=%d %s", response.Code, response.Body.String())
 	}
-	forbidden := `{"operationName":"SemanticStorageCurrent","query":` + strconv.Quote(semanticStorageFixedQuery) + `,"variables":{"request":{"contractId":"PUBLIC_GRAPHQL_SEMANTIC_STORAGE_V1","assetRef":"asset:storage-other"}}}`
+	forbidden := `{"operationName":"SemanticStorageCurrent","query":` + strconv.Quote(semanticStorageFixedQuery) + `,"variables":{"request":{"contract_id":"PUBLIC_GRAPHQL_SEMANTIC_STORAGE_V1","asset_ref":"asset:storage-other"}}}`
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, route, strings.NewReader(forbidden)))
 	if !strings.Contains(response.Body.String(), `"ASSET_FORBIDDEN"`) {
@@ -175,7 +175,7 @@ func TestM2MHandlerRateLimitIsKeyedByRemoteHost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := `{"operationName":"SemanticStorageCurrent","query":` + strconv.Quote(semanticStorageFixedQuery) + `,"variables":{"request":{"contractId":"PUBLIC_GRAPHQL_SEMANTIC_STORAGE_V1","assetRef":"asset:storage-test"}}}`
+	request := `{"operationName":"SemanticStorageCurrent","query":` + strconv.Quote(semanticStorageFixedQuery) + `,"variables":{"request":{"contract_id":"PUBLIC_GRAPHQL_SEMANTIC_STORAGE_V1","asset_ref":"asset:storage-test"}}}`
 	serve := func(remote string) string {
 		r := httptest.NewRequest(http.MethodPost, route, strings.NewReader(request))
 		r.RemoteAddr = remote

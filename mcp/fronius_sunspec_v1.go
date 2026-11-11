@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	FroniusSunSpecV1StatusGetTool = "modbus.v1.fronius.sunspec.status.get"
+	FroniusSunSpecV1StatusGetTool = "modbus_v1_fronius_sunspec_status_get"
 	FroniusSunSpecV1Profile       = "sunspec.fronius.readonly.v1"
 )
 

@@ -410,7 +410,7 @@ func TestHandleEbusStandardCall_CommandGetDispatchesNonexistent(t *testing.T) {
 }
 
 // TestNewServer_DispatchesEbusStandardServicesList pins end-to-end that
-// a tools/call for ebus.v1.ebus_standard.services.list is dispatched
+// a tools/call for ebus_v1_ebus_standard_services_list is dispatched
 // (not rejected as unknown) by a default NewServer instance.
 func TestNewServer_DispatchesEbusStandardServicesList(t *testing.T) {
 	reg := &testRegistry{entries: map[byte]registry.DeviceEntry{}}

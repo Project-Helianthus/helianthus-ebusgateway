@@ -254,7 +254,7 @@ func TestNormalizeInvokeResult_ConstraintFields(t *testing.T) {
 
 func TestSetBoilerConfigMutation_UnsupportedInReducedProfile(t *testing.T) {
 	queryType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "Query",
+		Name: "query",
 		Fields: graphqlgo.Fields{
 			"noop": &graphqlgo.Field{Type: graphqlgo.String},
 		},
@@ -271,7 +271,7 @@ func TestSetBoilerConfigMutation_UnsupportedInReducedProfile(t *testing.T) {
 	result := graphqlgo.Do(graphqlgo.Params{
 		Schema: schema,
 		RequestString: `mutation {
-			setBoilerConfig(field: "flowsetHcMaxC", value: "55") {
+			set_boiler_config(field: "flowsetHcMaxC", value: "55") {
 				success
 				error
 			}
@@ -285,16 +285,16 @@ func TestSetBoilerConfigMutation_UnsupportedInReducedProfile(t *testing.T) {
 	if !ok {
 		t.Fatalf("result data type = %T; want map", result.Data)
 	}
-	payload, ok := data["setBoilerConfig"].(map[string]any)
+	payload, ok := data["set_boiler_config"].(map[string]any)
 	if !ok {
-		t.Fatalf("setBoilerConfig payload type = %T; want map", data["setBoilerConfig"])
+		t.Fatalf("set_boiler_config payload type = %T; want map", data["set_boiler_config"])
 	}
 	if got, _ := payload["success"].(bool); got {
-		t.Fatalf("setBoilerConfig success = %v; want false", got)
+		t.Fatalf("set_boiler_config success = %v; want false", got)
 	}
 	errMessage, _ := payload["error"].(string)
 	if errMessage == "" {
-		t.Fatalf("setBoilerConfig error message empty")
+		t.Fatalf("set_boiler_config error message empty")
 	}
 }
 
@@ -315,21 +315,21 @@ func TestSetCircuitConfigMutation_Success(t *testing.T) {
 	}
 
 	data := executeMutation(t, buildMutationSchema(t, registry, invoker, nil, nil), `mutation {
-		setCircuitConfig(index: 1, field: "heatingCurve", value: "1.5") {
+		set_circuit_config(index: 1, field: "circuit_heating_curve_factor", value: "1.5") {
 			success
 			error
 		}
 	}`)
 
-	payload, ok := data["setCircuitConfig"].(map[string]any)
+	payload, ok := data["set_circuit_config"].(map[string]any)
 	if !ok {
-		t.Fatalf("setCircuitConfig payload type = %T; want map", data["setCircuitConfig"])
+		t.Fatalf("set_circuit_config payload type = %T; want map", data["set_circuit_config"])
 	}
 	if got, _ := payload["success"].(bool); !got {
-		t.Fatalf("setCircuitConfig success = %v; want true", got)
+		t.Fatalf("set_circuit_config success = %v; want true", got)
 	}
 	if got := payload["error"]; got != nil {
-		t.Fatalf("setCircuitConfig error = %#v; want nil", got)
+		t.Fatalf("set_circuit_config error = %#v; want nil", got)
 	}
 
 	if len(invoker.calls) != 2 {
@@ -380,22 +380,22 @@ func TestSetCircuitConfigMutation_FailsClosedBeforeSourceAdmission(t *testing.T)
 	data := executeMutation(t, buildMutationSchemaWithSourceProvider(t, registry, invoker, nil, nil, func() (byte, bool) {
 		return 0, false
 	}), `mutation {
-		setCircuitConfig(index: 1, field: "heatingCurve", value: "1.5") {
+		set_circuit_config(index: 1, field: "circuit_heating_curve_factor", value: "1.5") {
 			success
 			error
 		}
 	}`)
 
-	payload, ok := data["setCircuitConfig"].(map[string]any)
+	payload, ok := data["set_circuit_config"].(map[string]any)
 	if !ok {
-		t.Fatalf("setCircuitConfig payload type = %T; want map", data["setCircuitConfig"])
+		t.Fatalf("set_circuit_config payload type = %T; want map", data["set_circuit_config"])
 	}
 	if got, _ := payload["success"].(bool); got {
-		t.Fatalf("setCircuitConfig success = %v; want false", got)
+		t.Fatalf("set_circuit_config success = %v; want false", got)
 	}
 	errMessage, _ := payload["error"].(string)
 	if !strings.Contains(errMessage, "source selection not active") {
-		t.Fatalf("setCircuitConfig error = %q; want source selection not active", errMessage)
+		t.Fatalf("set_circuit_config error = %q; want source selection not active", errMessage)
 	}
 	if len(invoker.calls) != 0 {
 		t.Fatalf("invoker calls = %d; want 0 before source admission", len(invoker.calls))
@@ -422,12 +422,12 @@ func TestIssue851BuilderMutationProviderFencesDirectGraphQLInvoker(t *testing.T)
 	}
 
 	data := executeMutation(t, schema, `mutation {
-		setCircuitConfig(index: 1, field: "heatingCurve", value: "1.5") {
+		set_circuit_config(index: 1, field: "circuit_heating_curve_factor", value: "1.5") {
 			success
 			error
 		}
 	}`)
-	payload, _ := data["setCircuitConfig"].(map[string]any)
+	payload, _ := data["set_circuit_config"].(map[string]any)
 	if success, _ := payload["success"].(bool); success {
 		t.Fatalf("withdrawn GraphQL mutation = %#v, want unavailable", payload)
 	}
@@ -445,7 +445,7 @@ func TestApplyConfigMutation_FailsClosedBeforeSourceAdmission(t *testing.T) {
 	}
 	invoker := &mutationTestInvoker{}
 
-	result := ApplyConfigMutation(context.Background(), registry, invoker, 0, false, "heatingCurve", "1.5", circuitConfigFieldSpecs)
+	result := ApplyConfigMutation(context.Background(), registry, invoker, 0, false, "circuit_heating_curve_factor", "1.5", circuitConfigFieldSpecs)
 	if result.Success {
 		t.Fatalf("ApplyConfigMutation success = true; want false")
 	}
@@ -463,27 +463,27 @@ func TestSetBoilerConfigMutation_DelegatesToWriter(t *testing.T) {
 	}
 
 	data := executeMutation(t, buildMutationSchema(t, nil, nil, writer, nil), `mutation {
-		setBoilerConfig(field: "flowsetHcMaxC", value: "55") {
+		set_boiler_config(field: "flowsetHcMaxC", value: "55") {
 			success
 			error
 		}
 	}`)
 
-	payload, ok := data["setBoilerConfig"].(map[string]any)
+	payload, ok := data["set_boiler_config"].(map[string]any)
 	if !ok {
-		t.Fatalf("setBoilerConfig payload type = %T; want map", data["setBoilerConfig"])
+		t.Fatalf("set_boiler_config payload type = %T; want map", data["set_boiler_config"])
 	}
 	if got, _ := payload["success"].(bool); !got {
-		t.Fatalf("setBoilerConfig success = %v; want true", got)
+		t.Fatalf("set_boiler_config success = %v; want true", got)
 	}
 	if got := payload["error"]; got != nil {
-		t.Fatalf("setBoilerConfig error = %#v; want nil", got)
+		t.Fatalf("set_boiler_config error = %#v; want nil", got)
 	}
 	if len(writer.calls) != 1 {
 		t.Fatalf("writer calls = %d; want 1", len(writer.calls))
 	}
 	if writer.calls[0].field != "flowsetHcMaxC" || writer.calls[0].value != "55" {
-		t.Fatalf("writer call = %#v; want flowsetHcMaxC/55", writer.calls[0])
+		t.Fatalf("writer call = %#v; want flowset_hc_max_c/55", writer.calls[0])
 	}
 }
 
@@ -504,18 +504,18 @@ func TestSetSystemConfigMutation_Success(t *testing.T) {
 	}
 
 	data := executeMutation(t, buildMutationSchema(t, registry, invoker, nil, nil), `mutation {
-		setSystemConfig(field: "adaptiveHeatingCurve", value: "true") {
+		set_system_config(field: "adaptiveHeatingCurve", value: "true") {
 			success
 			error
 		}
 	}`)
 
-	payload, ok := data["setSystemConfig"].(map[string]any)
+	payload, ok := data["set_system_config"].(map[string]any)
 	if !ok {
-		t.Fatalf("setSystemConfig payload type = %T; want map", data["setSystemConfig"])
+		t.Fatalf("set_system_config payload type = %T; want map", data["set_system_config"])
 	}
 	if got, _ := payload["success"].(bool); !got {
-		t.Fatalf("setSystemConfig success = %v; want true", got)
+		t.Fatalf("set_system_config success = %v; want true", got)
 	}
 
 	if len(invoker.calls) != 2 {
@@ -557,18 +557,18 @@ func TestSetSystemConfigMutation_IntegerLikeFloatString(t *testing.T) {
 	}
 
 	data := executeMutation(t, buildMutationSchema(t, registry, invoker, nil, nil), `mutation {
-		setSystemConfig(field: "maxRoomHumidityPct", value: "55.0") {
+		set_system_config(field: "maxRoomHumidityPct", value: "55.0") {
 			success
 			error
 		}
 	}`)
 
-	payload, ok := data["setSystemConfig"].(map[string]any)
+	payload, ok := data["set_system_config"].(map[string]any)
 	if !ok {
-		t.Fatalf("setSystemConfig payload type = %T; want map", data["setSystemConfig"])
+		t.Fatalf("set_system_config payload type = %T; want map", data["set_system_config"])
 	}
 	if got, _ := payload["success"].(bool); !got {
-		t.Fatalf("setSystemConfig success = %v; want true", got)
+		t.Fatalf("set_system_config success = %v; want true", got)
 	}
 
 	if len(invoker.calls) != 2 {
@@ -593,21 +593,21 @@ func TestSetCircuitConfigMutation_ValidationFailures(t *testing.T) {
 		{
 			name: "unknown field",
 			query: `mutation {
-				setCircuitConfig(index: 1, field: "bogus", value: "1") { success error }
+				set_circuit_config(index: 1, field: "bogus", value: "1") { success error }
 			}`,
 			wantErrPart: "unknown circuit field",
 		},
 		{
 			name: "float out of range",
 			query: `mutation {
-				setCircuitConfig(index: 1, field: "heatingCurve", value: "8.1") { success error }
+				set_circuit_config(index: 1, field: "circuit_heating_curve_factor", value: "8.1") { success error }
 			}`,
 			wantErrPart: "out of range",
 		},
 		{
 			name: "invalid enum",
 			query: `mutation {
-				setCircuitConfig(index: 1, field: "roomTempControl", value: "manual") { success error }
+				set_circuit_config(index: 1, field: "circuit_room_temperature_influence_mode", value: "manual") { success error }
 			}`,
 			wantErrPart: "invalid enum value",
 		},
@@ -624,16 +624,16 @@ func TestSetCircuitConfigMutation_ValidationFailures(t *testing.T) {
 			invoker := &mutationTestInvoker{}
 			data := executeMutation(t, buildMutationSchema(t, registry, invoker, nil, nil), test.query)
 
-			payload, ok := data["setCircuitConfig"].(map[string]any)
+			payload, ok := data["set_circuit_config"].(map[string]any)
 			if !ok {
-				t.Fatalf("setCircuitConfig payload type = %T; want map", data["setCircuitConfig"])
+				t.Fatalf("set_circuit_config payload type = %T; want map", data["set_circuit_config"])
 			}
 			if got, _ := payload["success"].(bool); got {
-				t.Fatalf("setCircuitConfig success = %v; want false", got)
+				t.Fatalf("set_circuit_config success = %v; want false", got)
 			}
 			errMessage, _ := payload["error"].(string)
 			if !strings.Contains(errMessage, test.wantErrPart) {
-				t.Fatalf("setCircuitConfig error = %q; want contains %q", errMessage, test.wantErrPart)
+				t.Fatalf("set_circuit_config error = %q; want contains %q", errMessage, test.wantErrPart)
 			}
 			if len(invoker.calls) != 0 {
 				t.Fatalf("invoker calls = %d; want 0 for validation failure", len(invoker.calls))
@@ -652,14 +652,14 @@ func TestSetSystemConfigMutation_FailureScenarios(t *testing.T) {
 		}
 		invoker := &mutationTestInvoker{}
 		data := executeMutation(t, buildMutationSchema(t, registry, invoker, nil, nil), `mutation {
-			setSystemConfig(field: "adaptiveHeatingCurve", value: "maybe") { success error }
+			set_system_config(field: "adaptiveHeatingCurve", value: "maybe") { success error }
 		}`)
-		payload, _ := data["setSystemConfig"].(map[string]any)
+		payload, _ := data["set_system_config"].(map[string]any)
 		if got, _ := payload["success"].(bool); got {
-			t.Fatalf("setSystemConfig success = %v; want false", got)
+			t.Fatalf("set_system_config success = %v; want false", got)
 		}
 		if errMessage, _ := payload["error"].(string); !strings.Contains(errMessage, "invalid boolean value") {
-			t.Fatalf("setSystemConfig error = %q; want invalid boolean", errMessage)
+			t.Fatalf("set_system_config error = %q; want invalid boolean", errMessage)
 		}
 		if len(invoker.calls) != 0 {
 			t.Fatalf("invoker calls = %d; want 0", len(invoker.calls))
@@ -670,17 +670,17 @@ func TestSetSystemConfigMutation_FailureScenarios(t *testing.T) {
 		registry := mutationTestRegistry{}
 		invoker := &mutationTestInvoker{}
 		data := executeMutation(t, buildMutationSchema(t, registry, invoker, nil, nil), `mutation {
-			setSystemConfig(field: "adaptiveHeatingCurve", value: "true") { success error }
+			set_system_config(field: "adaptiveHeatingCurve", value: "true") { success error }
 		}`)
-		payload, _ := data["setSystemConfig"].(map[string]any)
+		payload, _ := data["set_system_config"].(map[string]any)
 		if got, _ := payload["success"].(bool); got {
-			t.Fatalf("setSystemConfig success = %v; want false", got)
+			t.Fatalf("set_system_config success = %v; want false", got)
 		}
 		// P9.5 pivot — error message changed from "controller BASV2
 		// not found" (identifier-coupled) to "no heating regulator at
 		// canonical eBUS target addresses" (identifier-free).
 		if errMessage, _ := payload["error"].(string); !strings.Contains(errMessage, "no heating regulator at canonical eBUS target addresses") {
-			t.Fatalf("setSystemConfig error = %q; want missing-regulator error", errMessage)
+			t.Fatalf("set_system_config error = %q; want missing-regulator error", errMessage)
 		}
 	})
 
@@ -693,14 +693,14 @@ func TestSetSystemConfigMutation_FailureScenarios(t *testing.T) {
 		}
 		invoker := &mutationTestInvoker{}
 		data := executeMutation(t, buildMutationSchema(t, registry, invoker, nil, nil), `mutation {
-			setSystemConfig(field: "adaptiveHeatingCurve", value: "true") { success error }
+			set_system_config(field: "adaptiveHeatingCurve", value: "true") { success error }
 		}`)
-		payload, _ := data["setSystemConfig"].(map[string]any)
+		payload, _ := data["set_system_config"].(map[string]any)
 		if got, _ := payload["success"].(bool); got {
-			t.Fatalf("setSystemConfig success = %v; want false", got)
+			t.Fatalf("set_system_config success = %v; want false", got)
 		}
 		if errMessage, _ := payload["error"].(string); !strings.Contains(errMessage, mutationGetExtRegisterMethod) {
-			t.Fatalf("setSystemConfig error = %q; want mention missing get method", errMessage)
+			t.Fatalf("set_system_config error = %q; want mention missing get method", errMessage)
 		}
 		if len(invoker.calls) != 0 {
 			t.Fatalf("invoker calls = %d; want 0", len(invoker.calls))
@@ -724,14 +724,14 @@ func TestSetCircuitConfigMutation_ReadbackConfirmFailure(t *testing.T) {
 		},
 	}
 	data := executeMutation(t, buildMutationSchema(t, registry, invoker, nil, nil), `mutation {
-		setCircuitConfig(index: 2, field: "heatingCurve", value: "1.5") { success error }
+		set_circuit_config(index: 2, field: "circuit_heating_curve_factor", value: "1.5") { success error }
 	}`)
-	payload, _ := data["setCircuitConfig"].(map[string]any)
+	payload, _ := data["set_circuit_config"].(map[string]any)
 	if got, _ := payload["success"].(bool); got {
-		t.Fatalf("setCircuitConfig success = %v; want false", got)
+		t.Fatalf("set_circuit_config success = %v; want false", got)
 	}
 	if errMessage, _ := payload["error"].(string); !strings.Contains(errMessage, "read-back mismatch") {
-		t.Fatalf("setCircuitConfig error = %q; want read-back mismatch", errMessage)
+		t.Fatalf("set_circuit_config error = %q; want read-back mismatch", errMessage)
 	}
 	if len(invoker.calls) != 2 {
 		t.Fatalf("invoker calls = %d; want 2", len(invoker.calls))
@@ -749,51 +749,51 @@ func TestSetZoneTimeProgramMutation_Success(t *testing.T) {
 	}
 
 	data := executeMutation(t, buildMutationSchema(t, nil, nil, nil, writer), `mutation {
-		setZoneTimeProgram(
+		set_zone_time_program(
 			zone: 2
 			weekday: 1
 			slots: "[{\"start_hour\":6,\"start_minute\":0,\"end_hour\":22,\"end_minute\":0,\"temperature_c\":21}]"
 		) {
 			success
 			error
-			slotResults {
-				slotIndex
+			slot_results {
+				slot_index
 				accepted
-				errorCode
-				errorDescription
+				error_code
+				error_description
 			}
 		}
 	}`)
 
-	payload, ok := data["setZoneTimeProgram"].(map[string]any)
+	payload, ok := data["set_zone_time_program"].(map[string]any)
 	if !ok {
-		t.Fatalf("setZoneTimeProgram payload type = %T; want map", data["setZoneTimeProgram"])
+		t.Fatalf("set_zone_time_program payload type = %T; want map", data["set_zone_time_program"])
 	}
 	if got, _ := payload["success"].(bool); !got {
-		t.Fatalf("setZoneTimeProgram success = %v; want true", got)
+		t.Fatalf("set_zone_time_program success = %v; want true", got)
 	}
 	if got := payload["error"]; got != nil {
-		t.Fatalf("setZoneTimeProgram error = %#v; want nil", got)
+		t.Fatalf("set_zone_time_program error = %#v; want nil", got)
 	}
-	slotResults, ok := payload["slotResults"].([]any)
+	slotResults, ok := payload["slot_results"].([]any)
 	if !ok || len(slotResults) != 1 {
-		t.Fatalf("setZoneTimeProgram slotResults = %#v; want one result", payload["slotResults"])
+		t.Fatalf("set_zone_time_program slot_results = %#v; want one result", payload["slot_results"])
 	}
 	firstSlot, ok := slotResults[0].(map[string]any)
 	if !ok {
-		t.Fatalf("setZoneTimeProgram first slot type = %T; want map", slotResults[0])
+		t.Fatalf("set_zone_time_program first slot type = %T; want map", slotResults[0])
 	}
-	if got, _ := firstSlot["slotIndex"].(int); got != 0 {
-		t.Fatalf("slotIndex = %v; want 0", got)
+	if got, _ := firstSlot["slot_index"].(int); got != 0 {
+		t.Fatalf("slot_index = %v; want 0", got)
 	}
 	if got, _ := firstSlot["accepted"].(bool); !got {
 		t.Fatalf("accepted = %v; want true", got)
 	}
-	if got, _ := firstSlot["errorCode"].(int); got != 0 {
-		t.Fatalf("errorCode = %v; want 0", got)
+	if got, _ := firstSlot["error_code"].(int); got != 0 {
+		t.Fatalf("error_code = %v; want 0", got)
 	}
-	if got := firstSlot["errorDescription"]; got != nil {
-		t.Fatalf("errorDescription = %#v; want nil", got)
+	if got := firstSlot["error_description"]; got != nil {
+		t.Fatalf("error_description = %#v; want nil", got)
 	}
 
 	if len(writer.zoneCalls) != 1 {
@@ -826,30 +826,30 @@ func TestSetDhwTimeProgramMutation_Success(t *testing.T) {
 	}
 
 	data := executeMutation(t, buildMutationSchema(t, nil, nil, nil, writer), `mutation {
-		setDhwTimeProgram(
+		set_dhw_time_program(
 			weekday: 5
 			slots: "[{\"start_hour\":5,\"start_minute\":30,\"end_hour\":7,\"end_minute\":0}]"
 		) {
 			success
 			error
-			slotResults {
-				slotIndex
+			slot_results {
+				slot_index
 				accepted
-				errorCode
-				errorDescription
+				error_code
+				error_description
 			}
 		}
 	}`)
 
-	payload, ok := data["setDhwTimeProgram"].(map[string]any)
+	payload, ok := data["set_dhw_time_program"].(map[string]any)
 	if !ok {
-		t.Fatalf("setDhwTimeProgram payload type = %T; want map", data["setDhwTimeProgram"])
+		t.Fatalf("set_dhw_time_program payload type = %T; want map", data["set_dhw_time_program"])
 	}
 	if got, _ := payload["success"].(bool); !got {
-		t.Fatalf("setDhwTimeProgram success = %v; want true", got)
+		t.Fatalf("set_dhw_time_program success = %v; want true", got)
 	}
 	if got := payload["error"]; got != nil {
-		t.Fatalf("setDhwTimeProgram error = %#v; want nil", got)
+		t.Fatalf("set_dhw_time_program error = %#v; want nil", got)
 	}
 	if len(writer.dhwCalls) != 1 {
 		t.Fatalf("dhw writer calls = %d; want 1", len(writer.dhwCalls))
@@ -874,29 +874,29 @@ func TestSetZoneTimeProgramMutation_InvalidJSON(t *testing.T) {
 	writer := &mockScheduleWriter{}
 
 	data := executeMutation(t, buildMutationSchema(t, nil, nil, nil, writer), `mutation {
-		setZoneTimeProgram(zone: 1, weekday: 2, slots: "not-json") {
+		set_zone_time_program(zone: 1, weekday: 2, slots: "not-json") {
 			success
 			error
-			slotResults {
-				slotIndex
+			slot_results {
+				slot_index
 			}
 		}
 	}`)
 
-	payload, ok := data["setZoneTimeProgram"].(map[string]any)
+	payload, ok := data["set_zone_time_program"].(map[string]any)
 	if !ok {
-		t.Fatalf("setZoneTimeProgram payload type = %T; want map", data["setZoneTimeProgram"])
+		t.Fatalf("set_zone_time_program payload type = %T; want map", data["set_zone_time_program"])
 	}
 	if got, _ := payload["success"].(bool); got {
-		t.Fatalf("setZoneTimeProgram success = %v; want false", got)
+		t.Fatalf("set_zone_time_program success = %v; want false", got)
 	}
 	errMessage, _ := payload["error"].(string)
 	if !strings.Contains(errMessage, "invalid slots JSON") {
-		t.Fatalf("setZoneTimeProgram error = %q; want invalid slots JSON", errMessage)
+		t.Fatalf("set_zone_time_program error = %q; want invalid slots JSON", errMessage)
 	}
-	slotResults, ok := payload["slotResults"].([]any)
+	slotResults, ok := payload["slot_results"].([]any)
 	if !ok || len(slotResults) != 0 {
-		t.Fatalf("setZoneTimeProgram slotResults = %#v; want empty list", payload["slotResults"])
+		t.Fatalf("set_zone_time_program slot_results = %#v; want empty list", payload["slot_results"])
 	}
 	if len(writer.zoneCalls) != 0 {
 		t.Fatalf("zone writer calls = %d; want 0", len(writer.zoneCalls))
@@ -910,7 +910,7 @@ func buildMutationSchema(t *testing.T, registry InvokeRegistry, invoker Invoker,
 func buildMutationSchemaWithSourceProvider(t *testing.T, registry InvokeRegistry, invoker Invoker, boilerWriter BoilerConfigWriter, scheduleWriter ScheduleWriter, sourceProvider func() (byte, bool)) graphqlgo.Schema {
 	t.Helper()
 	queryType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "Query",
+		Name: "query",
 		Fields: graphqlgo.Fields{
 			"noop": &graphqlgo.Field{Type: graphqlgo.String},
 		},

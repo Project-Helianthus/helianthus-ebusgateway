@@ -4,13 +4,13 @@ go 1.22.0
 
 require (
 	github.com/Project-Helianthus/helianthus-canbus v0.0.0-20260823184549-cb4c25a1a389
-	github.com/Project-Helianthus/helianthus-canbusreg v0.0.0-20261108095356-eab34ceb18f6
+	github.com/Project-Helianthus/helianthus-canbusreg v0.0.0-20261110201039-3b419da3d948
 	github.com/Project-Helianthus/helianthus-ebusgo v0.5.1-0.20261027131913-af6c5843b1e3
-	github.com/Project-Helianthus/helianthus-ebusreg v0.0.0-20261016182529-f90a3e330da7
-	github.com/Project-Helianthus/helianthus-eebusreg v0.1.36
+	github.com/Project-Helianthus/helianthus-ebusreg v0.0.0-20261110203305-65715b7b144a
+	github.com/Project-Helianthus/helianthus-eebusreg v0.1.37-0.20261111060854-871cb4c7c5c3
 	github.com/Project-Helianthus/helianthus-modbus v0.3.1-0.20261024182524-68e216993b83
-	github.com/Project-Helianthus/helianthus-modbusreg v0.6.8-0.20261105065500-54f710b7f329
-	github.com/Project-Helianthus/helianthus-semreg v0.0.0-20261107204616-b3e8cdfc4a60
+	github.com/Project-Helianthus/helianthus-modbusreg v0.6.8-0.20261110203814-7065f08cbd2c
+	github.com/Project-Helianthus/helianthus-semreg v0.0.0-20261110202930-5fe3a96fd9ae
 	github.com/grandcat/zeroconf v1.0.0
 	github.com/graphql-go/graphql v0.8.1
 	github.com/graphql-go/handler v0.2.4

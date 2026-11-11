@@ -52,7 +52,7 @@ func TestWatchSummaryQuery_SharedSnapshotPerOperation(t *testing.T) {
 		t.Fatalf("NewInvokeHandler error = %v", err)
 	}
 
-	request := `{"query":"{ first: watchSummary { lastUpdatedAt activationCounts { activeKeys } } second: watchSummary { lastUpdatedAt activationCounts { activeKeys } } }"}`
+	request := `{"query":"{ first: watch_summary { last_updated_at activation_counts { active_keys } } second: watch_summary { last_updated_at activation_counts { active_keys } } }"}`
 	req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(request))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -65,16 +65,16 @@ func TestWatchSummaryQuery_SharedSnapshotPerOperation(t *testing.T) {
 	var response struct {
 		Data struct {
 			First struct {
-				LastUpdatedAt    string `json:"lastUpdatedAt"`
+				LastUpdatedAt    string `json:"last_updated_at"`
 				ActivationCounts struct {
-					ActiveKeys int `json:"activeKeys"`
-				} `json:"activationCounts"`
+					ActiveKeys int `json:"active_keys"`
+				} `json:"activation_counts"`
 			} `json:"first"`
 			Second struct {
-				LastUpdatedAt    string `json:"lastUpdatedAt"`
+				LastUpdatedAt    string `json:"last_updated_at"`
 				ActivationCounts struct {
-					ActiveKeys int `json:"activeKeys"`
-				} `json:"activationCounts"`
+					ActiveKeys int `json:"active_keys"`
+				} `json:"activation_counts"`
 			} `json:"second"`
 		} `json:"data"`
 		Errors []any `json:"errors"`
@@ -90,14 +90,14 @@ func TestWatchSummaryQuery_SharedSnapshotPerOperation(t *testing.T) {
 	}
 	if response.Data.First.ActivationCounts.ActiveKeys != 1 || response.Data.Second.ActivationCounts.ActiveKeys != 1 {
 		t.Fatalf(
-			"watchSummary activationCounts.activeKeys = (%d,%d); want (1,1)",
+			"watch_summary activation_counts.active_keys = (%d,%d); want (1,1)",
 			response.Data.First.ActivationCounts.ActiveKeys,
 			response.Data.Second.ActivationCounts.ActiveKeys,
 		)
 	}
 	if response.Data.First.LastUpdatedAt != updatedAt.Format(time.RFC3339Nano) || response.Data.Second.LastUpdatedAt != updatedAt.Format(time.RFC3339Nano) {
 		t.Fatalf(
-			"watchSummary lastUpdatedAt = (%s,%s); want %s",
+			"watch_summary last_updated_at = (%s,%s); want %s",
 			response.Data.First.LastUpdatedAt,
 			response.Data.Second.LastUpdatedAt,
 			updatedAt.Format(time.RFC3339Nano),
@@ -116,7 +116,7 @@ func TestWatchSummaryQuery_DefaultZeroValueWhenProviderUnwired(t *testing.T) {
 	req := httptest.NewRequest(
 		http.MethodPost,
 		"/graphql",
-		strings.NewReader(`{"query":"{ watchSummary { inventory { totalEntries pinnedEntries evictableEntries } activationCounts { catalogDescriptors activeKeys } degraded { active shadowingEnabled pinnedBudgetDegraded compactorDegraded reasons } } }"}`),
+		strings.NewReader(`{"query":"{ watch_summary { inventory { total_entries pinned_entries evictable_entries } activation_counts { catalog_descriptors active_keys } degraded { active shadowing_enabled pinned_budget_degraded compactor_degraded reasons } } }"}`),
 	)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -130,22 +130,22 @@ func TestWatchSummaryQuery_DefaultZeroValueWhenProviderUnwired(t *testing.T) {
 		Data struct {
 			WatchSummary struct {
 				Inventory struct {
-					TotalEntries     int `json:"totalEntries"`
-					PinnedEntries    int `json:"pinnedEntries"`
-					EvictableEntries int `json:"evictableEntries"`
+					TotalEntries     int `json:"total_entries"`
+					PinnedEntries    int `json:"pinned_entries"`
+					EvictableEntries int `json:"evictable_entries"`
 				} `json:"inventory"`
 				ActivationCounts struct {
-					CatalogDescriptors int `json:"catalogDescriptors"`
-					ActiveKeys         int `json:"activeKeys"`
-				} `json:"activationCounts"`
+					CatalogDescriptors int `json:"catalog_descriptors"`
+					ActiveKeys         int `json:"active_keys"`
+				} `json:"activation_counts"`
 				Degraded struct {
 					Active               bool     `json:"active"`
-					ShadowingEnabled     bool     `json:"shadowingEnabled"`
-					PinnedBudgetDegraded bool     `json:"pinnedBudgetDegraded"`
-					CompactorDegraded    bool     `json:"compactorDegraded"`
+					ShadowingEnabled     bool     `json:"shadowing_enabled"`
+					PinnedBudgetDegraded bool     `json:"pinned_budget_degraded"`
+					CompactorDegraded    bool     `json:"compactor_degraded"`
 					Reasons              []string `json:"reasons"`
 				} `json:"degraded"`
-			} `json:"watchSummary"`
+			} `json:"watch_summary"`
 		} `json:"data"`
 		Errors []any `json:"errors"`
 	}
@@ -158,19 +158,19 @@ func TestWatchSummaryQuery_DefaultZeroValueWhenProviderUnwired(t *testing.T) {
 	if response.Data.WatchSummary.Inventory.TotalEntries != 0 ||
 		response.Data.WatchSummary.Inventory.PinnedEntries != 0 ||
 		response.Data.WatchSummary.Inventory.EvictableEntries != 0 {
-		t.Fatalf("watchSummary.inventory = %+v; want zero values", response.Data.WatchSummary.Inventory)
+		t.Fatalf("watch_summary.inventory = %+v; want zero values", response.Data.WatchSummary.Inventory)
 	}
 	if response.Data.WatchSummary.ActivationCounts.CatalogDescriptors != 0 ||
 		response.Data.WatchSummary.ActivationCounts.ActiveKeys != 0 {
-		t.Fatalf("watchSummary.activationCounts = %+v; want zero values", response.Data.WatchSummary.ActivationCounts)
+		t.Fatalf("watch_summary.activation_counts = %+v; want zero values", response.Data.WatchSummary.ActivationCounts)
 	}
 	if response.Data.WatchSummary.Degraded.Active {
-		t.Fatalf("watchSummary.degraded.active = true; want false")
+		t.Fatalf("watch_summary.degraded.active = true; want false")
 	}
 	if response.Data.WatchSummary.Degraded.ShadowingEnabled {
-		t.Fatalf("watchSummary.degraded.shadowingEnabled = true; want false for unwired static provider")
+		t.Fatalf("watch_summary.degraded.shadowing_enabled = true; want false for unwired static provider")
 	}
 	if len(response.Data.WatchSummary.Degraded.Reasons) != 0 {
-		t.Fatalf("watchSummary.degraded.reasons = %v; want empty", response.Data.WatchSummary.Degraded.Reasons)
+		t.Fatalf("watch_summary.degraded.reasons = %v; want empty", response.Data.WatchSummary.Degraded.Reasons)
 	}
 }

@@ -676,8 +676,8 @@ func (a *mcpConfigWriterAdapter) M8CommandRoutingState() (m8sourcestate.CommandR
 		return m8sourcestate.CommandRoutingFragment{}, fmt.Errorf("config writer unavailable")
 	}
 	return m8sourcestate.CommandRoutingFragment{Routes: []m8sourcestate.CommandRoute{
-		{SemanticPath: "/mcp/ebus.v1.semantic.boiler_status.set_config", Source: "ebus", Available: true},
-		{SemanticPath: "/mcp/ebus.v1.semantic.system.set_config", Source: "ebus", Available: true},
+		{SemanticPath: "/mcp/ebus_v1_semantic_boiler_status_set_config", Source: "ebus", Available: true},
+		{SemanticPath: "/mcp/ebus_v1_semantic_system_set_config", Source: "ebus", Available: true},
 	}}, nil
 }
 
@@ -686,8 +686,8 @@ func (poller *vaillantSemanticPoller) M8CommandRoutingState() (m8sourcestate.Com
 		return m8sourcestate.CommandRoutingFragment{}, fmt.Errorf("schedule writer unavailable")
 	}
 	return m8sourcestate.CommandRoutingFragment{Routes: []m8sourcestate.CommandRoute{
-		{SemanticPath: "/mcp/ebus.v1.semantic.schedules.set_dhw_time_program", Source: "ebus", Available: true},
-		{SemanticPath: "/mcp/ebus.v1.semantic.schedules.set_zone_time_program", Source: "ebus", Available: true},
+		{SemanticPath: "/mcp/ebus_v1_semantic_schedules_set_dhw_time_program", Source: "ebus", Available: true},
+		{SemanticPath: "/mcp/ebus_v1_semantic_schedules_set_zone_time_program", Source: "ebus", Available: true},
 	}}, nil
 }
 

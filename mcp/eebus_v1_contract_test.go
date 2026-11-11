@@ -21,15 +21,15 @@ import (
 )
 
 const (
-	msp06RuntimeStatusTool = "eebus.v1.runtime.status.get"
-	msp06ServicesListTool  = "eebus.v1.services.list"
-	msp06ServicesGetTool   = "eebus.v1.services.get"
-	msp06SessionsListTool  = "eebus.v1.sessions.list"
-	msp06SessionsGetTool   = "eebus.v1.sessions.get"
-	msp06TopologyGetTool   = "eebus.v1.topology.get"
-	msp06SnapshotCapture   = "eebus.v1.snapshot.capture"
-	msp06SnapshotDrop      = "eebus.v1.snapshot.drop"
-	msp06PairingStatusTool = "eebus.v1.pairing.status.get"
+	msp06RuntimeStatusTool = "eebus_v1_runtime_status_get"
+	msp06ServicesListTool  = "eebus_v1_services_list"
+	msp06ServicesGetTool   = "eebus_v1_services_get"
+	msp06SessionsListTool  = "eebus_v1_sessions_list"
+	msp06SessionsGetTool   = "eebus_v1_sessions_get"
+	msp06TopologyGetTool   = "eebus_v1_topology_get"
+	msp06SnapshotCapture   = "eebus_v1_snapshot_capture"
+	msp06SnapshotDrop      = "eebus_v1_snapshot_drop"
+	msp06PairingStatusTool = "eebus_v1_pairing_status_get"
 )
 
 var (
@@ -135,7 +135,7 @@ func msp06Call(t *testing.T, handler http.Handler, tool string, arguments map[st
 
 func msp06CallWithHeaders(t *testing.T, handler http.Handler, tool string, arguments map[string]any, headers map[string]string) msp06CallResult {
 	t.Helper()
-	params, err := json.Marshal(map[string]any{"name": tool, "arguments": arguments})
+	params, err := json.Marshal(map[string]any{"name": strings.ReplaceAll(tool, ".", "_"), "arguments": arguments})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -337,7 +337,7 @@ func msp06AssertErrorMode(t *testing.T, result msp06CallResult, tool, scope, mod
 
 func TestMSP06ToolInventoryAndSchemasRemainClosed(t *testing.T) {
 	server, _ := msp06TestServer(t, &msp06Provider{snapshot: msp06Snapshot(t, "runtime-a")})
-	got := msp06NamesWithPrefix(msp06Tools(t, server), "eebus.")
+	got := msp06NamesWithPrefix(msp06Tools(t, server), "eebus_")
 	want := append([]string(nil), msp06ToolNames...)
 	sort.Strings(want)
 	if !reflect.DeepEqual(got, want) {
@@ -345,7 +345,7 @@ func TestMSP06ToolInventoryAndSchemasRemainClosed(t *testing.T) {
 	}
 	for _, tool := range msp06Tools(t, server) {
 		name, _ := tool["name"].(string)
-		if !strings.HasPrefix(name, "eebus.") {
+		if !strings.HasPrefix(name, "eebus_") {
 			continue
 		}
 		schema := msp06Map(t, tool["inputSchema"], name+".inputSchema")
@@ -422,7 +422,7 @@ func TestIssue743SaturatedPublicWorkersCannotStarveOperatorBoundary(t *testing.T
 	for range eebusV1MaxLiveWorkers {
 		go func() {
 			request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(
-				`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"eebus.v1.topology.get","arguments":{}}}`,
+				`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"eebus_v1_topology_get","arguments":{}}}`,
 			))
 			server.Handler().ServeHTTP(httptest.NewRecorder(), request)
 			publicDone <- struct{}{}

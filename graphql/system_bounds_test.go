@@ -165,7 +165,7 @@ func TestSystemQueryExposesDHWBivalenceBound(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewHandler error = %v", err)
 			}
-			query := `{ system { config { dhwBivalencePoint dhwBivalencePointBound { minC maxC source reason profile narrowedOnly } dhw_bivalence_point_bound { min_c max_c source narrowed_only } } } }`
+			query := `{ system { config { dhw_bivalence_point dhw_bivalence_point_bound { min_c max_c source reason profile narrowed_only } alias_bound: dhw_bivalence_point_bound { min_c max_c source narrowed_only } } } }`
 			body, _ := json.Marshal(map[string]string{"query": query})
 			req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(string(body)))
 			req.Header.Set("Content-Type", "application/json")
@@ -178,21 +178,21 @@ func TestSystemQueryExposesDHWBivalenceBound(t *testing.T) {
 				Data struct {
 					System struct {
 						Config struct {
-							DhwBivalencePoint      float64 `json:"dhwBivalencePoint"`
+							DhwBivalencePoint      float64 `json:"dhw_bivalence_point"`
 							DhwBivalencePointBound struct {
-								NarrowedOnly *bool   `json:"narrowedOnly"`
-								MinC         float64 `json:"minC"`
-								MaxC         float64 `json:"maxC"`
+								NarrowedOnly *bool   `json:"narrowed_only"`
+								MinC         float64 `json:"min_c"`
+								MaxC         float64 `json:"max_c"`
 								Source       string  `json:"source"`
 								Reason       *string `json:"reason"`
 								Profile      *string `json:"profile"`
-							} `json:"dhwBivalencePointBound"`
+							} `json:"dhw_bivalence_point_bound"`
 							Snake struct {
 								NarrowedOnly *bool   `json:"narrowed_only"`
 								MinC         float64 `json:"min_c"`
 								MaxC         float64 `json:"max_c"`
 								Source       string  `json:"source"`
-							} `json:"dhw_bivalence_point_bound"`
+							} `json:"alias_bound"`
 						} `json:"config"`
 					} `json:"system"`
 				} `json:"data"`
@@ -203,7 +203,7 @@ func TestSystemQueryExposesDHWBivalenceBound(t *testing.T) {
 			}
 			bound := response.Data.System.Config.DhwBivalencePointBound
 			if bound.MinC != active.MinC || bound.MaxC != active.MaxC || bound.Source != active.Source || bound.NarrowedOnly == nil || *bound.NarrowedOnly != active.NarrowedOnly {
-				t.Fatalf("dhwBivalencePointBound = %+v; want %+v", bound, active)
+				t.Fatalf("dhw_bivalence_point_bound = %+v; want %+v", bound, active)
 			}
 			if (active.Reason == "" && bound.Reason != nil) || (active.Reason != "" && (bound.Reason == nil || *bound.Reason != active.Reason)) ||
 				(active.Profile == "" && bound.Profile != nil) || (active.Profile != "" && (bound.Profile == nil || *bound.Profile != active.Profile)) {
@@ -228,9 +228,9 @@ func TestNumericConfigNonFiniteRejectedBeforeInvoke(t *testing.T) {
 		name, mutation string
 		specs          map[string]configFieldSpec
 	}{
-		{"system", "setSystemConfig", systemConfigFieldSpecs},
-		{"circuit", "setCircuitConfig", circuitConfigFieldSpecs},
-		{"zone", "setZoneConfig", zoneConfigFieldSpecs},
+		{"system", "set_system_config", systemConfigFieldSpecs},
+		{"circuit", "set_circuit_config", circuitConfigFieldSpecs},
+		{"zone", "set_zone_config", zoneConfigFieldSpecs},
 	} {
 		for field, spec := range scope.specs {
 			if spec.valueType != configValueFloat32 && spec.valueType != configValueUint16 {

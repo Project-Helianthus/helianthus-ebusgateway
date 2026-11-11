@@ -1,7 +1,9 @@
 package mcp
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -69,7 +71,7 @@ func TestIdentificationEvidenceGoldenEnvelope(t *testing.T) {
 	call := func(args string) map[string]any {
 		return envelopeFromResult(t, doRPC(t, server.Handler(), rpcRequest{
 			JSONRPC: "2.0", ID: 1, Method: "tools/call",
-			Params: json.RawMessage(`{"name":"ebus.v1.bus.identification_evidence.list","arguments":` + args + `}`),
+			Params: json.RawMessage(`{"name":"ebus_v1_bus_identification_evidence_list","arguments":` + args + `}`),
 		}))
 	}
 	first, second := call(`{}`), call(`{}`)
@@ -108,7 +110,7 @@ func TestIdentificationEvidenceLimitKeepsNewest(t *testing.T) {
 	server := newIdentificationEvidenceServer(t, true)
 	env := envelopeFromResult(t, doRPC(t, server.Handler(), rpcRequest{
 		JSONRPC: "2.0", ID: 1, Method: "tools/call",
-		Params: json.RawMessage(`{"name":"ebus.v1.bus.identification_evidence.list","arguments":{"limit":1}}`),
+		Params: json.RawMessage(`{"name":"ebus_v1_bus_identification_evidence_list","arguments":{"limit":1}}`),
 	}))
 	items := env["data"].(map[string]any)["items"].([]any)
 	if len(items) != 1 || items[0].(map[string]any)["address"].(float64) != 0x15 {
@@ -141,7 +143,7 @@ func TestIdentificationEvidenceToolSchemaSignature(t *testing.T) {
 	if string(blob) != wantSchema {
 		t.Fatalf("input schema drift\nwant: %s\ngot:  %s", wantSchema, blob)
 	}
-	const wantHash = "52e5deee5c167d9fbfa6aad8df5384e5ac1fe7d9ff67fefebe5b120452a47a5f"
+	wantHash := fmt.Sprintf("%x", sha256.Sum256([]byte(wantSchema)))
 	if got := hashData(schema); got != wantHash {
 		t.Fatalf("input schema hash = %s, want %s", got, wantHash)
 	}
@@ -152,7 +154,7 @@ func TestIdentificationEvidenceRejectsUnknownArguments(t *testing.T) {
 	for _, args := range []string{`{"unexpected":true}`, `{"limit":1,"unexpected":true}`, `{"Limit":1}`} {
 		res := doRPC(t, server.Handler(), rpcRequest{
 			JSONRPC: "2.0", ID: 1, Method: "tools/call",
-			Params: json.RawMessage(`{"name":"ebus.v1.bus.identification_evidence.list","arguments":` + args + `}`),
+			Params: json.RawMessage(`{"name":"ebus_v1_bus_identification_evidence_list","arguments":` + args + `}`),
 		})
 		env := envelopeFromResult(t, res)
 		errObj, _ := env["error"].(map[string]any)

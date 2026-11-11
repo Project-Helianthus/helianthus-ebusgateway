@@ -298,7 +298,7 @@ func TestSystemConfigNonFiniteRejectedBeforeBusIO(t *testing.T) {
 						if err != nil {
 							t.Fatal(err)
 						}
-						query := fmt.Sprintf(`mutation { setSystemConfig(field: %q, value: %q) { success error } }`, field, value)
+						query := fmt.Sprintf(`mutation { set_system_config(field: %q, value: %q) { success error } }`, field, value)
 						body, err := json.Marshal(map[string]string{"query": query})
 						if err != nil {
 							t.Fatal(err)
@@ -309,7 +309,7 @@ func TestSystemConfigNonFiniteRejectedBeforeBusIO(t *testing.T) {
 						handler.ServeHTTP(rec, req)
 						var response struct {
 							Data struct {
-								Result graphql.ConfigMutationResult `json:"setSystemConfig"`
+								Result graphql.ConfigMutationResult `json:"set_system_config"`
 							} `json:"data"`
 							Errors []any `json:"errors"`
 						}

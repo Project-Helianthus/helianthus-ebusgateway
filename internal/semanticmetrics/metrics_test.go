@@ -188,14 +188,14 @@ func TestM36Quantities(t *testing.T) {
 	tests := []struct{ field, name, unit, number, want string }{
 		{"thermal.demand.level", "helianthus_thermal_demand_ratio", "unit.percent", "25", "0.25"},
 		{"thermal.demand.level", "helianthus_thermal_demand_ratio", "unit.percent", "57", "0.57"},
-		{"thermal.measurement.air_temperature", "helianthus_thermal_air_temperature_celsius", "unit.celsius", "-12", "-12"},
+		{"thermal.measurement.air_temperature", "helianthus_thermal_air_temperature", "unit.celsius", "-12", "-12"},
 		{"thermal.measurement.flow_rate", "helianthus_thermal_flow_cubic_meters_per_second", "unit.litre_per_minute", "60", "0.001"},
 		{"thermal.measurement.flow_rate", "helianthus_thermal_flow_cubic_meters_per_second", "unit.litre_per_minute", "7", "0.00011666666666666667"},
-		{"thermal.measurement.humidity_relative", "helianthus_thermal_relative_humidity_ratio", "unit.percent", "50", "0.5"},
+		{"thermal.measurement.humidity", "helianthus_thermal_relative_humidity_ratio", "unit.percent", "50", "0.5"},
 		{"thermal.measurement.power", "helianthus_thermal_power_watts", "unit.watt", "-12", "-12"},
 		{"thermal.measurement.water_temperature", "helianthus_thermal_water_temperature_celsius", "unit.celsius", "42", "42"},
-		{"thermal.setpoint.dhw_temperature", "helianthus_thermal_dhw_setpoint_celsius", "unit.celsius", "55", "55"},
-		{"thermal.setpoint.temperature", "helianthus_thermal_setpoint_celsius", "unit.celsius", "20", "20"},
+		{"thermal.setpoint.dhw_temperature_setpoint", "helianthus_thermal_dhw_setpoint_celsius", "unit.celsius", "55", "55"},
+		{"thermal.setpoint.temperature_setpoint", "helianthus_thermal_temperature_setpoint", "unit.celsius", "20", "20"},
 		{"infrastructure.ac.active_power", "helianthus_infrastructure_ac_active_power_watts", "unit.watt", "-12", "-12"},
 		{"infrastructure.ac.apparent_power", "helianthus_infrastructure_ac_apparent_power_volt_amperes", "unit.volt_ampere", "12", "12"},
 		{"infrastructure.ac.current", "helianthus_infrastructure_ac_current_amperes", "unit.ampere", "12", "12"},
@@ -217,7 +217,11 @@ func TestM36Quantities(t *testing.T) {
 			v := m36View(t, s)
 			before := m36JSON(t, v)
 			text := m36Render(t, v, r)
-			if !strings.Contains(text, fmt.Sprintf("%s{slot=\"0\"} %s\n", tt.name, tt.want)) || !strings.Contains(text, "# TYPE "+tt.name+" gauge\n") || !strings.Contains(text, "# HELP "+tt.name+" "+tt.field+" (") || !m36Available(text, r.Bindings[0], semreg.DefinitionID(tt.field), 1) {
+			labels := `slot="0"`
+			if tt.name == "helianthus_thermal_air_temperature" || tt.name == "helianthus_thermal_temperature_setpoint" {
+				labels += `,unit="celsius"`
+			}
+			if !strings.Contains(text, fmt.Sprintf("%s{%s} %s\n", tt.name, labels, tt.want)) || !strings.Contains(text, "# TYPE "+tt.name+" gauge\n") || !strings.Contains(text, "# HELP "+tt.name+" "+tt.field+" (") || !m36Available(text, r.Bindings[0], semreg.DefinitionID(tt.field), 1) {
 				t.Fatal(text)
 			}
 			if text != m36Render(t, v, r) || !reflect.DeepEqual(before, m36JSON(t, v)) {
@@ -327,7 +331,7 @@ func TestM36Unavailable(t *testing.T) {
 	if text := m36Render(t, withheld, r); !m36Available(text, r.Bindings[0], r.Bindings[0].Fields[0], 0) {
 		t.Fatal(text)
 	}
-	if text := m36Render(t, m36View(t, s), r); !strings.Contains(text, "helianthus_thermal_air_temperature_celsius{slot=\"0\"} 0\n") {
+	if text := m36Render(t, m36View(t, s), r); !strings.Contains(text, "helianthus_thermal_air_temperature{slot=\"0\",unit=\"celsius\"} 0\n") {
 		t.Fatal("known zero omitted")
 	}
 }

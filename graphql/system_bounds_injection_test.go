@@ -20,7 +20,7 @@ func TestM13InjectedSystemConfigBound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	query := `{ system { config { dhwBivalencePointBound { minC maxC source reason profile narrowedOnly } dhw_bivalence_point_bound { min_c max_c source reason profile narrowed_only } } } }`
+	query := `{ system { config { dhw_bivalence_point_bound { min_c max_c source reason profile narrowed_only } dhw_bivalence_point_bound { min_c max_c source reason profile narrowed_only } } } }`
 	for _, bound := range []*ConfigBound{
 		nil,
 		{MinC: -7, MaxC: 13, Source: "synthetic", Reason: "fixture", Profile: "family-a", NarrowedOnly: true},
@@ -32,14 +32,14 @@ func TestM13InjectedSystemConfigBound(t *testing.T) {
 			t.Fatal(result.Errors)
 		}
 		config := result.Data.(map[string]interface{})["system"].(map[string]interface{})["config"].(map[string]interface{})
-		for _, alias := range []string{"dhwBivalencePointBound", "dhw_bivalence_point_bound"} {
+		for _, alias := range []string{"dhw_bivalence_point_bound", "dhw_bivalence_point_bound"} {
 			if bound == nil {
 				if config[alias] != nil {
 					t.Fatalf("absent bound: %v", config)
 				}
 				continue
 			}
-			min, max, narrowed := "minC", "maxC", "narrowedOnly"
+			min, max, narrowed := "min_c", "max_c", "narrowed_only"
 			if alias == "dhw_bivalence_point_bound" {
 				min, max, narrowed = "min_c", "max_c", "narrowed_only"
 			}
@@ -80,13 +80,13 @@ func TestM13SystemConfigBoundMutationAdmission(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data := executeMutation(t, schema, `mutation { setSystemConfig(field: "dhwBivalencePointC", value: "5") { success error } }`)
-	result := data["setSystemConfig"].(map[string]interface{})
+	data := executeMutation(t, schema, `mutation { set_system_config(field: "dhwBivalencePointC", value: "5") { success error } }`)
+	result := data["set_system_config"].(map[string]interface{})
 	if result["success"] != false || !strings.Contains(result["error"].(string), "[-2, 4]") || len(invoker.calls) != 0 {
 		t.Fatalf("result=%v calls=%d", data, len(invoker.calls))
 	}
 	provider.SetSystem(&SystemStatus{})
-	missing := executeMutation(t, schema, `mutation { setSystemConfig(field: "dhwBivalencePointC", value: "0") { success error } }`)["setSystemConfig"].(map[string]interface{})
+	missing := executeMutation(t, schema, `mutation { set_system_config(field: "dhwBivalencePointC", value: "0") { success error } }`)["set_system_config"].(map[string]interface{})
 	if missing["success"] != false || !strings.Contains(missing["error"].(string), "missing resolved driver bound") || len(invoker.calls) != 0 {
 		t.Fatalf("missing bound: %v calls=%d", missing, len(invoker.calls))
 	}
@@ -101,7 +101,7 @@ func TestM13SystemConfigBoundMutationAdmission(t *testing.T) {
 func buildMutationSchemaForM13(t *testing.T, reg InvokeRegistry, invoker Invoker, bound func() *ConfigBound) graphqlgo.Schema {
 	t.Helper()
 	schema, err := graphqlgo.NewSchema(graphqlgo.SchemaConfig{
-		Query:    graphqlgo.NewObject(graphqlgo.ObjectConfig{Name: "Query", Fields: graphqlgo.Fields{"ok": &graphqlgo.Field{Type: graphqlgo.Boolean}}}),
+		Query:    graphqlgo.NewObject(graphqlgo.ObjectConfig{Name: "query", Fields: graphqlgo.Fields{"ok": &graphqlgo.Field{Type: graphqlgo.Boolean}}}),
 		Mutation: buildMutationType(reg, invoker, nil, nil, nil, func() (byte, bool) { return 0x7F, true }, bound),
 	})
 	if err != nil {
@@ -206,7 +206,7 @@ func TestInjectedBoundRefusesDifferentRoutedController(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result := executeMutation(t, schema, `mutation { setSystemConfig(field: "dhwBivalencePointC", value: "40") { success error } }`)["setSystemConfig"].(map[string]interface{})
+	result := executeMutation(t, schema, `mutation { set_system_config(field: "dhwBivalencePointC", value: "40") { success error } }`)["set_system_config"].(map[string]interface{})
 	if result["success"] != false || !strings.Contains(result["error"].(string), "does not match routed controller") || len(invoker.calls) != 0 {
 		t.Fatalf("result=%v calls=%d", result, len(invoker.calls))
 	}
@@ -237,7 +237,7 @@ func TestInjectedBoundRefusesSameAddressIdentityReplacement(t *testing.T) {
 	reg.entries[0x15] = replacement
 	invoker := &mutationTestInvoker{}
 	schema := buildMutationSchemaForM13(t, reg, invoker, func() *ConfigBound { return provider.System().Config.DhwBivalenceBound })
-	result := executeMutation(t, schema, `mutation { setSystemConfig(field: "dhwBivalencePointC", value: "40") { success error } }`)["setSystemConfig"].(map[string]interface{})
+	result := executeMutation(t, schema, `mutation { set_system_config(field: "dhwBivalencePointC", value: "40") { success error } }`)["set_system_config"].(map[string]interface{})
 	if result["success"] != false || !strings.Contains(result["error"].(string), "identity or qualification changed") || len(invoker.calls) != 0 {
 		t.Fatalf("result=%v calls=%d", result, len(invoker.calls))
 	}

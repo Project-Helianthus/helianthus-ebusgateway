@@ -1,7 +1,7 @@
 package main
 
-// Issue #1375: while ebus.primary is in BACKOFF, helianthus.runtime.list,
-// helianthus.runtime.get and the Portal driver row publish the recovery
+// Issue #1375: while ebus.primary is in BACKOFF, helianthus_runtime_list,
+// helianthus_runtime_get and the Portal driver row publish the recovery
 // schedule: the number of the attempt scheduled, when it is due, the closed
 // class of the failure that scheduled it and that failure's address-free cause.
 // Once the driver runs again every surface drops it.
@@ -70,7 +70,7 @@ func (pause *issue1375Pause) next(t *testing.T, want int, logs *issue1367Logs) {
 
 func (pause *issue1375Pause) release() { pause.resume <- struct{}{} }
 
-// issue1375Drivers reads helianthus.runtime.list and helianthus.runtime.get over
+// issue1375Drivers reads helianthus_runtime_list and helianthus_runtime_get over
 // the ordinary MCP endpoint and returns the ebus.primary driver object of each.
 // Every other listed driver must be free of the member, and each reading must
 // be the contract's driver object.

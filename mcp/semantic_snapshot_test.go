@@ -301,7 +301,7 @@ func m10RPC(t *testing.T, ctx context.Context, s *mcp.Server, method, params str
 }
 func m10Call(t *testing.T, ctx context.Context, s *mcp.Server, args string) map[string]any {
 	t.Helper()
-	result := m10RPC(t, ctx, s, "tools/call", `{"name":"semantic.v1.snapshot.get","arguments":`+args+`}`)
+	result := m10RPC(t, ctx, s, "tools/call", `{"name":"semantic_v1_snapshot_get","arguments":`+args+`}`)
 	var env map[string]any
 	if err := json.Unmarshal([]byte(result["content"].([]any)[0].(map[string]any)["text"].(string)), &env); err != nil {
 		t.Fatal(err)
@@ -449,7 +449,7 @@ func TestM10FivePackM09Parity(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			q := `{semanticSnapshot(assetIds:["asset:test","asset:missing"]) ` + m10Selection(schema.QueryType().Fields()["semanticSnapshot"].Type, 0) + `}`
+			q := `{semantic_snapshot(asset_ids:["asset:test","asset:missing"]) ` + m10Selection(schema.QueryType().Fields()["semantic_snapshot"].Type, 0) + `}`
 			h, err := gql.NewHandler(b)
 			if err != nil {
 				t.Fatal(err)
@@ -465,30 +465,8 @@ func TestM10FivePackM09Parity(t *testing.T) {
 			if result["errors"] != nil {
 				t.Fatal(result)
 			}
-			m10Contains(t, result["data"].(map[string]any)["semanticSnapshot"], m10Camel(env["data"]))
+			m10Contains(t, result["data"].(map[string]any)["semantic_snapshot"], env["data"])
 		})
-	}
-}
-func m10Camel(v any) any {
-	switch x := v.(type) {
-	case map[string]any:
-		out := map[string]any{}
-		for k, v := range x {
-			parts := strings.Split(k, "_")
-			for i := 1; i < len(parts); i++ {
-				parts[i] = strings.ToUpper(parts[i][:1]) + parts[i][1:]
-			}
-			out[strings.Join(parts, "")] = m10Camel(v)
-		}
-		return out
-	case []any:
-		out := make([]any, len(x))
-		for i, v := range x {
-			out[i] = m10Camel(v)
-		}
-		return out
-	default:
-		return v
 	}
 }
 func TestM10ProviderFailuresAndDeadline(t *testing.T) {

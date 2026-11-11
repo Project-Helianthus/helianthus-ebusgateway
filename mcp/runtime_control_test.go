@@ -355,7 +355,7 @@ func TestRuntimeControlToolsGolden(t *testing.T) {
 	tools := rcToolsList(t, server.Handler())
 	first := rcToolIndex(tools, RuntimeControlListTool)
 	if first < 0 {
-		t.Fatal("helianthus.runtime.list is not listed")
+		t.Fatal("helianthus_runtime_list is not listed")
 	}
 	defaults := len(defaultServerTools())
 	if first < defaults {
@@ -451,7 +451,7 @@ func rcOutputCases() []rcOutputCase {
 		{name: "list_rejects_member", tool: RuntimeControlListTool, args: `{"consistency":"LIVE"}`, service: "never consulted"},
 		{name: "list_rejects_null", tool: RuntimeControlListTool, args: `null`, service: "never consulted"},
 		{name: "list_rejects_array", tool: RuntimeControlListTool, args: `[]`, service: "never consulted"},
-		{name: "list_rejects_duplicate_arguments", tool: RuntimeControlListTool, params: `{"name":"helianthus.runtime.list","arguments":{},"arguments":{}}`, service: "never consulted"},
+		{name: "list_rejects_duplicate_arguments", tool: RuntimeControlListTool, params: `{"name":"helianthus_runtime_list","arguments":{},"arguments":{}}`, service: "never consulted"},
 		{name: "list_service_unavailable", tool: RuntimeControlListTool, args: `{}`, nilSvc: true, service: "no control service composed"},
 		{name: "get_driver", tool: RuntimeControlGetTool, args: `{"DriverID":"ebus.primary"}`, service: "one cached entry; its revision is the catalog revision"},
 		{name: "get_unregistered", tool: RuntimeControlGetTool, args: `{"DriverID":"ebus.secondary"}`, service: "NOT_FOUND row 2"},
@@ -730,8 +730,8 @@ func TestRuntimeControlStrictDecoding(t *testing.T) {
 	// Duplicate members anywhere in the call parameters are a tool-level
 	// refusal, never the generic -32602, and never reach the service.
 	for _, params := range []string{
-		`{"name":"helianthus.runtime.start","arguments":` + rcMutation + `,"arguments":{"DriverID":"ebus.primary","ExpectedRevision":"8"}}`,
-		`{"name":"helianthus.runtime.stop","name":"helianthus.runtime.start","arguments":` + rcMutation + `}`,
+		`{"name":"helianthus_runtime_start","arguments":` + rcMutation + `,"arguments":{"DriverID":"ebus.primary","ExpectedRevision":"8"}}`,
+		`{"name":"helianthus_runtime_stop","name":"helianthus_runtime_start","arguments":` + rcMutation + `}`,
 	} {
 		got := rcHTTP(t, server, params)
 		if got.rpcErr != nil || rcErrorCode(got) != "INVALID_ARGUMENT" {
@@ -1007,7 +1007,7 @@ func TestRuntimeControlNoForbiddenMembers(t *testing.T) {
 		}
 	}
 	for _, tool := range runtimeControlTools() {
-		if !strings.HasPrefix(tool.Name, "helianthus.runtime.") || strings.Contains(tool.Name, "experimental") || strings.Contains(tool.Name, ".v2") {
+		if !strings.HasPrefix(tool.Name, "helianthus_runtime_") || strings.Contains(tool.Name, "experimental") || strings.Contains(tool.Name, ".v2") {
 			t.Fatalf("tool %q is outside the plain helianthus.runtime family", tool.Name)
 		}
 	}

@@ -89,7 +89,7 @@ func m11GraphQL(t *testing.T, handler http.Handler, query string) map[string]any
 }
 func m11MCP(t *testing.T, handler http.Handler) map[string]any {
 	t.Helper()
-	response := mcpRPC(t, handler, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"semantic.v1.snapshot.get","arguments":{"asset_ids":["asset:synthetic-boiler"]}}}`)
+	response := mcpRPC(t, handler, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"semantic_v1_snapshot_get","arguments":{"asset_ids":["asset:synthetic-boiler"]}}}`)
 	if response.Error != nil {
 		t.Fatalf("MCP error: %+v", response.Error)
 	}
@@ -100,22 +100,13 @@ func m11MCP(t *testing.T, handler http.Handler) map[string]any {
 	}
 	return envelope
 }
-func m11Camel(s string) string {
-	parts := strings.Split(s, "_")
-	for i := 1; i < len(parts); i++ {
-		if parts[i] != "" {
-			parts[i] = strings.ToUpper(parts[i][:1]) + parts[i][1:]
-		}
-	}
-	return strings.Join(parts, "")
-}
 func m11Normalize(v any) any {
 	switch x := v.(type) {
 	case map[string]any:
 		result := map[string]any{}
 		for k, value := range x {
 			if value != nil {
-				result[m11Camel(k)] = m11Normalize(value)
+				result[k] = m11Normalize(value)
 			}
 		}
 		return result
@@ -142,13 +133,13 @@ func m11Selection(typ reflect.Type) string {
 		if tag == "" || tag == "-" {
 			continue
 		}
-		fields = append(fields, m11Camel(tag)+m11Selection(field.Type))
+		fields = append(fields, tag+m11Selection(field.Type))
 	}
 	return " { " + strings.Join(fields, " ") + " }"
 }
 func m11Query() string {
 	selection := m11Selection(reflect.TypeOf(semanticview.View{}))
-	return `{ a: semanticSnapshot(assetIds:["asset:synthetic-boiler"])` + selection + ` b: semanticSnapshot(assetIds:["asset:synthetic-boiler"])` + selection + ` }`
+	return `{ a: semantic_snapshot(asset_ids:["asset:synthetic-boiler"])` + selection + ` b: semantic_snapshot(asset_ids:["asset:synthetic-boiler"])` + selection + ` }`
 }
 
 func m11Publish(hub *semhub.Hub, handle *semhub.Handle, id semreg.AssetID) error {
@@ -257,7 +248,7 @@ func TestM11PublishDuringRequestKeepsCapturedRevision(t *testing.T) {
 				data = response["data"]
 			}
 			asset := m11Normalize(data).(map[string]any)["assets"].([]any)[0].(map[string]any)
-			if asset["snapshot"].(map[string]any)["snapshotId"] != string(prior.Snapshot.SnapshotID) || source.calls.Load() != 1 {
+			if asset["snapshot"].(map[string]any)["snapshot_id"] != string(prior.Snapshot.SnapshotID) || source.calls.Load() != 1 {
 				t.Fatal("request recaptured a newer revision")
 			}
 			next, _ := publication.hub.Inspect(publication.binding.Identity.Asset)
@@ -363,7 +354,7 @@ func TestM11FencedDriverUnavailableAndRetainsNativeEvidence(t *testing.T) {
 	}
 	for _, value := range []any{response["data"].(map[string]any)["a"], envelope["data"]} {
 		asset := m11Normalize(value).(map[string]any)["assets"].([]any)[0].(map[string]any)
-		if asset["unavailableReason"] != "semantic.read.reason.source_unavailable" || asset["snapshot"] != nil {
+		if asset["unavailable_reason"] != "semantic.read.reason.source_unavailable" || asset["snapshot"] != nil {
 			t.Fatalf("fenced publication exposed: %v", asset)
 		}
 	}
@@ -401,8 +392,8 @@ func TestM11PortalProductionOptionsSharedView(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, operation := range bootstrap.Read.Unavailable {
-		if operation == "semanticSnapshot" {
-			t.Fatal("production bootstrap withholds semanticSnapshot")
+		if operation == "semantic_snapshot" {
+			t.Fatal("production bootstrap withholds semantic_snapshot")
 		}
 	}
 	if source.calls.Load() != 0 {

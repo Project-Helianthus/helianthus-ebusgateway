@@ -56,16 +56,16 @@ const (
 	rateLimitRefillMillis  = 1000
 )
 
-const semanticPVFixedQuery = `query SemanticPVCurrent($request: M2MCurrentSnapshotRequest!) {
-  semanticPVCurrent(request: $request) { snapshot evaluation selections projection }
+const semanticPVFixedQuery = `query SemanticPVCurrent($request: m2m_current_snapshot_request!) {
+  semantic_pv_current(request: $request) { snapshot evaluation selections projection }
 }`
 
-const semanticStorageFixedQuery = `query SemanticStorageCurrent($request: M2MCurrentSnapshotRequest!) {
-  semanticStorageCurrent(request: $request) { snapshot evaluation selections projection }
+const semanticStorageFixedQuery = `query SemanticStorageCurrent($request: m2m_current_snapshot_request!) {
+  semantic_storage_current(request: $request) { snapshot evaluation selections projection }
 }`
 
-const semanticEVSEFixedQuery = `query SemanticEVSECurrent($request: M2MCurrentSnapshotRequest!) {
-  semanticEVSECurrent(request: $request) { snapshot evaluation selections projection }
+const semanticEVSEFixedQuery = `query SemanticEVSECurrent($request: m2m_current_snapshot_request!) {
+  semantic_evse_current(request: $request) { snapshot evaluation selections projection }
 }`
 
 // Config supplies the one immutable SemReg evaluation used by every public PV
@@ -239,11 +239,11 @@ func (h *handler) serve(w http.ResponseWriter, r *http.Request) {
 	root, contract, provider := "", "", (func(context.Context, string) (json.RawMessage, bool))(nil)
 	switch request.OperationName {
 	case "SemanticPVCurrent":
-		root, contract, provider = "semanticPVCurrent", semanticPVContractID, h.cfg.SemanticPVCurrent
+		root, contract, provider = "semantic_pv_current", semanticPVContractID, h.cfg.SemanticPVCurrent
 	case "SemanticStorageCurrent":
-		root, contract, provider = "semanticStorageCurrent", semanticStorageContractID, h.cfg.SemanticStorageCurrent
+		root, contract, provider = "semantic_storage_current", semanticStorageContractID, h.cfg.SemanticStorageCurrent
 	case "SemanticEVSECurrent":
-		root, contract, provider = "semanticEVSECurrent", semanticEVSEContractID, h.cfg.SemanticEVSECurrent
+		root, contract, provider = "semantic_evse_current", semanticEVSEContractID, h.cfg.SemanticEVSECurrent
 	default:
 		writeError(w, "", "QUERY_REJECTED")
 		return
@@ -426,13 +426,13 @@ func decodeClosedRequest(data []byte) (closedRequest, error) {
 		return request, errors.New("invalid variables")
 	}
 	var input map[string]json.RawMessage
-	if err := json.Unmarshal(variables["request"], &input); err != nil || !hasExactKeys(input, "contractId", "assetRef") {
+	if err := json.Unmarshal(variables["request"], &input); err != nil || !hasExactKeys(input, "contract_id", "asset_ref") {
 		return request, errors.New("invalid request input")
 	}
-	if err := json.Unmarshal(input["contractId"], &request.Variables.Request.ContractID); err != nil {
+	if err := json.Unmarshal(input["contract_id"], &request.Variables.Request.ContractID); err != nil {
 		return request, errors.New("invalid contract ID")
 	}
-	if err := json.Unmarshal(input["assetRef"], &request.Variables.Request.AssetRef); err != nil {
+	if err := json.Unmarshal(input["asset_ref"], &request.Variables.Request.AssetRef); err != nil {
 		return request, errors.New("invalid asset reference")
 	}
 	return request, nil

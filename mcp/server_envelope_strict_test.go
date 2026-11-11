@@ -192,7 +192,7 @@ func TestP91EnvelopeValidationDoesNotRecurseIntoParams(t *testing.T) {
 	if response.Error != nil || response.Result == nil {
 		t.Fatalf("nested members affected envelope validation: %+v", response)
 	}
-	response = p91Request(t, server, `{"jsonrpc":"2.0","id":"request-a","method":"tools/call","params":{"name":"ebus.v1.semantic.zones.get","arguments":{"value":1,"value":2}}}`)
+	response = p91Request(t, server, `{"jsonrpc":"2.0","id":"request-a","method":"tools/call","params":{"name":"ebus_v1_semantic_zones_get","arguments":{"value":1,"value":2}}}`)
 	if response.Error == nil || response.Error.Code != -32602 {
 		t.Fatalf("params duplicate behavior changed: %+v", response)
 	}

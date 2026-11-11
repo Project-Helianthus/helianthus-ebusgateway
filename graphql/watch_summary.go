@@ -152,7 +152,7 @@ func cloneWatchSummaryClassCounts(source []WatchSummaryClassCount) []WatchSummar
 
 func buildWatchSummaryType() *graphqlgo.Object {
 	classCountType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "WatchSummaryClassCount",
+		Name: "watch_summary_class_count",
 		Fields: graphqlgo.Fields{
 			"class": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.String),
@@ -178,9 +178,9 @@ func buildWatchSummaryType() *graphqlgo.Object {
 	})
 
 	inventoryType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "WatchSummaryInventory",
+		Name: "watch_summary_inventory",
 		Fields: graphqlgo.Fields{
-			"totalEntries": &graphqlgo.Field{
+			"total_entries": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.Int),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					value, ok := params.Source.(WatchSummaryInventory)
@@ -190,7 +190,7 @@ func buildWatchSummaryType() *graphqlgo.Object {
 					return value.TotalEntries, nil
 				},
 			},
-			"pinnedEntries": &graphqlgo.Field{
+			"pinned_entries": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.Int),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					value, ok := params.Source.(WatchSummaryInventory)
@@ -200,7 +200,7 @@ func buildWatchSummaryType() *graphqlgo.Object {
 					return value.PinnedEntries, nil
 				},
 			},
-			"evictableEntries": &graphqlgo.Field{
+			"evictable_entries": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.Int),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					value, ok := params.Source.(WatchSummaryInventory)
@@ -210,7 +210,7 @@ func buildWatchSummaryType() *graphqlgo.Object {
 					return value.EvictableEntries, nil
 				},
 			},
-			"staticPinnedFootprint": &graphqlgo.Field{
+			"static_pinned_footprint": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.Int),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					value, ok := params.Source.(WatchSummaryInventory)
@@ -220,7 +220,7 @@ func buildWatchSummaryType() *graphqlgo.Object {
 					return value.StaticPinnedFootprint, nil
 				},
 			},
-			"writeConfirmPinnedActive": &graphqlgo.Field{
+			"write_confirm_pinned_active": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.Int),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					value, ok := params.Source.(WatchSummaryInventory)
@@ -230,7 +230,7 @@ func buildWatchSummaryType() *graphqlgo.Object {
 					return value.WriteConfirmPinnedActive, nil
 				},
 			},
-			"stateClasses": &graphqlgo.Field{
+			"state_classes": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(classCountType))),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					value, ok := params.Source.(WatchSummaryInventory)
@@ -240,7 +240,7 @@ func buildWatchSummaryType() *graphqlgo.Object {
 					return value.StateClasses, nil
 				},
 			},
-			"pinClasses": &graphqlgo.Field{
+			"pin_classes": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(classCountType))),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					value, ok := params.Source.(WatchSummaryInventory)
@@ -254,9 +254,9 @@ func buildWatchSummaryType() *graphqlgo.Object {
 	})
 
 	activationCountsType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "WatchSummaryActivationCounts",
+		Name: "watch_summary_activation_counts",
 		Fields: graphqlgo.Fields{
-			"catalogDescriptors": &graphqlgo.Field{
+			"catalog_descriptors": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.Int),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					value, ok := params.Source.(WatchSummaryActivationCounts)
@@ -266,7 +266,7 @@ func buildWatchSummaryType() *graphqlgo.Object {
 					return value.CatalogDescriptors, nil
 				},
 			},
-			"activeKeys": &graphqlgo.Field{
+			"active_keys": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.Int),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					value, ok := params.Source.(WatchSummaryActivationCounts)
@@ -276,7 +276,7 @@ func buildWatchSummaryType() *graphqlgo.Object {
 					return value.ActiveKeys, nil
 				},
 			},
-			"sourceClasses": &graphqlgo.Field{
+			"source_classes": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(classCountType))),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					value, ok := params.Source.(WatchSummaryActivationCounts)
@@ -290,7 +290,7 @@ func buildWatchSummaryType() *graphqlgo.Object {
 	})
 
 	degradedType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "WatchSummaryDegraded",
+		Name: "watch_summary_degraded",
 		Fields: graphqlgo.Fields{
 			"active": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.Boolean),
@@ -302,7 +302,7 @@ func buildWatchSummaryType() *graphqlgo.Object {
 					return value.Active, nil
 				},
 			},
-			"shadowingEnabled": &graphqlgo.Field{
+			"shadowing_enabled": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.Boolean),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					value, ok := params.Source.(WatchSummaryDegraded)
@@ -312,7 +312,7 @@ func buildWatchSummaryType() *graphqlgo.Object {
 					return value.ShadowingEnabled, nil
 				},
 			},
-			"pinnedBudgetDegraded": &graphqlgo.Field{
+			"pinned_budget_degraded": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.Boolean),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					value, ok := params.Source.(WatchSummaryDegraded)
@@ -322,7 +322,7 @@ func buildWatchSummaryType() *graphqlgo.Object {
 					return value.PinnedBudgetDegraded, nil
 				},
 			},
-			"compactorDegraded": &graphqlgo.Field{
+			"compactor_degraded": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.Boolean),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					value, ok := params.Source.(WatchSummaryDegraded)
@@ -346,9 +346,9 @@ func buildWatchSummaryType() *graphqlgo.Object {
 	})
 
 	return graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "WatchSummary",
+		Name: "watch_summary",
 		Fields: graphqlgo.Fields{
-			"lastUpdatedAt": &graphqlgo.Field{
+			"last_updated_at": &graphqlgo.Field{
 				Type: graphqlgo.String,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					summary, ok := params.Source.(*WatchSummary)
@@ -376,7 +376,7 @@ func buildWatchSummaryType() *graphqlgo.Object {
 					return value.Inventory, nil
 				},
 			},
-			"activationCounts": &graphqlgo.Field{
+			"activation_counts": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(activationCountsType),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					summary, ok := params.Source.(*WatchSummary)
@@ -390,7 +390,7 @@ func buildWatchSummaryType() *graphqlgo.Object {
 					return value.ActivationCounts, nil
 				},
 			},
-			"freshnessClasses": &graphqlgo.Field{
+			"freshness_classes": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(classCountType))),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					summary, ok := params.Source.(*WatchSummary)
@@ -407,7 +407,7 @@ func buildWatchSummaryType() *graphqlgo.Object {
 					return value.FreshnessClasses, nil
 				},
 			},
-			"directApplyEligibilityClasses": &graphqlgo.Field{
+			"direct_apply_eligibility_classes": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(classCountType))),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					summary, ok := params.Source.(*WatchSummary)

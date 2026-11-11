@@ -10,7 +10,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 )
 
-// TestSemanticCircuitsStateGoldenEnvelope pins the ebus.v1.semantic.circuits.get
+// TestSemanticCircuitsStateGoldenEnvelope pins the ebus_v1_semantic_circuits_get
 // output (including data_hash) for every circuit_state token the gateway can
 // publish from B524 OP02 GG02 RR=0x001E: standby, heating, cooling, dhw (raw 3,
 // previously published as unknown_3) and a raw unmapped code kept as unknown_N.
@@ -38,7 +38,7 @@ func TestSemanticCircuitsStateGoldenEnvelope(t *testing.T) {
 			JSONRPC: "2.0",
 			ID:      1,
 			Method:  "tools/call",
-			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.circuits.get","arguments":{}}`),
+			Params:  json.RawMessage(`{"name":"ebus_v1_semantic_circuits_get","arguments":{}}`),
 		}))
 	}
 	first, second := call(), call()

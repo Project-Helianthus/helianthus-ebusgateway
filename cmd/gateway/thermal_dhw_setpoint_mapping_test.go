@@ -101,7 +101,7 @@ func TestThermalDhwSetpointMappingDomains(t *testing.T) {
 			if !reflect.DeepEqual(source.Observation.Value, observation.Value) || !reflect.DeepEqual(source.Binding.Domain, binding.Domain) {
 				t.Fatal("value clamped or context changed")
 			}
-			if result.Disposition.ItemID != "thermal.setpoint.dhw_temperature" || result.Disposition.Kind != projection.ItemFact || result.Disposition.Outcome != projection.ProjectionWithheld || len(result.Disposition.SourceKeys) != 0 || result.Disposition.Loss[0].Kind != projection.LossIdentity {
+			if result.Disposition.ItemID != "thermal.setpoint.dhw_temperature_setpoint" || result.Disposition.Kind != projection.ItemFact || result.Disposition.Outcome != projection.ProjectionWithheld || len(result.Disposition.SourceKeys) != 0 || result.Disposition.Loss[0].Kind != projection.LossIdentity {
 				t.Fatalf("service identity blocker lost: %+v", result.Disposition)
 			}
 		})
@@ -397,7 +397,7 @@ func TestThermalDhwSetpointMappingDetached(t *testing.T) {
 
 func TestThermalDhwSetpointMappingPackIdentityBlocker(t *testing.T) {
 	temperature, service := "temperature:dhw_requested", "dhw:alpha"
-	key := semreg.FactKey{PackID: "helianthus.pack.thermal", PackVersion: "1.0.0", FactID: "thermal.setpoint.dhw_temperature",
+	key := semreg.FactKey{PackID: "helianthus.pack.thermal", PackVersion: "1.0.0", FactID: "thermal.setpoint.dhw_temperature_setpoint",
 		Dimensions: []semreg.Dimension{{ID: "thermal.dimension.temperature", Value: semreg.Value{Kind: semreg.ValueText, Text: &temperature}}}}
 	value := &semreg.Value{Kind: semreg.ValueQuantity, Quantity: thermalDhwTestQuantity(50)}
 	if err := thermal.New().ValidateFact(key, value); err != nil {

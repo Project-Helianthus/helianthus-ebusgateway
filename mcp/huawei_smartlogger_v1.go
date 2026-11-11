@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	HuaweiSmartLoggerV1StatusGetTool = "modbus.v1.huawei.smartlogger.status.get"
+	HuaweiSmartLoggerV1StatusGetTool = "modbus_v1_huawei_smartlogger_status_get"
 	HuaweiSmartLoggerV1Profile       = "huawei.smartlogger.readonly.v1"
 )
 

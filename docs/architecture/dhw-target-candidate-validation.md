@@ -6,7 +6,7 @@ It adds no acquisition, registration, persistence, write operation or consumer
 admission. Nothing here establishes stability before Helianthus 1.0.
 
 The prerequisite native contract is the public
-[B524 register catalog](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/protocols/vaillant/ebus-vaillant-B524-register-map.md).
+[B524 register catalog](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/protocols/vaillant/ebus-vaillant-b524-register-map.md).
 The public [DHW cutover contract](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/architecture/dhw-setpoint-semreg-cutover.md)
 defines requested-target roles, source-specific bounds and the unresolved DHW
 service dimension. This slice changes validation of caller-supplied candidates;

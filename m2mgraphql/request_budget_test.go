@@ -33,14 +33,14 @@ func TestP08ThreeConsumerBurstAndBoundedRefill(t *testing.T) {
 		t.Fatal(err)
 	}
 	reads := []struct{ family, operation, query, root, contract string }{
-		{"pv", "SemanticPVCurrent", semanticPVFixedQuery, "semanticPVCurrent", "PUBLIC_GRAPHQL_SEMANTIC_PV_V1"},
-		{"storage", "SemanticStorageCurrent", semanticStorageFixedQuery, "semanticStorageCurrent", "PUBLIC_GRAPHQL_SEMANTIC_STORAGE_V1"},
-		{"evse", "SemanticEVSECurrent", semanticEVSEFixedQuery, "semanticEVSECurrent", "PUBLIC_GRAPHQL_SEMANTIC_EVSE_V1"},
+		{"pv", "SemanticPVCurrent", semanticPVFixedQuery, "semantic_pv_current", "PUBLIC_GRAPHQL_SEMANTIC_PV_V1"},
+		{"storage", "SemanticStorageCurrent", semanticStorageFixedQuery, "semantic_storage_current", "PUBLIC_GRAPHQL_SEMANTIC_STORAGE_V1"},
+		{"evse", "SemanticEVSECurrent", semanticEVSEFixedQuery, "semantic_evse_current", "PUBLIC_GRAPHQL_SEMANTIC_EVSE_V1"},
 	}
 	read := func(index int, remote string) {
 		t.Helper()
 		r := reads[index]
-		body := fmt.Sprintf(`{"operationName":%q,"query":%q,"variables":{"request":{"contractId":%q,"assetRef":%q}}}`, r.operation, r.query, r.contract, "asset:"+r.family)
+		body := fmt.Sprintf(`{"operationName":%q,"query":%q,"variables":{"request":{"contract_id":%q,"asset_ref":%q}}}`, r.operation, r.query, r.contract, "asset:"+r.family)
 		before := calls[r.family]
 		response := serveRaw(h, http.MethodPost, route, remote, strings.NewReader(body))
 		var decoded struct{ Data map[string]json.RawMessage }

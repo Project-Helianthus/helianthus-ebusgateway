@@ -433,9 +433,9 @@ func trimBusPeriodicity(items []BusPeriodicityEntry, limit int) []BusPeriodicity
 
 func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphqlgo.Object) {
 	capabilityType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "BusObservabilityCapability",
+		Name: "bus_observability_capability",
 		Fields: graphqlgo.Fields{
-			"activeSupported": &graphqlgo.Field{
+			"active_supported": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.Boolean),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					capability, ok := params.Source.(BusObservabilityCapability)
@@ -445,7 +445,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 					return capability.ActiveSupported, nil
 				},
 			},
-			"passiveSupported": &graphqlgo.Field{
+			"passive_supported": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.Boolean),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					capability, ok := params.Source.(BusObservabilityCapability)
@@ -455,7 +455,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 					return capability.PassiveSupported, nil
 				},
 			},
-			"broadcastSupported": &graphqlgo.Field{
+			"broadcast_supported": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.Boolean),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					capability, ok := params.Source.(BusObservabilityCapability)
@@ -465,7 +465,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 					return capability.BroadcastSupported, nil
 				},
 			},
-			"passiveAvailable": &graphqlgo.Field{
+			"passive_available": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.Boolean),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					capability, ok := params.Source.(BusObservabilityCapability)
@@ -475,7 +475,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 					return capability.PassiveAvailable, nil
 				},
 			},
-			"passiveState": &graphqlgo.Field{
+			"passive_state": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.String),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					capability, ok := params.Source.(BusObservabilityCapability)
@@ -485,7 +485,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 					return capability.PassiveState, nil
 				},
 			},
-			"passiveReason": &graphqlgo.Field{
+			"passive_reason": &graphqlgo.Field{
 				Type: graphqlgo.String,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					capability, ok := params.Source.(BusObservabilityCapability)
@@ -495,7 +495,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 					return capability.PassiveReason, nil
 				},
 			},
-			"endpointState": &graphqlgo.Field{
+			"endpoint_state": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.String),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					capability, ok := params.Source.(BusObservabilityCapability)
@@ -505,7 +505,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 					return capability.EndpointState, nil
 				},
 			},
-			"tapConnected": &graphqlgo.Field{
+			"tap_connected": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.Boolean),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					capability, ok := params.Source.(BusObservabilityCapability)
@@ -519,7 +519,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 	})
 
 	warmupType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "BusObservabilityWarmup",
+		Name: "bus_observability_warmup",
 		Fields: graphqlgo.Fields{
 			"state": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.String),
@@ -541,7 +541,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 					return warmup.Blocker, nil
 				},
 			},
-			"elapsedSeconds": &graphqlgo.Field{
+			"elapsed_seconds": &graphqlgo.Field{
 				Type: graphqlgo.Float,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					warmup, ok := params.Source.(BusObservabilityWarmup)
@@ -551,7 +551,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 					return warmup.ElapsedSeconds, nil
 				},
 			},
-			"completedTransactions": &graphqlgo.Field{
+			"completed_transactions": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.Int),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					warmup, ok := params.Source.(BusObservabilityWarmup)
@@ -561,7 +561,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 					return warmup.CompletedTransactions, nil
 				},
 			},
-			"requiredTransactions": &graphqlgo.Field{
+			"required_transactions": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.Int),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					warmup, ok := params.Source.(BusObservabilityWarmup)
@@ -571,7 +571,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 					return warmup.RequiredTransactions, nil
 				},
 			},
-			"completionMode": &graphqlgo.Field{
+			"completion_mode": &graphqlgo.Field{
 				Type: graphqlgo.String,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					warmup, ok := params.Source.(BusObservabilityWarmup)
@@ -585,7 +585,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 	})
 
 	timingQualityType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "BusObservabilityTimingQuality",
+		Name: "bus_observability_timing_quality",
 		Fields: graphqlgo.Fields{
 			"active": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.String),
@@ -631,7 +631,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 	})
 
 	degradedType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "BusObservabilityDegraded",
+		Name: "bus_observability_degraded",
 		Fields: graphqlgo.Fields{
 			"active": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.Boolean),
@@ -657,7 +657,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 	})
 
 	startupType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "BusObservabilityStartup",
+		Name: "bus_observability_startup",
 		Fields: graphqlgo.Fields{
 			"phase": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.String),
@@ -673,7 +673,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 					return value.Phase, nil
 				},
 			},
-			"lastUpdatedAt": &graphqlgo.Field{
+			"last_updated_at": &graphqlgo.Field{
 				Type: graphqlgo.String,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					startup, ok := params.Source.(*BusObservabilityStartup)
@@ -687,7 +687,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 					return graphqlTimeString(value.LastUpdatedAt), nil
 				},
 			},
-			"cacheEpoch": &graphqlgo.Field{
+			"cache_epoch": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.String),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					startup, ok := params.Source.(*BusObservabilityStartup)
@@ -701,7 +701,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 					return strconv.FormatUint(value.CacheEpoch, 10), nil
 				},
 			},
-			"liveEpoch": &graphqlgo.Field{
+			"live_epoch": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.String),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					startup, ok := params.Source.(*BusObservabilityStartup)
@@ -719,9 +719,9 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 	})
 
 	featureFlagStateType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "ObserveFirstFeatureFlagState",
+		Name: "observe_first_feature_flag_state",
 		Fields: graphqlgo.Fields{
-			"observeFirstEnabled": &graphqlgo.Field{
+			"observe_first_enabled": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.Boolean),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					state, ok := params.Source.(ObserveFirstFeatureFlagState)
@@ -731,7 +731,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 					return state.ObserveFirstEnabled, nil
 				},
 			},
-			"passiveStateDirectApply": &graphqlgo.Field{
+			"passive_state_direct_apply": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.Boolean),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					state, ok := params.Source.(ObserveFirstFeatureFlagState)
@@ -741,7 +741,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 					return state.PassiveStateDirectApply, nil
 				},
 			},
-			"passiveConfigDirectApply": &graphqlgo.Field{
+			"passive_config_direct_apply": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.Boolean),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					state, ok := params.Source.(ObserveFirstFeatureFlagState)
@@ -751,7 +751,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 					return state.PassiveConfigDirectApply, nil
 				},
 			},
-			"externalWritePolicy": &graphqlgo.Field{
+			"external_write_policy": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.String),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					state, ok := params.Source.(ObserveFirstFeatureFlagState)
@@ -771,7 +771,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 					return append([]string(nil), state.Normalizations...), nil
 				},
 			},
-			"lastUpdatedAt": &graphqlgo.Field{
+			"last_updated_at": &graphqlgo.Field{
 				Type: graphqlgo.String,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					state, ok := params.Source.(ObserveFirstFeatureFlagState)
@@ -785,7 +785,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 	})
 
 	busAdmissionActiveProbeType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "BusAdmissionActiveProbe",
+		Name: "bus_admission_active_probe",
 		Fields: graphqlgo.Fields{
 			"target": &graphqlgo.Field{
 				Type: graphqlgo.Int,
@@ -821,7 +821,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 	})
 
 	busAdmissionRejectedCandidateType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "BusAdmissionRejectedCandidate",
+		Name: "bus_admission_rejected_candidate",
 		Fields: graphqlgo.Fields{
 			"source": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.Int),
@@ -867,7 +867,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 	})
 
 	busAdmissionSourceSelectionType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "BusAdmissionSourceSelection",
+		Name: "bus_admission_source_selection",
 		Fields: graphqlgo.Fields{
 			"state": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.String),
@@ -1003,7 +1003,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 	})
 
 	busAdmissionType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "BusAdmission",
+		Name: "bus_admission",
 		Fields: graphqlgo.Fields{
 			"source_selection": &graphqlgo.Field{
 				Type: busAdmissionSourceSelectionType,
@@ -1019,9 +1019,9 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 	})
 
 	statusType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "BusObservabilityStatus",
+		Name: "bus_observability_status",
 		Fields: graphqlgo.Fields{
-			"transportClass": &graphqlgo.Field{
+			"transport_class": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.String),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					status, ok := params.Source.(*BusObservabilityStatus)
@@ -1035,7 +1035,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 					return value.TransportClass, nil
 				},
 			},
-			"publisherCadenceSec": &graphqlgo.Field{
+			"publisher_cadence_sec": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.Float),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					status, ok := params.Source.(*BusObservabilityStatus)
@@ -1049,7 +1049,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 					return value.PublisherCadenceSec, nil
 				},
 			},
-			"publisherCadenceSource": &graphqlgo.Field{
+			"publisher_cadence_source": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.String),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					status, ok := params.Source.(*BusObservabilityStatus)
@@ -1091,7 +1091,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 					return value.Warmup, nil
 				},
 			},
-			"timingQuality": &graphqlgo.Field{
+			"timing_quality": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(timingQualityType),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					status, ok := params.Source.(*BusObservabilityStatus)
@@ -1147,7 +1147,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 					return value.Startup, nil
 				},
 			},
-			"featureFlags": &graphqlgo.Field{
+			"feature_flags": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(featureFlagStateType),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					status, ok := params.Source.(*BusObservabilityStatus)
@@ -1161,7 +1161,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 					return value.FeatureFlags, nil
 				},
 			},
-			"lastUpdatedAt": &graphqlgo.Field{
+			"last_updated_at": &graphqlgo.Field{
 				Type: graphqlgo.String,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					status, ok := params.Source.(*BusObservabilityStatus)
@@ -1179,7 +1179,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 	})
 
 	boundedListSummaryType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "BusBoundedListSummary",
+		Name: "bus_bounded_list_summary",
 		Fields: graphqlgo.Fields{
 			"count": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.Int),
@@ -1205,9 +1205,9 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 	})
 
 	countersType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "BusObservabilityCounters",
+		Name: "bus_observability_counters",
 		Fields: graphqlgo.Fields{
-			"seriesBudgetOverflowTotal": &graphqlgo.Field{
+			"series_budget_overflow_total": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.String),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					counters, ok := params.Source.(BusObservabilityCounters)
@@ -1217,7 +1217,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 					return strconv.FormatUint(counters.SeriesBudgetOverflowTotal, 10), nil
 				},
 			},
-			"periodicityBudgetOverflowTotal": &graphqlgo.Field{
+			"periodicity_budget_overflow_total": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.String),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					counters, ok := params.Source.(BusObservabilityCounters)
@@ -1231,9 +1231,9 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 	})
 
 	busSummaryType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "BusSummary",
+		Name: "bus_summary",
 		Fields: graphqlgo.Fields{
-			"lastUpdatedAt": &graphqlgo.Field{
+			"last_updated_at": &graphqlgo.Field{
 				Type: graphqlgo.String,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					summary, ok := params.Source.(*BusSummary)
@@ -1312,7 +1312,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 			// existing BusObservabilityCounters convention (graphql-go
 			// Int is 32-bit; uint64 totals overflow it for sustained
 			// high-rate counters).
-			"reconstructorPrefixResyncSkippedTotal": &graphqlgo.Field{
+			"reconstructor_prefix_resync_skipped_total": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.String),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					if summary, ok := params.Source.(*BusSummary); ok && summary != nil {
@@ -1329,7 +1329,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 					return "0", nil
 				},
 			},
-			"reconstructorInvalidSrcClassSkippedTotal": &graphqlgo.Field{
+			"reconstructor_invalid_src_class_skipped_total": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.String),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					if summary, ok := params.Source.(*BusSummary); ok && summary != nil {
@@ -1350,7 +1350,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 	})
 
 	messageType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "BusMessage",
+		Name: "bus_message",
 		Fields: graphqlgo.Fields{
 			"scope": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.String),
@@ -1372,7 +1372,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 					return message.Family, nil
 				},
 			},
-			"frameType": &graphqlgo.Field{
+			"frame_type": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.String),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					message, ok := params.Source.(BusMessage)
@@ -1392,7 +1392,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 					return message.Outcome, nil
 				},
 			},
-			"observedAt": &graphqlgo.Field{
+			"observed_at": &graphqlgo.Field{
 				Type: graphqlgo.String,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					message, ok := params.Source.(BusMessage)
@@ -1402,7 +1402,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 					return message.ObservedAt, nil
 				},
 			},
-			"sourceAddress": &graphqlgo.Field{
+			"source_address": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.Int),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					message, ok := params.Source.(BusMessage)
@@ -1412,7 +1412,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 					return message.SourceAddress, nil
 				},
 			},
-			"targetAddress": &graphqlgo.Field{
+			"target_address": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.Int),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					message, ok := params.Source.(BusMessage)
@@ -1422,7 +1422,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 					return message.TargetAddress, nil
 				},
 			},
-			"requestLen": &graphqlgo.Field{
+			"request_len": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.Int),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					message, ok := params.Source.(BusMessage)
@@ -1432,7 +1432,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 					return message.RequestLen, nil
 				},
 			},
-			"responseLen": &graphqlgo.Field{
+			"response_len": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.Int),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					message, ok := params.Source.(BusMessage)
@@ -1446,7 +1446,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 	})
 
 	busMessagesListType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "BusMessagesList",
+		Name: "bus_messages_list",
 		Fields: graphqlgo.Fields{
 			"status": &graphqlgo.Field{
 				Type: statusType,
@@ -1511,9 +1511,9 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 	})
 
 	periodicityEntryType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "BusPeriodicityEntry",
+		Name: "bus_periodicity_entry",
 		Fields: graphqlgo.Fields{
-			"sourceBucket": &graphqlgo.Field{
+			"source_bucket": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.String),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					entry, ok := params.Source.(BusPeriodicityEntry)
@@ -1523,7 +1523,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 					return entry.SourceBucket, nil
 				},
 			},
-			"targetBucket": &graphqlgo.Field{
+			"target_bucket": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.String),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					entry, ok := params.Source.(BusPeriodicityEntry)
@@ -1573,7 +1573,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 					return entry.State, nil
 				},
 			},
-			"lastSeen": &graphqlgo.Field{
+			"last_seen": &graphqlgo.Field{
 				Type: graphqlgo.String,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					entry, ok := params.Source.(BusPeriodicityEntry)
@@ -1583,7 +1583,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 					return entry.LastSeen, nil
 				},
 			},
-			"sampleCount": &graphqlgo.Field{
+			"sample_count": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.Int),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					entry, ok := params.Source.(BusPeriodicityEntry)
@@ -1593,7 +1593,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 					return entry.SampleCount, nil
 				},
 			},
-			"lastInterval": &graphqlgo.Field{
+			"last_interval": &graphqlgo.Field{
 				Type: graphqlgo.String,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					entry, ok := params.Source.(BusPeriodicityEntry)
@@ -1603,7 +1603,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 					return entry.LastInterval, nil
 				},
 			},
-			"meanInterval": &graphqlgo.Field{
+			"mean_interval": &graphqlgo.Field{
 				Type: graphqlgo.String,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					entry, ok := params.Source.(BusPeriodicityEntry)
@@ -1613,7 +1613,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 					return entry.MeanInterval, nil
 				},
 			},
-			"minInterval": &graphqlgo.Field{
+			"min_interval": &graphqlgo.Field{
 				Type: graphqlgo.String,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					entry, ok := params.Source.(BusPeriodicityEntry)
@@ -1623,7 +1623,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 					return entry.MinInterval, nil
 				},
 			},
-			"maxInterval": &graphqlgo.Field{
+			"max_interval": &graphqlgo.Field{
 				Type: graphqlgo.String,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					entry, ok := params.Source.(BusPeriodicityEntry)
@@ -1637,7 +1637,7 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 	})
 
 	busPeriodicityListType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "BusPeriodicityList",
+		Name: "bus_periodicity_list",
 		Fields: graphqlgo.Fields{
 			"status": &graphqlgo.Field{
 				Type: statusType,

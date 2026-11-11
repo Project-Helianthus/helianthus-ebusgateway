@@ -61,10 +61,10 @@ func TestBusObservabilityAdaptersExposeIdentificationEvidence(t *testing.T) {
 	}
 	server.SetBusObservabilityProvider(newMCPBusObservabilityProvider(nil))
 	handler := server.Handler()
-	if !mcpToolsContain(mcpToolsList(t, handler), "ebus.v1.bus.identification_evidence.list") {
+	if !mcpToolsContain(mcpToolsList(t, handler), "ebus_v1_bus_identification_evidence_list") {
 		t.Fatalf("identification evidence tool not registered through bus observability provider")
 	}
-	envelope := mcpCallToolEnvelope(t, handler, "ebus.v1.bus.identification_evidence.list", `{}`)
+	envelope := mcpCallToolEnvelope(t, handler, "ebus_v1_bus_identification_evidence_list", `{}`)
 	data, _ := envelope["data"].(map[string]any)
 	if data["evidence_class"] != "raw" || data["count"] != float64(1) {
 		t.Fatalf("envelope data = %v", data)

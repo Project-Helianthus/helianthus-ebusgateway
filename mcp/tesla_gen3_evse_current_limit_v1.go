@@ -8,7 +8,7 @@ import (
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
 )
 
-const TeslaGen3EVSECurrentLimitV1GetTool = "modbus.v1.tesla.gen3.evse.current_limit.get"
+const TeslaGen3EVSECurrentLimitV1GetTool = "modbus_v1_tesla_gen3_evse_current_limit_get"
 
 var (
 	ErrTeslaGen3EVSECurrentLimitV1ProviderUnavailable = errors.New("tesla Gen3 EVSE current-limit provider unavailable")

@@ -274,18 +274,18 @@ func TestM09FivePacksHandler(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	field := schema.QueryType().Fields()["semanticSnapshot"]
+	field := schema.QueryType().Fields()["semantic_snapshot"]
 	selection := m09Selection(field.Type, 0)
-	q := `{ semanticSnapshot(assetIds:["asset:test"]) ` + selection + ` }`
+	q := `{ semantic_snapshot(asset_ids:["asset:test"]) ` + selection + ` }`
 	want, err := semanticview.Build(m09Registry(t), []semanticview.Input{in})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, invoke := range []bool{false, true} {
-		result := m09Success(t, m09Request(t, b, q, nil, invoke))["semanticSnapshot"]
+		result := m09Success(t, m09Request(t, b, q, nil, invoke))["semantic_snapshot"]
 		// GraphQL represents omitted optional members as null. Compare every source
 		// member recursively, permitting those additional nulls only.
-		m09Contains(t, result, semanticCamelValue(m09Decode(t, want)))
+		m09Contains(t, result, semanticJSONValue(m09Decode(t, want)))
 	}
 	if p.calls != 2 {
 		t.Fatalf("captures %d want 2", p.calls)
@@ -360,7 +360,7 @@ func TestM09AliasUnionAndRequestIsolation(t *testing.T) {
 	p := &m09Provider{}
 	b := NewBuilder(nil, nil)
 	b.SetSemanticSnapshotProvider(p)
-	q := `query($ids:[ID!]!,$skip:Boolean!){ first:semanticSnapshot(assetIds:$ids){assets{assetId unavailableReason}} ...More ignored:semanticSnapshot(assetIds:[] ) @skip(if:$skip){assets{assetId}} } fragment More on Query { second:semanticSnapshot(assetIds:["asset:b"]){assets{assetId}} }`
+	q := `query($ids:[ID!]!,$skip:Boolean!){ first:semantic_snapshot(asset_ids:$ids){assets{asset_id unavailable_reason}} ...More ignored:semantic_snapshot(asset_ids:[] ) @skip(if:$skip){assets{asset_id}} } fragment More on query { second:semantic_snapshot(asset_ids:["asset:b"]){assets{asset_id}} }`
 	for i := 0; i < 2; i++ {
 		d := m09Success(t, m09Request(t, b, q, map[string]any{"ids": []string{"asset:a"}, "skip": true}, false))
 		if p.calls != i+1 || strings.Join([]string{string(p.ids[0]), string(p.ids[1])}, ",") != "asset:a,asset:b" {
@@ -373,19 +373,19 @@ func TestM09AliasUnionAndRequestIsolation(t *testing.T) {
 }
 func TestM09InvalidSelectionAndUnavailable(t *testing.T) {
 	b := NewBuilder(nil, nil)
-	m09Error(t, m09Request(t, b, `{semanticSnapshot(assetIds:["asset:a"]){assets{assetId}}}`, nil, false), "UNAVAILABLE")
+	m09Error(t, m09Request(t, b, `{semantic_snapshot(asset_ids:["asset:a"]){assets{asset_id}}}`, nil, false), "UNAVAILABLE")
 	p := &m09Provider{}
 	b.SetSemanticSnapshotProvider(p)
 	invalid := []any{[]string{}, []string{"asset:a", "asset:a"}, []string{""}, []string{"*"}, []string{"native://resource"}, []string{strings.Repeat("x", 257)}}
 	for _, ids := range invalid {
-		m09Error(t, m09Request(t, b, `query($ids:[ID!]!){semanticSnapshot(assetIds:$ids){assets{assetId}}}`, map[string]any{"ids": ids}, false), "INVALID_ARGUMENT")
+		m09Error(t, m09Request(t, b, `query($ids:[ID!]!){semantic_snapshot(asset_ids:$ids){assets{asset_id}}}`, map[string]any{"ids": ids}, false), "INVALID_ARGUMENT")
 	}
 	a, c := []string{}, []string{}
 	for i := 0; i < 17; i++ {
 		a = append(a, fmt.Sprintf("asset:a%d", i))
 		c = append(c, fmt.Sprintf("asset:b%d", i))
 	}
-	m09Error(t, m09Request(t, b, `query($a:[ID!]!,$b:[ID!]!){a:semanticSnapshot(assetIds:$a){assets{assetId}} b:semanticSnapshot(assetIds:$b){assets{assetId}}}`, map[string]any{"a": a, "b": c}, false), "INVALID_ARGUMENT")
+	m09Error(t, m09Request(t, b, `query($a:[ID!]!,$b:[ID!]!){a:semantic_snapshot(asset_ids:$a){assets{asset_id}} b:semantic_snapshot(asset_ids:$b){assets{asset_id}}}`, map[string]any{"a": a, "b": c}, false), "INVALID_ARGUMENT")
 	if p.calls != 0 {
 		t.Fatalf("invalid selection captured %d times", p.calls)
 	}
@@ -401,10 +401,10 @@ func TestM09UnavailableCapabilityAndConflict(t *testing.T) {
 	p := &m09Provider{inputs: map[semreg.AssetID]semanticview.Input{in.AssetID: in}}
 	b := NewBuilder(nil, nil)
 	b.SetSemanticSnapshotProvider(p)
-	q := `{semanticSnapshot(assetIds:["asset:test","asset:missing"]){assets{assetId unavailableReason snapshot{snapshotId} projection{dispositions{kind outcome reason}}}}}`
+	q := `{semantic_snapshot(asset_ids:["asset:test","asset:missing"]){assets{asset_id unavailable_reason snapshot{snapshot_id} projection{dispositions{kind outcome reason}}}}}`
 	data := m09Success(t, m09Request(t, b, q, nil, false))
-	assets := data["semanticSnapshot"].(map[string]any)["assets"].([]any)
-	if assets[0].(map[string]any)["unavailableReason"] != "semantic.read.reason.asset_unknown" {
+	assets := data["semantic_snapshot"].(map[string]any)["assets"].([]any)
+	if assets[0].(map[string]any)["unavailable_reason"] != "semantic.read.reason.asset_unknown" {
 		t.Fatalf("unknown sibling: %v", assets)
 	}
 	dispositions := assets[1].(map[string]any)["projection"].(map[string]any)["dispositions"].([]any)
@@ -443,13 +443,13 @@ func TestM09EveryRevisionComponent(t *testing.T) {
 			in.Evaluation = &e
 			b := NewBuilder(nil, nil)
 			b.SetSemanticSnapshotProvider(&m09Provider{inputs: map[semreg.AssetID]semanticview.Input{in.AssetID: in}})
-			revisions := `snapshotId revisions{semantic identity facts services capabilities}`
-			q := `{semanticSnapshot(assetIds:["asset:test"]){assets{snapshot{` + revisions + `} evaluation{` + revisions + `} projection{` + revisions + `}}}}`
+			revisions := `snapshot_id revisions{semantic identity facts services capabilities}`
+			q := `{semantic_snapshot(asset_ids:["asset:test"]){assets{snapshot{` + revisions + `} evaluation{` + revisions + `} projection{` + revisions + `}}}}`
 			data := m09Success(t, m09Request(t, b, q, nil, false))
-			asset := data["semanticSnapshot"].(map[string]any)["assets"].([]any)[0].(map[string]any)
+			asset := data["semantic_snapshot"].(map[string]any)["assets"].([]any)[0].(map[string]any)
 			for _, record := range []string{"snapshot", "evaluation", "projection"} {
 				v := asset[record].(map[string]any)
-				if v["snapshotId"] != string(in.Snapshot.SnapshotID) {
+				if v["snapshot_id"] != string(in.Snapshot.SnapshotID) {
 					t.Fatalf("%s snapshot identity changed", record)
 				}
 				m09Contains(t, v["revisions"], m09Decode(t, in.Snapshot.Revisions))
@@ -489,15 +489,15 @@ func TestM09PackQueries(t *testing.T) {
 			p := &m09Provider{inputs: map[semreg.AssetID]semanticview.Input{in.AssetID: in}}
 			b := NewBuilder(m09NoNativeRegistry{}, nil)
 			b.SetSemanticSnapshotProvider(p)
-			q := `{semanticSnapshot(assetIds:["asset:test"]){assets{snapshot{snapshotId revisions{semantic identity facts services capabilities} facts{key{packId}}} projection{manifest{packVersions{id version}}}}}}`
+			q := `{semantic_snapshot(asset_ids:["asset:test"]){assets{snapshot{snapshot_id revisions{semantic identity facts services capabilities} facts{key{pack_id}}} projection{manifest{pack_versions{id version}}}}}}`
 			d := m09Success(t, m09Request(t, b, q, nil, false))
-			asset := d["semanticSnapshot"].(map[string]any)["assets"].([]any)[0].(map[string]any)
+			asset := d["semantic_snapshot"].(map[string]any)["assets"].([]any)[0].(map[string]any)
 			snapshot := asset["snapshot"].(map[string]any)
-			if snapshot["snapshotId"] != string(s.SnapshotID) {
+			if snapshot["snapshot_id"] != string(s.SnapshotID) {
 				t.Fatal("snapshot identity changed")
 			}
 			m09Contains(t, snapshot["revisions"], m09Decode(t, s.Revisions))
-			gotPacks := asset["projection"].(map[string]any)["manifest"].(map[string]any)["packVersions"]
+			gotPacks := asset["projection"].(map[string]any)["manifest"].(map[string]any)["pack_versions"]
 			m09Contains(t, gotPacks, m09Decode(t, []semreg.PackRef{pack}))
 			if len(snapshot["facts"].([]any)) != 1 || p.calls != 1 {
 				t.Fatal("pack query did not resolve exactly once")

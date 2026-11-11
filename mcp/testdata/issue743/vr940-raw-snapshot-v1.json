@@ -131,7 +131,7 @@
     {"device_address":"d:_n:Vaillant_VR940","entity_address":"d:_n:Vaillant_VR940:9","feature_address":"d:_n:Vaillant_VR940:9:0","type":"ActuatorSwitch","role":"server","description":"Pump state"},
     {"device_address":"d:_n:Vaillant_VR940","entity_address":"d:_n:Vaillant_VR940:10","feature_address":"d:_n:Vaillant_VR940:10:0","type":"Generic","role":"server","description":"Diagnostics"}
   ],
-  "usecases": [
+  "use_cases": [
     {"context_address":"d:_n:Vaillant_VR940:2:0","name":"monitoringOfRoomTemperature","actor":"HeatingZone","resolved_role":"server","scenarios":["1","2"],"version":"1.0.0","availability":true,"document_subrevision":"release"},
     {"context_address":"d:_n:Vaillant_VR940:2:1","name":"configurationOfRoomHeatingTemperature","actor":"HeatingZone","resolved_role":"client","scenarios":["1","3"],"version":"1.0.0","availability":true,"document_subrevision":"release"},
     {"context_address":"d:_n:Vaillant_VR940:3:0","name":"monitoringOfRoomHeatingSystemFunction","actor":"HeatingZone","resolved_role":"server","scenarios":["1"],"version":"1.0.0","availability":true,"document_subrevision":"release"},

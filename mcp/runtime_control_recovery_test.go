@@ -2,7 +2,7 @@ package mcp
 
 // Issue #1375: the optional recovery member of the runtime driver object.
 //
-// helianthus.runtime.list and helianthus.runtime.get publish `recovery` only
+// helianthus_runtime_list and helianthus_runtime_get publish `recovery` only
 // while the driver is in BACKOFF with a schedule: the attempt number, its due
 // time, the closed failure class and the address-free cause. Every other state
 // has no member at all (never null, never empty), and the driver object stays

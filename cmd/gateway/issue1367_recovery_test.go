@@ -4,7 +4,7 @@ package main
 // recovery, the ebus.primary lifecycle owner (DriverManager behind the
 // runtime control bridge) re-establishes the adapter-direct connection with a
 // logged backoff, and leaves RUNNING for a visible state meanwhile.
-// helianthus.runtime.list, the Portal readback and the adapter status must
+// helianthus_runtime_list, the Portal readback and the adapter status must
 // never keep RUNNING over a closed transport. The proxy-class (ENH) endpoint
 // goes through the same owner and is covered by twin tests.
 //
@@ -422,7 +422,7 @@ func requireIssue1367Version(t *testing.T, process *rctlProcess, session int) {
 }
 
 // waitIssue1367Status polls the service view (the source of
-// helianthus.runtime.list and the Portal readback) for one state.
+// helianthus_runtime_list and the Portal readback) for one state.
 func waitIssue1367Status(t *testing.T, process *rctlProcess, state drivermanager.ObservedState, reason drivermanager.ReasonCode, logs *issue1367Logs) runtimecontrol.DriverStatus {
 	t.Helper()
 	deadline := time.Now().Add(rctlBound)
@@ -438,7 +438,7 @@ func waitIssue1367Status(t *testing.T, process *rctlProcess, state drivermanager
 	}
 }
 
-// requireIssue1367List asserts helianthus.runtime.list over the ordinary MCP
+// requireIssue1367List asserts helianthus_runtime_list over the ordinary MCP
 // endpoint shows ebus.primary in the given state.
 func requireIssue1367List(t *testing.T, process *rctlProcess, state drivermanager.ObservedState, reason drivermanager.ReasonCode) {
 	t.Helper()
@@ -447,11 +447,11 @@ func requireIssue1367List(t *testing.T, process *rctlProcess, state drivermanage
 			continue
 		}
 		if driver.ObservedState != string(state) || driver.Reason != string(reason) {
-			t.Fatalf("helianthus.runtime.list ebus.primary = %s/%s; want %s/%s", driver.ObservedState, driver.Reason, state, reason)
+			t.Fatalf("helianthus_runtime_list ebus.primary = %s/%s; want %s/%s", driver.ObservedState, driver.Reason, state, reason)
 		}
 		return
 	}
-	t.Fatal("helianthus.runtime.list has no ebus.primary entry")
+	t.Fatal("helianthus_runtime_list has no ebus.primary entry")
 }
 
 // issue1367ObservedSince returns ebus.primary's committed observed events.

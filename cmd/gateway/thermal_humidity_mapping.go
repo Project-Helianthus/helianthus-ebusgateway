@@ -141,7 +141,7 @@ func mapThermalHumidity(requests []thermalHumidityRequest) []thermalHumidityResu
 		if !measurement {
 			r.Withheld = "unsupported_native_selector"
 		} else {
-			r.Field = ref("thermal.measurement.humidity_relative")
+			r.Field = ref("thermal.measurement.humidity")
 			if service != "" {
 				r.Service = ref(semreg.DefinitionID("thermal.service." + service))
 				r.Capability = ref(semreg.DefinitionID("thermal.capability.read." + service))

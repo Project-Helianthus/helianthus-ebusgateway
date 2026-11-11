@@ -13,7 +13,7 @@ import (
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 )
 
-const SemanticSnapshotTool = "semantic.v1.snapshot.get"
+const SemanticSnapshotTool = "semantic_v1_snapshot_get"
 const semanticReadTimeout = 5 * time.Second
 
 // SemanticSnapshotProvider captures a coherent public-safe detached publication,

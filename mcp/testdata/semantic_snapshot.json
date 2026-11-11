@@ -1,6 +1,6 @@
 {
   "tool": {
-    "name": "semantic.v1.snapshot.get",
+    "name": "semantic_v1_snapshot_get",
     "description": "Read one bounded detached SemReg snapshot view for selected assets across capability packs.",
     "inputSchema": {
       "type": "object",

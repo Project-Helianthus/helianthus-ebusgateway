@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	GrowattProtocolIIV1IdentityGetTool = "modbus.v1.growatt.protocol_ii.identity.get"
+	GrowattProtocolIIV1IdentityGetTool = "modbus_v1_growatt_protocol_ii_identity_get"
 	GrowattProtocolIIV1Profile         = "growatt.protocol_ii.tl3_x.identity.readonly.v1"
 )
 

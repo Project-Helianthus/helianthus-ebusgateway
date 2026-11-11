@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	TeslaFC100SummaryV1GetTool                        = "modbus.v1.tesla.fc100.summary.get"
+	TeslaFC100SummaryV1GetTool                        = "modbus_v1_tesla_fc100_summary_get"
 	TeslaFC100SummaryV1QualificationFramingOnly       = "framing_only"
 	TeslaFC100SummaryV1QualificationQualifiedReadOnly = "qualified_read_only"
 	maxTeslaFC100SummaryV1Entries                     = 64

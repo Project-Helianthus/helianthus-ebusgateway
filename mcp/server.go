@@ -80,8 +80,8 @@ type StatusProvider interface {
 }
 
 type ZoneState struct {
-	CurrentTempC       *float64 `json:"current_temp_c,omitempty"`
-	CurrentHumidityPct *float64 `json:"current_humidity_pct,omitempty"`
+	CurrentTempC       *float64 `json:"zone_room_temperature,omitempty"`
+	CurrentHumidityPct *float64 `json:"zone_room_humidity,omitempty"`
 	HvacAction         string   `json:"hvac_action,omitempty"`
 	SpecialFunction    string   `json:"special_function,omitempty"`
 	HeatingDemandPct   *float64 `json:"heating_demand_pct,omitempty"`
@@ -542,49 +542,48 @@ type Server struct {
 }
 
 const (
-	toolRuntimeStatusGetName             = "ebus.v1.runtime.status.get"
-	toolBusSummaryGetName                = "ebus.v1.bus.summary.get"
-	toolBusMessagesListName              = "ebus.v1.bus.messages.list"
-	toolBusPeriodicityListName           = "ebus.v1.bus.periodicity.list"
-	toolBusProtocolSpecimensListName     = "ebus.v1.bus.protocol_specimens.list"
-	toolWatchSummaryGetName              = "ebus.v1.watch.summary.get"
-	toolSemanticZonesGetName             = "ebus.v1.semantic.zones.get"
-	toolSemanticCircuitsGetName          = "ebus.v1.semantic.circuits.get"
-	toolSemanticRadioGetName             = "ebus.v1.semantic.radio_devices.get"
-	toolSemanticFM5ModeGetName           = "ebus.v1.semantic.fm5_mode.get"
-	toolSemanticFM5InterpretationGetName = "ebus.v1.semantic.fm5_interpretation.get"
-	toolSemanticSolarGetName             = "ebus.v1.semantic.solar.get"
-	toolSemanticCylindersGetName         = "ebus.v1.semantic.cylinders.get"
-	toolSemanticDHWGetName               = "ebus.v1.semantic.dhw.get"
-	toolSemanticEnergyGetName            = "ebus.v1.semantic.energy_totals.get"
-	toolSemanticBoilerGetName            = "ebus.v1.semantic.boiler_status.get"
-	toolSemanticSystemGetName            = "ebus.v1.semantic.system.get"
-	toolSemanticSchedulesGetName         = "ebus.v1.semantic.schedules.get"
-	toolSemanticSchedulesSetZoneName     = "ebus.v1.semantic.schedules.set_zone_time_program"
-	toolSemanticSchedulesSetDhwName      = "ebus.v1.semantic.schedules.set_dhw_time_program"
-	toolSemanticSystemSetConfigName      = "ebus.v1.semantic.system.set_config"
-	toolSemanticBoilerSetConfigName      = "ebus.v1.semantic.boiler_status.set_config"
-	toolSemanticAdapterInfoGetName       = "ebus.v1.semantic.adapter_info.get"
-	toolSemanticSnapshotName             = "ebus.v1.semantic.snapshot.get"
-	toolSnapshotCaptureName              = "ebus.v1.snapshot.capture"
-	toolSnapshotDropName                 = "ebus.v1.snapshot.drop"
-	toolDevicesV1Name                    = "ebus.v1.registry.devices.list"
-	toolDeviceGetV1Name                  = "ebus.v1.registry.devices.get"
-	toolPlanesListV1Name                 = "ebus.v1.registry.planes.list"
-	toolMethodsListV1Name                = "ebus.v1.registry.methods.list"
-	toolInvokeV1Name                     = "ebus.v1.rpc.invoke"
-	toolDevicesLegacyName                = "ebus.devices"
-	toolInvokeLegacyName                 = "ebus.invoke"
-	methodMutabilityUnknown              = "unknown"
-	methodMutabilityReadOnly             = "read_only"
-	methodMutabilityMutating             = "mutating"
-	methodDangerUnknown                  = "unknown"
-	methodDangerSafe                     = "safe"
-	methodDangerDangerous                = "dangerous"
-	defaultInvokeTimeout                 = 3 * time.Second
-	defaultIdempotencyTTL                = 30 * time.Second
-	defaultSnapshotTTL                   = 5 * time.Minute
-	defaultSnapshotReadTTL               = 10 * time.Second
+	toolRuntimeStatusGetName             = "ebus_v1_runtime_status_get"
+	toolBusSummaryGetName                = "ebus_v1_bus_summary_get"
+	toolBusMessagesListName              = "ebus_v1_bus_messages_list"
+	toolBusPeriodicityListName           = "ebus_v1_bus_periodicity_list"
+	toolBusProtocolSpecimensListName     = "ebus_v1_bus_protocol_specimens_list"
+	toolWatchSummaryGetName              = "ebus_v1_watch_summary_get"
+	toolSemanticZonesGetName             = "ebus_v1_semantic_zones_get"
+	toolSemanticCircuitsGetName          = "ebus_v1_semantic_circuits_get"
+	toolSemanticRadioGetName             = "ebus_v1_semantic_radio_devices_get"
+	toolSemanticFM5ModeGetName           = "ebus_v1_semantic_fm5_mode_get"
+	toolSemanticFM5InterpretationGetName = "ebus_v1_semantic_fm5_interpretation_get"
+	toolSemanticSolarGetName             = "ebus_v1_semantic_solar_get"
+	toolSemanticCylindersGetName         = "ebus_v1_semantic_cylinders_get"
+	toolSemanticDHWGetName               = "ebus_v1_semantic_dhw_get"
+	toolSemanticEnergyGetName            = "ebus_v1_semantic_energy_totals_get"
+	toolSemanticBoilerGetName            = "ebus_v1_semantic_boiler_status_get"
+	toolSemanticSystemGetName            = "ebus_v1_semantic_system_get"
+	toolSemanticSchedulesGetName         = "ebus_v1_semantic_schedules_get"
+	toolSemanticSchedulesSetZoneName     = "ebus_v1_semantic_schedules_set_zone_time_program"
+	toolSemanticSchedulesSetDhwName      = "ebus_v1_semantic_schedules_set_dhw_time_program"
+	toolSemanticSystemSetConfigName      = "ebus_v1_semantic_system_set_config"
+	toolSemanticBoilerSetConfigName      = "ebus_v1_semantic_boiler_status_set_config"
+	toolSemanticAdapterInfoGetName       = "ebus_v1_semantic_adapter_info_get"
+	toolSemanticSnapshotName             = "ebus_v1_semantic_snapshot_get"
+	toolSnapshotCaptureName              = "ebus_v1_snapshot_capture"
+	toolSnapshotDropName                 = "ebus_v1_snapshot_drop"
+	toolDevicesV1Name                    = "ebus_v1_registry_devices_list"
+	toolDeviceGetV1Name                  = "ebus_v1_registry_devices_get"
+	toolPlanesListV1Name                 = "ebus_v1_registry_planes_list"
+	toolMethodsListV1Name                = "ebus_v1_registry_methods_list"
+	toolInvokeV1Name                     = "ebus_v1_rpc_invoke"
+
+	methodMutabilityUnknown  = "unknown"
+	methodMutabilityReadOnly = "read_only"
+	methodMutabilityMutating = "mutating"
+	methodDangerUnknown      = "unknown"
+	methodDangerSafe         = "safe"
+	methodDangerDangerous    = "dangerous"
+	defaultInvokeTimeout     = 3 * time.Second
+	defaultIdempotencyTTL    = 30 * time.Second
+	defaultSnapshotTTL       = 5 * time.Minute
+	defaultSnapshotReadTTL   = 10 * time.Second
 )
 
 var errInvokePermissionDenied = errors.New("invoke permission denied")
@@ -1423,7 +1422,7 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
 		}
 		return callToolResultText(mustJSON(newToolEnvelope(map[string]any{"dropped": true}, nil)), false), nil
-	case toolDevicesV1Name, toolDevicesLegacyName:
+	case toolDevicesV1Name:
 		consistency, snapshot, err := s.resolveConsistency(call.Arguments)
 		if err != nil {
 			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
@@ -1506,15 +1505,6 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 		}
 		if policy.intent == "MUTATE" {
 			s.storeIdempotency(policy.idempotencyKey, signature, out)
-		}
-		return callToolResultText(mustJSON(newToolEnvelope(out, nil)), false), nil
-	case toolInvokeLegacyName:
-		if s.invoker == nil {
-			return nil, rpcErrorInternal("server missing invoker")
-		}
-		out, err := s.invoke(ctx, call.Arguments)
-		if err != nil {
-			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
 		}
 		return callToolResultText(mustJSON(newToolEnvelope(out, nil)), false), nil
 	default:
@@ -2444,7 +2434,7 @@ type deviceInfo struct {
 	// "static_seed" (productids LoadSeedTable planted at boot),
 	// "active_confirmed" (startup scan / probe), or "" when the
 	// registry has no slot record. Operators querying
-	// `ebus.v1.registry.devices.list` use this to distinguish a
+	// `ebus_v1_registry_devices_list` use this to distinguish a
 	// pre-known taxonomy entry from one that the gateway actively
 	// confirmed at runtime — required to verify the P3.5 contract.
 	DiscoverySource string `json:"discovery_source,omitempty"`
@@ -3548,7 +3538,7 @@ func cloneEnergySeries(series EnergySeries) EnergySeries {
 //
 // preferredAddr selects which AddressSlot is consulted for the
 // top-level discovery_source/verification_state projection. For
-// `ebus.v1.registry.devices.get(address=X)` the caller MUST pass the
+// `ebus_v1_registry_devices_get(address=X)` the caller MUST pass the
 // queried address X so operators querying a specific alias see THAT
 // alias's slot state — not the primary's. This matters when a merged
 // DeviceEntry has aliases at different DiscoverySource levels (e.g.
@@ -3645,7 +3635,7 @@ func (s *Server) snapshotAddressSlots() map[byte]addressSlotLabels {
 
 // lookupDiscoveryLabels projects the registry AddressSlot's enum
 // state for the given address into the JSON-friendly string labels
-// operators see in `ebus.v1.registry.devices.list` and friends.
+// operators see in `ebus_v1_registry_devices_list` and friends.
 // Mirrors the canonical mapping in helianthus-ebusgateway's
 // address_table.go so MCP and the address-table snapshot agree on
 // label spellings. Returns ("", "") when reg is nil or the slot is

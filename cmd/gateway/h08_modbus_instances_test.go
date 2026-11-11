@@ -535,7 +535,7 @@ func TestH08WithheldHuaweiInstanceListsWithItsClosedReason(t *testing.T) {
 }
 
 // TestH08RestartingOneInstanceLeavesTheOtherGenerationUnchanged drives the
-// existing helianthus.runtime.restart tool with the instance's driver ID. The
+// existing helianthus_runtime_restart tool with the instance's driver ID. The
 // other instance keeps its generation, desired revision and native runtime.
 func TestH08RestartingOneInstanceLeavesTheOtherGenerationUnchanged(t *testing.T) {
 	transport := h08InstallTransport(t)

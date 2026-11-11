@@ -87,7 +87,7 @@ func (client *Client) current(ctx context.Context, operation, query, contract st
 	}
 	body, err := json.Marshal(map[string]any{
 		"operationName": operation, "query": query,
-		"variables": map[string]any{"request": map[string]string{"contractId": contract, "assetRef": client.asset}},
+		"variables": map[string]any{"request": map[string]string{"contract_id": contract, "asset_ref": client.asset}},
 	})
 	if err != nil {
 		return Response{}, err

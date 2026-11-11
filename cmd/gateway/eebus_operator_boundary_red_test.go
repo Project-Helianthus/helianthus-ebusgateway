@@ -33,8 +33,8 @@ func TestIssue819ReleasedDependencyClosurePinsEEBusregV0135(t *testing.T) {
 	if err := scanner.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if len(versions) != 1 || versions[0] != "v0.1.36" {
-		t.Fatalf("%s versions = %v, want exactly [v0.1.36]", module, versions)
+	if len(versions) != 1 || versions[0] != "v0.1.37-0.20261111060854-871cb4c7c5c3" {
+		t.Fatalf("%s versions = %v, want exactly [v0.1.37-0.20261111060854-871cb4c7c5c3]", module, versions)
 	}
 }
 

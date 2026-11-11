@@ -535,9 +535,21 @@ func TestCAN03ReceiveFailureReachesLifecycleAndRestart(t *testing.T) {
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), rctlBound)
 			defer cancel()
-			if _, err := service.Decide(ctx, runtimecontrol.MethodRestart, runtimecontrol.Request{DriverID: managedGrowattCANID, ExpectedRevision: failed.DesiredRevision}); err != nil {
-				t.Fatal(err)
-			}
+			// FAILED can be published before the preceding decision finishes
+			// acceptance or terminal-slot pruning. Retry only those explicit
+			// row-8 transients, bounded by the existing wait and same revision.
+			m06Wait(t, func() bool {
+				_, err := service.Decide(ctx, runtimecontrol.MethodRestart, runtimecontrol.Request{DriverID: managedGrowattCANID, ExpectedRevision: failed.DesiredRevision})
+				var refusal *runtimecontrol.Refusal
+				if errors.As(err, &refusal) && refusal.Code == runtimecontrol.RefusalTransitionBusy && refusal.Row == 8 &&
+					(refusal.Reason == "previous decision outcome is being resolved" || refusal.Reason == "terminal work slot is being pruned") {
+					return false
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				return true
+			})
 			wait(drivermanager.ObservedRunning)
 			second := <-opened
 			if first.closeCount() != 1 {

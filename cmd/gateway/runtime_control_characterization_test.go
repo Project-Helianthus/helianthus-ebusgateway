@@ -550,7 +550,7 @@ func TestRuntimeControlCharacterizationStatusSurfaces(t *testing.T) {
 		{
 			name:      "pre_admission_no_adapter_identity",
 			admitted:  func() (byte, bool) { return 0, false },
-			want:      `graphql={"adapterStatus":{"firmwareVersion":"","initiatorAddress":"","status":"unknown","updatesAvailable":false},"daemonStatus":{"firmwareVersion":"0.0.0-char","initiatorAddress":"","status":"running","updatesAvailable":false}} mcp={"adapter_status":{"firmware_version":"","status":"unknown","updates_available":false},"daemon_status":{"firmware_version":"0.0.0-char","initiator_address":"auto","status":"running","updates_available":false},"vaillant_regulator_capability":"UNKNOWN"}`,
+			want:      `graphql={"adapter_status":{"firmware_version":"","initiator_address":"","status":"unknown","updates_available":false},"daemon_status":{"firmware_version":"0.0.0-char","initiator_address":"","status":"running","updates_available":false}} mcp={"adapter_status":{"firmware_version":"","status":"unknown","updates_available":false},"daemon_status":{"firmware_version":"0.0.0-char","initiator_address":"auto","status":"running","updates_available":false},"vaillant_regulator_capability":"UNKNOWN"}`,
 			changesBy: "1b durable control unifies the pre-admission initiator projection (GraphQL empty vs MCP auto today) or adds driver state to status",
 		},
 		{
@@ -558,14 +558,14 @@ func TestRuntimeControlCharacterizationStatusSurfaces(t *testing.T) {
 			semantic:  semantic,
 			admitted:  func() (byte, bool) { return 0x1A, true },
 			updates:   func() bool { return true },
-			want:      `graphql={"adapterStatus":{"firmwareVersion":"char-adapter-1","initiatorAddress":"","status":"running","updatesAvailable":false},"daemonStatus":{"firmwareVersion":"0.0.0-char","initiatorAddress":"0x1A","status":"running","updatesAvailable":true}} mcp={"adapter_status":{"firmware_version":"char-adapter-1","status":"running","updates_available":false},"daemon_status":{"firmware_version":"0.0.0-char","initiator_address":"0x1A","status":"running","updates_available":true},"vaillant_regulator_capability":"UNKNOWN"}`,
+			want:      `graphql={"adapter_status":{"firmware_version":"char-adapter-1","initiator_address":"","status":"running","updates_available":false},"daemon_status":{"firmware_version":"0.0.0-char","initiator_address":"0x1A","status":"running","updates_available":true}} mcp={"adapter_status":{"firmware_version":"char-adapter-1","status":"running","updates_available":false},"daemon_status":{"firmware_version":"0.0.0-char","initiator_address":"0x1A","status":"running","updates_available":true},"vaillant_regulator_capability":"UNKNOWN"}`,
 			changesBy: "1b durable control or 1c bridge changes admitted status projection",
 		},
 		{
 			name:      "selected_source_but_driver_not_running",
 			semantic:  semantic,
 			admitted:  newManagedEBusSourceProvider(stoppedController, func() (byte, bool) { return 0x1A, true }),
-			want:      `graphql={"adapterStatus":{"firmwareVersion":"char-adapter-1","initiatorAddress":"","status":"running","updatesAvailable":false},"daemonStatus":{"firmwareVersion":"0.0.0-char","initiatorAddress":"","status":"running","updatesAvailable":false}} mcp={"adapter_status":{"firmware_version":"char-adapter-1","status":"running","updates_available":false},"daemon_status":{"firmware_version":"0.0.0-char","initiator_address":"auto","status":"running","updates_available":false},"vaillant_regulator_capability":"UNKNOWN"}`,
+			want:      `graphql={"adapter_status":{"firmware_version":"char-adapter-1","initiator_address":"","status":"running","updates_available":false},"daemon_status":{"firmware_version":"0.0.0-char","initiator_address":"","status":"running","updates_available":false}} mcp={"adapter_status":{"firmware_version":"char-adapter-1","status":"running","updates_available":false},"daemon_status":{"firmware_version":"0.0.0-char","initiator_address":"auto","status":"running","updates_available":false},"vaillant_regulator_capability":"UNKNOWN"}`,
 			changesBy: "1a.2 registry seam stops intersecting the selected source with live driver WRITE admission",
 		},
 	}
@@ -577,7 +577,7 @@ func TestRuntimeControlCharacterizationStatusSurfaces(t *testing.T) {
 			if err != nil {
 				t.Fatalf("graphql.NewHandler() error = %v", err)
 			}
-			request := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":"{ daemonStatus { status firmwareVersion updatesAvailable initiatorAddress } adapterStatus { status firmwareVersion updatesAvailable initiatorAddress } }"}`))
+			request := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":"{ daemon_status { status firmware_version updates_available initiator_address } adapter_status { status firmware_version updates_available initiator_address } }"}`))
 			request.Header.Set("Content-Type", "application/json")
 			response := httptest.NewRecorder()
 			handler.ServeHTTP(response, request)
@@ -595,7 +595,7 @@ func TestRuntimeControlCharacterizationStatusSurfaces(t *testing.T) {
 				t.Fatalf("mcp.NewServer() error = %v", err)
 			}
 			server.SetStatusProvider(newMCPRuntimeStatusProviderForBuild(tc.semantic, tc.admitted, buildInfo, tc.updates))
-			envelope := mcpCallToolEnvelope(t, server.Handler(), "ebus.v1.runtime.status.get", `{}`)
+			envelope := mcpCallToolEnvelope(t, server.Handler(), "ebus_v1_runtime_status_get", `{}`)
 			mcpData, _ := json.Marshal(envelope["data"])
 			requireRCCPinned(t, []rccPinned{{
 				label:     "status surfaces",

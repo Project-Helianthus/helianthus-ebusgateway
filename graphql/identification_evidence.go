@@ -12,7 +12,7 @@ const (
 	identificationEvidenceClassRaw      = "raw"
 	identificationEvidenceQualification = "none"
 	identificationEvidenceNotice        = "Raw bytes of the directed 07 04 identification exchange as seen by the gateway bus observer. " +
-		"requestHex is QQ ZZ PB SB NN [data]; responseHex is NN [data]; CRC and ACK bytes are not retained. " +
+		"request_hex is QQ ZZ PB SB NN [data]; response_hex is NN [data]; CRC and ACK bytes are not retained. " +
 		"Nothing is decoded, normalised or qualified."
 )
 
@@ -40,18 +40,18 @@ type IdentificationEvidenceProvider interface {
 type identificationEvidenceItem struct {
 	Address     int    `json:"address"`
 	Sequence    int    `json:"sequence"`
-	SessionID   string `json:"sessionId"`
-	CapturedAt  string `json:"capturedAt"`
-	RequestHex  string `json:"requestHex"`
-	ResponseHex string `json:"responseHex"`
+	SessionID   string `json:"session_id"`
+	CapturedAt  string `json:"captured_at"`
+	RequestHex  string `json:"request_hex"`
+	ResponseHex string `json:"response_hex"`
 }
 
 type identificationEvidenceList struct {
-	EvidenceClass string                       `json:"evidenceClass"`
+	EvidenceClass string                       `json:"evidence_class"`
 	Decoded       bool                         `json:"decoded"`
 	Qualification string                       `json:"qualification"`
 	Notice        string                       `json:"notice"`
-	SessionID     string                       `json:"sessionId"`
+	SessionID     string                       `json:"session_id"`
 	Count         int                          `json:"count"`
 	Items         []identificationEvidenceItem `json:"items"`
 }
@@ -76,26 +76,26 @@ func (b *Builder) identificationEvidenceProvider() IdentificationEvidenceProvide
 
 func buildIdentificationEvidenceType() *graphqlgo.Object {
 	itemType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "BusIdentificationEvidenceItem",
+		Name: "bus_identification_evidence_item",
 		Fields: graphqlgo.Fields{
-			"address":     &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.Int)},
-			"sequence":    &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.Int)},
-			"sessionId":   &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.String)},
-			"capturedAt":  &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.String)},
-			"requestHex":  &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.String)},
-			"responseHex": &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+			"address":      &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.Int)},
+			"sequence":     &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.Int)},
+			"session_id":   &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+			"captured_at":  &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+			"request_hex":  &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+			"response_hex": &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.String)},
 		},
 	})
 	return graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "BusIdentificationEvidence",
+		Name: "bus_identification_evidence",
 		Fields: graphqlgo.Fields{
-			"evidenceClass": &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.String)},
-			"decoded":       &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.Boolean)},
-			"qualification": &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.String)},
-			"notice":        &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.String)},
-			"sessionId":     &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.String)},
-			"count":         &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.Int)},
-			"items":         &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(itemType)))},
+			"evidence_class": &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+			"decoded":        &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.Boolean)},
+			"qualification":  &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+			"notice":         &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+			"session_id":     &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+			"count":          &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.Int)},
+			"items":          &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(itemType)))},
 		},
 	})
 }

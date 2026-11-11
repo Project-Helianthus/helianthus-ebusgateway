@@ -994,8 +994,8 @@ func (p *m57Process) decide(tool string, id runtimecontrol.DriverID) {
 	}
 }
 
-// read captures the same assets through GraphQL semanticSnapshot and MCP
-// semantic.v1.snapshot.get and requires identical identity, revision, value
+// read captures the same assets through GraphQL semantic_snapshot and MCP
+// semantic_v1_snapshot_get and requires identical identity, revision, value
 // and loss. It returns the MCP view.
 func (p *m57Process) read(ids ...semreg.AssetID) semanticview.View {
 	p.t.Helper()
@@ -1003,18 +1003,18 @@ func (p *m57Process) read(ids ...semreg.AssetID) semanticview.View {
 	for i, id := range ids {
 		quoted[i] = strconv.Quote(string(id))
 	}
-	query, err := json.Marshal(map[string]string{"query": `{ semanticSnapshot(assetIds:[` + strings.Join(quoted, ",") + `])` + m11Selection(reflect.TypeOf(semanticview.View{})) + ` }`})
+	query, err := json.Marshal(map[string]string{"query": `{ semantic_snapshot(asset_ids:[` + strings.Join(quoted, ",") + `])` + m11Selection(reflect.TypeOf(semanticview.View{})) + ` }`})
 	if err != nil {
 		p.t.Fatal(err)
 	}
 	var gql struct {
 		Data struct {
-			SemanticSnapshot map[string]any `json:"semanticSnapshot"`
+			SemanticSnapshot map[string]any `json:"semantic_snapshot"`
 		} `json:"data"`
 		Errors []any `json:"errors"`
 	}
 	if err := json.Unmarshal(p.request(http.MethodPost, p.cfg.GraphQLPath, query), &gql); err != nil || gql.Errors != nil {
-		p.t.Fatalf("GraphQL semanticSnapshot: %v %v", err, gql.Errors)
+		p.t.Fatalf("GraphQL semantic_snapshot: %v %v", err, gql.Errors)
 	}
 	args, err := json.Marshal(map[string]any{"asset_ids": ids})
 	if err != nil {
@@ -1038,16 +1038,16 @@ func (p *m57Process) read(ids ...semreg.AssetID) semanticview.View {
 		left, right := graphQLAssets[i].(map[string]any), mcpAssets[i].(map[string]any)
 		// Each surface captures once at its own instant, so evaluation clocks
 		// differ; the evaluated publication tuple must not.
-		for _, member := range []string{"assetId", "unavailableReason", "snapshot", "projection", "selections"} {
+		for _, member := range []string{"asset_id", "unavailable_reason", "snapshot", "projection", "selections"} {
 			if !reflect.DeepEqual(left[member], right[member]) {
-				p.t.Fatalf("%v: GraphQL and MCP disagree on %s:\n%v\n%v", right["assetId"], member, left[member], right[member])
+				p.t.Fatalf("%v: GraphQL and MCP disagree on %s:\n%v\n%v", right["asset_id"], member, left[member], right[member])
 			}
 		}
-		for _, member := range []string{"snapshotId", "revisions"} {
+		for _, member := range []string{"snapshot_id", "revisions"} {
 			l, _ := left["evaluation"].(map[string]any)
 			r, _ := right["evaluation"].(map[string]any)
 			if !reflect.DeepEqual(l[member], r[member]) {
-				p.t.Fatalf("%v: GraphQL and MCP evaluate different publications", right["assetId"])
+				p.t.Fatalf("%v: GraphQL and MCP evaluate different publications", right["asset_id"])
 			}
 		}
 	}
@@ -1153,13 +1153,13 @@ func m57SetModeRequest(t *testing.T, asset semanticview.Asset, token string) m57
 	}
 	kind := m57ThermalPublication().ref(m57SetMode)
 	input := map[string]any{
-		"assetId": asset.AssetID, "bindingId": capability.BindingID, "capabilityInstanceId": capability.InstanceID,
-		"operation":                map[string]any{"pack": map[string]any{"id": kind.Pack.ID, "version": kind.Pack.Version}, "id": kind.ID, "version": kind.Version},
-		"arguments":                []any{map[string]any{"id": m57ModeField, "value": map[string]any{"kind": "symbol", "symbol": map[string]any{"namespace": m57ModeField, "token": token, "known": true}}}},
-		"expectedSemanticRevision": snapshot.Revisions.Semantic, "expectedCapabilityRevision": snapshot.Revisions.Capabilities, "expectedCapabilityInstanceRevision": capability.Revision,
-		"expectedSourceEpochId": capability.SourceEpochID, "expectedDriverGeneration": capability.DriverGeneration, "preconditions": []any{}, "timeoutMs": 5000,
+		"asset_id": asset.AssetID, "binding_id": capability.BindingID, "capability_instance_id": capability.InstanceID,
+		"operation":                  map[string]any{"pack": map[string]any{"id": kind.Pack.ID, "version": kind.Pack.Version}, "id": kind.ID, "version": kind.Version},
+		"arguments":                  []any{map[string]any{"id": m57ModeField, "value": map[string]any{"kind": "symbol", "symbol": map[string]any{"namespace": m57ModeField, "token": token, "known": true}}}},
+		"expected_semantic_revision": snapshot.Revisions.Semantic, "expected_capability_revision": snapshot.Revisions.Capabilities, "expected_capability_instance_revision": capability.Revision,
+		"expected_source_epoch_id": capability.SourceEpochID, "expected_driver_generation": capability.DriverGeneration, "preconditions": []any{}, "timeout_ms": 5000,
 	}
-	body, err := json.Marshal(map[string]any{"query": `mutation($input: SemanticOperationInput!) { semanticOperation(input: $input) { status kernelOutcome delivery reason } }`, "variables": map[string]any{"input": input}})
+	body, err := json.Marshal(map[string]any{"query": `mutation($input: semantic_operation_input!) { semantic_operation(input: $input) { status kernel_outcome delivery reason } }`, "variables": map[string]any{"input": input}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1167,29 +1167,29 @@ func m57SetModeRequest(t *testing.T, asset semanticview.Asset, token string) m57
 		SourceID: source.SourceID, SourceEpochID: capability.SourceEpochID, DriverGeneration: capability.DriverGeneration}}
 }
 
-// operate posts one semanticOperation mutation to the production GraphQL
+// operate posts one semantic_operation mutation to the production GraphQL
 // route. It is safe to call from any goroutine.
 func (p *m57Process) operate(request m57OperationRequest) (map[string]any, error) {
 	status, raw, err := p.send(http.MethodPost, p.cfg.GraphQLPath, request.body)
 	if err != nil || status != http.StatusOK {
-		return nil, fmt.Errorf("semanticOperation: status=%d err=%v body=%s", status, err, raw)
+		return nil, fmt.Errorf("semantic_operation: status=%d err=%v body=%s", status, err, raw)
 	}
 	var response struct {
 		Data struct {
-			Result map[string]any `json:"semanticOperation"`
+			Result map[string]any `json:"semantic_operation"`
 		} `json:"data"`
 		Errors []any `json:"errors"`
 	}
 	if err := json.Unmarshal(raw, &response); err != nil || response.Errors != nil || response.Data.Result == nil {
-		return nil, fmt.Errorf("semanticOperation: %v %s", err, raw)
+		return nil, fmt.Errorf("semantic_operation: %v %s", err, raw)
 	}
 	return response.Data.Result, nil
 }
 
 func m57RequireResult(t *testing.T, what string, result map[string]any, err error, status, kernel, delivery, reason string) {
 	t.Helper()
-	want := map[string]any{"status": status, "kernelOutcome": nil, "delivery": nil, "reason": nil}
-	for member, value := range map[string]string{"kernelOutcome": kernel, "delivery": delivery, "reason": reason} {
+	want := map[string]any{"status": status, "kernel_outcome": nil, "delivery": nil, "reason": nil}
+	for member, value := range map[string]string{"kernel_outcome": kernel, "delivery": delivery, "reason": reason} {
 		if value != "" {
 			want[member] = value
 		}
@@ -1389,7 +1389,7 @@ func TestM57ComposedDriversShareOneNorthboundPath(t *testing.T) {
 	if err := json.Unmarshal(p.request(http.MethodGet, p.cfg.PortalPath+"/api/v1/bootstrap", nil), &bootstrap); err != nil {
 		t.Fatal(err)
 	}
-	if bootstrap.Read.Operation != "semanticSnapshot" || len(bootstrap.Read.Unavailable) != 0 || bootstrap.Endpoints["graphql"] != p.cfg.GraphQLPath {
+	if bootstrap.Read.Operation != "semantic_snapshot" || len(bootstrap.Read.Unavailable) != 0 || bootstrap.Endpoints["graphql"] != p.cfg.GraphQLPath {
 		t.Fatalf("Portal shared read: %+v endpoints=%v", bootstrap.Read, bootstrap.Endpoints)
 	}
 	drivers = p.drivers()
@@ -1572,7 +1572,7 @@ func TestM57RestartRejectsLateOperationCompletion(t *testing.T) {
 	// bounded wait when the restart outlasted the request timeout; never a
 	// confirmation.
 	if reason := fmt.Sprint(completed.result["reason"]); completed.err != nil || completed.result["status"] != "unknown" ||
-		completed.result["kernelOutcome"] != nil || completed.result["delivery"] != nil ||
+		completed.result["kernel_outcome"] != nil || completed.result["delivery"] != nil ||
 		reason != semanticoperations.ReasonExecutionEvidenceInvalid && reason != semanticoperations.ReasonEvidenceTimeout {
 		t.Fatalf("late prior-generation completion: %v %v", completed.result, completed.err)
 	}
@@ -1796,14 +1796,14 @@ func TestM65RestartedDriverAdmitsOperationsOnItsSuccessor(t *testing.T) {
 			}
 			refusals := []refusal{
 				{"request naming the retired route", before, string(shape.stale)},
-				{"retired capability instance", current.with(t, "capabilityInstanceId", before.route.CapabilityInstance), string(shape.stale)},
-				{"retired binding", current.with(t, "bindingId", before.route.BindingID), semanticoperations.ReasonBindingMismatch},
+				{"retired capability instance", current.with(t, "capability_instance_id", before.route.CapabilityInstance), string(shape.stale)},
+				{"retired binding", current.with(t, "binding_id", before.route.BindingID), semanticoperations.ReasonBindingMismatch},
 			}
 			if epochChanged {
-				refusals = append(refusals, refusal{"retired source epoch", current.with(t, "expectedSourceEpochId", before.route.SourceEpochID), string(semreg.StaleSourceEpoch)})
+				refusals = append(refusals, refusal{"retired source epoch", current.with(t, "expected_source_epoch_id", before.route.SourceEpochID), string(semreg.StaleSourceEpoch)})
 			}
 			if generationChanged {
-				refusals = append(refusals, refusal{"retired driver generation", current.with(t, "expectedDriverGeneration", before.route.DriverGeneration), string(semreg.StaleDriverGeneration)})
+				refusals = append(refusals, refusal{"retired driver generation", current.with(t, "expected_driver_generation", before.route.DriverGeneration), string(semreg.StaleDriverGeneration)})
 			}
 			calls := p.lookup.calls.Load()
 			for _, refused := range refusals {

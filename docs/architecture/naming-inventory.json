@@ -3255,6 +3255,114 @@
         "value": "celsius"
       },
       "value_class": "gauge"
+    },
+    {
+      "current_name": "semantic.v1.snapshot.get",
+      "target": "semantic_v1_snapshot_get",
+      "status": "ready",
+      "kind": "mcp_method",
+      "action": "rename",
+      "source_file": "mcp/semantic_snapshot.go",
+      "full_identity": "mcp/semantic.v1.snapshot.get",
+      "evidence_class": "Proven",
+      "open_question": "",
+      "role_decomposition": {
+        "classification": "tool_name",
+        "namespace_tokens": [
+          "semantic",
+          "v1",
+          "snapshot",
+          "get"
+        ]
+      },
+      "consumer_files": [],
+      "preserve_safety": [
+        "Unchanged permission and descriptor ownership"
+      ],
+      "unit": "not_applicable",
+      "value_class": "not_applicable"
+    },
+    {
+      "current_name": "semantic.v1.pv.current.get",
+      "target": "semantic_v1_pv_current_get",
+      "status": "ready",
+      "kind": "mcp_method",
+      "action": "rename",
+      "source_file": "mcp/modbus_v1.go",
+      "full_identity": "mcp/semantic.v1.pv.current.get",
+      "evidence_class": "Proven",
+      "open_question": "",
+      "role_decomposition": {
+        "classification": "tool_name",
+        "namespace_tokens": [
+          "semantic",
+          "v1",
+          "pv",
+          "current",
+          "get"
+        ]
+      },
+      "consumer_files": [],
+      "preserve_safety": [
+        "Unchanged permission and descriptor ownership"
+      ],
+      "unit": "not_applicable",
+      "value_class": "not_applicable"
+    },
+    {
+      "current_name": "semantic.v1.evse.current.get",
+      "target": "semantic_v1_evse_current_get",
+      "status": "ready",
+      "kind": "mcp_method",
+      "action": "rename",
+      "source_file": "mcp/tesla_gen3_evse_semantic.go",
+      "full_identity": "mcp/semantic.v1.evse.current.get",
+      "evidence_class": "Proven",
+      "open_question": "",
+      "role_decomposition": {
+        "classification": "tool_name",
+        "namespace_tokens": [
+          "semantic",
+          "v1",
+          "evse",
+          "current",
+          "get"
+        ]
+      },
+      "consumer_files": [],
+      "preserve_safety": [
+        "Unchanged permission and descriptor ownership"
+      ],
+      "unit": "not_applicable",
+      "value_class": "not_applicable"
+    },
+    {
+      "current_name": "semantic.v1.storage.growatt.current.get",
+      "target": "semantic_v1_storage_growatt_current_get",
+      "status": "ready",
+      "kind": "mcp_method",
+      "action": "rename",
+      "source_file": "mcp/growatt_storage_semantic.go",
+      "full_identity": "mcp/semantic.v1.storage.growatt.current.get",
+      "evidence_class": "Proven",
+      "open_question": "",
+      "role_decomposition": {
+        "classification": "tool_name",
+        "namespace_tokens": [
+          "semantic",
+          "v1",
+          "storage",
+          "growatt",
+          "current",
+          "get"
+        ]
+      },
+      "consumer_files": [],
+      "preserve_safety": [
+        "Unchanged permission and descriptor ownership"
+      ],
+      "unit": "not_applicable",
+      "value_class": "not_applicable"
     }
   ],
   "bounded_validation_commands": [
@@ -140872,5 +140980,49 @@
       "}"
     ]
   },
-  "validation_scope": "The exhaustive-coverage assertions remain unchanged; partial coverage is accepted by owner decision. Bounded validators enforce explicit row status and bounded targets. Both scope and byte-neutrality validators compare tracked inputs against the PR merge base and permit changes only in the two inventories and the source-selection gate and its tests. They do not claim exhaustive coverage."
+  "validation_scope": "The exhaustive-coverage assertions remain unchanged; partial coverage is accepted by owner decision. Bounded validators enforce explicit row status and bounded targets. Both scope and byte-neutrality validators compare tracked inputs against the PR merge base and permit changes only in the two inventories and the source-selection gate and its tests. They do not claim exhaustive coverage.",
+  "adoption": {
+    "status": "bounded",
+    "evidence_class": "S",
+    "qualification": "not established by synthetic checks",
+    "supported_changes": "Bounded naming maps, structural GraphQL syntax, registered MCP tokens, six circuit setters and explicit control withdrawals. Other vocabulary retains its recorded status.",
+    "remaining_questions": [
+      "Selector-dependent target_temp_c retains its existing snake_case spelling.",
+      "energy_accumulated retains its provisional spelling.",
+      "Other unresolved native value and setter names remain provisional."
+    ],
+    "release_requirement": "Renew affected security, hardware and candidate evidence; complete independent review, full repository gates and affected transport/conformance before release.",
+    "native_authorization_boundary": {
+      "status": "structural",
+      "public_registration": "Join namespace tokens with underscores; accept exactly one public spelling.",
+      "native_identity": "Library-owned raw eeBUS ToolV1 values and permission scopes remain unchanged within authorization, results and hashes.",
+      "registered_commands": [
+        {
+          "current_name": "eebus.v1.features.get",
+          "target": "eebus_v1_features_get",
+          "status": "ready"
+        },
+        {
+          "current_name": "eebus.v1.features.data.get",
+          "target": "eebus_v1_features_data_get",
+          "status": "ready"
+        },
+        {
+          "current_name": "eebus.v1.features.data.set",
+          "target": "eebus_v1_features_data_set",
+          "status": "ready"
+        },
+        {
+          "current_name": "eebus.v1.mutations.get",
+          "target": "eebus_v1_mutations_get",
+          "status": "ready"
+        },
+        {
+          "current_name": "eebus.v1.mutations.rollback",
+          "target": "eebus_v1_mutations_rollback",
+          "status": "ready"
+        }
+      ]
+    }
+  }
 }

@@ -12,7 +12,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 )
 
-const mcpToolWatchSummaryGet = "ebus.v1.watch.summary.get"
+const mcpToolWatchSummaryGet = "ebus_v1_watch_summary_get"
 
 func TestMCPWatchSummaryProviderAdapter_DirectApplyPolicyGoldenAndNormalizedFlagClasses(t *testing.T) {
 	base := time.Date(2026, time.March, 13, 8, 30, 0, 0, time.UTC)

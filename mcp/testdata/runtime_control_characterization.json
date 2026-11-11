@@ -91,7 +91,7 @@
         "data_timestamp": "<data_timestamp>"
       }
     },
-    "tool": "ebus.v1.bus.summary.get"
+    "tool": "ebus_v1_bus_summary_get"
   },
   "bus_summary_admission_degraded": {
     "arguments": {},
@@ -179,7 +179,7 @@
         "data_timestamp": "<data_timestamp>"
       }
     },
-    "tool": "ebus.v1.bus.summary.get"
+    "tool": "ebus_v1_bus_summary_get"
   },
   "bus_summary_admission_pending_warmup": {
     "arguments": {},
@@ -265,7 +265,7 @@
         "data_timestamp": "<data_timestamp>"
       }
     },
-    "tool": "ebus.v1.bus.summary.get"
+    "tool": "ebus_v1_bus_summary_get"
   },
   "bus_summary_retained_while_stopped": {
     "arguments": {},
@@ -359,7 +359,7 @@
         "data_timestamp": "<data_timestamp>"
       }
     },
-    "tool": "ebus.v1.bus.summary.get"
+    "tool": "ebus_v1_bus_summary_get"
   },
   "bus_summary_without_provider": {
     "arguments": {},
@@ -367,10 +367,10 @@
     "envelope": {
       "rpc_error": {
         "code": -32602,
-        "message": "unknown tool \"ebus.v1.bus.summary.get\""
+        "message": "unknown tool \"ebus_v1_bus_summary_get\""
       }
     },
-    "tool": "ebus.v1.bus.summary.get"
+    "tool": "ebus_v1_bus_summary_get"
   },
   "identification_evidence_list": {
     "arguments": {},
@@ -416,7 +416,7 @@
         "data_timestamp": "<data_timestamp>"
       }
     },
-    "tool": "ebus.v1.bus.identification_evidence.list"
+    "tool": "ebus_v1_bus_identification_evidence_list"
   },
   "identification_evidence_list_limit_one": {
     "arguments": {
@@ -456,7 +456,7 @@
         "data_timestamp": "<data_timestamp>"
       }
     },
-    "tool": "ebus.v1.bus.identification_evidence.list"
+    "tool": "ebus_v1_bus_identification_evidence_list"
   },
   "identification_evidence_retained_while_stopped": {
     "arguments": {},
@@ -502,7 +502,7 @@
         "data_timestamp": "<data_timestamp>"
       }
     },
-    "tool": "ebus.v1.bus.identification_evidence.list"
+    "tool": "ebus_v1_bus_identification_evidence_list"
   },
   "runtime_status_admitted": {
     "arguments": {},
@@ -536,7 +536,7 @@
         "data_timestamp": "<data_timestamp>"
       }
     },
-    "tool": "ebus.v1.runtime.status.get"
+    "tool": "ebus_v1_runtime_status_get"
   },
   "runtime_status_default_provider": {
     "arguments": {},
@@ -569,7 +569,7 @@
         "data_timestamp": "<data_timestamp>"
       }
     },
-    "tool": "ebus.v1.runtime.status.get"
+    "tool": "ebus_v1_runtime_status_get"
   },
   "runtime_status_degraded_failed_startup_task": {
     "arguments": {},
@@ -604,7 +604,7 @@
         "data_timestamp": "<data_timestamp>"
       }
     },
-    "tool": "ebus.v1.runtime.status.get"
+    "tool": "ebus_v1_runtime_status_get"
   },
   "runtime_status_pre_admission": {
     "arguments": {},
@@ -638,7 +638,7 @@
         "data_timestamp": "<data_timestamp>"
       }
     },
-    "tool": "ebus.v1.runtime.status.get"
+    "tool": "ebus_v1_runtime_status_get"
   },
   "runtime_status_stopped_retained_firmware": {
     "arguments": {},
@@ -672,7 +672,7 @@
         "data_timestamp": "<data_timestamp>"
       }
     },
-    "tool": "ebus.v1.runtime.status.get"
+    "tool": "ebus_v1_runtime_status_get"
   },
   "runtime_status_unavailable_retained_firmware": {
     "arguments": {},
@@ -706,7 +706,7 @@
         "data_timestamp": "<data_timestamp>"
       }
     },
-    "tool": "ebus.v1.runtime.status.get"
+    "tool": "ebus_v1_runtime_status_get"
   },
   "runtime_status_unrecognised_capability": {
     "arguments": {},
@@ -740,7 +740,7 @@
         "data_timestamp": "<data_timestamp>"
       }
     },
-    "tool": "ebus.v1.runtime.status.get"
+    "tool": "ebus_v1_runtime_status_get"
   },
   "runtime_status_without_capability_method": {
     "arguments": {},
@@ -774,6 +774,6 @@
         "data_timestamp": "<data_timestamp>"
       }
     },
-    "tool": "ebus.v1.runtime.status.get"
+    "tool": "ebus_v1_runtime_status_get"
   }
 }

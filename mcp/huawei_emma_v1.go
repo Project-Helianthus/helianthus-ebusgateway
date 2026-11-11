@@ -7,8 +7,8 @@ import (
 )
 
 const (
-	HuaweiEMMAV1StatusGetTool   = "modbus.v1.huawei.emma.status.get"
-	HuaweiEMMAV1IdentityGetTool = "modbus.v1.huawei.emma.identity.get"
+	HuaweiEMMAV1StatusGetTool   = "modbus_v1_huawei_emma_status_get"
+	HuaweiEMMAV1IdentityGetTool = "modbus_v1_huawei_emma_identity_get"
 	HuaweiEMMAV1Profile         = "huawei.emma.readonly.v1"
 )
 

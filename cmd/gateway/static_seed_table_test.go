@@ -67,7 +67,7 @@ func TestApplyStaticSeedTable_StampsStaticSeedLabel(t *testing.T) {
 
 // TestApplyStaticSeedTable_MCPDeviceListProjection is the operator-
 // surface verification for P3.5: after applyStaticSeedTable runs, the
-// MCP `ebus.v1.registry.devices.list` tool MUST return JSON entries
+// MCP `ebus_v1_registry_devices_list` tool MUST return JSON entries
 // whose `discovery_source` field equals `"static_seed"` and whose
 // `verification_state` field equals `"candidate"` for each seeded
 // address. This is the path the operator follows on a deployed
@@ -90,7 +90,7 @@ func TestApplyStaticSeedTable_MCPDeviceListProjection(t *testing.T) {
 	httpSrv := httptest.NewServer(server.Handler())
 	defer httpSrv.Close()
 
-	body := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ebus.v1.registry.devices.list","arguments":{}}}`)
+	body := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ebus_v1_registry_devices_list","arguments":{}}}`)
 	resp, err := http.Post(httpSrv.URL, "application/json", body)
 	if err != nil {
 		t.Fatalf("POST tools/call error = %v", err)
@@ -195,7 +195,7 @@ func TestApplyStaticSeedTable_MCPDeviceListProjection_SnapshotMode(t *testing.T)
 	defer httpSrv.Close()
 
 	// 1. Capture a snapshot.
-	captureBody := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ebus.v1.snapshot.capture","arguments":{}}}`)
+	captureBody := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ebus_v1_snapshot_capture","arguments":{}}}`)
 	captureResp, err := http.Post(httpSrv.URL, "application/json", captureBody)
 	if err != nil {
 		t.Fatalf("snapshot.capture POST error = %v", err)
@@ -228,7 +228,7 @@ func TestApplyStaticSeedTable_MCPDeviceListProjection_SnapshotMode(t *testing.T)
 	}
 
 	// 2. Call devices.list with consistency: SNAPSHOT and the captured ID.
-	devicesBody := strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"ebus.v1.registry.devices.list","arguments":{"consistency":{"mode":"snapshot","snapshot_id":"` + captureEnvelope.Data.SnapshotID + `"}}}}`)
+	devicesBody := strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"ebus_v1_registry_devices_list","arguments":{"consistency":{"mode":"snapshot","snapshot_id":"` + captureEnvelope.Data.SnapshotID + `"}}}}`)
 	devResp, err := http.Post(httpSrv.URL, "application/json", devicesBody)
 	if err != nil {
 		t.Fatalf("snapshot devices.list POST error = %v", err)
@@ -355,7 +355,7 @@ func TestApplyStaticSeedTable_MCPDeviceGetProjectsQueriedAddressSlot(t *testing.
 
 	queryAddress := func(addr int) (string, string) {
 		t.Helper()
-		body := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ebus.v1.registry.devices.get","arguments":{"address":` + intToHexJSON(addr) + `}}}`)
+		body := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ebus_v1_registry_devices_get","arguments":{"address":` + intToHexJSON(addr) + `}}}`)
 		resp, err := http.Post(httpSrv.URL, "application/json", body)
 		if err != nil {
 			t.Fatalf("devices.get(0x%02X) POST error = %v", addr, err)
@@ -443,7 +443,7 @@ func TestApplyStaticSeedTable_MCPDeviceGetSnapshotPerAlias(t *testing.T) {
 	defer httpSrv.Close()
 
 	// Capture a snapshot.
-	captureBody := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ebus.v1.snapshot.capture","arguments":{}}}`)
+	captureBody := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ebus_v1_snapshot_capture","arguments":{}}}`)
 	captureResp, err := http.Post(httpSrv.URL, "application/json", captureBody)
 	if err != nil {
 		t.Fatalf("snapshot.capture POST error = %v", err)
@@ -474,7 +474,7 @@ func TestApplyStaticSeedTable_MCPDeviceGetSnapshotPerAlias(t *testing.T) {
 
 	queryAlias := func(addr int) (string, string) {
 		t.Helper()
-		body := strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"ebus.v1.registry.devices.get","arguments":{"address":` + intToHexJSON(addr) + `,"consistency":{"mode":"snapshot","snapshot_id":"` + snapID + `"}}}}`)
+		body := strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"ebus_v1_registry_devices_get","arguments":{"address":` + intToHexJSON(addr) + `,"consistency":{"mode":"snapshot","snapshot_id":"` + snapID + `"}}}}`)
 		resp, err := http.Post(httpSrv.URL, "application/json", body)
 		if err != nil {
 			t.Fatalf("snapshot devices.get(0x%02X) POST error = %v", addr, err)

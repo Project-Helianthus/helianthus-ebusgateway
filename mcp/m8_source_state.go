@@ -11,7 +11,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/m8sourcestate"
 )
 
-const m8SourceStateToolName = "helianthus.experimental.m8_source_state.get"
+const m8SourceStateToolName = "helianthus_experimental_m8_source_state_get"
 
 var m8SourceStateInputIDs = []string{
 	"ebus.debug",

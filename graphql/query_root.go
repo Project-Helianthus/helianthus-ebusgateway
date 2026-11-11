@@ -3,7 +3,7 @@ package graphql
 import graphqlgo "github.com/graphql-go/graphql"
 
 func addEnergyTotalsToDevice(deviceType *graphqlgo.Object, energyTotalsType *graphqlgo.Object, builder *Builder) {
-	deviceType.AddFieldConfig("energyTotals", &graphqlgo.Field{
+	deviceType.AddFieldConfig("energy_totals", &graphqlgo.Field{
 		Type: energyTotalsType,
 		Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 			device, ok := deviceFromSource(params)
@@ -19,47 +19,32 @@ func addEnergyTotalsToDevice(deviceType *graphqlgo.Object, energyTotalsType *gra
 }
 
 func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Object {
-	fields := graphqlgo.Fields{"semanticSnapshot": semanticSnapshotField(builder)}
+	fields := graphqlgo.Fields{"semantic_snapshot": semanticSnapshotField(builder)}
 	addVaillantB503Queries(fields, builder)
 	obj := graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "Query",
+		Name: "query",
 		Fields: mergeQueryFields(fields, graphqlgo.Fields{
-			"daemonStatus": &graphqlgo.Field{
-				Type: graphqlgo.NewNonNull(types.statusType),
-				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
-					return builder.statusProvider().DaemonStatus(), nil
-				},
-			},
 			"daemon_status": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(types.statusType),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					return builder.statusProvider().DaemonStatus(), nil
 				},
 			},
-			"gatewayIdentity": &graphqlgo.Field{
-				Type: graphqlgo.NewNonNull(types.gatewayIdentityType),
-				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
-					return builder.gatewayIdentityProvider().GatewayIdentity(), nil
-				},
-			},
+
 			"gateway_identity": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(types.gatewayIdentityType),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					return builder.gatewayIdentityProvider().GatewayIdentity(), nil
 				},
 			},
-			"adapterStatus": &graphqlgo.Field{
-				Type: graphqlgo.NewNonNull(types.statusType),
-				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
-					return builder.statusProvider().AdapterStatus(), nil
-				},
-			},
+
 			"adapter_status": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(types.statusType),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					return builder.statusProvider().AdapterStatus(), nil
 				},
 			},
+
 			"vaillant_regulator_capability": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(types.vaillantRegulatorCapability),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
@@ -82,28 +67,17 @@ func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Objec
 					return builder.semanticProvider().DHW(), nil
 				},
 			},
-			"energyTotals": &graphqlgo.Field{
-				Type: types.energyTotals,
-				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
-					return builder.semanticProvider().EnergyTotals(), nil
-				},
-			},
 			"energy_totals": &graphqlgo.Field{
 				Type: types.energyTotals,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					return builder.semanticProvider().EnergyTotals(), nil
 				},
 			},
+
 			"circuits": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(types.circuitStatusType))),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					return builder.semanticProvider().Circuits(), nil
-				},
-			},
-			"radioDevices": &graphqlgo.Field{
-				Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(types.radioDeviceType))),
-				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
-					return builder.semanticProvider().RadioDevices(), nil
 				},
 			},
 			"radio_devices": &graphqlgo.Field{
@@ -112,7 +86,8 @@ func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Objec
 					return builder.semanticProvider().RadioDevices(), nil
 				},
 			},
-			"fm5SemanticMode": &graphqlgo.Field{
+
+			"fm5_semantic_mode": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(types.fm5SemanticMode),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					mode := builder.semanticProvider().FM5SemanticMode()
@@ -122,7 +97,7 @@ func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Objec
 					return string(mode), nil
 				},
 			},
-			"fm5Interpretation": &graphqlgo.Field{
+			"fm5_interpretation": &graphqlgo.Field{
 				Type: types.fm5Interpretation,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					provider := builder.semanticProvider()
@@ -139,16 +114,7 @@ func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Objec
 					return nil, nil
 				},
 			},
-			"fm5_semantic_mode": &graphqlgo.Field{
-				Type: graphqlgo.NewNonNull(types.fm5SemanticMode),
-				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
-					mode := builder.semanticProvider().FM5SemanticMode()
-					if mode == "" {
-						mode = Fm5SemanticModeAbsent
-					}
-					return string(mode), nil
-				},
-			},
+
 			"solar": &graphqlgo.Field{
 				Type: types.solarStatusType,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
@@ -165,18 +131,13 @@ func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Objec
 					return values, nil
 				},
 			},
-			"boilerStatus": &graphqlgo.Field{
-				Type: types.boilerStatusType,
-				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
-					return builder.semanticProvider().BoilerStatus(), nil
-				},
-			},
 			"boiler_status": &graphqlgo.Field{
 				Type: types.boilerStatusType,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					return builder.semanticProvider().BoilerStatus(), nil
 				},
 			},
+
 			"system": &graphqlgo.Field{
 				Type: types.systemStatusType,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
@@ -189,25 +150,20 @@ func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Objec
 					return builder.semanticProvider().Schedules(), nil
 				},
 			},
-			"adapterHardwareInfo": &graphqlgo.Field{
-				Type: types.adapterHardwareInfoType,
-				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
-					return builder.semanticProvider().AdapterHardwareInfo(), nil
-				},
-			},
 			"adapter_hardware_info": &graphqlgo.Field{
 				Type: types.adapterHardwareInfoType,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					return builder.semanticProvider().AdapterHardwareInfo(), nil
 				},
 			},
-			"busSummary": &graphqlgo.Field{
+
+			"bus_summary": &graphqlgo.Field{
 				Type: types.busSummaryType,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					return resolveBusSummary(builder, params.Info.RootValue), nil
 				},
 			},
-			"busMessages": &graphqlgo.Field{
+			"bus_messages": &graphqlgo.Field{
 				Type: types.busMessagesType,
 				Args: graphqlgo.FieldConfigArgument{
 					"limit": &graphqlgo.ArgumentConfig{Type: graphqlgo.Int},
@@ -220,7 +176,7 @@ func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Objec
 					return resolveBusMessages(builder, params.Info.RootValue, limit), nil
 				},
 			},
-			"busPeriodicity": &graphqlgo.Field{
+			"bus_periodicity": &graphqlgo.Field{
 				Type: types.busPeriodicityType,
 				Args: graphqlgo.FieldConfigArgument{
 					"limit": &graphqlgo.ArgumentConfig{Type: graphqlgo.Int},
@@ -233,7 +189,7 @@ func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Objec
 					return resolveBusPeriodicity(builder, params.Info.RootValue, limit), nil
 				},
 			},
-			"busIdentificationEvidence": &graphqlgo.Field{
+			"bus_identification_evidence": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(types.busIdentificationEvidence),
 				Args: graphqlgo.FieldConfigArgument{
 					"limit": &graphqlgo.ArgumentConfig{Type: graphqlgo.Int},
@@ -246,7 +202,7 @@ func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Objec
 					return resolveIdentificationEvidence(builder, limit), nil
 				},
 			},
-			"watchSummary": &graphqlgo.Field{
+			"watch_summary": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(types.watchSummaryType),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					return resolveWatchSummary(builder, params.Info.RootValue), nil

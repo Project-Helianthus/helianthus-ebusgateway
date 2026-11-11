@@ -504,7 +504,7 @@ func (p *huaweiPVPublication) facts(asset semreg.AssetID, binding semreg.NativeB
 			}
 			id, dimension, unit, group = "pv.ac.aggregate_active_power", "pv.dimension.inverter", "unit.watt", 32064
 			number.Exponent10 += 3
-		case "device_status":
+		case "status":
 			if native.State != "grid_connected" {
 				continue
 			}

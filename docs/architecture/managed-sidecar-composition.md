@@ -529,7 +529,7 @@ unconfigured, so no socket is bound.
 
 - Registration, publication and reads agree. Each publication is bound to the
   source its driver registered and to that source's current hub admission.
-  GraphQL `semanticSnapshot` and MCP `semantic.v1.snapshot.get` return the same
+  GraphQL `semantic_snapshot` and MCP `semantic_v1_snapshot_get` return the same
   publication, revisions, values and losses, including an explicitly withheld
   value. Portal bootstrap advertises the same GraphQL read, and Portal driver
   rows report the lifecycle the MCP list reports. The scrape route serves the

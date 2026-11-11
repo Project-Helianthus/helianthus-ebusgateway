@@ -6,7 +6,7 @@ It implements the native-only seam of the public
 [circuit temperature cutover contract](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/architecture/circuit-temperature-cutover.md).
 The parent remains open. This candidate seam is pre-stable.
 
-The native authority is the [B524 circuit register catalog](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/protocols/vaillant/ebus-vaillant-B524-register-map.md#gg0x02--heating-circuits-multi-instance),
+The native authority is the [B524 circuit register catalog](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/protocols/vaillant/ebus-vaillant-b524-register-map.md#gg0x02--heating-circuits-multi-instance),
 including its profile-dependent float byte order and RR0020 correction.
 The [Thermal definitions](https://github.com/Project-Helianthus/helianthus-semreg/blob/main/semreg/v1/packs/thermal/definitions.go)
 provide semantic vocabulary and the inclusive water-temperature bounds of

@@ -145,7 +145,7 @@ func TestIssue851EarlyGraphQLMutationSurfaceRemainsStableAcrossBinding(t *testin
 		t.Helper()
 		result := graphqlgo.Do(graphqlgo.Params{
 			Schema:        schema,
-			RequestString: `mutation { setSystemConfig(field: "field", value: "value") { success error } }`,
+			RequestString: `mutation { set_system_config(field: "field", value: "value") { success error } }`,
 		})
 		if len(result.Errors) != 0 {
 			t.Fatalf("GraphQL mutation errors = %v", result.Errors)
@@ -154,9 +154,9 @@ func TestIssue851EarlyGraphQLMutationSurfaceRemainsStableAcrossBinding(t *testin
 		if !ok {
 			t.Fatalf("GraphQL data = %#v", result.Data)
 		}
-		mutation, ok := root["setSystemConfig"].(map[string]any)
+		mutation, ok := root["set_system_config"].(map[string]any)
 		if !ok {
-			t.Fatalf("GraphQL mutation result = %#v", root["setSystemConfig"])
+			t.Fatalf("GraphQL mutation result = %#v", root["set_system_config"])
 		}
 		return mutation
 	}

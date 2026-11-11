@@ -95,7 +95,7 @@ type eebusV1RawTopologyDataV1 struct {
 	Devices  []eebusruntime.DeviceV1            `json:"devices"`
 	Entities []eebusruntime.EntityV1            `json:"entities"`
 	Features []eebusruntime.FeatureV1           `json:"features"`
-	UseCases []eebusruntime.UseCaseV1           `json:"usecases"`
+	UseCases []eebusruntime.UseCaseV1           `json:"use_cases"`
 	Opaque   []eebusruntime.OpaqueObservationV1 `json:"opaque"`
 }
 

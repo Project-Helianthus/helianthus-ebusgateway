@@ -473,8 +473,6 @@ func TestServer_InitializeAndTools(t *testing.T) {
 		toolPlanesListV1Name,
 		toolMethodsListV1Name,
 		toolInvokeV1Name,
-		toolDevicesLegacyName,
-		toolInvokeLegacyName,
 	} {
 		if !hasToolName(tools, name) {
 			t.Fatalf("tools list missing %q", name)
@@ -497,15 +495,15 @@ func TestServer_InitializeAndTools(t *testing.T) {
 			t.Fatalf("invoke v1 properties missing %q", key)
 		}
 	}
-	if got := invokeV1["description"]; got != "Discover a device with ebus.v1.registry.devices.list, then select its plane with ebus.v1.registry.planes.list and method with ebus.v1.registry.methods.list before invoking it." {
+	if got := invokeV1["description"]; got != "Discover a device with ebus_v1_registry_devices_list, then select its plane with ebus_v1_registry_planes_list and method with ebus_v1_registry_methods_list before invoking it." {
 		t.Fatalf("invoke v1 description = %q", got)
 	}
 	for _, tc := range []struct {
 		property    string
 		description string
 	}{
-		{"plane", "Plane name returned by ebus.v1.registry.planes.list for this address."},
-		{"method", "Method name returned by ebus.v1.registry.methods.list for this address and plane."},
+		{"plane", "Plane name returned by ebus_v1_registry_planes_list for this address."},
+		{"method", "Method name returned by ebus_v1_registry_methods_list for this address and plane."},
 		{"params", "Method-specific parameters. Omit source to use the startup-admitted source; an explicit source overrides it when supplied as a nonzero byte."},
 	} {
 		property, ok := properties[tc.property].(map[string]any)
@@ -613,7 +611,7 @@ func TestServer_ToolsCallInvokeV1MalformedArgumentReturnsStableEnvelope(t *testi
 		JSONRPC: "2.0",
 		ID:      1,
 		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"ebus.v1.rpc.invoke","arguments":{"address":8,"plane":"heating","method":"get_status","intent":"READ_ONLY","allow_dangerous":"false"}}`),
+		Params:  json.RawMessage(`{"name":"ebus_v1_rpc_invoke","arguments":{"address":8,"plane":"heating","method":"get_status","intent":"READ_ONLY","allow_dangerous":"false"}}`),
 	})
 	if res.Error != nil {
 		t.Fatalf("tools/call returned rpc error = %+v", res.Error)
@@ -656,7 +654,7 @@ func TestServer_ToolsCallInvokeV1InvalidIntentPrecedesRouteLookup(t *testing.T) 
 		JSONRPC: "2.0",
 		ID:      1,
 		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"ebus.v1.rpc.invoke","arguments":{"address":254,"plane":"stale","method":"missing","intent":"DELETE","allow_dangerous":false}}`),
+		Params:  json.RawMessage(`{"name":"ebus_v1_rpc_invoke","arguments":{"address":254,"plane":"stale","method":"missing","intent":"DELETE","allow_dangerous":false}}`),
 	})
 	if res.Error != nil {
 		t.Fatalf("tools/call returned rpc error = %+v", res.Error)
@@ -690,22 +688,29 @@ func TestServer_ToolsCallChangedArgumentErrorsHaveStableEnvelopes(t *testing.T) 
 		t.Fatalf("NewServer error = %v", err)
 	}
 	cases := []struct{ name, request, golden string }{
-		{"devices address", `{"name":"ebus.v1.registry.devices.get","arguments":{"address":"bad"}}`, "registry_devices_get_invalid_address.golden.json"},
-		{"devices address out of range", `{"name":"ebus.v1.registry.devices.get","arguments":{"address":256}}`, "registry_devices_get_out_of_range_address.golden.json"},
-		{"planes address", `{"name":"ebus.v1.registry.planes.list","arguments":{"address":"bad"}}`, "registry_planes_list_invalid_address.golden.json"},
-		{"planes address out of range", `{"name":"ebus.v1.registry.planes.list","arguments":{"address":256}}`, "registry_planes_list_out_of_range_address.golden.json"},
-		{"methods address", `{"name":"ebus.v1.registry.methods.list","arguments":{"address":"bad","plane":"heating"}}`, "registry_methods_list_invalid_address.golden.json"},
-		{"methods address out of range", `{"name":"ebus.v1.registry.methods.list","arguments":{"address":256,"plane":"heating"}}`, "registry_methods_list_out_of_range_address.golden.json"},
-		{"invoke address", `{"name":"ebus.v1.rpc.invoke","arguments":{"address":"bad","plane":"heating","method":"get_status","intent":"READ_ONLY","allow_dangerous":false}}`, "rpc_invoke_invalid_address.golden.json"},
-		{"invoke address out of range", `{"name":"ebus.v1.rpc.invoke","arguments":{"address":256,"plane":"heating","method":"get_status","intent":"READ_ONLY","allow_dangerous":false}}`, "rpc_invoke_out_of_range_address.golden.json"},
+		{"devices address", `{"name":"ebus_v1_registry_devices_get","arguments":{"address":"bad"}}`, "registry_devices_get_invalid_address.golden.json"},
+		{"devices address out of range", `{"name":"ebus_v1_registry_devices_get","arguments":{"address":256}}`, "registry_devices_get_out_of_range_address.golden.json"},
+		{"planes address", `{"name":"ebus_v1_registry_planes_list","arguments":{"address":"bad"}}`, "registry_planes_list_invalid_address.golden.json"},
+		{"planes address out of range", `{"name":"ebus_v1_registry_planes_list","arguments":{"address":256}}`, "registry_planes_list_out_of_range_address.golden.json"},
+		{"methods address", `{"name":"ebus_v1_registry_methods_list","arguments":{"address":"bad","plane":"heating"}}`, "registry_methods_list_invalid_address.golden.json"},
+		{"methods address out of range", `{"name":"ebus_v1_registry_methods_list","arguments":{"address":256,"plane":"heating"}}`, "registry_methods_list_out_of_range_address.golden.json"},
+		{"invoke address", `{"name":"ebus_v1_rpc_invoke","arguments":{"address":"bad","plane":"heating","method":"get_status","intent":"READ_ONLY","allow_dangerous":false}}`, "rpc_invoke_invalid_address.golden.json"},
+		{"invoke address out of range", `{"name":"ebus_v1_rpc_invoke","arguments":{"address":256,"plane":"heating","method":"get_status","intent":"READ_ONLY","allow_dangerous":false}}`, "rpc_invoke_out_of_range_address.golden.json"},
 		{"legacy invoke address", `{"name":"ebus.invoke","arguments":{"address":"bad","plane":"heating","method":"get_status"}}`, "legacy_invoke_invalid_address.golden.json"},
 		{"legacy invoke address out of range", `{"name":"ebus.invoke","arguments":{"address":256,"plane":"heating","method":"get_status"}}`, "legacy_invoke_out_of_range_address.golden.json"},
-		{"invoke plane", `{"name":"ebus.v1.rpc.invoke","arguments":{"address":8,"plane":false,"method":"get_status","intent":"READ_ONLY","allow_dangerous":false}}`, "rpc_invoke_invalid_plane.golden.json"},
-		{"invoke method", `{"name":"ebus.v1.rpc.invoke","arguments":{"address":8,"plane":"heating","method":false,"intent":"READ_ONLY","allow_dangerous":false}}`, "rpc_invoke_invalid_method.golden.json"},
+		{"invoke plane", `{"name":"ebus_v1_rpc_invoke","arguments":{"address":8,"plane":false,"method":"get_status","intent":"READ_ONLY","allow_dangerous":false}}`, "rpc_invoke_invalid_plane.golden.json"},
+		{"invoke method", `{"name":"ebus_v1_rpc_invoke","arguments":{"address":8,"plane":"heating","method":false,"intent":"READ_ONLY","allow_dangerous":false}}`, "rpc_invoke_invalid_method.golden.json"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			res := doRPC(t, server.Handler(), rpcRequest{JSONRPC: "2.0", ID: 1, Method: "tools/call", Params: json.RawMessage(tc.request)})
+			if strings.HasPrefix(tc.name, "legacy invoke") {
+				if res.Error == nil {
+					t.Fatal("removed legacy tool accepted")
+				}
+				return
+			}
+
 			if res.Error != nil {
 				t.Fatalf("rpc error = %+v", res.Error)
 			}
@@ -974,7 +979,7 @@ func TestServer_ToolsCallDevicesAndInvoke(t *testing.T) {
 		JSONRPC: "2.0",
 		ID:      1,
 		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"ebus.v1.registry.devices.list","arguments":{}}`),
+		Params:  json.RawMessage(`{"name":"ebus_v1_registry_devices_list","arguments":{}}`),
 	})
 	if res.Error != nil {
 		t.Fatalf("tools/call devices error = %+v", res.Error)
@@ -1024,7 +1029,7 @@ func TestServer_ToolsCallDevicesAndInvoke(t *testing.T) {
 		JSONRPC: "2.0",
 		ID:      2,
 		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"ebus.v1.rpc.invoke","arguments":{"address":8,"plane":"heating","method":"get_status","params":{},"intent":"READ_ONLY","allow_dangerous":false}}`),
+		Params:  json.RawMessage(`{"name":"ebus_v1_rpc_invoke","arguments":{"address":8,"plane":"heating","method":"get_status","params":{},"intent":"READ_ONLY","allow_dangerous":false}}`),
 	})
 	if res.Error != nil {
 		t.Fatalf("tools/call invoke error = %+v", res.Error)
@@ -1084,7 +1089,7 @@ func TestServer_ToolsCallRuntimeStatus(t *testing.T) {
 		JSONRPC: "2.0",
 		ID:      1,
 		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"ebus.v1.runtime.status.get","arguments":{}}`),
+		Params:  json.RawMessage(`{"name":"ebus_v1_runtime_status_get","arguments":{}}`),
 	})
 	if res.Error != nil {
 		t.Fatalf("tools/call runtime status error = %+v", res.Error)
@@ -1219,7 +1224,7 @@ func TestServer_ToolsCallBusObservability(t *testing.T) {
 		JSONRPC: "2.0",
 		ID:      1,
 		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"ebus.v1.bus.summary.get","arguments":{}}`),
+		Params:  json.RawMessage(`{"name":"ebus_v1_bus_summary_get","arguments":{}}`),
 	}))
 	summaryData, ok := summaryEnvelope["data"].(map[string]any)
 	if !ok {
@@ -1338,7 +1343,7 @@ func TestServer_ToolsCallBusObservability(t *testing.T) {
 		JSONRPC: "2.0",
 		ID:      2,
 		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"ebus.v1.bus.messages.list","arguments":{"limit":2}}`),
+		Params:  json.RawMessage(`{"name":"ebus_v1_bus_messages_list","arguments":{"limit":2}}`),
 	}))
 	messageData, ok := messageEnvelope["data"].(map[string]any)
 	if !ok {
@@ -1363,7 +1368,7 @@ func TestServer_ToolsCallBusObservability(t *testing.T) {
 		JSONRPC: "2.0",
 		ID:      3,
 		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"ebus.v1.bus.periodicity.list","arguments":{"limit":1}}`),
+		Params:  json.RawMessage(`{"name":"ebus_v1_bus_periodicity_list","arguments":{"limit":1}}`),
 	}))
 	periodicityData, ok := periodicityEnvelope["data"].(map[string]any)
 	if !ok {
@@ -1496,7 +1501,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			JSONRPC: "2.0",
 			ID:      1,
 			Method:  "tools/call",
-			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.zones.get","arguments":{}}`),
+			Params:  json.RawMessage(`{"name":"ebus_v1_semantic_zones_get","arguments":{}}`),
 		})
 		envelope := envelopeFromResult(t, res)
 		data, ok := envelope["data"].([]any)
@@ -1528,7 +1533,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			JSONRPC: "2.0",
 			ID:      41,
 			Method:  "tools/call",
-			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.zones.get","arguments":{}}`),
+			Params:  json.RawMessage(`{"name":"ebus_v1_semantic_zones_get","arguments":{}}`),
 		})
 		liveEnvelope := envelopeFromResult(t, live)
 		liveData, ok := liveEnvelope["data"].([]any)
@@ -1540,7 +1545,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			JSONRPC: "2.0",
 			ID:      42,
 			Method:  "tools/call",
-			Params:  json.RawMessage(`{"name":"ebus.v1.snapshot.capture","arguments":{}}`),
+			Params:  json.RawMessage(`{"name":"ebus_v1_snapshot_capture","arguments":{}}`),
 		})
 		captureEnvelope := envelopeFromResult(t, capture)
 		captureData, ok := captureEnvelope["data"].(map[string]any)
@@ -1556,7 +1561,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			JSONRPC: "2.0",
 			ID:      43,
 			Method:  "tools/call",
-			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.zones.get","arguments":{"consistency":{"mode":"SNAPSHOT","snapshot_id":"` + snapshotID + `"}}}`),
+			Params:  json.RawMessage(`{"name":"ebus_v1_semantic_zones_get","arguments":{"consistency":{"mode":"SNAPSHOT","snapshot_id":"` + snapshotID + `"}}}`),
 		})
 		snapshotEnvelope := envelopeFromResult(t, snapshot)
 		snapshotData, ok := snapshotEnvelope["data"].([]any)
@@ -1570,7 +1575,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			JSONRPC: "2.0",
 			ID:      20,
 			Method:  "tools/call",
-			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.circuits.get","arguments":{}}`),
+			Params:  json.RawMessage(`{"name":"ebus_v1_semantic_circuits_get","arguments":{}}`),
 		})
 		envelope := envelopeFromResult(t, res)
 		data, ok := envelope["data"].([]any)
@@ -1618,7 +1623,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			JSONRPC: "2.0",
 			ID:      44,
 			Method:  "tools/call",
-			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.circuits.get","arguments":{}}`),
+			Params:  json.RawMessage(`{"name":"ebus_v1_semantic_circuits_get","arguments":{}}`),
 		})
 		liveEnvelope := envelopeFromResult(t, live)
 		liveData, ok := liveEnvelope["data"].([]any)
@@ -1630,7 +1635,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			JSONRPC: "2.0",
 			ID:      45,
 			Method:  "tools/call",
-			Params:  json.RawMessage(`{"name":"ebus.v1.snapshot.capture","arguments":{}}`),
+			Params:  json.RawMessage(`{"name":"ebus_v1_snapshot_capture","arguments":{}}`),
 		})
 		captureEnvelope := envelopeFromResult(t, capture)
 		captureData, ok := captureEnvelope["data"].(map[string]any)
@@ -1646,7 +1651,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			JSONRPC: "2.0",
 			ID:      46,
 			Method:  "tools/call",
-			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.circuits.get","arguments":{"consistency":{"mode":"SNAPSHOT","snapshot_id":"` + snapshotID + `"}}}`),
+			Params:  json.RawMessage(`{"name":"ebus_v1_semantic_circuits_get","arguments":{"consistency":{"mode":"SNAPSHOT","snapshot_id":"` + snapshotID + `"}}}`),
 		})
 		snapshotEnvelope := envelopeFromResult(t, snapshot)
 		snapshotData, ok := snapshotEnvelope["data"].([]any)
@@ -1660,7 +1665,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			JSONRPC: "2.0",
 			ID:      21,
 			Method:  "tools/call",
-			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.radio_devices.get","arguments":{}}`),
+			Params:  json.RawMessage(`{"name":"ebus_v1_semantic_radio_devices_get","arguments":{}}`),
 		})
 		envelope := envelopeFromResult(t, res)
 		data, ok := envelope["data"].([]any)
@@ -1690,7 +1695,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			JSONRPC: "2.0",
 			ID:      18,
 			Method:  "tools/call",
-			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.radio_devices.get","arguments":{}}`),
+			Params:  json.RawMessage(`{"name":"ebus_v1_semantic_radio_devices_get","arguments":{}}`),
 		})
 		envelope := envelopeFromResult(t, res)
 		data, ok := envelope["data"].([]any)
@@ -1704,7 +1709,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			JSONRPC: "2.0",
 			ID:      22,
 			Method:  "tools/call",
-			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.fm5_mode.get","arguments":{}}`),
+			Params:  json.RawMessage(`{"name":"ebus_v1_semantic_fm5_mode_get","arguments":{}}`),
 		})
 		envelope := envelopeFromResult(t, res)
 		mode, ok := envelope["data"].(string)
@@ -1745,7 +1750,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 					JSONRPC: "2.0",
 					ID:      23 + index,
 					Method:  "tools/call",
-					Params:  json.RawMessage(`{"name":"ebus.v1.semantic.fm5_interpretation.get","arguments":{}}`),
+					Params:  json.RawMessage(`{"name":"ebus_v1_semantic_fm5_interpretation_get","arguments":{}}`),
 				})
 				envelope := envelopeFromResult(t, res)
 				data, ok := envelope["data"].(map[string]any)
@@ -1779,7 +1784,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			JSONRPC: "2.0",
 			ID:      24,
 			Method:  "tools/call",
-			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.fm5_interpretation.get","arguments":{}}`),
+			Params:  json.RawMessage(`{"name":"ebus_v1_semantic_fm5_interpretation_get","arguments":{}}`),
 		})
 		envelope := envelopeFromResult(t, res)
 		if envelope["data"] != nil || envelope["error"] != nil {
@@ -1799,7 +1804,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			JSONRPC: "2.0",
 			ID:      25,
 			Method:  "tools/call",
-			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.fm5_mode.get","arguments":{}}`),
+			Params:  json.RawMessage(`{"name":"ebus_v1_semantic_fm5_mode_get","arguments":{}}`),
 		}))
 		if got := modeEnvelope["data"]; got != string(Fm5SemanticModeGPIOOnly) {
 			t.Fatalf("legacy fm5 mode = %#v; want stable GPIO_ONLY", got)
@@ -1809,7 +1814,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			JSONRPC: "2.0",
 			ID:      26,
 			Method:  "tools/call",
-			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.fm5_interpretation.get","arguments":{}}`),
+			Params:  json.RawMessage(`{"name":"ebus_v1_semantic_fm5_interpretation_get","arguments":{}}`),
 		}))
 		if interpretationEnvelope["data"] != nil || interpretationEnvelope["error"] != nil {
 			t.Fatalf("legacy-only FM5 envelope = %#v; want data=null error=null", interpretationEnvelope)
@@ -1836,7 +1841,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			JSONRPC: "2.0",
 			ID:      27,
 			Method:  "tools/call",
-			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.fm5_interpretation.get","arguments":{}}`),
+			Params:  json.RawMessage(`{"name":"ebus_v1_semantic_fm5_interpretation_get","arguments":{}}`),
 		})
 		if res.Error != nil {
 			t.Fatalf("tools/call RPC error = %+v", res.Error)
@@ -1852,7 +1857,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			JSONRPC: "2.0",
 			ID:      23,
 			Method:  "tools/call",
-			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.solar.get","arguments":{}}`),
+			Params:  json.RawMessage(`{"name":"ebus_v1_semantic_solar_get","arguments":{}}`),
 		})
 		envelope := envelopeFromResult(t, res)
 		data, ok := envelope["data"].(map[string]any)
@@ -1869,7 +1874,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			JSONRPC: "2.0",
 			ID:      24,
 			Method:  "tools/call",
-			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.cylinders.get","arguments":{}}`),
+			Params:  json.RawMessage(`{"name":"ebus_v1_semantic_cylinders_get","arguments":{}}`),
 		})
 		envelope := envelopeFromResult(t, res)
 		data, ok := envelope["data"].([]any)
@@ -1895,7 +1900,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			JSONRPC: "2.0",
 			ID:      25,
 			Method:  "tools/call",
-			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.cylinders.get","arguments":{}}`),
+			Params:  json.RawMessage(`{"name":"ebus_v1_semantic_cylinders_get","arguments":{}}`),
 		})
 		envelope := envelopeFromResult(t, res)
 		data, ok := envelope["data"].([]any)
@@ -1909,7 +1914,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			JSONRPC: "2.0",
 			ID:      2,
 			Method:  "tools/call",
-			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.dhw.get","arguments":{}}`),
+			Params:  json.RawMessage(`{"name":"ebus_v1_semantic_dhw_get","arguments":{}}`),
 		})
 		envelope := envelopeFromResult(t, res)
 		data, ok := envelope["data"].(map[string]any)
@@ -1927,7 +1932,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			JSONRPC: "2.0",
 			ID:      3,
 			Method:  "tools/call",
-			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.energy_totals.get","arguments":{}}`),
+			Params:  json.RawMessage(`{"name":"ebus_v1_semantic_energy_totals_get","arguments":{}}`),
 		})
 		envelope := envelopeFromResult(t, res)
 		data, ok := envelope["data"].(map[string]any)
@@ -1962,7 +1967,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			JSONRPC: "2.0",
 			ID:      30,
 			Method:  "tools/call",
-			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.system.get","arguments":{}}`),
+			Params:  json.RawMessage(`{"name":"ebus_v1_semantic_system_get","arguments":{}}`),
 		})
 		envelope := envelopeFromResult(t, res)
 		data, ok := envelope["data"].(map[string]any)
@@ -1988,7 +1993,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			JSONRPC: "2.0",
 			ID:      4,
 			Method:  "tools/call",
-			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.snapshot.get","arguments":{}}`),
+			Params:  json.RawMessage(`{"name":"ebus_v1_semantic_snapshot_get","arguments":{}}`),
 		})
 		envelope := envelopeFromResult(t, res)
 		data, ok := envelope["data"].(map[string]any)
@@ -2020,7 +2025,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			JSONRPC: "2.0",
 			ID:      5,
 			Method:  "tools/call",
-			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.snapshot.get","arguments":{"planes":["circuits"]}}`),
+			Params:  json.RawMessage(`{"name":"ebus_v1_semantic_snapshot_get","arguments":{"planes":["circuits"]}}`),
 		})
 		envelope := envelopeFromResult(t, res)
 		data, ok := envelope["data"].(map[string]any)
@@ -2041,7 +2046,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			JSONRPC: "2.0",
 			ID:      6,
 			Method:  "tools/call",
-			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.snapshot.get","arguments":{"planes":["unknown"]}}`),
+			Params:  json.RawMessage(`{"name":"ebus_v1_semantic_snapshot_get","arguments":{"planes":["unknown"]}}`),
 		})
 		assertToolErrorCode(t, res, "INVALID_ARGUMENT")
 	})
@@ -2090,7 +2095,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 				t.Fatalf("timed out waiting for %s", name)
 			}
 		}
-		r := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"ebus.v1.semantic.snapshot.get","arguments":{"planes":["dhw","zones"],"timeout_ms":10}}}`)).WithContext(watchdogCtx)
+		r := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"ebus_v1_semantic_snapshot_get","arguments":{"planes":["dhw","zones"],"timeout_ms":10}}}`)).WithContext(watchdogCtx)
 		w := httptest.NewRecorder()
 		handlerDone := make(chan struct{})
 		t.Cleanup(func() {
@@ -2154,7 +2159,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			JSONRPC: "2.0",
 			ID:      8,
 			Method:  "tools/call",
-			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.snapshot.get","arguments":{"planes":["dhw","zones"],"timeout_ms":35,"allow_partial":true}}`),
+			Params:  json.RawMessage(`{"name":"ebus_v1_semantic_snapshot_get","arguments":{"planes":["dhw","zones"],"timeout_ms":35,"allow_partial":true}}`),
 		})
 		select {
 		case <-zonesDone:
@@ -2235,7 +2240,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 		})
 
 		requestCtx, cancelRequest := context.WithCancel(watchdogCtx)
-		r := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"ebus.v1.semantic.snapshot.get","arguments":{"planes":["zones","dhw"],"timeout_ms":1,"allow_partial":true}}}`)).WithContext(requestCtx)
+		r := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"ebus_v1_semantic_snapshot_get","arguments":{"planes":["zones","dhw"],"timeout_ms":1,"allow_partial":true}}}`)).WithContext(requestCtx)
 		w := httptest.NewRecorder()
 		handlerDone := make(chan struct{})
 		t.Cleanup(func() {
@@ -2363,7 +2368,7 @@ func TestServer_ToolsCallBoilerStatus_ReducedShape(t *testing.T) {
 		JSONRPC: "2.0",
 		ID:      1,
 		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"ebus.v1.semantic.boiler_status.get","arguments":{}}`),
+		Params:  json.RawMessage(`{"name":"ebus_v1_semantic_boiler_status_get","arguments":{}}`),
 	})
 	envelope := envelopeFromResult(t, res)
 	data, ok := envelope["data"].(map[string]any)
@@ -2445,7 +2450,7 @@ func TestServer_SnapshotConsistencyMode(t *testing.T) {
 		JSONRPC: "2.0",
 		ID:      1,
 		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"ebus.v1.snapshot.capture","arguments":{}}`),
+		Params:  json.RawMessage(`{"name":"ebus_v1_snapshot_capture","arguments":{}}`),
 	})
 	captureEnvelope := envelopeFromResult(t, capture)
 	captureData, ok := captureEnvelope["data"].(map[string]any)
@@ -2478,7 +2483,7 @@ func TestServer_SnapshotConsistencyMode(t *testing.T) {
 		JSONRPC: "2.0",
 		ID:      2,
 		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"ebus.v1.runtime.status.get","arguments":{}}`),
+		Params:  json.RawMessage(`{"name":"ebus_v1_runtime_status_get","arguments":{}}`),
 	}))
 	liveRuntimeData, _ := liveRuntime["data"].(map[string]any)
 	liveDaemon, _ := liveRuntimeData["daemon_status"].(map[string]any)
@@ -2490,7 +2495,7 @@ func TestServer_SnapshotConsistencyMode(t *testing.T) {
 		JSONRPC: "2.0",
 		ID:      3,
 		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"ebus.v1.runtime.status.get","arguments":{"consistency":{"mode":"SNAPSHOT","snapshot_id":"` + snapshotID + `"}}}`),
+		Params:  json.RawMessage(`{"name":"ebus_v1_runtime_status_get","arguments":{"consistency":{"mode":"SNAPSHOT","snapshot_id":"` + snapshotID + `"}}}`),
 	}))
 	snapshotRuntimeData, _ := snapshotRuntime["data"].(map[string]any)
 	snapshotDaemon, _ := snapshotRuntimeData["daemon_status"].(map[string]any)
@@ -2507,13 +2512,13 @@ func TestServer_SnapshotConsistencyMode(t *testing.T) {
 		JSONRPC: "2.0",
 		ID:      4,
 		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"ebus.v1.registry.devices.list","arguments":{"consistency":{"mode":"SNAPSHOT","snapshot_id":"` + snapshotID + `"}}}`),
+		Params:  json.RawMessage(`{"name":"ebus_v1_registry_devices_list","arguments":{"consistency":{"mode":"SNAPSHOT","snapshot_id":"` + snapshotID + `"}}}`),
 	}))
 	secondSnapshotDevices := envelopeFromResult(t, doRPC(t, server.Handler(), rpcRequest{
 		JSONRPC: "2.0",
 		ID:      5,
 		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"ebus.v1.registry.devices.list","arguments":{"consistency":{"mode":"SNAPSHOT","snapshot_id":"` + snapshotID + `"}}}`),
+		Params:  json.RawMessage(`{"name":"ebus_v1_registry_devices_list","arguments":{"consistency":{"mode":"SNAPSHOT","snapshot_id":"` + snapshotID + `"}}}`),
 	}))
 	firstMeta, _ := firstSnapshotDevices["meta"].(map[string]any)
 	secondMeta, _ := secondSnapshotDevices["meta"].(map[string]any)
@@ -2535,7 +2540,7 @@ func TestServer_SnapshotConsistencyMode(t *testing.T) {
 		JSONRPC: "2.0",
 		ID:      6,
 		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"ebus.v1.snapshot.drop","arguments":{"snapshot_id":"` + snapshotID + `"}}`),
+		Params:  json.RawMessage(`{"name":"ebus_v1_snapshot_drop","arguments":{"snapshot_id":"` + snapshotID + `"}}`),
 	})
 	dropEnvelope := envelopeFromResult(t, drop)
 	dropData, _ := dropEnvelope["data"].(map[string]any)
@@ -2547,7 +2552,7 @@ func TestServer_SnapshotConsistencyMode(t *testing.T) {
 		JSONRPC: "2.0",
 		ID:      7,
 		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"ebus.v1.registry.devices.list","arguments":{"consistency":{"mode":"SNAPSHOT","snapshot_id":"` + snapshotID + `"}}}`),
+		Params:  json.RawMessage(`{"name":"ebus_v1_registry_devices_list","arguments":{"consistency":{"mode":"SNAPSHOT","snapshot_id":"` + snapshotID + `"}}}`),
 	})
 	assertToolErrorCode(t, missing, "NOT_FOUND")
 }
@@ -2592,7 +2597,7 @@ func TestServer_SnapshotConsistencyAdapterInfo(t *testing.T) {
 		JSONRPC: "2.0",
 		ID:      1,
 		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"ebus.v1.snapshot.capture","arguments":{}}`),
+		Params:  json.RawMessage(`{"name":"ebus_v1_snapshot_capture","arguments":{}}`),
 	}))
 	captureData, ok := capture["data"].(map[string]any)
 	if !ok {
@@ -2609,7 +2614,7 @@ func TestServer_SnapshotConsistencyAdapterInfo(t *testing.T) {
 		JSONRPC: "2.0",
 		ID:      2,
 		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"ebus.v1.semantic.adapter_info.get","arguments":{}}`),
+		Params:  json.RawMessage(`{"name":"ebus_v1_semantic_adapter_info_get","arguments":{}}`),
 	}))
 	liveData, ok := live["data"].(map[string]any)
 	if !ok {
@@ -2626,7 +2631,7 @@ func TestServer_SnapshotConsistencyAdapterInfo(t *testing.T) {
 		JSONRPC: "2.0",
 		ID:      3,
 		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"ebus.v1.semantic.adapter_info.get","arguments":{"consistency":{"mode":"SNAPSHOT","snapshot_id":"` + snapshotID + `"}}}`),
+		Params:  json.RawMessage(`{"name":"ebus_v1_semantic_adapter_info_get","arguments":{"consistency":{"mode":"SNAPSHOT","snapshot_id":"` + snapshotID + `"}}}`),
 	}))
 	snapshotData, ok := snapshot["data"].(map[string]any)
 	if !ok {
@@ -2659,7 +2664,7 @@ func TestServer_SnapshotConsistencyAdapterInfo(t *testing.T) {
 		JSONRPC: "2.0",
 		ID:      4,
 		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"ebus.v1.semantic.snapshot.get","arguments":{"planes":["adapter_info"],"consistency":{"mode":"SNAPSHOT","snapshot_id":"` + snapshotID + `"}}}`),
+		Params:  json.RawMessage(`{"name":"ebus_v1_semantic_snapshot_get","arguments":{"planes":["adapter_info"],"consistency":{"mode":"SNAPSHOT","snapshot_id":"` + snapshotID + `"}}}`),
 	}))
 	snapshotPlaneData, ok := snapshotPlane["data"].(map[string]any)
 	if !ok {
@@ -2725,7 +2730,7 @@ func TestServer_BusObservabilitySnapshotConsistency(t *testing.T) {
 		JSONRPC: "2.0",
 		ID:      1,
 		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"ebus.v1.snapshot.capture","arguments":{}}`),
+		Params:  json.RawMessage(`{"name":"ebus_v1_snapshot_capture","arguments":{}}`),
 	}))
 	captureData, ok := capture["data"].(map[string]any)
 	if !ok {
@@ -2778,7 +2783,7 @@ func TestServer_BusObservabilitySnapshotConsistency(t *testing.T) {
 		JSONRPC: "2.0",
 		ID:      2,
 		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"ebus.v1.bus.summary.get","arguments":{}}`),
+		Params:  json.RawMessage(`{"name":"ebus_v1_bus_summary_get","arguments":{}}`),
 	}))
 	liveSummaryData, _ := liveSummary["data"].(map[string]any)
 	liveStatus, _ := liveSummaryData["status"].(map[string]any)
@@ -2791,7 +2796,7 @@ func TestServer_BusObservabilitySnapshotConsistency(t *testing.T) {
 		JSONRPC: "2.0",
 		ID:      3,
 		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"ebus.v1.bus.summary.get","arguments":{"consistency":{"mode":"SNAPSHOT","snapshot_id":"` + snapshotID + `"}}}`),
+		Params:  json.RawMessage(`{"name":"ebus_v1_bus_summary_get","arguments":{"consistency":{"mode":"SNAPSHOT","snapshot_id":"` + snapshotID + `"}}}`),
 	}))
 	snapshotSummaryData, _ := snapshotSummary["data"].(map[string]any)
 	snapshotStatus, _ := snapshotSummaryData["status"].(map[string]any)
@@ -2804,7 +2809,7 @@ func TestServer_BusObservabilitySnapshotConsistency(t *testing.T) {
 		JSONRPC: "2.0",
 		ID:      4,
 		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"ebus.v1.bus.messages.list","arguments":{"consistency":{"mode":"SNAPSHOT","snapshot_id":"` + snapshotID + `"}}}`),
+		Params:  json.RawMessage(`{"name":"ebus_v1_bus_messages_list","arguments":{"consistency":{"mode":"SNAPSHOT","snapshot_id":"` + snapshotID + `"}}}`),
 	}))
 	snapshotMessagesData, _ := snapshotMessages["data"].(map[string]any)
 	if got, _ := snapshotMessagesData["count"].(float64); int(got) != 1 {
@@ -2819,7 +2824,7 @@ func TestServer_BusObservabilitySnapshotConsistency(t *testing.T) {
 		JSONRPC: "2.0",
 		ID:      5,
 		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"ebus.v1.bus.periodicity.list","arguments":{"consistency":{"mode":"SNAPSHOT","snapshot_id":"` + snapshotID + `"}}}`),
+		Params:  json.RawMessage(`{"name":"ebus_v1_bus_periodicity_list","arguments":{"consistency":{"mode":"SNAPSHOT","snapshot_id":"` + snapshotID + `"}}}`),
 	}))
 	snapshotPeriodicityData, _ := snapshotPeriodicity["data"].(map[string]any)
 	if got, _ := snapshotPeriodicityData["count"].(float64); int(got) != 1 {
@@ -2857,7 +2862,7 @@ func TestServer_WatchSummarySnapshotConsistency(t *testing.T) {
 		JSONRPC: "2.0",
 		ID:      1,
 		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"ebus.v1.snapshot.capture","arguments":{}}`),
+		Params:  json.RawMessage(`{"name":"ebus_v1_snapshot_capture","arguments":{}}`),
 	}))
 	captureData, ok := capture["data"].(map[string]any)
 	if !ok {
@@ -2886,7 +2891,7 @@ func TestServer_WatchSummarySnapshotConsistency(t *testing.T) {
 		JSONRPC: "2.0",
 		ID:      2,
 		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"ebus.v1.watch.summary.get","arguments":{}}`),
+		Params:  json.RawMessage(`{"name":"ebus_v1_watch_summary_get","arguments":{}}`),
 	}))
 	liveData, _ := live["data"].(map[string]any)
 	if got, _ := liveData["last_updated_at"].(string); got != updatedAt.Format(time.RFC3339Nano) {
@@ -2901,7 +2906,7 @@ func TestServer_WatchSummarySnapshotConsistency(t *testing.T) {
 		JSONRPC: "2.0",
 		ID:      3,
 		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"ebus.v1.watch.summary.get","arguments":{"consistency":{"mode":"SNAPSHOT","snapshot_id":"` + snapshotID + `"}}}`),
+		Params:  json.RawMessage(`{"name":"ebus_v1_watch_summary_get","arguments":{"consistency":{"mode":"SNAPSHOT","snapshot_id":"` + snapshotID + `"}}}`),
 	}))
 	snapshotData, _ := snap["data"].(map[string]any)
 	if got, _ := snapshotData["last_updated_at"].(string); got != base.Format(time.RFC3339Nano) {
@@ -2981,7 +2986,7 @@ func TestServer_RegistryReadToolsOrderingAndMetadata(t *testing.T) {
 			JSONRPC: "2.0",
 			ID:      1,
 			Method:  "tools/call",
-			Params:  json.RawMessage(`{"name":"ebus.v1.registry.devices.list","arguments":{}}`),
+			Params:  json.RawMessage(`{"name":"ebus_v1_registry_devices_list","arguments":{}}`),
 		})
 		envelope := envelopeFromResult(t, res)
 		data, ok := envelope["data"].([]any)
@@ -2999,7 +3004,7 @@ func TestServer_RegistryReadToolsOrderingAndMetadata(t *testing.T) {
 			JSONRPC: "2.0",
 			ID:      2,
 			Method:  "tools/call",
-			Params:  json.RawMessage(`{"name":"ebus.v1.registry.devices.get","arguments":{"address":16}}`),
+			Params:  json.RawMessage(`{"name":"ebus_v1_registry_devices_get","arguments":{"address":16}}`),
 		})
 		envelope := envelopeFromResult(t, res)
 		data, ok := envelope["data"].(map[string]any)
@@ -3016,7 +3021,7 @@ func TestServer_RegistryReadToolsOrderingAndMetadata(t *testing.T) {
 			JSONRPC: "2.0",
 			ID:      3,
 			Method:  "tools/call",
-			Params:  json.RawMessage(`{"name":"ebus.v1.registry.planes.list","arguments":{"address":16}}`),
+			Params:  json.RawMessage(`{"name":"ebus_v1_registry_planes_list","arguments":{"address":16}}`),
 		})
 		envelope := envelopeFromResult(t, res)
 		data, ok := envelope["data"].([]any)
@@ -3044,7 +3049,7 @@ func TestServer_RegistryReadToolsOrderingAndMetadata(t *testing.T) {
 			JSONRPC: "2.0",
 			ID:      4,
 			Method:  "tools/call",
-			Params:  json.RawMessage(`{"name":"ebus.v1.registry.methods.list","arguments":{"address":16,"plane":"heating"}}`),
+			Params:  json.RawMessage(`{"name":"ebus_v1_registry_methods_list","arguments":{"address":16,"plane":"heating"}}`),
 		})
 		envelope := envelopeFromResult(t, res)
 		data, ok := envelope["data"].([]any)
@@ -3103,31 +3108,14 @@ func TestServer_ToolsCallLegacyAliases(t *testing.T) {
 	}
 	server.SetAdmittedRPCSource(0x7F)
 
-	res := doRPC(t, server.Handler(), rpcRequest{
-		JSONRPC: "2.0",
-		ID:      1,
-		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"ebus.devices","arguments":{}}`),
-	})
-	if res.Error != nil {
-		t.Fatalf("legacy devices error = %+v", res.Error)
+	for _, name := range []string{"ebus.devices", "ebus.invoke"} {
+		res := doRPC(t, server.Handler(), rpcRequest{JSONRPC: "2.0", ID: 1, Method: "tools/call", Params: json.RawMessage(`{"name":"` + name + `","arguments":{"address":8,"plane":"heating","method":"get_status","params":{}}}`)})
+		if res.Error == nil {
+			t.Fatalf("legacy tool accepted: %s", name)
+		}
 	}
-
-	res = doRPC(t, server.Handler(), rpcRequest{
-		JSONRPC: "2.0",
-		ID:      2,
-		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"ebus.invoke","arguments":{"address":8,"plane":"heating","method":"get_status","params":{}}}`),
-	})
-	if res.Error != nil {
-		t.Fatalf("legacy invoke error = %+v", res.Error)
-	}
-	resultMap, ok := res.Result.(map[string]any)
-	if !ok {
-		t.Fatalf("legacy invoke result type = %T; want map", res.Result)
-	}
-	if isError, _ := resultMap["isError"].(bool); isError {
-		t.Fatalf("legacy invoke isError=true; want false")
+	if len(invoker.calls) != 0 {
+		t.Fatal("legacy tool dispatched")
 	}
 }
 
@@ -3160,7 +3148,7 @@ func TestServer_ToolsCallInvokeErrorEnvelope(t *testing.T) {
 		JSONRPC: "2.0",
 		ID:      1,
 		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"ebus.invoke","arguments":{"address":9,"plane":"heating","method":"get_status","params":{}}}`),
+		Params:  json.RawMessage(`{"name":"ebus_v1_rpc_invoke","arguments":{"address":9,"plane":"heating","method":"get_status","params":{},"intent":"READ_ONLY","allow_dangerous":false}}`),
 	})
 	if res.Error != nil {
 		t.Fatalf("tools/call invoke error response should be content-level, got rpc error = %+v", res.Error)
@@ -3234,7 +3222,7 @@ func TestServer_ToolsCallInvokeV1SafetyGuards(t *testing.T) {
 			JSONRPC: "2.0",
 			ID:      1,
 			Method:  "tools/call",
-			Params:  json.RawMessage(`{"name":"ebus.v1.rpc.invoke","arguments":{"address":8,"plane":"heating","method":"set_target","params":{},"allow_dangerous":false}}`),
+			Params:  json.RawMessage(`{"name":"ebus_v1_rpc_invoke","arguments":{"address":8,"plane":"heating","method":"set_target","params":{},"allow_dangerous":false}}`),
 		})
 		assertToolErrorCode(t, res, "INVALID_ARGUMENT")
 	})
@@ -3244,7 +3232,7 @@ func TestServer_ToolsCallInvokeV1SafetyGuards(t *testing.T) {
 			JSONRPC: "2.0",
 			ID:      2,
 			Method:  "tools/call",
-			Params:  json.RawMessage(`{"name":"ebus.v1.rpc.invoke","arguments":{"address":8,"plane":"heating","method":"set_target","params":{},"intent":"READ_ONLY","allow_dangerous":false}}`),
+			Params:  json.RawMessage(`{"name":"ebus_v1_rpc_invoke","arguments":{"address":8,"plane":"heating","method":"set_target","params":{},"intent":"READ_ONLY","allow_dangerous":false}}`),
 		})
 		assertToolErrorCode(t, res, "PERMISSION_DENIED")
 	})
@@ -3254,7 +3242,7 @@ func TestServer_ToolsCallInvokeV1SafetyGuards(t *testing.T) {
 			JSONRPC: "2.0",
 			ID:      3,
 			Method:  "tools/call",
-			Params:  json.RawMessage(`{"name":"ebus.v1.rpc.invoke","arguments":{"address":8,"plane":"heating","method":"set_target","params":{},"intent":"MUTATE","allow_dangerous":true}}`),
+			Params:  json.RawMessage(`{"name":"ebus_v1_rpc_invoke","arguments":{"address":8,"plane":"heating","method":"set_target","params":{},"intent":"MUTATE","allow_dangerous":true}}`),
 		})
 		assertToolErrorCode(t, res, "PERMISSION_DENIED")
 	})
@@ -3296,7 +3284,7 @@ func TestServer_ToolsCallInvokeV1Idempotency(t *testing.T) {
 		JSONRPC: "2.0",
 		ID:      1,
 		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"ebus.v1.rpc.invoke","arguments":{"address":8,"plane":"heating","method":"set_target","params":{"target_c":21.5},"intent":"MUTATE","allow_dangerous":true,"idempotency_key":"abc123"}}`),
+		Params:  json.RawMessage(`{"name":"ebus_v1_rpc_invoke","arguments":{"address":8,"plane":"heating","method":"set_target","params":{"target_c":21.5},"intent":"MUTATE","allow_dangerous":true,"idempotency_key":"abc123"}}`),
 	})
 	if first.Error != nil {
 		t.Fatalf("first invoke rpc error = %+v", first.Error)
@@ -3306,7 +3294,7 @@ func TestServer_ToolsCallInvokeV1Idempotency(t *testing.T) {
 		JSONRPC: "2.0",
 		ID:      2,
 		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"ebus.v1.rpc.invoke","arguments":{"address":8,"plane":"heating","method":"set_target","params":{"target_c":21.5},"intent":"MUTATE","allow_dangerous":true,"idempotency_key":"abc123"}}`),
+		Params:  json.RawMessage(`{"name":"ebus_v1_rpc_invoke","arguments":{"address":8,"plane":"heating","method":"set_target","params":{"target_c":21.5},"intent":"MUTATE","allow_dangerous":true,"idempotency_key":"abc123"}}`),
 	})
 	if second.Error != nil {
 		t.Fatalf("second invoke rpc error = %+v", second.Error)
@@ -3319,7 +3307,7 @@ func TestServer_ToolsCallInvokeV1Idempotency(t *testing.T) {
 		JSONRPC: "2.0",
 		ID:      3,
 		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"ebus.v1.rpc.invoke","arguments":{"address":8,"plane":"heating","method":"set_target","params":{"target_c":22.0},"intent":"MUTATE","allow_dangerous":true,"idempotency_key":"abc123"}}`),
+		Params:  json.RawMessage(`{"name":"ebus_v1_rpc_invoke","arguments":{"address":8,"plane":"heating","method":"set_target","params":{"target_c":22.0},"intent":"MUTATE","allow_dangerous":true,"idempotency_key":"abc123"}}`),
 	})
 	assertToolErrorCode(t, conflict, "CONFLICT")
 }
@@ -3366,7 +3354,7 @@ func TestServer_ToolsCallInvokeV1IdempotencySourceNormalization(t *testing.T) {
 		JSONRPC: "2.0",
 		ID:      1,
 		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"ebus.v1.rpc.invoke","arguments":{"address":8,"plane":"heating","method":"set_target","params":{"target_c":21.5},"intent":"MUTATE","allow_dangerous":true,"idempotency_key":"srckey"}}`),
+		Params:  json.RawMessage(`{"name":"ebus_v1_rpc_invoke","arguments":{"address":8,"plane":"heating","method":"set_target","params":{"target_c":21.5},"intent":"MUTATE","allow_dangerous":true,"idempotency_key":"srckey"}}`),
 	})
 	if first.Error != nil {
 		t.Fatalf("first invoke rpc error = %+v", first.Error)
@@ -3379,7 +3367,7 @@ func TestServer_ToolsCallInvokeV1IdempotencySourceNormalization(t *testing.T) {
 		JSONRPC: "2.0",
 		ID:      2,
 		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"ebus.v1.rpc.invoke","arguments":{"address":8,"plane":"heating","method":"set_target","params":{"target_c":21.5,"source":127},"intent":"MUTATE","allow_dangerous":true,"idempotency_key":"srckey"}}`),
+		Params:  json.RawMessage(`{"name":"ebus_v1_rpc_invoke","arguments":{"address":8,"plane":"heating","method":"set_target","params":{"target_c":21.5,"source":127},"intent":"MUTATE","allow_dangerous":true,"idempotency_key":"srckey"}}`),
 	})
 	if second.Error != nil {
 		t.Fatalf("second invoke rpc error = %+v", second.Error)
@@ -3446,7 +3434,7 @@ func TestServer_ToolsCallInvokeV1Timeout(t *testing.T) {
 		JSONRPC: "2.0",
 		ID:      1,
 		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"ebus.v1.rpc.invoke","arguments":{"address":8,"plane":"heating","method":"get_status","params":{},"intent":"READ_ONLY","allow_dangerous":false,"timeout_ms":1}}`),
+		Params:  json.RawMessage(`{"name":"ebus_v1_rpc_invoke","arguments":{"address":8,"plane":"heating","method":"get_status","params":{},"intent":"READ_ONLY","allow_dangerous":false,"timeout_ms":1}}`),
 	})
 	assertToolErrorCode(t, res, "TIMEOUT")
 }

@@ -126,7 +126,7 @@ func buildResponderCapabilityProvider(cfg ebusgateway.Config, actualTransport eb
 // wrong observability label for a pre-known seed entry) to
 // registry.RegisterStaticSeed (which stamps DiscoverySourceStaticSeed
 // /VerificationStateCandidate). Operators reading
-// `ebus.v1.registry.devices.list` or the address-table snapshot via
+// `ebus_v1_registry_devices_list` or the address-table snapshot via
 // MCP/JSON now correctly see seeded addresses labelled
 // `discovery_source: "static_seed"`, `verification: "candidate"`
 // instead of pretending the gateway actively confirmed them at boot.

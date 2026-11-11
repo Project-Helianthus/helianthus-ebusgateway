@@ -364,7 +364,7 @@ func TestM2MRuntimeMatterRoutesShareThePerHostRequestBudget(t *testing.T) {
 		}
 	}
 	matterRefusal := serveRefused(http.MethodGet, "/matter-binding/v1/changes?cursor=x:1", "198.51.100.7:40002", "")
-	graphqlBody := `{"operationName":"SemanticPVCurrent","query":"query SemanticPVCurrent($request: M2MCurrentSnapshotRequest!) { semanticPVCurrent(request: $request) { snapshot evaluation selections projection } }","variables":{"request":{"contractId":"PUBLIC_GRAPHQL_SEMANTIC_PV_V1","assetRef":"pv-asset-known"}}}`
+	graphqlBody := `{"operationName":"SemanticPVCurrent","query":"query SemanticPVCurrent($request: m2m_current_snapshot_request!) { semantic_pv_current(request: $request) { snapshot evaluation selections projection } }","variables":{"request":{"contract_id":"PUBLIC_GRAPHQL_SEMANTIC_PV_V1","asset_ref":"pv-asset-known"}}}`
 	graphqlRefusal := serveRefused(http.MethodPost, "/graphql/m2m/v1", "198.51.100.7:40003", graphqlBody)
 	if matterRefusal.Code != http.StatusServiceUnavailable || strings.TrimSpace(matterRefusal.Body.String()) != `{"contract":"`+feedv1.Contract+`","error":"unavailable"}` {
 		t.Fatalf("concurrent same-host Matter refusal=%d %s; want the feed's unavailable error", matterRefusal.Code, matterRefusal.Body.String())

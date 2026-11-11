@@ -100,7 +100,7 @@ func TestThermalHumidityMappingSelectors(t *testing.T) {
 				if r.Field != nil || r.Service != nil || r.Capability != nil || r.Candidate != nil || r.Withheld != "unsupported_native_selector" {
 					t.Fatal("unsupported selector projected")
 				}
-			} else if r.Field == nil || r.Field.ID != "thermal.measurement.humidity_relative" || r.Service == nil || r.Service.ID != semreg.DefinitionID("thermal.service."+tc.service) || r.Capability.ID != semreg.DefinitionID("thermal.capability.read."+tc.service) || r.Candidate == nil || r.Withheld != "humidity_binding_unresolved" {
+			} else if r.Field == nil || r.Field.ID != "thermal.measurement.humidity" || r.Service == nil || r.Service.ID != semreg.DefinitionID("thermal.service."+tc.service) || r.Capability.ID != semreg.DefinitionID("thermal.capability.read."+tc.service) || r.Candidate == nil || r.Withheld != "humidity_binding_unresolved" {
 				t.Fatalf("wrong mapping: %+v", r)
 			}
 		})
@@ -243,7 +243,7 @@ func TestThermalHumidityMappingDetached(t *testing.T) {
 	r[0].Candidate.Quantity.Number.Coefficient = "7"
 	r[0].Field.ID = "modified"
 	fresh := mapThermalHumidity([]thermalHumidityRequest{{Identity: original.Identity, Observation: &original}})[0]
-	if fresh.Candidate.Quantity.Number != (semreg.Decimal{Coefficient: "4", Exponent10: 1}) || fresh.Field.ID != "thermal.measurement.humidity_relative" {
+	if fresh.Candidate.Quantity.Number != (semreg.Decimal{Coefficient: "4", Exponent10: 1}) || fresh.Field.ID != "thermal.measurement.humidity" {
 		t.Fatal("output aliases future calls")
 	}
 	missing := mapThermalHumidity([]thermalHumidityRequest{{Identity: original.Identity, Previous: &original}})[0]

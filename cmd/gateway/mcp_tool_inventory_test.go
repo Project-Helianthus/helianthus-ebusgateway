@@ -220,7 +220,7 @@ func TestMCPInventoryRegistrationCoverage(t *testing.T) {
 		// Omission of the unconditional runtime registration must fail the same comparator.
 		withoutRuntime := []string{}
 		for _, name := range names {
-			if !strings.HasPrefix(name, "helianthus.runtime.") {
+			if !strings.HasPrefix(name, "helianthus_runtime_") {
 				withoutRuntime = append(withoutRuntime, name)
 			}
 		}

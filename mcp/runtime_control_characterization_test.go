@@ -3,9 +3,9 @@ package mcp
 // G5 PR 1a.1 characterization baseline (issue #1147).
 //
 // Pins the CURRENT MCP payloads that the G5 lifecycle work will touch:
-// ebus.v1.runtime.status.get (daemon/adapter status and regulator capability
-// projection), ebus.v1.bus.summary.get (bus admission and startup status) and
-// ebus.v1.bus.identification_evidence.list (raw identification evidence).
+// ebus_v1_runtime_status_get (daemon/adapter status and regulator capability
+// projection), ebus_v1_bus_summary_get (bus admission and startup status) and
+// ebus_v1_bus_identification_evidence_list (raw identification evidence).
 // All inputs are synthetic and fixed. Each golden entry records, next to the
 // envelope, the later production change that may legitimately alter it
 // ("changes_when"); a later G5 PR that changes an envelope must update the

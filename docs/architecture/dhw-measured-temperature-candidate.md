@@ -6,7 +6,7 @@ Nothing here is stable before Helianthus 1.0. It is a pure application seam,
 not acquisition, registration, a common production provider, or live cutover.
 
 The [public native cutover contract](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/architecture/dhw-measured-temperature-cutover.md)
-and [B524 native register catalog](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/protocols/vaillant/ebus-vaillant-B524-register-map.md)
+and [B524 native register catalog](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/protocols/vaillant/ebus-vaillant-b524-register-map.md)
 precede interpretation. Only B5/24 OP02/GG01/II00 RR0005 is measured input.
 Separately supplied RR0001 exact two-byte UIN context determines presence:
 nonzero means present under its supplied qualification, zero means absent;

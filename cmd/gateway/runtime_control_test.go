@@ -409,7 +409,7 @@ func (process *rctlProcess) adapterStatus() string {
 	if err != nil {
 		t.Fatalf("graphql.NewHandler() = %v", err)
 	}
-	request := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":"{ adapterStatus { status } daemonStatus { status } }"}`))
+	request := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":"{ adapter_status { status } daemon_status { status } }"}`))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 	begin := time.Now()
@@ -419,8 +419,8 @@ func (process *rctlProcess) adapterStatus() string {
 	}
 	var payload struct {
 		Data struct {
-			Adapter struct{ Status string } `json:"adapterStatus"`
-			Daemon  struct{ Status string } `json:"daemonStatus"`
+			Adapter struct{ Status string } `json:"adapter_status"`
+			Daemon  struct{ Status string } `json:"daemon_status"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
@@ -1586,7 +1586,7 @@ func (process *rctlProcess) requireMCPTools() {
 	}
 }
 
-// mcpList reads helianthus.runtime.list within the read bound.
+// mcpList reads helianthus_runtime_list within the read bound.
 func (process *rctlProcess) mcpList() rctlWireList {
 	t := process.env.t
 	t.Helper()
@@ -1613,7 +1613,7 @@ func (process *rctlProcess) mcpList() rctlWireList {
 	return list
 }
 
-// mcpGet reads helianthus.runtime.get for ebus.primary within the read bound.
+// mcpGet reads helianthus_runtime_get for ebus.primary within the read bound.
 func (process *rctlProcess) mcpGet() rctlWireDriver {
 	t := process.env.t
 	t.Helper()
@@ -1718,14 +1718,14 @@ func rctlSameOutcome(t *testing.T, what string, got rctlToolResult, view runtime
 func (process *rctlProcess) mcpAdapterStatus() string {
 	t := process.env.t
 	t.Helper()
-	result := process.tool("ebus.v1.runtime.status.get", `{}`)
+	result := process.tool("ebus_v1_runtime_status_get", `{}`)
 	var data struct {
 		Adapter struct {
 			Status string `json:"status"`
 		} `json:"adapter_status"`
 	}
 	if result.isError || json.Unmarshal(result.data, &data) != nil {
-		t.Fatalf("ebus.v1.runtime.status.get = %s %s", result.code, result.data)
+		t.Fatalf("ebus_v1_runtime_status_get = %s %s", result.code, result.data)
 	}
 	return data.Adapter.Status
 }

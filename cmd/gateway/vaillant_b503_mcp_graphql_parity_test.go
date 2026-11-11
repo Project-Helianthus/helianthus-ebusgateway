@@ -94,13 +94,13 @@ func TestIssue552VaillantB503RefreshingSessionMCPGraphQLParity(t *testing.T) {
 	}()
 	<-refreshStarted
 
-	mcpSession := mcpCallToolEnvelope(t, runtime.mcpServer.Handler(), "ebus.v1.vaillant.live_monitor.session.get", `{"target_address":21}`)
-	graphSession := b503GraphQLResult(t, provider, `{ vaillantLiveMonitorSession(targetAddress:21) { state owned } }`)
+	mcpSession := mcpCallToolEnvelope(t, runtime.mcpServer.Handler(), "ebus_v1_vaillant_live_monitor_session_get", `{"target_address":21}`)
+	graphSession := b503GraphQLResult(t, provider, `{ vaillant_live_monitor_session(target_address:21) { state owned } }`)
 	if len(graphSession.Errors) != 0 {
 		t.Fatalf("GraphQL session errors: %+v", graphSession.Errors)
 	}
 	mcpState := mcpSession["data"].(map[string]any)
-	graphState := graphSession.Data.(map[string]any)["vaillantLiveMonitorSession"].(map[string]any)
+	graphState := graphSession.Data.(map[string]any)["vaillant_live_monitor_session"].(map[string]any)
 	if mcpState["state"] != "Refreshing" || mcpState["owned"] != true {
 		t.Fatalf("MCP session=%#v; want Refreshing with ownership held", mcpState)
 	}
@@ -139,7 +139,7 @@ func TestIssue552B503GraphQLPreservesDispatcherErrorCodes(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, provider := newB503ParityRuntime(t, b503GraphQLErrorDispatcher{err: tc.err})
-			result := b503GraphQLResult(t, provider, `{ vaillantErrors(targetAddress:21) { firstActiveError } }`)
+			result := b503GraphQLResult(t, provider, `{ vaillant_errors(target_address:21) { first_active_error } }`)
 			if len(result.Errors) != 1 {
 				t.Fatalf("GraphQL errors=%+v; want one field-local error", result.Errors)
 			}
@@ -159,15 +159,15 @@ func TestIssue552B503DispatcherTimeoutMCPGraphQLParity(t *testing.T) {
 	}{
 		{
 			name:       "errors get",
-			mcpTool:    "ebus.v1.vaillant.errors.get",
+			mcpTool:    "ebus_v1_vaillant_errors_get",
 			mcpArgs:    `{"target_address":21}`,
-			graphQuery: `{ vaillantErrors(targetAddress:21) { firstActiveError } }`,
+			graphQuery: `{ vaillant_errors(target_address:21) { first_active_error } }`,
 		},
 		{
 			name:       "live enable",
-			mcpTool:    "ebus.v1.vaillant.live_monitor.get",
+			mcpTool:    "ebus_v1_vaillant_live_monitor_get",
 			mcpArgs:    `{"action":"enable","target_address":21}`,
-			graphQuery: `{ vaillantLiveMonitor(action:"enable", targetAddress:21) { issuerToken } }`,
+			graphQuery: `{ vaillant_live_monitor(action:"enable", target_address:21) { issuer_token } }`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -196,15 +196,15 @@ func TestIssue552B503DispatcherTimeoutMCPGraphQLParity(t *testing.T) {
 
 func TestIssue552VaillantB503PromotedMCPGraphQLParity(t *testing.T) {
 	runtime, provider := newB503ParityRuntime(t, &b503ParityDispatcher{})
-	mcpHistory := mcpCallToolEnvelope(t, runtime.mcpServer.Handler(), "ebus.v1.vaillant.errors.history.list", `{"target_address":21,"limit":2}`)
-	graphResult := b503GraphQLResult(t, provider, `{ vaillantErrorsHistory(targetAddress:21, limit:2) { records { index firstActiveError slots } failure { index code message } } }`)
+	mcpHistory := mcpCallToolEnvelope(t, runtime.mcpServer.Handler(), "ebus_v1_vaillant_errors_history_list", `{"target_address":21,"limit":2}`)
+	graphResult := b503GraphQLResult(t, provider, `{ vaillant_errors_history(target_address:21, limit:2) { records { index first_active_error slots } failure { index code message } } }`)
 	if len(graphResult.Errors) != 0 {
 		t.Fatalf("GraphQL history errors: %+v", graphResult.Errors)
 	}
 
 	mcpData := mcpHistory["data"].(map[string]any)
 	mcpRows := mcpData["records"].([]any)
-	graphHistory := graphResult.Data.(map[string]any)["vaillantErrorsHistory"].(map[string]any)
+	graphHistory := graphResult.Data.(map[string]any)["vaillant_errors_history"].(map[string]any)
 	graphRows := graphHistory["records"].([]any)
 	if len(mcpRows) != len(graphRows) {
 		t.Fatalf("history lengths MCP=%d GraphQL=%d", len(mcpRows), len(graphRows))
@@ -212,7 +212,7 @@ func TestIssue552VaillantB503PromotedMCPGraphQLParity(t *testing.T) {
 	for index := range mcpRows {
 		mcpRow := mcpRows[index].(map[string]any)
 		graphRow := graphRows[index].(map[string]any)
-		if int(mcpRow["index"].(float64)) != graphRow["index"] || int(mcpRow["first_active_error"].(float64)) != graphRow["firstActiveError"] {
+		if int(mcpRow["index"].(float64)) != graphRow["index"] || int(mcpRow["first_active_error"].(float64)) != graphRow["first_active_error"] {
 			t.Fatalf("history row %d drift: MCP=%#v GraphQL=%#v", index, mcpRow, graphRow)
 		}
 		mcpSlots := mcpRow["slots"].([]any)
@@ -233,13 +233,13 @@ func TestIssue552VaillantB503PromotedMCPGraphQLParity(t *testing.T) {
 	if _, err := runtime.manager.Enable(context.Background()); err != nil {
 		t.Fatalf("Enable session: %v", err)
 	}
-	mcpSession := mcpCallToolEnvelope(t, runtime.mcpServer.Handler(), "ebus.v1.vaillant.live_monitor.session.get", `{"target_address":21}`)
-	graphSession := b503GraphQLResult(t, provider, `{ vaillantLiveMonitorSession(targetAddress:21) { state owned } }`)
+	mcpSession := mcpCallToolEnvelope(t, runtime.mcpServer.Handler(), "ebus_v1_vaillant_live_monitor_session_get", `{"target_address":21}`)
+	graphSession := b503GraphQLResult(t, provider, `{ vaillant_live_monitor_session(target_address:21) { state owned } }`)
 	if len(graphSession.Errors) != 0 {
 		t.Fatalf("GraphQL session errors: %+v", graphSession.Errors)
 	}
 	mcpState := mcpSession["data"].(map[string]any)
-	graphState := graphSession.Data.(map[string]any)["vaillantLiveMonitorSession"].(map[string]any)
+	graphState := graphSession.Data.(map[string]any)["vaillant_live_monitor_session"].(map[string]any)
 	if mcpState["state"] != graphState["state"] || mcpState["owned"] != graphState["owned"] {
 		t.Fatalf("session drift: MCP=%#v GraphQL=%#v", mcpState, graphState)
 	}
@@ -248,7 +248,7 @@ func TestIssue552VaillantB503PromotedMCPGraphQLParity(t *testing.T) {
 func TestIssue552VaillantB503HistoryMCPGraphQLFailureParity(t *testing.T) {
 	failIndex := byte(1)
 	runtime, provider := newB503ParityRuntime(t, &b503ParityDispatcher{failIndex: &failIndex})
-	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ebus.v1.vaillant.errors.history.list","arguments":{"limit":2}}}`
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ebus_v1_vaillant_errors_history_list","arguments":{"limit":2}}}`
 	response := mcpRPC(t, runtime.mcpServer.Handler(), body)
 	if response.Error != nil {
 		t.Fatalf("MCP RPC error: %+v", response.Error)
@@ -259,20 +259,20 @@ func TestIssue552VaillantB503HistoryMCPGraphQLFailureParity(t *testing.T) {
 	}
 
 	graphResult := b503GraphQLResult(t, provider, `{
-		vaillantErrorsHistory(limit:2) { records { index } failure { index code message } }
-		vaillantCapabilities { vaillantB503 { reason available } }
+		vaillant_errors_history(limit:2) { records { index } failure { index code message } }
+		vaillant_capabilities { vaillant_b503 { reason available } }
 	}`)
 	if len(graphResult.Errors) != 0 {
 		t.Fatalf("GraphQL partial aggregate must remain typed data: %+v", graphResult.Errors)
 	}
 	if data, ok := graphResult.Data.(map[string]any); ok {
-		history := data["vaillantErrorsHistory"].(map[string]any)
+		history := data["vaillant_errors_history"].(map[string]any)
 		records := history["records"].([]any)
 		failure := history["failure"].(map[string]any)
 		if len(records) != 1 || records[0].(map[string]any)["index"] != 0 || failure["index"] != 1 || failure["code"] != "UPSTREAM_RPC_FAILED" {
 			t.Fatalf("GraphQL partial history=%#v; want prefix and structured failure", history)
 		}
-		capability := data["vaillantCapabilities"].(map[string]any)["vaillantB503"].(map[string]any)
+		capability := data["vaillant_capabilities"].(map[string]any)["vaillant_b503"].(map[string]any)
 		if capability["reason"] != "AVAILABLE" || capability["available"] != true {
 			t.Fatalf("GraphQL lost sibling capability after aggregate failure: %#v", capability)
 		}

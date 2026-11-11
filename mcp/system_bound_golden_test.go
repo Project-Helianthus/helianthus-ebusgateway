@@ -11,7 +11,7 @@ import (
 )
 
 // TestSemanticSystemDHWBivalenceBoundGoldenEnvelope pins the
-// ebus.v1.semantic.system.get output (including data_hash) for the two shapes
+// ebus_v1_semantic_system_get output (including data_hash) for the two shapes
 // of the active dhwBivalencePointC bound: a matched controller profile and the
 // conservative unmatched policy. Regenerate with
 // TZ=UTC UPDATE=1 go test ./mcp -run TestSemanticSystemDHWBivalenceBoundGoldenEnvelope.
@@ -38,7 +38,7 @@ func TestSemanticSystemDHWBivalenceBoundGoldenEnvelope(t *testing.T) {
 				JSONRPC: "2.0",
 				ID:      1,
 				Method:  "tools/call",
-				Params:  json.RawMessage(`{"name":"ebus.v1.semantic.system.get","arguments":{}}`),
+				Params:  json.RawMessage(`{"name":"ebus_v1_semantic_system_get","arguments":{}}`),
 			}))
 		}
 		first, second := call(), call()
@@ -100,7 +100,7 @@ func TestSemanticSnapshotDHWBivalenceBoundGoldenEnvelope(t *testing.T) {
 					JSONRPC: "2.0",
 					ID:      1,
 					Method:  "tools/call",
-					Params:  json.RawMessage(`{"name":"ebus.v1.semantic.snapshot.get","arguments":` + selection.arguments + `}`),
+					Params:  json.RawMessage(`{"name":"ebus_v1_semantic_snapshot_get","arguments":` + selection.arguments + `}`),
 				}))
 			}
 			first, second := call(), call()

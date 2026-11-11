@@ -31,17 +31,17 @@ func (h *m56CountingHub) Capture(context.Context, []semreg.AssetID, func() time.
 
 func m56SemanticOperationBody(t *testing.T, request semanticoperations.Request) []byte {
 	t.Helper()
-	input := fmt.Sprintf(`{"assetId":%q,"bindingId":%q,"capabilityInstanceId":%q,
+	input := fmt.Sprintf(`{"asset_id":%q,"binding_id":%q,"capability_instance_id":%q,
 	  "operation":{"pack":{"id":%q,"version":%q},"id":%q,"version":%q},
 	  "arguments":[{"id":"fixture.field.level","value":{"kind":"boolean","boolean":true}}],
-	  "expectedSemanticRevision":%q,"expectedCapabilityRevision":%q,"expectedCapabilityInstanceRevision":%q,
-	  "expectedSourceEpochId":%q,"expectedDriverGeneration":%q,"preconditions":[],"timeoutMs":1000}`,
+	  "expected_semantic_revision":%q,"expected_capability_revision":%q,"expected_capability_instance_revision":%q,
+	  "expected_source_epoch_id":%q,"expected_driver_generation":%q,"preconditions":[],"timeout_ms":1000}`,
 		request.AssetID, request.BindingID, request.CapabilityInstanceID,
 		request.Operation.Pack.ID, request.Operation.Pack.Version, request.Operation.ID, request.Operation.Version,
 		request.ExpectedSemanticRevision, request.ExpectedCapabilityRevision, request.ExpectedCapabilityInstanceRevision,
 		request.ExpectedSourceEpochID, request.ExpectedDriverGeneration)
 	body, err := json.Marshal(map[string]any{
-		"query":     `mutation($input: SemanticOperationInput!) { semanticOperation(input: $input) { status kernelOutcome delivery reason } }`,
+		"query":     `mutation($input: semantic_operation_input!) { semantic_operation(input: $input) { status kernel_outcome delivery reason } }`,
 		"variables": map[string]json.RawMessage{"input": json.RawMessage(input)},
 	})
 	if err != nil {
@@ -84,7 +84,7 @@ func TestM56GatewayCompositionInstallsUnwiredRoute(t *testing.T) {
 		t.Fatalf("installGatewaySemanticOperationRoute() = %v", err)
 	}
 	response := m56GatewayPost(t, builder, m56SemanticOperationBody(t, semoptest.New(t).Request()))
-	if len(response.Errors) != 1 || response.Errors[0].Extensions["code"] != string(semanticoperations.CodeUnavailable) || response.Data["semanticOperation"] != nil {
+	if len(response.Errors) != 1 || response.Errors[0].Extensions["code"] != string(semanticoperations.CodeUnavailable) || response.Data["semantic_operation"] != nil {
 		t.Fatalf("response = %+v; want UNAVAILABLE with a null result", response)
 	}
 	if hub.captures.Load() != 0 {
@@ -108,8 +108,8 @@ func TestM56GatewayCompositionAdmitsThroughBuiltinKernel(t *testing.T) {
 		t.Fatal(err)
 	}
 	response := m56GatewayPost(t, builder, m56SemanticOperationBody(t, f.Request()))
-	result, _ := response.Data["semanticOperation"].(map[string]any)
-	if len(response.Errors) != 0 || result["status"] != "failed" || result["kernelOutcome"] != "rejected" || result["delivery"] != "not_sent" ||
+	result, _ := response.Data["semantic_operation"].(map[string]any)
+	if len(response.Errors) != 0 || result["status"] != "failed" || result["kernel_outcome"] != "rejected" || result["delivery"] != "not_sent" ||
 		result["reason"] != string(semreg.DefinitionOwnerMissing) {
 		t.Fatalf("response = %+v", response)
 	}

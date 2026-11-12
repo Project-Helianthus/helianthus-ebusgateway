@@ -406,6 +406,10 @@ type vaillantSemanticPoller struct {
 	routerPlanesRefreshFn        func()
 	withFM5ObservationGeneration func(func(uint64)) bool
 	nowFn                        func() time.Time
+	// pauseFn replaces the waits between and after semantic read attempts;
+	// nil waits on the wall clock. Offline scenarios keep pauses on a
+	// simulated clock.
+	pauseFn func(context.Context, time.Duration) bool
 }
 
 type regulatorEnrichment struct {
@@ -851,6 +855,22 @@ func (p *vaillantSemanticPoller) zoneHitThresholdValue() int {
 		return ebusgateway.DefaultSemanticZonePresenceHitThreshold
 	}
 	return p.zoneHitThreshold
+}
+
+// pause waits d, or until ctx ends, and reports whether the full pause
+// elapsed.
+func (p *vaillantSemanticPoller) pause(ctx context.Context, d time.Duration) bool {
+	if p != nil && p.pauseFn != nil {
+		return p.pauseFn(ctx, d)
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 func (p *vaillantSemanticPoller) now() time.Time {
@@ -5946,12 +5966,8 @@ func (p *vaillantSemanticPoller) readB509ValueWithMaxAge(ctx context.Context, ta
 				lastErr = fmt.Errorf("b509 read failed: target=0x%02x addr=0x%04x", target, addr)
 			}
 
-			if attempt < 2 {
-				select {
-				case <-ctx.Done():
-					return nil, ctx.Err()
-				case <-time.After(75 * time.Millisecond):
-				}
+			if attempt < 2 && !p.pause(ctx, 75*time.Millisecond) {
+				return nil, ctx.Err()
 			}
 		}
 		if lastErr == nil {
@@ -5961,10 +5977,7 @@ func (p *vaillantSemanticPoller) readB509ValueWithMaxAge(ctx context.Context, ta
 	})
 	p.emitWatchReadEfficiency(watchRuntime, maxAge, stats)
 	if stats.ActiveFetchSucceeded {
-		select {
-		case <-ctx.Done():
-		case <-time.After(25 * time.Millisecond):
-		}
+		p.pause(ctx, 25*time.Millisecond)
 	}
 	if err != nil {
 		return nil, false
@@ -6733,12 +6746,8 @@ func (p *vaillantSemanticPoller) readB524ValueWithMaxAge(ctx context.Context, op
 				)
 			}
 
-			if attempt < 2 {
-				select {
-				case <-ctx.Done():
-					return nil, ctx.Err()
-				case <-time.After(75 * time.Millisecond):
-				}
+			if attempt < 2 && !p.pause(ctx, 75*time.Millisecond) {
+				return nil, ctx.Err()
 			}
 		}
 		if lastErr == nil {
@@ -6748,10 +6757,7 @@ func (p *vaillantSemanticPoller) readB524ValueWithMaxAge(ctx context.Context, op
 	})
 	p.emitWatchReadEfficiency(watchRuntime, maxAge, stats)
 	if stats.ActiveFetchSucceeded {
-		select {
-		case <-ctx.Done():
-		case <-time.After(25 * time.Millisecond):
-		}
+		p.pause(ctx, 25*time.Millisecond)
 	}
 	if err != nil {
 		return nil, false
@@ -6952,12 +6958,8 @@ func (p *vaillantSemanticPoller) probeB524Register(ctx context.Context, target, 
 	for attempt := 0; attempt < 3; attempt++ {
 		// Back off between retries to avoid colliding with the same
 		// bus contention pattern (50ms arbitration + waitForSyn).
-		if attempt > 0 {
-			select {
-			case <-time.After(200 * time.Millisecond):
-			case <-ctx.Done():
-				return false
-			}
+		if attempt > 0 && !p.pause(ctx, 200*time.Millisecond) {
+			return false
 		}
 
 		data := buildB524ReadSelector(opcode, group, instance, addr)
@@ -6972,7 +6974,7 @@ func (p *vaillantSemanticPoller) probeB524Register(ctx context.Context, target, 
 
 		p.readMu.Lock()
 		reqCtx, cancel := context.WithTimeout(ctx, timeout)
-		response, err := p.bus.Send(reqCtx, frame)
+		response, err := p.sendSemanticFrame(reqCtx, frame)
 		cancel()
 		p.readMu.Unlock()
 

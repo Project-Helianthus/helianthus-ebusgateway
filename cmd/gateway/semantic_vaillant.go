@@ -509,10 +509,14 @@ func (p *vaillantSemanticPoller) refreshRegulatorCapability(_ context.Context) {
 // insertion and promotion). ABSENT alone does not prove that no controller
 // exists (an unclassified or structurally registered controller also reaches
 // it), so a process that has discovered a root once keeps the per-minute
-// recovery, and a known controller without zones keeps the fallback.
+// recovery, and a known controller without zones keeps the fallback. The
+// fallback is suspended only while the periodic discovery task runs: the poll
+// schedule starts that task's loop only for a positive discovery interval, so
+// with the interval disabled the fallback stays the only periodic search.
 func (p *vaillantSemanticPoller) fallbackDiscoveryAllowed(controller byte) bool {
 	p.mu.Lock()
-	suspend := controller == 0 && p.regAbsenceState == regulatorAbsent && !p.controllerEverDiscovered
+	periodicDiscovery := p.discoveryInterval > 0
+	suspend := controller == 0 && p.regAbsenceState == regulatorAbsent && !p.controllerEverDiscovered && periodicDiscovery
 	logSuspension := suspend && !p.discoveryFallbackSuspended
 	p.discoveryFallbackSuspended = suspend
 	interval := p.discoveryInterval

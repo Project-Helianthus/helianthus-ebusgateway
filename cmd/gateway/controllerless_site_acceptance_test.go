@@ -674,12 +674,14 @@ func runControllerlessPolling(t *testing.T, site *controllerlessSite, startup *c
 
 	schedule := poller.pollSchedule()
 	run.recurringFamilies = len(schedule.recurring)
+	// A disabled task (interval zero or negative) never ticks, as the
+	// production loop returns without a ticker; -1 marks it.
 	next := make([]time.Duration, len(schedule.recurring))
 	for i, task := range schedule.recurring {
-		if task.interval <= 0 {
-			t.Fatalf("recurring task %s has no interval", task.key)
+		next[i] = -1
+		if task.interval > 0 {
+			next[i] = run.pollStart + task.interval
 		}
-		next[i] = run.pollStart + task.interval
 	}
 	var stepTimes []time.Duration
 	for at := range script {
@@ -705,7 +707,7 @@ func runControllerlessPolling(t *testing.T, site *controllerlessSite, startup *c
 		// Production tickers enqueue on their own goroutines, also while a
 		// task runs; the queue coalesces a family that is still pending.
 		for i, task := range schedule.recurring {
-			for next[i] <= now {
+			for next[i] >= 0 && next[i] <= now {
 				poller.enqueueTask(task.key, task.priority, task.refresh)
 				next[i] += task.interval
 			}
@@ -741,7 +743,7 @@ func runControllerlessPolling(t *testing.T, site *controllerlessSite, startup *c
 		busy = 0
 		nextAt := end + 1
 		for _, due := range next {
-			if due < nextAt {
+			if due >= 0 && due < nextAt {
 				nextAt = due
 			}
 		}
@@ -1384,11 +1386,13 @@ func TestControllerlessSiteControllerAppearsAfterAbsent(t *testing.T) {
 	regulatorPart := controllerlessCatalogPartWith(t, "Regulator", productids.ControllerPresent)
 	afterAbsent := 12*time.Minute + 30*time.Second
 	for _, tc := range []struct {
-		name      string
-		appear    time.Duration // polling-relative
-		registry  bool          // the registry gains a catalogue-classified regulator identity
-		enqueue   bool          // a discovery refresh is enqueued (passive insertion or promotion)
-		wantState regulatorAbsenceState
+		name     string
+		appear   time.Duration // polling-relative
+		registry bool          // the registry gains a catalogue-classified regulator identity
+		enqueue  bool          // a discovery refresh is enqueued (passive insertion or promotion)
+		// noPeriodic disables the periodic discovery task (interval zero).
+		noPeriodic bool
+		wantState  regulatorAbsenceState
 		// The find falls in [wantFrom, wantFrom+10 s) of polling time.
 		wantFrom time.Duration
 	}{
@@ -1400,6 +1404,9 @@ func TestControllerlessSiteControllerAppearsAfterAbsent(t *testing.T) {
 		// No trigger: the 15:00 configuration tick and the state ticks skip
 		// their fallback; the 20:00 discovery tick finds it.
 		{name: "no event", appear: afterAbsent, wantState: regulatorAbsent, wantFrom: 20 * time.Minute},
+		// With the periodic discovery task disabled the fallback is never
+		// suspended, so the next state tick (13:00) finds it.
+		{name: "no event, periodic discovery disabled", appear: afterAbsent, noPeriodic: true, wantState: regulatorAbsent, wantFrom: 13 * time.Minute},
 		// Before ABSENT the state tick's fallback still finds it within a minute.
 		{name: "no event before ABSENT", appear: 3*time.Minute + 30*time.Second, wantState: regulatorAbsenceGrace, wantFrom: 4 * time.Minute},
 	} {
@@ -1442,6 +1449,9 @@ func TestControllerlessSiteControllerAppearsAfterAbsent(t *testing.T) {
 					p.EnqueueDiscoveryRefresh()
 				}
 			}}
+			if tc.noPeriodic {
+				startup.cfg.SemanticDiscoveryInterval = 0
+			}
 			run := runControllerlessPolling(t, site, startup, tc.wantFrom+time.Minute, script)
 
 			if stateAtAppear != tc.wantState {

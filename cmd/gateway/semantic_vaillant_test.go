@@ -7321,3 +7321,67 @@ func TestVaillantSemanticPollerKeepsRecoveryWhenAbsentControllerWasDiscovered(t 
 		})
 	}
 }
+
+// TestVaillantSemanticPollerFallbackKeptWhenPeriodicDiscoveryDisabled covers a
+// zero or negative discovery interval, for which the poll schedule never
+// starts the periodic discovery loop. The fallback on the state and
+// configuration ticks is then the only periodic search and stays in place in
+// ABSENT, with no suspension marker. The gate's view must match the
+// schedule's: the fallback is suspended exactly when the schedule starts the
+// discovery loop (creates its ticker).
+func TestVaillantSemanticPollerFallbackKeptWhenPeriodicDiscoveryDisabled(t *testing.T) {
+	var mu sync.Mutex
+	var out strings.Builder
+	original := log.Writer()
+	log.SetOutput(fallbackLogWriter{mu: &mu, out: &out})
+	t.Cleanup(func() { log.SetOutput(original) })
+	markers := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return strings.Count(out.String(), "semantic_discovery_fallback_suspended")
+	}
+
+	for _, interval := range []time.Duration{-time.Second, 0, 10 * time.Minute} {
+		t.Run(interval.String(), func(t *testing.T) {
+			probes := 0
+			poller := newFallbackGatePoller(0x00, false, regulatorAbsent, &probes)
+			poller.discoveryInterval = interval
+
+			var discovery semanticPollTask
+			for _, task := range poller.pollSchedule().recurring {
+				if task.key == semanticTaskRefreshDiscovery {
+					discovery = task
+				}
+			}
+			loopStarted := false
+			schedule := &semanticPollSchedule{pollMu: &sync.Mutex{}, newTicker: func(time.Duration) *semanticPollTicker {
+				loopStarted = true
+				return &semanticPollTicker{C: make(chan time.Time), stop: func() {}}
+			}}
+			stopped, cancel := context.WithCancel(context.Background())
+			cancel()
+			schedule.runLoop(stopped, discovery.interval, discovery.key, discovery.priority, discovery.refresh)
+
+			before := markers()
+			ctx := context.Background()
+			poller.refreshState(ctx)
+			stateProbes := probes
+			poller.refreshConfig(ctx)
+			configProbes := probes - stateProbes
+			fallbackRan := stateProbes > 0 && configProbes > 0
+			if fallbackRan == loopStarted {
+				t.Fatalf("periodic discovery loop started = %v, fallback ran (state %d, config %d probe calls) = %v; want exactly one of them", loopStarted, stateProbes, configProbes, fallbackRan)
+			}
+			wantMarkers := 0
+			if loopStarted {
+				wantMarkers = 1
+			}
+			if got := markers() - before; got != wantMarkers {
+				t.Fatalf("suspension markers = %d; want %d", got, wantMarkers)
+			}
+			if loopStarted && !strings.Contains(out.String(), "discovery_interval=10m0s") {
+				t.Fatalf("suspension marker does not name the running interval: %q", out.String())
+			}
+		})
+	}
+}

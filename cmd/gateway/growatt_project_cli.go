@@ -212,15 +212,15 @@ func growattProjectAged(age, elapsed time.Duration) time.Duration {
 	}
 	return age + elapsed
 }
-func (c growattProjectContext) input(s canbusreg.CXSelection) (canbusreg.CX16ReplayInput, error) {
-	n := s.CX01Spec()
+func (c growattProjectContext) input(s canbusreg.CXSelection) (canbusreg.ReplayInput, error) {
+	n := s.SelectionSpecValue()
 	age, err := growattProjectAge(c.FieldAge)
 	if err != nil {
-		return canbusreg.CX16ReplayInput{}, err
+		return canbusreg.ReplayInput{}, err
 	}
-	var in canbusreg.CX16ReplayInput
+	var in canbusreg.ReplayInput
 	in.Selection = s
-	in.PCS.CX01LINKInput = canbusreg.CX01LINKInput{Epoch: n.Epoch, Direction: n.Direction, Scope: n.Scope, Bank: n.Bank, Endpoint: n.Endpoint, Group: n.Group, Slot: n.Slot, FieldAge: age}
+	in.PCS.LINKInput = canbusreg.LINKInput{Epoch: n.Epoch, Direction: n.Direction, Scope: n.Scope, Bank: n.Bank, Endpoint: n.Endpoint, Group: n.Group, Slot: n.Slot, FieldAge: age}
 	in.PCS.SerialSlot, in.PCS.SerialSlotValid = c.SerialSlot, c.SerialSlotValid
 	in.PCS.NativeSlot, in.PCS.NativeGroup = c.NativeSlot, c.NativeGroup
 	in.PCS.SlotValid, in.PCS.GroupValid = c.SlotValid, c.GroupValid
@@ -230,7 +230,7 @@ func (c growattProjectContext) input(s canbusreg.CXSelection) (canbusreg.CX16Rep
 	in.SensorCount, in.SensorCountValid = c.Sensors.Count, c.Sensors.CountValid
 	for _, v := range []struct {
 		context growattProjectVectorContext
-		target  *[4]canbusreg.CX12MeasurementGate
+		target  *[4]canbusreg.MeasurementGate
 		maximum int
 	}{{c.Cells, &in.CellGates, 16}, {c.Sensors, &in.SensorGates, 8}} {
 		if v.context.Count < 0 || v.context.Count > v.maximum || (v.context.CountValid && v.context.Count == 0) {
@@ -246,7 +246,7 @@ func (c growattProjectContext) input(s canbusreg.CXSelection) (canbusreg.CX16Rep
 			default:
 				return in, errors.New("unknown measurement gate status")
 			}
-			v.target[j] = canbusreg.CX12MeasurementGate{Configured: g.Configured, Valid: g.Valid, Status: g.Status, Age: age}
+			v.target[j] = canbusreg.MeasurementGate{Configured: g.Configured, Valid: g.Valid, Status: g.Status, Age: age}
 		}
 	}
 	return in, nil
@@ -312,7 +312,7 @@ func admitGrowattProject(c ebusgateway.GrowattProjectCANConfig, link bool) (grow
 	if len(entries) != len(contexts) {
 		return a, errors.New("one explicit context per selection required")
 	}
-	inputs := map[canbusreg.CXSelection]canbusreg.CX16ReplayInput{}
+	inputs := map[canbusreg.CXSelection]canbusreg.ReplayInput{}
 	for i, entry := range entries {
 		context := contexts[i]
 		if context.Source != entry.Source {
@@ -328,7 +328,7 @@ func admitGrowattProject(c ebusgateway.GrowattProjectCANConfig, link bool) (grow
 		if context.Endpoint == "" || context.Group == "" || context.Slot == "" || context.Epoch == 0 {
 			return a, errors.New("explicit endpoint, group, slot and positive epoch required")
 		}
-		n := canbusreg.CX01SelectionSpec{Interface: id, Flavor: flavor, ProjectCode: entry.ProjectCode, Release: entry.Release, Choice: entry.Contract, Direction: "bms-to-pcs", Scope: c.Scope, Bank: c.Bank, Endpoint: context.Endpoint, Group: context.Group, Slot: context.Slot, Epoch: context.Epoch, RouteSet: true, Source: context.Source, Destination: context.Destination}
+		n := canbusreg.SelectionSpec{Interface: id, Flavor: flavor, ProjectCode: entry.ProjectCode, Release: entry.Release, Choice: entry.Contract, Direction: "bms-to-pcs", Scope: c.Scope, Bank: c.Bank, Endpoint: context.Endpoint, Group: context.Group, Slot: context.Slot, Epoch: context.Epoch, RouteSet: true, Source: context.Source, Destination: context.Destination}
 		if link {
 			n.Flavor = "link"
 			n.PCSFlavor = flavor
@@ -381,12 +381,12 @@ func admitGrowattProject(c ebusgateway.GrowattProjectCANConfig, link bool) (grow
 		a.link.Native.Choice = ""
 	}
 	origin := time.Now()
-	a.associate = func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.CX16ReplayInput {
+	a.associate = func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
 		in, ok := inputs[s]
 		if !ok {
-			return canbusreg.CX16ReplayInput{}
+			return canbusreg.ReplayInput{}
 		}
-		n := s.CX01Spec()
+		n := s.SelectionSpecValue()
 		in.PCS.Evidence = e
 		in.PCS.Epoch = n.Epoch
 		elapsed := time.Since(origin)

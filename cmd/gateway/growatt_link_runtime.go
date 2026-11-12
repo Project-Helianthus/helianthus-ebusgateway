@@ -34,14 +34,14 @@ func newGrowattLINKManagedDriverFactory(config ebusgateway.GrowattLINKConfig, op
 				return nil, err
 			}
 			return &growattLINKReceiver{growattProjectReceiver: r, lifetime: d.lifetime}, err
-		}, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.CX16ReplayInput {
+		}, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
 			in := associate(s, e)
 			// The unbuffered native source applies observations before receiving
 			// their successors. Capture confirmed counts before bounded history
 			// can evict them, even when no managed snapshot has been requested.
 			for n, selection := range d.provider.selections {
 				if selection == s {
-					native := d.provider.providers[n].CX17Snapshot(e.Monotonic, d.provider.staleAfter)
+					native := d.provider.providers[n].ProjectProviderSnapshot(e.Monotonic, d.provider.staleAfter)
 					d.metadataMu.Lock()
 					d.retainCounts(native)
 					d.metadataMu.Unlock()
@@ -295,7 +295,7 @@ func (d *growattLINKManagedDriver) SafetyQuarantined() bool {
 
 type growattLINKSnapshot struct {
 	Native     growattProjectSnapshot
-	Cells      []canbusreg.CX12VectorSnapshot
+	Cells      []canbusreg.VectorSnapshot
 	State      string
 	Generation uint64
 }
@@ -335,7 +335,7 @@ func (d *growattLINKManagedDriver) Snapshot(now time.Duration) growattLINKSnapsh
 			p.Current = map[string]canbusreg.CXNativeField{}
 			p.Promotable = false
 		}
-		v := canbusreg.CX12VectorSnapshot{Selection: p.Selection, Kind: "cells", AddressableSlots: 16, AsOf: now, MaxAge: d.provider.staleAfter, Fields: map[int]canbusreg.CXNativeField{}, LastGood: map[int]canbusreg.CXNativeField{}}
+		v := canbusreg.VectorSnapshot{Selection: p.Selection, Kind: "cells", AddressableSlots: 16, AsOf: now, MaxAge: d.provider.staleAfter, Fields: map[int]canbusreg.CXNativeField{}, LastGood: map[int]canbusreg.CXNativeField{}}
 		d.retainCounts(*p)
 		if a, ok := d.admitted[p.Selection]; ok {
 			v.ConfiguredCount, v.CountValid = a.count, a.valid
@@ -384,7 +384,7 @@ func (d *growattLINKManagedDriver) Snapshot(now time.Duration) growattLINKSnapsh
 
 // retainCounts requires metadataMu. Only native-confirmed descriptive records
 // can update the retained count; rejected or unrelated observations cannot.
-func (d *growattLINKManagedDriver) retainCounts(p canbusreg.CX17Snapshot) {
+func (d *growattLINKManagedDriver) retainCounts(p canbusreg.ProjectProviderSnapshot) {
 	for j := len(p.Raw) - 1; j >= 0; j-- {
 		r := p.Raw[j]
 		if r.Generation != p.Generation || r.Status != "descriptive" {

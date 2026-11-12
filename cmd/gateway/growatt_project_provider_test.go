@@ -46,7 +46,7 @@ func (r *cx18Receiver) Close() error {
 func cx18Selection(t *testing.T, link bool) canbusreg.CXSelection {
 	t.Helper()
 	id, _ := canbus.NewInterfaceIdentity("synthetic0", 7)
-	c := canbusreg.CX01SelectionSpec{Interface: id, Flavor: "pcs-standard", ProjectCode: "QAAA", Release: "0011", Direction: "bms-to-pcs", Scope: "local", Bank: "ordinary", Endpoint: "synthetic", Epoch: 1}
+	c := canbusreg.SelectionSpec{Interface: id, Flavor: "pcs-standard", ProjectCode: "QAAA", Release: "0011", Direction: "bms-to-pcs", Scope: "local", Bank: "ordinary", Endpoint: "synthetic", Epoch: 1}
 	if link {
 		c.Flavor = "link"
 		c.PCSFlavor = "pcs-standard"
@@ -61,11 +61,11 @@ func cx18Selection(t *testing.T, link bool) canbusreg.CXSelection {
 	}
 	return s
 }
-func cx18Associate(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.CX16ReplayInput {
-	c := s.CX01Spec()
-	var in canbusreg.CX16ReplayInput
+func cx18Associate(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
+	c := s.SelectionSpecValue()
+	var in canbusreg.ReplayInput
 	in.Selection = s
-	in.PCS.CX01LINKInput = canbusreg.CX01LINKInput{Evidence: e, Epoch: c.Epoch, Direction: c.Direction, Scope: c.Scope, Bank: c.Bank, Endpoint: c.Endpoint, Group: c.Group, Slot: c.Slot}
+	in.PCS.LINKInput = canbusreg.LINKInput{Evidence: e, Epoch: c.Epoch, Direction: c.Direction, Scope: c.Scope, Bank: c.Bank, Endpoint: c.Endpoint, Group: c.Group, Slot: c.Slot}
 	in.PCS.PublisherResolved = true
 	in.PCS.MeasurementValid = true
 	return in
@@ -75,11 +75,11 @@ func cx18Record(s canbusreg.CXSelection, seq uint64) growattProjectRecord {
 	binary.NativeEndian.PutUint32(raw, 0x313)
 	raw[4] = 8
 	binary.LittleEndian.PutUint16(raw[8:], 5310)
-	return growattProjectRecord{Interface: s.CX01Spec().Interface, Raw: raw, Sequence: seq, Monotonic: time.Second}
+	return growattProjectRecord{Interface: s.SelectionSpecValue().Interface, Raw: raw, Sequence: seq, Monotonic: time.Second}
 }
 func cx18New(t *testing.T, s canbusreg.CXSelection, associate growattProjectAssociation) (*growattProjectProvider, *cx18Receiver, *int) {
 	t.Helper()
-	r := &cx18Receiver{id: s.CX01Spec().Interface, records: make(chan growattProjectRecord), canceled: make(chan struct{})}
+	r := &cx18Receiver{id: s.SelectionSpecValue().Interface, records: make(chan growattProjectRecord), canceled: make(chan struct{})}
 	opens := new(int)
 	p, err := newGrowattProjectProvider([]canbusreg.CXSelection{s}, time.Second, true, func(name string) (growattProjectReceiver, error) {
 		*opens++
@@ -151,21 +151,21 @@ func TestCX18Lifecycle(t *testing.T) {
 }
 func TestCX18ContextHypotheses(t *testing.T) {
 	// Every association component is varied independently with identical bytes.
-	mutations := map[string]func(*canbusreg.CX16ReplayInput){
-		"selector":  func(i *canbusreg.CX16ReplayInput) { i.Selection = canbusreg.CXSelection{} },
-		"epoch":     func(i *canbusreg.CX16ReplayInput) { i.PCS.Epoch++ },
-		"direction": func(i *canbusreg.CX16ReplayInput) { i.PCS.Direction = "pcs-to-bms" },
-		"scope":     func(i *canbusreg.CX16ReplayInput) { i.PCS.Scope = "aggregate" },
-		"bank":      func(i *canbusreg.CX16ReplayInput) { i.PCS.Bank = "parallel" },
-		"endpoint":  func(i *canbusreg.CX16ReplayInput) { i.PCS.Endpoint = "other" },
-		"group":     func(i *canbusreg.CX16ReplayInput) { i.PCS.Group = "other" },
-		"slot":      func(i *canbusreg.CX16ReplayInput) { i.PCS.Slot = "other" },
-		"publisher": func(i *canbusreg.CX16ReplayInput) { i.PCS.PublisherResolved = false },
+	mutations := map[string]func(*canbusreg.ReplayInput){
+		"selector":  func(i *canbusreg.ReplayInput) { i.Selection = canbusreg.CXSelection{} },
+		"epoch":     func(i *canbusreg.ReplayInput) { i.PCS.Epoch++ },
+		"direction": func(i *canbusreg.ReplayInput) { i.PCS.Direction = "pcs-to-bms" },
+		"scope":     func(i *canbusreg.ReplayInput) { i.PCS.Scope = "aggregate" },
+		"bank":      func(i *canbusreg.ReplayInput) { i.PCS.Bank = "parallel" },
+		"endpoint":  func(i *canbusreg.ReplayInput) { i.PCS.Endpoint = "other" },
+		"group":     func(i *canbusreg.ReplayInput) { i.PCS.Group = "other" },
+		"slot":      func(i *canbusreg.ReplayInput) { i.PCS.Slot = "other" },
+		"publisher": func(i *canbusreg.ReplayInput) { i.PCS.PublisherResolved = false },
 	}
 	for name, mutate := range mutations {
 		t.Run(name, func(t *testing.T) {
 			s := cx18Selection(t, false)
-			p, r, _ := cx18New(t, s, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.CX16ReplayInput {
+			p, r, _ := cx18New(t, s, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
 				i := cx18Associate(s, e)
 				mutate(&i)
 				return i
@@ -286,7 +286,7 @@ func TestCX18FieldAgesAndPartialRetention(t *testing.T) {
 	s := cx18Selection(t, false)
 	for _, age := range []time.Duration{-1, 0, time.Second, time.Second + 1} {
 		t.Run(fmt.Sprint(age), func(t *testing.T) {
-			p, r, _ := cx18New(t, s, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.CX16ReplayInput {
+			p, r, _ := cx18New(t, s, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
 				i := cx18Associate(s, e)
 				i.PCS.FieldAges = map[string]time.Duration{"voltage": age}
 				return i
@@ -312,7 +312,7 @@ func TestCX18FieldAgesAndPartialRetention(t *testing.T) {
 			}
 		})
 	}
-	p, r, _ := cx18New(t, s, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.CX16ReplayInput {
+	p, r, _ := cx18New(t, s, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
 		i := cx18Associate(s, e)
 		if e.Sequence > 1 {
 			i.PCS.FieldStates = map[string]string{"voltage": "invalid"}
@@ -340,7 +340,7 @@ func TestCX18TemperatureHypothesisCountAndValidity(t *testing.T) {
 	}{{"zero", 0, true, true, false}, {"one", 1, true, true, true}, {"count-invalid", 1, false, true, false}, {"temperature-invalid", 1, true, false, false}} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := cx18Selection(t, false)
-			p, r, _ := cx18New(t, s, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.CX16ReplayInput {
+			p, r, _ := cx18New(t, s, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
 				i := cx18Associate(s, e)
 				i.PCS.Count = tc.count
 				i.PCS.CountValid = tc.valid
@@ -363,7 +363,7 @@ func TestCX18TemperatureHypothesisCountAndValidity(t *testing.T) {
 }
 func TestCX18LINKSourceAndDestinationHypotheses(t *testing.T) {
 	s := cx18Selection(t, true)
-	c := s.CX01Spec()
+	c := s.SelectionSpecValue()
 	c.Source = 2
 	c.ProjectCode = "QAAa"
 	c.Release = "9011"
@@ -405,29 +405,29 @@ func TestCX18LINKSourceAndDestinationHypotheses(t *testing.T) {
 }
 
 func TestCX18SelectionIdentityFields(t *testing.T) {
-	mutations := map[string]func(*canbusreg.CX01SelectionSpec){
-		"interface-name":  func(c *canbusreg.CX01SelectionSpec) { c.Interface, _ = canbus.NewInterfaceIdentity("synthetic1", 7) },
-		"interface-index": func(c *canbusreg.CX01SelectionSpec) { c.Interface, _ = canbus.NewInterfaceIdentity("synthetic0", 8) },
-		"flavor":          func(c *canbusreg.CX01SelectionSpec) { c.Flavor = "pcs-parallel" },
-		"pcs-flavor":      func(c *canbusreg.CX01SelectionSpec) { c.PCSFlavor = "pcs-parallel" },
-		"project-code":    func(c *canbusreg.CX01SelectionSpec) { c.ProjectCode = "QAAa" },
-		"release":         func(c *canbusreg.CX01SelectionSpec) { c.Release = "0010" },
-		"contract-choice": func(c *canbusreg.CX01SelectionSpec) { c.Choice = "legacy19" },
-		"direction":       func(c *canbusreg.CX01SelectionSpec) { c.Direction = "pcs-to-bms" },
-		"scope":           func(c *canbusreg.CX01SelectionSpec) { c.Scope = "aggregate" },
-		"bank":            func(c *canbusreg.CX01SelectionSpec) { c.Bank = "parallel" },
-		"endpoint":        func(c *canbusreg.CX01SelectionSpec) { c.Endpoint = "other" },
-		"group":           func(c *canbusreg.CX01SelectionSpec) { c.Group = "1" },
-		"slot":            func(c *canbusreg.CX01SelectionSpec) { c.Slot = "1" },
-		"route-set":       func(c *canbusreg.CX01SelectionSpec) { c.RouteSet = true },
-		"destination":     func(c *canbusreg.CX01SelectionSpec) { c.Destination = 245 },
-		"source":          func(c *canbusreg.CX01SelectionSpec) { c.Source = 2 },
-		"epoch":           func(c *canbusreg.CX01SelectionSpec) { c.Epoch = 2 },
+	mutations := map[string]func(*canbusreg.SelectionSpec){
+		"interface-name":  func(c *canbusreg.SelectionSpec) { c.Interface, _ = canbus.NewInterfaceIdentity("synthetic1", 7) },
+		"interface-index": func(c *canbusreg.SelectionSpec) { c.Interface, _ = canbus.NewInterfaceIdentity("synthetic0", 8) },
+		"flavor":          func(c *canbusreg.SelectionSpec) { c.Flavor = "pcs-parallel" },
+		"pcs-flavor":      func(c *canbusreg.SelectionSpec) { c.PCSFlavor = "pcs-parallel" },
+		"project-code":    func(c *canbusreg.SelectionSpec) { c.ProjectCode = "QAAa" },
+		"release":         func(c *canbusreg.SelectionSpec) { c.Release = "0010" },
+		"contract-choice": func(c *canbusreg.SelectionSpec) { c.Choice = "legacy19" },
+		"direction":       func(c *canbusreg.SelectionSpec) { c.Direction = "pcs-to-bms" },
+		"scope":           func(c *canbusreg.SelectionSpec) { c.Scope = "aggregate" },
+		"bank":            func(c *canbusreg.SelectionSpec) { c.Bank = "parallel" },
+		"endpoint":        func(c *canbusreg.SelectionSpec) { c.Endpoint = "other" },
+		"group":           func(c *canbusreg.SelectionSpec) { c.Group = "1" },
+		"slot":            func(c *canbusreg.SelectionSpec) { c.Slot = "1" },
+		"route-set":       func(c *canbusreg.SelectionSpec) { c.RouteSet = true },
+		"destination":     func(c *canbusreg.SelectionSpec) { c.Destination = 245 },
+		"source":          func(c *canbusreg.SelectionSpec) { c.Source = 2 },
+		"epoch":           func(c *canbusreg.SelectionSpec) { c.Epoch = 2 },
 	}
 	for name, mutate := range mutations {
 		t.Run(name, func(t *testing.T) {
 			s := cx18Selection(t, false)
-			c := s.CX01Spec()
+			c := s.SelectionSpecValue()
 			mutate(&c)
 			different, err := canbusreg.NewCXSelection(c)
 			if err != nil {
@@ -436,7 +436,7 @@ func TestCX18SelectionIdentityFields(t *testing.T) {
 			if different == s {
 				t.Fatal("identity not varied")
 			}
-			p, r, _ := cx18New(t, s, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.CX16ReplayInput {
+			p, r, _ := cx18New(t, s, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
 				i := cx18Associate(s, e)
 				i.Selection = different
 				return i
@@ -473,11 +473,11 @@ func TestCX18ConfigAdaptersAreInert(t *testing.T) {
 	if p, err := newGrowattLINKProjectProvider(ebusgateway.GrowattLINKConfig{}, open, cx18Associate); err != nil || p != nil {
 		t.Fatal(p, err)
 	}
-	pcs := ebusgateway.GrowattPCSConfig{Enabled: true, ListenOnlyConfirmed: true, StaleAfter: time.Second, Native: cx18Selection(t, false).CX01Spec()}
+	pcs := ebusgateway.GrowattPCSConfig{Enabled: true, ListenOnlyConfirmed: true, StaleAfter: time.Second, Native: cx18Selection(t, false).SelectionSpecValue()}
 	if p, err := newGrowattPCSProjectProvider(pcs, open, cx18Associate); err != nil || p == nil {
 		t.Fatal(p, err)
 	}
-	linkSpec := cx18Selection(t, true).CX01Spec()
+	linkSpec := cx18Selection(t, true).SelectionSpecValue()
 	linkSpec.Source = 0
 	link := ebusgateway.GrowattLINKConfig{Enabled: true, ListenOnlyConfirmed: true, StaleAfter: time.Second, Native: linkSpec, SourceSelectors: `[{"source":1,"use_default":true,"contract":"release11"}]`}
 	if p, err := newGrowattLINKProjectProvider(link, open, cx18Associate); err != nil || p == nil {

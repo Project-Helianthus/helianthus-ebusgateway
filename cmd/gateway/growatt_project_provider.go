@@ -35,11 +35,11 @@ type growattProjectOpen func(string) (growattProjectReceiver, error)
 // Association supplies explicit native context, including independent validity
 // gates and ages. It must return detached input; the adapter supplies only the
 // unmodified transport evidence. No native context is inferred from payloads.
-type growattProjectAssociation func(canbusreg.CXSelection, canbusreg.Evidence) canbusreg.CX16ReplayInput
+type growattProjectAssociation func(canbusreg.CXSelection, canbusreg.Evidence) canbusreg.ReplayInput
 
-type growattProjectSource chan canbusreg.CX17Observation
+type growattProjectSource chan canbusreg.Observation
 
-func (s growattProjectSource) CX17Receive(ctx context.Context) (canbusreg.CX17Observation, error) {
+func (s growattProjectSource) ProjectProviderReceive(ctx context.Context) (canbusreg.Observation, error) {
 	select {
 	case o, ok := <-s:
 		if !ok {
@@ -47,7 +47,7 @@ func (s growattProjectSource) CX17Receive(ctx context.Context) (canbusreg.CX17Ob
 		}
 		return o, nil
 	case <-ctx.Done():
-		return canbusreg.CX17Observation{}, ctx.Err()
+		return canbusreg.Observation{}, ctx.Err()
 	}
 }
 
@@ -58,7 +58,7 @@ type growattProjectDiagnostic struct {
 }
 
 type growattProjectSnapshot struct {
-	Providers    []canbusreg.CX17Snapshot
+	Providers    []canbusreg.ProjectProviderSnapshot
 	Raw          []growattProjectDiagnostic
 	Evicted      uint64
 	ReceiveError error
@@ -69,7 +69,7 @@ type growattProjectProvider struct {
 	lifecycle            sync.Mutex
 	mu                   sync.Mutex
 	selections           []canbusreg.CXSelection
-	providers            []*canbusreg.CX17Provider
+	providers            []*canbusreg.Provider
 	sources              []growattProjectSource
 	staleAfter           time.Duration
 	open                 growattProjectOpen
@@ -90,17 +90,17 @@ func newGrowattProjectProvider(selections []canbusreg.CXSelection, staleAfter ti
 	p := &growattProjectProvider{selections: append([]canbusreg.CXSelection(nil), selections...), staleAfter: staleAfter, open: open, associate: associate}
 	seen := map[uint8]bool{}
 	for _, s := range selections {
-		c := s.CX01Spec()
-		if c.Interface != selections[0].CX01Spec().Interface || (len(selections) > 1 && c.Flavor != "link") || seen[c.Source] {
+		c := s.SelectionSpecValue()
+		if c.Interface != selections[0].SelectionSpecValue().Interface || (len(selections) > 1 && c.Flavor != "link") || seen[c.Source] {
 			return nil, errors.New("one interface and unique selected sources required")
 		}
 		seen[c.Source] = true
-		var native *canbusreg.CX17Provider
+		var native *canbusreg.Provider
 		var err error
 		if c.Flavor == "link" {
-			native, err = canbusreg.CX17NewLINKProvider(s)
+			native, err = canbusreg.NewLINKProvider(s)
 		} else {
-			native, err = canbusreg.CX17NewPCSProvider(s)
+			native, err = canbusreg.NewPCSProvider(s)
 		}
 		if err != nil {
 			return nil, err
@@ -121,7 +121,7 @@ func (p *growattProjectProvider) Start(generation uint64) error {
 	if err := p.stop(); err != nil {
 		return err
 	}
-	c := p.selections[0].CX01Spec()
+	c := p.selections[0].SelectionSpecValue()
 	r, err := p.open(c.Interface.Name())
 	if err != nil {
 		if r != nil {
@@ -181,7 +181,7 @@ func (p *growattProjectProvider) receive(ctx context.Context, r growattProjectRe
 		if decodeErr != nil || frame.DLC() != 8 || frame.RawDLC() != 8 {
 			status = "invalid"
 		}
-		if record.Interface != p.selections[0].CX01Spec().Interface {
+		if record.Interface != p.selections[0].SelectionSpecValue().Interface {
 			status = "wrong-interface"
 		}
 		if record.Sequence == 0 || record.Monotonic < 0 {
@@ -194,7 +194,7 @@ func (p *growattProjectProvider) receive(ctx context.Context, r growattProjectRe
 		e := canbusreg.Evidence{Frame: frame, Interface: record.Interface, Sequence: record.Sequence, Monotonic: record.Monotonic}
 		copy(e.RawRecord[:], record.Raw)
 		for n, s := range p.selections {
-			c := s.CX01Spec()
+			c := s.SelectionSpecValue()
 			if c.Flavor == "link" && (!frame.ID().Extended() || uint8(frame.ID().Value()) != c.Source) {
 				continue
 			}
@@ -203,7 +203,7 @@ func (p *growattProjectProvider) receive(ctx context.Context, r growattProjectRe
 			// and epoch remain caller assertions and native admission fails closed.
 			in.PCS.Evidence = e
 			in.PCS.NativeRecord = append([]byte(nil), record.Raw...)
-			o := canbusreg.CX17Observation{Generation: generation, Input: in}
+			o := canbusreg.Observation{Generation: generation, Input: in}
 			select {
 			case p.sources[n] <- o:
 			case <-ctx.Done():
@@ -263,7 +263,7 @@ func (p *growattProjectProvider) Snapshot(now time.Duration) growattProjectSnaps
 	}
 	p.mu.Unlock()
 	for _, native := range p.providers {
-		s.Providers = append(s.Providers, native.CX17Snapshot(now, p.staleAfter))
+		s.Providers = append(s.Providers, native.ProjectProviderSnapshot(now, p.staleAfter))
 	}
 	return s
 }

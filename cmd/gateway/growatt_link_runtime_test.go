@@ -51,17 +51,17 @@ func cx20Config(t *testing.T, name string, index int) ebusgateway.GrowattLINKCon
 	if err != nil {
 		t.Fatal(err)
 	}
-	return ebusgateway.GrowattLINKConfig{Enabled: true, ListenOnlyConfirmed: true, StaleAfter: time.Second, Native: canbusreg.CX01SelectionSpec{Interface: id, Flavor: "link", PCSFlavor: "pcs-standard", ProjectCode: "QAAA", Release: "0011", Direction: "module-to-coordinator", Scope: "local", Bank: "ordinary", Endpoint: "synthetic", Epoch: 1, RouteSet: true, Destination: 244}, SourceSelectors: `[{"source":1,"use_default":true,"contract":"release11"}]`}
+	return ebusgateway.GrowattLINKConfig{Enabled: true, ListenOnlyConfirmed: true, StaleAfter: time.Second, Native: canbusreg.SelectionSpec{Interface: id, Flavor: "link", PCSFlavor: "pcs-standard", ProjectCode: "QAAA", Release: "0011", Direction: "module-to-coordinator", Scope: "local", Bank: "ordinary", Endpoint: "synthetic", Epoch: 1, RouteSet: true, Destination: 244}, SourceSelectors: `[{"source":1,"use_default":true,"contract":"release11"}]`}
 }
-func cx20Association(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.CX16ReplayInput {
-	c := s.CX01Spec()
-	var in canbusreg.CX16ReplayInput
+func cx20Association(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
+	c := s.SelectionSpecValue()
+	var in canbusreg.ReplayInput
 	in.Selection = s
-	in.PCS.CX01LINKInput = canbusreg.CX01LINKInput{Evidence: e, Epoch: c.Epoch, Direction: c.Direction, Scope: c.Scope, Bank: c.Bank, Endpoint: c.Endpoint, Group: c.Group, Slot: c.Slot}
+	in.PCS.LINKInput = canbusreg.LINKInput{Evidence: e, Epoch: c.Epoch, Direction: c.Direction, Scope: c.Scope, Bank: c.Bank, Endpoint: c.Endpoint, Group: c.Group, Slot: c.Slot}
 	in.CellCount = 8
 	in.CellCountValid = true
 	for n := range in.CellGates {
-		in.CellGates[n] = canbusreg.CX12MeasurementGate{Configured: true, Valid: true}
+		in.CellGates[n] = canbusreg.MeasurementGate{Configured: true, Valid: true}
 	}
 	return in
 }
@@ -211,32 +211,32 @@ func TestCX20IndependentInterfacesAndHeterogeneousSources(t *testing.T) {
 // Each context field is varied alone with identical payload. Removing its
 // equality check would admit the wrong source-local identity or association.
 func TestCX20IdentityFields(t *testing.T) {
-	mutations := map[string]func(*canbusreg.CX01SelectionSpec){
-		"interface-name":    func(c *canbusreg.CX01SelectionSpec) { c.Interface, _ = canbus.NewInterfaceIdentity("synthetic1", 7) },
-		"interface-index":   func(c *canbusreg.CX01SelectionSpec) { c.Interface, _ = canbus.NewInterfaceIdentity("synthetic0", 8) },
-		"flavor":            func(c *canbusreg.CX01SelectionSpec) { c.Flavor = "pcs-standard" },
-		"pcs-flavor":        func(c *canbusreg.CX01SelectionSpec) { c.PCSFlavor = "pcs-parallel" },
-		"project-code-case": func(c *canbusreg.CX01SelectionSpec) { c.ProjectCode = "QAAa" },
-		"release":           func(c *canbusreg.CX01SelectionSpec) { c.Release = "0010" },
-		"choice":            func(c *canbusreg.CX01SelectionSpec) { c.Choice = "legacy19" },
-		"direction":         func(c *canbusreg.CX01SelectionSpec) { c.Direction = "coordinator-to-module" },
-		"scope":             func(c *canbusreg.CX01SelectionSpec) { c.Scope = "aggregate" },
-		"bank":              func(c *canbusreg.CX01SelectionSpec) { c.Bank = "parallel" },
-		"endpoint":          func(c *canbusreg.CX01SelectionSpec) { c.Endpoint = "other" },
-		"group":             func(c *canbusreg.CX01SelectionSpec) { c.Group = "other" },
-		"slot":              func(c *canbusreg.CX01SelectionSpec) { c.Slot = "other" },
-		"route-set":         func(c *canbusreg.CX01SelectionSpec) { c.RouteSet = false },
-		"destination":       func(c *canbusreg.CX01SelectionSpec) { c.Destination = 245 },
-		"source":            func(c *canbusreg.CX01SelectionSpec) { c.Source = 2 },
-		"epoch":             func(c *canbusreg.CX01SelectionSpec) { c.Epoch = 2 },
+	mutations := map[string]func(*canbusreg.SelectionSpec){
+		"interface-name":    func(c *canbusreg.SelectionSpec) { c.Interface, _ = canbus.NewInterfaceIdentity("synthetic1", 7) },
+		"interface-index":   func(c *canbusreg.SelectionSpec) { c.Interface, _ = canbus.NewInterfaceIdentity("synthetic0", 8) },
+		"flavor":            func(c *canbusreg.SelectionSpec) { c.Flavor = "pcs-standard" },
+		"pcs-flavor":        func(c *canbusreg.SelectionSpec) { c.PCSFlavor = "pcs-parallel" },
+		"project-code-case": func(c *canbusreg.SelectionSpec) { c.ProjectCode = "QAAa" },
+		"release":           func(c *canbusreg.SelectionSpec) { c.Release = "0010" },
+		"choice":            func(c *canbusreg.SelectionSpec) { c.Choice = "legacy19" },
+		"direction":         func(c *canbusreg.SelectionSpec) { c.Direction = "coordinator-to-module" },
+		"scope":             func(c *canbusreg.SelectionSpec) { c.Scope = "aggregate" },
+		"bank":              func(c *canbusreg.SelectionSpec) { c.Bank = "parallel" },
+		"endpoint":          func(c *canbusreg.SelectionSpec) { c.Endpoint = "other" },
+		"group":             func(c *canbusreg.SelectionSpec) { c.Group = "other" },
+		"slot":              func(c *canbusreg.SelectionSpec) { c.Slot = "other" },
+		"route-set":         func(c *canbusreg.SelectionSpec) { c.RouteSet = false },
+		"destination":       func(c *canbusreg.SelectionSpec) { c.Destination = 245 },
+		"source":            func(c *canbusreg.SelectionSpec) { c.Source = 2 },
+		"epoch":             func(c *canbusreg.SelectionSpec) { c.Epoch = 2 },
 	}
 	for name, mutate := range mutations {
 		t.Run(name, func(t *testing.T) {
 			c := cx20Config(t, "synthetic0", 7)
 			r := cx20NewReceiver(c)
-			d, _ := cx20Driver(t, c, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.CX16ReplayInput {
+			d, _ := cx20Driver(t, c, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
 				in := cx20Association(s, e)
-				spec := s.CX01Spec()
+				spec := s.SelectionSpecValue()
 				mutate(&spec)
 				other, err := canbusreg.NewCXSelection(spec)
 				if err != nil && name != "route-set" {
@@ -258,21 +258,21 @@ func TestCX20IdentityFields(t *testing.T) {
 	}
 }
 func TestCX20AssociationHypotheses(t *testing.T) {
-	mutations := map[string]func(*canbusreg.CX16ReplayInput){
-		"absent-selector":      func(in *canbusreg.CX16ReplayInput) { in.Selection = canbusreg.CXSelection{} },
-		"reused-address-epoch": func(in *canbusreg.CX16ReplayInput) { in.PCS.Epoch++ },
-		"direction":            func(in *canbusreg.CX16ReplayInput) { in.PCS.Direction = "coordinator-to-module" },
-		"scope":                func(in *canbusreg.CX16ReplayInput) { in.PCS.Scope = "aggregate" },
-		"bank":                 func(in *canbusreg.CX16ReplayInput) { in.PCS.Bank = "parallel" },
-		"endpoint":             func(in *canbusreg.CX16ReplayInput) { in.PCS.Endpoint = "other" },
-		"group":                func(in *canbusreg.CX16ReplayInput) { in.PCS.Group = "other" },
-		"slot-not-topology":    func(in *canbusreg.CX16ReplayInput) { in.PCS.Slot = "2" },
+	mutations := map[string]func(*canbusreg.ReplayInput){
+		"absent-selector":      func(in *canbusreg.ReplayInput) { in.Selection = canbusreg.CXSelection{} },
+		"reused-address-epoch": func(in *canbusreg.ReplayInput) { in.PCS.Epoch++ },
+		"direction":            func(in *canbusreg.ReplayInput) { in.PCS.Direction = "coordinator-to-module" },
+		"scope":                func(in *canbusreg.ReplayInput) { in.PCS.Scope = "aggregate" },
+		"bank":                 func(in *canbusreg.ReplayInput) { in.PCS.Bank = "parallel" },
+		"endpoint":             func(in *canbusreg.ReplayInput) { in.PCS.Endpoint = "other" },
+		"group":                func(in *canbusreg.ReplayInput) { in.PCS.Group = "other" },
+		"slot-not-topology":    func(in *canbusreg.ReplayInput) { in.PCS.Slot = "2" },
 	}
 	for name, mutate := range mutations {
 		t.Run(name, func(t *testing.T) {
 			c := cx20Config(t, "synthetic0", 7)
 			r := cx20NewReceiver(c)
-			d, _ := cx20Driver(t, c, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.CX16ReplayInput {
+			d, _ := cx20Driver(t, c, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
 				in := cx20Association(s, e)
 				mutate(&in)
 				return in
@@ -303,11 +303,11 @@ func TestCX20CellCountAndGateBoundaries(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			c := cx20Config(t, "synthetic0", 7)
 			r := cx20NewReceiver(c)
-			d, _ := cx20Driver(t, c, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.CX16ReplayInput {
+			d, _ := cx20Driver(t, c, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
 				in := cx20Association(s, e)
 				in.CellCount = tc.count
 				in.CellCountValid = tc.countValid
-				in.CellGates[0] = canbusreg.CX12MeasurementGate{Configured: tc.configured, Valid: tc.valid, Age: tc.age}
+				in.CellGates[0] = canbusreg.MeasurementGate{Configured: tc.configured, Valid: tc.valid, Age: tc.age}
 				return in
 			}, r)
 			cx20Start(t, d)
@@ -330,7 +330,7 @@ func TestCX20PartialStaleAndLastGood(t *testing.T) {
 	c := cx20Config(t, "synthetic0", 7)
 	c.SourceSelectors = `[{"source":1,"use_default":true,"contract":"release11"},{"source":2,"use_default":true,"contract":"release11"}]`
 	r := cx20NewReceiver(c)
-	d, _ := cx20Driver(t, c, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.CX16ReplayInput {
+	d, _ := cx20Driver(t, c, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
 		in := cx20Association(s, e)
 		if e.Sequence == 2 {
 			in.CellGates[0].Age = time.Second / 2
@@ -568,7 +568,7 @@ func TestCX20DuplicateSequenceCannotRebindCount(t *testing.T) {
 	c := cx20Config(t, "synthetic0", 7)
 	r := cx20NewReceiver(c)
 	var calls atomic.Int32
-	d, _ := cx20Driver(t, c, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.CX16ReplayInput {
+	d, _ := cx20Driver(t, c, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
 		in := cx20Association(s, e)
 		in.CellCount = 8
 		if calls.Add(1) > 1 {
@@ -679,7 +679,7 @@ func TestCX20RetainedCountAdmissionAndValidity(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			c := cx20Config(t, "synthetic0", 7)
 			r := cx20NewReceiver(c)
-			d, _ := cx20Driver(t, c, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.CX16ReplayInput {
+			d, _ := cx20Driver(t, c, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
 				in := cx20Association(s, e)
 				in.CellCount = tc.initial
 				if e.Sequence >= 2 {
@@ -735,7 +735,7 @@ func TestCX20RetainedCountAdmissionAndValidity(t *testing.T) {
 func TestCX20ConcurrentSnapshotCountMatchesNativeObservation(t *testing.T) {
 	c := cx20Config(t, "synthetic0", 7)
 	r := cx20NewReceiver(c)
-	d, _ := cx20Driver(t, c, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.CX16ReplayInput {
+	d, _ := cx20Driver(t, c, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
 		in := cx20Association(s, e)
 		if e.Sequence%2 == 0 {
 			in.CellCount = 4

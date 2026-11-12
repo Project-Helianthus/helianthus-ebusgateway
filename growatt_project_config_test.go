@@ -11,7 +11,7 @@ import (
 
 func cx18Config() GrowattPCSConfig {
 	id, _ := canbus.NewInterfaceIdentity("synthetic0", 7)
-	return GrowattPCSConfig{Enabled: true, ListenOnlyConfirmed: true, StaleAfter: time.Second, Native: canbusreg.CX01SelectionSpec{Interface: id, Flavor: "pcs-standard", ProjectCode: "QAAA", Release: "0011", Direction: "bms-to-pcs", Scope: "local", Bank: "ordinary", Endpoint: "synthetic", Epoch: 1}}
+	return GrowattPCSConfig{Enabled: true, ListenOnlyConfirmed: true, StaleAfter: time.Second, Native: canbusreg.SelectionSpec{Interface: id, Flavor: "pcs-standard", ProjectCode: "QAAA", Release: "0011", Direction: "bms-to-pcs", Scope: "local", Bank: "ordinary", Endpoint: "synthetic", Epoch: 1}}
 }
 func TestCX18Config(t *testing.T) {
 	if _, err := (GrowattPCSConfig{}).Selection(); err != nil {
@@ -118,7 +118,7 @@ func TestCX18SourceSelectors(t *testing.T) {
 	c.Native.Destination = 244
 	link := GrowattLINKConfig{Enabled: true, ListenOnlyConfirmed: true, StaleAfter: time.Second, Native: c.Native, SourceSelectors: good}
 	sels, err := link.Selections()
-	if err != nil || len(sels) != 2 || sels[0].CX01Spec().Source != 1 || sels[1].CX01Spec().Choice != "legacy19" {
+	if err != nil || len(sels) != 2 || sels[0].SelectionSpecValue().Source != 1 || sels[1].SelectionSpecValue().Choice != "legacy19" {
 		t.Fatal(sels, err)
 	}
 	link.Enabled = false

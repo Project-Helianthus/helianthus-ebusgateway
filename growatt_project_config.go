@@ -19,7 +19,7 @@ type GrowattPCSConfig struct {
 	Enabled             bool
 	ListenOnlyConfirmed bool
 	StaleAfter          time.Duration
-	Native              canbusreg.CX01SelectionSpec
+	Native              canbusreg.SelectionSpec
 }
 
 // GrowattLINKConfig selects each admitted source explicitly. No omitted source
@@ -30,7 +30,7 @@ type GrowattLINKConfig struct {
 	Enabled             bool
 	ListenOnlyConfirmed bool
 	StaleAfter          time.Duration
-	Native              canbusreg.CX01SelectionSpec
+	Native              canbusreg.SelectionSpec
 	SourceSelectors     string
 }
 
@@ -124,12 +124,12 @@ func ParseGrowattLINKSourceSelectors(value, project, release string) ([]GrowattL
 	return result, nil
 }
 
-func validateGrowattProjectNative(n canbusreg.CX01SelectionSpec) (canbusreg.CXSelection, error) {
+func validateGrowattProjectNative(n canbusreg.SelectionSpec) (canbusreg.CXSelection, error) {
 	s, err := canbusreg.NewCXSelection(n)
 	if err != nil {
 		return s, err
 	}
-	if s.CX01Group() == "" {
+	if s.SelectionGroup() == "" {
 		return s, errors.New("unsupported explicit native selection")
 	}
 	if n.Flavor == "link" {

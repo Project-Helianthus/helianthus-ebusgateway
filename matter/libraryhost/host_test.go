@@ -168,6 +168,15 @@ func aa17RequireReleased(t *testing.T, host *Host) {
 }
 
 // aa17WaitState spins without a timer: the state change is the synchronization.
+//
+// Rule for a test that cancels a Stop budget and expects ErrQuiesce: cancel
+// only once Stop holds the operation lock, after which every cancellation path
+// reports ErrQuiesce. StateStopping from Stop is not that signal: Stop publishes
+// it before it competes for the operation lock, and a budget that ends in
+// between lets Stop return the bare context error without ErrQuiesce, which is
+// the unchanged behaviour of a Stop that never reaches the operation lock. A
+// test whose Stop reaches Close takes the signal from the close hook; one whose
+// Stop never reaches Close waits for the operation lock itself.
 func aa17WaitState(host *Host, want State) {
 	for host.Status().State != want {
 		runtime.Gosched()
@@ -642,6 +651,10 @@ func TestAA17StopFencesDrainsThenReleases(t *testing.T) {
 	}
 }
 
+// The first Stop never reaches Close, because its task does not drain, so it
+// cancels under the rule on aa17WaitState once Stop holds the operation lock.
+// Restart publishes StateStopping only after it holds that lock, so waiting for
+// the state is enough before the Restart budget is cancelled.
 func TestAA17UnquiescedTaskQuarantinesAndBlocksRestart(t *testing.T) {
 	rig := aa17NewRig()
 	host := New(rig.config())
@@ -661,7 +674,14 @@ func TestAA17UnquiescedTaskQuarantinesAndBlocksRestart(t *testing.T) {
 	stopCtx, stopCancel := context.WithCancel(ctx)
 	stopDone := make(chan error, 1)
 	go func() { stopDone <- host.Stop(stopCtx) }()
-	aa17WaitState(host, StateStopping)
+	// Nothing else contends for the operation lock here, so a taken slot is Stop.
+	deadline := time.Now().Add(10 * time.Second)
+	for len(host.ops) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("first stop did not take the operation lock within 10s")
+		}
+		runtime.Gosched()
+	}
 	stopCancel()
 	if err := <-stopDone; !errors.Is(err, ErrQuiesce) || !errors.Is(err, context.Canceled) {
 		t.Fatalf("stop err=%v", err)
@@ -1280,9 +1300,11 @@ func TestAA17StopFencesAStartHoldingTheOperationLock(t *testing.T) {
 
 // Catches: a buffered error from an expired Close attempt is taken as the
 // result of the follow-up Stop, which then quarantines without calling Close.
+// The first budget is cancelled under the rule on aa17WaitState, after the
+// close hook has received it: Close starts only once Stop holds the lock.
 func TestAA17StopRetriesCloseAfterAnExpiredAttempt(t *testing.T) {
 	rig := aa17NewRig()
-	returned := make(chan struct{})
+	observed, returned := make(chan struct{}), make(chan struct{})
 	var mu sync.Mutex
 	calls := 0
 	rig.closeHook = func(ctx context.Context) error {
@@ -1293,6 +1315,7 @@ func TestAA17StopRetriesCloseAfterAnExpiredAttempt(t *testing.T) {
 		if !first {
 			return nil
 		}
+		close(observed)
 		<-ctx.Done()
 		defer close(returned)
 		return ctx.Err()
@@ -1304,7 +1327,11 @@ func TestAA17StopRetriesCloseAfterAnExpiredAttempt(t *testing.T) {
 	first, cancel := context.WithCancel(context.Background())
 	stopDone := make(chan error, 1)
 	go func() { stopDone <- host.Stop(first) }()
-	aa17WaitState(host, StateStopping)
+	select {
+	case <-observed:
+	case err := <-stopDone:
+		t.Fatalf("first stop returned before Close received its budget: %v", err)
+	}
 	cancel()
 	if err := <-stopDone; !errors.Is(err, ErrQuiesce) {
 		t.Fatalf("first stop err=%v", err)
@@ -1407,9 +1434,11 @@ type aa17SliceContext struct {
 
 // Catches: comparing context interface values, which panics for a
 // non-comparable dynamic type once a buffered close error is retried.
+// It cancels under the rule on aa17WaitState, after the close hook has
+// received the first budget.
 func TestAA17StopRetryAcceptsNonComparableContexts(t *testing.T) {
 	rig := aa17NewRig()
-	returned := make(chan struct{})
+	observed, returned := make(chan struct{}), make(chan struct{})
 	var mu sync.Mutex
 	calls := 0
 	rig.closeHook = func(ctx context.Context) error {
@@ -1420,6 +1449,7 @@ func TestAA17StopRetryAcceptsNonComparableContexts(t *testing.T) {
 		if !first {
 			return nil
 		}
+		close(observed)
 		<-ctx.Done()
 		defer close(returned)
 		return ctx.Err()
@@ -1431,7 +1461,11 @@ func TestAA17StopRetryAcceptsNonComparableContexts(t *testing.T) {
 	base, cancel := context.WithCancel(context.Background())
 	stopDone := make(chan error, 1)
 	go func() { stopDone <- host.Stop(aa17SliceContext{Context: base, tag: []int{1}}) }()
-	aa17WaitState(host, StateStopping)
+	select {
+	case <-observed:
+	case err := <-stopDone:
+		t.Fatalf("first stop returned before Close received its budget: %v", err)
+	}
 	cancel()
 	if err := <-stopDone; !errors.Is(err, ErrQuiesce) {
 		t.Fatalf("first stop err=%v", err)

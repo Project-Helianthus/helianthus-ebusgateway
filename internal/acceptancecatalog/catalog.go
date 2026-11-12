@@ -11,49 +11,49 @@ import (
 	"strings"
 )
 
-const O22MaxBytes = 2 << 20
+const MaxBytes = 2 << 20
 
-type O22Row struct {
+type Row struct {
 	ID         string   `json:"id"`
 	Cases      []string `json:"cases"`
 	Kind       string   `json:"kind"`
 	Historical bool     `json:"historical"`
 }
-type O22Category struct {
+type Category struct {
 	ID      string   `json:"id"`
 	Outcome string   `json:"outcome"`
 	Reason  string   `json:"reason"`
 	Cases   []string `json:"cases"`
 }
-type O22Transition struct {
+type Transition struct {
 	Old             string   `json:"old"`
 	Disposition     string   `json:"disposition"`
 	Code            string   `json:"code"`
 	Keepers         []string `json:"keepers"`
 	ExpectedFailure string   `json:"expected_failure"`
 }
-type O22Catalogue struct {
+type Catalog struct {
 	Version                string              `json:"version"`
 	ResultSchema           string              `json:"result_schema"`
 	ResultSchemaSignature  string              `json:"result_schema_signature"`
 	ActiveForm             string              `json:"active_form"`
-	HandoffRows            []O22Row            `json:"handoff_rows"`
+	HandoffRows            []Row               `json:"handoff_rows"`
 	Forms                  map[string][]string `json:"forms"`
 	V2Cells                []string            `json:"v2_cells"`
 	RetiredV2              []string            `json:"retired_v2"`
-	Full88ExpectedFailures []O22Category       `json:"full88_expected_failures,omitempty"`
-	Categories             []O22Category       `json:"categories"`
+	Full88ExpectedFailures []Category          `json:"full88_expected_failures,omitempty"`
+	Categories             []Category          `json:"categories"`
 	CategoryPrecedence     []string            `json:"category_precedence"`
-	Transition             []O22Transition     `json:"transition"`
+	Transition             []Transition        `json:"transition"`
 	ResultVocabulary       []string            `json:"result_vocabulary"`
 }
 
-func o22Decode(r io.Reader, v any) error {
-	b, err := io.ReadAll(io.LimitReader(r, O22MaxBytes+1))
+func decode(r io.Reader, v any) error {
+	b, err := io.ReadAll(io.LimitReader(r, MaxBytes+1))
 	if err != nil {
 		return err
 	}
-	if len(b) > O22MaxBytes {
+	if len(b) > MaxBytes {
 		return fmt.Errorf("acceptance input exceeds bound")
 	}
 	d := json.NewDecoder(strings.NewReader(string(b)))
@@ -68,32 +68,32 @@ func o22Decode(r io.Reader, v any) error {
 	return nil
 }
 
-// O22Signature hashes compact encoding/json output of the typed catalogue.
+// Signature hashes compact encoding/json output of the typed catalog.
 // A consumer must supply a trusted version ledger, separate from the input.
-func O22Signature(c O22Catalogue) string {
+func Signature(c Catalog) string {
 	b, _ := json.Marshal(c)
 	sum := sha256.Sum256(b)
 	return base64.StdEncoding.EncodeToString(sum[:])
 }
-func O22ReadCatalogue(r io.Reader, ledger map[string]string) (O22Catalogue, error) {
-	var c O22Catalogue
-	if err := o22Decode(r, &c); err != nil {
+func ReadCatalog(r io.Reader, ledger map[string]string) (Catalog, error) {
+	var c Catalog
+	if err := decode(r, &c); err != nil {
 		return c, err
 	}
 	signature, known := ledger[c.Version]
-	if !known || signature != O22Signature(c) {
-		return c, fmt.Errorf("unknown version or catalogue signature mismatch")
+	if !known || signature != Signature(c) {
+		return c, fmt.Errorf("unknown version or catalog signature mismatch")
 	}
 	return c, nil
 }
 
-type O22Identity struct {
+type Identity struct {
 	Candidate string `json:"candidate"`
 	Session   string `json:"session"`
 	Target    string `json:"target"`
 }
-type O22Review struct {
-	O22Identity
+type Review struct {
+	Identity
 	GateID      string `json:"gate_id"`
 	CaseID      string `json:"case_id"`
 	RecordID    string `json:"record_id"`
@@ -101,58 +101,58 @@ type O22Review struct {
 	Independent bool   `json:"independent"`
 	Current     bool   `json:"current"`
 }
-type O22Record struct {
-	O22Identity
-	GateID        string    `json:"gate_id"`
-	CaseID        string    `json:"case_id"`
-	RecordID      string    `json:"record_id"`
-	Source        string    `json:"source"`
-	Outcome       string    `json:"outcome"`
-	Category      string    `json:"category"`
-	Reason        string    `json:"reason"`
-	EvidenceGrade string    `json:"evidence_grade"`
-	Qualification string    `json:"qualification"`
-	Admission     string    `json:"admission"`
-	Scope         string    `json:"scope"`
-	Procedure     string    `json:"procedure"`
-	Expected      string    `json:"expected"`
-	Actual        string    `json:"actual"`
-	EvidenceRef   string    `json:"evidence_ref"`
-	Omissions     string    `json:"omissions"`
-	Review        O22Review `json:"review"`
+type Record struct {
+	Identity
+	GateID        string `json:"gate_id"`
+	CaseID        string `json:"case_id"`
+	RecordID      string `json:"record_id"`
+	Source        string `json:"source"`
+	Outcome       string `json:"outcome"`
+	Category      string `json:"category"`
+	Reason        string `json:"reason"`
+	EvidenceGrade string `json:"evidence_grade"`
+	Qualification string `json:"qualification"`
+	Admission     string `json:"admission"`
+	Scope         string `json:"scope"`
+	Procedure     string `json:"procedure"`
+	Expected      string `json:"expected"`
+	Actual        string `json:"actual"`
+	EvidenceRef   string `json:"evidence_ref"`
+	Omissions     string `json:"omissions"`
+	Review        Review `json:"review"`
 }
-type O22Report struct {
-	O22Identity
-	CatalogueVersion string      `json:"catalogue_version"`
-	Form             string      `json:"form"`
-	Source           string      `json:"source"`
-	Records          []O22Record `json:"records"`
+type Report struct {
+	Identity
+	CatalogVersion string   `json:"catalogue_version"`
+	Form           string   `json:"form"`
+	Source         string   `json:"source"`
+	Records        []Record `json:"records"`
 }
 
-func O22ReadReport(r io.Reader) (O22Report, error) {
-	var report O22Report
+func ReadReport(r io.Reader) (Report, error) {
+	var report Report
 	// A pointer distinguishes an explicit empty declaration from missing/null.
 	var wire struct {
-		*O22Report
+		*Report
 		Records []struct {
-			O22Record
+			Record
 			Omissions *string `json:"omissions"`
 		} `json:"records"`
 	}
-	wire.O22Report = &report
-	if err := o22Decode(r, &wire); err != nil {
+	wire.Report = &report
+	if err := decode(r, &wire); err != nil {
 		return report, err
 	}
 	for i, record := range wire.Records {
 		if record.Omissions == nil {
 			return report, fmt.Errorf("record %d requires a non-null omissions string", i)
 		}
-		record.O22Record.Omissions = *record.Omissions
-		report.Records = append(report.Records, record.O22Record)
+		record.Record.Omissions = *record.Omissions
+		report.Records = append(report.Records, record.Record)
 	}
 	return report, nil
 }
-func o22Contains(values []string, s string) bool {
+func contains(values []string, s string) bool {
 	for _, v := range values {
 		if v == s {
 			return true
@@ -160,16 +160,16 @@ func o22Contains(values []string, s string) bool {
 	}
 	return false
 }
-func o22IdentityValid(i O22Identity) bool {
+func identityValid(i Identity) bool {
 	return strings.TrimSpace(i.Candidate) != "" && strings.TrimSpace(i.Session) != "" && strings.TrimSpace(i.Target) != ""
 }
 
-// O22ValidateReport returns complete only for current, independently reviewed,
+// ValidateReport returns complete only for current, independently reviewed,
 // live passing evidence for every required case. Category-allowed non-pass
 // results can be structurally valid without completing hardware acceptance.
 // The caller establishes identity and review authenticity outside this package.
-func O22ValidateReport(c O22Catalogue, r O22Report, expected O22Identity) (bool, error) {
-	if !o22IdentityValid(expected) || r.O22Identity != expected || r.CatalogueVersion != c.Version {
+func ValidateReport(c Catalog, r Report, expected Identity) (bool, error) {
+	if !identityValid(expected) || r.Identity != expected || r.CatalogVersion != c.Version {
 		return false, fmt.Errorf("report identity/version mismatch")
 	}
 	gates, ok := c.Forms[r.Form]
@@ -197,7 +197,7 @@ func O22ValidateReport(c O22Catalogue, r O22Report, expected O22Identity) (bool,
 			return false, fmt.Errorf("unknown or duplicate gate/case")
 		}
 		delete(required, key)
-		if record.O22Identity != expected || record.Source != r.Source {
+		if record.Identity != expected || record.Source != r.Source {
 			return false, fmt.Errorf("row identity/source mismatch")
 		}
 		for _, field := range []string{record.RecordID, record.Qualification, record.Admission, record.Scope, record.Procedure, record.Expected, record.Actual, record.EvidenceRef} {
@@ -206,12 +206,12 @@ func O22ValidateReport(c O22Catalogue, r O22Report, expected O22Identity) (bool,
 			}
 		}
 		review := record.Review
-		if ids[record.RecordID] || reviews[review.ReviewID] || strings.TrimSpace(review.ReviewID) == "" || review.O22Identity != expected || review.GateID != record.GateID || review.CaseID != record.CaseID || review.RecordID != record.RecordID || !review.Independent || !review.Current {
+		if ids[record.RecordID] || reviews[review.ReviewID] || strings.TrimSpace(review.ReviewID) == "" || review.Identity != expected || review.GateID != record.GateID || review.CaseID != record.CaseID || review.RecordID != record.RecordID || !review.Independent || !review.Current {
 			return false, fmt.Errorf("missing, reused, stale or mismatched per-row review")
 		}
 		ids[record.RecordID] = true
 		reviews[review.ReviewID] = true
-		if !o22Contains([]string{"Proven", "Hypothesis", "Unknown"}, record.EvidenceGrade) || !o22Contains(c.ResultVocabulary, record.Outcome) {
+		if !contains([]string{"Proven", "Hypothesis", "Unknown"}, record.EvidenceGrade) || !contains(c.ResultVocabulary, record.Outcome) {
 			return false, fmt.Errorf("unknown evidence grade/outcome")
 		}
 		if record.Outcome == "pass" && (record.EvidenceGrade != "Proven" || record.Omissions != "") {
@@ -224,7 +224,7 @@ func O22ValidateReport(c O22Catalogue, r O22Report, expected O22Identity) (bool,
 			}
 			allowed := false
 			for _, cat := range categories {
-				if cat.ID == record.Category && cat.Outcome == record.Outcome && cat.Reason == record.Reason && o22Contains(cat.Cases, record.CaseID) {
+				if cat.ID == record.Category && cat.Outcome == record.Outcome && cat.Reason == record.Reason && contains(cat.Cases, record.CaseID) {
 					allowed = true
 				}
 			}
@@ -239,7 +239,7 @@ func O22ValidateReport(c O22Catalogue, r O22Report, expected O22Identity) (bool,
 			for _, category := range c.CategoryPrecedence {
 				found := false
 				for _, cat := range c.Categories {
-					if cat.ID == category && o22Contains(cat.Cases, record.CaseID) {
+					if cat.ID == category && contains(cat.Cases, record.CaseID) {
 						if record.Category != cat.ID || record.Outcome != cat.Outcome || record.Reason != cat.Reason {
 							return false, fmt.Errorf("reserved cell category mismatch")
 						}
@@ -262,10 +262,10 @@ func O22ValidateReport(c O22Catalogue, r O22Report, expected O22Identity) (bool,
 	return complete, nil
 }
 
-// O22ReadSchema parses and verifies the companion schema using only the standard library.
-func O22ReadSchema(r io.Reader, c O22Catalogue) (map[string]any, error) {
+// ReadSchema parses and verifies the companion schema using only the standard library.
+func ReadSchema(r io.Reader, c Catalog) (map[string]any, error) {
 	var schema map[string]any
-	if err := o22Decode(r, &schema); err != nil {
+	if err := decode(r, &schema); err != nil {
 		return nil, err
 	}
 	b, err := json.Marshal(schema)

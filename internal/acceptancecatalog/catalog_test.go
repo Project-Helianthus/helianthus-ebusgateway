@@ -14,7 +14,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/matrix"
 )
 
-func o22File(t *testing.T, name string) []byte {
+func repoFile(t *testing.T, name string) []byte {
 	t.Helper()
 	b, err := os.ReadFile("../../" + name)
 	if err != nil {
@@ -22,9 +22,9 @@ func o22File(t *testing.T, name string) []byte {
 	}
 	return b
 }
-func o22Ledger(t *testing.T) map[string]string {
+func repoLedger(t *testing.T) map[string]string {
 	t.Helper()
-	b := o22File(t, "docs/testing/hardware-acceptance-catalogue.md")
+	b := repoFile(t, "docs/testing/hardware-acceptance-catalog.md")
 	entries := regexp.MustCompile(`(?m)^\| ([0-9]+) \| ([A-Za-z0-9+/=]+) \|$`).FindAllSubmatch(b, -1)
 	if len(entries) == 0 {
 		t.Fatal("missing version ledger")
@@ -38,28 +38,28 @@ func o22Ledger(t *testing.T) map[string]string {
 	}
 	return ledger
 }
-func o22Load(t *testing.T) O22Catalogue {
+func loadCatalog(t *testing.T) Catalog {
 	t.Helper()
-	c, err := O22ReadCatalogue(strings.NewReader(string(o22File(t, "docs/testing/hardware-acceptance-catalogue-v1.json"))), o22Ledger(t))
+	c, err := ReadCatalog(strings.NewReader(string(repoFile(t, "docs/testing/hardware-acceptance-catalog-v1.json"))), repoLedger(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	return c
 }
-func o22Clone[T any](v T) T {
+func clone[T any](v T) T {
 	b, _ := json.Marshal(v)
 	var out T
 	_ = json.Unmarshal(b, &out)
 	return out
 }
-func o22Equal(t *testing.T, got, want any) {
+func equal(t *testing.T, got, want any) {
 	t.Helper()
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("inventory differs:\ngot %v\nwant %v", got, want)
 	}
 }
-func o22Handoff(text string) []O22Row {
-	var rows []O22Row
+func handoffRows(text string) []Row {
+	var rows []Row
 	rangeRE := regexp.MustCompile(`^([A-Z]+)([0-9]+)–[A-Z]+([0-9]+)$`)
 	for _, line := range strings.Split(text, "\n") {
 		p := strings.Split(line, "|")
@@ -72,7 +72,7 @@ func o22Handoff(text string) []O22Row {
 		if p[3] != "Not run" {
 			continue
 		}
-		row := O22Row{ID: p[1], Kind: "single", Cases: []string{p[1]}, Historical: p[1] == "Prior RTU evidence applicability"}
+		row := Row{ID: p[1], Kind: "single", Cases: []string{p[1]}, Historical: p[1] == "Prior RTU evidence applicability"}
 		if m := rangeRE.FindStringSubmatch(p[1]); m != nil {
 			lo, _ := strconv.Atoi(m[2])
 			hi, _ := strconv.Atoi(m[3])
@@ -86,13 +86,13 @@ func o22Handoff(text string) []O22Row {
 	}
 	return rows
 }
-func TestO22PublishedArtifacts(t *testing.T) {
-	c := o22Load(t)
+func TestPublishedArtifacts(t *testing.T) {
+	c := loadCatalog(t)
 	if c.Version != "2" || c.ActiveForm != "full88" || len(c.HandoffRows) != 65 || len(c.Forms["full88"]) != 64 || len(c.V2Cells) != 173 || len(c.Forms["adaptermux-v2"]) != 220 {
 		t.Fatal("unexpected publication inventory")
 	}
-	o22Equal(t, c.RetiredV2, []string{"AD11"})
-	schema, err := O22ReadSchema(strings.NewReader(string(o22File(t, "docs/testing/"+c.ResultSchema))), c)
+	equal(t, c.RetiredV2, []string{"AD11"})
+	schema, err := ReadSchema(strings.NewReader(string(repoFile(t, "docs/testing/"+c.ResultSchema))), c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,11 +100,11 @@ func TestO22PublishedArtifacts(t *testing.T) {
 		t.Fatal("schema draft")
 	}
 	if schema["properties"].(map[string]any)["catalogue_version"].(map[string]any)["const"] != c.Version {
-		t.Fatal("schema catalogue version mismatch")
+		t.Fatal("schema catalog version mismatch")
 	}
 	// Independently require all serialized record/review fields in the schema.
 	defs := schema["$defs"].(map[string]any)
-	for name, value := range map[string]any{"record": O22Record{}, "review": O22Review{}} {
+	for name, value := range map[string]any{"record": Record{}, "review": Review{}} {
 		b, _ := json.Marshal(value)
 		var keys map[string]any
 		_ = json.Unmarshal(b, &keys)
@@ -130,12 +130,12 @@ func TestO22PublishedArtifacts(t *testing.T) {
 	b, _ := json.Marshal(outcomes)
 	var vocabulary []string
 	_ = json.Unmarshal(b, &vocabulary)
-	o22Equal(t, c.ResultVocabulary, vocabulary)
+	equal(t, c.ResultVocabulary, vocabulary)
 }
-func TestO22HandoffInventory(t *testing.T) {
-	c := o22Load(t)
-	rows := o22Handoff(string(o22File(t, "docs/testing/consolidated-candidate-handoff.md")))
-	o22Equal(t, c.HandoffRows, rows)
+func TestHandoffInventory(t *testing.T) {
+	c := loadCatalog(t)
+	rows := handoffRows(string(repoFile(t, "docs/testing/consolidated-candidate-handoff.md")))
+	equal(t, c.HandoffRows, rows)
 	var full, v2 []string
 	for _, row := range rows {
 		if !row.Historical {
@@ -145,12 +145,12 @@ func TestO22HandoffInventory(t *testing.T) {
 			}
 		}
 	}
-	o22Equal(t, c.Forms["full88"], full)
-	o22Equal(t, c.Forms["adaptermux-v2"], append(v2, c.V2Cells...))
+	equal(t, c.Forms["full88"], full)
+	equal(t, c.Forms["adaptermux-v2"], append(v2, c.V2Cells...))
 }
-func TestO22MatrixInventory(t *testing.T) {
-	c := o22Load(t)
-	text := string(o22File(t, "matrix/M7-adaptermux-conformance-matrix.md"))
+func TestMatrixInventory(t *testing.T) {
+	c := loadCatalog(t)
+	text := string(repoFile(t, "matrix/M7-adaptermux-conformance-matrix.md"))
 	var transports, invariants, compat []string
 	for _, line := range strings.Split(text, "\n") {
 		p := strings.Split(line, "|")
@@ -175,9 +175,9 @@ func TestO22MatrixInventory(t *testing.T) {
 		}
 	}
 	cells = append(cells, compat...)
-	o22Equal(t, c.V2Cells, cells)
-	var mappings []O22Transition
-	for _, line := range strings.Split(string(o22File(t, "matrix/M7-adaptermux-conformance-cell-map.md")), "\n") {
+	equal(t, c.V2Cells, cells)
+	var mappings []Transition
+	for _, line := range strings.Split(string(repoFile(t, "matrix/M7-adaptermux-conformance-cell-map.md")), "\n") {
 		p := strings.Split(line, "|")
 		if len(p) != 9 {
 			continue
@@ -188,16 +188,16 @@ func TestO22MatrixInventory(t *testing.T) {
 		if !regexp.MustCompile(`^T[0-9]{2}$`).MatchString(p[1]) {
 			continue
 		}
-		m := O22Transition{Old: p[1], Disposition: p[4], Code: p[5], ExpectedFailure: p[7]}
+		m := Transition{Old: p[1], Disposition: p[4], Code: p[5], ExpectedFailure: p[7]}
 		for _, id := range regexp.MustCompile("`([A-Z]+-(?:AD|DS|ES|CX)[0-9]+)`").FindAllStringSubmatch(p[6], -1) {
 			m.Keepers = append(m.Keepers, id[1])
-			if !o22Contains(cells, id[1]) {
+			if !contains(cells, id[1]) {
 				t.Fatal("unknown keeper")
 			}
 		}
 		mappings = append(mappings, m)
 	}
-	o22Equal(t, c.Transition, mappings)
+	equal(t, c.Transition, mappings)
 	if len(mappings) != 88 {
 		t.Fatal("missing old case")
 	}
@@ -208,7 +208,7 @@ func TestO22MatrixInventory(t *testing.T) {
 	}
 	// Independent category membership and reason controls from the policy contract.
 	reasons := map[string]string{"XF-01": "southbound plain tcp under dual-client load reports no signal (carried from proxy dual-client)", "BI-01": "adapter_no_signal", "BI-02": "uart_direct_hardware_absent", "PL-01": "mux_southbound_plain_not_implemented", "PL-02": "mux_local_responder_not_implemented", "PL-03": "mux_raw_symbol_forwarding_not_implemented"}
-	o22Equal(t, c.CategoryPrecedence, []string{"BI-02", "PL-01", "PL-02", "PL-03"})
+	equal(t, c.CategoryPrecedence, []string{"BI-02", "PL-01", "PL-02", "PL-03"})
 	if len(c.Categories) != len(reasons) {
 		t.Fatal("category count")
 	}
@@ -243,54 +243,54 @@ func TestO22MatrixInventory(t *testing.T) {
 				want = append(want, id)
 			}
 		}
-		o22Equal(t, cat.Cases, want)
+		equal(t, cat.Cases, want)
 	}
 }
-func TestO22CatalogueMutations(t *testing.T) {
-	c := o22Load(t)
-	ledger := o22Ledger(t)
-	mutations := map[string]func(*O22Catalogue){
-		"full88-expected-reason": func(c *O22Catalogue) { c.Full88ExpectedFailures[0].Reason = "O22-other" },
-		"full88-expected-case":   func(c *O22Catalogue) { c.Full88ExpectedFailures[0].Cases[0] = "T01" },
-		"remove-gate":            func(c *O22Catalogue) { c.Forms["full88"] = c.Forms["full88"][1:] },
-		"add-gate":               func(c *O22Catalogue) { c.Forms["full88"] = append(c.Forms["full88"], "O22-extra") },
-		"rename-gate":            func(c *O22Catalogue) { c.HandoffRows[0].ID = "O22-renamed" },
-		"remove-case":            func(c *O22Catalogue) { c.HandoffRows[0].Cases = c.HandoffRows[0].Cases[1:] },
-		"add-case":               func(c *O22Catalogue) { c.HandoffRows[0].Cases = append(c.HandoffRows[0].Cases, "O22-extra") },
-		"rename-case":            func(c *O22Catalogue) { c.HandoffRows[0].Cases[0] = "O22-renamed" },
-		"historical-required": func(c *O22Catalogue) {
+func TestCatalogMutations(t *testing.T) {
+	c := loadCatalog(t)
+	ledger := repoLedger(t)
+	mutations := map[string]func(*Catalog){
+		"full88-expected-reason": func(c *Catalog) { c.Full88ExpectedFailures[0].Reason = "O22-other" },
+		"full88-expected-case":   func(c *Catalog) { c.Full88ExpectedFailures[0].Cases[0] = "T01" },
+		"remove-gate":            func(c *Catalog) { c.Forms["full88"] = c.Forms["full88"][1:] },
+		"add-gate":               func(c *Catalog) { c.Forms["full88"] = append(c.Forms["full88"], "O22-extra") },
+		"rename-gate":            func(c *Catalog) { c.HandoffRows[0].ID = "O22-renamed" },
+		"remove-case":            func(c *Catalog) { c.HandoffRows[0].Cases = c.HandoffRows[0].Cases[1:] },
+		"add-case":               func(c *Catalog) { c.HandoffRows[0].Cases = append(c.HandoffRows[0].Cases, "O22-extra") },
+		"rename-case":            func(c *Catalog) { c.HandoffRows[0].Cases[0] = "O22-renamed" },
+		"historical-required": func(c *Catalog) {
 			c.Forms["full88"] = append(c.Forms["full88"], "Prior RTU evidence applicability")
 		},
-		"retired-required":        func(c *O22Catalogue) { c.Forms["adaptermux-v2"] = append(c.Forms["adaptermux-v2"], "AD11") },
-		"unknown-version":         func(c *O22Catalogue) { c.Version = "O22-unknown" },
-		"unreviewed-version-bump": func(c *O22Catalogue) { c.Version = "3" },
-		"vocabulary":              func(c *O22Catalogue) { c.ResultVocabulary = append(c.ResultVocabulary, "O22-unknown") },
+		"retired-required":        func(c *Catalog) { c.Forms["adaptermux-v2"] = append(c.Forms["adaptermux-v2"], "AD11") },
+		"unknown-version":         func(c *Catalog) { c.Version = "O22-unknown" },
+		"unreviewed-version-bump": func(c *Catalog) { c.Version = "3" },
+		"vocabulary":              func(c *Catalog) { c.ResultVocabulary = append(c.ResultVocabulary, "O22-unknown") },
 	}
 	for name, mutate := range mutations {
 		t.Run(name, func(t *testing.T) {
-			changed := o22Clone(c)
+			changed := clone(c)
 			mutate(&changed)
 			b, _ := json.Marshal(changed)
-			if _, err := O22ReadCatalogue(strings.NewReader(string(b)), ledger); err == nil {
+			if _, err := ReadCatalog(strings.NewReader(string(b)), ledger); err == nil {
 				t.Fatal("changed identity admitted without new ledger version")
 			}
 		})
 	}
-	b := string(o22File(t, "docs/testing/"+c.ResultSchema))
-	if _, err := O22ReadSchema(strings.NewReader(strings.Replace(b, "timeout", "O22-unknown", 1)), c); err == nil {
+	b := string(repoFile(t, "docs/testing/"+c.ResultSchema))
+	if _, err := ReadSchema(strings.NewReader(strings.Replace(b, "timeout", "O22-unknown", 1)), c); err == nil {
 		t.Fatal("schema drift admitted")
 	}
-	for _, input := range []string{"{} {}", `{"unknown":true}`, strings.Repeat(" ", O22MaxBytes+1)} {
-		if _, err := O22ReadCatalogue(strings.NewReader(input), ledger); err == nil {
+	for _, input := range []string{"{} {}", `{"unknown":true}`, strings.Repeat(" ", MaxBytes+1)} {
+		if _, err := ReadCatalog(strings.NewReader(input), ledger); err == nil {
 			t.Fatal("malformed/bounded input admitted")
 		}
 	}
 }
 
-func o22Report(c O22Catalogue, form string) O22Report {
+func syntheticReport(c Catalog, form string) Report {
 	// All observations and review attestations here are fabricated unit-test data.
-	identity := O22Identity{Candidate: "O22-candidate", Session: "O22-session", Target: "O22-target"}
-	r := O22Report{O22Identity: identity, CatalogueVersion: c.Version, Form: form, Source: "synthetic"}
+	identity := Identity{Candidate: "O22-candidate", Session: "O22-session", Target: "O22-target"}
+	r := Report{Identity: identity, CatalogVersion: c.Version, Form: form, Source: "synthetic"}
 	for _, gate := range c.Forms[form] {
 		cases := []string{gate}
 		for _, row := range c.HandoffRows {
@@ -300,13 +300,13 @@ func o22Report(c O22Catalogue, form string) O22Report {
 		}
 		for _, id := range cases {
 			key := fmt.Sprintf("O22-record-%d", len(r.Records))
-			record := O22Record{O22Identity: identity, GateID: gate, CaseID: id, RecordID: key, Source: "synthetic", Outcome: "pass", EvidenceGrade: "Proven", Qualification: "Unassessed", Admission: "Unassessed", Scope: "O22-family", Procedure: "O22-procedure", Expected: "O22-expected", Actual: "O22-synthetic-observation", EvidenceRef: "O22-public-reference#row"}
-			record.Review = O22Review{O22Identity: identity, GateID: gate, CaseID: id, RecordID: key, ReviewID: "O22-review-" + key, Independent: true, Current: true}
+			record := Record{Identity: identity, GateID: gate, CaseID: id, RecordID: key, Source: "synthetic", Outcome: "pass", EvidenceGrade: "Proven", Qualification: "Unassessed", Admission: "Unassessed", Scope: "O22-family", Procedure: "O22-procedure", Expected: "O22-expected", Actual: "O22-synthetic-observation", EvidenceRef: "O22-public-reference#row"}
+			record.Review = Review{Identity: identity, GateID: gate, CaseID: id, RecordID: key, ReviewID: "O22-review-" + key, Independent: true, Current: true}
 			if form == "adaptermux-v2" {
 				for _, category := range c.CategoryPrecedence {
 					found := false
 					for _, cat := range c.Categories {
-						if cat.ID == category && o22Contains(cat.Cases, id) {
+						if cat.ID == category && contains(cat.Cases, id) {
 							record.Outcome = cat.Outcome
 							record.Category = cat.ID
 							record.Reason = cat.Reason
@@ -325,10 +325,10 @@ func o22Report(c O22Catalogue, form string) O22Report {
 	}
 	return r
 }
-func TestO22ReadReportOmissions(t *testing.T) {
-	c := o22Load(t)
+func TestReadReportOmissions(t *testing.T) {
+	c := loadCatalog(t)
 	// Fabricated live claims exercise completion without supplying hardware evidence.
-	base := o22Report(c, "full88")
+	base := syntheticReport(c, "full88")
 	base.Source = "live"
 	for i := range base.Records {
 		base.Records[i].Source = "live"
@@ -337,11 +337,11 @@ func TestO22ReadReportOmissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	parsed, err := O22ReadReport(strings.NewReader(string(b)))
+	parsed, err := ReadReport(strings.NewReader(string(b)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if complete, err := O22ValidateReport(c, parsed, base.O22Identity); err != nil || !complete {
+	if complete, err := ValidateReport(c, parsed, base.Identity); err != nil || !complete {
 		t.Fatalf("explicit empty omissions control: %v %v", complete, err)
 	}
 	var wire map[string]any
@@ -356,7 +356,7 @@ func TestO22ReadReportOmissions(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := O22ReadReport(strings.NewReader(string(input))); err == nil {
+			if _, err := ReadReport(strings.NewReader(string(input))); err == nil {
 				t.Fatal("non-string omissions admitted")
 			}
 		})
@@ -367,38 +367,38 @@ func TestO22ReadReportOmissions(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := O22ReadReport(strings.NewReader(string(input))); err == nil {
+		if _, err := ReadReport(strings.NewReader(string(input))); err == nil {
 			t.Fatal("missing omissions admitted")
 		}
 	})
 }
 
-func TestO22ReportIdentityMutations(t *testing.T) {
-	c := o22Load(t)
-	base := o22Report(c, "full88")
-	if done, err := O22ValidateReport(c, base, base.O22Identity); err != nil || done {
+func TestReportIdentityMutations(t *testing.T) {
+	c := loadCatalog(t)
+	base := syntheticReport(c, "full88")
+	if done, err := ValidateReport(c, base, base.Identity); err != nil || done {
 		t.Fatalf("synthetic control: %v %v", done, err)
 	}
 	b, _ := json.Marshal(base)
-	parsed, err := O22ReadReport(strings.NewReader(string(b)))
+	parsed, err := ReadReport(strings.NewReader(string(b)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	o22Equal(t, parsed, base)
-	mutations := map[string]func(*O22Report){
-		"gate-id": func(r *O22Report) { r.Records[0].GateID = "O22-other" }, "case-id": func(r *O22Report) { r.Records[0].CaseID = "O22-other" },
-		"report-candidate": func(r *O22Report) { r.Candidate = "O22-other" }, "report-session": func(r *O22Report) { r.Session = "O22-other" }, "report-target": func(r *O22Report) { r.Target = "O22-other" },
-		"row-candidate": func(r *O22Report) { r.Records[0].Candidate = "O22-other" }, "row-session": func(r *O22Report) { r.Records[0].Session = "O22-other" }, "row-target": func(r *O22Report) { r.Records[0].Target = "O22-other" },
-		"review-candidate": func(r *O22Report) { r.Records[0].Review.Candidate = "O22-other" }, "review-session": func(r *O22Report) { r.Records[0].Review.Session = "O22-other" }, "review-target": func(r *O22Report) { r.Records[0].Review.Target = "O22-other" },
-		"review-gate": func(r *O22Report) { r.Records[0].Review.GateID = "O22-other" }, "review-case": func(r *O22Report) { r.Records[0].Review.CaseID = "O22-other" }, "review-record": func(r *O22Report) { r.Records[0].Review.RecordID = "O22-other" },
-		"review-id-empty": func(r *O22Report) { r.Records[0].Review.ReviewID = "" }, "review-id-reused": func(r *O22Report) { r.Records[0].Review.ReviewID = r.Records[1].Review.ReviewID },
-		"record-id-empty": func(r *O22Report) { r.Records[0].RecordID = "" }, "record-id-reused": func(r *O22Report) { r.Records[0].RecordID = r.Records[1].RecordID },
-		"review-not-independent": func(r *O22Report) { r.Records[0].Review.Independent = false }, "review-stale": func(r *O22Report) { r.Records[0].Review.Current = false },
-		"source": func(r *O22Report) { r.Records[0].Source = "live" }, "report-source": func(r *O22Report) { r.Source = "O22-unknown" },
-		"version": func(r *O22Report) { r.CatalogueVersion = "O22-unknown" }, "form": func(r *O22Report) { r.Form = "O22-unknown" },
-		"vocabulary": func(r *O22Report) { r.Records[0].Outcome = "O22-unknown" }, "grade": func(r *O22Report) { r.Records[0].EvidenceGrade = "O22-unknown" }, "pass-omission": func(r *O22Report) { r.Records[0].Omissions = "O22-omitted" }, "pass-unproven": func(r *O22Report) { r.Records[0].EvidenceGrade = "Unknown" },
-		"missing": func(r *O22Report) { r.Records = r.Records[1:] }, "duplicate": func(r *O22Report) { r.Records = append(r.Records, r.Records[0]) },
-		"historical": func(r *O22Report) { r.Records[0].GateID = "Prior RTU evidence applicability" }, "planned-full88": func(r *O22Report) {
+	equal(t, parsed, base)
+	mutations := map[string]func(*Report){
+		"gate-id": func(r *Report) { r.Records[0].GateID = "O22-other" }, "case-id": func(r *Report) { r.Records[0].CaseID = "O22-other" },
+		"report-candidate": func(r *Report) { r.Candidate = "O22-other" }, "report-session": func(r *Report) { r.Session = "O22-other" }, "report-target": func(r *Report) { r.Target = "O22-other" },
+		"row-candidate": func(r *Report) { r.Records[0].Candidate = "O22-other" }, "row-session": func(r *Report) { r.Records[0].Session = "O22-other" }, "row-target": func(r *Report) { r.Records[0].Target = "O22-other" },
+		"review-candidate": func(r *Report) { r.Records[0].Review.Candidate = "O22-other" }, "review-session": func(r *Report) { r.Records[0].Review.Session = "O22-other" }, "review-target": func(r *Report) { r.Records[0].Review.Target = "O22-other" },
+		"review-gate": func(r *Report) { r.Records[0].Review.GateID = "O22-other" }, "review-case": func(r *Report) { r.Records[0].Review.CaseID = "O22-other" }, "review-record": func(r *Report) { r.Records[0].Review.RecordID = "O22-other" },
+		"review-id-empty": func(r *Report) { r.Records[0].Review.ReviewID = "" }, "review-id-reused": func(r *Report) { r.Records[0].Review.ReviewID = r.Records[1].Review.ReviewID },
+		"record-id-empty": func(r *Report) { r.Records[0].RecordID = "" }, "record-id-reused": func(r *Report) { r.Records[0].RecordID = r.Records[1].RecordID },
+		"review-not-independent": func(r *Report) { r.Records[0].Review.Independent = false }, "review-stale": func(r *Report) { r.Records[0].Review.Current = false },
+		"source": func(r *Report) { r.Records[0].Source = "live" }, "report-source": func(r *Report) { r.Source = "O22-unknown" },
+		"version": func(r *Report) { r.CatalogVersion = "O22-unknown" }, "form": func(r *Report) { r.Form = "O22-unknown" },
+		"vocabulary": func(r *Report) { r.Records[0].Outcome = "O22-unknown" }, "grade": func(r *Report) { r.Records[0].EvidenceGrade = "O22-unknown" }, "pass-omission": func(r *Report) { r.Records[0].Omissions = "O22-omitted" }, "pass-unproven": func(r *Report) { r.Records[0].EvidenceGrade = "Unknown" },
+		"missing": func(r *Report) { r.Records = r.Records[1:] }, "duplicate": func(r *Report) { r.Records = append(r.Records, r.Records[0]) },
+		"historical": func(r *Report) { r.Records[0].GateID = "Prior RTU evidence applicability" }, "planned-full88": func(r *Report) {
 			r.Records[0].Outcome = "planned"
 			r.Records[0].Category = "PL-01"
 			r.Records[0].Reason = "mux_southbound_plain_not_implemented"
@@ -406,46 +406,46 @@ func TestO22ReportIdentityMutations(t *testing.T) {
 	}
 	for name, mutate := range mutations {
 		t.Run(name, func(t *testing.T) {
-			r := o22Clone(base)
+			r := clone(base)
 			mutate(&r)
-			if _, err := O22ValidateReport(c, r, base.O22Identity); err == nil {
+			if _, err := ValidateReport(c, r, base.Identity); err == nil {
 				t.Fatal("identity mutation admitted")
 			}
 		})
 	}
 	for _, field := range []string{"Qualification", "Admission", "Scope", "Procedure", "Expected", "Actual", "EvidenceRef"} {
 		t.Run("missing-"+field, func(t *testing.T) {
-			r := o22Clone(base)
+			r := clone(base)
 			reflect.ValueOf(&r.Records[0]).Elem().FieldByName(field).SetString("")
-			if _, err := O22ValidateReport(c, r, base.O22Identity); err == nil {
+			if _, err := ValidateReport(c, r, base.Identity); err == nil {
 				t.Fatal("missing evidence admitted")
 			}
 		})
 	}
 }
-func TestO22OutcomesAndCategories(t *testing.T) {
-	c := o22Load(t)
-	r := o22Report(c, "adaptermux-v2")
-	if complete, err := O22ValidateReport(c, r, r.O22Identity); err != nil || complete {
+func TestOutcomesAndCategories(t *testing.T) {
+	c := loadCatalog(t)
+	r := syntheticReport(c, "adaptermux-v2")
+	if complete, err := ValidateReport(c, r, r.Identity); err != nil || complete {
 		t.Fatalf("v2 synthetic control: %v %v", complete, err)
 	}
 	for _, field := range []string{"Category", "Reason", "Outcome"} {
 		t.Run("category-"+field, func(t *testing.T) {
-			changed := o22Clone(r)
+			changed := clone(r)
 			for i := range changed.Records {
 				if changed.Records[i].Category == "PL-03" {
 					reflect.ValueOf(&changed.Records[i]).Elem().FieldByName(field).SetString("O22-other")
 					break
 				}
 			}
-			if _, err := O22ValidateReport(c, changed, r.O22Identity); err == nil {
+			if _, err := ValidateReport(c, changed, r.Identity); err == nil {
 				t.Fatal("category mutation admitted")
 			}
 		})
 	}
 	for _, id := range []string{"ENS-AD01", "ENS-DS01", "LEGACY-MUX"} {
 		t.Run("planned-outside-"+id, func(t *testing.T) {
-			changed := o22Clone(r)
+			changed := clone(r)
 			for i := range changed.Records {
 				if changed.Records[i].CaseID == id {
 					changed.Records[i].Outcome = "planned"
@@ -453,38 +453,38 @@ func TestO22OutcomesAndCategories(t *testing.T) {
 					changed.Records[i].Reason = "mux_raw_symbol_forwarding_not_implemented"
 				}
 			}
-			if _, err := O22ValidateReport(c, changed, r.O22Identity); err == nil {
+			if _, err := ValidateReport(c, changed, r.Identity); err == nil {
 				t.Fatal("planned outside category")
 			}
 		})
 	}
 	for _, outcome := range []string{"fail", "timeout", "not-run", "omitted-checks", "xpass"} {
 		t.Run(outcome, func(t *testing.T) {
-			report := o22Report(c, "full88")
+			report := syntheticReport(c, "full88")
 			report.Source = "live"
 			for i := range report.Records {
 				report.Records[i].Source = "live"
 			}
 			report.Records[0].Outcome = outcome
-			if complete, err := O22ValidateReport(c, report, report.O22Identity); err != nil || complete {
+			if complete, err := ValidateReport(c, report, report.Identity); err != nil || complete {
 				t.Fatalf("non-pass disposition: %v %v", complete, err)
 			}
 		})
 	}
 	// Exercise the live-claim branch with fabricated attestations, never publish it as evidence.
-	live := o22Report(c, "full88")
+	live := syntheticReport(c, "full88")
 	live.Source = "live"
 	for i := range live.Records {
 		live.Records[i].Source = "live"
 	}
-	if complete, err := O22ValidateReport(c, live, live.O22Identity); err != nil || !complete {
+	if complete, err := ValidateReport(c, live, live.Identity); err != nil || !complete {
 		t.Fatalf("live-claim consistency control: %v %v", complete, err)
 	}
 }
 
-func TestO22HandoffMutationControls(t *testing.T) {
-	c := o22Load(t)
-	source := string(o22File(t, "docs/testing/consolidated-candidate-handoff.md"))
+func TestHandoffMutationControls(t *testing.T) {
+	c := loadCatalog(t)
+	source := string(repoFile(t, "docs/testing/consolidated-candidate-handoff.md"))
 	first := ""
 	for _, line := range strings.Split(source, "\n") {
 		if strings.HasPrefix(line, "| AD01 |") {
@@ -502,15 +502,15 @@ func TestO22HandoffMutationControls(t *testing.T) {
 		"case-range": strings.Replace(source, "| T01–T04 |", "| T01–T03 |", 1),
 	} {
 		t.Run(name, func(t *testing.T) {
-			if reflect.DeepEqual(o22Handoff(changed), c.HandoffRows) {
+			if reflect.DeepEqual(handoffRows(changed), c.HandoffRows) {
 				t.Fatal("handoff inventory mutation not detected")
 			}
 		})
 	}
 }
 
-func TestO22Full88ExpectedFailures(t *testing.T) {
-	c := o22Load(t)
+func TestFull88ExpectedFailures(t *testing.T) {
+	c := loadCatalog(t)
 	// Dry-run expectations come from the current runner without hardware access.
 	runner, err := matrix.NewRunner(matrix.RunnerOptions{OutputDir: t.TempDir(), Suite: "full88"})
 	if err != nil {
@@ -538,20 +538,20 @@ func TestO22Full88ExpectedFailures(t *testing.T) {
 			got[id] = cat.Reason
 		}
 	}
-	o22Equal(t, got, want)
+	equal(t, got, want)
 	if len(got) != 40 {
 		t.Fatal("full88 expected failure inventory changed")
 	}
 	for _, source := range []string{"synthetic", "live"} {
 		t.Run(source, func(t *testing.T) {
-			r := o22Report(c, "full88")
+			r := syntheticReport(c, "full88")
 			r.Source = source
 			first := -1
 			for i := range r.Records {
 				record := &r.Records[i]
 				record.Source = source
 				for _, cat := range c.Full88ExpectedFailures {
-					if o22Contains(cat.Cases, record.CaseID) {
+					if contains(cat.Cases, record.CaseID) {
 						record.Outcome, record.Category, record.Reason = cat.Outcome, cat.ID, cat.Reason
 						record.EvidenceGrade = "Unknown"
 						if first < 0 {
@@ -560,18 +560,18 @@ func TestO22Full88ExpectedFailures(t *testing.T) {
 					}
 				}
 			}
-			if complete, err := O22ValidateReport(c, r, r.O22Identity); err != nil || complete {
+			if complete, err := ValidateReport(c, r, r.Identity); err != nil || complete {
 				t.Fatalf("full88 expected failures: %v %v", complete, err)
 			}
 			for _, field := range []string{"Category", "Reason"} {
-				changed := o22Clone(r)
+				changed := clone(r)
 				reflect.ValueOf(&changed.Records[first]).Elem().FieldByName(field).SetString("O22-other")
-				if _, err := O22ValidateReport(c, changed, r.O22Identity); err == nil {
+				if _, err := ValidateReport(c, changed, r.Identity); err == nil {
 					t.Fatalf("incorrect %s admitted", field)
 				}
 			}
 			for _, id := range []string{"T01", "T65", "T66", "AD01"} {
-				changed := o22Clone(r)
+				changed := clone(r)
 				for i := range changed.Records {
 					if changed.Records[i].CaseID == id {
 						changed.Records[i].Outcome = "xfail"
@@ -579,7 +579,7 @@ func TestO22Full88ExpectedFailures(t *testing.T) {
 						changed.Records[i].Reason = r.Records[first].Reason
 					}
 				}
-				if _, err := O22ValidateReport(c, changed, r.O22Identity); err == nil {
+				if _, err := ValidateReport(c, changed, r.Identity); err == nil {
 					t.Fatalf("undeclared xfail %s admitted", id)
 				}
 			}

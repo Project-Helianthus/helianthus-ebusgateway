@@ -1,15 +1,15 @@
-# Transitional hardware acceptance catalogue
+# Transitional hardware acceptance catalog
 
 Refs [gateway #1345](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1345).
 This publication supplies offline inventory and result validation. It changes no
 active gate and reports no candidate, physical result, release closure or authority
 to access equipment. Nothing is stable before Helianthus 1.0.
 
-The v1-format artifacts (catalogue version 2) are [catalogue v1](hardware-acceptance-catalogue-v1.json)
+The v1-format artifacts (catalog version 2) are [catalog v1](hardware-acceptance-catalog-v1.json)
 and [result schema v1](hardware-acceptance-result-v1.schema.json). The
 [standard-library reader](../../internal/acceptancecatalog/catalog.go) accepts
 only a version/signature pair in a separately trusted ledger. Consumers must
-validate the catalogue and schema before using the catalogue-aware result validator;
+validate the catalog and schema before using the catalog-aware result validator;
 JSON Schema alone checks shape, not inventory equality or authenticity.
 
 ## Source and transition
@@ -21,13 +21,13 @@ T01–T04, T05–T08, T09–T24, T25–T88 and PX01–PX12. Their case lists are
 The other 59 gates each require their own row record. Historical RTU evidence is
 retained as a non-gate; it cannot substitute for a candidate result or a triggered
 offline RTU gate. Rows remain bound to their owning native contracts; this
-catalogue defines no protocol interpretation or semantic admission.
+catalog defines no protocol interpretation or semantic admission.
 
 The [v2 matrix](../../matrix/M7-adaptermux-conformance-matrix.md),
 [cell map](../../matrix/M7-adaptermux-conformance-cell-map.md) and
 [proposed policy](transport-gate-policy-v2.md) define the planned second form.
 It has 173 cells: seven transports × 24 invariants, plus five compatibility
-cells. AD11 is retired only in that form. The catalogue includes every old
+cells. AD11 is retired only in that form. The catalog includes every old
 T01–T88 transition mapping, its disposition, reason code, keeper cells and
 expected-failure disposition; AD10 additionally uses T13–T16 as proxy baselines
 and ENH-AD10 uses EBUSD-ES01. UART and PX cells have no T predecessor.
@@ -41,7 +41,7 @@ proxy-dependent passive decisions remain with their owners.
 Full88 expected failures are classified separately in `full88_expected_failures`.
 Its four FULL88-XF categories enumerate the runner's 40 default cases and exact
 expectation reasons. An `xfail` record must supply the matching category and
-reason; custom runner overrides require a separately reviewed catalogue update.
+reason; custom runner overrides require a separately reviewed catalog update.
 These records are structurally valid but leave acceptance incomplete. Planned
 and infrastructure-blocked categories remain restricted to the v2 form.
 
@@ -56,7 +56,7 @@ xpass remain visible and prevent completion.
 
 ## Result identity and evidence
 
-A report names its catalogue version, form, opaque M44 candidate association,
+A report names its catalog version, form, opaque M44 candidate association,
 session and target. The caller supplies the expected current identity from its
 private verification process. Every gate/case pair occurs exactly once, with
 no extras, and carries that same identity, its own unique record ID, scope,
@@ -75,7 +75,7 @@ non-empty strings do not prove them. Do not publish private captures, serials,
 network coordinates, capture times or source revisions. Native raw evidence is
 preserved separately under its owning retention rules. Missing, stale or
 contradictory evidence withholds admission while bounded per-field last-known-good
-state retains its lineage; catalogue validation changes no runtime state.
+state retains its lineage; catalog validation changes no runtime state.
 
 Evidence is Proven / Hypothesis / Unknown, separately from qualification,
 freshness and admission. `pass` requires Proven and no omissions; it does not
@@ -83,11 +83,11 @@ qualify a family or grant control. `synthetic` reports may exercise the shape an
 validator but always return incomplete, including when a synthetic outcome is
 `pass`. Only a complete set of current independently reviewed live pass records
 can return complete; that is a bounded offline consistency verdict, not hardware
-authentication. This catalogue supplies no live report or candidate revision.
+authentication. This catalog supplies no live report or candidate revision.
 
 ## Version history signature ledger
 
-Canonical identity is compact `encoding/json.Marshal` of `O22Catalogue`: struct
+Canonical identity is compact `encoding/json.Marshal` of `Catalog`: struct
 field order, map keys sorted by encoding/json, array order significant, UTF-8,
 no trailing newline. Signature is SHA-256 encoded as standard base64. It covers
 the version, both complete inventories, mappings, category rules, vocabulary and
@@ -95,18 +95,18 @@ the companion schema signature. Schema identity is compact encoding/json of its
 parsed object (sorted object keys). These are content signatures, not source
 revision identifiers. Whitespace in either input is immaterial.
 
-| Version | Canonical catalogue signature (SHA-256 base64) |
+| Version | Canonical catalog signature (SHA-256 base64) |
 |---|---|
 | 1 | dgQZfJpvcTWqfdroLGAAKl8T+/Th28VeKtZKOyPC/70= |
 | 2 | wRyjMhSFWd3AJtm3OPlrL1TgZavYzPatH+u9D1eBIcU= |
 
 Any added, removed or renamed gate/case, changed transition, category, result
-vocabulary or schema requires a new catalogue version and a new ledger entry;
+vocabulary or schema requires a new catalog version and a new ledger entry;
 retain earlier entries unchanged. Consumers reject unknown versions. Do not
 replace a signature under an existing version to admit drift. Tests compare the
 ledger with canonical identity and independently compare the handoff and matrix
 inventories. If an owning handoff row changes, regenerate and review the owned
-catalogue files; never patch the handoff to make this check pass.
+catalog files; never patch the handoff to make this check pass.
 
 Add-on consumption and removal of its local lists are a separate future change
 under [add-on #273](https://github.com/Project-Helianthus/helianthus-ha-addon/issues/273).

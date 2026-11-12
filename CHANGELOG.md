@@ -2,7 +2,9 @@
 
 ## Site profile without a system controller
 
-An offline acceptance scenario covers an eBUS that carries a heat source and the vendor's internet module but never a system controller. It runs the production startup scan, registry scan, semantic poller and poll schedule over a synthetic bus in simulated time and asserts the startup phases, the bounded B524 root discovery cadence, the published streams and the regulator-absence signal. The [reduced run sheet](docs/testing/site-without-controller-run-sheet.md) for the hardware session at such a site removes the controller rows and names the remaining ones. The gateway binary is unchanged.
+An offline acceptance scenario covers an eBUS that carries a heat source and the vendor's internet module but never a system controller. It runs the production startup scan, registry scan, B524 root probe, semantic poller, read scheduler and poll schedule over a recording synthetic bus on a simulated clock that starts at process start. It asserts the startup phases against the boot-live deadline, the root discovery frames and attempts, the native refresh spacing of the heat-source registers, the published streams and the regulator-absence signal. The [reduced run sheet](docs/testing/site-without-controller-run-sheet.md) for the hardware session at such a site removes the controller rows and names the remaining ones.
+
+Runtime behaviour is unchanged. The semantic poller's root probe now sends through the poller's existing frame seam, its read-retry, post-read and probe back-off waits go through one pause hook with the same durations, and the semantic read scheduler gains `SetClock`, so the scenario runs the production probe and read cache on its clock. The gateway binary changes, so affected release evidence must be renewed before the final bill of materials freeze.
 
 ## Catalog spelling in the acceptance catalog and modbusreg adoption
 

@@ -113,6 +113,21 @@ func NewSemanticReadScheduler() *SemanticReadScheduler {
 	}
 }
 
+// SetClock replaces the clock that ages cached values and breaker cooldowns;
+// nil restores the wall clock. Call it before the first read. It exists so
+// offline scenarios can run the scheduler on a simulated clock.
+func (s *SemanticReadScheduler) SetClock(now func() time.Time) {
+	if s == nil {
+		return
+	}
+	if now == nil {
+		now = time.Now
+	}
+	s.mu.Lock()
+	s.now = now
+	s.mu.Unlock()
+}
+
 func (s *SemanticReadScheduler) SetShadowCache(cache *ShadowCache) {
 	if s == nil {
 		return

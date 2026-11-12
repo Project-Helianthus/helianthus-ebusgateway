@@ -9,45 +9,55 @@ package main
 // identification), protocols/vaillant/ebus-vaillant-b509.md (B509 register
 // reads and the 24..27 serial windows) and protocols/vaillant/ebus-vaillant.md
 // (device-class table: heat source target 0x08 without B524, internet module
-// target 0xF6 with B524 as initiator only). Serial numbers are synthetic: zero
-// date, plant and sequence fields around a public product-catalogue part number
-// that the test selects by catalogue role at run time. No identifier of a real
-// installation is used.
+// target 0xF6 with B524 as initiator only). No device answers B524, the worst
+// case for retries. Serial numbers are synthetic: zero date, plant and
+// sequence fields around a public product-catalogue part number that the test
+// selects by catalogue role at run time. No identifier of a real installation
+// is used.
 //
-// The scenario runs the production startup scan loop, the production registry
-// scan, the production semantic poller constructor and its production poll
-// schedule with default configuration. The replaced parts are the seams the
-// existing startup and semantic tests already use:
-//   - frames reach the synthetic bus through the scan bus, sendFrameFn and the
-//     B524 probe seams; the gateway's own protocol bus runs over a counting
-//     loopback that must stay silent for the whole run;
-//   - polling time is simulated: the poller clock and the task-queue clock
-//     follow one simulated clock, every recurring task is enqueued at the
-//     instants its production ticker would fire, and the task queue is then
-//     drained. On-wire duration is not modelled, so a frame takes zero
-//     simulated time. The B509 read cache and the startup scan pacing keep the
-//     wall clock, so heat-source read counts are not asserted exactly;
-//   - simulated polling time 0 is the moment the semantic barrier opens. The
-//     boot-live timer counts from process start, which is earlier, so the
-//     scenario applies it at the latest instant it could fire;
-//   - the passive observation path is not simulated. The internet module is
-//     identified through the per-address identity probe that the passive
-//     address-table inserter calls when it sees the module's traffic.
+// The scenario runs the production startup scan loop, registry scan, B524 root
+// probe, semantic poller, read scheduler and poll schedule with default
+// configuration. Every gateway frame reaches the recording bus below through
+// the scan bus or the poller's frame seam; the gateway's own protocol bus runs
+// over a counting loopback that must stay silent. Time is simulated from
+// process start, in production order:
+//   - the semantic runtime and its boot-live deadline start at time 0, then the
+//     passive warm-up of source selection, then the startup scan, then semantic
+//     polling once the barrier opens;
+//   - each frame takes simulated bus time, and every pause the gateway inserts
+//     (scan pacing, probe retry back-off, read retry and post-read pauses, the
+//     scan loop interval) takes its production duration on the simulated clock;
+//   - the poller, its task queue, its read scheduler and its shadow cache all
+//     run on that clock, and recurring tasks are enqueued at the instants their
+//     production tickers fire, also while another task runs.
 //
-// Expected results, asserted below for every variant unless stated:
-//   - startup, automatic source (add-on default): one scan pass; semantic
-//     polling is released by the active probe, not by a controller. Explicit
-//     source: two passes, then the loop gives up root confirmation and reports
-//     admission failure while still releasing semantic polling;
-//   - phases: a boiler-class heat source reaches LIVE_READY during the first
-//     boiler priming pass at polling start, from the boiler stream alone. A
-//     heat-pump-class heat source publishes no stream and the boot-live timer
-//     moves BOOT_INIT to DEGRADED;
-//   - no B524 register read, B555 read or write frame is ever sent. The only
-//     controller-class traffic is B524 root discovery: one probe per candidate
-//     (0x15 first, then the registry and structural targets) on every state
-//     tick (60 s), config tick (5 min) and discovery tick (10 min), never more
-//     than the per-instant plan below and never a tight loop;
+// Two timing profiles bound real bus behaviour. Wire timing: a frame costs its
+// symbols at 2400 Bd, and an unanswered request costs one more symbol (the SYN
+// that replaces the acknowledgement). Timeout timing: an unanswered request
+// lasts its whole per-attempt timeout (400 ms scan request, 5 s root probe).
+// The passive observation path is not simulated: the internet module is
+// identified through the per-address identity probe that the passive
+// address-table inserter calls when it sees the module's traffic.
+//
+// Expected results, asserted below:
+//   - startup, automatic source (add-on default): one scan pass and one root
+//     confirmation probe call; the active probe releases semantic polling.
+//     Explicit source: two passes, then the loop gives up root confirmation and
+//     reports admission failure while still releasing semantic polling;
+//   - phases: a boiler-class heat source reaches LIVE_READY from the boiler
+//     stream alone, before the boot-live deadline in both timing profiles with
+//     the automatic source; with an explicit source and timeout timing the
+//     deadline passes first (DEGRADED, then LIVE_READY). A heat-pump-class heat
+//     source publishes no stream and the deadline moves BOOT_INIT to DEGRADED;
+//   - controller-class traffic is B524 root discovery only: each candidate
+//     (0x15 first, then 0x08, 0x26 and any identified device) gets one
+//     production probe call per discovery pass, three read attempts each with
+//     the regulator selector, on every state tick (60 s), config tick (5 min)
+//     and discovery tick (10 min). No other B524 frame, no B555 read and no
+//     write is ever sent, and nothing runs as a tight loop;
+//   - heat-source B509 registers are re-read natively when the 30 s read cache
+//     has expired: fast-tier registers once a minute, medium-tier every 5 min,
+//     slow-tier every 10 min;
 //   - published: boiler status from the heat source only, an ABSENT FM5 mode,
 //     empty zone, circuit, radio and cylinder lists, an all-null solar plane and
 //     the zero/provenance-none energy projection; nothing for DHW, system or
@@ -55,7 +65,7 @@ package main
 //   - absence: vaillant_regulator_capability is NONE from the first discovery
 //     (UNKNOWN when an identified module has no readable serial), identical in
 //     GraphQL and MCP; the absence state goes PRESENT -> ABSENCE_GRACE at the
-//     first recheck (60 s) -> ABSENT five minutes later (360 s).
+//     first recheck -> ABSENT five minutes after that.
 //
 // Nothing here writes to a bus or answers as a controller: the synthetic bus
 // leaves every B524 request unanswered and the test fails on any write frame.
@@ -91,9 +101,14 @@ const (
 	controllerlessModuleSlot     = byte(0x26)
 	controllerlessInternetModule = byte(0xF6)
 	controllerlessHorizon        = 30 * time.Minute
-	// controllerlessTaskLimit bounds the tasks one simulated instant may run.
-	// Twelve recurring families exist; a queue that keeps refilling itself
-	// within one instant is a tight loop.
+	// One eBUS symbol: 10 bits at 2400 Bd.
+	controllerlessSymbol = time.Second * 10 / 2400
+	// registry.Scan pauses this long after every identification probe.
+	controllerlessScanPacing = 100 * time.Millisecond
+	// Production probe attempts per call against an unanswered address.
+	controllerlessProbeAttempts = 3
+	// controllerlessTaskLimit bounds the tasks that may run without simulated
+	// time advancing; a queue that keeps refilling itself is a tight loop.
 	controllerlessTaskLimit = 64
 )
 
@@ -105,18 +120,27 @@ const (
 	controllerlessB524Frame    = "b524_frame"
 	controllerlessWriteFrame   = "write_frame"
 	controllerlessOtherFrame   = "other_frame"
-	controllerlessRootProbe    = "b524_root_probe"
-	controllerlessStartupProbe = "b524_root_probe_startup"
 )
 
-type controllerlessClock struct {
-	mu     sync.Mutex
-	base   time.Time
-	offset time.Duration
+type controllerlessTiming int
+
+const (
+	controllerlessWireTiming controllerlessTiming = iota
+	controllerlessTimeoutTiming
+)
+
+func (timing controllerlessTiming) String() string {
+	if timing == controllerlessTimeoutTiming {
+		return "timeout timing"
+	}
+	return "wire timing"
 }
 
-func newControllerlessClock() *controllerlessClock {
-	return &controllerlessClock{base: time.Date(2001, time.January, 1, 0, 0, 0, 0, time.UTC)}
+type controllerlessClock struct {
+	mu        sync.Mutex
+	base      time.Time
+	offset    time.Duration
+	onAdvance func(time.Duration)
 }
 
 func (c *controllerlessClock) Now() time.Time {
@@ -131,10 +155,21 @@ func (c *controllerlessClock) elapsed() time.Duration {
 	return c.offset
 }
 
-func (c *controllerlessClock) set(offset time.Duration) {
+func (c *controllerlessClock) advance(d time.Duration) {
+	if d <= 0 {
+		return
+	}
 	c.mu.Lock()
-	c.offset = offset
+	c.offset += d
+	at, hook := c.offset, c.onAdvance
 	c.mu.Unlock()
+	if hook != nil {
+		hook(at)
+	}
+}
+
+func (c *controllerlessClock) advanceTo(at time.Duration) {
+	c.advance(at - c.elapsed())
 }
 
 type controllerlessDevice struct {
@@ -148,16 +183,37 @@ type controllerlessEvent struct {
 	kind     string
 	target   byte
 	register uint16
+	data     []byte
 }
 
-// controllerlessBus is the synthetic eBUS: present devices answer the frame
-// shapes listed above, every other address is silent (no acknowledgement, the
-// timeout class the protocol bus reports), and no device answers B524.
-type controllerlessBus struct {
-	mu      sync.Mutex
-	clock   *controllerlessClock
-	devices map[byte]controllerlessDevice
-	events  []controllerlessEvent
+type controllerlessObservation struct {
+	at    time.Duration
+	value string
+}
+
+func controllerlessNote(series *[]controllerlessObservation, at time.Duration, value string) {
+	if n := len(*series); n > 0 && (*series)[n-1].value == value {
+		return
+	}
+	*series = append(*series, controllerlessObservation{at: at, value: value})
+}
+
+// controllerlessSite is one simulated installation: the synthetic bus, the
+// clock and the semantic provider that the gateway starts at process start.
+type controllerlessSite struct {
+	t        *testing.T
+	ctx      context.Context
+	timing   controllerlessTiming
+	clock    *controllerlessClock
+	provider *graphql.LiveSemanticProvider
+	deadline time.Duration
+
+	mu              sync.Mutex
+	devices         map[byte]controllerlessDevice
+	events          []controllerlessEvent
+	phases          []controllerlessObservation
+	deadlinePassed  bool
+	phaseAtDeadline graphql.SemanticStartupPhase
 }
 
 // controllerlessHeatSourceRegisters holds synthetic B509 values for the
@@ -171,8 +227,63 @@ var controllerlessHeatSourceRegisters = map[uint16][]byte{
 	boiler_b509_phone_number:       {0xFF},       // no BCD digit
 }
 
-func newControllerlessBus() *controllerlessBus {
-	return &controllerlessBus{clock: newControllerlessClock(), devices: map[byte]controllerlessDevice{}}
+func newControllerlessSite(t *testing.T, timing controllerlessTiming) *controllerlessSite {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	site := &controllerlessSite{
+		t:        t,
+		ctx:      ctx,
+		timing:   timing,
+		clock:    &controllerlessClock{base: time.Date(2001, time.January, 1, 0, 0, 0, 0, time.UTC)},
+		provider: graphql.NewLiveSemanticProvider(),
+		deadline: ebusgateway.DefaultConfig().BootLiveTimeout,
+		devices:  map[byte]controllerlessDevice{},
+	}
+	site.clock.onAdvance = site.observePhase
+	site.observePhase(0)
+	return site
+}
+
+// observePhase records phase changes and applies the boot-live deadline. The
+// production timer (graphql.StartBootFSM) starts with the semantic runtime at
+// process start and moves any phase other than LIVE_READY to DEGRADED when it
+// fires; the scenario fires it at the first simulated instant at or after the
+// deadline.
+func (s *controllerlessSite) observePhase(at time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	controllerlessNote(&s.phases, at, string(s.provider.StartupPhase()))
+	if s.deadlinePassed || at < s.deadline {
+		return
+	}
+	s.deadlinePassed = true
+	s.phaseAtDeadline = s.provider.StartupPhase()
+	if s.phaseAtDeadline == graphql.SemanticStartupPhaseLiveReady {
+		return
+	}
+	s.provider.StartBootFSM(s.ctx, time.Nanosecond, func(string, ...any) {})
+	limit := time.Now().Add(5 * time.Second)
+	for s.provider.StartupPhase() != graphql.SemanticStartupPhaseDegraded {
+		if time.Now().After(limit) {
+			s.t.Errorf("boot-live timer did not move phase %s to DEGRADED", s.provider.StartupPhase())
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	controllerlessNote(&s.phases, s.deadline, string(graphql.SemanticStartupPhaseDegraded))
+}
+
+func (s *controllerlessSite) phaseSeries() []controllerlessObservation {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]controllerlessObservation(nil), s.phases...)
+}
+
+func (s *controllerlessSite) addDevice(target byte, device controllerlessDevice) {
+	s.mu.Lock()
+	s.devices[target] = device
+	s.mu.Unlock()
 }
 
 func controllerlessFrameKind(frame protocol.Frame) string {
@@ -197,79 +308,90 @@ func controllerlessFrameKind(frame protocol.Frame) string {
 	return controllerlessOtherFrame
 }
 
-func (b *controllerlessBus) record(event controllerlessEvent) {
-	event.at = b.clock.elapsed()
-	b.mu.Lock()
-	b.events = append(b.events, event)
-	b.mu.Unlock()
+// frameCost is the simulated bus time of one request: arbitration (one SYN),
+// QQ ZZ PB SB NN, data and CRC, then either the answer (ACK, NN, data, CRC,
+// ACK) or, when nobody answers, one more symbol in wire timing or the rest of
+// the attempt's timeout in timeout timing.
+func (s *controllerlessSite) frameCost(ctx context.Context, frame protocol.Frame, answered bool, replyLen int) time.Duration {
+	symbols := 1 + 6 + len(frame.Data)
+	if answered {
+		symbols += 5 + replyLen
+	} else {
+		symbols++
+	}
+	wire := time.Duration(symbols) * controllerlessSymbol
+	if answered || s.timing == controllerlessWireTiming {
+		return wire
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		if rest := time.Until(deadline).Round(100 * time.Millisecond); rest > wire {
+			return rest
+		}
+	}
+	return wire
 }
 
-func (b *controllerlessBus) Send(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+// Send is the recording bus: every frame of the scenario arrives here.
+func (s *controllerlessSite) Send(ctx context.Context, frame protocol.Frame) (*protocol.Frame, error) {
 	kind := controllerlessFrameKind(frame)
-	event := controllerlessEvent{kind: kind, target: frame.Target}
+	event := controllerlessEvent{at: s.clock.elapsed(), kind: kind, target: frame.Target, data: append([]byte(nil), frame.Data...)}
 	if kind == controllerlessB509Read {
 		event.register = uint16(frame.Data[1])<<8 | uint16(frame.Data[2])
 	}
-	b.record(event)
-	silent := fmt.Errorf("synthetic bus: no answer from 0x%02X: %w", frame.Target, ebuserrors.ErrTimeout)
-	b.mu.Lock()
-	device, present := b.devices[frame.Target]
-	b.mu.Unlock()
-	if !present {
-		return nil, silent
-	}
-	reply := func(data []byte) *protocol.Frame {
-		return &protocol.Frame{Source: frame.Target, Target: frame.Source, Primary: frame.Primary, Secondary: frame.Secondary, Data: data}
-	}
-	switch kind {
-	case controllerlessIdentify:
-		payload := append([]byte{0xB5}, []byte(device.deviceID)...)
-		return reply(append(payload, 0x01, 0x00, 0x01, 0x00)), nil
-	case controllerlessSerialWindow:
-		if device.serialRaw == "" {
-			return nil, silent
+	s.mu.Lock()
+	s.events = append(s.events, event)
+	device, present := s.devices[frame.Target]
+	s.mu.Unlock()
+
+	var reply []byte
+	answered := false
+	if present {
+		switch kind {
+		case controllerlessIdentify:
+			reply = append(append([]byte{0xB5}, []byte(device.deviceID)...), 0x01, 0x00, 0x01, 0x00)
+			answered = true
+		case controllerlessSerialWindow:
+			if device.serialRaw != "" {
+				padded := device.serialRaw + strings.Repeat(" ", 32-len(device.serialRaw))
+				start := int(frame.Data[0]-0x24) * 8
+				reply = append([]byte{0x00}, padded[start:start+8]...)
+				answered = true
+			}
+		case controllerlessB509Read:
+			if device.answersB509 {
+				value, ok := controllerlessHeatSourceRegisters[event.register]
+				if !ok {
+					value = []byte{0x00, 0x00}
+				}
+				reply = append([]byte{vaillantB509OpcodeRead, frame.Data[1], frame.Data[2]}, value...)
+				answered = true
+			}
 		}
-		padded := device.serialRaw + strings.Repeat(" ", 32-len(device.serialRaw))
-		start := int(frame.Data[0]-0x24) * 8
-		return reply(append([]byte{0x00}, padded[start:start+8]...)), nil
-	case controllerlessB509Read:
-		if !device.answersB509 {
-			return nil, silent
-		}
-		value, ok := controllerlessHeatSourceRegisters[event.register]
-		if !ok {
-			value = []byte{0x00, 0x00}
-		}
-		return reply(append([]byte{vaillantB509OpcodeRead, frame.Data[1], frame.Data[2]}, value...)), nil
 	}
-	return nil, silent
+	s.clock.advance(s.frameCost(ctx, frame, answered, len(reply)))
+	if kind == controllerlessIdentify {
+		s.clock.advance(controllerlessScanPacing)
+	}
+	if !answered {
+		return nil, fmt.Errorf("synthetic bus: no answer from 0x%02X: %w", frame.Target, ebuserrors.ErrTimeout)
+	}
+	return &protocol.Frame{Source: frame.Target, Target: frame.Source, Primary: frame.Primary, Secondary: frame.Secondary, Data: reply}, nil
 }
 
-// semanticRootProbe and startupRootProbe stand in for one production B524
-// root probe call each. No device on this bus answers B524, so every probe is
-// incoherent. Against a silent address the production probe makes at most
-// three bus attempts per call (probeB524Register).
-func (b *controllerlessBus) semanticRootProbe(_ context.Context, target, _, _, _ byte, _ uint16) bool {
-	b.record(controllerlessEvent{kind: controllerlessRootProbe, target: target})
-	return false
+// pause keeps the gateway's own pauses on the simulated clock.
+func (s *controllerlessSite) pause(ctx context.Context, d time.Duration) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	s.clock.advance(d)
+	return true
 }
 
-func (b *controllerlessBus) startupRootProbe(_ context.Context, target, _, _, _ byte, _ uint16) bool {
-	b.record(controllerlessEvent{kind: controllerlessStartupProbe, target: target})
-	return false
-}
-
-func (b *controllerlessBus) addDevice(target byte, device controllerlessDevice) {
-	b.mu.Lock()
-	b.devices[target] = device
-	b.mu.Unlock()
-}
-
-func (b *controllerlessBus) eventsOf(kind string) []controllerlessEvent {
-	b.mu.Lock()
-	defer b.mu.Unlock()
+func (s *controllerlessSite) eventsOf(kind string) []controllerlessEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	var out []controllerlessEvent
-	for _, event := range b.events {
+	for _, event := range s.events {
 		if event.kind == kind {
 			out = append(out, event)
 		}
@@ -277,20 +399,14 @@ func (b *controllerlessBus) eventsOf(kind string) []controllerlessEvent {
 	return out
 }
 
-func (b *controllerlessBus) countByTarget(kind string) map[byte]int {
+func (s *controllerlessSite) countByTarget(kind string, from time.Duration) map[byte]int {
 	counts := make(map[byte]int)
-	for _, event := range b.eventsOf(kind) {
-		counts[event.target]++
+	for _, event := range s.eventsOf(kind) {
+		if event.at >= from {
+			counts[event.target]++
+		}
 	}
 	return counts
-}
-
-func (b *controllerlessBus) probesByInstant() map[time.Duration]int {
-	out := make(map[time.Duration]int)
-	for _, event := range b.eventsOf(controllerlessRootProbe) {
-		out[event.at]++
-	}
-	return out
 }
 
 // controllerlessCatalogPart selects a ten-digit part number that the public
@@ -326,7 +442,7 @@ func controllerlessSerial(part string) string {
 }
 
 // controllerlessSilentTransport counts writes to the gateway's own protocol
-// bus. Every frame of this scenario must take a fixture seam instead.
+// bus. Every frame of this scenario must take the recording bus instead.
 type controllerlessSilentTransport struct {
 	*transport.Loopback
 	writes atomic.Int64
@@ -346,14 +462,15 @@ type controllerlessStartup struct {
 	admissionFailed     bool
 	identityEnrichCalls int
 	delayedRetryCalls   int
+	barrierAt           time.Duration
 }
 
-// runControllerlessStartupScan runs the production startup scan loop in the
-// add-on default admission (adapter-direct, automatic source with its
-// companion) or with an explicitly configured source, over the synthetic bus.
-// The seams stay installed until the test ends so the poller's per-address
+// runControllerlessStartupScan runs the passive warm-up and the production
+// startup scan loop in the add-on default admission (adapter-direct, automatic
+// source with its companion) or with an explicitly configured source. The
+// seams stay installed until the test ends so the poller's per-address
 // identity probe reaches the same bus.
-func runControllerlessStartupScan(t *testing.T, bus *controllerlessBus, explicitSource bool) *controllerlessStartup {
+func runControllerlessStartupScan(t *testing.T, site *controllerlessSite, explicitSource bool) *controllerlessStartup {
 	t.Helper()
 	silent := &controllerlessSilentTransport{Loopback: transport.NewLoopback()}
 	gateway, err := ebusgateway.New(context.Background(), ebusgateway.Config{Transport: silent})
@@ -371,7 +488,9 @@ func runControllerlessStartupScan(t *testing.T, bus *controllerlessBus, explicit
 
 	cfg := ebusgateway.DefaultConfig()
 	cfg.ScanOnStart = true
-	// Pass spacing only; the default is 30 s and the scenario counts passes.
+	// Wall-clock spacing of loop passes; the simulated clock charges the
+	// production interval instead.
+	productionScanInterval := cfg.ScanInterval
 	cfg.ScanInterval = 10 * time.Millisecond
 	cfg.TransportConfig = ebusgateway.TransportConfig{Protocol: ebusgateway.TransportAdapterDirect, Network: "tcp", Address: "adapter.invalid:9999"}
 	cfg.ScanSource = controllerlessSource
@@ -402,16 +521,20 @@ func runControllerlessStartupScan(t *testing.T, bus *controllerlessBus, explicit
 	})
 
 	// The production directed scan runs unchanged; only the bus beneath the
-	// loop's counting scan bus is the synthetic one.
+	// loop's counting scan bus is the recording one.
 	registryScanDirectedFn = func(ctx context.Context, scanBus registry.ScanBus, reg *registry.DeviceRegistry, source byte, targets []byte) ([]registry.DeviceEntry, error) {
 		if stats, ok := scanBus.(*statsBus); ok {
 			mu.Lock()
 			startup.passes++
+			pass := startup.passes
 			mu.Unlock()
-			stats.bus = &timeoutBus{bus: bus, timeout: cfg.ScanRequestTimeout}
+			if pass > 1 {
+				site.clock.advance(productionScanInterval)
+			}
+			stats.bus = &timeoutBus{bus: site, timeout: cfg.ScanRequestTimeout}
 			return registry.ScanDirected(ctx, stats, reg, source, targets)
 		}
-		return registry.ScanDirected(ctx, bus, reg, source, targets)
+		return registry.ScanDirected(ctx, site, reg, source, targets)
 	}
 	registryScanFn = func(context.Context, registry.ScanBus, *registry.DeviceRegistry, byte, []byte) ([]registry.DeviceEntry, error) {
 		t.Error("adapter-direct admission must use the directed scan")
@@ -425,7 +548,13 @@ func runControllerlessStartupScan(t *testing.T, bus *controllerlessBus, explicit
 		t.Error("ebusd scan result queried on an adapter-direct transport")
 		return nil, nil
 	}
-	startupScanB524ProbeFn = bus.startupRootProbe
+	// The startup root check builds its own poller over the gateway bus; this
+	// gives the same production probe the recording bus and simulated pauses.
+	startupScanB524ProbeFn = func(ctx context.Context, target, opcode, group, instance byte, addr uint16) bool {
+		probe := &vaillantSemanticPoller{bus: gateway.Bus, sendFrameFn: site.Send, pauseFn: site.pause,
+			source: cfg.ScanSource, requestTimeout: cfg.SemanticRequestTimeout}
+		return probe.probeB524Register(ctx, target, opcode, group, instance, addr)
+	}
 	// Identity enrichment re-reads the same 24..27 windows the scan already
 	// read; with this fixture its outcome is the scan's, so only calls count.
 	enrichVaillantIdentityFn = func(context.Context, *ebusgateway.Gateway, ebusgateway.Config) {
@@ -437,7 +566,7 @@ func runControllerlessStartupScan(t *testing.T, bus *controllerlessBus, explicit
 		t.Error("ebusd serial enrichment on an adapter-direct transport")
 	}
 	enrichB524InterfaceIdentityFn = func(ctx context.Context, reg *registry.DeviceRegistry, _ registry.ScanBus, source, companion byte) {
-		enrichB524InterfaceIdentity(ctx, reg, bus, source, companion)
+		enrichB524InterfaceIdentity(ctx, reg, site, source, companion)
 	}
 	postStartupIdentityRetryFn = func(context.Context, *ebusgateway.Gateway, *graphql.Builder, ebusgateway.Config, *ebusgateway.TransportConfig) {
 		mu.Lock()
@@ -446,6 +575,8 @@ func runControllerlessStartupScan(t *testing.T, bus *controllerlessBus, explicit
 	}
 	startupScanLoopExitFn = nil
 
+	// Source selection listens passively before the first scan pass.
+	site.clock.advance(ebusgateway.DefaultStartupAdmissionSourceSelectionConfig().ListenWarmup)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	signals := startDiscoveryScanLoop(ctx, cfg, gateway, nil)
@@ -469,171 +600,175 @@ func runControllerlessStartupScan(t *testing.T, bus *controllerlessBus, explicit
 		startup.admissionFailed = true
 	default:
 	}
+	startup.barrierAt = site.clock.elapsed()
 	mu.Lock()
 	defer mu.Unlock()
 	return startup
 }
 
-type controllerlessObservation struct {
-	at    time.Duration
-	value string
-}
-
 type controllerlessRun struct {
-	provider           *graphql.LiveSemanticProvider
-	phases             []controllerlessObservation
-	absence            []controllerlessObservation
-	capability         []controllerlessObservation
-	recurringFamilies  int
-	maxTasksPerInstant int
-	phaseAtBootTimeout graphql.SemanticStartupPhase
-}
-
-func (r *controllerlessRun) note(series *[]controllerlessObservation, at time.Duration, value string) {
-	if n := len(*series); n > 0 && (*series)[n-1].value == value {
-		return
-	}
-	*series = append(*series, controllerlessObservation{at: at, value: value})
+	pollStart                time.Duration
+	absence                  []controllerlessObservation
+	capability               []controllerlessObservation
+	recurringFamilies        int
+	maxTasksPerBusyPeriod    int
+	liveReadyAt, liveWarmAt  time.Duration
+	degradedAt, capabilityAt time.Duration
 }
 
 // runControllerlessPolling starts the production poller over the startup
-// registry and drives its production schedule over simulated time. A script
-// entry runs at its instant before the tickers due at the same instant.
-func runControllerlessPolling(t *testing.T, startup *controllerlessStartup, bus *controllerlessBus, script map[time.Duration]func(*vaillantSemanticPoller)) *controllerlessRun {
+// registry when the barrier opens and drives its production schedule on the
+// simulated clock for horizon. A script entry runs at its polling-relative
+// instant before the tickers due at the same instant.
+func runControllerlessPolling(t *testing.T, site *controllerlessSite, startup *controllerlessStartup, horizon time.Duration, script map[time.Duration]func(*vaillantSemanticPoller)) *controllerlessRun {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	clock := bus.clock
-	clock.set(0)
+	clock := site.clock
+	run := &controllerlessRun{pollStart: clock.elapsed(), liveReadyAt: -1, liveWarmAt: -1, degradedAt: -1, capabilityAt: -1}
 
-	provider := graphql.NewLiveSemanticProvider()
-	poller := newVaillantSemanticPoller(startup.cfg, startup.gateway, provider, nil, nil)
+	poller := newVaillantSemanticPoller(startup.cfg, startup.gateway, site.provider, nil, nil)
 	poller.nowFn = clock.Now
 	poller.tasks.now = clock.Now
-	poller.sendFrameFn = bus.Send
-	poller.b524ProbeFn = bus.semanticRootProbe
-	run := &controllerlessRun{provider: provider}
+	poller.scheduler.SetClock(clock.Now)
+	// The constructor's shadow cache, rebuilt with the simulated clock.
+	shadow := ebusgateway.NewShadowCache(ebusgateway.ShadowCacheOptions{FeatureFlags: normalizeObserveFirstFeatureFlagsForPoller(startup.cfg), Now: clock.Now})
+	poller.shadow = shadow
+	poller.scheduler.SetShadowCache(shadow)
+	poller.sendFrameFn = site.Send
+	poller.pauseFn = site.pause
 
 	observe := func() {
 		at := clock.elapsed()
-		run.note(&run.phases, at, string(provider.StartupPhase()))
+		site.observePhase(at)
 		poller.mu.Lock()
 		state := poller.regAbsenceState
 		poller.mu.Unlock()
-		run.note(&run.absence, at, string(state))
-		run.note(&run.capability, at, string(provider.VaillantRegulatorCapability()))
+		controllerlessNote(&run.absence, at, string(state))
+		controllerlessNote(&run.capability, at, string(site.provider.VaillantRegulatorCapability()))
 	}
-	drain := func() {
-		queue := poller.tasks
-		ran := 0
-		for {
-			queue.mu.Lock()
-			pending := len(queue.queue)
-			queue.mu.Unlock()
-			if pending == 0 {
-				break
+
+	schedule := poller.pollSchedule()
+	run.recurringFamilies = len(schedule.recurring)
+	next := make([]time.Duration, len(schedule.recurring))
+	for i, task := range schedule.recurring {
+		if task.interval <= 0 {
+			t.Fatalf("recurring task %s has no interval", task.key)
+		}
+		next[i] = run.pollStart + task.interval
+	}
+	var stepTimes []time.Duration
+	for at := range script {
+		stepTimes = append(stepTimes, at)
+	}
+	sort.Slice(stepTimes, func(i, j int) bool { return stepTimes[i] < stepTimes[j] })
+
+	observe()
+	for _, task := range schedule.initial {
+		poller.enqueueTask(task.key, task.priority, task.refresh)
+	}
+	end := run.pollStart + horizon
+	queue := poller.tasks
+	busy, sameInstant := 0, 0
+	lastAt := clock.elapsed()
+	for {
+		now := clock.elapsed()
+		for len(stepTimes) > 0 && run.pollStart+stepTimes[0] <= now {
+			script[stepTimes[0]](poller)
+			stepTimes = stepTimes[1:]
+			observe()
+		}
+		// Production tickers enqueue on their own goroutines, also while a
+		// task runs; the queue coalesces a family that is still pending.
+		for i, task := range schedule.recurring {
+			for next[i] <= now {
+				poller.enqueueTask(task.key, task.priority, task.refresh)
+				next[i] += task.interval
 			}
+		}
+		queue.mu.Lock()
+		pending := len(queue.queue)
+		queue.mu.Unlock()
+		if pending > 0 {
 			task := queue.nextTask(ctx)
 			if task == nil {
 				t.Fatal("task queue stopped during the simulation")
 			}
 			task.run(ctx)
 			queue.taskDone(task)
-			ran++
 			observe()
-			if ran > controllerlessTaskLimit {
-				t.Fatalf("tight loop: more than %d tasks at %s", controllerlessTaskLimit, clock.elapsed())
+			busy++
+			if clock.elapsed() == lastAt {
+				sameInstant++
+				if sameInstant > controllerlessTaskLimit {
+					t.Fatalf("tight loop: more than %d tasks without simulated time advancing at %s", controllerlessTaskLimit, lastAt)
+				}
+			} else {
+				sameInstant, lastAt = 0, clock.elapsed()
 			}
+			continue
 		}
-		if ran > run.maxTasksPerInstant {
-			run.maxTasksPerInstant = ran
+		if busy > run.maxTasksPerBusyPeriod {
+			run.maxTasksPerBusyPeriod = busy
 		}
-	}
-
-	steps := map[time.Duration]func(*vaillantSemanticPoller){}
-	for at, step := range script {
-		steps[at] = step
-	}
-	bootTimeout := startup.cfg.BootLiveTimeout
-	scripted := steps[bootTimeout]
-	// The production boot timer moves any phase other than LIVE_READY to
-	// DEGRADED when it fires (graphql.StartBootFSM); apply it at the latest
-	// instant it can fire relative to polling start.
-	steps[bootTimeout] = func(p *vaillantSemanticPoller) {
-		if scripted != nil {
-			scripted(p)
-		}
-		run.phaseAtBootTimeout = provider.StartupPhase()
-		if run.phaseAtBootTimeout == graphql.SemanticStartupPhaseLiveReady {
-			return
-		}
-		provider.StartBootFSM(ctx, time.Nanosecond, func(string, ...any) {})
-		deadline := time.Now().Add(5 * time.Second)
-		for provider.StartupPhase() != graphql.SemanticStartupPhaseDegraded {
-			if time.Now().After(deadline) {
-				t.Fatalf("boot-live timer did not move phase %s to DEGRADED", provider.StartupPhase())
-			}
-			time.Sleep(time.Millisecond)
-		}
-	}
-
-	observe()
-	schedule := poller.pollSchedule()
-	run.recurringFamilies = len(schedule.recurring)
-	for _, task := range schedule.initial {
-		poller.enqueueTask(task.key, task.priority, task.refresh)
-	}
-	drain()
-
-	next := make([]time.Duration, len(schedule.recurring))
-	for i, task := range schedule.recurring {
-		if task.interval <= 0 {
-			t.Fatalf("recurring task %s has no interval", task.key)
-		}
-		next[i] = task.interval
-	}
-	var stepTimes []time.Duration
-	for at := range steps {
-		stepTimes = append(stepTimes, at)
-	}
-	sort.Slice(stepTimes, func(i, j int) bool { return stepTimes[i] < stepTimes[j] })
-
-	for {
-		at := controllerlessHorizon + 1
+		busy = 0
+		nextAt := end + 1
 		for _, due := range next {
-			if due < at {
-				at = due
+			if due < nextAt {
+				nextAt = due
 			}
 		}
-		if len(stepTimes) > 0 && stepTimes[0] < at {
-			at = stepTimes[0]
+		if len(stepTimes) > 0 && run.pollStart+stepTimes[0] < nextAt {
+			nextAt = run.pollStart + stepTimes[0]
 		}
-		if at > controllerlessHorizon {
+		if !site.deadlinePassedNow() && site.deadline < nextAt {
+			nextAt = site.deadline
+		}
+		if nextAt > end {
 			break
 		}
-		clock.set(at)
-		if len(stepTimes) > 0 && stepTimes[0] == at {
-			steps[at](poller)
-			stepTimes = stepTimes[1:]
-			observe()
-		}
-		for i, task := range schedule.recurring {
-			if next[i] == at {
-				poller.enqueueTask(task.key, task.priority, task.refresh)
-				next[i] += task.interval
+		clock.advanceTo(nextAt)
+		lastAt = clock.elapsed()
+		observe()
+	}
+
+	for _, phase := range site.phaseSeries() {
+		switch graphql.SemanticStartupPhase(phase.value) {
+		case graphql.SemanticStartupPhaseLiveWarmup:
+			if run.liveWarmAt < 0 {
+				run.liveWarmAt = phase.at
+			}
+		case graphql.SemanticStartupPhaseLiveReady:
+			if run.liveReadyAt < 0 {
+				run.liveReadyAt = phase.at
+			}
+		case graphql.SemanticStartupPhaseDegraded:
+			if run.degradedAt < 0 {
+				run.degradedAt = phase.at
 			}
 		}
-		drain()
+	}
+	for _, observation := range run.capability {
+		if observation.value != string(graphql.VaillantRegulatorCapabilityUnknown) {
+			run.capabilityAt = observation.at
+			break
+		}
 	}
 	return run
 }
 
-// controllerlessDiscoveryPlan is the expected number of root probes per
-// instant: one discovery pass at polling start, then one per state tick
+func (s *controllerlessSite) deadlinePassedNow() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.deadlinePassed
+}
+
+// controllerlessDiscoveryPlan is the expected number of root probe calls per
+// polling minute: one discovery pass at polling start, then one per state tick
 // (60 s), one more per config tick (5 min) and one more per discovery tick
-// (10 min), each probing every candidate once; extra adds event-driven probes.
-func controllerlessDiscoveryPlan(candidates func(minute int) int, extra map[int]int) map[time.Duration]int {
-	plan := map[time.Duration]int{0: candidates(0)}
+// (10 min), each probing every candidate once; extra adds event-driven calls.
+func controllerlessDiscoveryPlan(candidates func(minute int) int, extra map[int]int) map[int]int {
+	plan := map[int]int{0: candidates(0)}
 	for minute := 1; minute <= int(controllerlessHorizon/time.Minute); minute++ {
 		passes := 1
 		if minute%5 == 0 {
@@ -642,9 +777,28 @@ func controllerlessDiscoveryPlan(candidates func(minute int) int, extra map[int]
 		if minute%10 == 0 {
 			passes++
 		}
-		plan[time.Duration(minute)*time.Minute] = passes*candidates(minute) + extra[minute]
+		plan[minute] = passes*candidates(minute) + extra[minute]
 	}
 	return plan
+}
+
+// controllerlessProbeFrames returns the B524 frames sent after from and fails
+// on any frame that is not the root probe's regulator-register read.
+func controllerlessProbeFrames(t *testing.T, site *controllerlessSite, from time.Duration) []controllerlessEvent {
+	t.Helper()
+	probe := b524CapabilityProbes[0]
+	want := buildB524ReadSelector(probe.opcode, probe.group, probe.instance, probe.addr)
+	var frames []controllerlessEvent
+	for _, event := range site.eventsOf(controllerlessB524Frame) {
+		if event.at < from {
+			continue
+		}
+		if !reflect.DeepEqual(event.data, want) {
+			t.Errorf("B524 frame to 0x%02X at %s has selector % X; want only the root probe read % X", event.target, event.at, event.data, want)
+		}
+		frames = append(frames, event)
+	}
+	return frames
 }
 
 func controllerlessGraphQL(t *testing.T, provider *graphql.LiveSemanticProvider) map[string]any {
@@ -713,50 +867,89 @@ func controllerlessRegistryEntries(reg *registry.DeviceRegistry) map[byte]regist
 	return entries
 }
 
-func controllerlessExpectSeries(t *testing.T, name string, got []controllerlessObservation, want []controllerlessObservation) {
+func controllerlessExpectSeries(t *testing.T, name string, got []controllerlessObservation, want []string) {
 	t.Helper()
-	if !reflect.DeepEqual(got, want) {
+	values := make([]string, len(got))
+	for i, observation := range got {
+		values[i] = observation.value
+	}
+	if !reflect.DeepEqual(values, want) {
 		t.Errorf("%s = %v; want %v", name, got, want)
 	}
 }
 
-// controllerlessExpectCommon asserts the results every variant shares.
-func controllerlessExpectCommon(t *testing.T, bus *controllerlessBus, startup *controllerlessStartup, run *controllerlessRun, wantCapability string) map[string]any {
+// controllerlessExpectProbes asserts the root discovery traffic after polling
+// starts: per candidate and per polling minute, three production read attempts
+// per probe call, and the first pass's candidate order.
+func controllerlessExpectProbes(t *testing.T, site *controllerlessSite, run *controllerlessRun, wantCalls map[byte]int, wantPlan map[int]int) {
 	t.Helper()
-	for _, kind := range []string{controllerlessB524Frame, controllerlessWriteFrame, controllerlessOtherFrame} {
-		if got := bus.countByTarget(kind); len(got) != 0 {
+	frames := controllerlessProbeFrames(t, site, run.pollStart)
+	byTarget := map[byte]int{}
+	byMinute := map[int]int{}
+	for _, frame := range frames {
+		byTarget[frame.target]++
+		byMinute[int((frame.at-run.pollStart)/time.Minute)]++
+	}
+	wantFrames := map[byte]int{}
+	for target, calls := range wantCalls {
+		wantFrames[target] = calls * controllerlessProbeAttempts
+	}
+	if !reflect.DeepEqual(byTarget, wantFrames) {
+		t.Errorf("B524 root probe frames by target = %v; want %v (%d attempts per call, calls %v)", byTarget, wantFrames, controllerlessProbeAttempts, wantCalls)
+	}
+	wantByMinute := map[int]int{}
+	for minute, calls := range wantPlan {
+		wantByMinute[minute] = calls * controllerlessProbeAttempts
+	}
+	if !reflect.DeepEqual(byMinute, wantByMinute) {
+		t.Errorf("B524 root probe frames per polling minute = %v; want %v", byMinute, wantByMinute)
+	}
+	order := []byte{controllerlessRegulator, controllerlessHeatSource, controllerlessModuleSlot}
+	for i := 0; i < len(order)*controllerlessProbeAttempts && i < len(frames); i++ {
+		if want := order[i/controllerlessProbeAttempts]; frames[i].target != want {
+			t.Errorf("first discovery pass frame %d to 0x%02X; want 0x%02X (0x15 first, three attempts per candidate)", i, frames[i].target, want)
+		}
+	}
+}
+
+// controllerlessExpectCommon asserts the results every polling variant shares.
+func controllerlessExpectCommon(t *testing.T, site *controllerlessSite, startup *controllerlessStartup, run *controllerlessRun, wantCapability string) map[string]any {
+	t.Helper()
+	for _, kind := range []string{controllerlessWriteFrame, controllerlessOtherFrame} {
+		if got := site.countByTarget(kind, 0); len(got) != 0 {
 			t.Errorf("%s frames = %v; want none on a controller-less bus", kind, got)
 		}
 	}
 	if writes := startup.silent.writes.Load(); writes != 0 {
-		t.Errorf("gateway protocol bus writes = %d; want 0 (every frame takes a fixture seam)", writes)
+		t.Errorf("gateway protocol bus writes = %d; want 0 (every frame takes the recording bus)", writes)
 	}
-	for _, read := range bus.eventsOf(controllerlessB509Read) {
+	for _, read := range site.eventsOf(controllerlessB509Read) {
 		if read.target != controllerlessHeatSource {
 			t.Errorf("B509 register read to 0x%02X at %s; want only the heat source", read.target, read.at)
 		}
 	}
-	controllerlessExpectSeries(t, "absence states", run.absence, []controllerlessObservation{
-		{at: 0, value: string(regulatorPresent)},
-		{at: time.Minute, value: string(regulatorAbsenceGrace)},
-		{at: 6 * time.Minute, value: string(regulatorAbsent)},
-	})
+	controllerlessExpectSeries(t, "absence states", run.absence, []string{string(regulatorPresent), string(regulatorAbsenceGrace), string(regulatorAbsent)})
+	if len(run.absence) == 3 {
+		grace, absent := run.absence[1].at-run.pollStart, run.absence[2].at-run.absence[1].at
+		if grace < time.Minute || grace >= time.Minute+10*time.Second || absent < 5*time.Minute || absent >= 5*time.Minute+time.Minute {
+			t.Errorf("ABSENCE_GRACE at %s after polling start and ABSENT %s after that; want the first 60 s recheck and the next recheck after the 5 min grace", grace, absent)
+		}
+	}
 	if got := semanticRegulatorState.Value(); got != string(regulatorAbsent) {
 		t.Errorf("semantic_regulator_state = %q; want %q", got, regulatorAbsent)
 	}
-	if run.maxTasksPerInstant != run.recurringFamilies {
-		t.Errorf("most tasks run at one instant = %d; want %d, every recurring family due once", run.maxTasksPerInstant, run.recurringFamilies)
+	if run.maxTasksPerBusyPeriod > run.recurringFamilies {
+		t.Errorf("most tasks run between idle periods = %d; want at most %d, every recurring family once", run.maxTasksPerBusyPeriod, run.recurringFamilies)
 	}
-	probes := bus.eventsOf(controllerlessRootProbe)
-	if len(probes) < 3 || probes[0].target != controllerlessRegulator || probes[1].target != controllerlessHeatSource || probes[2].target != controllerlessModuleSlot {
-		t.Errorf("first discovery pass probes %v; want 0x15, then 0x08 and 0x26", probes)
+	if run.capabilityAt < 0 || run.capabilityAt-run.pollStart > 10*time.Second {
+		t.Errorf("first published regulator capability at %s after polling start; want it from the first discovery pass", run.capabilityAt-run.pollStart)
 	}
 
-	view := controllerlessGraphQL(t, run.provider)
+	view := controllerlessGraphQL(t, site.provider)
 	if got := view["vaillant_regulator_capability"]; got != wantCapability {
 		t.Errorf("GraphQL vaillant_regulator_capability = %v; want %s", got, wantCapability)
 	}
-	if got := controllerlessMCPCapability(t, run.provider); got != wantCapability {
+	if got := controllerlessMCPCapability(t, site.provider); got != wantCapability {
 		t.Errorf("MCP vaillant_regulator_capability = %v; want %s", got, wantCapability)
 	}
 	for _, plane := range []string{"zones", "circuits", "radio_devices", "cylinders"} {
@@ -802,9 +995,27 @@ func controllerlessExpectCommon(t *testing.T, bus *controllerlessBus, startup *c
 	return view
 }
 
+// controllerlessReadSpacing returns the spacing between consecutive native
+// reads of register after polling starts.
+func controllerlessReadSpacing(site *controllerlessSite, run *controllerlessRun, register uint16) []time.Duration {
+	var reads []time.Duration
+	for _, event := range site.eventsOf(controllerlessB509Read) {
+		if event.register == register && event.at >= run.pollStart {
+			reads = append(reads, event.at)
+		}
+	}
+	var spacing []time.Duration
+	for i := 1; i < len(reads); i++ {
+		spacing = append(spacing, reads[i]-reads[i-1])
+	}
+	return spacing
+}
+
 // controllerlessExpectBoilerStream asserts that the boiler stream carries the
-// heat source's own B509 values and no controller-owned mirror field.
-func controllerlessExpectBoilerStream(t *testing.T, bus *controllerlessBus, view map[string]any) {
+// heat source's own B509 values, no controller-owned mirror field, and that
+// each boiler tier re-reads its registers natively once the 30 s read cache
+// has expired.
+func controllerlessExpectBoilerStream(t *testing.T, site *controllerlessSite, run *controllerlessRun, view map[string]any) {
 	t.Helper()
 	pressure, _ := decodeDATA2b(controllerlessHeatSourceRegisters[boiler_b509_water_pressure])
 	flowset, _ := decodeDATA2c(controllerlessHeatSourceRegisters[boiler_b509_flowset_hc_max_c])
@@ -824,17 +1035,33 @@ func controllerlessExpectBoilerStream(t *testing.T, bus *controllerlessBus, view
 			t.Errorf("boiler_status.%s = %v; want %v", path, got, want)
 		}
 	}
-	read := map[uint16]bool{}
-	for _, event := range bus.eventsOf(controllerlessB509Read) {
-		read[event.register] = true
-	}
-	// One register of each boiler tier: fast, medium, slow.
-	for _, register := range []uint16{boiler_b509_water_pressure, boiler_b509_flowset_hc_max_c, boiler_b509_central_heating_hours} {
-		if !read[register] {
-			t.Errorf("heat source register 0x%04X never read; want every boiler tier polled", register)
+	// The fast tier ticks every 30 s, but on the half-minute tick its values
+	// are under 30 s old and served from the read cache; the minute tick runs
+	// after the state task's discovery pass and finds them expired.
+	for _, tier := range []struct {
+		name     string
+		register uint16
+		reads    int
+		spacing  time.Duration
+	}{
+		{"fast", boiler_b509_water_pressure, 31, time.Minute},
+		{"medium", boiler_b509_flowset_hc_max_c, 7, 5 * time.Minute},
+		{"slow", boiler_b509_central_heating_hours, 4, 10 * time.Minute},
+	} {
+		spacing := controllerlessReadSpacing(site, run, tier.register)
+		if len(spacing) > 0 {
+			t.Logf("%s-tier register 0x%04X: %d native reads, first spacing %s", tier.name, tier.register, len(spacing)+1, spacing[0])
+		}
+		if len(spacing)+1 != tier.reads {
+			t.Errorf("%s-tier register 0x%04X read %d times in %s; want %d native reads", tier.name, tier.register, len(spacing)+1, controllerlessHorizon, tier.reads)
+		}
+		for _, gap := range spacing {
+			if gap < tier.spacing || gap >= tier.spacing+10*time.Second {
+				t.Errorf("%s-tier register 0x%04X reads spaced %v; want every %s", tier.name, tier.register, spacing, tier.spacing)
+				break
+			}
 		}
 	}
-	t.Logf("distinct heat source B509 registers read: %d", len(read))
 }
 
 func TestControllerlessSiteStartupWithoutController(t *testing.T) {
@@ -847,7 +1074,7 @@ func TestControllerlessSiteStartupWithoutController(t *testing.T) {
 		wantFailed      bool
 		wantIdentify    map[byte]int
 		wantSerialReads map[byte]int
-		wantRootProbes  map[byte]int
+		wantProbeFrames map[byte]int
 	}{
 		{
 			// Source selection admits on the first pass on which any device
@@ -856,7 +1083,7 @@ func TestControllerlessSiteStartupWithoutController(t *testing.T) {
 			name: "automatic source", wantPasses: 1, wantActive: true,
 			wantIdentify:    map[byte]int{controllerlessHeatSource: 1, controllerlessRegulator: 4, controllerlessModuleSlot: 4},
 			wantSerialReads: map[byte]int{controllerlessHeatSource: 4},
-			wantRootProbes:  map[byte]int{controllerlessHeatSource: 1},
+			wantProbeFrames: map[byte]int{controllerlessHeatSource: 1 * controllerlessProbeAttempts},
 		},
 		{
 			// Without source selection the loop waits for a coherent B524 root,
@@ -865,13 +1092,13 @@ func TestControllerlessSiteStartupWithoutController(t *testing.T) {
 			name: "explicit source", explicitSource: true, wantPasses: 2, wantFailed: true,
 			wantIdentify:    map[byte]int{controllerlessHeatSource: 2, controllerlessRegulator: 8, controllerlessModuleSlot: 8},
 			wantSerialReads: map[byte]int{controllerlessHeatSource: 8},
-			wantRootProbes:  map[byte]int{controllerlessHeatSource: 2},
+			wantProbeFrames: map[byte]int{controllerlessHeatSource: 2 * controllerlessProbeAttempts},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			bus := newControllerlessBus()
-			bus.addDevice(controllerlessHeatSource, controllerlessDevice{deviceID: "BAI00", serialRaw: controllerlessSerialRaw(boilerPart), answersB509: true})
-			startup := runControllerlessStartupScan(t, bus, tc.explicitSource)
+			site := newControllerlessSite(t, controllerlessWireTiming)
+			site.addDevice(controllerlessHeatSource, controllerlessDevice{deviceID: "BAI00", serialRaw: controllerlessSerialRaw(boilerPart), answersB509: true})
+			startup := runControllerlessStartupScan(t, site, tc.explicitSource)
 
 			if startup.passes != tc.wantPasses {
 				t.Errorf("scan passes before semantic polling = %d; want %d", startup.passes, tc.wantPasses)
@@ -882,14 +1109,19 @@ func TestControllerlessSiteStartupWithoutController(t *testing.T) {
 			for kind, want := range map[string]map[byte]int{
 				controllerlessIdentify:     tc.wantIdentify,
 				controllerlessSerialWindow: tc.wantSerialReads,
-				controllerlessStartupProbe: tc.wantRootProbes,
 			} {
-				if got := bus.countByTarget(kind); !reflect.DeepEqual(got, want) {
+				if got := site.countByTarget(kind, 0); !reflect.DeepEqual(got, want) {
 					t.Errorf("%s attempts by target = %v; want %v", kind, got, want)
 				}
 			}
-			for _, kind := range []string{controllerlessB509Read, controllerlessB524Frame, controllerlessWriteFrame, controllerlessOtherFrame, controllerlessRootProbe} {
-				if got := bus.countByTarget(kind); len(got) != 0 {
+			if got := len(controllerlessProbeFrames(t, site, 0)); got != tc.wantProbeFrames[controllerlessHeatSource] {
+				t.Errorf("startup root confirmation frames = %d; want %d", got, tc.wantProbeFrames[controllerlessHeatSource])
+			}
+			if got := site.countByTarget(controllerlessB524Frame, 0); !reflect.DeepEqual(got, tc.wantProbeFrames) {
+				t.Errorf("startup B524 frames by target = %v; want %v", got, tc.wantProbeFrames)
+			}
+			for _, kind := range []string{controllerlessB509Read, controllerlessWriteFrame, controllerlessOtherFrame} {
+				if got := site.countByTarget(kind, 0); len(got) != 0 {
 					t.Errorf("%s during startup = %v; want none", kind, got)
 				}
 			}
@@ -909,6 +1141,54 @@ func TestControllerlessSiteStartupWithoutController(t *testing.T) {
 				t.Errorf("heat source entry = addresses %v, %q, %q, %q; want [8 3], Vaillant, BAI00, the synthetic serial",
 					heatSource.Addresses, heatSource.Manufacturer, heatSource.DeviceID, heatSource.SerialNumber)
 			}
+			t.Logf("semantic barrier opens %s after process start (%s)", startup.barrierAt, site.timing)
+		})
+	}
+}
+
+// TestControllerlessSiteReadinessAgainstBootDeadline places LIVE_READY on the
+// process timeline for a boiler-class heat source in both admissions and both
+// timing profiles. The boot-live deadline counts from process start.
+func TestControllerlessSiteReadinessAgainstBootDeadline(t *testing.T) {
+	boilerPart := controllerlessCatalogPart(t, "Boiler")
+	for _, tc := range []struct {
+		name           string
+		explicitSource bool
+		timing         controllerlessTiming
+		wantDegraded   bool
+	}{
+		{name: "automatic source, wire timing", timing: controllerlessWireTiming},
+		{name: "automatic source, timeout timing", timing: controllerlessTimeoutTiming},
+		{name: "explicit source, wire timing", explicitSource: true, timing: controllerlessWireTiming},
+		// Two scan passes with their 30 s interval, two 5 s-per-attempt root
+		// confirmations and a first discovery pass of three such calls push the
+		// first boiler reads past the 120 s deadline.
+		{name: "explicit source, timeout timing", explicitSource: true, timing: controllerlessTimeoutTiming, wantDegraded: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			site := newControllerlessSite(t, tc.timing)
+			site.addDevice(controllerlessHeatSource, controllerlessDevice{deviceID: "BAI00", serialRaw: controllerlessSerialRaw(boilerPart), answersB509: true})
+			startup := runControllerlessStartupScan(t, site, tc.explicitSource)
+			run := runControllerlessPolling(t, site, startup, 3*time.Minute, nil)
+
+			want := []string{string(graphql.SemanticStartupPhaseBootInit), string(graphql.SemanticStartupPhaseLiveWarmup), string(graphql.SemanticStartupPhaseLiveReady)}
+			if tc.wantDegraded {
+				want = []string{string(graphql.SemanticStartupPhaseBootInit), string(graphql.SemanticStartupPhaseDegraded),
+					string(graphql.SemanticStartupPhaseLiveWarmup), string(graphql.SemanticStartupPhaseLiveReady)}
+			}
+			phases := site.phaseSeries()
+			controllerlessExpectSeries(t, "startup phases", phases, want)
+			if run.liveReadyAt < 0 {
+				t.Fatalf("LIVE_READY never reached; phases %v", phases)
+			}
+			if before := run.liveReadyAt < site.deadline; before == tc.wantDegraded {
+				t.Errorf("LIVE_READY at %s, boot-live deadline at %s; want LIVE_READY before the deadline = %v", run.liveReadyAt, site.deadline, !tc.wantDegraded)
+			}
+			if tc.wantDegraded && run.degradedAt != site.deadline {
+				t.Errorf("DEGRADED at %s; want at the deadline %s", run.degradedAt, site.deadline)
+			}
+			t.Logf("%s: barrier %s, polling start %s, LIVE_WARMUP %s, LIVE_READY %s, deadline %s, margin %s",
+				tc.name, startup.barrierAt, run.pollStart, run.liveWarmAt, run.liveReadyAt, site.deadline, site.deadline-run.liveReadyAt)
 		})
 	}
 }
@@ -924,15 +1204,8 @@ func TestControllerlessSitePollingOverSimulatedTime(t *testing.T) {
 		}
 		return 4
 	}
-	liveReadyAtStart := []controllerlessObservation{
-		{at: 0, value: string(graphql.SemanticStartupPhaseBootInit)},
-		{at: 0, value: string(graphql.SemanticStartupPhaseLiveWarmup)},
-		{at: 0, value: string(graphql.SemanticStartupPhaseLiveReady)},
-	}
-	noneFromFirstDiscovery := []controllerlessObservation{
-		{at: 0, value: string(graphql.VaillantRegulatorCapabilityUnknown)},
-		{at: 0, value: string(graphql.VaillantRegulatorCapabilityNone)},
-	}
+	liveReady := []string{string(graphql.SemanticStartupPhaseBootInit), string(graphql.SemanticStartupPhaseLiveWarmup), string(graphql.SemanticStartupPhaseLiveReady)}
+	noneFromFirstDiscovery := []string{string(graphql.VaillantRegulatorCapabilityUnknown), string(graphql.VaillantRegulatorCapabilityNone)}
 
 	for _, tc := range []struct {
 		name           string
@@ -940,59 +1213,54 @@ func TestControllerlessSitePollingOverSimulatedTime(t *testing.T) {
 		heatSourcePart string
 		boilerClass    bool
 		// moduleSerial is used when the internet module is identified at two
-		// minutes; "-" identifies it without a readable serial.
-		moduleSerial     string
-		wantPhases       []controllerlessObservation
-		wantBootPhase    graphql.SemanticStartupPhase
-		wantCapability   []controllerlessObservation
-		wantRootByTarget map[byte]int
-		wantRootPlan     map[time.Duration]int
+		// minutes of polling; "-" identifies it without a readable serial.
+		moduleSerial   string
+		wantPhases     []string
+		wantCapability []string
+		wantCalls      map[byte]int
+		wantPlan       map[int]int
 	}{
 		{
 			name: "boiler-class heat source", heatSourceID: "BAI00", heatSourcePart: boilerPart, boilerClass: true,
-			wantPhases: liveReadyAtStart, wantBootPhase: graphql.SemanticStartupPhaseLiveReady, wantCapability: noneFromFirstDiscovery,
+			wantPhases: liveReady, wantCapability: noneFromFirstDiscovery,
 			// 1 + 30 state + 6 config + 3 discovery passes, three candidates each.
-			wantRootByTarget: map[byte]int{controllerlessRegulator: 40, controllerlessHeatSource: 40, controllerlessModuleSlot: 40},
-			wantRootPlan:     controllerlessDiscoveryPlan(threeCandidates, nil),
+			wantCalls: map[byte]int{controllerlessRegulator: 40, controllerlessHeatSource: 40, controllerlessModuleSlot: 40},
+			wantPlan:  controllerlessDiscoveryPlan(threeCandidates, nil),
 		},
 		{
 			// The module joins the candidates; the inventory change at its
 			// identification adds one discovery pass at two minutes.
 			name: "boiler-class heat source and internet module", heatSourceID: "BAI00", heatSourcePart: boilerPart, boilerClass: true,
 			moduleSerial: controllerlessSerialRaw(modulePart),
-			wantPhases:   liveReadyAtStart, wantBootPhase: graphql.SemanticStartupPhaseLiveReady, wantCapability: noneFromFirstDiscovery,
-			wantRootByTarget: map[byte]int{controllerlessRegulator: 41, controllerlessHeatSource: 41, controllerlessModuleSlot: 41, controllerlessInternetModule: 38},
-			wantRootPlan:     controllerlessDiscoveryPlan(moduleFromMinuteThree, map[int]int{2: 4}),
+			wantPhases:   liveReady, wantCapability: noneFromFirstDiscovery,
+			wantCalls: map[byte]int{controllerlessRegulator: 41, controllerlessHeatSource: 41, controllerlessModuleSlot: 41, controllerlessInternetModule: 38},
+			wantPlan:  controllerlessDiscoveryPlan(moduleFromMinuteThree, map[int]int{2: 4}),
 		},
 		{
 			// An identified Vaillant device without a catalogued serial keeps
 			// the public result UNKNOWN; the absence state still settles.
 			name: "boiler-class heat source and internet module without serial", heatSourceID: "BAI00", heatSourcePart: boilerPart, boilerClass: true,
 			moduleSerial: "-",
-			wantPhases:   liveReadyAtStart, wantBootPhase: graphql.SemanticStartupPhaseLiveReady,
-			wantCapability: append(append([]controllerlessObservation(nil), noneFromFirstDiscovery...),
-				controllerlessObservation{at: 2 * time.Minute, value: string(graphql.VaillantRegulatorCapabilityUnknown)}),
-			wantRootByTarget: map[byte]int{controllerlessRegulator: 41, controllerlessHeatSource: 41, controllerlessModuleSlot: 41, controllerlessInternetModule: 38},
-			wantRootPlan:     controllerlessDiscoveryPlan(moduleFromMinuteThree, map[int]int{2: 4}),
+			wantPhases:   liveReady,
+			wantCapability: append(append([]string(nil), noneFromFirstDiscovery...),
+				string(graphql.VaillantRegulatorCapabilityUnknown)),
+			wantCalls: map[byte]int{controllerlessRegulator: 41, controllerlessHeatSource: 41, controllerlessModuleSlot: 41, controllerlessInternetModule: 38},
+			wantPlan:  controllerlessDiscoveryPlan(moduleFromMinuteThree, map[int]int{2: 4}),
 		},
 		{
 			// The poller reads boiler status only from boiler-class identities;
 			// a heat-pump-class heat source therefore publishes no live stream.
 			name: "heat-pump-class heat source", heatSourceID: "EHP00", heatSourcePart: heatPumpPart,
-			wantPhases: []controllerlessObservation{
-				{at: 0, value: string(graphql.SemanticStartupPhaseBootInit)},
-				{at: 2 * time.Minute, value: string(graphql.SemanticStartupPhaseDegraded)},
-			},
-			wantBootPhase:    graphql.SemanticStartupPhaseBootInit,
-			wantCapability:   noneFromFirstDiscovery,
-			wantRootByTarget: map[byte]int{controllerlessRegulator: 40, controllerlessHeatSource: 40, controllerlessModuleSlot: 40},
-			wantRootPlan:     controllerlessDiscoveryPlan(threeCandidates, nil),
+			wantPhases:     []string{string(graphql.SemanticStartupPhaseBootInit), string(graphql.SemanticStartupPhaseDegraded)},
+			wantCapability: noneFromFirstDiscovery,
+			wantCalls:      map[byte]int{controllerlessRegulator: 40, controllerlessHeatSource: 40, controllerlessModuleSlot: 40},
+			wantPlan:       controllerlessDiscoveryPlan(threeCandidates, nil),
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			bus := newControllerlessBus()
-			bus.addDevice(controllerlessHeatSource, controllerlessDevice{deviceID: tc.heatSourceID, serialRaw: controllerlessSerialRaw(tc.heatSourcePart), answersB509: tc.boilerClass})
-			startup := runControllerlessStartupScan(t, bus, false)
+			site := newControllerlessSite(t, controllerlessWireTiming)
+			site.addDevice(controllerlessHeatSource, controllerlessDevice{deviceID: tc.heatSourceID, serialRaw: controllerlessSerialRaw(tc.heatSourcePart), answersB509: tc.boilerClass})
+			startup := runControllerlessStartupScan(t, site, false)
 			if startup.passes != 1 || !startup.activeProbePassed {
 				t.Fatalf("startup passes = %d, active probe passed = %v; want 1, true", startup.passes, startup.activeProbePassed)
 			}
@@ -1004,33 +1272,30 @@ func TestControllerlessSitePollingOverSimulatedTime(t *testing.T) {
 					serial = ""
 				}
 				script = map[time.Duration]func(*vaillantSemanticPoller){2 * time.Minute: func(p *vaillantSemanticPoller) {
-					bus.addDevice(controllerlessInternetModule, controllerlessDevice{deviceID: "NETX3", serialRaw: serial})
+					site.addDevice(controllerlessInternetModule, controllerlessDevice{deviceID: "NETX3", serialRaw: serial})
 					p.EnqueueAddressIdentityProbe(controllerlessInternetModule)
 				}}
 			}
-			run := runControllerlessPolling(t, startup, bus, script)
+			run := runControllerlessPolling(t, site, startup, controllerlessHorizon, script)
 
-			controllerlessExpectSeries(t, "startup phases", run.phases, tc.wantPhases)
-			if run.phaseAtBootTimeout != tc.wantBootPhase {
-				t.Errorf("phase when the boot-live timer fires = %s; want %s", run.phaseAtBootTimeout, tc.wantBootPhase)
+			controllerlessExpectSeries(t, "startup phases", site.phaseSeries(), tc.wantPhases)
+			if tc.boilerClass && (run.liveReadyAt < 0 || run.liveReadyAt >= site.deadline) {
+				t.Errorf("LIVE_READY at %s; want before the boot-live deadline %s", run.liveReadyAt, site.deadline)
+			}
+			if !tc.boilerClass && run.degradedAt != site.deadline {
+				t.Errorf("DEGRADED at %s; want at the boot-live deadline %s", run.degradedAt, site.deadline)
 			}
 			controllerlessExpectSeries(t, "regulator capability", run.capability, tc.wantCapability)
-			if got := bus.countByTarget(controllerlessRootProbe); !reflect.DeepEqual(got, tc.wantRootByTarget) {
-				t.Errorf("B524 root probes by target over %s = %v; want %v", controllerlessHorizon, got, tc.wantRootByTarget)
-			}
-			if got := bus.probesByInstant(); !reflect.DeepEqual(got, tc.wantRootPlan) {
-				t.Errorf("B524 root probes per instant = %v; want %v", got, tc.wantRootPlan)
-			}
-			wantCapability := tc.wantCapability[len(tc.wantCapability)-1].value
-			view := controllerlessExpectCommon(t, bus, startup, run, wantCapability)
+			controllerlessExpectProbes(t, site, run, tc.wantCalls, tc.wantPlan)
+			view := controllerlessExpectCommon(t, site, startup, run, tc.wantCapability[len(tc.wantCapability)-1])
 
 			if tc.boilerClass {
-				controllerlessExpectBoilerStream(t, bus, view)
+				controllerlessExpectBoilerStream(t, site, run, view)
 			} else {
 				if got := view["boiler_status"]; got != nil {
 					t.Errorf("GraphQL boiler_status = %#v; want null for a heat-pump-class heat source", got)
 				}
-				if got := bus.countByTarget(controllerlessB509Read); len(got) != 0 {
+				if got := site.countByTarget(controllerlessB509Read, 0); len(got) != 0 {
 					t.Errorf("B509 register reads = %v; want none for a heat-pump-class heat source", got)
 				}
 			}
@@ -1045,13 +1310,15 @@ func TestControllerlessSitePollingOverSimulatedTime(t *testing.T) {
 				if !ok || module.Manufacturer != "Vaillant" || module.DeviceID != "NETX3" || module.SerialNumber != wantSerial {
 					t.Errorf("internet module entry = %+v (present %v); want Vaillant NETX3 with serial %q", module, ok, wantSerial)
 				}
-				if got := bus.countByTarget(controllerlessIdentify)[controllerlessInternetModule]; got != 1 {
+				if got := site.countByTarget(controllerlessIdentify, 0)[controllerlessInternetModule]; got != 1 {
 					t.Errorf("internet module identification attempts = %d; want 1", got)
 				}
-				if got := bus.countByTarget(controllerlessSerialWindow)[controllerlessInternetModule]; got != wantSerialWindows {
+				if got := site.countByTarget(controllerlessSerialWindow, 0)[controllerlessInternetModule]; got != wantSerialWindows {
 					t.Errorf("internet module serial window reads = %d; want %d", got, wantSerialWindows)
 				}
 			}
+			t.Logf("%s: polling start %s, LIVE_READY %s, capability published %s after polling start, absence %v",
+				tc.name, run.pollStart, run.liveReadyAt, run.capabilityAt-run.pollStart, run.absence)
 		})
 	}
 }

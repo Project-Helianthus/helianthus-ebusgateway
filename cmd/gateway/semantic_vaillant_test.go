@@ -7194,4 +7194,130 @@ func TestVaillantSemanticPollerFallbackSuspensionLogsOnTransition(t *testing.T) 
 	if got := count(); got != 2 {
 		t.Fatalf("markers = %d after entering ABSENT again; want 2", got)
 	}
+
+	// Leaving the suspension by discovering a controller clears the flag. No
+	// provider, so the successful pass runs no startup priming in this test;
+	// a task queue, as in production, so the controller priming is queued and
+	// no other refresh re-evaluates the gate before the check.
+	poller.provider = nil
+	poller.tasks = newSemanticTaskScheduler()
+	poller.b524ProbeFn = func(_ context.Context, target, _, _, _ byte, _ uint16) bool {
+		probes++
+		return target == 0x15
+	}
+	poller.refreshDiscovery(ctx)
+	poller.mu.Lock()
+	controller, suspended := poller.controller, poller.discoveryFallbackSuspended
+	poller.mu.Unlock()
+	if controller != 0x15 || suspended {
+		t.Fatalf("after discovering a controller: controller 0x%02X, suspended %v; want 0x15, false", controller, suspended)
+	}
+
+	// Losing it again in ABSENT does not suspend: this process had a root, so
+	// the state tick keeps its per-minute recovery and no marker is written.
+	poller.b524ProbeFn = func(context.Context, byte, byte, byte, byte, uint16) bool {
+		probes++
+		return false
+	}
+	poller.refreshDiscovery(ctx)
+	before := probes
+	poller.refreshState(ctx)
+	if probes == before {
+		t.Fatal("state tick after losing a discovered controller ran no root discovery; want the per-minute recovery")
+	}
+	if got := count(); got != 2 {
+		t.Fatalf("markers = %d after losing a discovered controller in ABSENT; want 2 (no suspension)", got)
+	}
+}
+
+// TestVaillantSemanticPollerKeepsRecoveryWhenAbsentControllerWasDiscovered
+// covers sites where a B524 root exists but the regulator is not classified
+// by the product data, so the absence state still reaches ABSENT: a
+// controller registered structurally without a serial, a serial whose part
+// number the product data does not list, and unavailable product data. After
+// one failed discovery pass loses the controller and its zones, the next state
+// tick must rediscover it instead of waiting for the discovery tick.
+func TestVaillantSemanticPollerKeepsRecoveryWhenAbsentControllerWasDiscovered(t *testing.T) {
+	catalog, err := productids.LoadCatalog()
+	if err != nil {
+		t.Fatalf("LoadCatalog() error = %v", err)
+	}
+	boilerSerial := controllerlessSerial(controllerlessCatalogPart(t, "Boiler"))
+	missingPart := "0000000000"
+	if got := catalog.ControllerCapability(missingPart); got != productids.ControllerUnknown {
+		t.Fatalf("part %s capability = %v; want it absent from the product data", missingPart, got)
+	}
+	for _, tc := range []struct {
+		name            string
+		regulatorSerial string // empty: the controller is registered structurally by discovery
+		catalogErr      error
+	}{
+		{name: "structural registration without serial"},
+		{name: "part number missing from product data", regulatorSerial: controllerlessSerial(missingPart)},
+		{name: "product data unavailable", regulatorSerial: controllerlessSerial(controllerlessCatalogPartWith(t, "Regulator", productids.ControllerPresent)), catalogErr: errors.New("product data unavailable")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			now := time.Unix(0, 0)
+			probes := 0
+			coherent := true
+			devices := []registry.DeviceInfo{{Address: 0x08, Manufacturer: "Vaillant", DeviceID: "BAI00", SerialNumber: boilerSerial}}
+			if tc.regulatorSerial != "" {
+				devices = append(devices, registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", SerialNumber: tc.regulatorSerial})
+			}
+			// No provider: the successful pass runs no startup priming here.
+			poller := &vaillantSemanticPoller{
+				reg:                   newTestRegistry(devices...),
+				catalog:               catalog,
+				catalogErr:            tc.catalogErr,
+				tasks:                 newSemanticTaskScheduler(),
+				regAbsenceState:       regulatorPresent,
+				regulatorAbsenceGrace: 5 * time.Minute,
+				discoveryInterval:     10 * time.Minute,
+				nowFn:                 func() time.Time { return now },
+				zones:                 make(map[byte]*vaillantZoneSnapshot),
+				presence:              make(map[byte]*zonePresenceRecord),
+				circuits:              make(map[byte]*vaillantCircuitSnapshot),
+				radioDevices:          make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot),
+				solarCylinders:        make(map[byte]*vaillantCylinderSnapshot),
+				b524ProbeFn: func(_ context.Context, target, _, _, _ byte, _ uint16) bool {
+					probes++
+					return coherent && target == 0x15
+				},
+			}
+			controllerOf := func() byte {
+				poller.mu.Lock()
+				defer poller.mu.Unlock()
+				return poller.controller
+			}
+
+			poller.refreshDiscovery(ctx)
+			if got := controllerOf(); got != 0x15 {
+				t.Fatalf("controller after discovery = 0x%02X; want 0x15", got)
+			}
+			poller.refreshRegulatorCapability(ctx)
+			now = now.Add(6 * time.Minute)
+			poller.refreshRegulatorCapability(ctx)
+			poller.mu.Lock()
+			state, capability := poller.regAbsenceState, poller.regulatorCapability
+			poller.mu.Unlock()
+			if state != regulatorAbsent || capability != productids.ControllerUnknown {
+				t.Fatalf("absence state %s, capability %v with a controller known; want ABSENT, unknown", state, capability)
+			}
+
+			// A transient failure of one discovery pass loses the controller.
+			coherent = false
+			poller.refreshDiscovery(ctx)
+			if got := controllerOf(); got != 0 {
+				t.Fatalf("controller after a failed pass = 0x%02X; want 0", got)
+			}
+
+			coherent = true
+			probes = 0
+			poller.refreshState(ctx)
+			if probes == 0 || controllerOf() != 0x15 {
+				t.Fatalf("state tick after the loss: %d probe calls, controller 0x%02X; want the controller rediscovered on this tick", probes, controllerOf())
+			}
+		})
+	}
 }

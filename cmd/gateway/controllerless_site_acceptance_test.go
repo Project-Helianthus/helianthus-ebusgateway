@@ -487,8 +487,9 @@ type controllerlessStartup struct {
 // startup scan loop in the add-on default admission (adapter-direct, automatic
 // source with its companion) or with an explicitly configured source. The
 // seams stay installed until the test ends so the poller's per-address
-// identity probe reaches the same bus.
-func runControllerlessStartupScan(t *testing.T, site *controllerlessSite, explicitSource bool) *controllerlessStartup {
+// identity probe reaches the same bus. observed lists target addresses the
+// passive warm-up offered; without them the structural targets are probed.
+func runControllerlessStartupScan(t *testing.T, site *controllerlessSite, explicitSource bool, observed ...byte) *controllerlessStartup {
 	t.Helper()
 	silent := &controllerlessSilentTransport{Loopback: transport.NewLoopback()}
 	gateway, err := ebusgateway.New(context.Background(), ebusgateway.Config{Transport: silent})
@@ -513,6 +514,7 @@ func runControllerlessStartupScan(t *testing.T, site *controllerlessSite, explic
 	cfg.TransportConfig = ebusgateway.TransportConfig{Protocol: ebusgateway.TransportAdapterDirect, Network: "tcp", Address: "adapter.invalid:9999"}
 	cfg.ScanSource = controllerlessSource
 	selection := protocol.SourceAddressSelection{Source: controllerlessSource}
+	selection.Metrics.ObservedProbableTargets = observed
 	if explicitSource {
 		source := controllerlessSource
 		cfg.StartupSource.Source = &source
@@ -520,7 +522,6 @@ func runControllerlessStartupScan(t *testing.T, site *controllerlessSite, explic
 		cfg.StartupCompanionTarget = controllerlessCompanion
 		selection.Companion = controllerlessCompanion
 	}
-	// No passive warm-up evidence: the structural targets are probed.
 	cfg.StartupProbeTargets = startupProbeTargetsForSelection(selection)
 
 	startup := &controllerlessStartup{gateway: gateway, silent: silent, cfg: cfg}
@@ -1463,4 +1464,68 @@ func TestControllerlessSiteControllerAppearsAfterAbsent(t *testing.T) {
 			t.Logf("%s: appears at %s, found at %s of polling", tc.name, tc.appear, found-run.pollStart)
 		})
 	}
+}
+
+// TestControllerlessSiteHeatSourceIdentifiedAfterAbsent covers a heat source
+// that only becomes known after the absence state is ABSENT, when the state and
+// configuration ticks no longer run a root discovery pass. Its address first
+// enters the registry without an identity, as the passive address-table
+// inserter adds it; the inventory change starts a discovery pass at the next
+// regulator recheck, which cannot yet classify it. Its identity arrives
+// afterwards through the per-address identity probe, which changes no device
+// count. The next state tick must pick the boiler-class heat source from the
+// registry and start its status reads, not the next discovery tick.
+func TestControllerlessSiteHeatSourceIdentifiedAfterAbsent(t *testing.T) {
+	boilerPart := controllerlessCatalogPart(t, "Boiler")
+	modulePart := controllerlessCatalogPart(t, "Gateway")
+	site := newControllerlessSite(t, controllerlessWireTiming)
+	// The heat source is off at startup; the passive warm-up offered the
+	// internet module's target address, which answers identification.
+	site.addDevice(controllerlessInternetModule, controllerlessDevice{deviceID: "NETX3", serialRaw: controllerlessSerialRaw(modulePart)})
+	startup := runControllerlessStartupScan(t, site, false, controllerlessInternetModule)
+	if startup.passes != 1 || !startup.activeProbePassed {
+		t.Fatalf("startup passes = %d, active probe passed = %v; want 1, true", startup.passes, startup.activeProbePassed)
+	}
+	reg := startup.gateway.Registry
+	slotAt, identityAt := 10*time.Minute+30*time.Second, 11*time.Minute+30*time.Second
+	devicesAtIdentity := -1
+	var stateAtIdentity regulatorAbsenceState
+	script := map[time.Duration]func(*vaillantSemanticPoller){
+		slotAt: func(*vaillantSemanticPoller) {
+			site.addDevice(controllerlessHeatSource, controllerlessDevice{deviceID: "BAI00", serialRaw: controllerlessSerialRaw(boilerPart), answersB509: true})
+			reg.Register(registry.DeviceInfo{Address: controllerlessHeatSource})
+		},
+		identityAt: func(p *vaillantSemanticPoller) {
+			devicesAtIdentity = countRegistryDevices(reg)
+			p.mu.Lock()
+			stateAtIdentity = p.regAbsenceState
+			p.mu.Unlock()
+			p.EnqueueAddressIdentityProbe(controllerlessHeatSource)
+		},
+	}
+	run := runControllerlessPolling(t, site, startup, 13*time.Minute, script)
+
+	if stateAtIdentity != regulatorAbsent {
+		t.Errorf("absence state when the identity arrives = %s; want ABSENT", stateAtIdentity)
+	}
+	if got := countRegistryDevices(reg); got != devicesAtIdentity {
+		t.Errorf("registry devices after the identity probe = %d, before = %d; want no inventory change", got, devicesAtIdentity)
+	}
+	if entry, ok := controllerlessRegistryEntries(reg)[controllerlessHeatSource]; !ok || entry.DeviceID != "BAI00" {
+		t.Fatalf("heat source entry = %+v (present %v); want the identified boiler-class heat source", entry, ok)
+	}
+	firstRead := time.Duration(-1)
+	for _, read := range site.eventsOf(controllerlessB509Read) {
+		if read.target == controllerlessHeatSource {
+			firstRead = read.at - run.pollStart
+			break
+		}
+	}
+	if firstRead < 12*time.Minute || firstRead >= 12*time.Minute+10*time.Second {
+		t.Errorf("first heat-source status read at %s of polling; want on the state tick after the identity (12:00), not the discovery tick (20:00)", firstRead)
+	}
+	if site.provider.BoilerStatus() == nil {
+		t.Error("boiler status not published after the heat source was identified")
+	}
+	t.Logf("slot at %s, identity at %s, first status read at %s of polling; phases %v", slotAt, identityAt, firstRead, site.phaseSeries())
 }

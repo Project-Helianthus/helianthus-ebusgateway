@@ -21,7 +21,7 @@ def inventory(root):
     paths = []
     for directory, dirs, files in os.walk(root):
         dirs[:] = sorted(name for name in dirs if name not in EXCLUDED)
-        for name in dirs + files:
+        for name in dirs + [name for name in files if name.endswith(".py")]:
             if (Path(directory) / name).is_symlink():
                 raise ValueError("source symlinks are not supported")
         paths.extend(Path(directory) / name for name in sorted(files) if name.endswith(".py"))

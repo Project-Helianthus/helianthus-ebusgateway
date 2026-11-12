@@ -138,6 +138,11 @@ class PythonLintTests(unittest.TestCase):
             (root / "link.py").symlink_to(root / "real.py")
             with self.assertRaises(ValueError):
                 LINT.inventory(root)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_tree(root, {"real.py": CLEAN, "asset.txt": "x"})
+            (root / "link.txt").symlink_to(root / "asset.txt")
+            self.assertEqual(LINT.inventory(root), [root / "real.py"])
 
     def test_other_ruff_version_rejected(self):
         other = subprocess.CompletedProcess([], 0, stdout="ruff 0.0.0\n", stderr="")

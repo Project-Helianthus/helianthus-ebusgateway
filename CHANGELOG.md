@@ -1,5 +1,9 @@
 # Changelog
 
+## Smoke check calls the registered devices list tool
+
+The gateway smoke command's MCP check now makes its read-only call to the registered `ebus_v1_registry_devices_list` tool when `tools/list` contains it, with the same result validation, and its summary detail and errors name that tool. Without that tool the check reports listing only. It no longer looks for the withdrawn `ebus.devices` route, so after that route's removal the check again makes a read-only call. There is no alias or compatibility layer. The gateway binary changes, so affected release evidence must be renewed before the final bill of materials freeze.
+
 ## Site profile without a system controller
 
 An offline acceptance scenario covers an eBUS that carries a heat source and the vendor's internet module but never a system controller. It runs the production startup scan, registry scan, B524 root probe, semantic poller, read scheduler and poll schedule over a recording synthetic bus on a simulated clock that starts at process start. It asserts the startup phases against the boot-live deadline, the root discovery frames and attempts, the native refresh spacing of the heat-source registers, the published streams and the regulator-absence signal. The [reduced run sheet](docs/testing/site-without-controller-run-sheet.md) for the hardware session at such a site removes the controller rows and names the remaining ones.

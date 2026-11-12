@@ -54,7 +54,7 @@ func cx19Config(t *testing.T, flavor string) ebusgateway.GrowattPCSConfig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := ebusgateway.GrowattPCSConfig{Enabled: true, ListenOnlyConfirmed: true, StaleAfter: time.Second, Native: canbusreg.CX01SelectionSpec{Interface: id, Flavor: flavor, ProjectCode: "QAAA", Release: "0011", Direction: "bms-to-pcs", Scope: "local", Bank: "ordinary", Endpoint: "synthetic", Epoch: 1}}
+	c := ebusgateway.GrowattPCSConfig{Enabled: true, ListenOnlyConfirmed: true, StaleAfter: time.Second, Native: canbusreg.SelectionSpec{Interface: id, Flavor: flavor, ProjectCode: "QAAA", Release: "0011", Direction: "bms-to-pcs", Scope: "local", Bank: "ordinary", Endpoint: "synthetic", Epoch: 1}}
 	if flavor == "pcs-parallel" {
 		c.Native.Bank = "parallel"
 		c.Native.Group = "0"
@@ -68,11 +68,11 @@ func cx19Config(t *testing.T, flavor string) ebusgateway.GrowattPCSConfig {
 	}
 	return c
 }
-func cx19Association(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.CX16ReplayInput {
-	c := s.CX01Spec()
-	var in canbusreg.CX16ReplayInput
+func cx19Association(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
+	c := s.SelectionSpecValue()
+	var in canbusreg.ReplayInput
 	in.Selection = s
-	in.PCS.CX01LINKInput = canbusreg.CX01LINKInput{Evidence: e, Epoch: c.Epoch, Direction: c.Direction, Scope: c.Scope, Bank: c.Bank, Endpoint: c.Endpoint, Group: c.Group, Slot: c.Slot}
+	in.PCS.LINKInput = canbusreg.LINKInput{Evidence: e, Epoch: c.Epoch, Direction: c.Direction, Scope: c.Scope, Bank: c.Bank, Endpoint: c.Endpoint, Group: c.Group, Slot: c.Slot}
 	in.PCS.PublisherResolved = true
 	in.PCS.MeasurementValid = true
 	return in
@@ -142,7 +142,7 @@ func cx19Wait(t *testing.T, d *growattPCSManagedDriver, now time.Duration, predi
 	t.Fatal("synthetic snapshot timed out")
 	return growattProjectSnapshot{}
 }
-func cx19Raw(t *testing.T, d *growattPCSManagedDriver, count int) canbusreg.CX17Snapshot {
+func cx19Raw(t *testing.T, d *growattPCSManagedDriver, count int) canbusreg.ProjectProviderSnapshot {
 	t.Helper()
 	return cx19Wait(t, d, time.Second, func(s growattProjectSnapshot) bool { return len(s.Providers) == 1 && len(s.Providers[0].Raw) >= count }).Providers[0]
 }
@@ -168,7 +168,7 @@ func TestCX19InertAndValidation(t *testing.T) {
 			assoc := growattProjectAssociation(cx19Association)
 			switch field {
 			case "selector":
-				bad.Native = canbusreg.CX01SelectionSpec{}
+				bad.Native = canbusreg.SelectionSpec{}
 			case "project":
 				bad.Native.ProjectCode = ""
 			case "release":
@@ -208,7 +208,7 @@ func TestCX19SelectedFlavorsAndCachedEvidence(t *testing.T) {
 			record := cx19Record(c, 1)
 			cx19Send(t, r, record)
 			got := cx19Raw(t, d, 1)
-			if got.Selection.CX01Spec() != c.Native || got.Generation != 1 || got.PhysicalQualified || !reflect.DeepEqual(got.Raw[0].NativeRecord, record.Raw) {
+			if got.Selection.SelectionSpecValue() != c.Native || got.Generation != 1 || got.PhysicalQualified || !reflect.DeepEqual(got.Raw[0].NativeRecord, record.Raw) {
 				t.Fatal(got)
 			}
 			if len(got.Current) == 0 {
@@ -241,7 +241,7 @@ func TestCX19SelectedFlavorsAndCachedEvidence(t *testing.T) {
 }
 func TestCX19FieldwiseStalenessAndLastGood(t *testing.T) {
 	c := cx19Config(t, "pcs-standard")
-	d, r := cx19New(t, c, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.CX16ReplayInput {
+	d, r := cx19New(t, c, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
 		i := cx19Association(s, e)
 		i.PCS.FieldAges = map[string]time.Duration{"voltage": 0, "current": time.Second}
 		if e.Sequence == 2 {
@@ -267,21 +267,21 @@ func TestCX19FieldwiseStalenessAndLastGood(t *testing.T) {
 // Fixed bytes with independently varied context gates test withholding rather
 // than plausibility-based selection. Every identity component is exercised.
 func TestCX19HypothesisContextNegativeVectors(t *testing.T) {
-	mutations := map[string]func(*canbusreg.CX16ReplayInput){
-		"missing-selector":      func(i *canbusreg.CX16ReplayInput) { i.Selection = canbusreg.CXSelection{} },
-		"epoch-reuse":           func(i *canbusreg.CX16ReplayInput) { i.PCS.Epoch++ },
-		"wrong-direction":       func(i *canbusreg.CX16ReplayInput) { i.PCS.Direction = "pcs-to-bms" },
-		"wrong-scope":           func(i *canbusreg.CX16ReplayInput) { i.PCS.Scope = "aggregate" },
-		"wrong-bank":            func(i *canbusreg.CX16ReplayInput) { i.PCS.Bank = "parallel" },
-		"wrong-endpoint":        func(i *canbusreg.CX16ReplayInput) { i.PCS.Endpoint = "other" },
-		"wrong-group":           func(i *canbusreg.CX16ReplayInput) { i.PCS.Group = "other" },
-		"wrong-slot":            func(i *canbusreg.CX16ReplayInput) { i.PCS.Slot = "other" },
-		"unassigned-publishers": func(i *canbusreg.CX16ReplayInput) { i.PCS.PublisherResolved = false },
+	mutations := map[string]func(*canbusreg.ReplayInput){
+		"missing-selector":      func(i *canbusreg.ReplayInput) { i.Selection = canbusreg.CXSelection{} },
+		"epoch-reuse":           func(i *canbusreg.ReplayInput) { i.PCS.Epoch++ },
+		"wrong-direction":       func(i *canbusreg.ReplayInput) { i.PCS.Direction = "pcs-to-bms" },
+		"wrong-scope":           func(i *canbusreg.ReplayInput) { i.PCS.Scope = "aggregate" },
+		"wrong-bank":            func(i *canbusreg.ReplayInput) { i.PCS.Bank = "parallel" },
+		"wrong-endpoint":        func(i *canbusreg.ReplayInput) { i.PCS.Endpoint = "other" },
+		"wrong-group":           func(i *canbusreg.ReplayInput) { i.PCS.Group = "other" },
+		"wrong-slot":            func(i *canbusreg.ReplayInput) { i.PCS.Slot = "other" },
+		"unassigned-publishers": func(i *canbusreg.ReplayInput) { i.PCS.PublisherResolved = false },
 	}
 	for name, mutate := range mutations {
 		t.Run(name, func(t *testing.T) {
 			c := cx19Config(t, "pcs-standard")
-			d, r := cx19New(t, c, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.CX16ReplayInput {
+			d, r := cx19New(t, c, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
 				i := cx19Association(s, e)
 				mutate(&i)
 				return i
@@ -299,13 +299,13 @@ func TestCX19SourceAndEpochReuseInvalidateDependentState(t *testing.T) {
 	for _, field := range []string{"epoch", "selector-source"} {
 		t.Run(field, func(t *testing.T) {
 			c := cx19Config(t, "pcs-standard")
-			d, r := cx19New(t, c, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.CX16ReplayInput {
+			d, r := cx19New(t, c, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
 				i := cx19Association(s, e)
 				if e.Sequence > 1 {
 					if field == "epoch" {
 						i.PCS.Epoch++
 					} else {
-						spec := s.CX01Spec()
+						spec := s.SelectionSpecValue()
 						spec.Source++
 						i.Selection, _ = canbusreg.NewCXSelection(spec)
 					}
@@ -324,7 +324,7 @@ func TestCX19SourceAndEpochReuseInvalidateDependentState(t *testing.T) {
 }
 func TestCX19UnassignedStandardPublishersNeverMerge(t *testing.T) {
 	c := cx19Config(t, "pcs-standard")
-	d, r := cx19New(t, c, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.CX16ReplayInput {
+	d, r := cx19New(t, c, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
 		i := cx19Association(s, e)
 		i.PCS.PublisherResolved = false
 		return i
@@ -348,7 +348,7 @@ func TestCX19OptionalTrafficCannotSelectOrFallback(t *testing.T) {
 	for _, flavor := range []string{"pcs-standard", "pcs-extended19", "pcs-parallel"} {
 		t.Run(flavor, func(t *testing.T) {
 			c := cx19Config(t, flavor)
-			d, r := cx19New(t, c, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.CX16ReplayInput {
+			d, r := cx19New(t, c, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
 				i := cx19Association(s, e)
 				i.Selection = canbusreg.CXSelection{}
 				return i
@@ -359,7 +359,7 @@ func TestCX19OptionalTrafficCannotSelectOrFallback(t *testing.T) {
 				cx19Send(t, r, record)
 			}
 			s := cx19Raw(t, d, 4)
-			if len(s.Current) != 0 || s.Promotable || s.Selection.CX01Spec().Flavor != flavor {
+			if len(s.Current) != 0 || s.Promotable || s.Selection.SelectionSpecValue().Flavor != flavor {
 				t.Fatal("inferred selection/fallback", s)
 			}
 		})
@@ -558,7 +558,7 @@ func TestCX19ExtremaNeverBecomeCompleteCells(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			c := cx19Config(t, "pcs-standard")
-			d, r := cx19New(t, c, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.CX16ReplayInput {
+			d, r := cx19New(t, c, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
 				i := cx19Association(s, e)
 				i.PCS.MeasurementValid = valid
 				return i
@@ -583,7 +583,7 @@ func TestCX19ExtremaNeverBecomeCompleteCells(t *testing.T) {
 }
 func TestCX19UnknownCachedMemberAgeRemainsWithheld(t *testing.T) {
 	c := cx19Config(t, "pcs-standard")
-	d, r := cx19New(t, c, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.CX16ReplayInput {
+	d, r := cx19New(t, c, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
 		i := cx19Association(s, e)
 		i.PCS.SlotValid = true
 		i.PCS.NativeSlot = 0
@@ -603,31 +603,31 @@ func TestCX19UnknownCachedMemberAgeRemainsWithheld(t *testing.T) {
 	}
 }
 func TestCX19SelectionIdentityEveryField(t *testing.T) {
-	mutations := map[string]func(*canbusreg.CX01SelectionSpec){
-		"interface-name":  func(c *canbusreg.CX01SelectionSpec) { c.Interface, _ = canbus.NewInterfaceIdentity("synthetic1", 7) },
-		"interface-index": func(c *canbusreg.CX01SelectionSpec) { c.Interface, _ = canbus.NewInterfaceIdentity("synthetic0", 8) },
-		"flavor":          func(c *canbusreg.CX01SelectionSpec) { c.Flavor = "pcs-parallel" },
-		"pcs-flavor":      func(c *canbusreg.CX01SelectionSpec) { c.PCSFlavor = "pcs-parallel" },
-		"project":         func(c *canbusreg.CX01SelectionSpec) { c.ProjectCode = "QAAa" },
-		"release":         func(c *canbusreg.CX01SelectionSpec) { c.Release = "0010" },
-		"choice":          func(c *canbusreg.CX01SelectionSpec) { c.Choice = "legacy19" },
-		"direction":       func(c *canbusreg.CX01SelectionSpec) { c.Direction = "pcs-to-bms" },
-		"scope":           func(c *canbusreg.CX01SelectionSpec) { c.Scope = "aggregate" },
-		"bank":            func(c *canbusreg.CX01SelectionSpec) { c.Bank = "parallel" },
-		"endpoint":        func(c *canbusreg.CX01SelectionSpec) { c.Endpoint = "other" },
-		"group":           func(c *canbusreg.CX01SelectionSpec) { c.Group = "1" },
-		"slot":            func(c *canbusreg.CX01SelectionSpec) { c.Slot = "1" },
-		"route-set":       func(c *canbusreg.CX01SelectionSpec) { c.RouteSet = true },
-		"destination":     func(c *canbusreg.CX01SelectionSpec) { c.Destination = 245 },
-		"source":          func(c *canbusreg.CX01SelectionSpec) { c.Source = 2 },
-		"epoch":           func(c *canbusreg.CX01SelectionSpec) { c.Epoch = 2 },
+	mutations := map[string]func(*canbusreg.SelectionSpec){
+		"interface-name":  func(c *canbusreg.SelectionSpec) { c.Interface, _ = canbus.NewInterfaceIdentity("synthetic1", 7) },
+		"interface-index": func(c *canbusreg.SelectionSpec) { c.Interface, _ = canbus.NewInterfaceIdentity("synthetic0", 8) },
+		"flavor":          func(c *canbusreg.SelectionSpec) { c.Flavor = "pcs-parallel" },
+		"pcs-flavor":      func(c *canbusreg.SelectionSpec) { c.PCSFlavor = "pcs-parallel" },
+		"project":         func(c *canbusreg.SelectionSpec) { c.ProjectCode = "QAAa" },
+		"release":         func(c *canbusreg.SelectionSpec) { c.Release = "0010" },
+		"choice":          func(c *canbusreg.SelectionSpec) { c.Choice = "legacy19" },
+		"direction":       func(c *canbusreg.SelectionSpec) { c.Direction = "pcs-to-bms" },
+		"scope":           func(c *canbusreg.SelectionSpec) { c.Scope = "aggregate" },
+		"bank":            func(c *canbusreg.SelectionSpec) { c.Bank = "parallel" },
+		"endpoint":        func(c *canbusreg.SelectionSpec) { c.Endpoint = "other" },
+		"group":           func(c *canbusreg.SelectionSpec) { c.Group = "1" },
+		"slot":            func(c *canbusreg.SelectionSpec) { c.Slot = "1" },
+		"route-set":       func(c *canbusreg.SelectionSpec) { c.RouteSet = true },
+		"destination":     func(c *canbusreg.SelectionSpec) { c.Destination = 245 },
+		"source":          func(c *canbusreg.SelectionSpec) { c.Source = 2 },
+		"epoch":           func(c *canbusreg.SelectionSpec) { c.Epoch = 2 },
 	}
 	for name, mutate := range mutations {
 		t.Run(name, func(t *testing.T) {
 			c := cx19Config(t, "pcs-standard")
-			d, r := cx19New(t, c, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.CX16ReplayInput {
+			d, r := cx19New(t, c, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
 				i := cx19Association(s, e)
-				spec := s.CX01Spec()
+				spec := s.SelectionSpecValue()
 				mutate(&spec)
 				var err error
 				i.Selection, err = canbusreg.NewCXSelection(spec)
@@ -828,7 +828,7 @@ func TestCX19FieldStatesAndZeroRemainDistinct(t *testing.T) {
 	for _, state := range []string{"accepted", "absent", "invalid", "unsupported", "stale", "conflict", "unassigned"} {
 		t.Run(state, func(t *testing.T) {
 			c := cx19Config(t, "pcs-standard")
-			d, r := cx19New(t, c, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.CX16ReplayInput {
+			d, r := cx19New(t, c, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
 				i := cx19Association(s, e)
 				if state != "accepted" {
 					i.PCS.FieldStates = map[string]string{"voltage": state}

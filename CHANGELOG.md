@@ -1,5 +1,11 @@
 # Changelog
 
+## canbusreg provider behavior names
+
+The canbusreg pin moves to the main-branch revision with the provider export renames, the Growatt BMS provider error texts and the exported API documentation. The Growatt project configuration, provider, LINK and PCS runtimes, CLI and their tests use the behavior names `SelectionSpec`, `SelectionSpecValue`, `SelectionGroup`, `ReplayInput`, `LINKInput`, `MeasurementGate`, `VectorSnapshot`, `Observation`, `Provider`, `NewLINKProvider`, `NewPCSProvider`, `ProjectProviderSnapshot`, `SelectionNativeIndication` and `ConfirmNativeSelection`; the gateway receive source implements `ProjectProviderReceive`. There is no alias or compatibility layer. `python3 scripts/rename_can_provider_references.py` reproduces the rename offline and its `--check` mode lists any remaining old name.
+
+Native records, admission, field ages, retained last-good state and wire values are unchanged. The gateway binary changes, so affected release evidence must be renewed before the final bill of materials freeze.
+
 ## Coordinated public naming adoption
 
 Owned GraphQL types, roots, fields and arguments use snake_case. CamelCase twins are removed. Zone observations use zone_room_temperature and zone_room_humidity. The selector-dependent target_temp_c remains provisional pending resolution of its manual, heating and cooling source selection.

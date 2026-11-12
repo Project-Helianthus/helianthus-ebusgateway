@@ -279,7 +279,7 @@ func (d *growattPCSManagedDriver) Snapshot(now time.Duration) growattProjectSnap
 		}
 		if d.provider != nil {
 			for _, native := range d.provider.providers {
-				s.Providers = append(s.Providers, native.CX17Snapshot(now, d.config.StaleAfter))
+				s.Providers = append(s.Providers, native.ProjectProviderSnapshot(now, d.config.StaleAfter))
 			}
 		}
 	}

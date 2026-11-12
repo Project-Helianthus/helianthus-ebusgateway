@@ -279,7 +279,7 @@ func TestCX21LINKSelectorsStrictAndHeterogeneous(t *testing.T) {
 	c.SourceSelectors = `[{"source":1,"project_code":"QAAA","release":"0005","contract":"legacy19"},{"source":2,"project_code":"QAAa","release":"9011","contract":"release11"}]`
 	c.Context = cx21JSON(t, []growattProjectContext{cx21Context(1), cx21Context(2)})
 	a := cx21Admission(t, c, true)
-	if len(a.selections) != 2 || a.selections[0].CX01Spec().Release != "0005" || a.selections[1].CX01Spec().ProjectCode != "QAAa" {
+	if len(a.selections) != 2 || a.selections[0].SelectionSpecValue().Release != "0005" || a.selections[1].SelectionSpecValue().ProjectCode != "QAAa" {
 		t.Fatal("heterogeneous map lost")
 	}
 	selected, err := a.link.Selections()
@@ -326,19 +326,19 @@ func TestCX21LINKSelectorsStrictAndHeterogeneous(t *testing.T) {
 func TestCX21AssociationKeyEveryField(t *testing.T) {
 	// Each mutation must withhold association; the complete native selection,
 	// including interface name/index and route, is the map key.
-	mutations := map[string]func(*canbusreg.CX01SelectionSpec){
-		"interface name": func(n *canbusreg.CX01SelectionSpec) {
+	mutations := map[string]func(*canbusreg.SelectionSpec){
+		"interface name": func(n *canbusreg.SelectionSpec) {
 			n.Interface, _ = canbus.NewInterfaceIdentity("synthetic2", n.Interface.Index())
-		}, "interface index": func(n *canbusreg.CX01SelectionSpec) {
+		}, "interface index": func(n *canbusreg.SelectionSpec) {
 			n.Interface, _ = canbus.NewInterfaceIdentity(n.Interface.Name(), 8)
 		},
-		"flavor": func(n *canbusreg.CX01SelectionSpec) { n.Flavor = "pcs-parallel" }, "PCSFlavor": func(n *canbusreg.CX01SelectionSpec) { n.PCSFlavor = "pcs-parallel" }, "project": func(n *canbusreg.CX01SelectionSpec) { n.ProjectCode = "QAAa" }, "release": func(n *canbusreg.CX01SelectionSpec) { n.Release = "0005" }, "contract": func(n *canbusreg.CX01SelectionSpec) { n.Choice = "legacy19" }, "direction": func(n *canbusreg.CX01SelectionSpec) { n.Direction = "pcs-to-bms" }, "scope": func(n *canbusreg.CX01SelectionSpec) { n.Scope = "aggregate" }, "bank": func(n *canbusreg.CX01SelectionSpec) { n.Bank = "parallel" }, "endpoint": func(n *canbusreg.CX01SelectionSpec) { n.Endpoint = "other" }, "group": func(n *canbusreg.CX01SelectionSpec) { n.Group = "other" }, "slot": func(n *canbusreg.CX01SelectionSpec) { n.Slot = "other" }, "route": func(n *canbusreg.CX01SelectionSpec) { n.RouteSet = false }, "destination": func(n *canbusreg.CX01SelectionSpec) { n.Destination = 245 }, "source": func(n *canbusreg.CX01SelectionSpec) { n.Source = 2 }, "epoch": func(n *canbusreg.CX01SelectionSpec) { n.Epoch = 2 },
+		"flavor": func(n *canbusreg.SelectionSpec) { n.Flavor = "pcs-parallel" }, "PCSFlavor": func(n *canbusreg.SelectionSpec) { n.PCSFlavor = "pcs-parallel" }, "project": func(n *canbusreg.SelectionSpec) { n.ProjectCode = "QAAa" }, "release": func(n *canbusreg.SelectionSpec) { n.Release = "0005" }, "contract": func(n *canbusreg.SelectionSpec) { n.Choice = "legacy19" }, "direction": func(n *canbusreg.SelectionSpec) { n.Direction = "pcs-to-bms" }, "scope": func(n *canbusreg.SelectionSpec) { n.Scope = "aggregate" }, "bank": func(n *canbusreg.SelectionSpec) { n.Bank = "parallel" }, "endpoint": func(n *canbusreg.SelectionSpec) { n.Endpoint = "other" }, "group": func(n *canbusreg.SelectionSpec) { n.Group = "other" }, "slot": func(n *canbusreg.SelectionSpec) { n.Slot = "other" }, "route": func(n *canbusreg.SelectionSpec) { n.RouteSet = false }, "destination": func(n *canbusreg.SelectionSpec) { n.Destination = 245 }, "source": func(n *canbusreg.SelectionSpec) { n.Source = 2 }, "epoch": func(n *canbusreg.SelectionSpec) { n.Epoch = 2 },
 	}
 	for _, link := range []bool{false, true} {
 		a := cx21Admission(t, cx21Config(t, link), link)
 		for name, mutate := range mutations {
 			t.Run(fmt.Sprintf("link=%v/%s", link, name), func(t *testing.T) {
-				n := a.selections[0].CX01Spec()
+				n := a.selections[0].SelectionSpecValue()
 				mutate(&n)
 				s, _ := canbusreg.NewCXSelection(n)
 				if got := a.associate(s, canbusreg.Evidence{}); got.Selection != (canbusreg.CXSelection{}) {

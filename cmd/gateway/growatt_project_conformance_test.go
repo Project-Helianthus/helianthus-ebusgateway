@@ -180,7 +180,7 @@ func cx22New(t *testing.T, cfg ebusgateway.Config) *cx22Harness {
 			c = cfg.GrowattLINKCANConfig
 		}
 		a := cx21Admission(t, c, link)
-		r := &cx22Receiver{id: a.selections[0].CX01Spec().Interface, records: make(chan growattProjectRecord), fail: make(chan error)}
+		r := &cx22Receiver{id: a.selections[0].SelectionSpecValue().Interface, records: make(chan growattProjectRecord), fail: make(chan error)}
 		h.receivers[id] = r
 		w.open = func(name string) (growattProjectReceiver, error) {
 			if name != r.id.Name() {
@@ -525,7 +525,7 @@ func TestCX22VoltageAndMemberDictionary(t *testing.T) {
 			h := cx22New(t, cfg)
 			d := h.wrappers[managedGrowattPCSID].Runtime.(*growattPCSManagedDriver)
 			original := d.provider.associate
-			d.provider.associate = func(sel canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.CX16ReplayInput {
+			d.provider.associate = func(sel canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
 				in := original(sel, e)
 				member := sel
 				in.PCS.Member = &member
@@ -614,33 +614,33 @@ func TestCX22TransportNegativeVectors(t *testing.T) {
 
 // A follow-up changes exactly one immutable selector component. Each row catches
 // removal of that component from the native equality/conflict fence. This list
-// covers every CX01SelectionSpec field, including otherwise unused route fields.
+// covers every SelectionSpec field, including otherwise unused route fields.
 func TestCX22SelectorReuseInvalidatesDependentFields(t *testing.T) {
-	mutations := map[string]func(*canbusreg.CX01SelectionSpec){
-		"interface-name": func(c *canbusreg.CX01SelectionSpec) {
+	mutations := map[string]func(*canbusreg.SelectionSpec){
+		"interface-name": func(c *canbusreg.SelectionSpec) {
 			c.Interface, _ = canbus.NewInterfaceIdentity("synthetic-other", 7)
 		},
-		"interface-index": func(c *canbusreg.CX01SelectionSpec) {
+		"interface-index": func(c *canbusreg.SelectionSpec) {
 			c.Interface, _ = canbus.NewInterfaceIdentity("synthetic-link", 8)
 		},
-		"flavor":       func(c *canbusreg.CX01SelectionSpec) { c.Flavor = "pcs-standard" },
-		"pcs-flavor":   func(c *canbusreg.CX01SelectionSpec) { c.PCSFlavor = "pcs-parallel" },
-		"project-code": func(c *canbusreg.CX01SelectionSpec) { c.ProjectCode = "QAAa" },
-		"release":      func(c *canbusreg.CX01SelectionSpec) { c.Release = "0010" },
-		"choice":       func(c *canbusreg.CX01SelectionSpec) { c.Choice = "legacy19" },
-		"direction":    func(c *canbusreg.CX01SelectionSpec) { c.Direction = "coordinator-to-module" },
-		"scope":        func(c *canbusreg.CX01SelectionSpec) { c.Scope = "aggregate" },
-		"bank":         func(c *canbusreg.CX01SelectionSpec) { c.Bank = "parallel" },
-		"endpoint":     func(c *canbusreg.CX01SelectionSpec) { c.Endpoint = "other" },
-		"group":        func(c *canbusreg.CX01SelectionSpec) { c.Group = "other" },
-		"slot":         func(c *canbusreg.CX01SelectionSpec) { c.Slot = "other" },
-		"route-set":    func(c *canbusreg.CX01SelectionSpec) { c.RouteSet = false },
-		"destination":  func(c *canbusreg.CX01SelectionSpec) { c.Destination = 245 },
-		"source":       func(c *canbusreg.CX01SelectionSpec) { c.Source = 2 },
-		"epoch":        func(c *canbusreg.CX01SelectionSpec) { c.Epoch = 2 },
+		"flavor":       func(c *canbusreg.SelectionSpec) { c.Flavor = "pcs-standard" },
+		"pcs-flavor":   func(c *canbusreg.SelectionSpec) { c.PCSFlavor = "pcs-parallel" },
+		"project-code": func(c *canbusreg.SelectionSpec) { c.ProjectCode = "QAAa" },
+		"release":      func(c *canbusreg.SelectionSpec) { c.Release = "0010" },
+		"choice":       func(c *canbusreg.SelectionSpec) { c.Choice = "legacy19" },
+		"direction":    func(c *canbusreg.SelectionSpec) { c.Direction = "coordinator-to-module" },
+		"scope":        func(c *canbusreg.SelectionSpec) { c.Scope = "aggregate" },
+		"bank":         func(c *canbusreg.SelectionSpec) { c.Bank = "parallel" },
+		"endpoint":     func(c *canbusreg.SelectionSpec) { c.Endpoint = "other" },
+		"group":        func(c *canbusreg.SelectionSpec) { c.Group = "other" },
+		"slot":         func(c *canbusreg.SelectionSpec) { c.Slot = "other" },
+		"route-set":    func(c *canbusreg.SelectionSpec) { c.RouteSet = false },
+		"destination":  func(c *canbusreg.SelectionSpec) { c.Destination = 245 },
+		"source":       func(c *canbusreg.SelectionSpec) { c.Source = 2 },
+		"epoch":        func(c *canbusreg.SelectionSpec) { c.Epoch = 2 },
 	}
 	// Guard the completeness claim if the public selector gains another field.
-	if reflect.TypeOf(canbusreg.CX01SelectionSpec{}).NumField() != 16 {
+	if reflect.TypeOf(canbusreg.SelectionSpec{}).NumField() != 16 {
 		t.Fatal("update selector mutation coverage")
 	}
 	for name, mutate := range mutations {
@@ -656,9 +656,9 @@ func TestCX22SelectorReuseInvalidatesDependentFields(t *testing.T) {
 			// Change explicit association only while reception is parked. Production
 			// composition and its factory have already supplied the original selector.
 			original := d.provider.associate
-			d.provider.associate = func(sel canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.CX16ReplayInput {
+			d.provider.associate = func(sel canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
 				in := original(sel, e)
-				spec := sel.CX01Spec()
+				spec := sel.SelectionSpecValue()
 				mutate(&spec)
 				in.Selection, _ = canbusreg.NewCXSelection(spec)
 				return in
@@ -780,7 +780,7 @@ func TestCX22FieldAgeIsIndependentOfLatestTraffic(t *testing.T) {
 	f := cx22Load(t)
 	ld := h.wrappers[managedGrowattLINKID].Runtime.(*growattLINKManagedDriver)
 	originalLINK := ld.provider.associate
-	ld.provider.associate = func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.CX16ReplayInput {
+	ld.provider.associate = func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
 		in := originalLINK(s, e)
 		in.PCS.FieldAge = 0
 		for n := range in.CellGates {
@@ -809,7 +809,7 @@ func TestCX22FieldAgeIsIndependentOfLatestTraffic(t *testing.T) {
 	// Per-field ages must survive a new frame and keep their own boundary.
 	d := h.wrappers[managedGrowattPCSID].Runtime.(*growattPCSManagedDriver)
 	original := d.provider.associate
-	d.provider.associate = func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.CX16ReplayInput {
+	d.provider.associate = func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
 		in := original(s, e)
 		in.PCS.FieldAge = 0
 		in.PCS.FieldAges = map[string]time.Duration{"voltage": 0, "current": time.Second}
@@ -885,23 +885,23 @@ func TestCX22NativeContextDoesNotInventTopology(t *testing.T) {
 	// Each changed assertion is independent of the unchanged transport payload.
 	// Endpoint/group/slot/epoch/direction/scope/bank equality checks and explicit
 	// publisher/validity/topology gates must remain separate native decisions.
-	mutations := map[string]func(*canbusreg.CX16ReplayInput){
-		"endpoint":    func(in *canbusreg.CX16ReplayInput) { in.PCS.Endpoint = "other" },
-		"group":       func(in *canbusreg.CX16ReplayInput) { in.PCS.Group = "other" },
-		"slot":        func(in *canbusreg.CX16ReplayInput) { in.PCS.Slot = "other" },
-		"epoch":       func(in *canbusreg.CX16ReplayInput) { in.PCS.Epoch++ },
-		"direction":   func(in *canbusreg.CX16ReplayInput) { in.PCS.Direction = "pcs-to-bms" },
-		"scope":       func(in *canbusreg.CX16ReplayInput) { in.PCS.Scope = "aggregate" },
-		"bank":        func(in *canbusreg.CX16ReplayInput) { in.PCS.Bank = "parallel" },
-		"publisher":   func(in *canbusreg.CX16ReplayInput) { in.PCS.PublisherResolved = false },
-		"measurement": func(in *canbusreg.CX16ReplayInput) { in.PCS.MeasurementValid = false },
+	mutations := map[string]func(*canbusreg.ReplayInput){
+		"endpoint":    func(in *canbusreg.ReplayInput) { in.PCS.Endpoint = "other" },
+		"group":       func(in *canbusreg.ReplayInput) { in.PCS.Group = "other" },
+		"slot":        func(in *canbusreg.ReplayInput) { in.PCS.Slot = "other" },
+		"epoch":       func(in *canbusreg.ReplayInput) { in.PCS.Epoch++ },
+		"direction":   func(in *canbusreg.ReplayInput) { in.PCS.Direction = "pcs-to-bms" },
+		"scope":       func(in *canbusreg.ReplayInput) { in.PCS.Scope = "aggregate" },
+		"bank":        func(in *canbusreg.ReplayInput) { in.PCS.Bank = "parallel" },
+		"publisher":   func(in *canbusreg.ReplayInput) { in.PCS.PublisherResolved = false },
+		"measurement": func(in *canbusreg.ReplayInput) { in.PCS.MeasurementValid = false },
 	}
 	for name, mutate := range mutations {
 		t.Run(name, func(t *testing.T) {
 			h := cx22New(t, cx22Config(t, false))
 			d := h.wrappers[managedGrowattPCSID].Runtime.(*growattPCSManagedDriver)
 			original := d.provider.associate
-			d.provider.associate = func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.CX16ReplayInput {
+			d.provider.associate = func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
 				in := original(s, e)
 				mutate(&in)
 				return in
@@ -1061,11 +1061,11 @@ func TestCX22StaleContributorCannotRenewMean(t *testing.T) {
 			contributors.Fields[1] = field
 			d := h.wrappers[managedGrowattLINKID].Runtime.(*growattLINKManagedDriver)
 			original := d.provider.associate
-			d.provider.associate = func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.CX16ReplayInput {
+			d.provider.associate = func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
 				in := original(s, e)
 				in.PCS.FieldAge = 0
 				in.CellContributors = contributors
-				in.MeanGate = canbusreg.CX12MeasurementGate{Configured: true, Valid: true}
+				in.MeanGate = canbusreg.MeasurementGate{Configured: true, Valid: true}
 				return in
 			}
 			mean := cx22Record(t, r.Interface, 0x9806f401, 2, time.Second+elapsed, "000000000000e40c")
@@ -1162,7 +1162,7 @@ func TestCX22TopologyAssociationWithholdsConfirmation(t *testing.T) {
 	cx22Raw(t, s, r)
 	input := p.Raw[0].Input
 	for _, associated := range []bool{false, true} {
-		result := canbusreg.CX01ConfirmNativeSelection(p.Selection, canbusreg.CX01NativeIndication{Input: input, TopologyAssociated: associated})
+		result := canbusreg.ConfirmNativeSelection(p.Selection, canbusreg.SelectionNativeIndication{Input: input, TopologyAssociated: associated})
 		want := "unsupported"
 		if associated {
 			want = "confirmed"
@@ -1177,7 +1177,7 @@ func TestCX22InvalidFollowupRetainsLastGoodAndSibling(t *testing.T) {
 	h := cx22New(t, cx22Config(t, false))
 	d := h.wrappers[managedGrowattLINKID].Runtime.(*growattLINKManagedDriver)
 	original := d.provider.associate
-	d.provider.associate = func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.CX16ReplayInput {
+	d.provider.associate = func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
 		in := original(s, e)
 		if e.Sequence == 2 {
 			in.CellGates[0].Valid = false

@@ -95,7 +95,7 @@ func TestCX21DistinctInterfacesAndIndependentOpenFailure(t *testing.T) {
 					c = cfg.GrowattLINKCANConfig
 				}
 				a := cx21Admission(t, c, link)
-				r := &cx20Receiver{id: a.selections[0].CX01Spec().Interface, records: make(chan growattProjectRecord), fail: make(chan error)}
+				r := &cx20Receiver{id: a.selections[0].SelectionSpecValue().Interface, records: make(chan growattProjectRecord), fail: make(chan error)}
 				receivers[id] = r
 				counter := new(atomic.Int32)
 				counts[id] = counter
@@ -169,7 +169,7 @@ func TestCX21CachedBindingsAndReceiveFailureFence(t *testing.T) {
 			c = cfg.GrowattLINKCANConfig
 		}
 		a := cx21Admission(t, c, link)
-		r := &cx20Receiver{id: a.selections[0].CX01Spec().Interface, records: make(chan growattProjectRecord), fail: make(chan error)}
+		r := &cx20Receiver{id: a.selections[0].SelectionSpecValue().Interface, records: make(chan growattProjectRecord), fail: make(chan error)}
 		receivers[id] = r
 		w.open = func(string) (growattProjectReceiver, error) { return r, nil }
 		w.reportFailure = func(native drivermanager.Correlation, _ runtimecontrol.LifecycleCorrelation) {
@@ -239,14 +239,14 @@ func managerSnapshotCorrelation(t *testing.T, m *drivermanager.Manager, id runti
 	return drivermanager.Correlation{Generation: s.Generation}
 }
 func TestCX21ExplicitContextHypothesisNegatives(t *testing.T) {
-	mutations := map[string]func(*canbusreg.CX16ReplayInput){
-		"selector": func(in *canbusreg.CX16ReplayInput) { in.Selection = canbusreg.CXSelection{} }, "direction": func(in *canbusreg.CX16ReplayInput) { in.PCS.Direction = "pcs-to-bms" }, "scope": func(in *canbusreg.CX16ReplayInput) { in.PCS.Scope = "aggregate" }, "publisher": func(in *canbusreg.CX16ReplayInput) { in.PCS.PublisherResolved = false }, "endpoint": func(in *canbusreg.CX16ReplayInput) { in.PCS.Endpoint = "other" }, "group": func(in *canbusreg.CX16ReplayInput) { in.PCS.Group = "other" }, "slot": func(in *canbusreg.CX16ReplayInput) { in.PCS.Slot = "other" },
+	mutations := map[string]func(*canbusreg.ReplayInput){
+		"selector": func(in *canbusreg.ReplayInput) { in.Selection = canbusreg.CXSelection{} }, "direction": func(in *canbusreg.ReplayInput) { in.PCS.Direction = "pcs-to-bms" }, "scope": func(in *canbusreg.ReplayInput) { in.PCS.Scope = "aggregate" }, "publisher": func(in *canbusreg.ReplayInput) { in.PCS.PublisherResolved = false }, "endpoint": func(in *canbusreg.ReplayInput) { in.PCS.Endpoint = "other" }, "group": func(in *canbusreg.ReplayInput) { in.PCS.Group = "other" }, "slot": func(in *canbusreg.ReplayInput) { in.PCS.Slot = "other" },
 	}
 	for name, mutate := range mutations {
 		t.Run(name, func(t *testing.T) {
 			a := cx21Admission(t, cx21Config(t, false), false)
 			s := a.selections[0]
-			p, r, _ := cx18New(t, s, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.CX16ReplayInput {
+			p, r, _ := cx18New(t, s, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
 				in := a.associate(s, e)
 				mutate(&in)
 				return in
@@ -340,7 +340,7 @@ func TestCX21ThreeDistinctInterfaces(t *testing.T) {
 			c = cfg.GrowattLINKCANConfig
 		}
 		a := cx21Admission(t, c, link)
-		r := &cx20Receiver{id: a.selections[0].CX01Spec().Interface, records: make(chan growattProjectRecord), fail: make(chan error)}
+		r := &cx20Receiver{id: a.selections[0].SelectionSpecValue().Interface, records: make(chan growattProjectRecord), fail: make(chan error)}
 		b.entry(id).runtime.Runtime.(*growattProjectManagedRuntime).open = func(string) (growattProjectReceiver, error) { projectOpens.Add(1); return r, nil }
 	}
 	manager, err := drivermanager.New(drivermanager.Config{Drivers: sidecars.driverConfigs()})
@@ -404,7 +404,7 @@ func TestCX21LINKOmittedSourceAndWrongRouteRetainRaw(t *testing.T) {
 						t.Error(err)
 					}
 				}()
-				record := cx20Record(s.CX01Spec().Interface, source, 0x1801, 1, time.Second)
+				record := cx20Record(s.SelectionSpecValue().Interface, source, 0x1801, 1, time.Second)
 				// Keep the full payload fixed while varying only the explicit route.
 				frameID := uint32(0x80000000) | 0x18010000 | destination<<8 | source
 				binary.NativeEndian.PutUint32(record.Raw, frameID)
@@ -442,7 +442,7 @@ func TestCX21LINKIndependentValidityRetainsSibling(t *testing.T) {
 					t.Error(err)
 				}
 			}()
-			record := cx20Record(s.CX01Spec().Interface, 1, 0x1810, 1, time.Second)
+			record := cx20Record(s.SelectionSpecValue().Interface, 1, 0x1810, 1, time.Second)
 			cx18Send(t, r, record)
 			got := cx18Wait(t, p, func(s growattProjectSnapshot) bool { return len(s.Providers[0].Raw) > 0 })
 			fields := got.Providers[0].Current

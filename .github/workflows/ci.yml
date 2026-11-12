@@ -74,6 +74,7 @@ jobs:
         with:
           python-version: '3.11'
       - run: python3 -m pip install pytest
+      - run: python3 -m pip install -r requirements-lint.txt
       - run: python3 -m pytest tests/test_metrics_inventory_docs.py -q -p no:cacheprovider
       # cmd/gateway runs at about 600 s under -race here, right at Go's 10-minute
       # default; 20 minutes keeps a margin inside the 45-minute job limit.
@@ -86,6 +87,8 @@ jobs:
       - run: python3 scripts/source_selection_m4_gate_test.py
       - run: python3 scripts/transport_gate_test.py
       - run: python3 scripts/passive_smoke_gate_test.py
+      - run: python3 scripts/check_python_lint.py
+      - run: python3 -m unittest discover -s tests -p test_python_lint.py -v
 
   lint:
     # fork pull requests never run on the persistent runners

@@ -101,9 +101,10 @@ replace protocol owners, and the Gateway does not redefine their evidence.
 
 ## Quickstart (copy/paste)
 
-Prerequisites: Git, Go 1.22 or newer, Python 3.11 or newer, and Node.js 20
-or newer. The public module graph resolves over HTTPS without a GitHub token,
-`GOPRIVATE`, a `.netrc` file, or sibling checkouts.
+Prerequisites: Git, Go 1.22 or newer, Python 3.11 or newer with the Ruff
+version pinned in `requirements-lint.txt` installed for that interpreter, and
+Node.js 20 or newer. The public module graph resolves over HTTPS without a
+GitHub token, `GOPRIVATE`, a `.netrc` file, or sibling checkouts.
 
 ### 1) Clone and validate the public source
 
@@ -261,6 +262,25 @@ not exist yet. Serial devices are supported on Linux and macOS.
 | gateway flags smoke-check | `go run ./cmd/gateway -h` |
 | smoke entrypoint smoke-check | `EBUS_SMOKE=0 go run ./cmd/smoke` |
 | ebusd helper smoke-check | `go run ./cmd/ebusdscan -h` |
+| Python lint baseline (CI parity) | `python3 scripts/check_python_lint.py` |
+
+### Python lint baseline
+
+Install the pinned tool from `requirements-lint.txt`, then run
+`python3 scripts/check_python_lint.py`. All repository Python sources and tests
+are checked with Ruff naming (`N`), complexity (`C90`, maximum 10), and statement
+count (`PLR0915`, maximum 50) rules. Local caches, virtual environments, vendored
+dependencies and the local agent directory (`.claude`) are excluded; source
+ignores and noqa do not hide debt. The offline checker requires Ruff 0.15.10 and
+rejects source symlinks.
+
+The generated [baseline](scripts/python-lint-baseline.json) records path, rule,
+qualified symbol, diagnostic detail and measured values. New violations,
+measured growth, duplicate occurrences and stale entries fail, including in
+files with existing debt. After removing or reducing debt, regenerate with
+`python3 scripts/check_python_lint.py --generate` and review the exact changes;
+regeneration must never approve new or growing debt. Run the synthetic guard
+tests with `python3 -m unittest discover -s tests -p test_python_lint.py`.
 
 ## Link Map
 

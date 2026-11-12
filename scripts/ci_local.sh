@@ -15,6 +15,10 @@ echo "==> semantic import boundary"
 python3 scripts/check_semantic_imports.py
 python3 -m unittest discover -s tests -p test_semantic_imports.py -v
 
+echo "==> Python lint baseline"
+python3 scripts/check_python_lint.py
+python3 -m unittest discover -s tests -p test_python_lint.py -v
+
 echo "==> gofmt"
 unformatted="$(
   git ls-files --cached --others --exclude-standard '*.go' |

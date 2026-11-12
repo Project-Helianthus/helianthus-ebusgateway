@@ -1,5 +1,9 @@
 # Changelog
 
+## Site profile without a system controller
+
+An offline acceptance scenario covers an eBUS that carries a heat source and the vendor's internet module but never a system controller. It runs the production startup scan, registry scan, semantic poller and poll schedule over a synthetic bus in simulated time and asserts the startup phases, the bounded B524 root discovery cadence, the published streams and the regulator-absence signal. The [reduced run sheet](docs/testing/site-without-controller-run-sheet.md) for the hardware session at such a site removes the controller rows and names the remaining ones. The gateway binary is unchanged.
+
 ## canbusreg provider behavior names
 
 The canbusreg pin moves to the main-branch revision with the provider export renames, the Growatt BMS provider error texts and the exported API documentation. The Growatt project configuration, provider, LINK and PCS runtimes, CLI and their tests use the behavior names `SelectionSpec`, `SelectionSpecValue`, `SelectionGroup`, `ReplayInput`, `LINKInput`, `MeasurementGate`, `VectorSnapshot`, `Observation`, `Provider`, `NewLINKProvider`, `NewPCSProvider`, `ProjectProviderSnapshot`, `SelectionNativeIndication` and `ConfirmNativeSelection`; the gateway receive source implements `ProjectProviderReceive`. There is no alias or compatibility layer. `python3 scripts/rename_can_provider_references.py` reproduces the rename offline and its `--check` mode lists any remaining old name.

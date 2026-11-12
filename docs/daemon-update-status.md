@@ -19,6 +19,6 @@ installs, or changes an add-on or device.
 
 Adapter status intentionally remains different. It reports the observed adapter
 firmware only and keeps `adapterStatus.updatesAvailable` false until a public
-catalogue supplies model, hardware revision, bootloader compatibility, exact
+catalog supplies model, hardware revision, bootloader compatibility, exact
 latest version, and provenance. Comparing adapter firmware with the add-on
 release is not valid.

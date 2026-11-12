@@ -299,7 +299,7 @@ func (p *huaweiPVPublication) Publish(cycle modbusreg.HuaweiProviderCycle) error
 	// Retain the exact typed native cycle even when a semantic field is withheld.
 	p.native = cycle
 	for _, child := range cycle.Children {
-		admitted := child.Evidence != modbusreg.HuaweiProviderEvidenceWithheld && child.Reading.ProfileID() == child.ProfileID && child.Reading.UnitID() == child.UnitID && child.IdentifiedGeneration == cycle.Generation && child.Catalogue != nil && child.Catalogue.Outcome() == modbusreg.HuaweiSUN2000CatalogueSelected
+		admitted := child.Evidence != modbusreg.HuaweiProviderEvidenceWithheld && child.Reading.ProfileID() == child.ProfileID && child.Reading.UnitID() == child.UnitID && child.IdentifiedGeneration == cycle.Generation && child.Catalog != nil && child.Catalog.Outcome() == modbusreg.HuaweiSUN2000CatalogSelected
 		admitted = admitted && (cycle.Path == modbusreg.HuaweiProviderPathSmartLogger && child.ProfileID == modbusreg.HuaweiSUN2000M3MonitoringProfileID || cycle.Path == modbusreg.HuaweiProviderPathSDongle && child.ProfileID == modbusreg.HuaweiSUN2000M1MonitoringProfileID)
 		if !admitted {
 			if id, ok := p.published[child.UnitID]; ok {

@@ -359,7 +359,7 @@ func TestIssue469DaemonStatusUsesEmbeddedReleaseAndSharedCachedComparison(t *tes
 		t.Fatalf("cached comparison reads = %d; want one per status provider call", cacheReads.Load())
 	}
 	if got := graphQLProvider.AdapterStatus().UpdatesAvailable; got {
-		t.Fatal("adapter updatesAvailable changed without an authoritative adapter catalogue")
+		t.Fatal("adapter updatesAvailable changed without an authoritative adapter catalog")
 	}
 }
 

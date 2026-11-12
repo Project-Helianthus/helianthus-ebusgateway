@@ -1,6 +1,6 @@
 // Package b503session implements the live-monitor session FSM for the
 // Vaillant B503 extended-register protocol as specified in
-// helianthus-docs-ebus/protocols/vaillant/ebus-vaillant-B503.md sections 6,
+// helianthus-docs-ebus/protocols/vaillant/ebus-vaillant-b503.md sections 6,
 // 7.1.1, and 7.4.
 //
 // The package is deliberately self-contained: no dependencies outside the

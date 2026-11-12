@@ -20126,7 +20126,7 @@
       "fixtures/b524_shared/LICENSE-CC0",
       "fixtures/b524_shared/README.md",
       "fixtures/b524_shared/manifest.json",
-      "fixtures/b524_shared/protocols/vaillant/ebus-vaillant-B524-register-map.md",
+      "fixtures/b524_shared/protocols/vaillant/ebus-vaillant-b524-register-map.md",
       "fixtures/b524_shared/protocols/vaillant/fixtures/b524-basv0-description-profile-schema-v1.json",
       "fixtures/b524_shared/protocols/vaillant/fixtures/b524-basv0-description-profile-v1.json",
       "fixtures/b524_shared/protocols/vaillant/fixtures/b524-basv0-register-observations-schema-v1.json",

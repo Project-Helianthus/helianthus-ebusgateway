@@ -1,0 +1,396 @@
+{
+  "generator_version": 1,
+  "ruff_version": "0.15.10",
+  "thresholds": {
+    "complexity": 10,
+    "statements": 50
+  },
+  "regenerate": "python3 scripts/check_python_lint.py --generate",
+  "violations": [
+    {
+      "path": "scripts/reset_runtime_control.py",
+      "rule": "N818",
+      "symbol": "Ambiguous",
+      "detail": "Exception name `Ambiguous` should be named with an Error suffix",
+      "value": null
+    },
+    {
+      "path": "scripts/reset_runtime_control.py",
+      "rule": "N818",
+      "symbol": "Refusal",
+      "detail": "Exception name `Refusal` should be named with an Error suffix",
+      "value": null
+    },
+    {
+      "path": "scripts/passive_canary_verifier.py",
+      "rule": "PLR0915",
+      "symbol": "build_canary_verdict",
+      "detail": "Too many statements (measured)",
+      "value": 59
+    },
+    {
+      "path": "scripts/passive_canary_verifier.py",
+      "rule": "PLR0915",
+      "symbol": "build_cross_plane_skew_artifact_for_phases",
+      "detail": "Too many statements (measured)",
+      "value": 73
+    },
+    {
+      "path": "scripts/passive_canary_verifier.py",
+      "rule": "PLR0915",
+      "symbol": "build_family_proof_eligibility_artifact_for_run",
+      "detail": "Too many statements (measured)",
+      "value": 138
+    },
+    {
+      "path": "scripts/passive_canary_verifier.py",
+      "rule": "PLR0915",
+      "symbol": "build_parser",
+      "detail": "Too many statements (measured)",
+      "value": 101
+    },
+    {
+      "path": "scripts/passive_canary_verifier.py",
+      "rule": "PLR0915",
+      "symbol": "build_promotion_eligibility_artifact_for_run",
+      "detail": "Too many statements (measured)",
+      "value": 252
+    },
+    {
+      "path": "scripts/passive_canary_verifier.py",
+      "rule": "PLR0915",
+      "symbol": "build_replay_falsification_verdict",
+      "detail": "Too many statements (measured)",
+      "value": 181
+    },
+    {
+      "path": "scripts/passive_canary_verifier.py",
+      "rule": "PLR0915",
+      "symbol": "build_rollback_result_artifact",
+      "detail": "Too many statements (measured)",
+      "value": 87
+    },
+    {
+      "path": "scripts/passive_canary_verifier.py",
+      "rule": "PLR0915",
+      "symbol": "build_timing_reference_verdict",
+      "detail": "Too many statements (measured)",
+      "value": 110
+    },
+    {
+      "path": "scripts/passive_canary_verifier.py",
+      "rule": "PLR0915",
+      "symbol": "build_window_read_avoidance_accounting_for_phases",
+      "detail": "Too many statements (measured)",
+      "value": 81
+    },
+    {
+      "path": "scripts/passive_canary_verifier.py",
+      "rule": "PLR0915",
+      "symbol": "evaluate_warmup_behavior",
+      "detail": "Too many statements (measured)",
+      "value": 72
+    },
+    {
+      "path": "scripts/passive_canary_verifier.py",
+      "rule": "PLR0915",
+      "symbol": "load_phase_status_snapshot",
+      "detail": "Too many statements (measured)",
+      "value": 60
+    },
+    {
+      "path": "scripts/passive_canary_verifier.py",
+      "rule": "PLR0915",
+      "symbol": "load_rollback_execution_artifact",
+      "detail": "Too many statements (measured)",
+      "value": 69
+    },
+    {
+      "path": "scripts/passive_canary_verifier.py",
+      "rule": "PLR0915",
+      "symbol": "load_structured_snapshot_bundle",
+      "detail": "Too many statements (measured)",
+      "value": 98
+    },
+    {
+      "path": "scripts/passive_canary_verifier.py",
+      "rule": "PLR0915",
+      "symbol": "summarize_run",
+      "detail": "Too many statements (measured)",
+      "value": 56
+    },
+    {
+      "path": "scripts/passive_canary_verifier.py",
+      "rule": "PLR0915",
+      "symbol": "validate_family_upstream_canary_verdict",
+      "detail": "Too many statements (measured)",
+      "value": 199
+    },
+    {
+      "path": "scripts/passive_canary_verifier.py",
+      "rule": "PLR0915",
+      "symbol": "validate_family_upstream_replay_verdict",
+      "detail": "Too many statements (measured)",
+      "value": 214
+    },
+    {
+      "path": "scripts/passive_canary_verifier_test.py",
+      "rule": "PLR0915",
+      "symbol": "PassiveSmokeCanaryVerdictGateTests._run_smoke_with_fake_tools",
+      "detail": "Too many statements (measured)",
+      "value": 86
+    },
+    {
+      "path": "scripts/reset_runtime_control.py",
+      "rule": "PLR0915",
+      "symbol": "plan_reset",
+      "detail": "Too many statements (measured)",
+      "value": 73
+    },
+    {
+      "path": "scripts/passive_canary_verifier_test.py",
+      "rule": "C901",
+      "symbol": "PassiveSmokeCanaryVerdictGateTests._run_smoke_with_fake_tools",
+      "detail": "`_run_smoke_with_fake_tools` is too complex (measured)",
+      "value": 18
+    },
+    {
+      "path": "scripts/passive_canary_verifier.py",
+      "rule": "C901",
+      "symbol": "build_canary_verdict",
+      "detail": "`build_canary_verdict` is too complex (measured)",
+      "value": 12
+    },
+    {
+      "path": "scripts/passive_canary_verifier.py",
+      "rule": "C901",
+      "symbol": "build_cross_plane_skew_artifact_for_phases",
+      "detail": "`build_cross_plane_skew_artifact_for_phases` is too complex (measured)",
+      "value": 19
+    },
+    {
+      "path": "scripts/passive_canary_verifier.py",
+      "rule": "C901",
+      "symbol": "build_family_proof_eligibility_artifact_for_run",
+      "detail": "`build_family_proof_eligibility_artifact_for_run` is too complex (measured)",
+      "value": 43
+    },
+    {
+      "path": "scripts/passive_canary_verifier.py",
+      "rule": "C901",
+      "symbol": "build_promotion_eligibility_artifact_for_run",
+      "detail": "`build_promotion_eligibility_artifact_for_run` is too complex (measured)",
+      "value": 86
+    },
+    {
+      "path": "scripts/passive_canary_verifier.py",
+      "rule": "C901",
+      "symbol": "build_publisher_cadence_artifact_for_phases",
+      "detail": "`build_publisher_cadence_artifact_for_phases` is too complex (measured)",
+      "value": 14
+    },
+    {
+      "path": "scripts/passive_canary_verifier.py",
+      "rule": "C901",
+      "symbol": "build_replay_falsification_verdict",
+      "detail": "`build_replay_falsification_verdict` is too complex (measured)",
+      "value": 37
+    },
+    {
+      "path": "scripts/passive_canary_verifier.py",
+      "rule": "C901",
+      "symbol": "build_rollback_execution_artifact",
+      "detail": "`build_rollback_execution_artifact` is too complex (measured)",
+      "value": 13
+    },
+    {
+      "path": "scripts/passive_canary_verifier.py",
+      "rule": "C901",
+      "symbol": "build_rollback_result_artifact",
+      "detail": "`build_rollback_result_artifact` is too complex (measured)",
+      "value": 23
+    },
+    {
+      "path": "scripts/passive_canary_verifier.py",
+      "rule": "C901",
+      "symbol": "build_timing_reference_verdict",
+      "detail": "`build_timing_reference_verdict` is too complex (measured)",
+      "value": 30
+    },
+    {
+      "path": "scripts/passive_canary_verifier.py",
+      "rule": "C901",
+      "symbol": "build_window_read_avoidance_accounting_for_phases",
+      "detail": "`build_window_read_avoidance_accounting_for_phases` is too complex (measured)",
+      "value": 20
+    },
+    {
+      "path": "scripts/check_naming_contract.py",
+      "rule": "C901",
+      "symbol": "check",
+      "detail": "`check` is too complex (measured)",
+      "value": 14
+    },
+    {
+      "path": "scripts/passive_canary_verifier.py",
+      "rule": "C901",
+      "symbol": "evaluate_feature_flag_consistency",
+      "detail": "`evaluate_feature_flag_consistency` is too complex (measured)",
+      "value": 15
+    },
+    {
+      "path": "scripts/passive_canary_verifier.py",
+      "rule": "C901",
+      "symbol": "evaluate_publisher_cadence",
+      "detail": "`evaluate_publisher_cadence` is too complex (measured)",
+      "value": 16
+    },
+    {
+      "path": "scripts/passive_canary_verifier.py",
+      "rule": "C901",
+      "symbol": "evaluate_warmup_behavior",
+      "detail": "`evaluate_warmup_behavior` is too complex (measured)",
+      "value": 47
+    },
+    {
+      "path": "scripts/passive_canary_verifier.py",
+      "rule": "C901",
+      "symbol": "extract_locked_replay_case_contracts",
+      "detail": "`extract_locked_replay_case_contracts` is too complex (measured)",
+      "value": 24
+    },
+    {
+      "path": "scripts/source_selection_m4_gate.py",
+      "rule": "C901",
+      "symbol": "go_string_literals",
+      "detail": "`go_string_literals` is too complex (measured)",
+      "value": 13
+    },
+    {
+      "path": "scripts/passive_canary_verifier.py",
+      "rule": "C901",
+      "symbol": "load_and_validate_manifest",
+      "detail": "`load_and_validate_manifest` is too complex (measured)",
+      "value": 12
+    },
+    {
+      "path": "scripts/passive_canary_verifier.py",
+      "rule": "C901",
+      "symbol": "load_phase_status_snapshot",
+      "detail": "`load_phase_status_snapshot` is too complex (measured)",
+      "value": 18
+    },
+    {
+      "path": "scripts/passive_canary_verifier.py",
+      "rule": "C901",
+      "symbol": "load_rollback_execution_artifact",
+      "detail": "`load_rollback_execution_artifact` is too complex (measured)",
+      "value": 27
+    },
+    {
+      "path": "scripts/passive_canary_verifier.py",
+      "rule": "C901",
+      "symbol": "load_structured_snapshot_bundle",
+      "detail": "`load_structured_snapshot_bundle` is too complex (measured)",
+      "value": 30
+    },
+    {
+      "path": "scripts/passive_canary_verifier.py",
+      "rule": "C901",
+      "symbol": "load_wire_timing_reference_artifact",
+      "detail": "`load_wire_timing_reference_artifact` is too complex (measured)",
+      "value": 13
+    },
+    {
+      "path": "scripts/source_selection_m4_gate.py",
+      "rule": "C901",
+      "symbol": "main",
+      "detail": "`main` is too complex (measured)",
+      "value": 21
+    },
+    {
+      "path": "scripts/check_semantic_imports.py",
+      "rule": "C901",
+      "symbol": "parse_sources",
+      "detail": "`parse_sources` is too complex (measured)",
+      "value": 12
+    },
+    {
+      "path": "scripts/reset_runtime_control.py",
+      "rule": "C901",
+      "symbol": "plan_reset",
+      "detail": "`plan_reset` is too complex (measured)",
+      "value": 24
+    },
+    {
+      "path": "scripts/reset_runtime_control.py",
+      "rule": "C901",
+      "symbol": "run",
+      "detail": "`run` is too complex (measured)",
+      "value": 11
+    },
+    {
+      "path": "tests/test_metrics_inventory_docs.py",
+      "rule": "C901",
+      "symbol": "sample_labels",
+      "detail": "`sample_labels` is too complex (measured)",
+      "value": 15
+    },
+    {
+      "path": "tests/test_metrics_inventory_docs.py",
+      "rule": "C901",
+      "symbol": "sample_labels.split_args",
+      "detail": "`split_args` is too complex (measured)",
+      "value": 11
+    },
+    {
+      "path": "tests/test_metrics_inventory_docs.py",
+      "rule": "C901",
+      "symbol": "split_top_level",
+      "detail": "`split_top_level` is too complex (measured)",
+      "value": 11
+    },
+    {
+      "path": "scripts/passive_canary_verifier.py",
+      "rule": "C901",
+      "symbol": "summarize_run",
+      "detail": "`summarize_run` is too complex (measured)",
+      "value": 18
+    },
+    {
+      "path": "scripts/reset_runtime_control.py",
+      "rule": "C901",
+      "symbol": "validate_base_value",
+      "detail": "`validate_base_value` is too complex (measured)",
+      "value": 11
+    },
+    {
+      "path": "scripts/passive_canary_verifier.py",
+      "rule": "C901",
+      "symbol": "validate_family_upstream_canary_verdict",
+      "detail": "`validate_family_upstream_canary_verdict` is too complex (measured)",
+      "value": 120
+    },
+    {
+      "path": "scripts/passive_canary_verifier.py",
+      "rule": "C901",
+      "symbol": "validate_family_upstream_replay_verdict",
+      "detail": "`validate_family_upstream_replay_verdict` is too complex (measured)",
+      "value": 128
+    },
+    {
+      "path": "scripts/reset_runtime_control.py",
+      "rule": "C901",
+      "symbol": "verify_recovery",
+      "detail": "`verify_recovery` is too complex (measured)",
+      "value": 12
+    },
+    {
+      "path": "scripts/check_semantic_imports.py",
+      "rule": "C901",
+      "symbol": "violations",
+      "detail": "`violations` is too complex (measured)",
+      "value": 14
+    }
+  ]
+}

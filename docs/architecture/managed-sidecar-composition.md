@@ -474,7 +474,7 @@ and native qualification; no status read opens an endpoint.
 | SunSpec TCP | Proven: TCP adapter and qualify/refresh path exist. | Requires the existing exact native profile and observation evidence; availability does not qualify a peer. | Proven: managed factory, shared service registration and generation-guarded consumer bindings. |
 | Growatt BMS RS-485 | Proven: production provider/open seam exists. | Existing family/revision admission and qualified native evidence remain required. | Proven: inert managed factory and generation-owned lifecycle wrapper exist. Shared service registration and generation-guarded consumer rebinding are composed. Semantic recovery remains subject to the managed-recorder boundary. No Protocol II or CAN inference. |
 | eeBUS | Proven: runtime, operator adapter and slot exist. | Existing trust, pairing and native use-case evidence remain independent of process health. | Proven: shared service registration and generation-guarded runtime, operator and capture bindings. Native qualification and semantic promotion remain separate. |
-| Huawei SmartLogger | Admitted native read-only provider composed per configured instance. | Native identity, catalogue and child-profile admission remain required; physical qualification is Unknown. | One source per instance; lazily declared PV assets per admitted inverter. No cross-family fallback. |
+| Huawei SmartLogger | Admitted native read-only provider composed per configured instance. | Native identity, catalog and child-profile admission remain required; physical qualification is Unknown. | One source per instance; lazily declared PV assets per admitted inverter. No cross-family fallback. |
 | Huawei EMMA | Identity-only supplied-evidence seam exists. | No admitted acquisition profile. | Withheld as a registered instance (`NO_ADMITTED_CHILD_PROFILE`); registry issue 199 remains the prerequisite. |
 | Huawei S-Dongle | Admitted native read-only provider composed per configured instance. | Native same-connection identity tuple and child profile remain required; no inherited qualification. | One source per instance and one PV asset per admitted child. The native recorded-stop safeguards remain enforced. |
 | Growatt Protocol II | Typed/injected-provider contracts exist. | Separate evidence required; BMS RS-485 evidence is insufficient. | Withheld pending its own evidence and decision. |
@@ -578,7 +578,7 @@ It adds no storage, meter, control or all-family readiness claim. Storage and
 meter withholding and the per-instance Portal contribution are specified in the
 next section.
 
-The registry owns identity, catalogue selection, native decoding, per-child
+The registry owns identity, catalog selection, native decoding, per-child
 backoff, retry bounds and partial last-known-good group readings. The gateway
 supplies one connected session exposing only FC03 (at most 123 registers) and
 FC2B/MEI 0x0E basic or extended reads. Each identification call requests exactly

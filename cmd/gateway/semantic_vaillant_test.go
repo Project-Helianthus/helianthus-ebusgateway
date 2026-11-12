@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"slices"
 	"strings"
@@ -7076,5 +7077,121 @@ func TestReadEnergyRegister_MonthlyNeverServedFromCache(t *testing.T) {
 	// Lifetime total is undated: normal TTL, served from cache.
 	if _, ok := poller.readEnergyRegister(ctx, life); !ok || calls != warm+2 {
 		t.Fatalf("lifetime read calls=%d; want cache hit (%d)", calls, warm+2)
+	}
+}
+
+func newFallbackGatePoller(controller byte, zoneKnown bool, state regulatorAbsenceState, probes *int) *vaillantSemanticPoller {
+	poller := &vaillantSemanticPoller{
+		reg:               newTestRegistry(registry.DeviceInfo{Address: 0x08, Manufacturer: "Vaillant", DeviceID: "BAI00"}),
+		provider:          graphql.NewLiveSemanticProvider(),
+		controller:        controller,
+		regAbsenceState:   state,
+		discoveryInterval: 10 * time.Minute,
+		zones:             make(map[byte]*vaillantZoneSnapshot),
+		presence:          make(map[byte]*zonePresenceRecord),
+		circuits:          make(map[byte]*vaillantCircuitSnapshot),
+		radioDevices:      make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot),
+		solarCylinders:    make(map[byte]*vaillantCylinderSnapshot),
+		b524ProbeFn: func(context.Context, byte, byte, byte, byte, uint16) bool {
+			*probes++
+			return false
+		},
+	}
+	if zoneKnown {
+		poller.zones[0x00] = &vaillantZoneSnapshot{}
+	}
+	return poller
+}
+
+// TestVaillantSemanticPollerFallbackDiscoveryGate varies every field of the
+// gate: the task (state or configuration), whether a controller is known,
+// whether a zone is known and the absence state. Production mutations caught:
+// skipping in ABSENCE_GRACE or PRESENT too (those rows expect a pass);
+// dropping the "no controller" condition (controller-known ABSENT rows, the
+// "controller known, no zone" case, expect a pass); gating only one of the two
+// tasks (each row runs per task); gating on the zone map instead of the
+// controller (controller-less ABSENT rows with a cached zone expect a skip).
+func TestVaillantSemanticPollerFallbackDiscoveryGate(t *testing.T) {
+	tasks := []struct {
+		name string
+		run  func(*vaillantSemanticPoller, context.Context)
+	}{
+		{name: "state", run: (*vaillantSemanticPoller).refreshState},
+		{name: "config", run: (*vaillantSemanticPoller).refreshConfig},
+	}
+	for _, task := range tasks {
+		for _, controller := range []byte{0x00, 0x15} {
+			for _, zoneKnown := range []bool{false, true} {
+				for _, state := range []regulatorAbsenceState{regulatorPresent, regulatorAbsenceGrace, regulatorAbsent} {
+					name := fmt.Sprintf("%s/controller_0x%02X/zone_known_%v/%s", task.name, controller, zoneKnown, state)
+					t.Run(name, func(t *testing.T) {
+						// The fallback is reached when no controller or no zone
+						// is known; it is skipped only without a controller in ABSENT.
+						reached := controller == 0 || !zoneKnown
+						want := reached && (controller != 0 || state != regulatorAbsent)
+						probes := 0
+						poller := newFallbackGatePoller(controller, zoneKnown, state, &probes)
+						task.run(poller, context.Background())
+						if got := probes > 0; got != want {
+							t.Fatalf("root discovery ran = %v (%d probe calls); want %v", got, probes, want)
+						}
+					})
+				}
+			}
+		}
+	}
+}
+
+type fallbackLogWriter struct {
+	mu  *sync.Mutex
+	out *strings.Builder
+}
+
+func (w fallbackLogWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.out.Write(p)
+}
+
+// TestVaillantSemanticPollerFallbackSuspensionLogsOnTransition checks that the
+// suspension marker is written once per entry into the suspended state, not on
+// every skipped tick.
+func TestVaillantSemanticPollerFallbackSuspensionLogsOnTransition(t *testing.T) {
+	var mu sync.Mutex
+	var out strings.Builder
+	original := log.Writer()
+	log.SetOutput(fallbackLogWriter{mu: &mu, out: &out})
+	t.Cleanup(func() { log.SetOutput(original) })
+	marker := "semantic_discovery_fallback_suspended regulator_state=ABSENT discovery_interval=10m0s"
+	count := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return strings.Count(out.String(), marker)
+	}
+
+	probes := 0
+	poller := newFallbackGatePoller(0x00, false, regulatorAbsent, &probes)
+	ctx := context.Background()
+	poller.refreshState(ctx)
+	poller.refreshConfig(ctx)
+	poller.refreshState(ctx)
+	if got := count(); got != 1 || probes != 0 {
+		t.Fatalf("markers = %d, probe calls = %d after three skipped ticks; want 1, 0", got, probes)
+	}
+
+	poller.mu.Lock()
+	poller.regAbsenceState = regulatorAbsenceGrace
+	poller.mu.Unlock()
+	poller.refreshState(ctx)
+	if got := count(); got != 1 || probes == 0 {
+		t.Fatalf("markers = %d, probe calls = %d after leaving ABSENT; want 1 and a discovery pass", got, probes)
+	}
+
+	poller.mu.Lock()
+	poller.regAbsenceState = regulatorAbsent
+	poller.mu.Unlock()
+	poller.refreshState(ctx)
+	if got := count(); got != 2 {
+		t.Fatalf("markers = %d after entering ABSENT again; want 2", got)
 	}
 }

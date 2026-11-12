@@ -366,6 +366,7 @@ type vaillantSemanticPoller struct {
 	boilerThermal               *boilerThermalPublisher
 	regulatorCapability         productids.ControllerCapability
 	regAbsenceState             regulatorAbsenceState
+	discoveryFallbackSuspended  bool
 	regAbsenceSince             time.Time
 	registryDeviceCount         int
 	regulatorRecheckInterval    time.Duration
@@ -497,6 +498,25 @@ func (p *vaillantSemanticPoller) refreshRegulatorCapability(_ context.Context) {
 		log.Printf("semantic_regulator_recheck inventory_change prev=%d curr=%d", prevDeviceCount, deviceCount)
 		p.enqueueTask(semanticTaskRefreshDiscovery, semanticTaskPriorityLow, p.refreshDiscovery)
 	}
+}
+
+// fallbackDiscoveryAllowed reports whether the state and configuration tasks
+// may run their fallback root discovery. While no controller is known and the
+// regulator absence state is ABSENT, root discovery runs only from the
+// discovery task at the configured discovery interval and from event-driven
+// refreshes (inventory change, passive insertion and promotion). A known
+// controller without zones keeps the fallback.
+func (p *vaillantSemanticPoller) fallbackDiscoveryAllowed(controller byte) bool {
+	p.mu.Lock()
+	suspend := controller == 0 && p.regAbsenceState == regulatorAbsent
+	logSuspension := suspend && !p.discoveryFallbackSuspended
+	p.discoveryFallbackSuspended = suspend
+	interval := p.discoveryInterval
+	p.mu.Unlock()
+	if logSuspension {
+		log.Printf("semantic_discovery_fallback_suspended regulator_state=%s discovery_interval=%s", regulatorAbsent, interval)
+	}
+	return !suspend
 }
 
 func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
@@ -910,7 +930,7 @@ func (p *vaillantSemanticPoller) tryRefreshFromEbusdGrabWithInstances(ctx contex
 func (p *vaillantSemanticPoller) refreshConfig(ctx context.Context) {
 	controller, zones := p.snapshotZones()
 	grabHydrated := false
-	if controller == 0 || len(zones) == 0 {
+	if (controller == 0 || len(zones) == 0) && p.fallbackDiscoveryAllowed(controller) {
 		p.refreshDiscovery(ctx)
 		controller, zones = p.snapshotZones()
 	}
@@ -1213,7 +1233,7 @@ func parseUint16Token(token string) (*uint16, bool) {
 func (p *vaillantSemanticPoller) refreshState(ctx context.Context) {
 	controller, zones := p.snapshotZones()
 	grabHydrated := false
-	if controller == 0 || len(zones) == 0 {
+	if (controller == 0 || len(zones) == 0) && p.fallbackDiscoveryAllowed(controller) {
 		p.refreshDiscovery(ctx)
 		controller, zones = p.snapshotZones()
 	}

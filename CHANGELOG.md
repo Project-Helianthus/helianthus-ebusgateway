@@ -1,5 +1,9 @@
 # Changelog
 
+## Hang-detection budgets in timing-sensitive tests
+
+Three tests that still failed on a short hang-detection budget under a loaded race run get a 60 second budget: the runtime-control test that observed transitions never bump the desired revision, where START after STOPPED is still retried only on `TRANSITION_BUSY`; the semantic-operations router waits for executor completion and for the late-evidence replay record; and the wait for the replaced generation in the Growatt managed sidecar restart test, now bounded by that test's deadline. Every behavioral, revision, event, timeout, replay and no-extra-dispatch assertion is unchanged. Only test files change, so the gateway binary is unchanged. The measured slow-test inventory, `testing.Short` skips and the remaining local-gate work stay open.
+
 ## Site profile without a system controller
 
 An offline acceptance scenario covers an eBUS that carries a heat source and the vendor's internet module but never a system controller. It runs the production startup scan, registry scan, B524 root probe, semantic poller, read scheduler and poll schedule over a recording synthetic bus on a simulated clock that starts at process start. It asserts the startup phases against the boot-live deadline, the root discovery frames and attempts, the native refresh spacing of the heat-source registers, the published streams and the regulator-absence signal. The [reduced run sheet](docs/testing/site-without-controller-run-sheet.md) for the hardware session at such a site removes the controller rows and names the remaining ones.

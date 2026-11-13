@@ -1650,6 +1650,8 @@ func TestQueryResolvers_Integration(t *testing.T) {
 	})
 
 	t.Run("energy_totals_root", func(t *testing.T) {
+		// No energy point has been accepted yet: the plane is null, not a
+		// projection of 0/none placeholders.
 		request := graphqlclient.NewRequest(`
 			query {
 				energy_totals {
@@ -1657,7 +1659,6 @@ func TestQueryResolvers_Integration(t *testing.T) {
 						dhw {
 							today
 							today_meta { freshness_state provenance stale }
-							yearly_meta { freshness_state provenance stale }
 						}
 					}
 				}
@@ -1668,17 +1669,7 @@ func TestQueryResolvers_Integration(t *testing.T) {
 			EnergyTotals *struct {
 				Gas struct {
 					DHW struct {
-						Today     float64 `json:"today"`
-						TodayMeta struct {
-							FreshnessState string `json:"freshness_state"`
-							Provenance     string `json:"provenance"`
-							Stale          bool   `json:"stale"`
-						} `json:"today_meta"`
-						YearlyMeta []struct {
-							FreshnessState string `json:"freshness_state"`
-							Provenance     string `json:"provenance"`
-							Stale          bool   `json:"stale"`
-						} `json:"yearly_meta"`
+						Today float64 `json:"today"`
 					} `json:"dhw"`
 				} `json:"gas"`
 			} `json:"energy_totals"`
@@ -1687,20 +1678,8 @@ func TestQueryResolvers_Integration(t *testing.T) {
 		if err := client.Run(context.Background(), request, &response); err != nil {
 			t.Fatalf("energy_totals no-data root query error = %v", err)
 		}
-		if response.EnergyTotals == nil {
-			t.Fatal("energy_totals = nil; want visible no-data object")
-		}
-		if response.EnergyTotals.Gas.DHW.Today != 0 {
-			t.Fatalf("gas.dhw.today = %v; want 0 when no values were seen", response.EnergyTotals.Gas.DHW.Today)
-		}
-		if response.EnergyTotals.Gas.DHW.TodayMeta.FreshnessState != "never_seen" {
-			t.Fatalf("gas.dhw.today_meta.freshness_state = %q; want never_seen", response.EnergyTotals.Gas.DHW.TodayMeta.FreshnessState)
-		}
-		if response.EnergyTotals.Gas.DHW.TodayMeta.Provenance != "none" {
-			t.Fatalf("gas.dhw.today_meta.provenance = %q; want none", response.EnergyTotals.Gas.DHW.TodayMeta.Provenance)
-		}
-		if len(response.EnergyTotals.Gas.DHW.YearlyMeta) != 2 {
-			t.Fatalf("gas.dhw.yearly_meta len = %d; want 2", len(response.EnergyTotals.Gas.DHW.YearlyMeta))
+		if response.EnergyTotals != nil {
+			t.Fatalf("energy_totals = %+v; want null before the first accepted point", response.EnergyTotals)
 		}
 	})
 

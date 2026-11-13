@@ -9,12 +9,28 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 )
 
-func TestSemanticEnergyAdaptersExposeNeverSeenShapeWithoutPoints(t *testing.T) {
+// GraphQL, MCP and portal agree: no energy plane before the first accepted
+// point, and the never-seen 0/none slot projection from that point on.
+func TestSemanticEnergyAdaptersNullUntilFirstAcceptedPoint(t *testing.T) {
 	provider := graphql.NewLiveSemanticProvider()
+
+	if got := provider.EnergyTotals(); got != nil {
+		t.Fatalf("provider.EnergyTotals() before any point = %+v; want nil", got)
+	}
+	if got := newMCPSemanticProvider(provider).EnergyTotals(); got != nil {
+		t.Fatalf("mcp adapter EnergyTotals() before any point = %+v; want nil", got)
+	}
+	if got := mapPortalEnergyTotals(provider.EnergyTotals()); got != nil {
+		t.Fatalf("portal mapper before any point = %+v; want nil", got)
+	}
+
+	if !provider.ApplyEnergyFromRegister(provider.EnergyWindowKey("electricity", "climate", "day", ""), 1.25) {
+		t.Fatal("ApplyEnergyFromRegister(electricity climate day) rejected; want accepted")
+	}
 
 	graphTotals := provider.EnergyTotals()
 	if graphTotals == nil {
-		t.Fatal("provider.EnergyTotals() = nil; want visible no-data energy shape")
+		t.Fatal("provider.EnergyTotals() after the first point = nil; want projection")
 	}
 	if got := graphTotals.Gas.DHW.TodayMeta.FreshnessState; got != graphql.EnergyFreshnessStateNeverSeen {
 		t.Fatalf("provider gas.dhw.todayMeta.freshnessState = %q; want never_seen", got)
@@ -25,7 +41,7 @@ func TestSemanticEnergyAdaptersExposeNeverSeenShapeWithoutPoints(t *testing.T) {
 
 	mcpTotals := newMCPSemanticProvider(provider).EnergyTotals()
 	if mcpTotals == nil {
-		t.Fatal("mcp adapter EnergyTotals() = nil; want visible no-data energy shape")
+		t.Fatal("mcp adapter EnergyTotals() after the first point = nil; want projection")
 	}
 	if got := mcpTotals.Gas.DHW.TodayMeta.FreshnessState; got != "never_seen" {
 		t.Fatalf("mcp gas.dhw.today_meta.freshness_state = %q; want never_seen", got)
@@ -33,10 +49,13 @@ func TestSemanticEnergyAdaptersExposeNeverSeenShapeWithoutPoints(t *testing.T) {
 	if got := mcpTotals.Gas.DHW.TodayMeta.Provenance; got != "none" {
 		t.Fatalf("mcp gas.dhw.today_meta.provenance = %q; want none", got)
 	}
+	if got := mcpTotals.Electric.Climate.Today; got != 1.25 {
+		t.Fatalf("mcp electric.climate.today = %v; want 1.25", got)
+	}
 
 	portalTotals := mapPortalEnergyTotals(provider.EnergyTotals())
 	if portalTotals == nil {
-		t.Fatal("portal mapper returned nil; want visible no-data energy shape")
+		t.Fatal("portal mapper after the first point = nil; want projection")
 	}
 	if got := portalTotals.Gas.DHW.TodayMeta.FreshnessState; got != "never_seen" {
 		t.Fatalf("portal gas.dhw.today_meta.freshness_state = %q; want never_seen", got)

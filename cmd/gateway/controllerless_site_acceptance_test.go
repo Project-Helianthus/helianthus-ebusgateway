@@ -42,13 +42,17 @@ package main
 // Expected results, asserted below:
 //   - startup, automatic source (add-on default): one scan pass and one root
 //     confirmation probe call; the active probe releases semantic polling.
-//     Explicit source: two passes, then the loop gives up root confirmation and
-//     reports admission failure while still releasing semantic polling;
+//     Explicit source: the same single pass; root confirmation finds no root
+//     and the catalog classifies every Vaillant identity as a non-controller,
+//     so active confirmation admits. With an unclassified or a regulator
+//     identity at the controller address the explicit source still needs a
+//     root: two passes, then admission failure while semantic polling starts;
 //   - phases: a boiler-class heat source reaches LIVE_READY from the boiler
-//     stream alone, before the boot-live deadline in both timing profiles with
-//     the automatic source; with an explicit source and timeout timing the
-//     deadline passes first (DEGRADED, then LIVE_READY). A heat-pump-class heat
-//     source publishes no stream and the deadline moves BOOT_INIT to DEGRADED;
+//     stream alone, before the boot-live deadline in both timing profiles and
+//     both admissions; with an explicit source, an unclassified identity at the
+//     controller address and timeout timing the deadline passes first
+//     (DEGRADED, then LIVE_READY). A heat-pump-class heat source publishes no
+//     stream and the deadline moves BOOT_INIT to DEGRADED;
 //   - controller-class traffic is B524 root discovery only: each candidate
 //     (0x15 first, then 0x08, 0x26 and any identified device) gets one
 //     production probe call per discovery pass, three read attempts each with
@@ -61,13 +65,14 @@ package main
 //     has expired: fast-tier registers once a minute, medium-tier every 5 min,
 //     slow-tier every 10 min;
 //   - published: boiler status from the heat source only, an ABSENT FM5 mode,
-//     empty zone, circuit, radio and cylinder lists, an all-null solar plane and
-//     the zero/provenance-none energy projection; nothing for DHW, system or
-//     schedules; no controller-owned boiler mirror field;
+//     empty zone, circuit, radio and cylinder lists, an all-null solar plane, a
+//     null energy plane in GraphQL and MCP (no energy point is ever accepted);
+//     nothing for DHW, system or schedules; no controller-owned boiler mirror
+//     field;
 //   - absence: vaillant_regulator_capability is NONE from the first discovery
 //     (UNKNOWN when an identified module has no readable serial), identical in
-//     GraphQL and MCP; the absence state goes PRESENT -> ABSENCE_GRACE at the
-//     first recheck -> ABSENT five minutes after that.
+//     GraphQL and MCP; the absence state goes UNKNOWN (not yet evaluated) ->
+//     ABSENCE_GRACE at the first recheck -> ABSENT five minutes after that.
 //
 // Nothing here writes to a bus or answers as a controller: the synthetic bus
 // leaves every B524 request unanswered and the test fails on any write frame.
@@ -865,11 +870,7 @@ func controllerlessGraphQL(t *testing.T, provider *graphql.LiveSemanticProvider)
 		cylinders { __typename }
 		fm5_semantic_mode
 		solar { collector_temperature_c return_temperature_c pump_active current_yield pump_hours solar_enabled function_mode }
-		energy_totals {
-			gas { dhw { today yearly monthly today_meta { provenance last_observed_utc } } climate { today yearly monthly } }
-			electric { dhw { today yearly monthly } climate { today yearly monthly } }
-			solar { dhw { today yearly monthly } climate { today yearly monthly } }
-		}
+		energy_totals { gas { dhw { today today_meta { provenance } } } }
 		boiler_status {
 			state { water_pressure_bar flame_active flow_temperature_c dhw_temperature_c dhw_target_temperature_c dhw_temp_desired_c }
 			config { flowset_hc_max_c dhw_operating_mode }
@@ -889,6 +890,19 @@ func controllerlessMCPCapability(t *testing.T, provider *graphql.LiveSemanticPro
 	}
 	server.SetStatusProvider(newMCPRuntimeStatusProvider(provider, nil))
 	return mcpCallToolEnvelope(t, server.Handler(), "ebus_v1_runtime_status_get", `{}`)["data"].(map[string]any)["vaillant_regulator_capability"]
+}
+
+// controllerlessMCPEnergy returns the data member of the MCP energy totals
+// envelope, served through the gateway's semantic adapter.
+func controllerlessMCPEnergy(t *testing.T, provider *graphql.LiveSemanticProvider) (any, bool) {
+	t.Helper()
+	server, err := mcp.NewServer(emptyMCPRegistry{}, nil)
+	if err != nil {
+		t.Fatalf("mcp.NewServer() error = %v", err)
+	}
+	server.SetSemanticProvider(newMCPSemanticProvider(provider))
+	data, present := mcpCallToolEnvelope(t, server.Handler(), "ebus_v1_semantic_energy_totals_get", `{}`)["data"]
+	return data, present
 }
 
 func controllerlessPath(data map[string]any, path ...string) any {
@@ -973,7 +987,7 @@ func controllerlessExpectCommon(t *testing.T, site *controllerlessSite, startup 
 			t.Errorf("B509 register read to 0x%02X at %s; want only the heat source", read.target, read.at)
 		}
 	}
-	controllerlessExpectSeries(t, "absence states", run.absence, []string{string(regulatorPresent), string(regulatorAbsenceGrace), string(regulatorAbsent)})
+	controllerlessExpectSeries(t, "absence states", run.absence, []string{string(regulatorAbsenceUnknown), string(regulatorAbsenceGrace), string(regulatorAbsent)})
 	if len(run.absence) == 3 {
 		grace, absent := run.absence[1].at-run.pollStart, run.absence[2].at-run.absence[1].at
 		if grace < time.Minute || grace >= time.Minute+10*time.Second || absent < 5*time.Minute || absent >= 5*time.Minute+time.Minute {
@@ -1019,23 +1033,13 @@ func controllerlessExpectCommon(t *testing.T, site *controllerlessSite, startup 
 			t.Errorf("GraphQL solar.%s = %v; want null without a controller", field, value)
 		}
 	}
-	for _, channel := range []string{"gas", "electric", "solar"} {
-		for _, usage := range []string{"dhw", "climate"} {
-			if got := controllerlessPath(view, "energy_totals", channel, usage, "today"); got != 0.0 {
-				t.Errorf("energy_totals.%s.%s.today = %v; want the 0 placeholder", channel, usage, got)
-			}
-			for _, series := range []string{"yearly", "monthly"} {
-				if got, ok := controllerlessPath(view, "energy_totals", channel, usage, series).([]any); !ok || len(got) != 0 {
-					t.Errorf("energy_totals.%s.%s.%s = %#v; want empty", channel, usage, series, got)
-				}
-			}
-		}
+	// No energy point is ever accepted on this bus, so the energy plane is null
+	// rather than a projection of 0/none placeholders.
+	if got, present := view["energy_totals"]; !present || got != nil {
+		t.Errorf("GraphQL energy_totals = %#v (present %v); want null before the first accepted point", got, present)
 	}
-	if got := controllerlessPath(view, "energy_totals", "gas", "dhw", "today_meta", "provenance"); got != "none" {
-		t.Errorf("energy_totals today provenance = %v; want none (no observation)", got)
-	}
-	if got := controllerlessPath(view, "energy_totals", "gas", "dhw", "today_meta", "last_observed_utc"); got != nil {
-		t.Errorf("energy_totals today last_observed_utc = %v; want null", got)
+	if got, present := controllerlessMCPEnergy(t, site.provider); !present || got != nil {
+		t.Errorf("MCP energy totals data = %#v (present %v); want null before the first accepted point", got, present)
 	}
 	return view
 }
@@ -1113,15 +1117,21 @@ func controllerlessExpectBoilerStream(t *testing.T, site *controllerlessSite, ru
 
 func TestControllerlessSiteStartupWithoutController(t *testing.T) {
 	boilerPart := controllerlessCatalogPart(t, "Boiler")
+	regulatorPart := controllerlessCatalogPartWith(t, "Regulator", productids.ControllerPresent)
 	for _, tc := range []struct {
 		name            string
 		explicitSource  bool
+		atController    *controllerlessDevice // identity answering at the controller address
 		wantPasses      int
 		wantActive      bool
 		wantFailed      bool
 		wantIdentify    map[byte]int
 		wantSerialReads map[byte]int
 		wantProbeFrames map[byte]int
+		// B524 interface identity reads (selectors 00 06 00 and 00 07 00) that
+		// startup enrichment sends to an identity at a regulator address.
+		wantInterfaceReads map[byte]int
+		wantDelayedRetries int
 	}{
 		{
 			// Source selection admits on the first pass on which any device
@@ -1133,18 +1143,48 @@ func TestControllerlessSiteStartupWithoutController(t *testing.T) {
 			wantProbeFrames: map[byte]int{controllerlessHeatSource: 1 * controllerlessProbeAttempts},
 		},
 		{
-			// Without source selection the loop waits for a coherent B524 root,
-			// gives up after two passes and releases semantic polling while
-			// reporting admission failure.
-			name: "explicit source", explicitSource: true, wantPasses: 2, wantFailed: true,
-			wantIdentify:    map[byte]int{controllerlessHeatSource: 2, controllerlessRegulator: 8, controllerlessModuleSlot: 8},
-			wantSerialReads: map[byte]int{controllerlessHeatSource: 8},
-			wantProbeFrames: map[byte]int{controllerlessHeatSource: 2 * controllerlessProbeAttempts},
+			// Without source selection the loop waits for a coherent B524 root.
+			// The first root confirmation finds none and the catalog classifies
+			// the only Vaillant identity as a non-controller, so active
+			// confirmation admits on that pass, as with the automatic source.
+			name: "explicit source", explicitSource: true, wantPasses: 1, wantActive: true,
+			wantIdentify:    map[byte]int{controllerlessHeatSource: 1, controllerlessRegulator: 4, controllerlessModuleSlot: 4},
+			wantSerialReads: map[byte]int{controllerlessHeatSource: 4},
+			wantProbeFrames: map[byte]int{controllerlessHeatSource: 1 * controllerlessProbeAttempts},
+		},
+		{
+			// An identity at the controller address whose serial cannot be read
+			// is unclassified: root confirmation stays required, the loop gives
+			// up after two passes and reports admission failure while still
+			// releasing semantic polling. The missing serial also schedules the
+			// delayed identity retry.
+			name: "explicit source, unclassified identity", explicitSource: true,
+			atController: &controllerlessDevice{deviceID: "CTL00"},
+			wantPasses:   2, wantFailed: true,
+			wantIdentify:       map[byte]int{controllerlessHeatSource: 2, controllerlessRegulator: 2, controllerlessModuleSlot: 8},
+			wantSerialReads:    map[byte]int{controllerlessHeatSource: 8, controllerlessRegulator: 2},
+			wantProbeFrames:    map[byte]int{controllerlessHeatSource: 2 * controllerlessProbeAttempts, controllerlessRegulator: 2 * controllerlessProbeAttempts},
+			wantInterfaceReads: map[byte]int{controllerlessRegulator: 4},
+			wantDelayedRetries: 1,
+		},
+		{
+			// A catalogued regulator identity without a B524 root keeps root
+			// confirmation required: two passes, then admission failure.
+			name: "explicit source, regulator identity", explicitSource: true,
+			atController: &controllerlessDevice{deviceID: "CTL00", serialRaw: controllerlessSerialRaw(regulatorPart)},
+			wantPasses:   2, wantFailed: true,
+			wantIdentify:       map[byte]int{controllerlessHeatSource: 2, controllerlessRegulator: 2, controllerlessModuleSlot: 8},
+			wantSerialReads:    map[byte]int{controllerlessHeatSource: 8, controllerlessRegulator: 8},
+			wantProbeFrames:    map[byte]int{controllerlessHeatSource: 2 * controllerlessProbeAttempts, controllerlessRegulator: 2 * controllerlessProbeAttempts},
+			wantInterfaceReads: map[byte]int{controllerlessRegulator: 4},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			site := newControllerlessSite(t, controllerlessWireTiming)
 			site.addDevice(controllerlessHeatSource, controllerlessDevice{deviceID: "BAI00", serialRaw: controllerlessSerialRaw(boilerPart), answersB509: true})
+			if tc.atController != nil {
+				site.addDevice(controllerlessRegulator, *tc.atController)
+			}
 			startup := runControllerlessStartupScan(t, site, tc.explicitSource)
 
 			if startup.passes != tc.wantPasses {
@@ -1161,27 +1201,51 @@ func TestControllerlessSiteStartupWithoutController(t *testing.T) {
 					t.Errorf("%s attempts by target = %v; want %v", kind, got, want)
 				}
 			}
-			if got := len(controllerlessProbeFrames(t, site, 0)); got != tc.wantProbeFrames[controllerlessHeatSource] {
-				t.Errorf("startup root confirmation frames = %d; want %d", got, tc.wantProbeFrames[controllerlessHeatSource])
+			probe := b524CapabilityProbes[0]
+			rootProbe := buildB524ReadSelector(probe.opcode, probe.group, probe.instance, probe.addr)
+			probeFrames, interfaceReads := map[byte]int{}, map[byte]int{}
+			for _, event := range site.eventsOf(controllerlessB524Frame) {
+				switch {
+				case reflect.DeepEqual(event.data, rootProbe):
+					probeFrames[event.target]++
+				case reflect.DeepEqual(event.data, []byte{0x00, 0x06, 0x00}), reflect.DeepEqual(event.data, []byte{0x00, 0x07, 0x00}):
+					interfaceReads[event.target]++
+				default:
+					t.Errorf("B524 frame to 0x%02X at %s has selector % X; want the root probe read or an interface identity read", event.target, event.at, event.data)
+				}
 			}
-			if got := site.countByTarget(controllerlessB524Frame, 0); !reflect.DeepEqual(got, tc.wantProbeFrames) {
-				t.Errorf("startup B524 frames by target = %v; want %v", got, tc.wantProbeFrames)
+			if !reflect.DeepEqual(probeFrames, tc.wantProbeFrames) {
+				t.Errorf("startup root confirmation frames by target = %v; want %v", probeFrames, tc.wantProbeFrames)
+			}
+			wantInterfaceReads := tc.wantInterfaceReads
+			if wantInterfaceReads == nil {
+				wantInterfaceReads = map[byte]int{}
+			}
+			if !reflect.DeepEqual(interfaceReads, wantInterfaceReads) {
+				t.Errorf("startup interface identity reads by target = %v; want %v", interfaceReads, wantInterfaceReads)
 			}
 			for _, kind := range []string{controllerlessB509Read, controllerlessWriteFrame, controllerlessOtherFrame} {
 				if got := site.countByTarget(kind, 0); len(got) != 0 {
 					t.Errorf("%s during startup = %v; want none", kind, got)
 				}
 			}
-			if startup.identityEnrichCalls != tc.wantPasses || startup.delayedRetryCalls != 0 {
-				t.Errorf("identity enrichment calls = %d, delayed retries = %d; want %d, 0", startup.identityEnrichCalls, startup.delayedRetryCalls, tc.wantPasses)
+			if startup.identityEnrichCalls != tc.wantPasses || startup.delayedRetryCalls != tc.wantDelayedRetries {
+				t.Errorf("identity enrichment calls = %d, delayed retries = %d; want %d, %d", startup.identityEnrichCalls, startup.delayedRetryCalls, tc.wantPasses, tc.wantDelayedRetries)
 			}
 			if writes := startup.silent.writes.Load(); writes != 0 {
 				t.Errorf("gateway protocol bus writes = %d; want 0", writes)
 			}
 			entries := controllerlessRegistryEntries(startup.gateway.Registry)
 			heatSource, ok := entries[controllerlessHeatSource]
-			if len(entries) != 1 || !ok {
-				t.Fatalf("registry = %v; want only the heat source", entries)
+			wantEntries := 1
+			if tc.atController != nil {
+				wantEntries = 2
+				if _, found := entries[controllerlessRegulator]; !found {
+					t.Errorf("registry = %v; want the identity at 0x%02X", entries, controllerlessRegulator)
+				}
+			}
+			if len(entries) != wantEntries || !ok {
+				t.Fatalf("registry = %v; want the heat source and %d other entries", entries, wantEntries-1)
 			}
 			if !reflect.DeepEqual(heatSource.Addresses, []byte{controllerlessHeatSource, controllerlessHeatSourceInit}) ||
 				heatSource.Manufacturer != "Vaillant" || heatSource.DeviceID != "BAI00" || heatSource.SerialNumber != controllerlessSerial(boilerPart) {
@@ -1201,20 +1265,27 @@ func TestControllerlessSiteReadinessAgainstBootDeadline(t *testing.T) {
 	for _, tc := range []struct {
 		name           string
 		explicitSource bool
+		unclassified   bool // an identity without a readable serial answers at the controller address
 		timing         controllerlessTiming
 		wantDegraded   bool
 	}{
 		{name: "automatic source, wire timing", timing: controllerlessWireTiming},
 		{name: "automatic source, timeout timing", timing: controllerlessTimeoutTiming},
 		{name: "explicit source, wire timing", explicitSource: true, timing: controllerlessWireTiming},
-		// Two scan passes with their 30 s interval, two 5 s-per-attempt root
-		// confirmations and a first discovery pass of three such calls push the
-		// first boiler reads past the 120 s deadline.
-		{name: "explicit source, timeout timing", explicitSource: true, timing: controllerlessTimeoutTiming, wantDegraded: true},
+		// The explicit source admits on the first pass like the automatic one,
+		// so one 5 s-per-attempt root confirmation precedes polling.
+		{name: "explicit source, timeout timing", explicitSource: true, timing: controllerlessTimeoutTiming},
+		// An unclassified identity keeps root confirmation required: two scan
+		// passes with their 30 s interval and two 5 s-per-attempt root
+		// confirmations push the first boiler reads past the 120 s deadline.
+		{name: "explicit source, unclassified identity, timeout timing", explicitSource: true, unclassified: true, timing: controllerlessTimeoutTiming, wantDegraded: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			site := newControllerlessSite(t, tc.timing)
 			site.addDevice(controllerlessHeatSource, controllerlessDevice{deviceID: "BAI00", serialRaw: controllerlessSerialRaw(boilerPart), answersB509: true})
+			if tc.unclassified {
+				site.addDevice(controllerlessRegulator, controllerlessDevice{deviceID: "CTL00"})
+			}
 			startup := runControllerlessStartupScan(t, site, tc.explicitSource)
 			run := runControllerlessPolling(t, site, startup, 3*time.Minute, nil)
 

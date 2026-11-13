@@ -295,11 +295,41 @@ func TestEnergyMerge_SnapshotMonthlyMetadataBackfillsPartialSelectors(t *testing
 	}
 }
 
-func TestEnergyMerge_SnapshotReturnsNeverSeenShapeWhenEmpty(t *testing.T) {
+// A store that has never accepted a point projects nothing, whatever the
+// passive state; a rejected apply is not an accepted point. From the first
+// accepted point on, every slot without an observation reads 0/none.
+func TestEnergyMerge_SnapshotIsNilUntilFirstAcceptedPoint(t *testing.T) {
 	store := newEnergyMergeStore()
+	for _, passive := range []string{"", "unavailable"} {
+		if snap := store.SnapshotWithContext(t0, passive); snap != nil {
+			t.Fatalf("SnapshotWithContext(%q) before any point = %+v; want nil", passive, snap)
+		}
+	}
+	if snap := store.Snapshot(); snap != nil {
+		t.Fatalf("Snapshot() before any point = %+v; want nil", snap)
+	}
+
+	obsolete := wkey("gas", "hot_water", "year", "previous")
+	obsolete.Year--
+	if store.Apply(obsolete, 1, EnergySourceRegister, t0) {
+		t.Fatal("Apply(obsolete year) accepted; want rejected")
+	}
+	if snap := store.SnapshotWithContext(t0, ""); snap != nil {
+		t.Fatalf("SnapshotWithContext() after a rejected apply = %+v; want nil", snap)
+	}
+
+	if !store.Apply(wkey("electricity", "climate", "day", ""), 1.25, EnergySourceRegister, t0) {
+		t.Fatal("Apply(electricity climate day) rejected; want accepted")
+	}
 	snap := store.SnapshotWithContext(t0, "")
 	if snap == nil {
-		t.Fatal("SnapshotWithContext() = nil; want empty energy shape")
+		t.Fatal("SnapshotWithContext() after the first accepted point = nil; want projection")
+	}
+	if got := snap.Electric.Climate.Today; got != 1.25 {
+		t.Fatalf("Electric.Climate.Today = %v; want 1.25", got)
+	}
+	if got := snap.Gas.DHW.Today; got != 0 {
+		t.Fatalf("Gas.DHW.Today = %v; want 0", got)
 	}
 	if got := snap.Gas.DHW.TodayMeta.FreshnessState; got != EnergyFreshnessStateNeverSeen {
 		t.Fatalf("Gas.DHW.TodayMeta.FreshnessState = %q; want never_seen", got)
@@ -313,10 +343,60 @@ func TestEnergyMerge_SnapshotReturnsNeverSeenShapeWhenEmpty(t *testing.T) {
 
 	unavailable := store.SnapshotWithContext(t0, "unavailable")
 	if unavailable == nil {
-		t.Fatal("SnapshotWithContext(unavailable) = nil; want empty energy shape")
+		t.Fatal("SnapshotWithContext(unavailable) after the first accepted point = nil; want projection")
 	}
 	if got := unavailable.Gas.DHW.TodayMeta.FreshnessState; got != EnergyFreshnessStateUnavailable {
 		t.Fatalf("Gas.DHW.TodayMeta.FreshnessState = %q; want unavailable", got)
+	}
+}
+
+// Once a point was accepted the projection stays visible: after pruning, after
+// every retained point has left the projection, and even with no retained
+// point at all. Pruning runs only inside an accepted apply and keeps the point
+// just written, so the store cannot empty itself today; the last case removes
+// the points directly so that a retained-point count can never stand in for the
+// accepted-point fact.
+func TestEnergyMerge_SnapshotStaysVisibleAfterPruning(t *testing.T) {
+	store := newEnergyMergeStore()
+	november := time.Date(2026, time.November, 15, 12, 0, 0, 0, time.UTC)
+	novemberMonth := energyWindowKey("gas", "climate", "month", "current", november)
+	novemberDay := energyWindowKey("gas", "climate", "day", "", november)
+	if !store.Apply(novemberMonth, 40, EnergySourceRegister, november) || !store.Apply(novemberDay, 2, EnergySourceRegister, november) {
+		t.Fatal("November month/day applies rejected; want accepted")
+	}
+
+	january := time.Date(2027, time.January, 15, 12, 0, 0, 0, time.UTC)
+	if !store.Apply(energyWindowKey("gas", "climate", "month", "current", january), 30, EnergySourceRegister, january) ||
+		!store.Apply(energyWindowKey("gas", "climate", "day", "", january), 1, EnergySourceRegister, january) {
+		t.Fatal("January month/day applies rejected; want accepted")
+	}
+	if _, kept := store.points[novemberMonth]; kept {
+		t.Fatal("November month window retained; want pruned by the January write")
+	}
+	if _, kept := store.points[novemberDay]; kept {
+		t.Fatal("November day retained; want pruned by the January day write")
+	}
+
+	// A month later nothing retained projects onto the reference date.
+	february := time.Date(2027, time.February, 16, 12, 0, 0, 0, time.UTC)
+	snap := store.SnapshotWithContext(february, "")
+	if snap == nil {
+		t.Fatal("SnapshotWithContext() after pruning = nil; want projection")
+	}
+	if got := snap.Gas.Climate.Today; got != 0 {
+		t.Fatalf("Gas.Climate.Today = %v; want 0 once the retained day has passed", got)
+	}
+	if got := snap.Gas.Climate.TodayMeta.Provenance; got != EnergyProvenanceNone {
+		t.Fatalf("Gas.Climate.TodayMeta.Provenance = %q; want none", got)
+	}
+
+	store.mu.Lock()
+	for key := range store.points {
+		delete(store.points, key)
+	}
+	store.mu.Unlock()
+	if snap := store.SnapshotWithContext(february, ""); snap == nil {
+		t.Fatal("SnapshotWithContext() with no retained point after accepted points = nil; want projection")
 	}
 }
 
@@ -674,27 +754,69 @@ func TestEnergyMerge_RegisterFreshnessAgesOut(t *testing.T) {
 	}
 }
 
-func TestLiveSemanticProvider_EnergyTotalsVisibleWhenNeverSeen(t *testing.T) {
-	provider := newClockedProvider()
+// The provider's energy plane is null until its merge store accepts a point,
+// then carries the per-slot 0/none projection, also after pruning.
+func TestLiveSemanticProvider_EnergyTotalsNullUntilFirstAcceptedPoint(t *testing.T) {
+	clock := time.Date(2026, time.November, 15, 12, 0, 0, 0, time.UTC)
+	provider := NewLiveSemanticProvider()
+	provider.SetEnergyClock(func() time.Time { return clock })
 
+	if totals := provider.EnergyTotals(); totals != nil {
+		t.Fatalf("energy_totals() before any point = %+v; want nil", totals)
+	}
+	provider.SetEnergyPassiveState("unavailable")
+	if totals := provider.EnergyTotals(); totals != nil {
+		t.Fatalf("energy_totals() before any point with passive unavailable = %+v; want nil", totals)
+	}
+	provider.SetEnergyPassiveState("")
+
+	november := provider.EnergyWindowKey("gas", "climate", "month", "current")
+	if !provider.ApplyEnergyFromRegister(november, 40) {
+		t.Fatal("ApplyEnergyFromRegister(November month) rejected; want accepted")
+	}
 	totals := provider.EnergyTotals()
 	if totals == nil {
-		t.Fatal("energy_totals() = nil; want never-seen energy shape")
+		t.Fatal("energy_totals() after the first accepted point = nil; want projection")
 	}
-	if got := totals.Gas.Climate.TodayMeta.FreshnessState; got != EnergyFreshnessStateNeverSeen {
-		t.Fatalf("Gas.Climate.TodayMeta.FreshnessState = %q; want never_seen", got)
+	if got := totals.Gas.Climate.Monthly; !reflect.DeepEqual(got, []float64{0, 40}) {
+		t.Fatalf("Gas.Climate.Monthly = %v; want [0 40]", got)
 	}
-	if got := totals.Gas.Climate.TodayMeta.Provenance; got != EnergyProvenanceNone {
-		t.Fatalf("Gas.Climate.TodayMeta.Provenance = %q; want none", got)
+	if got := totals.Gas.DHW.TodayMeta.FreshnessState; got != EnergyFreshnessStateNeverSeen {
+		t.Fatalf("Gas.DHW.TodayMeta.FreshnessState = %q; want never_seen", got)
+	}
+	if got := totals.Gas.DHW.TodayMeta.Provenance; got != EnergyProvenanceNone {
+		t.Fatalf("Gas.DHW.TodayMeta.Provenance = %q; want none", got)
 	}
 
 	provider.SetEnergyPassiveState("unavailable")
 	unavailable := provider.EnergyTotals()
 	if unavailable == nil {
-		t.Fatal("energy_totals() unavailable = nil; want visible energy shape")
+		t.Fatal("energy_totals() with passive unavailable after the first point = nil; want projection")
 	}
-	if got := unavailable.Gas.Climate.TodayMeta.FreshnessState; got != EnergyFreshnessStateUnavailable {
-		t.Fatalf("Gas.Climate.TodayMeta.FreshnessState = %q; want unavailable", got)
+	if got := unavailable.Gas.DHW.TodayMeta.FreshnessState; got != EnergyFreshnessStateUnavailable {
+		t.Fatalf("Gas.DHW.TodayMeta.FreshnessState = %q; want unavailable", got)
+	}
+	provider.SetEnergyPassiveState("")
+
+	// Two months later a write prunes the November window, which has left the
+	// projection; the plane keeps the 0/none projection.
+	clock = time.Date(2027, time.January, 15, 12, 0, 0, 0, time.UTC)
+	if !provider.ApplyEnergyFromRegister(provider.EnergyWindowKey("gas", "climate", "month", "current"), 30) {
+		t.Fatal("ApplyEnergyFromRegister(January month) rejected; want accepted")
+	}
+	clock = time.Date(2027, time.March, 15, 12, 0, 0, 0, time.UTC)
+	pruned := provider.EnergyTotals()
+	if pruned == nil {
+		t.Fatal("energy_totals() after pruning = nil; want projection")
+	}
+	if got := pruned.Gas.Climate.Monthly; len(got) != 0 {
+		t.Fatalf("Gas.Climate.Monthly in March = %v; want empty, no retained month projects", got)
+	}
+	if got := pruned.Gas.Climate.MonthlyMeta; len(got) != 2 || got[0].Provenance != EnergyProvenanceNone || got[1].Provenance != EnergyProvenanceNone {
+		t.Fatalf("Gas.Climate.MonthlyMeta in March = %+v; want two none slots", got)
+	}
+	if got := pruned.Gas.Climate.TodayMeta.Provenance; got != EnergyProvenanceNone {
+		t.Fatalf("Gas.Climate.TodayMeta.Provenance in March = %q; want none", got)
 	}
 }
 

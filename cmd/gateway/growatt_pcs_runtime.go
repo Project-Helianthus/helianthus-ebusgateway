@@ -285,7 +285,7 @@ func (d *growattPCSManagedDriver) Snapshot(now time.Duration) growattProjectSnap
 	}
 	if !d.active || d.session == nil || d.session.ctx.Err() != nil {
 		for n := range s.Providers {
-			s.Providers[n].Current = map[string]canbusreg.CXNativeField{}
+			s.Providers[n].Current = map[string]canbusreg.NativeField{}
 			s.Providers[n].Promotable = false
 		}
 	}

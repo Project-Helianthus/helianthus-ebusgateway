@@ -1092,8 +1092,9 @@ func TestServiceAcceptanceIsDurableBeforePublishWakeAndEvent(t *testing.T) {
 // transition advances only the catalog revision; desired revision and the
 // mark keep the accepted value.
 func TestServiceObservedTransitionsNeverBumpDesiredRevision(t *testing.T) {
-	// The deadline diagnoses a hung test; all progress is ordered by signals.
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// The deadline only diagnoses a hung test, so it is generous for a loaded
+	// race run; all progress is ordered by signals, never by elapsed time.
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	await := func(signal <-chan struct{}, what string) {
 		t.Helper()
@@ -1147,7 +1148,8 @@ func TestServiceObservedTransitionsNeverBumpDesiredRevision(t *testing.T) {
 	})
 	// Close cancels blocked callbacks and joins the reconciler even on Fatal.
 	defer f.svc.Close()
-	// STOPPED may be published before the terminal work slot is pruned.
+	// STOPPED may be published before the terminal work slot is pruned. Only
+	// TRANSITION_BUSY is retried, and the hang-detection deadline bounds it.
 	var accepted DesiredView
 	for {
 		var err error

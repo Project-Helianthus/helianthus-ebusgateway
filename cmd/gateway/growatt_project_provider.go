@@ -35,7 +35,7 @@ type growattProjectOpen func(string) (growattProjectReceiver, error)
 // Association supplies explicit native context, including independent validity
 // gates and ages. It must return detached input; the adapter supplies only the
 // unmodified transport evidence. No native context is inferred from payloads.
-type growattProjectAssociation func(canbusreg.CXSelection, canbusreg.Evidence) canbusreg.ReplayInput
+type growattProjectAssociation func(canbusreg.Selection, canbusreg.Evidence) canbusreg.ReplayInput
 
 type growattProjectSource chan canbusreg.Observation
 
@@ -68,7 +68,7 @@ type growattProjectSnapshot struct {
 type growattProjectProvider struct {
 	lifecycle            sync.Mutex
 	mu                   sync.Mutex
-	selections           []canbusreg.CXSelection
+	selections           []canbusreg.Selection
 	providers            []*canbusreg.Provider
 	sources              []growattProjectSource
 	staleAfter           time.Duration
@@ -83,11 +83,11 @@ type growattProjectProvider struct {
 	receiveErr, closeErr error
 }
 
-func newGrowattProjectProvider(selections []canbusreg.CXSelection, staleAfter time.Duration, listenOnlyConfirmed bool, open growattProjectOpen, associate growattProjectAssociation) (*growattProjectProvider, error) {
+func newGrowattProjectProvider(selections []canbusreg.Selection, staleAfter time.Duration, listenOnlyConfirmed bool, open growattProjectOpen, associate growattProjectAssociation) (*growattProjectProvider, error) {
 	if !listenOnlyConfirmed || len(selections) == 0 || len(selections) > 32 || staleAfter <= 0 || open == nil || associate == nil {
 		return nil, errors.New("selected provider preconditions required")
 	}
-	p := &growattProjectProvider{selections: append([]canbusreg.CXSelection(nil), selections...), staleAfter: staleAfter, open: open, associate: associate}
+	p := &growattProjectProvider{selections: append([]canbusreg.Selection(nil), selections...), staleAfter: staleAfter, open: open, associate: associate}
 	seen := map[uint8]bool{}
 	for _, s := range selections {
 		c := s.SelectionSpecValue()
@@ -273,7 +273,7 @@ func newGrowattPCSProjectProvider(config ebusgateway.GrowattPCSConfig, open grow
 	if err != nil || !config.Enabled {
 		return nil, err
 	}
-	return newGrowattProjectProvider([]canbusreg.CXSelection{selection}, config.StaleAfter, config.ListenOnlyConfirmed, open, associate)
+	return newGrowattProjectProvider([]canbusreg.Selection{selection}, config.StaleAfter, config.ListenOnlyConfirmed, open, associate)
 }
 
 func newGrowattLINKProjectProvider(config ebusgateway.GrowattLINKConfig, open growattProjectOpen, associate growattProjectAssociation) (*growattProjectProvider, error) {

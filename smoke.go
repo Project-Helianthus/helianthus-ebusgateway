@@ -960,7 +960,14 @@ func runSmokeMCPCheck(ctx context.Context, gateway *Gateway, opts SmokeOptions) 
 		}
 	}
 
-	handler := server.Handler()
+	return runSmokeMCPHandlerCheck(ctx, server.Handler())
+}
+
+// smokeMCPDevicesListTool is the registered read-only MCP tool the smoke
+// check calls after tools/list.
+const smokeMCPDevicesListTool = "ebus_v1_registry_devices_list"
+
+func runSmokeMCPHandlerCheck(ctx context.Context, handler http.Handler) smokeCheckSummary {
 	tools, err := mcpToolsListCheck(ctx, handler)
 	if err != nil {
 		return smokeCheckSummary{
@@ -968,7 +975,7 @@ func runSmokeMCPCheck(ctx context.Context, gateway *Gateway, opts SmokeOptions) 
 			Error: err.Error(),
 		}
 	}
-	if containsString(tools, "ebus.devices") {
+	if containsString(tools, smokeMCPDevicesListTool) {
 		if err := mcpDevicesCallCheck(ctx, handler); err != nil {
 			return smokeCheckSummary{
 				OK:    false,
@@ -977,7 +984,7 @@ func runSmokeMCPCheck(ctx context.Context, gateway *Gateway, opts SmokeOptions) 
 		}
 		return smokeCheckSummary{
 			OK:      true,
-			Details: fmt.Sprintf("tools=%d (read-only tools/list + ebus.devices)", len(tools)),
+			Details: fmt.Sprintf("tools=%d (read-only tools/list + %s)", len(tools), smokeMCPDevicesListTool),
 		}
 	}
 	return smokeCheckSummary{
@@ -1024,7 +1031,8 @@ func mcpToolsListCheck(ctx context.Context, handler http.Handler) ([]string, err
 }
 
 func mcpDevicesCallCheck(ctx context.Context, handler http.Handler) error {
-	response, err := invokeSmokeJSONRPC(ctx, handler, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"ebus.devices","arguments":{}}}`)
+	payload := fmt.Sprintf(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":%q,"arguments":{}}}`, smokeMCPDevicesListTool)
+	response, err := invokeSmokeJSONRPC(ctx, handler, payload)
 	if err != nil {
 		return err
 	}
@@ -1033,19 +1041,19 @@ func mcpDevicesCallCheck(ctx context.Context, handler http.Handler) error {
 		return fmt.Errorf("mcp tools/call response missing result object")
 	}
 	if isError, _ := result["isError"].(bool); isError {
-		return fmt.Errorf("mcp tools/call ebus.devices returned isError=true")
+		return fmt.Errorf("mcp tools/call %s returned isError=true", smokeMCPDevicesListTool)
 	}
 	content, ok := result["content"].([]any)
 	if !ok || len(content) == 0 {
-		return fmt.Errorf("mcp tools/call ebus.devices missing content")
+		return fmt.Errorf("mcp tools/call %s missing content", smokeMCPDevicesListTool)
 	}
 	first, ok := content[0].(map[string]any)
 	if !ok {
-		return fmt.Errorf("mcp tools/call ebus.devices content item invalid")
+		return fmt.Errorf("mcp tools/call %s content item invalid", smokeMCPDevicesListTool)
 	}
 	text, _ := first["text"].(string)
 	if strings.TrimSpace(text) == "" {
-		return fmt.Errorf("mcp tools/call ebus.devices returned empty text")
+		return fmt.Errorf("mcp tools/call %s returned empty text", smokeMCPDevicesListTool)
 	}
 	return nil
 }

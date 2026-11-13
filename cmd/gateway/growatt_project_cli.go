@@ -212,7 +212,7 @@ func growattProjectAged(age, elapsed time.Duration) time.Duration {
 	}
 	return age + elapsed
 }
-func (c growattProjectContext) input(s canbusreg.CXSelection) (canbusreg.ReplayInput, error) {
+func (c growattProjectContext) input(s canbusreg.Selection) (canbusreg.ReplayInput, error) {
 	n := s.SelectionSpecValue()
 	age, err := growattProjectAge(c.FieldAge)
 	if err != nil {
@@ -255,7 +255,7 @@ func (c growattProjectContext) input(s canbusreg.CXSelection) (canbusreg.ReplayI
 type growattProjectAdmission struct {
 	pcs        ebusgateway.GrowattPCSConfig
 	link       ebusgateway.GrowattLINKConfig
-	selections []canbusreg.CXSelection
+	selections []canbusreg.Selection
 	associate  growattProjectAssociation
 }
 
@@ -312,7 +312,7 @@ func admitGrowattProject(c ebusgateway.GrowattProjectCANConfig, link bool) (grow
 	if len(entries) != len(contexts) {
 		return a, errors.New("one explicit context per selection required")
 	}
-	inputs := map[canbusreg.CXSelection]canbusreg.ReplayInput{}
+	inputs := map[canbusreg.Selection]canbusreg.ReplayInput{}
 	for i, entry := range entries {
 		context := contexts[i]
 		if context.Source != entry.Source {
@@ -334,7 +334,7 @@ func admitGrowattProject(c ebusgateway.GrowattProjectCANConfig, link bool) (grow
 			n.PCSFlavor = flavor
 			n.Direction = "module-to-coordinator"
 		}
-		var selection canbusreg.CXSelection
+		var selection canbusreg.Selection
 		if link {
 			// The accepted config validates the complete source map and route before open.
 			one := ebusgateway.GrowattLINKConfig{Enabled: true, ListenOnlyConfirmed: c.ListenOnlyConfirmed, StaleAfter: c.StaleAfter, Native: n}
@@ -381,7 +381,7 @@ func admitGrowattProject(c ebusgateway.GrowattProjectCANConfig, link bool) (grow
 		a.link.Native.Choice = ""
 	}
 	origin := time.Now()
-	a.associate = func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
+	a.associate = func(s canbusreg.Selection, e canbusreg.Evidence) canbusreg.ReplayInput {
 		in, ok := inputs[s]
 		if !ok {
 			return canbusreg.ReplayInput{}

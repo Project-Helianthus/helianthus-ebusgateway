@@ -295,6 +295,15 @@ func (s *energyMergeStore) SnapshotWithContext(now time.Time, passiveState strin
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	// Until the store has accepted a point there is nothing to project: the
+	// 0/none placeholders describe slots of a projection that holds
+	// observations, not a bus without any energy source. revision counts
+	// accepted applies and never decreases, so pruning every point does not
+	// return to this case.
+	if s.revision == 0 {
+		return nil
+	}
+
 	totals := &EnergyTotals{}
 
 	for key, point := range s.points {

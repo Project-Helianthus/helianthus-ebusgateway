@@ -20,6 +20,7 @@ import (
 	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
+	"github.com/Project-Helianthus/helianthus-ebusreg/vaillant/productids"
 )
 
 type timeoutBus struct {
@@ -874,7 +875,21 @@ func startDiscoveryScanLoopWithClassifier(ctx context.Context, cfg ebusgateway.C
 				directScanConfirmationRetries = 0
 			}
 
-			if sourceSelectionActiveAdmission && activeConfirmed {
+			// An explicit source has no source-selection admission, so the
+			// loop waits for a coherent B524 root, which only a regulator
+			// carries. When this pass's root confirmation found none among the
+			// registry candidates and the product catalog classifies every
+			// Vaillant identity as a non-controller, active confirmation
+			// decides instead. A regulator identity or an unclassified Vaillant
+			// identity keeps root confirmation required; an inventory without a
+			// Vaillant identity never needed it.
+			rootConfirmationWaived := overrideSet && !confirmationSatisfied &&
+				startupScanInventoryHasNoRegulatorIdentity(gateway)
+			if rootConfirmationWaived {
+				log.Printf("startup scan: root confirmation not required: inventory has no regulator identity; active confirmation=%v", activeConfirmed)
+			}
+
+			if (sourceSelectionActiveAdmission || rootConfirmationWaived) && activeConfirmed {
 				signalActiveProbePassed()
 				signalSemanticBootstrapReady()
 				return
@@ -1111,6 +1126,21 @@ func startupScanHasVaillantInventory(gateway *ebusgateway.Gateway) bool {
 		return true
 	})
 	return hasVaillant
+}
+
+// startupScanInventoryHasNoRegulatorIdentity reports whether the product
+// catalog classifies every Vaillant identity in the registry as a
+// non-controller, the classification vaillant_regulator_capability publishes
+// as NONE. A Vaillant identity without a readable serial or with an
+// uncatalogued part number is unclassified and makes it false, as do a
+// registry without a Vaillant identity and a catalog that failed to load.
+func startupScanInventoryHasNoRegulatorIdentity(gateway *ebusgateway.Gateway) bool {
+	if gateway == nil || gateway.Registry == nil {
+		return false
+	}
+	catalog, catalogErr := productids.LoadCatalog()
+	classifier := &vaillantSemanticPoller{reg: gateway.Registry, catalog: catalog, catalogErr: catalogErr}
+	return classifier.findRegulatorCapability() == productids.ControllerNone
 }
 
 func startupScanHasCoherentVaillantRoot(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway) bool {

@@ -3641,7 +3641,8 @@ func intPtr(value int) *int {
 	return &v
 }
 
-func TestRefreshEnergy_NilControllerKeepsNeverSeenShape(t *testing.T) {
+// A refresh that accepts no energy point leaves the energy plane null.
+func TestRefreshEnergy_NilControllerKeepsEnergyNull(t *testing.T) {
 	t.Parallel()
 
 	provider := graphql.NewLiveSemanticProvider()
@@ -3652,16 +3653,12 @@ func TestRefreshEnergy_NilControllerKeepsNeverSeenShape(t *testing.T) {
 
 	poller.refreshEnergy(context.Background())
 
-	totals := provider.EnergyTotals()
-	if totals == nil {
-		t.Fatal("EnergyTotals() = nil; want visible no-data shape for nil controller path")
-	}
-	if got := totals.Gas.DHW.TodayMeta.FreshnessState; got != graphql.EnergyFreshnessStateNeverSeen {
-		t.Fatalf("Gas.DHW.TodayMeta.FreshnessState = %q; want never_seen", got)
+	if totals := provider.EnergyTotals(); totals != nil {
+		t.Fatalf("EnergyTotals() = %+v; want nil while no energy point was accepted", totals)
 	}
 }
 
-func TestRefreshEnergy_NoRegulatorKeepsNeverSeenShape(t *testing.T) {
+func TestRefreshEnergy_NoRegulatorKeepsEnergyNull(t *testing.T) {
 	t.Parallel()
 
 	provider := graphql.NewLiveSemanticProvider()
@@ -3674,12 +3671,8 @@ func TestRefreshEnergy_NoRegulatorKeepsNeverSeenShape(t *testing.T) {
 
 	poller.refreshEnergy(context.Background())
 
-	totals := provider.EnergyTotals()
-	if totals == nil {
-		t.Fatal("EnergyTotals() = nil; want visible no-data shape without regulator")
-	}
-	if got := totals.Gas.DHW.TodayMeta.FreshnessState; got != graphql.EnergyFreshnessStateNeverSeen {
-		t.Fatalf("Gas.DHW.TodayMeta.FreshnessState = %q; want never_seen", got)
+	if totals := provider.EnergyTotals(); totals != nil {
+		t.Fatalf("EnergyTotals() = %+v; want nil while no energy point was accepted", totals)
 	}
 }
 
@@ -7106,7 +7099,7 @@ func newFallbackGatePoller(controller byte, zoneKnown bool, state regulatorAbsen
 // TestVaillantSemanticPollerFallbackDiscoveryGate varies every field of the
 // gate: the task (state or configuration), whether a controller is known,
 // whether a zone is known and the absence state. Production mutations caught:
-// skipping in ABSENCE_GRACE or PRESENT too (those rows expect a pass);
+// skipping in UNKNOWN, ABSENCE_GRACE or PRESENT too (those rows expect a pass);
 // dropping the "no controller" condition (controller-known ABSENT rows, the
 // "controller known, no zone" case, expect a pass); gating only one of the two
 // tasks (each row runs per task); gating on the zone map instead of the
@@ -7122,7 +7115,7 @@ func TestVaillantSemanticPollerFallbackDiscoveryGate(t *testing.T) {
 	for _, task := range tasks {
 		for _, controller := range []byte{0x00, 0x15} {
 			for _, zoneKnown := range []bool{false, true} {
-				for _, state := range []regulatorAbsenceState{regulatorPresent, regulatorAbsenceGrace, regulatorAbsent} {
+				for _, state := range []regulatorAbsenceState{regulatorAbsenceUnknown, regulatorPresent, regulatorAbsenceGrace, regulatorAbsent} {
 					name := fmt.Sprintf("%s/controller_0x%02X/zone_known_%v/%s", task.name, controller, zoneKnown, state)
 					t.Run(name, func(t *testing.T) {
 						// The fallback is reached when no controller or no zone
@@ -7381,6 +7374,70 @@ func TestVaillantSemanticPollerFallbackKeptWhenPeriodicDiscoveryDisabled(t *test
 			}
 			if loopStarted && !strings.Contains(out.String(), "discovery_interval=10m0s") {
 				t.Fatalf("suspension marker does not name the running interval: %q", out.String())
+			}
+		})
+	}
+}
+
+// TestVaillantSemanticPollerAbsenceStartsUnknown covers the initial absence
+// state. The constructor starts in UNKNOWN (not yet evaluated) and publishes it;
+// the first regulator recheck moves it to PRESENT when the regulator is
+// classified, otherwise to ABSENCE_GRACE with the grace measured from that
+// recheck, so ABSENT falls on the same recheck as when the state started at
+// PRESENT. An unclassified controller (no serial) follows the not-present path.
+func TestVaillantSemanticPollerAbsenceStartsUnknown(t *testing.T) {
+	catalog, err := productids.LoadCatalog()
+	if err != nil {
+		t.Fatalf("LoadCatalog() error = %v", err)
+	}
+	boiler := registry.DeviceInfo{Address: 0x08, Manufacturer: "Vaillant", DeviceID: "BAI00", SerialNumber: controllerlessSerial(controllerlessCatalogPart(t, "Boiler"))}
+	regulator := registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", SerialNumber: controllerlessSerial(controllerlessCatalogPartWith(t, "Regulator", productids.ControllerPresent))}
+	unclassified := registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant"}
+	for _, tc := range []struct {
+		name    string
+		devices []registry.DeviceInfo
+		// states at the rechecks after 1, 2, 6 and 7 minutes of polling
+		want []regulatorAbsenceState
+	}{
+		{name: "classified regulator", devices: []registry.DeviceInfo{boiler, regulator},
+			want: []regulatorAbsenceState{regulatorPresent, regulatorPresent, regulatorPresent, regulatorPresent}},
+		{name: "no regulator", devices: []registry.DeviceInfo{boiler},
+			want: []regulatorAbsenceState{regulatorAbsenceGrace, regulatorAbsenceGrace, regulatorAbsent, regulatorAbsent}},
+		{name: "unclassified controller", devices: []registry.DeviceInfo{boiler, unclassified},
+			want: []regulatorAbsenceState{regulatorAbsenceGrace, regulatorAbsenceGrace, regulatorAbsent, regulatorAbsent}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var out strings.Builder
+			original := log.Writer()
+			log.SetOutput(fallbackLogWriter{mu: &mu, out: &out})
+			t.Cleanup(func() { log.SetOutput(original) })
+
+			cfg := ebusgateway.DefaultConfig()
+			poller := newVaillantSemanticPoller(cfg, &ebusgateway.Gateway{Registry: newTestRegistry(tc.devices...)}, nil, nil, nil)
+			poller.catalog, poller.catalogErr = catalog, nil
+			if got := poller.regAbsenceState; got != regulatorAbsenceUnknown {
+				t.Fatalf("initial absence state = %s; want UNKNOWN", got)
+			}
+			if got := semanticRegulatorState.Value(); got != string(regulatorAbsenceUnknown) {
+				t.Fatalf("semantic_regulator_state at construction = %q; want UNKNOWN", got)
+			}
+			start := time.Unix(0, 0)
+			now := start
+			poller.nowFn = func() time.Time { return now }
+			for i, minute := range []int{1, 2, 6, 7} {
+				now = start.Add(time.Duration(minute) * time.Minute)
+				poller.refreshRegulatorCapability(context.Background())
+				if got := poller.regAbsenceState; got != tc.want[i] {
+					t.Fatalf("absence state at the %d min recheck = %s; want %s", minute, got, tc.want[i])
+				}
+			}
+			mu.Lock()
+			logs := out.String()
+			mu.Unlock()
+			first := fmt.Sprintf("semantic_regulator_transition from=UNKNOWN to=%s", tc.want[0])
+			if !strings.Contains(logs, first) || strings.Contains(logs, "from=PRESENT to=ABSENCE_GRACE") {
+				t.Fatalf("transition log = %q; want %q and no PRESENT->ABSENCE_GRACE", logs, first)
 			}
 		})
 	}

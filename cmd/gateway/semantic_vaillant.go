@@ -258,9 +258,12 @@ const (
 type regulatorAbsenceState string
 
 const (
-	regulatorPresent      regulatorAbsenceState = "PRESENT"
-	regulatorAbsenceGrace regulatorAbsenceState = "ABSENCE_GRACE"
-	regulatorAbsent       regulatorAbsenceState = "ABSENT"
+	// regulatorAbsenceUnknown is the state before the first regulator
+	// recheck has evaluated the capability.
+	regulatorAbsenceUnknown regulatorAbsenceState = "UNKNOWN"
+	regulatorPresent        regulatorAbsenceState = "PRESENT"
+	regulatorAbsenceGrace   regulatorAbsenceState = "ABSENCE_GRACE"
+	regulatorAbsent         regulatorAbsenceState = "ABSENT"
 )
 
 var (
@@ -468,8 +471,9 @@ func (p *vaillantSemanticPoller) refreshRegulatorCapability(_ context.Context) {
 			p.regAbsenceState = regulatorPresent
 			p.regAbsenceSince = time.Time{}
 		}
-	case prevAbsence == regulatorPresent:
-		// Was present, now not present — enter grace window.
+	case prevAbsence == regulatorPresent || prevAbsence == regulatorAbsenceUnknown:
+		// Was present, or not yet evaluated, and is not present: enter the
+		// grace window from this evaluation.
 		p.regAbsenceState = regulatorAbsenceGrace
 		p.regAbsenceSince = now
 	case prevAbsence == regulatorAbsenceGrace:

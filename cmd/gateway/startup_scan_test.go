@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"log"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -12,6 +14,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
+	"github.com/Project-Helianthus/helianthus-ebusreg/vaillant/productids"
 )
 
 // p07JoinStartupIdentityRetry must be registered after hook restoration cleanup
@@ -3084,6 +3087,187 @@ func TestStartupScanB524InterfaceIdentityAfterSerialEnrichment(t *testing.T) {
 			assertB524InterfaceBound(t, poller, 20, "controller_profile")
 			if len(endpoint.requests()) != 2 {
 				t.Fatal("expected both OP00 requests")
+			}
+		})
+	}
+}
+
+// TestSourceAdmissionInventoryHasNoRegulatorIdentity pins the classification
+// the explicit-source admission rule relies on: every Vaillant identity must be
+// catalogued as a non-controller.
+func TestSourceAdmissionInventoryHasNoRegulatorIdentity(t *testing.T) {
+	boiler := registry.DeviceInfo{Address: 0x08, Manufacturer: "Vaillant", DeviceID: "BAI00", SerialNumber: controllerlessSerial(controllerlessCatalogPart(t, "Boiler"))}
+	module := registry.DeviceInfo{Address: 0xF6, Manufacturer: "Vaillant", DeviceID: "NET00", SerialNumber: controllerlessSerial(controllerlessCatalogPart(t, "Gateway"))}
+	regulator := registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "CTL00", SerialNumber: controllerlessSerial(controllerlessCatalogPartWith(t, "Regulator", productids.ControllerPresent))}
+	unclassified := registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "CTL00"}
+	foreign := registry.DeviceInfo{Address: 0x08, Manufacturer: "Other", DeviceID: "HS000"}
+	for _, tc := range []struct {
+		name    string
+		devices []registry.DeviceInfo
+		want    bool
+	}{
+		{name: "empty registry"},
+		{name: "no Vaillant identity", devices: []registry.DeviceInfo{foreign}},
+		{name: "heat source", devices: []registry.DeviceInfo{boiler}, want: true},
+		{name: "heat source and internet module", devices: []registry.DeviceInfo{boiler, module}, want: true},
+		{name: "heat source and regulator identity", devices: []registry.DeviceInfo{boiler, regulator}},
+		{name: "heat source and unclassified identity", devices: []registry.DeviceInfo{boiler, unclassified}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := registry.NewDeviceRegistry(nil)
+			for _, device := range tc.devices {
+				reg.Register(device)
+			}
+			if got := startupScanInventoryHasNoRegulatorIdentity(&ebusgateway.Gateway{Registry: reg}); got != tc.want {
+				t.Fatalf("startupScanInventoryHasNoRegulatorIdentity() = %v; want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestStartDiscoveryScanLoop_ExplicitSourceWithoutRegulatorIdentity covers the
+// explicit-source admission rule and the neighbouring configurations it must
+// leave unchanged.
+func TestStartDiscoveryScanLoop_ExplicitSourceWithoutRegulatorIdentity(t *testing.T) {
+	boiler := registry.DeviceInfo{Address: 0x08, Manufacturer: "Vaillant", DeviceID: "BAI00", SerialNumber: controllerlessSerial(controllerlessCatalogPart(t, "Boiler"))}
+	regulator := registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "CTL00", SerialNumber: controllerlessSerial(controllerlessCatalogPartWith(t, "Regulator", productids.ControllerPresent))}
+	unclassified := registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "CTL00"}
+	const waiverLog = "root confirmation not required: inventory has no regulator identity"
+	for _, tc := range []struct {
+		name           string
+		explicitSource bool
+		answering      []registry.DeviceInfo // identities answering every scan pass
+		preloaded      []registry.DeviceInfo // identities registered before the loop
+		rootAnswers    bool
+		wantPasses     int
+		wantActive     bool
+		wantWaiverLog  bool
+	}{
+		{name: "explicit source, heat source only", explicitSource: true, answering: []registry.DeviceInfo{boiler}, wantPasses: 1, wantActive: true, wantWaiverLog: true},
+		// A coherent root admits through root confirmation; the rule is not
+		// consulted.
+		{name: "explicit source, heat source answers the root probe", explicitSource: true, answering: []registry.DeviceInfo{boiler}, rootAnswers: true, wantPasses: 1, wantActive: true},
+		{name: "explicit source, regulator identity", explicitSource: true, answering: []registry.DeviceInfo{boiler, regulator}, wantPasses: 2},
+		{name: "explicit source, unclassified identity", explicitSource: true, answering: []registry.DeviceInfo{boiler, unclassified}, wantPasses: 2},
+		// Active confirmation decides: an inventory nobody answers for on the
+		// scan is not admitted.
+		{name: "explicit source, no device answers", explicitSource: true, preloaded: []registry.DeviceInfo{boiler}, wantPasses: 2, wantWaiverLog: true},
+		// Source-selection-capable transport with neither an explicit source
+		// nor a companion: not an explicit source, unchanged.
+		{name: "no explicit source and no companion", answering: []registry.DeviceInfo{boiler}, wantPasses: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gateway, err := ebusgateway.New(context.Background(), ebusgateway.Config{Transport: transport.NewLoopback()})
+			if err != nil {
+				t.Fatalf("gateway.New error = %v", err)
+			}
+			t.Cleanup(func() {
+				if err := gateway.Close(); err != nil {
+					t.Errorf("gateway.Close error = %v", err)
+				}
+			})
+			for _, device := range tc.preloaded {
+				gateway.Registry.Register(device)
+			}
+
+			savedScan, savedDirected := registryScanFn, registryScanDirectedFn
+			savedTargets, savedInfos := ebusdScanResultTargetsFn, ebusdScanResultInfosFn
+			savedProbe, savedExit := startupScanB524ProbeFn, startupScanLoopExitFn
+			savedIdentity, savedSerials := enrichVaillantIdentityFn, enrichSerialsFromEbusdFn
+			savedB524Identity, savedDelayed := enrichB524InterfaceIdentityFn, postStartupIdentityRetryFn
+			t.Cleanup(func() {
+				registryScanFn, registryScanDirectedFn = savedScan, savedDirected
+				ebusdScanResultTargetsFn, ebusdScanResultInfosFn = savedTargets, savedInfos
+				startupScanB524ProbeFn, startupScanLoopExitFn = savedProbe, savedExit
+				enrichVaillantIdentityFn, enrichSerialsFromEbusdFn = savedIdentity, savedSerials
+				enrichB524InterfaceIdentityFn, postStartupIdentityRetryFn = savedB524Identity, savedDelayed
+			})
+
+			var mu sync.Mutex
+			passes := 0
+			registryScanFn = func(_ context.Context, scanBus registry.ScanBus, reg *registry.DeviceRegistry, _ byte, _ []byte) ([]registry.DeviceEntry, error) {
+				mu.Lock()
+				passes++
+				mu.Unlock()
+				entries := make([]registry.DeviceEntry, 0, len(tc.answering))
+				for _, device := range tc.answering {
+					entries = append(entries, reg.Register(device))
+				}
+				if stats, ok := scanBus.(*statsBus); ok {
+					stats.stats.ok = len(entries)
+					stats.stats.timeouts = 1
+				}
+				return entries, nil
+			}
+			registryScanDirectedFn = registryScanFn
+			ebusdScanResultTargetsFn = func(context.Context, ebusgateway.TransportConfig) ([]byte, error) { return nil, nil }
+			ebusdScanResultInfosFn = func(context.Context, ebusgateway.TransportConfig) ([]registry.DeviceInfo, error) { return nil, nil }
+			startupScanB524ProbeFn = func(_ context.Context, target, _, _, _ byte, _ uint16) bool {
+				return tc.rootAnswers && target == boiler.Address
+			}
+			startupScanLoopExitFn = nil
+			enrichVaillantIdentityFn = func(context.Context, *ebusgateway.Gateway, ebusgateway.Config) {}
+			enrichSerialsFromEbusdFn = func(context.Context, *registry.DeviceRegistry, ebusgateway.TransportConfig) {}
+			enrichB524InterfaceIdentityFn = func(context.Context, *registry.DeviceRegistry, registry.ScanBus, byte, byte) {}
+			postStartupIdentityRetryFn = func(context.Context, *ebusgateway.Gateway, *graphql.Builder, ebusgateway.Config, *ebusgateway.TransportConfig) {
+			}
+
+			var logMu sync.Mutex
+			var logs strings.Builder
+			previousLog := log.Writer()
+			log.SetOutput(fallbackLogWriter{mu: &logMu, out: &logs})
+			t.Cleanup(func() { log.SetOutput(previousLog) })
+
+			cfg := ebusgateway.DefaultConfig()
+			cfg.ScanOnStart = true
+			cfg.ScanInterval = 10 * time.Millisecond
+			cfg.TransportConfig = ebusgateway.TransportConfig{Protocol: ebusgateway.TransportAdapterDirect, Network: "tcp", Address: "adapter.invalid:9999"}
+			cfg.ScanSource = 0xF0
+			cfg.StartupProbeTargets = []byte{0x08, 0x15, 0x26}
+			if tc.explicitSource {
+				source := byte(0xF0)
+				cfg.StartupSource.Source = &source
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			signals := startDiscoveryScanLoop(ctx, cfg, gateway, nil)
+			select {
+			case <-signals.done:
+			case <-time.After(10 * time.Second):
+				t.Fatal("startup scan loop did not finish")
+			}
+			select {
+			case <-signals.semanticBootstrapReady:
+			default:
+				t.Fatal("semantic bootstrap not released")
+			}
+			active, failed := false, false
+			select {
+			case <-signals.activeProbePassed:
+				active = true
+			default:
+			}
+			select {
+			case <-signals.admissionFailed:
+				failed = true
+			default:
+			}
+
+			mu.Lock()
+			gotPasses := passes
+			mu.Unlock()
+			if gotPasses != tc.wantPasses {
+				t.Errorf("scan passes = %d; want %d", gotPasses, tc.wantPasses)
+			}
+			if active != tc.wantActive || failed == tc.wantActive {
+				t.Errorf("active probe passed = %v, admission failed = %v; want %v, %v", active, failed, tc.wantActive, !tc.wantActive)
+			}
+			logMu.Lock()
+			output := logs.String()
+			logMu.Unlock()
+			if got := strings.Contains(output, waiverLog); got != tc.wantWaiverLog {
+				t.Errorf("log contains %q = %v; want %v", waiverLog, got, tc.wantWaiverLog)
 			}
 		})
 	}

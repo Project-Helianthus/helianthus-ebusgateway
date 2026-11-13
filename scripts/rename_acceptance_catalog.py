@@ -5,8 +5,8 @@ RENAMES drops the work-item prefix from the identifiers of
 internal/acceptancecatalog, uses the catalog spelling, and adopts the renamed
 helianthus-modbusreg exports that the gateway uses. Identifier tokens and
 identifier words inside comments are renamed. In comments and string literals
-only the spelling changes; the JSON key catalogue_version of the acceptance
-report format stays as it is. Run without arguments to rewrite FILES; --check
+only the spelling changes, including the acceptance report JSON key
+catalog_version. Run without arguments to rewrite FILES; --check
 lists any remaining old name, spelling or file name in the repository and fails.
 """
 import os
@@ -63,7 +63,7 @@ FILES = [
 ]
 TOKEN = re.compile(r"//[^\n]*|/\*[\s\S]*?\*/|\"(?:\\.|[^\"\\])*\"|`[^`]*`|'(?:\\.|[^'\\])*'|\b[A-Za-z_]\w*\b")
 WORD = re.compile(r"\b[A-Za-z_]\w*\b")
-SPELLING = re.compile(r"(?i:c)atalogue(?!_version)")
+SPELLING = re.compile(r"(?i:c)atalogue")
 
 
 def rename(match):

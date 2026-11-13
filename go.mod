@@ -4,7 +4,7 @@ go 1.22.0
 
 require (
 	github.com/Project-Helianthus/helianthus-canbus v0.0.0-20260823184549-cb4c25a1a389
-	github.com/Project-Helianthus/helianthus-canbusreg v0.0.0-20261112100617-7e5faff86142
+	github.com/Project-Helianthus/helianthus-canbusreg v0.0.0-20261112204539-e3d96dec60d8
 	github.com/Project-Helianthus/helianthus-ebusgo v0.5.1-0.20261027131913-af6c5843b1e3
 	github.com/Project-Helianthus/helianthus-ebusreg v0.0.0-20261110203305-65715b7b144a
 	github.com/Project-Helianthus/helianthus-eebusreg v0.1.37-0.20261111060854-871cb4c7c5c3

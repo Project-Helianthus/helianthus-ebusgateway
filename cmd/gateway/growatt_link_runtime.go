@@ -34,7 +34,7 @@ func newGrowattLINKManagedDriverFactory(config ebusgateway.GrowattLINKConfig, op
 				return nil, err
 			}
 			return &growattLINKReceiver{growattProjectReceiver: r, lifetime: d.lifetime}, err
-		}, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
+		}, func(s canbusreg.Selection, e canbusreg.Evidence) canbusreg.ReplayInput {
 			in := associate(s, e)
 			// The unbuffered native source applies observations before receiving
 			// their successors. Capture confirmed counts before bounded history
@@ -95,7 +95,7 @@ func (r *growattLINKReceiver) Receive(ctx context.Context) (growattProjectRecord
 }
 
 type growattLINKCount struct {
-	selection canbusreg.CXSelection
+	selection canbusreg.Selection
 	evidence  canbusreg.Evidence
 	count     int
 	valid     bool
@@ -115,8 +115,8 @@ type growattLINKManagedDriver struct {
 	lifetime             context.Context
 	fence                atomic.Pointer[growattLINKFence]
 	metadataMu           sync.Mutex
-	counts               map[canbusreg.CXSelection][]growattLINKCount
-	admitted             map[canbusreg.CXSelection]growattLINKAdmitted
+	counts               map[canbusreg.Selection][]growattLINKCount
+	admitted             map[canbusreg.Selection]growattLINKAdmitted
 }
 
 // growattLINKAdmitted is the latest count seen on an admitted descriptive
@@ -155,8 +155,8 @@ func (d *growattLINKManagedDriver) Start(ctx context.Context) (uint64, error) {
 		return 0, errors.New("LINK generation exhausted")
 	}
 	d.metadataMu.Lock()
-	d.counts = make(map[canbusreg.CXSelection][]growattLINKCount)
-	d.admitted = make(map[canbusreg.CXSelection]growattLINKAdmitted)
+	d.counts = make(map[canbusreg.Selection][]growattLINKCount)
+	d.admitted = make(map[canbusreg.Selection]growattLINKAdmitted)
 	d.metadataMu.Unlock()
 	d.generation++
 	generation := d.generation
@@ -332,10 +332,10 @@ func (d *growattLINKManagedDriver) Snapshot(now time.Duration) growattLINKSnapsh
 	for n := range s.Native.Providers {
 		p := &s.Native.Providers[n]
 		if !usable {
-			p.Current = map[string]canbusreg.CXNativeField{}
+			p.Current = map[string]canbusreg.NativeField{}
 			p.Promotable = false
 		}
-		v := canbusreg.VectorSnapshot{Selection: p.Selection, Kind: "cells", AddressableSlots: 16, AsOf: now, MaxAge: d.provider.staleAfter, Fields: map[int]canbusreg.CXNativeField{}, LastGood: map[int]canbusreg.CXNativeField{}}
+		v := canbusreg.VectorSnapshot{Selection: p.Selection, Kind: "cells", AddressableSlots: 16, AsOf: now, MaxAge: d.provider.staleAfter, Fields: map[int]canbusreg.NativeField{}, LastGood: map[int]canbusreg.NativeField{}}
 		d.retainCounts(*p)
 		if a, ok := d.admitted[p.Selection]; ok {
 			v.ConfiguredCount, v.CountValid = a.count, a.valid

@@ -43,7 +43,7 @@ func (r *cx18Receiver) Close() error {
 	r.closed = true
 	return r.closeError
 }
-func cx18Selection(t *testing.T, link bool) canbusreg.CXSelection {
+func cx18Selection(t *testing.T, link bool) canbusreg.Selection {
 	t.Helper()
 	id, _ := canbus.NewInterfaceIdentity("synthetic0", 7)
 	c := canbusreg.SelectionSpec{Interface: id, Flavor: "pcs-standard", ProjectCode: "QAAA", Release: "0011", Direction: "bms-to-pcs", Scope: "local", Bank: "ordinary", Endpoint: "synthetic", Epoch: 1}
@@ -55,13 +55,13 @@ func cx18Selection(t *testing.T, link bool) canbusreg.CXSelection {
 		c.Source = 1
 		c.Destination = 244
 	}
-	s, err := canbusreg.NewCXSelection(c)
+	s, err := canbusreg.NewSelection(c)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return s
 }
-func cx18Associate(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
+func cx18Associate(s canbusreg.Selection, e canbusreg.Evidence) canbusreg.ReplayInput {
 	c := s.SelectionSpecValue()
 	var in canbusreg.ReplayInput
 	in.Selection = s
@@ -70,18 +70,18 @@ func cx18Associate(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.Repl
 	in.PCS.MeasurementValid = true
 	return in
 }
-func cx18Record(s canbusreg.CXSelection, seq uint64) growattProjectRecord {
+func cx18Record(s canbusreg.Selection, seq uint64) growattProjectRecord {
 	raw := make([]byte, 16)
 	binary.NativeEndian.PutUint32(raw, 0x313)
 	raw[4] = 8
 	binary.LittleEndian.PutUint16(raw[8:], 5310)
 	return growattProjectRecord{Interface: s.SelectionSpecValue().Interface, Raw: raw, Sequence: seq, Monotonic: time.Second}
 }
-func cx18New(t *testing.T, s canbusreg.CXSelection, associate growattProjectAssociation) (*growattProjectProvider, *cx18Receiver, *int) {
+func cx18New(t *testing.T, s canbusreg.Selection, associate growattProjectAssociation) (*growattProjectProvider, *cx18Receiver, *int) {
 	t.Helper()
 	r := &cx18Receiver{id: s.SelectionSpecValue().Interface, records: make(chan growattProjectRecord), canceled: make(chan struct{})}
 	opens := new(int)
-	p, err := newGrowattProjectProvider([]canbusreg.CXSelection{s}, time.Second, true, func(name string) (growattProjectReceiver, error) {
+	p, err := newGrowattProjectProvider([]canbusreg.Selection{s}, time.Second, true, func(name string) (growattProjectReceiver, error) {
 		*opens++
 		if name != r.id.Name() {
 			t.Fatal(name)
@@ -152,7 +152,7 @@ func TestCX18Lifecycle(t *testing.T) {
 func TestCX18ContextHypotheses(t *testing.T) {
 	// Every association component is varied independently with identical bytes.
 	mutations := map[string]func(*canbusreg.ReplayInput){
-		"selector":  func(i *canbusreg.ReplayInput) { i.Selection = canbusreg.CXSelection{} },
+		"selector":  func(i *canbusreg.ReplayInput) { i.Selection = canbusreg.Selection{} },
 		"epoch":     func(i *canbusreg.ReplayInput) { i.PCS.Epoch++ },
 		"direction": func(i *canbusreg.ReplayInput) { i.PCS.Direction = "pcs-to-bms" },
 		"scope":     func(i *canbusreg.ReplayInput) { i.PCS.Scope = "aggregate" },
@@ -165,7 +165,7 @@ func TestCX18ContextHypotheses(t *testing.T) {
 	for name, mutate := range mutations {
 		t.Run(name, func(t *testing.T) {
 			s := cx18Selection(t, false)
-			p, r, _ := cx18New(t, s, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
+			p, r, _ := cx18New(t, s, func(s canbusreg.Selection, e canbusreg.Evidence) canbusreg.ReplayInput {
 				i := cx18Associate(s, e)
 				mutate(&i)
 				return i
@@ -286,7 +286,7 @@ func TestCX18FieldAgesAndPartialRetention(t *testing.T) {
 	s := cx18Selection(t, false)
 	for _, age := range []time.Duration{-1, 0, time.Second, time.Second + 1} {
 		t.Run(fmt.Sprint(age), func(t *testing.T) {
-			p, r, _ := cx18New(t, s, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
+			p, r, _ := cx18New(t, s, func(s canbusreg.Selection, e canbusreg.Evidence) canbusreg.ReplayInput {
 				i := cx18Associate(s, e)
 				i.PCS.FieldAges = map[string]time.Duration{"voltage": age}
 				return i
@@ -312,7 +312,7 @@ func TestCX18FieldAgesAndPartialRetention(t *testing.T) {
 			}
 		})
 	}
-	p, r, _ := cx18New(t, s, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
+	p, r, _ := cx18New(t, s, func(s canbusreg.Selection, e canbusreg.Evidence) canbusreg.ReplayInput {
 		i := cx18Associate(s, e)
 		if e.Sequence > 1 {
 			i.PCS.FieldStates = map[string]string{"voltage": "invalid"}
@@ -340,7 +340,7 @@ func TestCX18TemperatureHypothesisCountAndValidity(t *testing.T) {
 	}{{"zero", 0, true, true, false}, {"one", 1, true, true, true}, {"count-invalid", 1, false, true, false}, {"temperature-invalid", 1, true, false, false}} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := cx18Selection(t, false)
-			p, r, _ := cx18New(t, s, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
+			p, r, _ := cx18New(t, s, func(s canbusreg.Selection, e canbusreg.Evidence) canbusreg.ReplayInput {
 				i := cx18Associate(s, e)
 				i.PCS.Count = tc.count
 				i.PCS.CountValid = tc.valid
@@ -368,13 +368,13 @@ func TestCX18LINKSourceAndDestinationHypotheses(t *testing.T) {
 	c.ProjectCode = "QAAa"
 	c.Release = "9011"
 	c.Choice = "legacy19"
-	second, err := canbusreg.NewCXSelection(c)
+	second, err := canbusreg.NewSelection(c)
 	if err != nil {
 		t.Fatal(err)
 	}
 	r := &cx18Receiver{id: c.Interface, records: make(chan growattProjectRecord), canceled: make(chan struct{})}
 	opens := 0
-	p, err := newGrowattProjectProvider([]canbusreg.CXSelection{s, second}, time.Second, true, func(string) (growattProjectReceiver, error) { opens++; return r, nil }, cx18Associate)
+	p, err := newGrowattProjectProvider([]canbusreg.Selection{s, second}, time.Second, true, func(string) (growattProjectReceiver, error) { opens++; return r, nil }, cx18Associate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -429,14 +429,14 @@ func TestCX18SelectionIdentityFields(t *testing.T) {
 			s := cx18Selection(t, false)
 			c := s.SelectionSpecValue()
 			mutate(&c)
-			different, err := canbusreg.NewCXSelection(c)
+			different, err := canbusreg.NewSelection(c)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if different == s {
 				t.Fatal("identity not varied")
 			}
-			p, r, _ := cx18New(t, s, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
+			p, r, _ := cx18New(t, s, func(s canbusreg.Selection, e canbusreg.Evidence) canbusreg.ReplayInput {
 				i := cx18Associate(s, e)
 				i.Selection = different
 				return i
@@ -456,10 +456,10 @@ func TestCX18SelectionIdentityFields(t *testing.T) {
 }
 func TestCX18ConstructorPreconditions(t *testing.T) {
 	s := cx18Selection(t, false)
-	if _, err := newGrowattProjectProvider([]canbusreg.CXSelection{s}, time.Second, false, openGrowattProjectSocket, cx18Associate); err == nil {
+	if _, err := newGrowattProjectProvider([]canbusreg.Selection{s}, time.Second, false, openGrowattProjectSocket, cx18Associate); err == nil {
 		t.Fatal("missing external confirmation")
 	}
-	if _, err := newGrowattProjectProvider([]canbusreg.CXSelection{s, s}, time.Second, true, openGrowattProjectSocket, cx18Associate); err == nil {
+	if _, err := newGrowattProjectProvider([]canbusreg.Selection{s, s}, time.Second, true, openGrowattProjectSocket, cx18Associate); err == nil {
 		t.Fatal("duplicate ownership")
 	}
 }

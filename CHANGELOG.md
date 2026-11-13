@@ -1,5 +1,11 @@
 # Changelog
 
+## canbusreg selection and native result names
+
+The canbusreg pin moves to the main-branch revision that drops the remaining work-item prefixes from its exports. The Growatt project configuration, provider, LINK and PCS runtimes, CLI and their tests use `Selection`, `NewSelection` and `NativeField`. There is no alias or compatibility layer. `python3 scripts/rename_can_provider_references.py` now also carries `CXSelection`, `NewCXSelection`, `CXNativeField`, `CXNativeResult`, `CXDecodeLINKTelemetry`, `NewCX15OpaqueStore` and `NewCX16SelectedProfile`, reproduces the caller rename offline and its `--check` mode lists any remaining old name.
+
+Native records, admission, field ages, retained last-good state, log and error texts and wire values are unchanged. The gateway binary changes, so affected release evidence must be renewed before the final bill of materials freeze.
+
 ## Hang-detection budgets in timing-sensitive tests
 
 Three tests that still failed on a short hang-detection budget under a loaded race run get a 60 second budget: the runtime-control test that observed transitions never bump the desired revision, where START after STOPPED is still retried only on `TRANSITION_BUSY`; the semantic-operations router waits for executor completion and for the late-evidence replay record; and the wait for the replaced generation in the Growatt managed sidecar restart test, now bounded by that test's deadline. Every behavioral, revision, event, timeout, replay and no-extra-dispatch assertion is unchanged. Only test files change, so the gateway binary is unchanged. The measured slow-test inventory, `testing.Short` skips and the remaining local-gate work stay open.

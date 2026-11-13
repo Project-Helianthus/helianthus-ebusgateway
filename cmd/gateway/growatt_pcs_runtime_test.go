@@ -68,7 +68,7 @@ func cx19Config(t *testing.T, flavor string) ebusgateway.GrowattPCSConfig {
 	}
 	return c
 }
-func cx19Association(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
+func cx19Association(s canbusreg.Selection, e canbusreg.Evidence) canbusreg.ReplayInput {
 	c := s.SelectionSpecValue()
 	var in canbusreg.ReplayInput
 	in.Selection = s
@@ -241,7 +241,7 @@ func TestCX19SelectedFlavorsAndCachedEvidence(t *testing.T) {
 }
 func TestCX19FieldwiseStalenessAndLastGood(t *testing.T) {
 	c := cx19Config(t, "pcs-standard")
-	d, r := cx19New(t, c, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
+	d, r := cx19New(t, c, func(s canbusreg.Selection, e canbusreg.Evidence) canbusreg.ReplayInput {
 		i := cx19Association(s, e)
 		i.PCS.FieldAges = map[string]time.Duration{"voltage": 0, "current": time.Second}
 		if e.Sequence == 2 {
@@ -268,7 +268,7 @@ func TestCX19FieldwiseStalenessAndLastGood(t *testing.T) {
 // than plausibility-based selection. Every identity component is exercised.
 func TestCX19HypothesisContextNegativeVectors(t *testing.T) {
 	mutations := map[string]func(*canbusreg.ReplayInput){
-		"missing-selector":      func(i *canbusreg.ReplayInput) { i.Selection = canbusreg.CXSelection{} },
+		"missing-selector":      func(i *canbusreg.ReplayInput) { i.Selection = canbusreg.Selection{} },
 		"epoch-reuse":           func(i *canbusreg.ReplayInput) { i.PCS.Epoch++ },
 		"wrong-direction":       func(i *canbusreg.ReplayInput) { i.PCS.Direction = "pcs-to-bms" },
 		"wrong-scope":           func(i *canbusreg.ReplayInput) { i.PCS.Scope = "aggregate" },
@@ -281,7 +281,7 @@ func TestCX19HypothesisContextNegativeVectors(t *testing.T) {
 	for name, mutate := range mutations {
 		t.Run(name, func(t *testing.T) {
 			c := cx19Config(t, "pcs-standard")
-			d, r := cx19New(t, c, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
+			d, r := cx19New(t, c, func(s canbusreg.Selection, e canbusreg.Evidence) canbusreg.ReplayInput {
 				i := cx19Association(s, e)
 				mutate(&i)
 				return i
@@ -299,7 +299,7 @@ func TestCX19SourceAndEpochReuseInvalidateDependentState(t *testing.T) {
 	for _, field := range []string{"epoch", "selector-source"} {
 		t.Run(field, func(t *testing.T) {
 			c := cx19Config(t, "pcs-standard")
-			d, r := cx19New(t, c, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
+			d, r := cx19New(t, c, func(s canbusreg.Selection, e canbusreg.Evidence) canbusreg.ReplayInput {
 				i := cx19Association(s, e)
 				if e.Sequence > 1 {
 					if field == "epoch" {
@@ -307,7 +307,7 @@ func TestCX19SourceAndEpochReuseInvalidateDependentState(t *testing.T) {
 					} else {
 						spec := s.SelectionSpecValue()
 						spec.Source++
-						i.Selection, _ = canbusreg.NewCXSelection(spec)
+						i.Selection, _ = canbusreg.NewSelection(spec)
 					}
 				}
 				return i
@@ -324,7 +324,7 @@ func TestCX19SourceAndEpochReuseInvalidateDependentState(t *testing.T) {
 }
 func TestCX19UnassignedStandardPublishersNeverMerge(t *testing.T) {
 	c := cx19Config(t, "pcs-standard")
-	d, r := cx19New(t, c, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
+	d, r := cx19New(t, c, func(s canbusreg.Selection, e canbusreg.Evidence) canbusreg.ReplayInput {
 		i := cx19Association(s, e)
 		i.PCS.PublisherResolved = false
 		return i
@@ -348,9 +348,9 @@ func TestCX19OptionalTrafficCannotSelectOrFallback(t *testing.T) {
 	for _, flavor := range []string{"pcs-standard", "pcs-extended19", "pcs-parallel"} {
 		t.Run(flavor, func(t *testing.T) {
 			c := cx19Config(t, flavor)
-			d, r := cx19New(t, c, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
+			d, r := cx19New(t, c, func(s canbusreg.Selection, e canbusreg.Evidence) canbusreg.ReplayInput {
 				i := cx19Association(s, e)
-				i.Selection = canbusreg.CXSelection{}
+				i.Selection = canbusreg.Selection{}
 				return i
 			})
 			for index, id := range []uint32{0x311, 0x312, 0x313, 0x37f} {
@@ -558,7 +558,7 @@ func TestCX19ExtremaNeverBecomeCompleteCells(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			c := cx19Config(t, "pcs-standard")
-			d, r := cx19New(t, c, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
+			d, r := cx19New(t, c, func(s canbusreg.Selection, e canbusreg.Evidence) canbusreg.ReplayInput {
 				i := cx19Association(s, e)
 				i.PCS.MeasurementValid = valid
 				return i
@@ -583,7 +583,7 @@ func TestCX19ExtremaNeverBecomeCompleteCells(t *testing.T) {
 }
 func TestCX19UnknownCachedMemberAgeRemainsWithheld(t *testing.T) {
 	c := cx19Config(t, "pcs-standard")
-	d, r := cx19New(t, c, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
+	d, r := cx19New(t, c, func(s canbusreg.Selection, e canbusreg.Evidence) canbusreg.ReplayInput {
 		i := cx19Association(s, e)
 		i.PCS.SlotValid = true
 		i.PCS.NativeSlot = 0
@@ -625,12 +625,12 @@ func TestCX19SelectionIdentityEveryField(t *testing.T) {
 	for name, mutate := range mutations {
 		t.Run(name, func(t *testing.T) {
 			c := cx19Config(t, "pcs-standard")
-			d, r := cx19New(t, c, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
+			d, r := cx19New(t, c, func(s canbusreg.Selection, e canbusreg.Evidence) canbusreg.ReplayInput {
 				i := cx19Association(s, e)
 				spec := s.SelectionSpecValue()
 				mutate(&spec)
 				var err error
-				i.Selection, err = canbusreg.NewCXSelection(spec)
+				i.Selection, err = canbusreg.NewSelection(spec)
 				if err != nil {
 					t.Error(err)
 				}
@@ -828,7 +828,7 @@ func TestCX19FieldStatesAndZeroRemainDistinct(t *testing.T) {
 	for _, state := range []string{"accepted", "absent", "invalid", "unsupported", "stale", "conflict", "unassigned"} {
 		t.Run(state, func(t *testing.T) {
 			c := cx19Config(t, "pcs-standard")
-			d, r := cx19New(t, c, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
+			d, r := cx19New(t, c, func(s canbusreg.Selection, e canbusreg.Evidence) canbusreg.ReplayInput {
 				i := cx19Association(s, e)
 				if state != "accepted" {
 					i.PCS.FieldStates = map[string]string{"voltage": state}

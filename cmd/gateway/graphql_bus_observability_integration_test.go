@@ -63,6 +63,26 @@ func TestGraphQLBusObservabilityProviderAdapter_ParityWithMCPAdapter(t *testing.
 	if !reflect.DeepEqual(normalizeMCPBusSnapshot(got), normalizeMCPBusSnapshot(want)) {
 		t.Fatalf("GraphQL/MCP bus observability parity mismatch\nwant: %#v\ngot:  %#v", want, got)
 	}
+
+	// Issue #1526: the startup reason reaches both surfaces unchanged.
+	store.SetStartupSurfaceProvider(func() *ebusgateway.BusObservabilityStartup {
+		return &ebusgateway.BusObservabilityStartup{
+			LastUpdatedAt: &startupAt,
+			Phase:         string(graphql.SemanticStartupPhaseDegraded),
+			CacheEpoch:    0,
+			LiveEpoch:     0,
+			Reason:        graphql.SemanticStartupReasonNoSupportedHeatSourcePath,
+		}
+	})
+	got = graphQLSnapshotToMCPShape(t, newGraphQLBusObservabilityProvider(store).Snapshot())
+	want = newMCPBusObservabilityProvider(store).Snapshot()
+	if !reflect.DeepEqual(normalizeMCPBusSnapshot(got), normalizeMCPBusSnapshot(want)) {
+		t.Fatalf("GraphQL/MCP bus observability parity mismatch with a startup reason\nwant: %#v\ngot:  %#v", want, got)
+	}
+	if want.Summary == nil || want.Summary.Status == nil || want.Summary.Status.Startup == nil ||
+		want.Summary.Status.Startup.Reason != graphql.SemanticStartupReasonNoSupportedHeatSourcePath {
+		t.Fatalf("MCP startup block = %#v; want reason %s", want.Summary, graphql.SemanticStartupReasonNoSupportedHeatSourcePath)
+	}
 }
 
 func TestRun_WiresBusObservabilityIntoGraphQLQueries(t *testing.T) {
@@ -123,7 +143,7 @@ func TestRun_WiresBusObservabilityIntoGraphQLQueries(t *testing.T) {
 			t.Fatalf("NewInvokeHandler error = %v", err)
 		}
 
-		body := bytes.NewBufferString(`{"query":"{ bus_summary { last_updated_at messages { count capacity } status { last_updated_at transport_class publisher_cadence_sec publisher_cadence_source capability { active_supported } bus_admission { source_selection { state outcome selected_source companion_target reason active_probe { target status } retryable automatic_retry_scheduled next_action } } startup { last_updated_at phase cache_epoch live_epoch } feature_flags { last_updated_at } } } bus_messages(limit: 1) { count items { family source_address target_address } } }"}`)
+		body := bytes.NewBufferString(`{"query":"{ bus_summary { last_updated_at messages { count capacity } status { last_updated_at transport_class publisher_cadence_sec publisher_cadence_source capability { active_supported } bus_admission { source_selection { state outcome selected_source companion_target reason active_probe { target status } retryable automatic_retry_scheduled next_action } } startup { last_updated_at phase cache_epoch live_epoch reason } feature_flags { last_updated_at } } } bus_messages(limit: 1) { count items { family source_address target_address } } }"}`)
 		req := httptest.NewRequest(http.MethodPost, cfg.GraphQLPath, body)
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
@@ -166,10 +186,11 @@ func TestRun_WiresBusObservabilityIntoGraphQLQueries(t *testing.T) {
 							} `json:"source_selection"`
 						} `json:"bus_admission"`
 						Startup struct {
-							LastUpdatedAt string `json:"last_updated_at"`
-							Phase         string `json:"phase"`
-							CacheEpoch    string `json:"cache_epoch"`
-							LiveEpoch     string `json:"live_epoch"`
+							LastUpdatedAt string  `json:"last_updated_at"`
+							Phase         string  `json:"phase"`
+							CacheEpoch    string  `json:"cache_epoch"`
+							LiveEpoch     string  `json:"live_epoch"`
+							Reason        *string `json:"reason"`
 						} `json:"startup"`
 						FeatureFlags struct {
 							LastUpdatedAt string `json:"last_updated_at"`
@@ -226,6 +247,9 @@ func TestRun_WiresBusObservabilityIntoGraphQLQueries(t *testing.T) {
 		}
 		if response.Data.BusSummary.Status.Startup.CacheEpoch != "0" || response.Data.BusSummary.Status.Startup.LiveEpoch != "0" {
 			t.Fatalf("bus_summary.status.startup epochs = (%s,%s); want (0,0)", response.Data.BusSummary.Status.Startup.CacheEpoch, response.Data.BusSummary.Status.Startup.LiveEpoch)
+		}
+		if reason := response.Data.BusSummary.Status.Startup.Reason; reason != nil {
+			t.Fatalf("bus_summary.status.startup.reason = %q; want null without a startup reason", *reason)
 		}
 		if response.Data.BusSummary.Status.Startup.LastUpdatedAt == "" {
 			t.Fatal("bus_summary.status.startup.last_updated_at empty; want timestamp")
@@ -426,6 +450,7 @@ func graphQLStatusToMCP(status *graphql.BusObservabilityStatus) *mcp.BusObservab
 			Phase:         status.Startup.Phase,
 			CacheEpoch:    status.Startup.CacheEpoch,
 			LiveEpoch:     status.Startup.LiveEpoch,
+			Reason:        status.Startup.Reason,
 		}
 	}
 	var admission *mcp.BusAdmission

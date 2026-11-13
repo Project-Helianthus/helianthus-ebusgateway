@@ -23,6 +23,13 @@ const (
 	SemanticStartupPhaseDegraded         SemanticStartupPhase = "DEGRADED"
 )
 
+// SemanticStartupReasonNoSupportedHeatSourcePath is the startup reason set
+// while the bus offers no data path the semantic poller supports: no B524 root
+// and no boiler-class heat source, while the inventory holds a heat-pump-class
+// heat-source identity. It explains a warm-up that publishes nothing; it is
+// not a phase and does not change the readiness predicate.
+const SemanticStartupReasonNoSupportedHeatSourcePath = "no_supported_heat_source_path"
+
 type semanticDataSource uint8
 
 const (
@@ -77,6 +84,7 @@ type LiveSemanticProvider struct {
 	energyPassiveStateProvider func() string
 
 	phase              SemanticStartupPhase
+	startupReason      string
 	startupUpdatedAt   time.Time
 	cacheEpoch         uint64
 	liveEpoch          uint64
@@ -145,6 +153,9 @@ func (provider *LiveSemanticProvider) StartBootFSM(ctx context.Context, bootLive
 			provider.mu.Lock()
 			if provider.phase != SemanticStartupPhaseLiveReady {
 				reason := fmt.Sprintf("boot_live_timeout elapsed=%s", bootLiveTimeout)
+				if provider.startupReason != "" {
+					reason += " startup_reason=" + provider.startupReason
+				}
 				transition = provider.transitionPhaseLocked(SemanticStartupPhaseDegraded, reason)
 			}
 			provider.mu.Unlock()
@@ -160,6 +171,38 @@ func (provider *LiveSemanticProvider) StartupPhase() SemanticStartupPhase {
 	provider.mu.RLock()
 	defer provider.mu.RUnlock()
 	return provider.phase
+}
+
+// StartupReason returns the reason shown next to the startup phase, or "" when
+// none applies.
+func (provider *LiveSemanticProvider) StartupReason() string {
+	if provider == nil {
+		return ""
+	}
+	provider.mu.RLock()
+	defer provider.mu.RUnlock()
+	return provider.startupReason
+}
+
+// SetNoSupportedHeatSourcePath sets or clears the startup reason
+// SemanticStartupReasonNoSupportedHeatSourcePath and reports whether it
+// changed. It changes neither the phase nor the epochs.
+func (provider *LiveSemanticProvider) SetNoSupportedHeatSourcePath(active bool) bool {
+	if provider == nil {
+		return false
+	}
+	next := ""
+	if active {
+		next = SemanticStartupReasonNoSupportedHeatSourcePath
+	}
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	if provider.startupReason == next {
+		return false
+	}
+	provider.startupReason = next
+	provider.touchStartupUpdatedAtLocked()
+	return true
 }
 
 func (provider *LiveSemanticProvider) StartupEpochs() (cacheEpoch uint64, liveEpoch uint64) {

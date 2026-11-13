@@ -1,5 +1,11 @@
 # Changelog
 
+## canbusreg selection and native result names
+
+The canbusreg pin moves to the main-branch revision that drops the remaining work-item prefixes from its exports. The Growatt project configuration, provider, LINK and PCS runtimes, CLI and their tests use `Selection`, `NewSelection` and `NativeField`. There is no alias or compatibility layer. `python3 scripts/rename_can_provider_references.py` now also carries `CXSelection`, `NewCXSelection`, `CXNativeField`, `CXNativeResult`, `CXDecodeLINKTelemetry`, `NewCX15OpaqueStore` and `NewCX16SelectedProfile`, reproduces the caller rename offline and its `--check` mode lists any remaining old name.
+
+Native records, admission, field ages, retained last-good state, log and error texts and wire values are unchanged. The gateway binary changes, so affected release evidence must be renewed before the final bill of materials freeze.
+
 ## Site profile without a system controller
 
 An offline acceptance scenario covers an eBUS that carries a heat source and the vendor's internet module but never a system controller. It runs the production startup scan, registry scan, B524 root probe, semantic poller, read scheduler and poll schedule over a recording synthetic bus on a simulated clock that starts at process start. It asserts the startup phases against the boot-live deadline, the root discovery frames and attempts, the native refresh spacing of the heat-source registers, the published streams and the regulator-absence signal. The [reduced run sheet](docs/testing/site-without-controller-run-sheet.md) for the hardware session at such a site removes the controller rows and names the remaining ones.

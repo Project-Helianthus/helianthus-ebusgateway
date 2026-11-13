@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Offline, token-aware adoption of the canbusreg provider export renames.
 
-RENAMES is the exported subset of the canbusreg provider rename
+RENAMES is the exported subset of the canbusreg provider rename and of its
+follow-up for the remaining work-item-prefixed exports
 (scripts/rename_provider_names.py in helianthus-canbusreg); only exported names
 are reachable from the gateway. Identifier tokens and identifier words inside
 comments are renamed; string, rune and raw-string literals stay unchanged.
@@ -100,6 +101,13 @@ RENAMES = {
     "CX17Receive": "ProjectProviderReceive",
     "CX17ReceiveSource": "ReceiveSource",
     "CX17Snapshot": "ProjectProviderSnapshot",
+    "CXDecodeLINKTelemetry": "DecodeLINKTelemetry",
+    "CXNativeField": "NativeField",
+    "CXNativeResult": "NativeResult",
+    "CXSelection": "Selection",
+    "NewCX15OpaqueStore": "NewOpaqueStore",
+    "NewCX16SelectedProfile": "NewSelectedProfile",
+    "NewCXSelection": "NewSelection",
     "O08Evidence": "Evidence",
     "O08Generation": "Generation",
     "O08GrowattProvider": "GrowattBMSProvider",

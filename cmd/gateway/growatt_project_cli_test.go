@@ -340,8 +340,8 @@ func TestCX21AssociationKeyEveryField(t *testing.T) {
 			t.Run(fmt.Sprintf("link=%v/%s", link, name), func(t *testing.T) {
 				n := a.selections[0].SelectionSpecValue()
 				mutate(&n)
-				s, _ := canbusreg.NewCXSelection(n)
-				if got := a.associate(s, canbusreg.Evidence{}); got.Selection != (canbusreg.CXSelection{}) {
+				s, _ := canbusreg.NewSelection(n)
+				if got := a.associate(s, canbusreg.Evidence{}); got.Selection != (canbusreg.Selection{}) {
 					t.Fatal("foreign key acquired association")
 				}
 			})

@@ -525,7 +525,7 @@ func TestCX22VoltageAndMemberDictionary(t *testing.T) {
 			h := cx22New(t, cfg)
 			d := h.wrappers[managedGrowattPCSID].Runtime.(*growattPCSManagedDriver)
 			original := d.provider.associate
-			d.provider.associate = func(sel canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
+			d.provider.associate = func(sel canbusreg.Selection, e canbusreg.Evidence) canbusreg.ReplayInput {
 				in := original(sel, e)
 				member := sel
 				in.PCS.Member = &member
@@ -656,11 +656,11 @@ func TestCX22SelectorReuseInvalidatesDependentFields(t *testing.T) {
 			// Change explicit association only while reception is parked. Production
 			// composition and its factory have already supplied the original selector.
 			original := d.provider.associate
-			d.provider.associate = func(sel canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
+			d.provider.associate = func(sel canbusreg.Selection, e canbusreg.Evidence) canbusreg.ReplayInput {
 				in := original(sel, e)
 				spec := sel.SelectionSpecValue()
 				mutate(&spec)
-				in.Selection, _ = canbusreg.NewCXSelection(spec)
+				in.Selection, _ = canbusreg.NewSelection(spec)
 				return in
 			}
 			r.Sequence = 2
@@ -780,7 +780,7 @@ func TestCX22FieldAgeIsIndependentOfLatestTraffic(t *testing.T) {
 	f := cx22Load(t)
 	ld := h.wrappers[managedGrowattLINKID].Runtime.(*growattLINKManagedDriver)
 	originalLINK := ld.provider.associate
-	ld.provider.associate = func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
+	ld.provider.associate = func(s canbusreg.Selection, e canbusreg.Evidence) canbusreg.ReplayInput {
 		in := originalLINK(s, e)
 		in.PCS.FieldAge = 0
 		for n := range in.CellGates {
@@ -809,7 +809,7 @@ func TestCX22FieldAgeIsIndependentOfLatestTraffic(t *testing.T) {
 	// Per-field ages must survive a new frame and keep their own boundary.
 	d := h.wrappers[managedGrowattPCSID].Runtime.(*growattPCSManagedDriver)
 	original := d.provider.associate
-	d.provider.associate = func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
+	d.provider.associate = func(s canbusreg.Selection, e canbusreg.Evidence) canbusreg.ReplayInput {
 		in := original(s, e)
 		in.PCS.FieldAge = 0
 		in.PCS.FieldAges = map[string]time.Duration{"voltage": 0, "current": time.Second}
@@ -901,7 +901,7 @@ func TestCX22NativeContextDoesNotInventTopology(t *testing.T) {
 			h := cx22New(t, cx22Config(t, false))
 			d := h.wrappers[managedGrowattPCSID].Runtime.(*growattPCSManagedDriver)
 			original := d.provider.associate
-			d.provider.associate = func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
+			d.provider.associate = func(s canbusreg.Selection, e canbusreg.Evidence) canbusreg.ReplayInput {
 				in := original(s, e)
 				mutate(&in)
 				return in
@@ -1061,7 +1061,7 @@ func TestCX22StaleContributorCannotRenewMean(t *testing.T) {
 			contributors.Fields[1] = field
 			d := h.wrappers[managedGrowattLINKID].Runtime.(*growattLINKManagedDriver)
 			original := d.provider.associate
-			d.provider.associate = func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
+			d.provider.associate = func(s canbusreg.Selection, e canbusreg.Evidence) canbusreg.ReplayInput {
 				in := original(s, e)
 				in.PCS.FieldAge = 0
 				in.CellContributors = contributors
@@ -1177,7 +1177,7 @@ func TestCX22InvalidFollowupRetainsLastGoodAndSibling(t *testing.T) {
 	h := cx22New(t, cx22Config(t, false))
 	d := h.wrappers[managedGrowattLINKID].Runtime.(*growattLINKManagedDriver)
 	original := d.provider.associate
-	d.provider.associate = func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
+	d.provider.associate = func(s canbusreg.Selection, e canbusreg.Evidence) canbusreg.ReplayInput {
 		in := original(s, e)
 		if e.Sequence == 2 {
 			in.CellGates[0].Valid = false

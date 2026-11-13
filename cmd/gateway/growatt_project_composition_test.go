@@ -240,13 +240,13 @@ func managerSnapshotCorrelation(t *testing.T, m *drivermanager.Manager, id runti
 }
 func TestCX21ExplicitContextHypothesisNegatives(t *testing.T) {
 	mutations := map[string]func(*canbusreg.ReplayInput){
-		"selector": func(in *canbusreg.ReplayInput) { in.Selection = canbusreg.CXSelection{} }, "direction": func(in *canbusreg.ReplayInput) { in.PCS.Direction = "pcs-to-bms" }, "scope": func(in *canbusreg.ReplayInput) { in.PCS.Scope = "aggregate" }, "publisher": func(in *canbusreg.ReplayInput) { in.PCS.PublisherResolved = false }, "endpoint": func(in *canbusreg.ReplayInput) { in.PCS.Endpoint = "other" }, "group": func(in *canbusreg.ReplayInput) { in.PCS.Group = "other" }, "slot": func(in *canbusreg.ReplayInput) { in.PCS.Slot = "other" },
+		"selector": func(in *canbusreg.ReplayInput) { in.Selection = canbusreg.Selection{} }, "direction": func(in *canbusreg.ReplayInput) { in.PCS.Direction = "pcs-to-bms" }, "scope": func(in *canbusreg.ReplayInput) { in.PCS.Scope = "aggregate" }, "publisher": func(in *canbusreg.ReplayInput) { in.PCS.PublisherResolved = false }, "endpoint": func(in *canbusreg.ReplayInput) { in.PCS.Endpoint = "other" }, "group": func(in *canbusreg.ReplayInput) { in.PCS.Group = "other" }, "slot": func(in *canbusreg.ReplayInput) { in.PCS.Slot = "other" },
 	}
 	for name, mutate := range mutations {
 		t.Run(name, func(t *testing.T) {
 			a := cx21Admission(t, cx21Config(t, false), false)
 			s := a.selections[0]
-			p, r, _ := cx18New(t, s, func(s canbusreg.CXSelection, e canbusreg.Evidence) canbusreg.ReplayInput {
+			p, r, _ := cx18New(t, s, func(s canbusreg.Selection, e canbusreg.Evidence) canbusreg.ReplayInput {
 				in := a.associate(s, e)
 				mutate(&in)
 				return in

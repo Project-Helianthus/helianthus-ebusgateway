@@ -124,8 +124,8 @@ func ParseGrowattLINKSourceSelectors(value, project, release string) ([]GrowattL
 	return result, nil
 }
 
-func validateGrowattProjectNative(n canbusreg.SelectionSpec) (canbusreg.CXSelection, error) {
-	s, err := canbusreg.NewCXSelection(n)
+func validateGrowattProjectNative(n canbusreg.SelectionSpec) (canbusreg.Selection, error) {
+	s, err := canbusreg.NewSelection(n)
 	if err != nil {
 		return s, err
 	}
@@ -150,20 +150,20 @@ func validateGrowattProjectNative(n canbusreg.SelectionSpec) (canbusreg.CXSelect
 	return s, nil
 }
 
-func (c GrowattPCSConfig) Selection() (canbusreg.CXSelection, error) {
+func (c GrowattPCSConfig) Selection() (canbusreg.Selection, error) {
 	if !c.Enabled {
 		if c != (GrowattPCSConfig{}) {
-			return canbusreg.CXSelection{}, errors.New("disabled PCS has active fields")
+			return canbusreg.Selection{}, errors.New("disabled PCS has active fields")
 		}
-		return canbusreg.CXSelection{}, nil
+		return canbusreg.Selection{}, nil
 	}
 	if !c.ListenOnlyConfirmed || c.StaleAfter <= 0 || c.Native.Flavor == "link" {
-		return canbusreg.CXSelection{}, errors.New("PCS preconditions required")
+		return canbusreg.Selection{}, errors.New("PCS preconditions required")
 	}
 	return validateGrowattProjectNative(c.Native)
 }
 
-func (c GrowattLINKConfig) Selections() ([]canbusreg.CXSelection, error) {
+func (c GrowattLINKConfig) Selections() ([]canbusreg.Selection, error) {
 	if !c.Enabled {
 		if c != (GrowattLINKConfig{}) {
 			return nil, errors.New("disabled LINK has active fields")
@@ -177,7 +177,7 @@ func (c GrowattLINKConfig) Selections() ([]canbusreg.CXSelection, error) {
 	if err != nil {
 		return nil, err
 	}
-	result := make([]canbusreg.CXSelection, 0, len(entries))
+	result := make([]canbusreg.Selection, 0, len(entries))
 	for _, entry := range entries {
 		n := c.Native
 		n.Source, n.ProjectCode, n.Release, n.Choice = entry.Source, entry.ProjectCode, entry.Release, entry.Contract

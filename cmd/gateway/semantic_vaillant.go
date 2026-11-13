@@ -498,6 +498,11 @@ func (p *vaillantSemanticPoller) refreshRegulatorCapability(_ context.Context) {
 		log.Printf("semantic_regulator_absence state=%s capability=%s", newAbsence, regCap.String())
 	}
 
+	// The reason depends on the regulator capability: re-evaluate it here so
+	// an enrichment that classifies a registered identity as a controller
+	// clears it without waiting for a discovery pass.
+	p.refreshHeatSourcePathReason()
+
 	// If device count changed, enqueue an immediate full discovery refresh.
 	if deviceCount != prevDeviceCount && prevDeviceCount > 0 {
 		log.Printf("semantic_regulator_recheck inventory_change prev=%d curr=%d", prevDeviceCount, deviceCount)

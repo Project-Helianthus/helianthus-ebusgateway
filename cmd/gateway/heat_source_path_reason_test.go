@@ -216,3 +216,24 @@ func TestHeatSourcePathReasonClearedByBoilerClassHeatSource(t *testing.T) {
 		t.Fatalf("log lines = %q; want %q", lines, want)
 	}
 }
+
+// A registry entry enriched with a serial the catalogue classifies as a
+// controller clears the reason at the next regulator capability recheck, with
+// an unchanged device count (no discovery pass is queued). Mutation caught:
+// the reason evaluation removed from refreshRegulatorCapability.
+func TestHeatSourcePathReasonClearedByCapabilityRecheck(t *testing.T) {
+	regulatorSerial := controllerlessSerial(controllerlessCatalogPartWith(t, "Regulator", productids.ControllerPresent))
+	p := newHeatSourcePathPoller(t,
+		registry.DeviceInfo{Address: 0x08, Manufacturer: "Vaillant", DeviceID: "EHP00"},
+		registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV"},
+	)
+	p.refreshRegulatorCapability(context.Background())
+	if got := p.provider.StartupReason(); got != graphql.SemanticStartupReasonNoSupportedHeatSourcePath {
+		t.Fatalf("StartupReason() before enrichment = %q; want the reason", got)
+	}
+	p.reg.Register(registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV", SerialNumber: regulatorSerial})
+	p.refreshRegulatorCapability(context.Background())
+	if got := p.provider.StartupReason(); got != "" {
+		t.Fatalf("StartupReason() after a controller serial = %q; want empty", got)
+	}
+}

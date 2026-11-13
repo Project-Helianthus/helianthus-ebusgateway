@@ -1,5 +1,30 @@
 # Changelog
 
+## Error texts with the package names and Growatt CAN contract names without work-item codes
+
+Error texts that reach logs and API errors now start with the package name without underscores, and one of them names the declared emit set instead of a work-item code. Each text is renamed directly, with no alias and no acceptance of the old text:
+
+| Old | New |
+|---|---|
+| `execution_policy: safety_class denied` | `executionpolicy: safety_class denied` |
+| `execution_policy: responder transport unavailable` | `executionpolicy: responder transport unavailable` |
+| `execution_policy: nmWhitelist entry has incomplete identity axes …` (startup panic) | `executionpolicy: nmWhitelist entry has incomplete identity axes …` |
+| `nm_runtime: no catalog entry for emit event` | `nmruntime: no catalog entry for emit event` |
+| `nm_runtime: unknown emit event (not in declared M4 set)` | `nmruntime: unknown emit event (not in the declared emit set)` |
+| `nm_runtime: emitter is required` | `nmruntime: emitter is required` |
+| `nm_runtime: executionpolicy: responder transport unavailable` (wrapped) | `nmruntime: executionpolicy: responder transport unavailable` |
+| `nm_runtime: responder send: …` (wrapped) | `nmruntime: responder send: …` |
+| `rpc_source: source byte is invalid` | `rpcsource: source byte is invalid` |
+
+The native contract names the gateway registers for the receive-only Growatt PCS and LINK CAN providers (owner `helianthus-canbusreg`) follow their sibling `GrowattBMSCANReceiveOnly` instead of a work-item code:
+
+| Old | New |
+|---|---|
+| `CX17PCSReceiveOnly` | `GrowattPCSCANReceiveOnly` |
+| `CX17LINKReceiveOnly` | `GrowattLINKCANReceiveOnly` |
+
+Callers compare these errors with `errors.Is`; the sentinels are unchanged. The acceptance report key `catalogue_version`, the hardware acceptance catalog data and its schema are not changed by this entry. Native records, admission, wire values and the `ebus_standard` MCP method strings are unchanged. The gateway binary changes, so affected release evidence must be renewed before the final bill of materials freeze.
+
 ## Gateway packages without underscores and the eBUS library package renames
 
 Four gateway packages move to names without underscores, with their tests and golden files: `internal/execution_policy` becomes `internal/executionpolicy` (package `executionpolicy`), `internal/nm_runtime` becomes `internal/nmruntime` (`nmruntime`), `internal/rpc_source` becomes `internal/rpcsource` (`rpcsource`) and `mcp/ebus_standard` becomes `mcp/ebusstandard` (`ebusstandard`). Every importer uses the new paths. Import names that only repeated the new package name are dropped, and the files that import both the gateway MCP package and the ebusreg catalog name them `mcpstandard` and `ebusregstandard`. The ebusreg pin moves to the main-branch revision where `catalog/ebus_standard` is `catalog/ebusstandard`, and the ebusgo pin moves to the main-branch revision where `protocol/telegram_fsm` is `protocol/telegramfsm` and `protocol/ebus_standard` is `protocol/ebusstandard`; the gateway imports follow. There is no alias, forwarding package or compatibility layer. `python3 scripts/rename_underscore_packages.py` reproduces the moves, the import and qualifier rewrite and the source list of the naming inventory offline, `--require MODULE@VERSION` also re-pins a library from the local module cache, and `--check` lists any remaining old package path or name.

@@ -191,7 +191,7 @@ func init() {
 			e.serviceVariant == "" ||
 			e.version == "" ||
 			e.transportCapabilityRequirements == nil {
-			panic("execution_policy: nmWhitelist entry has incomplete identity axes (index " +
+			panic("executionpolicy: nmWhitelist entry has incomplete identity axes (index " +
 				itoa(i) + ") — AD09 invariant violation")
 		}
 	}

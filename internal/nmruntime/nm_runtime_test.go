@@ -121,6 +121,44 @@ func TestRuntime_Emit_RefusesIfCatalogMissing(t *testing.T) {
 	}
 }
 
+// TestErrorTexts_StartWithPackageName pins the sentinel texts that reach
+// logs and API errors: each starts with the package name nmruntime, and the
+// undeclared-event text names the declared emit set.
+func TestErrorTexts_StartWithPackageName(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{nmruntime.ErrNoCatalogEntry, "nmruntime: no catalog entry for emit event"},
+		{nmruntime.ErrUnknownEmitEvent, "nmruntime: unknown emit event (not in the declared emit set)"},
+		{nmruntime.ErrEmitterRequired, "nmruntime: emitter is required"},
+	} {
+		if got := tc.err.Error(); got != tc.want {
+			t.Fatalf("error text = %q, want %q", got, tc.want)
+		}
+	}
+
+	em := &recordingEmitter{}
+	rt, err := nmruntime.NewRuntime(ebusstd.Catalog{Namespace: "ebus_standard"}, em, testRuntimeSource)
+	if err != nil {
+		t.Fatalf("NewRuntime err: %v", err)
+	}
+	err = rt.Emit(context.Background(), nmruntime.EventResetStatus, nil)
+	if !errors.Is(err, nmruntime.ErrNoCatalogEntry) {
+		t.Fatalf("want ErrNoCatalogEntry, got %v", err)
+	}
+	if want := `event="reset_status": nmruntime: no catalog entry for emit event`; err.Error() != want {
+		t.Fatalf("missing-entry text = %q, want %q", err.Error(), want)
+	}
+	err = rt.Emit(context.Background(), nmruntime.EmitEvent("sign_of_life"), nil)
+	if !errors.Is(err, nmruntime.ErrUnknownEmitEvent) {
+		t.Fatalf("want ErrUnknownEmitEvent, got %v", err)
+	}
+	if want := `event="sign_of_life": nmruntime: unknown emit event (not in the declared emit set)`; err.Error() != want {
+		t.Fatalf("undeclared-event text = %q, want %q", err.Error(), want)
+	}
+}
+
 // TestNewRuntime_RejectsNilEmitter is the fail-fast guard for issue #505
 // r3106859312. NewRuntime previously accepted a nil Emitter and would
 // nil-panic on the first Emit call; now construction must reject it with

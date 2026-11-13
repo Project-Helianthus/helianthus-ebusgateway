@@ -52,9 +52,11 @@ package main
 //   - controller-class traffic is B524 root discovery only: each candidate
 //     (0x15 first, then 0x08, 0x26 and any identified device) gets one
 //     production probe call per discovery pass, three read attempts each with
-//     the regulator selector, on every state tick (60 s), config tick (5 min)
-//     and discovery tick (10 min). No other B524 frame, no B555 read and no
-//     write is ever sent, and nothing runs as a tight loop;
+//     the regulator selector. Until the absence state is ABSENT a pass runs on
+//     every state tick (60 s), config tick (5 min) and discovery tick (10 min);
+//     once ABSENT only the discovery tick and event-driven refreshes run one.
+//     No other B524 frame, no B555 read and no write is ever sent, and nothing
+//     runs as a tight loop;
 //   - heat-source B509 registers are re-read natively when the 30 s read cache
 //     has expired: fast-tier registers once a minute, medium-tier every 5 min,
 //     slow-tier every 10 min;
@@ -208,6 +210,11 @@ type controllerlessSite struct {
 	provider *graphql.LiveSemanticProvider
 	deadline time.Duration
 
+	// onFrame, when set, sees every recorded frame; stopPolling ends the
+	// running simulation (the task in progress sees a cancelled context).
+	onFrame     func(controllerlessEvent)
+	stopPolling context.CancelFunc
+
 	mu              sync.Mutex
 	devices         map[byte]controllerlessDevice
 	events          []controllerlessEvent
@@ -309,9 +316,10 @@ func controllerlessFrameKind(frame protocol.Frame) string {
 }
 
 // frameCost is the simulated bus time of one request: arbitration (one SYN),
-// QQ ZZ PB SB NN, data and CRC, then either the answer (ACK, NN, data, CRC,
-// ACK) or, when nobody answers, one more symbol in wire timing or the rest of
-// the attempt's timeout in timeout timing.
+// QQ ZZ PB SB NN, data and CRC, then either the answered exchange (the
+// target's ACK, NN, data and CRC, the initiator's ACK and the closing SYN:
+// five fixed symbols plus the data) or, when nobody answers, one more symbol
+// in wire timing or the rest of the attempt's timeout in timeout timing.
 func (s *controllerlessSite) frameCost(ctx context.Context, frame protocol.Frame, answered bool, replyLen int) time.Duration {
 	symbols := 1 + 6 + len(frame.Data)
 	if answered {
@@ -342,6 +350,9 @@ func (s *controllerlessSite) Send(ctx context.Context, frame protocol.Frame) (*p
 	s.events = append(s.events, event)
 	device, present := s.devices[frame.Target]
 	s.mu.Unlock()
+	if s.onFrame != nil {
+		s.onFrame(event)
+	}
 
 	var reply []byte
 	answered := false
@@ -413,6 +424,13 @@ func (s *controllerlessSite) countByTarget(kind string, from time.Duration) map[
 // product catalogue classifies with role and as a non-controller.
 func controllerlessCatalogPart(t *testing.T, role string) string {
 	t.Helper()
+	return controllerlessCatalogPartWith(t, role, productids.ControllerNone)
+}
+
+// controllerlessCatalogPartWith selects a ten-digit part number that the
+// public product catalogue classifies with role and capability.
+func controllerlessCatalogPartWith(t *testing.T, role string, capability productids.ControllerCapability) string {
+	t.Helper()
 	catalog, err := productids.LoadCatalog()
 	if err != nil {
 		t.Fatalf("LoadCatalog() error = %v", err)
@@ -422,11 +440,11 @@ func controllerlessCatalogPart(t *testing.T, role string) string {
 		if !strings.EqualFold(strings.TrimSpace(record.Role), role) || len(part) != 10 || !isAllDigits(part) {
 			continue
 		}
-		if catalog.ControllerCapability(part) == productids.ControllerNone {
+		if catalog.ControllerCapability(part) == capability {
 			return part
 		}
 	}
-	t.Fatalf("product catalogue has no non-controller %q part number", role)
+	t.Fatalf("product catalogue has no %q part number with capability %v", role, capability)
 	return ""
 }
 
@@ -469,8 +487,9 @@ type controllerlessStartup struct {
 // startup scan loop in the add-on default admission (adapter-direct, automatic
 // source with its companion) or with an explicitly configured source. The
 // seams stay installed until the test ends so the poller's per-address
-// identity probe reaches the same bus.
-func runControllerlessStartupScan(t *testing.T, site *controllerlessSite, explicitSource bool) *controllerlessStartup {
+// identity probe reaches the same bus. observed lists target addresses the
+// passive warm-up offered; without them the structural targets are probed.
+func runControllerlessStartupScan(t *testing.T, site *controllerlessSite, explicitSource bool, observed ...byte) *controllerlessStartup {
 	t.Helper()
 	silent := &controllerlessSilentTransport{Loopback: transport.NewLoopback()}
 	gateway, err := ebusgateway.New(context.Background(), ebusgateway.Config{Transport: silent})
@@ -495,6 +514,7 @@ func runControllerlessStartupScan(t *testing.T, site *controllerlessSite, explic
 	cfg.TransportConfig = ebusgateway.TransportConfig{Protocol: ebusgateway.TransportAdapterDirect, Network: "tcp", Address: "adapter.invalid:9999"}
 	cfg.ScanSource = controllerlessSource
 	selection := protocol.SourceAddressSelection{Source: controllerlessSource}
+	selection.Metrics.ObservedProbableTargets = observed
 	if explicitSource {
 		source := controllerlessSource
 		cfg.StartupSource.Source = &source
@@ -502,7 +522,6 @@ func runControllerlessStartupScan(t *testing.T, site *controllerlessSite, explic
 		cfg.StartupCompanionTarget = controllerlessCompanion
 		selection.Companion = controllerlessCompanion
 	}
-	// No passive warm-up evidence: the structural targets are probed.
 	cfg.StartupProbeTargets = startupProbeTargetsForSelection(selection)
 
 	startup := &controllerlessStartup{gateway: gateway, silent: silent, cfg: cfg}
@@ -614,6 +633,7 @@ type controllerlessRun struct {
 	maxTasksPerBusyPeriod    int
 	liveReadyAt, liveWarmAt  time.Duration
 	degradedAt, capabilityAt time.Duration
+	controllerAt             time.Duration
 }
 
 // runControllerlessPolling starts the production poller over the startup
@@ -624,8 +644,9 @@ func runControllerlessPolling(t *testing.T, site *controllerlessSite, startup *c
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	site.stopPolling = cancel
 	clock := site.clock
-	run := &controllerlessRun{pollStart: clock.elapsed(), liveReadyAt: -1, liveWarmAt: -1, degradedAt: -1, capabilityAt: -1}
+	run := &controllerlessRun{pollStart: clock.elapsed(), liveReadyAt: -1, liveWarmAt: -1, degradedAt: -1, capabilityAt: -1, controllerAt: -1}
 
 	poller := newVaillantSemanticPoller(startup.cfg, startup.gateway, site.provider, nil, nil)
 	poller.nowFn = clock.Now
@@ -642,20 +663,25 @@ func runControllerlessPolling(t *testing.T, site *controllerlessSite, startup *c
 		at := clock.elapsed()
 		site.observePhase(at)
 		poller.mu.Lock()
-		state := poller.regAbsenceState
+		state, controller := poller.regAbsenceState, poller.controller
 		poller.mu.Unlock()
+		if controller != 0 && run.controllerAt < 0 {
+			run.controllerAt = at
+		}
 		controllerlessNote(&run.absence, at, string(state))
 		controllerlessNote(&run.capability, at, string(site.provider.VaillantRegulatorCapability()))
 	}
 
 	schedule := poller.pollSchedule()
 	run.recurringFamilies = len(schedule.recurring)
+	// A disabled task (interval zero or negative) never ticks, as the
+	// production loop returns without a ticker; -1 marks it.
 	next := make([]time.Duration, len(schedule.recurring))
 	for i, task := range schedule.recurring {
-		if task.interval <= 0 {
-			t.Fatalf("recurring task %s has no interval", task.key)
+		next[i] = -1
+		if task.interval > 0 {
+			next[i] = run.pollStart + task.interval
 		}
-		next[i] = run.pollStart + task.interval
 	}
 	var stepTimes []time.Duration
 	for at := range script {
@@ -681,7 +707,7 @@ func runControllerlessPolling(t *testing.T, site *controllerlessSite, startup *c
 		// Production tickers enqueue on their own goroutines, also while a
 		// task runs; the queue coalesces a family that is still pending.
 		for i, task := range schedule.recurring {
-			for next[i] <= now {
+			for next[i] >= 0 && next[i] <= now {
 				poller.enqueueTask(task.key, task.priority, task.refresh)
 				next[i] += task.interval
 			}
@@ -697,6 +723,9 @@ func runControllerlessPolling(t *testing.T, site *controllerlessSite, startup *c
 			task.run(ctx)
 			queue.taskDone(task)
 			observe()
+			if ctx.Err() != nil {
+				break
+			}
 			busy++
 			if clock.elapsed() == lastAt {
 				sameInstant++
@@ -714,7 +743,7 @@ func runControllerlessPolling(t *testing.T, site *controllerlessSite, startup *c
 		busy = 0
 		nextAt := end + 1
 		for _, due := range next {
-			if due < nextAt {
+			if due >= 0 && due < nextAt {
 				nextAt = due
 			}
 		}
@@ -763,21 +792,37 @@ func (s *controllerlessSite) deadlinePassedNow() bool {
 	return s.deadlinePassed
 }
 
+// controllerlessAbsentMinute is the polling minute at which the absence state
+// becomes ABSENT with default intervals: the first 60 s recheck enters
+// ABSENCE_GRACE, the recheck five minutes after it enters ABSENT.
+const controllerlessAbsentMinute = 6
+
 // controllerlessDiscoveryPlan is the expected number of root probe calls per
-// polling minute: one discovery pass at polling start, then one per state tick
-// (60 s), one more per config tick (5 min) and one more per discovery tick
-// (10 min), each probing every candidate once; extra adds event-driven calls.
-func controllerlessDiscoveryPlan(candidates func(minute int) int, extra map[int]int) map[int]int {
+// polling minute, each pass probing every candidate once; extra adds
+// event-driven calls. One pass runs at polling start. Up to and including
+// absentMinute, the state task (60 s, high priority) and the configuration
+// task (5 min, medium priority) each run a fallback pass. At absentMinute the
+// regulator recheck that enters ABSENT is a low-priority task, so the state
+// task (and at a 5 min mark the configuration task) runs before it, still in
+// ABSENCE_GRACE, and its pass happens. From the next minute on no controller is
+// known and the state is ABSENT, so both fallbacks are skipped; the discovery
+// task (10 min, low priority) runs its pass throughout.
+func controllerlessDiscoveryPlan(candidates func(minute int) int, extra map[int]int, absentMinute int) map[int]int {
 	plan := map[int]int{0: candidates(0)}
 	for minute := 1; minute <= int(controllerlessHorizon/time.Minute); minute++ {
-		passes := 1
-		if minute%5 == 0 {
+		passes := 0
+		if minute <= absentMinute {
 			passes++
+			if minute%5 == 0 {
+				passes++
+			}
 		}
 		if minute%10 == 0 {
 			passes++
 		}
-		plan[minute] = passes*candidates(minute) + extra[minute]
+		if calls := passes*candidates(minute) + extra[minute]; calls > 0 {
+			plan[minute] = calls
+		}
 	}
 	return plan
 }
@@ -1036,8 +1081,10 @@ func controllerlessExpectBoilerStream(t *testing.T, site *controllerlessSite, ru
 		}
 	}
 	// The fast tier ticks every 30 s, but on the half-minute tick its values
-	// are under 30 s old and served from the read cache; the minute tick runs
-	// after the state task's discovery pass and finds them expired.
+	// are at most 30 s old and served from the read cache; the minute tick
+	// finds them expired. A tier's read sits behind whatever discovery passes
+	// run ahead of it at that instant, so the one gap after the fallback passes
+	// stop (ABSENT) is a few seconds shorter than the tier interval.
 	for _, tier := range []struct {
 		name     string
 		register uint16
@@ -1056,7 +1103,7 @@ func controllerlessExpectBoilerStream(t *testing.T, site *controllerlessSite, ru
 			t.Errorf("%s-tier register 0x%04X read %d times in %s; want %d native reads", tier.name, tier.register, len(spacing)+1, controllerlessHorizon, tier.reads)
 		}
 		for _, gap := range spacing {
-			if gap < tier.spacing || gap >= tier.spacing+10*time.Second {
+			if gap <= tier.spacing-10*time.Second || gap >= tier.spacing+10*time.Second {
 				t.Errorf("%s-tier register 0x%04X reads spaced %v; want every %s", tier.name, tier.register, spacing, tier.spacing)
 				break
 			}
@@ -1223,18 +1270,21 @@ func TestControllerlessSitePollingOverSimulatedTime(t *testing.T) {
 		{
 			name: "boiler-class heat source", heatSourceID: "BAI00", heatSourcePart: boilerPart, boilerClass: true,
 			wantPhases: liveReady, wantCapability: noneFromFirstDiscovery,
-			// 1 + 30 state + 6 config + 3 discovery passes, three candidates each.
-			wantCalls: map[byte]int{controllerlessRegulator: 40, controllerlessHeatSource: 40, controllerlessModuleSlot: 40},
-			wantPlan:  controllerlessDiscoveryPlan(threeCandidates, nil),
+			// 1 start + 6 state (minutes 1-6) + 1 config (minute 5) + 3
+			// discovery (minutes 10, 20, 30) passes, three candidates each.
+			wantCalls: map[byte]int{controllerlessRegulator: 11, controllerlessHeatSource: 11, controllerlessModuleSlot: 11},
+			wantPlan:  controllerlessDiscoveryPlan(threeCandidates, nil, controllerlessAbsentMinute),
 		},
 		{
 			// The module joins the candidates; the inventory change at its
-			// identification adds one discovery pass at two minutes.
+			// identification adds one discovery pass at two minutes. The module
+			// gets the inventory pass, the state passes of minutes 3-6, the
+			// config pass of minute 5 and the three discovery-tick passes.
 			name: "boiler-class heat source and internet module", heatSourceID: "BAI00", heatSourcePart: boilerPart, boilerClass: true,
 			moduleSerial: controllerlessSerialRaw(modulePart),
 			wantPhases:   liveReady, wantCapability: noneFromFirstDiscovery,
-			wantCalls: map[byte]int{controllerlessRegulator: 41, controllerlessHeatSource: 41, controllerlessModuleSlot: 41, controllerlessInternetModule: 38},
-			wantPlan:  controllerlessDiscoveryPlan(moduleFromMinuteThree, map[int]int{2: 4}),
+			wantCalls: map[byte]int{controllerlessRegulator: 12, controllerlessHeatSource: 12, controllerlessModuleSlot: 12, controllerlessInternetModule: 9},
+			wantPlan:  controllerlessDiscoveryPlan(moduleFromMinuteThree, map[int]int{2: 4}, controllerlessAbsentMinute),
 		},
 		{
 			// An identified Vaillant device without a catalogued serial keeps
@@ -1244,8 +1294,8 @@ func TestControllerlessSitePollingOverSimulatedTime(t *testing.T) {
 			wantPhases:   liveReady,
 			wantCapability: append(append([]string(nil), noneFromFirstDiscovery...),
 				string(graphql.VaillantRegulatorCapabilityUnknown)),
-			wantCalls: map[byte]int{controllerlessRegulator: 41, controllerlessHeatSource: 41, controllerlessModuleSlot: 41, controllerlessInternetModule: 38},
-			wantPlan:  controllerlessDiscoveryPlan(moduleFromMinuteThree, map[int]int{2: 4}),
+			wantCalls: map[byte]int{controllerlessRegulator: 12, controllerlessHeatSource: 12, controllerlessModuleSlot: 12, controllerlessInternetModule: 9},
+			wantPlan:  controllerlessDiscoveryPlan(moduleFromMinuteThree, map[int]int{2: 4}, controllerlessAbsentMinute),
 		},
 		{
 			// The poller reads boiler status only from boiler-class identities;
@@ -1253,8 +1303,8 @@ func TestControllerlessSitePollingOverSimulatedTime(t *testing.T) {
 			name: "heat-pump-class heat source", heatSourceID: "EHP00", heatSourcePart: heatPumpPart,
 			wantPhases:     []string{string(graphql.SemanticStartupPhaseBootInit), string(graphql.SemanticStartupPhaseDegraded)},
 			wantCapability: noneFromFirstDiscovery,
-			wantCalls:      map[byte]int{controllerlessRegulator: 40, controllerlessHeatSource: 40, controllerlessModuleSlot: 40},
-			wantPlan:       controllerlessDiscoveryPlan(threeCandidates, nil),
+			wantCalls:      map[byte]int{controllerlessRegulator: 11, controllerlessHeatSource: 11, controllerlessModuleSlot: 11},
+			wantPlan:       controllerlessDiscoveryPlan(threeCandidates, nil, controllerlessAbsentMinute),
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1321,4 +1371,171 @@ func TestControllerlessSitePollingOverSimulatedTime(t *testing.T) {
 				tc.name, run.pollStart, run.liveReadyAt, run.capabilityAt-run.pollStart, run.absence)
 		})
 	}
+}
+
+// TestControllerlessSiteControllerAppearsAfterAbsent shows how a controller
+// that becomes reachable after polling started is found. The synthetic bus
+// never answers B524 and must not act as a controller, so the only seam left
+// is the root probe of 0x15 from the appearance on: it reports a coherent root
+// there and hands every other probe to the production probe over the
+// recording bus. No frame answers as a controller. The simulation stops at the
+// first frame the poller addresses to the found controller other than a root
+// probe, which follows the successful discovery pass without simulated delay.
+func TestControllerlessSiteControllerAppearsAfterAbsent(t *testing.T) {
+	boilerPart := controllerlessCatalogPart(t, "Boiler")
+	regulatorPart := controllerlessCatalogPartWith(t, "Regulator", productids.ControllerPresent)
+	afterAbsent := 12*time.Minute + 30*time.Second
+	for _, tc := range []struct {
+		name     string
+		appear   time.Duration // polling-relative
+		registry bool          // the registry gains a catalogue-classified regulator identity
+		enqueue  bool          // a discovery refresh is enqueued (passive insertion or promotion)
+		// noPeriodic disables the periodic discovery task (interval zero).
+		noPeriodic bool
+		wantState  regulatorAbsenceState
+		// The find falls in [wantFrom, wantFrom+10 s) of polling time.
+		wantFrom time.Duration
+	}{
+		// The next regulator recheck (13:00) sees the inventory change and
+		// enqueues a discovery pass.
+		{name: "registry gains a regulator identity", appear: afterAbsent, registry: true, wantState: regulatorAbsent, wantFrom: 13 * time.Minute},
+		// An enqueued refresh runs at once.
+		{name: "discovery refresh enqueued", appear: afterAbsent, enqueue: true, wantState: regulatorAbsent, wantFrom: afterAbsent},
+		// No trigger: the 15:00 configuration tick and the state ticks skip
+		// their fallback; the 20:00 discovery tick finds it.
+		{name: "no event", appear: afterAbsent, wantState: regulatorAbsent, wantFrom: 20 * time.Minute},
+		// With the periodic discovery task disabled the fallback is never
+		// suspended, so the next state tick (13:00) finds it.
+		{name: "no event, periodic discovery disabled", appear: afterAbsent, noPeriodic: true, wantState: regulatorAbsent, wantFrom: 13 * time.Minute},
+		// Before ABSENT the state tick's fallback still finds it within a minute.
+		{name: "no event before ABSENT", appear: 3*time.Minute + 30*time.Second, wantState: regulatorAbsenceGrace, wantFrom: 4 * time.Minute},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			site := newControllerlessSite(t, controllerlessWireTiming)
+			site.addDevice(controllerlessHeatSource, controllerlessDevice{deviceID: "BAI00", serialRaw: controllerlessSerialRaw(boilerPart), answersB509: true})
+			startup := runControllerlessStartupScan(t, site, false)
+
+			rootProbe := b524CapabilityProbes[0]
+			rootSelector := buildB524ReadSelector(rootProbe.opcode, rootProbe.group, rootProbe.instance, rootProbe.addr)
+			appeared, found := time.Duration(-1), time.Duration(-1)
+			var seamCalls []time.Duration
+			var stateAtAppear regulatorAbsenceState
+			site.onFrame = func(event controllerlessEvent) {
+				if appeared < 0 || found >= 0 || event.target != controllerlessRegulator {
+					return
+				}
+				if event.kind == controllerlessB524Frame && reflect.DeepEqual(event.data, rootSelector) {
+					return
+				}
+				found = event.at
+				site.stopPolling()
+			}
+			script := map[time.Duration]func(*vaillantSemanticPoller){tc.appear: func(p *vaillantSemanticPoller) {
+				appeared = site.clock.elapsed()
+				p.mu.Lock()
+				stateAtAppear = p.regAbsenceState
+				p.mu.Unlock()
+				p.b524ProbeFn = func(ctx context.Context, target, opcode, group, instance byte, addr uint16) bool {
+					if target == controllerlessRegulator {
+						seamCalls = append(seamCalls, site.clock.elapsed())
+						return true
+					}
+					return p.probeB524Register(ctx, target, opcode, group, instance, addr)
+				}
+				if tc.registry {
+					startup.gateway.Registry.Register(registry.DeviceInfo{Address: controllerlessRegulator, Manufacturer: "Vaillant", SerialNumber: controllerlessSerial(regulatorPart)})
+				}
+				if tc.enqueue {
+					p.EnqueueDiscoveryRefresh()
+				}
+			}}
+			if tc.noPeriodic {
+				startup.cfg.SemanticDiscoveryInterval = 0
+			}
+			run := runControllerlessPolling(t, site, startup, tc.wantFrom+time.Minute, script)
+
+			if stateAtAppear != tc.wantState {
+				t.Errorf("absence state when the controller appears = %s; want %s", stateAtAppear, tc.wantState)
+			}
+			if found < 0 || run.controllerAt < 0 {
+				t.Fatalf("controller appearing at %s was not found by %s of polling", tc.appear, tc.wantFrom+time.Minute)
+			}
+			if at := found - run.pollStart; at < tc.wantFrom || at >= tc.wantFrom+10*time.Second {
+				t.Errorf("controller found at %s of polling; want in [%s, %s)", at, tc.wantFrom, tc.wantFrom+10*time.Second)
+			}
+			for _, at := range seamCalls {
+				if at-run.pollStart < tc.wantFrom {
+					t.Errorf("root probe of 0x15 at %s of polling, before the expected find at %s; the suspended fallback must not probe", at-run.pollStart, tc.wantFrom)
+				}
+			}
+			if got := site.countByTarget(controllerlessWriteFrame, 0); len(got) != 0 {
+				t.Errorf("write frames = %v; want none", got)
+			}
+			t.Logf("%s: appears at %s, found at %s of polling", tc.name, tc.appear, found-run.pollStart)
+		})
+	}
+}
+
+// TestControllerlessSiteHeatSourceIdentifiedAfterAbsent covers a heat source
+// that only becomes known after the absence state is ABSENT, when the state and
+// configuration ticks no longer run a root discovery pass. Its address first
+// enters the registry without an identity, as the passive address-table
+// inserter adds it; the inventory change starts a discovery pass at the next
+// regulator recheck, which cannot yet classify it. Its identity arrives
+// afterwards through the per-address identity probe, which changes no device
+// count. The next state tick must pick the boiler-class heat source from the
+// registry and start its status reads, not the next discovery tick.
+func TestControllerlessSiteHeatSourceIdentifiedAfterAbsent(t *testing.T) {
+	boilerPart := controllerlessCatalogPart(t, "Boiler")
+	modulePart := controllerlessCatalogPart(t, "Gateway")
+	site := newControllerlessSite(t, controllerlessWireTiming)
+	// The heat source is off at startup; the passive warm-up offered the
+	// internet module's target address, which answers identification.
+	site.addDevice(controllerlessInternetModule, controllerlessDevice{deviceID: "NETX3", serialRaw: controllerlessSerialRaw(modulePart)})
+	startup := runControllerlessStartupScan(t, site, false, controllerlessInternetModule)
+	if startup.passes != 1 || !startup.activeProbePassed {
+		t.Fatalf("startup passes = %d, active probe passed = %v; want 1, true", startup.passes, startup.activeProbePassed)
+	}
+	reg := startup.gateway.Registry
+	slotAt, identityAt := 10*time.Minute+30*time.Second, 11*time.Minute+30*time.Second
+	devicesAtIdentity := -1
+	var stateAtIdentity regulatorAbsenceState
+	script := map[time.Duration]func(*vaillantSemanticPoller){
+		slotAt: func(*vaillantSemanticPoller) {
+			site.addDevice(controllerlessHeatSource, controllerlessDevice{deviceID: "BAI00", serialRaw: controllerlessSerialRaw(boilerPart), answersB509: true})
+			reg.Register(registry.DeviceInfo{Address: controllerlessHeatSource})
+		},
+		identityAt: func(p *vaillantSemanticPoller) {
+			devicesAtIdentity = countRegistryDevices(reg)
+			p.mu.Lock()
+			stateAtIdentity = p.regAbsenceState
+			p.mu.Unlock()
+			p.EnqueueAddressIdentityProbe(controllerlessHeatSource)
+		},
+	}
+	run := runControllerlessPolling(t, site, startup, 13*time.Minute, script)
+
+	if stateAtIdentity != regulatorAbsent {
+		t.Errorf("absence state when the identity arrives = %s; want ABSENT", stateAtIdentity)
+	}
+	if got := countRegistryDevices(reg); got != devicesAtIdentity {
+		t.Errorf("registry devices after the identity probe = %d, before = %d; want no inventory change", got, devicesAtIdentity)
+	}
+	if entry, ok := controllerlessRegistryEntries(reg)[controllerlessHeatSource]; !ok || entry.DeviceID != "BAI00" {
+		t.Fatalf("heat source entry = %+v (present %v); want the identified boiler-class heat source", entry, ok)
+	}
+	firstRead := time.Duration(-1)
+	for _, read := range site.eventsOf(controllerlessB509Read) {
+		if read.target == controllerlessHeatSource {
+			firstRead = read.at - run.pollStart
+			break
+		}
+	}
+	if firstRead < 12*time.Minute || firstRead >= 12*time.Minute+10*time.Second {
+		t.Errorf("first heat-source status read at %s of polling; want on the state tick after the identity (12:00), not the discovery tick (20:00)", firstRead)
+	}
+	if site.provider.BoilerStatus() == nil {
+		t.Error("boiler status not published after the heat source was identified")
+	}
+	t.Logf("slot at %s, identity at %s, first status read at %s of polling; phases %v", slotAt, identityAt, firstRead, site.phaseSeries())
 }

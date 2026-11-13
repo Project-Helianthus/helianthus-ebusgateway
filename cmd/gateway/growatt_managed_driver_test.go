@@ -1374,10 +1374,20 @@ func TestM61ManagedSidecarRestartRepublishesStorage(t *testing.T) {
 	if err := manager.Replace(ctx, string(managedGrowattID)); err != nil {
 		t.Fatal(err)
 	}
-	m06Wait(t, func() bool {
+	// The test deadline, not a shorter poll budget, detects a hung replacement.
+	poll := time.NewTicker(time.Millisecond)
+	defer poll.Stop()
+	for {
 		snapshot, _ := manager.Snapshot(string(managedGrowattID))
-		return snapshot.ObservedState == drivermanager.ObservedRunning && snapshot.Generation == 3
-	})
+		if snapshot.ObservedState == drivermanager.ObservedRunning && snapshot.Generation == 3 {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("replacement never reached RUNNING generation 3: %+v, %v", snapshot, ctx.Err())
+		case <-poll.C:
+		}
+	}
 	h.publishAndRead(3, "1")
 	h.publishAndRead(3, "2")
 }

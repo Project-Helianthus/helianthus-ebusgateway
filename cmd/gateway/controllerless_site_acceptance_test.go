@@ -52,7 +52,12 @@ package main
 //     both admissions; with an explicit source, an unclassified identity at the
 //     controller address and timeout timing the deadline passes first
 //     (DEGRADED, then LIVE_READY). A heat-pump-class heat source publishes no
-//     stream and the deadline moves BOOT_INIT to DEGRADED;
+//     stream and the deadline moves BOOT_INIT to DEGRADED; from the first
+//     discovery pass the startup block carries the reason
+//     no_supported_heat_source_path in GraphQL and MCP and the DEGRADED
+//     transition names it. A heat source of unknown class gets no reason and
+//     the plain DEGRADED transition. A heat-pump-class unit that answers the
+//     root probe is adopted as root as before, which clears the reason;
 //   - controller-class traffic is B524 root discovery only: each candidate
 //     (0x15 first, then 0x08, 0x26 and any identified device) gets one
 //     production probe call per discovery pass, three read attempts each with
@@ -226,6 +231,11 @@ type controllerlessSite struct {
 	phases          []controllerlessObservation
 	deadlinePassed  bool
 	phaseAtDeadline graphql.SemanticStartupPhase
+
+	// transitions holds the phase transition lines the boot-live timer's
+	// logger received.
+	transitionMu sync.Mutex
+	transitions  []string
 }
 
 // controllerlessHeatSourceRegisters holds synthetic B509 values for the
@@ -274,7 +284,11 @@ func (s *controllerlessSite) observePhase(at time.Duration) {
 	if s.phaseAtDeadline == graphql.SemanticStartupPhaseLiveReady {
 		return
 	}
-	s.provider.StartBootFSM(s.ctx, time.Nanosecond, func(string, ...any) {})
+	s.provider.StartBootFSM(s.ctx, time.Nanosecond, func(format string, args ...any) {
+		s.transitionMu.Lock()
+		s.transitions = append(s.transitions, fmt.Sprintf(format, args...))
+		s.transitionMu.Unlock()
+	})
 	limit := time.Now().Add(5 * time.Second)
 	for s.provider.StartupPhase() != graphql.SemanticStartupPhaseDegraded {
 		if time.Now().After(limit) {
@@ -284,6 +298,39 @@ func (s *controllerlessSite) observePhase(at time.Duration) {
 		time.Sleep(time.Millisecond)
 	}
 	controllerlessNote(&s.phases, s.deadline, string(graphql.SemanticStartupPhaseDegraded))
+}
+
+// degradedTransition returns the logged transition to DEGRADED. The timer
+// logs it right after the transition, so it may trail the phase briefly.
+func (s *controllerlessSite) degradedTransition() string {
+	limit := time.Now().Add(5 * time.Second)
+	for {
+		s.transitionMu.Lock()
+		for _, line := range s.transitions {
+			if strings.Contains(line, " to=DEGRADED ") {
+				s.transitionMu.Unlock()
+				return line
+			}
+		}
+		s.transitionMu.Unlock()
+		if time.Now().After(limit) {
+			return ""
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// controllerlessReasonValue names the startup reason in a series; "none" when
+// no reason applies.
+func controllerlessReasonValue(provider *graphql.LiveSemanticProvider) string {
+	return controllerlessReasonValueOf(provider.StartupReason())
+}
+
+func controllerlessReasonValueOf(reason string) string {
+	if reason == "" {
+		return "none"
+	}
+	return reason
 }
 
 func (s *controllerlessSite) phaseSeries() []controllerlessObservation {
@@ -634,6 +681,7 @@ type controllerlessRun struct {
 	pollStart                time.Duration
 	absence                  []controllerlessObservation
 	capability               []controllerlessObservation
+	reasons                  []controllerlessObservation
 	recurringFamilies        int
 	maxTasksPerBusyPeriod    int
 	liveReadyAt, liveWarmAt  time.Duration
@@ -675,6 +723,7 @@ func runControllerlessPolling(t *testing.T, site *controllerlessSite, startup *c
 		}
 		controllerlessNote(&run.absence, at, string(state))
 		controllerlessNote(&run.capability, at, string(site.provider.VaillantRegulatorCapability()))
+		controllerlessNote(&run.reasons, at, controllerlessReasonValue(site.provider))
 	}
 
 	schedule := poller.pollSchedule()
@@ -905,6 +954,71 @@ func controllerlessMCPEnergy(t *testing.T, provider *graphql.LiveSemanticProvide
 	return data, present
 }
 
+// controllerlessStartupBlocks returns the bus observability startup block as
+// GraphQL bus_summary and the MCP bus summary tool serve it, both fed by the
+// gateway's startup surface of provider.
+func controllerlessStartupBlocks(t *testing.T, provider *graphql.LiveSemanticProvider) (map[string]any, map[string]any) {
+	t.Helper()
+	cfg := ebusgateway.DefaultConfig()
+	cfg.BroadcastListen = true
+	store := ebusgateway.NewBusObservabilityStore(cfg)
+	if store == nil {
+		t.Fatal("NewBusObservabilityStore() = nil")
+	}
+	store.SetStartupSurfaceProvider(func() *ebusgateway.BusObservabilityStartup { return semanticStartupSurface(provider) })
+
+	builder := graphql.NewBuilder(nil, nil)
+	builder.SetBusObservabilityProvider(newGraphQLBusObservabilityProvider(store))
+	schema, err := graphql.NewQuerySchema(builder)
+	if err != nil {
+		t.Fatalf("NewQuerySchema() error = %v", err)
+	}
+	result := graphqlgo.Do(graphqlgo.Params{Schema: schema, RequestString: `{ bus_summary { status { startup { phase cache_epoch live_epoch reason } } } }`})
+	if len(result.Errors) != 0 {
+		t.Fatalf("GraphQL errors = %v", result.Errors)
+	}
+	graphQLStartup, _ := controllerlessPath(result.Data.(map[string]any), "bus_summary", "status", "startup").(map[string]any)
+
+	server, err := mcp.NewServer(emptyMCPRegistry{}, nil)
+	if err != nil {
+		t.Fatalf("mcp.NewServer() error = %v", err)
+	}
+	server.SetBusObservabilityProvider(newMCPBusObservabilityProvider(store))
+	envelope := mcpCallToolEnvelope(t, server.Handler(), mcpToolBusSummaryGet, `{}`)
+	mcpStartup, _ := controllerlessPath(envelope, "data", "status", "startup").(map[string]any)
+	return graphQLStartup, mcpStartup
+}
+
+// controllerlessExpectStartupBlock asserts phase and reason of the startup
+// block in GraphQL (reason null when none applies) and MCP (reason omitted).
+func controllerlessExpectStartupBlock(t *testing.T, provider *graphql.LiveSemanticProvider, wantPhase graphql.SemanticStartupPhase, wantReason string) {
+	t.Helper()
+	graphQLStartup, mcpStartup := controllerlessStartupBlocks(t, provider)
+	if graphQLStartup == nil || mcpStartup == nil {
+		t.Fatalf("startup block GraphQL %#v, MCP %#v; want both", graphQLStartup, mcpStartup)
+	}
+	var wantGraphQLReason any
+	if wantReason != "" {
+		wantGraphQLReason = wantReason
+	}
+	if got := graphQLStartup["phase"]; got != string(wantPhase) {
+		t.Errorf("GraphQL startup.phase = %v; want %s", got, wantPhase)
+	}
+	if got := graphQLStartup["reason"]; got != wantGraphQLReason {
+		t.Errorf("GraphQL startup.reason = %#v; want %#v", got, wantGraphQLReason)
+	}
+	if got := mcpStartup["phase"]; got != string(wantPhase) {
+		t.Errorf("MCP startup.phase = %v; want %s", got, wantPhase)
+	}
+	got, present := mcpStartup["reason"]
+	if wantReason == "" && present {
+		t.Errorf("MCP startup.reason = %#v; want the member omitted", got)
+	}
+	if wantReason != "" && got != wantReason {
+		t.Errorf("MCP startup.reason = %#v (present %v); want %q", got, present, wantReason)
+	}
+}
+
 func controllerlessPath(data map[string]any, path ...string) any {
 	var current any = data
 	for _, key := range path {
@@ -1000,8 +1114,10 @@ func controllerlessExpectCommon(t *testing.T, site *controllerlessSite, startup 
 	if run.maxTasksPerBusyPeriod > run.recurringFamilies {
 		t.Errorf("most tasks run between idle periods = %d; want at most %d, every recurring family once", run.maxTasksPerBusyPeriod, run.recurringFamilies)
 	}
-	if run.capabilityAt < 0 || run.capabilityAt-run.pollStart > 10*time.Second {
-		t.Errorf("first published regulator capability at %s after polling start; want it from the first discovery pass", run.capabilityAt-run.pollStart)
+	// The run sheet states 1.7 s after polling starts (wire timing) for the
+	// first discovery pass.
+	if at := run.capabilityAt - run.pollStart; run.capabilityAt < 0 || at < 1700*time.Millisecond || at >= 1750*time.Millisecond {
+		t.Errorf("first published regulator capability at %s after polling start; want it from the first discovery pass, in [1.7s, 1.75s) at wire timing", at)
 	}
 
 	view := controllerlessGraphQL(t, site.provider)
@@ -1305,6 +1421,12 @@ func TestControllerlessSiteReadinessAgainstBootDeadline(t *testing.T) {
 			if tc.wantDegraded && run.degradedAt != site.deadline {
 				t.Errorf("DEGRADED at %s; want at the deadline %s", run.degradedAt, site.deadline)
 			}
+			if tc.wantDegraded {
+				if got, want := site.degradedTransition(), `reason="boot_live_timeout elapsed=1ns"`; !strings.Contains(got, want) {
+					t.Errorf("DEGRADED transition = %q; want it to carry %s and no startup reason", got, want)
+				}
+			}
+			controllerlessExpectSeries(t, "startup reason", run.reasons, []string{"none"})
 			t.Logf("%s: barrier %s, polling start %s, LIVE_WARMUP %s, LIVE_READY %s, deadline %s, margin %s",
 				tc.name, startup.barrierAt, run.pollStart, run.liveWarmAt, run.liveReadyAt, site.deadline, site.deadline-run.liveReadyAt)
 		})
@@ -1315,6 +1437,9 @@ func TestControllerlessSitePollingOverSimulatedTime(t *testing.T) {
 	boilerPart := controllerlessCatalogPart(t, "Boiler")
 	heatPumpPart := controllerlessCatalogPart(t, "Heat Pump")
 	modulePart := controllerlessCatalogPart(t, "Gateway")
+	// A catalogued part of neither heat-source class: with an unknown device
+	// ID the heat source's class is unknown.
+	unknownClassPart := controllerlessCatalogPart(t, "Module")
 	threeCandidates := func(int) int { return 3 }
 	moduleFromMinuteThree := func(minute int) int {
 		if minute < 3 {
@@ -1324,6 +1449,8 @@ func TestControllerlessSitePollingOverSimulatedTime(t *testing.T) {
 	}
 	liveReady := []string{string(graphql.SemanticStartupPhaseBootInit), string(graphql.SemanticStartupPhaseLiveWarmup), string(graphql.SemanticStartupPhaseLiveReady)}
 	noneFromFirstDiscovery := []string{string(graphql.VaillantRegulatorCapabilityUnknown), string(graphql.VaillantRegulatorCapabilityNone)}
+	noReason := []string{"none"}
+	reasonFromFirstDiscovery := []string{"none", graphql.SemanticStartupReasonNoSupportedHeatSourcePath}
 
 	for _, tc := range []struct {
 		name           string
@@ -1335,12 +1462,13 @@ func TestControllerlessSitePollingOverSimulatedTime(t *testing.T) {
 		moduleSerial   string
 		wantPhases     []string
 		wantCapability []string
+		wantReasons    []string // startup reason series, "none" when none applies
 		wantCalls      map[byte]int
 		wantPlan       map[int]int
 	}{
 		{
 			name: "boiler-class heat source", heatSourceID: "BAI00", heatSourcePart: boilerPart, boilerClass: true,
-			wantPhases: liveReady, wantCapability: noneFromFirstDiscovery,
+			wantPhases: liveReady, wantCapability: noneFromFirstDiscovery, wantReasons: noReason,
 			// 1 start + 6 state (minutes 1-6) + 1 config (minute 5) + 3
 			// discovery (minutes 10, 20, 30) passes, three candidates each.
 			wantCalls: map[byte]int{controllerlessRegulator: 11, controllerlessHeatSource: 11, controllerlessModuleSlot: 11},
@@ -1353,7 +1481,7 @@ func TestControllerlessSitePollingOverSimulatedTime(t *testing.T) {
 			// config pass of minute 5 and the three discovery-tick passes.
 			name: "boiler-class heat source and internet module", heatSourceID: "BAI00", heatSourcePart: boilerPart, boilerClass: true,
 			moduleSerial: controllerlessSerialRaw(modulePart),
-			wantPhases:   liveReady, wantCapability: noneFromFirstDiscovery,
+			wantPhases:   liveReady, wantCapability: noneFromFirstDiscovery, wantReasons: noReason,
 			wantCalls: map[byte]int{controllerlessRegulator: 12, controllerlessHeatSource: 12, controllerlessModuleSlot: 12, controllerlessInternetModule: 9},
 			wantPlan:  controllerlessDiscoveryPlan(moduleFromMinuteThree, map[int]int{2: 4}, controllerlessAbsentMinute),
 		},
@@ -1362,7 +1490,7 @@ func TestControllerlessSitePollingOverSimulatedTime(t *testing.T) {
 			// the public result UNKNOWN; the absence state still settles.
 			name: "boiler-class heat source and internet module without serial", heatSourceID: "BAI00", heatSourcePart: boilerPart, boilerClass: true,
 			moduleSerial: "-",
-			wantPhases:   liveReady,
+			wantPhases:   liveReady, wantReasons: noReason,
 			wantCapability: append(append([]string(nil), noneFromFirstDiscovery...),
 				string(graphql.VaillantRegulatorCapabilityUnknown)),
 			wantCalls: map[byte]int{controllerlessRegulator: 12, controllerlessHeatSource: 12, controllerlessModuleSlot: 12, controllerlessInternetModule: 9},
@@ -1371,11 +1499,21 @@ func TestControllerlessSitePollingOverSimulatedTime(t *testing.T) {
 		{
 			// The poller reads boiler status only from boiler-class identities;
 			// a heat-pump-class heat source therefore publishes no live stream.
+			// The first discovery pass names the cause on the startup surface.
 			name: "heat-pump-class heat source", heatSourceID: "EHP00", heatSourcePart: heatPumpPart,
 			wantPhases:     []string{string(graphql.SemanticStartupPhaseBootInit), string(graphql.SemanticStartupPhaseDegraded)},
-			wantCapability: noneFromFirstDiscovery,
-			wantCalls:      map[byte]int{controllerlessRegulator: 11, controllerlessHeatSource: 11, controllerlessModuleSlot: 11},
-			wantPlan:       controllerlessDiscoveryPlan(threeCandidates, nil, controllerlessAbsentMinute),
+			wantCapability: noneFromFirstDiscovery, wantReasons: reasonFromFirstDiscovery,
+			wantCalls: map[byte]int{controllerlessRegulator: 11, controllerlessHeatSource: 11, controllerlessModuleSlot: 11},
+			wantPlan:  controllerlessDiscoveryPlan(threeCandidates, nil, controllerlessAbsentMinute),
+		},
+		{
+			// A heat source of unknown class is not treated as heat-pump class:
+			// no reason, and the same DEGRADED as before.
+			name: "heat source of unknown class", heatSourceID: "XYZ00", heatSourcePart: unknownClassPart,
+			wantPhases:     []string{string(graphql.SemanticStartupPhaseBootInit), string(graphql.SemanticStartupPhaseDegraded)},
+			wantCapability: noneFromFirstDiscovery, wantReasons: noReason,
+			wantCalls: map[byte]int{controllerlessRegulator: 11, controllerlessHeatSource: 11, controllerlessModuleSlot: 11},
+			wantPlan:  controllerlessDiscoveryPlan(threeCandidates, nil, controllerlessAbsentMinute),
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1407,6 +1545,28 @@ func TestControllerlessSitePollingOverSimulatedTime(t *testing.T) {
 				t.Errorf("DEGRADED at %s; want at the boot-live deadline %s", run.degradedAt, site.deadline)
 			}
 			controllerlessExpectSeries(t, "regulator capability", run.capability, tc.wantCapability)
+			controllerlessExpectSeries(t, "startup reason", run.reasons, tc.wantReasons)
+			wantReason := ""
+			if len(tc.wantReasons) > 1 {
+				wantReason = tc.wantReasons[len(tc.wantReasons)-1]
+				// Set by the same first discovery pass that publishes the
+				// regulator capability (pinned in controllerlessExpectCommon).
+				if at := run.reasons[1].at; at != run.capabilityAt {
+					t.Errorf("startup reason set %s after polling start, capability published %s after; want both from the first discovery pass", at-run.pollStart, run.capabilityAt-run.pollStart)
+				}
+			}
+			wantPhase := graphql.SemanticStartupPhaseLiveReady
+			if !tc.boilerClass {
+				wantPhase = graphql.SemanticStartupPhaseDegraded
+				want := `reason="boot_live_timeout elapsed=1ns"`
+				if wantReason != "" {
+					want = `reason="boot_live_timeout elapsed=1ns startup_reason=` + wantReason + `"`
+				}
+				if got := site.degradedTransition(); !strings.Contains(got, want) {
+					t.Errorf("DEGRADED transition = %q; want it to carry %s", got, want)
+				}
+			}
+			controllerlessExpectStartupBlock(t, site.provider, wantPhase, wantReason)
 			controllerlessExpectProbes(t, site, run, tc.wantCalls, tc.wantPlan)
 			view := controllerlessExpectCommon(t, site, startup, run, tc.wantCapability[len(tc.wantCapability)-1])
 
@@ -1414,10 +1574,10 @@ func TestControllerlessSitePollingOverSimulatedTime(t *testing.T) {
 				controllerlessExpectBoilerStream(t, site, run, view)
 			} else {
 				if got := view["boiler_status"]; got != nil {
-					t.Errorf("GraphQL boiler_status = %#v; want null for a heat-pump-class heat source", got)
+					t.Errorf("GraphQL boiler_status = %#v; want null for a heat source that is not boiler class", got)
 				}
 				if got := site.countByTarget(controllerlessB509Read, 0); len(got) != 0 {
-					t.Errorf("B509 register reads = %v; want none for a heat-pump-class heat source", got)
+					t.Errorf("B509 register reads = %v; want none for a heat source that is not boiler class", got)
 				}
 			}
 
@@ -1545,6 +1705,183 @@ func TestControllerlessSiteControllerAppearsAfterAbsent(t *testing.T) {
 			t.Logf("%s: appears at %s, found at %s of polling", tc.name, tc.appear, found-run.pollStart)
 		})
 	}
+}
+
+// TestControllerlessSiteHeatPumpClassUnitAdoptedAsRoot pins that root
+// discovery is unchanged for a heat-pump-class heat source: a unit at 0x08
+// that answers the root probe coherently is adopted as semantic root, and with
+// a root the startup reason is clear. The synthetic bus never answers B524 and
+// must not act as a controller, so the root probe of 0x08 is the only seam
+// from the appearance on: it reports a coherent root there and hands every
+// other probe to the production probe over the recording bus. No frame
+// answers as a controller. The simulation stops at the first frame the poller
+// addresses to the adopted root other than a root probe.
+func TestControllerlessSiteHeatPumpClassUnitAdoptedAsRoot(t *testing.T) {
+	heatPumpPart := controllerlessCatalogPart(t, "Heat Pump")
+	reason := graphql.SemanticStartupReasonNoSupportedHeatSourcePath
+	for _, tc := range []struct {
+		name   string
+		appear time.Duration // polling-relative
+		// The adoption falls in [wantFrom, wantFrom+10 s) of polling time.
+		wantFrom     time.Duration
+		wantAtAppear string // startup reason when the unit starts answering
+		wantReasons  []string
+		wantDegraded bool // the boot-live deadline passes before the adoption
+	}{
+		// The first discovery pass adopts it: the reason is never set.
+		{name: "answers from polling start", wantAtAppear: "none", wantReasons: []string{"none"}},
+		// The first pass sets the reason, the boot-live deadline moves the
+		// phase to DEGRADED, and the state tick's pass at 4:00 (before ABSENT)
+		// adopts the root and clears the reason.
+		{name: "answers after the boot-live deadline", appear: 3*time.Minute + 30*time.Second, wantFrom: 4 * time.Minute,
+			wantAtAppear: reason, wantReasons: []string{"none", reason, "none"}, wantDegraded: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			site := newControllerlessSite(t, controllerlessWireTiming)
+			site.addDevice(controllerlessHeatSource, controllerlessDevice{deviceID: "EHP00", serialRaw: controllerlessSerialRaw(heatPumpPart)})
+			startup := runControllerlessStartupScan(t, site, false)
+
+			rootProbe := b524CapabilityProbes[0]
+			rootSelector := buildB524ReadSelector(rootProbe.opcode, rootProbe.group, rootProbe.instance, rootProbe.addr)
+			appeared, found := time.Duration(-1), time.Duration(-1)
+			site.onFrame = func(event controllerlessEvent) {
+				if appeared < 0 || found >= 0 || event.target != controllerlessHeatSource {
+					return
+				}
+				if event.kind == controllerlessB524Frame && reflect.DeepEqual(event.data, rootSelector) {
+					return
+				}
+				found = event.at
+				site.stopPolling()
+			}
+			var reasonAtAppear string
+			script := map[time.Duration]func(*vaillantSemanticPoller){tc.appear: func(p *vaillantSemanticPoller) {
+				appeared = site.clock.elapsed()
+				reasonAtAppear = site.provider.StartupReason()
+				p.b524ProbeFn = func(ctx context.Context, target, opcode, group, instance byte, addr uint16) bool {
+					if target == controllerlessHeatSource {
+						return true
+					}
+					return p.probeB524Register(ctx, target, opcode, group, instance, addr)
+				}
+			}}
+			run := runControllerlessPolling(t, site, startup, tc.wantFrom+time.Minute, script)
+
+			if found < 0 || run.controllerAt < 0 {
+				t.Fatalf("heat-pump-class unit answering the root probe from %s was not adopted by %s of polling", tc.appear, tc.wantFrom+time.Minute)
+			}
+			if at := found - run.pollStart; at < tc.wantFrom || at >= tc.wantFrom+10*time.Second {
+				t.Errorf("root adopted at %s of polling; want in [%s, %s)", at, tc.wantFrom, tc.wantFrom+10*time.Second)
+			}
+			if got := controllerlessReasonValueOf(reasonAtAppear); got != tc.wantAtAppear {
+				t.Errorf("startup reason when the unit starts answering = %q; want %q", got, tc.wantAtAppear)
+			}
+			controllerlessExpectSeries(t, "startup reason", run.reasons, tc.wantReasons)
+			// The adopted root drives the phase as any root does; the reason
+			// only names the cause while there is no path.
+			if (run.degradedAt == site.deadline) != tc.wantDegraded {
+				t.Errorf("DEGRADED at %s; want at the deadline %s = %v", run.degradedAt, site.deadline, tc.wantDegraded)
+			}
+			if tc.wantDegraded {
+				if got, want := site.degradedTransition(), `startup_reason=`+reason; !strings.Contains(got, want) {
+					t.Errorf("DEGRADED transition = %q; want it to carry %s", got, want)
+				}
+			}
+			controllerlessExpectStartupBlock(t, site.provider, site.provider.StartupPhase(), "")
+			for _, kind := range []string{controllerlessWriteFrame, controllerlessB509Read} {
+				if got := site.countByTarget(kind, 0); len(got) != 0 {
+					t.Errorf("%s frames = %v; want none", kind, got)
+				}
+			}
+			t.Logf("%s: answers from %s, adopted at %s of polling, reasons %v", tc.name, tc.appear, found-run.pollStart, run.reasons)
+		})
+	}
+}
+
+// TestControllerlessSiteHeatPumpBusControllerAppearsClearsReason covers a
+// controller that appears on a bus whose heat source is heat-pump class: the
+// first discovery pass sets the startup reason, the boot-live deadline moves
+// the phase to DEGRADED with that reason, and after ABSENT a controller
+// becomes reachable at 0x15 while the registry gains a catalogue-classified
+// regulator identity. The next regulator recheck (13:00) enqueues a discovery
+// pass that finds the root, and the reason clears. As in
+// TestControllerlessSiteControllerAppearsAfterAbsent, the root probe of 0x15
+// is the only seam from the appearance on, no frame answers as a controller,
+// and the simulation stops at the first frame the poller addresses to the
+// found controller other than a root probe.
+func TestControllerlessSiteHeatPumpBusControllerAppearsClearsReason(t *testing.T) {
+	heatPumpPart := controllerlessCatalogPart(t, "Heat Pump")
+	regulatorPart := controllerlessCatalogPartWith(t, "Regulator", productids.ControllerPresent)
+	reason := graphql.SemanticStartupReasonNoSupportedHeatSourcePath
+	appear := 12*time.Minute + 30*time.Second // polling-relative, after ABSENT
+	wantFrom := 13 * time.Minute              // the find falls in [wantFrom, wantFrom+10 s)
+
+	site := newControllerlessSite(t, controllerlessWireTiming)
+	site.addDevice(controllerlessHeatSource, controllerlessDevice{deviceID: "EHP00", serialRaw: controllerlessSerialRaw(heatPumpPart)})
+	startup := runControllerlessStartupScan(t, site, false)
+
+	rootProbe := b524CapabilityProbes[0]
+	rootSelector := buildB524ReadSelector(rootProbe.opcode, rootProbe.group, rootProbe.instance, rootProbe.addr)
+	appeared, found := time.Duration(-1), time.Duration(-1)
+	site.onFrame = func(event controllerlessEvent) {
+		if appeared < 0 || found >= 0 || event.target != controllerlessRegulator {
+			return
+		}
+		if event.kind == controllerlessB524Frame && reflect.DeepEqual(event.data, rootSelector) {
+			return
+		}
+		found = event.at
+		site.stopPolling()
+	}
+	var reasonAtAppear string
+	var stateAtAppear regulatorAbsenceState
+	script := map[time.Duration]func(*vaillantSemanticPoller){appear: func(p *vaillantSemanticPoller) {
+		appeared = site.clock.elapsed()
+		reasonAtAppear = site.provider.StartupReason()
+		p.mu.Lock()
+		stateAtAppear = p.regAbsenceState
+		p.mu.Unlock()
+		p.b524ProbeFn = func(ctx context.Context, target, opcode, group, instance byte, addr uint16) bool {
+			if target == controllerlessRegulator {
+				return true
+			}
+			return p.probeB524Register(ctx, target, opcode, group, instance, addr)
+		}
+		startup.gateway.Registry.Register(registry.DeviceInfo{Address: controllerlessRegulator, Manufacturer: "Vaillant", SerialNumber: controllerlessSerial(regulatorPart)})
+	}}
+	run := runControllerlessPolling(t, site, startup, wantFrom+time.Minute, script)
+
+	if stateAtAppear != regulatorAbsent {
+		t.Errorf("absence state when the controller appears = %s; want %s", stateAtAppear, regulatorAbsent)
+	}
+	if got := controllerlessReasonValueOf(reasonAtAppear); got != reason {
+		t.Errorf("startup reason when the controller appears = %q; want %q", got, reason)
+	}
+	if run.degradedAt != site.deadline {
+		t.Errorf("DEGRADED at %s; want at the boot-live deadline %s", run.degradedAt, site.deadline)
+	}
+	if got, want := site.degradedTransition(), `startup_reason=`+reason; !strings.Contains(got, want) {
+		t.Errorf("DEGRADED transition = %q; want it to carry %s", got, want)
+	}
+	if found < 0 || run.controllerAt < 0 {
+		t.Fatalf("controller appearing at %s was not found by %s of polling", appear, wantFrom+time.Minute)
+	}
+	if at := found - run.pollStart; at < wantFrom || at >= wantFrom+10*time.Second {
+		t.Errorf("controller found at %s of polling; want in [%s, %s)", at, wantFrom, wantFrom+10*time.Second)
+	}
+	controllerlessExpectSeries(t, "startup reason", run.reasons, []string{"none", reason, "none"})
+	if len(run.reasons) == 3 {
+		if at := run.reasons[2].at - run.pollStart; at < wantFrom || at >= wantFrom+10*time.Second {
+			t.Errorf("startup reason cleared at %s of polling; want in [%s, %s)", at, wantFrom, wantFrom+10*time.Second)
+		}
+	}
+	controllerlessExpectStartupBlock(t, site.provider, site.provider.StartupPhase(), "")
+	for _, kind := range []string{controllerlessWriteFrame, controllerlessB509Read} {
+		if got := site.countByTarget(kind, 0); len(got) != 0 {
+			t.Errorf("%s frames = %v; want none", kind, got)
+		}
+	}
+	t.Logf("appears at %s, found at %s of polling, reasons %v", appear, found-run.pollStart, run.reasons)
 }
 
 // TestControllerlessSiteHeatSourceIdentifiedAfterAbsent covers a heat source

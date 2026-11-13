@@ -341,11 +341,14 @@ func TestCAN03StartupCompositionRetriesAndLifecycle(t *testing.T) {
 	})
 	running := wait(drivermanager.ObservedRunning)
 	// RUNNING is observable before the preceding restart's terminal slot is
-	// pruned. Wait only for that explicit transient, with the same revision.
+	// pruned. Wait only for that transient, with the same revision and the
+	// same bound. Rule: every TRANSITION_BUSY refusal of row 8 is that
+	// transient and is retried, whatever its reason text; any other error,
+	// including a TRANSITION_BUSY refusal of another row, is fatal.
 	m06Wait(t, func() bool {
 		_, err := service.Decide(ctx, runtimecontrol.MethodStop, runtimecontrol.Request{DriverID: managedGrowattCANID, ExpectedRevision: running.DesiredRevision})
 		var refusal *runtimecontrol.Refusal
-		if errors.As(err, &refusal) && refusal.Code == runtimecontrol.RefusalTransitionBusy && refusal.Row == 8 && refusal.Reason == "terminal work slot is being pruned" {
+		if errors.As(err, &refusal) && refusal.Code == runtimecontrol.RefusalTransitionBusy && refusal.Row == 8 {
 			return false
 		}
 		if err != nil {

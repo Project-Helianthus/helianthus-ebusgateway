@@ -174,6 +174,9 @@ func TestMCPBusObservabilityProviderAdapterWiresRealStore(t *testing.T) {
 	} else if got != startupAt.Format(time.RFC3339Nano) {
 		t.Fatalf("summary startup.last_updated_at = %q; want %s", got, startupAt.Format(time.RFC3339Nano))
 	}
+	if got, present := startup["reason"]; present {
+		t.Fatalf("summary startup.reason = %#v; want the member omitted without a startup reason", got)
+	}
 	if got, _ := startup["phase"].(string); got != "LIVE_READY" {
 		t.Fatalf("summary startup.phase = %q; want LIVE_READY", got)
 	}

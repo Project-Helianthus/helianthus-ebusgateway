@@ -533,14 +533,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 	semanticRuntime.Start(ctx)
 	if busObservability != nil && semanticRuntime.Provider() != nil {
 		busObservability.SetStartupSurfaceProvider(func() *ebusgateway.BusObservabilityStartup {
-			startupUpdatedAt := semanticRuntime.Provider().StartupUpdatedAt()
-			cacheEpoch, liveEpoch := semanticRuntime.Provider().StartupEpochs()
-			return &ebusgateway.BusObservabilityStartup{
-				LastUpdatedAt: &startupUpdatedAt,
-				Phase:         string(semanticRuntime.Provider().StartupPhase()),
-				CacheEpoch:    cacheEpoch,
-				LiveEpoch:     liveEpoch,
-			}
+			return semanticStartupSurface(semanticRuntime.Provider())
 		})
 		semanticRuntime.Provider().SetEnergyPassiveStateProvider(func() string {
 			snapshot := busObservability.Snapshot()

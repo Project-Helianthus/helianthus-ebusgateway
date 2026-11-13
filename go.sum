@@ -2,10 +2,10 @@ github.com/Project-Helianthus/helianthus-canbus v0.0.0-20260823184549-cb4c25a1a3
 github.com/Project-Helianthus/helianthus-canbus v0.0.0-20260823184549-cb4c25a1a389/go.mod h1:kzIUMrpUktsj0JMYU5Tl+g56Qsi4uM4kbOKAOnpKn34=
 github.com/Project-Helianthus/helianthus-canbusreg v0.0.0-20261112204539-e3d96dec60d8 h1:ZmB3bQulj1zV03XEA734jFxUC+WlhTVcNXy2yuWLKns=
 github.com/Project-Helianthus/helianthus-canbusreg v0.0.0-20261112204539-e3d96dec60d8/go.mod h1:udXHPbsGPmz/umZS/yc5ue0B2mxy77Vx9JnP5FeZE1U=
-github.com/Project-Helianthus/helianthus-ebusgo v0.5.1-0.20261027131913-af6c5843b1e3 h1:HRx4MsFn0Fae8PEbJ84jEy4bsKyX22pc+u66OEryqUs=
-github.com/Project-Helianthus/helianthus-ebusgo v0.5.1-0.20261027131913-af6c5843b1e3/go.mod h1:thVkNAfYJ0Qv4jvdpr6xeCFokeUQAeuAbq510DXYXMU=
-github.com/Project-Helianthus/helianthus-ebusreg v0.0.0-20261110203305-65715b7b144a h1:JnefmF6qXkZ7MF2S4ld3oq8Ptvp9LcNym4HF9qJKKnU=
-github.com/Project-Helianthus/helianthus-ebusreg v0.0.0-20261110203305-65715b7b144a/go.mod h1:r5KD1orSMfmBpvHoFf/mm9LUoQzLz3cn6kG0kv8jq6E=
+github.com/Project-Helianthus/helianthus-ebusgo v0.5.1-0.20261112221459-addf8d407aee h1:DjBbEsPfq+/fAZhzYe4WQx/Yl73Gha0rdz/gFcrrSm4=
+github.com/Project-Helianthus/helianthus-ebusgo v0.5.1-0.20261112221459-addf8d407aee/go.mod h1:thVkNAfYJ0Qv4jvdpr6xeCFokeUQAeuAbq510DXYXMU=
+github.com/Project-Helianthus/helianthus-ebusreg v0.0.0-20261112230739-5f50f6ffb348 h1:gWqDYrJ0VVPTVGPZws5mzdws8E+sWQCLQqt0UShqfEc=
+github.com/Project-Helianthus/helianthus-ebusreg v0.0.0-20261112230739-5f50f6ffb348/go.mod h1:r5KD1orSMfmBpvHoFf/mm9LUoQzLz3cn6kG0kv8jq6E=
 github.com/Project-Helianthus/helianthus-eebus-go v0.7.1-helianthus.21 h1:WCK8rbEMxEe2162DYk4RySASomCrevTpDsqi3p6NZSA=
 github.com/Project-Helianthus/helianthus-eebus-go v0.7.1-helianthus.21/go.mod h1:bgzARtJ/pYZ8PJjNyFQyzrWNFI6H9GCbIxPk5//5gOI=
 github.com/Project-Helianthus/helianthus-eebusreg v0.1.37-0.20261111060854-871cb4c7c5c3 h1:hczK87jTpwBI7WBbjs0MNjodJVZShVatJkvOjsm/hGA=

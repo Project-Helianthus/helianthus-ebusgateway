@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Project-Helianthus/helianthus-ebusgo/protocol/telegram_fsm"
+	"github.com/Project-Helianthus/helianthus-ebusgo/protocol/telegramfsm"
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux/v8classifier"
@@ -240,7 +240,7 @@ func TestV8Classifier_ShadowMode_FSMDrivenThroughMux(t *testing.T) {
 
 	// FSM should be in passive tracking (or its internal
 	// MASTER_HEADER sub-phase, collapsed via FSMState).
-	if got := c.FSMState(); got != telegram_fsm.StatePassiveTracking {
+	if got := c.FSMState(); got != telegramfsm.StatePassiveTracking {
 		t.Errorf("FSMState()=%v; want StatePassiveTracking through mux", got)
 	}
 	if !c.FSMIsPassive() {

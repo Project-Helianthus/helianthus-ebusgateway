@@ -1,7 +1,7 @@
-package ebus_standard_test
+package ebusstandard_test
 
 import (
-	ebusstd "github.com/Project-Helianthus/helianthus-ebusreg/catalog/ebus_standard"
+	ebusstd "github.com/Project-Helianthus/helianthus-ebusreg/catalog/ebusstandard"
 )
 
 // syntheticGoldenCatalog builds a tiny deterministic catalog used by the

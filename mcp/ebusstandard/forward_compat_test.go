@@ -1,4 +1,4 @@
-package ebus_standard_test
+package ebusstandard_test
 
 // Forward-compat test (decision doc §4.5 + M4B §7.3).
 //

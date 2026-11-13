@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/vaillant/b503session"
-	estd "github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebus_standard"
+	estd "github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebusstandard"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 	"github.com/Project-Helianthus/helianthus-eebusreg/eebusraw"
 )

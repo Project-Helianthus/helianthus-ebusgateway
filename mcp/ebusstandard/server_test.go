@@ -1,20 +1,20 @@
-package ebus_standard_test
+package ebusstandard_test
 
 import (
 	"errors"
 	"testing"
 
-	estd "github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebus_standard"
-	ebusstd "github.com/Project-Helianthus/helianthus-ebusreg/catalog/ebus_standard"
+	mcpstandard "github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebusstandard"
+	ebusregstandard "github.com/Project-Helianthus/helianthus-ebusreg/catalog/ebusstandard"
 )
 
-func loadCatalog(t *testing.T) ebusstd.Catalog {
+func loadCatalog(t *testing.T) ebusregstandard.Catalog {
 	t.Helper()
-	return ebusstd.MustEmbeddedCatalog()
+	return ebusregstandard.MustEmbeddedCatalog()
 }
 
 func TestServer_ServicesList_IncludesKnownServices(t *testing.T) {
-	s := estd.NewServer(loadCatalog(t))
+	s := mcpstandard.NewServer(loadCatalog(t))
 	out := s.ServicesList()
 	if out["namespace"] != "ebus_standard" {
 		t.Fatalf("namespace = %v, want ebus_standard", out["namespace"])
@@ -29,7 +29,7 @@ func TestServer_ServicesList_IncludesKnownServices(t *testing.T) {
 }
 
 func TestServer_ServicesList_Sorted(t *testing.T) {
-	s := estd.NewServer(loadCatalog(t))
+	s := mcpstandard.NewServer(loadCatalog(t))
 	out := s.ServicesList()
 	svcs := out["services"].([]map[string]any)
 	for i := 1; i < len(svcs); i++ {
@@ -42,7 +42,7 @@ func TestServer_ServicesList_Sorted(t *testing.T) {
 }
 
 func TestServer_CommandsList_FilterByPB(t *testing.T) {
-	s := estd.NewServer(loadCatalog(t))
+	s := mcpstandard.NewServer(loadCatalog(t))
 	pb := uint8(0x03)
 	out, err := s.CommandsList(&pb)
 	if err != nil {
@@ -60,7 +60,7 @@ func TestServer_CommandsList_FilterByPB(t *testing.T) {
 }
 
 func TestServer_CommandGet_ReturnsFullIdentity(t *testing.T) {
-	s := estd.NewServer(loadCatalog(t))
+	s := mcpstandard.NewServer(loadCatalog(t))
 	id := "ebus_standard.service_data.start_counts"
 	out, err := s.CommandGet(id)
 	if err != nil {
@@ -82,20 +82,20 @@ func TestServer_CommandGet_ReturnsFullIdentity(t *testing.T) {
 }
 
 func TestServer_CommandGet_UnknownReturnsSentinel(t *testing.T) {
-	s := estd.NewServer(loadCatalog(t))
+	s := mcpstandard.NewServer(loadCatalog(t))
 	_, err := s.CommandGet("ebus_standard.nope.nope")
 	if err == nil {
 		t.Fatal("want error for unknown id")
 	}
-	if !errors.Is(err, estd.ErrUnknownCommand) {
+	if !errors.Is(err, mcpstandard.ErrUnknownCommand) {
 		t.Fatalf("want errors.Is ErrUnknownCommand, got %v", err)
 	}
 }
 
 func TestServer_Decode_HandlesKnownIdentity(t *testing.T) {
-	s := estd.NewServer(loadCatalog(t))
+	s := mcpstandard.NewServer(loadCatalog(t))
 	// start_counts: pb=0x03 sb=0x04 direction=request telegram=addressed
-	out, err := s.Decode(estd.DecodeInput{
+	out, err := s.Decode(mcpstandard.DecodeInput{
 		PB: 0x03, SB: 0x04,
 		Direction:  "request",
 		FrameType:  "addressed",
@@ -117,8 +117,8 @@ func TestServer_Decode_HandlesKnownIdentity(t *testing.T) {
 }
 
 func TestServer_Decode_UnknownIdentityReturnsSentinel(t *testing.T) {
-	s := estd.NewServer(loadCatalog(t))
-	_, err := s.Decode(estd.DecodeInput{
+	s := mcpstandard.NewServer(loadCatalog(t))
+	_, err := s.Decode(mcpstandard.DecodeInput{
 		PB:         0xAB,
 		SB:         0xCD,
 		Direction:  "request",
@@ -128,7 +128,7 @@ func TestServer_Decode_UnknownIdentityReturnsSentinel(t *testing.T) {
 	if err == nil {
 		t.Fatal("want error for unknown identity")
 	}
-	if !errors.Is(err, estd.ErrUnknownCommand) {
+	if !errors.Is(err, mcpstandard.ErrUnknownCommand) {
 		t.Fatalf("want errors.Is ErrUnknownCommand, got %v", err)
 	}
 }
@@ -139,8 +139,8 @@ func TestServer_Decode_UnknownIdentityReturnsSentinel(t *testing.T) {
 // return the wrong command when the catalog carries multiple variants
 // on the same (pb, sb). Regression for PR #505 r3106756020.
 func TestServer_Decode_RequiresDirectionAndFrameType(t *testing.T) {
-	s := estd.NewServer(loadCatalog(t))
-	cases := []estd.DecodeInput{
+	s := mcpstandard.NewServer(loadCatalog(t))
+	cases := []mcpstandard.DecodeInput{
 		{PB: 0x03, SB: 0x04, FrameType: "addressed", PayloadHex: "0102"}, // missing direction
 		{PB: 0x03, SB: 0x04, Direction: "request", PayloadHex: "0102"},   // missing frame_type
 		{PB: 0x03, SB: 0x04, PayloadHex: "0102"},                         // missing both
@@ -150,29 +150,29 @@ func TestServer_Decode_RequiresDirectionAndFrameType(t *testing.T) {
 		if err == nil {
 			t.Fatalf("case %d: want error for missing selectors, got nil", i)
 		}
-		if !errors.Is(err, estd.ErrInvalidPayload) {
+		if !errors.Is(err, mcpstandard.ErrInvalidPayload) {
 			t.Fatalf("case %d: want errors.Is ErrInvalidPayload, got %v", i, err)
 		}
 	}
 }
 
 func TestServer_Decode_BadHexReturnsInvalidPayload(t *testing.T) {
-	s := estd.NewServer(loadCatalog(t))
-	_, err := s.Decode(estd.DecodeInput{PB: 0x03, SB: 0x04, Direction: "request", FrameType: "addressed", PayloadHex: "zz"})
+	s := mcpstandard.NewServer(loadCatalog(t))
+	_, err := s.Decode(mcpstandard.DecodeInput{PB: 0x03, SB: 0x04, Direction: "request", FrameType: "addressed", PayloadHex: "zz"})
 	if err == nil {
 		t.Fatal("want error for bad hex")
 	}
-	if !errors.Is(err, estd.ErrInvalidPayload) {
+	if !errors.Is(err, mcpstandard.ErrInvalidPayload) {
 		t.Fatalf("want errors.Is ErrInvalidPayload, got %v", err)
 	}
 }
 
 func TestToolNames_Canonical(t *testing.T) {
 	cases := map[string]string{
-		estd.ToolServicesList: "ebus_v1_ebus_standard_services_list",
-		estd.ToolCommandsList: "ebus_v1_ebus_standard_commands_list",
-		estd.ToolCommandGet:   "ebus_v1_ebus_standard_command_get",
-		estd.ToolDecode:       "ebus_v1_ebus_standard_decode",
+		mcpstandard.ToolServicesList: "ebus_v1_ebus_standard_services_list",
+		mcpstandard.ToolCommandsList: "ebus_v1_ebus_standard_commands_list",
+		mcpstandard.ToolCommandGet:   "ebus_v1_ebus_standard_command_get",
+		mcpstandard.ToolDecode:       "ebus_v1_ebus_standard_decode",
 	}
 	for got, want := range cases {
 		if got != want {

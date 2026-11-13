@@ -1,9 +1,9 @@
-package execution_policy
+package executionpolicy
 
 import (
 	"reflect"
 
-	ebusstd "github.com/Project-Helianthus/helianthus-ebusreg/catalog/ebus_standard"
+	ebusstd "github.com/Project-Helianthus/helianthus-ebusreg/catalog/ebusstandard"
 )
 
 // nmWhitelistEntry carries the FULL 14-axis identity tuple used to match

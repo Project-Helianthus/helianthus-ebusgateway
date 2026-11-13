@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Project-Helianthus/helianthus-ebusgo/protocol/telegram_fsm"
+	"github.com/Project-Helianthus/helianthus-ebusgo/protocol/telegramfsm"
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
 )
 
@@ -205,7 +205,7 @@ func TestClassifier_ProtocolFault_EmitsAdminEvent(t *testing.T) {
 	if ev.Byte != 0xFF {
 		t.Errorf("event byte=0x%02X; want 0xFF (the offending NN)", ev.Byte)
 	}
-	if ev.FSMState != telegram_fsm.StateAborted {
+	if ev.FSMState != telegramfsm.StateAborted {
 		t.Errorf("event FSMState=%v; want StateAborted (FSM aborted on fault)", ev.FSMState)
 	}
 	if ev.At.IsZero() {

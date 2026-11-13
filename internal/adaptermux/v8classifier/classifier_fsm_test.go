@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Project-Helianthus/helianthus-ebusgo/protocol/telegram_fsm"
+	"github.com/Project-Helianthus/helianthus-ebusgo/protocol/telegramfsm"
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
 )
 
@@ -34,10 +34,10 @@ func observeEvent(c *Classifier, e transport.StreamEvent) {
 func TestFSM_NewClassifier_OffMode_NilFSM(t *testing.T) {
 	t.Parallel()
 	c := New(ModeOff)
-	if got := c.FSMState(); got != telegram_fsm.StateIdle {
+	if got := c.FSMState(); got != telegramfsm.StateIdle {
 		t.Errorf("FSMState()=%v; want StateIdle in ModeOff", got)
 	}
-	if got := c.FSMInternalState(); got != telegram_fsm.StateIdle {
+	if got := c.FSMInternalState(); got != telegramfsm.StateIdle {
 		t.Errorf("FSMInternalState()=%v; want StateIdle in ModeOff", got)
 	}
 	if c.FSMIsPassive() {
@@ -59,7 +59,7 @@ func TestFSM_NewClassifier_OffMode_NilFSM(t *testing.T) {
 func TestFSM_NewClassifier_ShadowMode_FreshFSM(t *testing.T) {
 	t.Parallel()
 	c := New(ModeShadow)
-	if got := c.FSMState(); got != telegram_fsm.StateIdle {
+	if got := c.FSMState(); got != telegramfsm.StateIdle {
 		t.Errorf("FSMState()=%v; want StateIdle for fresh classifier", got)
 	}
 	if c.FSMIsPassive() {
@@ -78,7 +78,7 @@ func TestFSM_StreamEventStarted_EntersPassiveTracking(t *testing.T) {
 		Kind: transport.StreamEventStarted,
 		Data: 0x71, // winning QQ — the gateway's own initiator
 	})
-	if got := c.FSMState(); got != telegram_fsm.StatePassiveTracking {
+	if got := c.FSMState(); got != telegramfsm.StatePassiveTracking {
 		t.Errorf("FSMState()=%v; want StatePassiveTracking after StreamEventStarted", got)
 	}
 	if !c.FSMIsPassive() {
@@ -100,7 +100,7 @@ func TestFSM_StreamEventFailed_EntersPassiveTracking(t *testing.T) {
 		Kind: transport.StreamEventFailed,
 		Data: 0x10, // foreign initiator's QQ
 	})
-	if got := c.FSMState(); got != telegram_fsm.StatePassiveTracking {
+	if got := c.FSMState(); got != telegramfsm.StatePassiveTracking {
 		t.Errorf("FSMState()=%v; want StatePassiveTracking after StreamEventFailed", got)
 	}
 	if !c.FSMIsPassive() {
@@ -123,13 +123,13 @@ func TestFSM_StreamEventReset_ResetsToIdle(t *testing.T) {
 		Kind: transport.StreamEventStarted,
 		Data: 0x71,
 	})
-	if got := c.FSMState(); got != telegram_fsm.StatePassiveTracking {
+	if got := c.FSMState(); got != telegramfsm.StatePassiveTracking {
 		t.Fatalf("precondition: FSMState()=%v; want StatePassiveTracking", got)
 	}
 
 	// Now reset.
 	observeEvent(c, transport.StreamEvent{Kind: transport.StreamEventReset})
-	if got := c.FSMState(); got != telegram_fsm.StateIdle {
+	if got := c.FSMState(); got != telegramfsm.StateIdle {
 		t.Errorf("FSMState()=%v; want StateIdle after StreamEventReset", got)
 	}
 	if c.FSMIsPassive() {
@@ -200,10 +200,10 @@ func TestFSM_StreamEventByte_OffMode_DoesNotFeedFSM(t *testing.T) {
 func TestFSM_NilReceiverSafe(t *testing.T) {
 	t.Parallel()
 	var c *Classifier
-	if got := c.FSMState(); got != telegram_fsm.StateIdle {
+	if got := c.FSMState(); got != telegramfsm.StateIdle {
 		t.Errorf("nil.FSMState()=%v; want StateIdle", got)
 	}
-	if got := c.FSMInternalState(); got != telegram_fsm.StateIdle {
+	if got := c.FSMInternalState(); got != telegramfsm.StateIdle {
 		t.Errorf("nil.FSMInternalState()=%v; want StateIdle", got)
 	}
 	if c.FSMIsPassive() {
@@ -490,7 +490,7 @@ func TestFSM_StateAborted_ContinuationCountsFaults(t *testing.T) {
 	}, now)
 
 	// Now feed a byte that the FSM will treat as a fault. Per the
-	// telegram_fsm library, a wire AUTO-SYN (Byte=0xAA, WasEscaped=
+	// telegramfsm library, a wire AUTO-SYN (Byte=0xAA, WasEscaped=
 	// false) in the middle of MASTER_HEADER is AA-injection and
 	// gets DecisionDropAaInjection (NOT a fault). The fault
 	// trigger differs by phase. To force a fault, use the
@@ -512,7 +512,7 @@ func TestFSM_StateAborted_ContinuationCountsFaults(t *testing.T) {
 	if got := c.FsmProtocolFaultTotal(); got != 1 {
 		t.Errorf("after first fault: FsmProtocolFaultTotal()=%d; want 1", got)
 	}
-	if got := c.FSMState(); got != telegram_fsm.StateAborted {
+	if got := c.FSMState(); got != telegramfsm.StateAborted {
 		t.Errorf("after fault: FSMState()=%v; want StateAborted", got)
 	}
 
@@ -527,13 +527,13 @@ func TestFSM_StateAborted_ContinuationCountsFaults(t *testing.T) {
 	if got := c.FsmProtocolFaultTotal(); got != 6 {
 		t.Errorf("after continuation: FsmProtocolFaultTotal()=%d; want 6 (1 initial + 5 continuation)", got)
 	}
-	if got := c.FSMState(); got != telegram_fsm.StateAborted {
+	if got := c.FSMState(); got != telegramfsm.StateAborted {
 		t.Errorf("during continuation: FSMState()=%v; want StateAborted (no auto-reset)", got)
 	}
 
 	// A Reset clears the fault cascade.
 	c.Observe(transport.StreamEvent{Kind: transport.StreamEventReset}, now)
-	if got := c.FSMState(); got != telegram_fsm.StateIdle {
+	if got := c.FSMState(); got != telegramfsm.StateIdle {
 		t.Errorf("after Reset: FSMState()=%v; want StateIdle", got)
 	}
 	// Subsequent bytes after Reset go to the Idle handler, which
@@ -552,7 +552,7 @@ func TestFSM_StateAborted_ContinuationCountsFaults(t *testing.T) {
 // round-1 HIGH fix: FSMState/FSMInternalState/FSMIsPassive read
 // from atomic snapshots that Observe publishes after each FSM
 // mutation. The accessors MUST NOT touch the underlying FSM
-// (telegram_fsm.Machine is not thread-safe).
+// (telegramfsm.Machine is not thread-safe).
 //
 // This test launches concurrent readers AND a single Observe
 // goroutine; under `go test -race` any direct read of the FSM

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	estd "github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebus_standard"
+	estd "github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebusstandard"
 )
 
 // parsePBSBByte parses a PB/SB selector as a 1-byte value, using smart
@@ -64,7 +64,7 @@ func parsePBSBByte(raw string) (uint8, error) {
 //
 // The M5_PORTAL consumer UI is strictly read-only: these four methods expose
 // the L7 catalog and decode observed frames. No invocation is performed here;
-// the producer-side execution_policy still gates all writes at the mcp layer.
+// the producer-side executionpolicy still gates all writes at the mcp layer.
 type PortalEbusStandardServer interface {
 	ServicesList() map[string]any
 	CommandsList(pb *uint8) (map[string]any, error)

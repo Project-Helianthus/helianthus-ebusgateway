@@ -1,4 +1,4 @@
-// Package ebus_standard implements the gateway MCP surfaces for the
+// Package ebusstandard implements the gateway MCP surfaces for the
 // ebus_standard L7 namespace (M4_GATEWAY_MCP).
 //
 // Surfaces (canonical plan §4):
@@ -9,10 +9,10 @@
 //   - ebus_v1_ebus_standard_decode
 //
 // The server consumes the shared provider from helianthus-ebusreg and the
-// shared execution_policy module from internal/execution_policy. It does
+// shared executionpolicy module from internal/executionpolicy. It does
 // NOT duplicate catalog walking, safety logic, or identity construction —
 // all of that lives in ebusreg.
-package ebus_standard
+package ebusstandard
 
 import (
 	"encoding/hex"
@@ -21,7 +21,7 @@ import (
 	"sort"
 	"strings"
 
-	ebusstd "github.com/Project-Helianthus/helianthus-ebusreg/catalog/ebus_standard"
+	ebusstd "github.com/Project-Helianthus/helianthus-ebusreg/catalog/ebusstandard"
 )
 
 // Tool names exposed over MCP.

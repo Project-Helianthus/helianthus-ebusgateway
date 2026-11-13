@@ -763,7 +763,7 @@ function beginPortalCatalogRequestAbort(lifecycleAbort) {
 }
 
 // L7 decode catalog-canonical enums. Source of truth:
-// helianthus-ebusreg/catalog/ebus_standard/identity.go — Direction and
+// helianthus-ebusreg/catalog/ebusstandard/identity.go — Direction and
 // TelegramClass constants. Any form value outside these sets is
 // rejected client-side by the decode submit handler (fail-closed)
 // because the backend matcher would return UNKNOWN_COMMAND.
@@ -4674,7 +4674,7 @@ class PortalShell extends HTMLElement {
   // ---------------------------------------------------------------------
   // M5_PORTAL — ebus_standard L7 consumer UI
   //
-  // Read-only surface over the in-process mcp/ebus_standard sub-server.
+  // Read-only surface over the in-process mcp/ebusstandard sub-server.
   // Four views:
   //   - services list         → refreshL7Services()
   //   - commands list         → refreshL7Commands(optional pb)

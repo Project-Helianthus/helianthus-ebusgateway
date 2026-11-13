@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"math"
 
-	rpcsource "github.com/Project-Helianthus/helianthus-ebusgateway/internal/rpc_source"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/rpcsource"
 )
 
 var errSourceSelectionNotActive = errors.New("source selection not active")
@@ -20,7 +20,7 @@ var errSourceSelectionNotActive = errors.New("source selection not active")
 // absent-params must use enforceRPCSourceOnArgs which operates on the
 // enclosing args envelope and can create a fresh params map.
 //
-// Invalid explicit source values wrap rpc_source.ErrInvalidSource.
+// Invalid explicit source values wrap rpcsource.ErrInvalidSource.
 func enforceRPCSourceParam(params map[string]any, admittedSource byte, admitted bool) error {
 	if params == nil {
 		return nil
@@ -74,7 +74,7 @@ func enforceRPCSourceOnArgs(args map[string]any, admittedSource byte, admitted b
 // toByteSource coerces a JSON-decoded value into an 8-bit source byte.
 //
 // It returns a non-nil error in two distinguishable cases — both wrap
-// rpc_source.ErrInvalidSource so the outer classifier (classifyToolError)
+// rpcsource.ErrInvalidSource so the outer classifier (classifyToolError)
 // still maps them to INVALID_ARGUMENT:
 //
 //   - unsupported type (e.g. bool, string, map, slice, nil): the caller

@@ -5,7 +5,7 @@ import (
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
-	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebus_standard"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebusstandard"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal"
 	ebusgoTransport "github.com/Project-Helianthus/helianthus-ebusgo/transport"
 )
@@ -143,7 +143,7 @@ func TestResponderCapabilityProvider_UnknownTransport_OmitsCapability(t *testing
 
 // assertActiveInTransports is the local I2 guard: active.transport MUST
 // literally appear as one of the transports[] row labels.
-func assertActiveInTransports(t *testing.T, cap ebus_standard.ResponderCapability) {
+func assertActiveInTransports(t *testing.T, cap ebusstandard.ResponderCapability) {
 	t.Helper()
 	if len(cap.Transports) != 3 {
 		t.Fatalf("transports[] has %d rows; want 3 (I1 at v1.1)", len(cap.Transports))
@@ -255,7 +255,7 @@ func TestResponderCapabilityProvider_MuxBypass_DowngradesMatchingTransportRow(t 
 			t.Fatalf("canonical=%q: transports[] has %d rows; want 3 (I1)", canonical, len(cap.Transports))
 		}
 
-		var enhRow, ensRow, ebusdRow *ebus_standard.TransportRow
+		var enhRow, ensRow, ebusdRow *ebusstandard.TransportRow
 		for i := range cap.Transports {
 			row := &cap.Transports[i]
 			switch row.Transport {
@@ -272,7 +272,7 @@ func TestResponderCapabilityProvider_MuxBypass_DowngradesMatchingTransportRow(t 
 		}
 
 		// Both ENH and ENS rows must be downgraded — the mux is shared.
-		for _, row := range []*ebus_standard.TransportRow{enhRow, ensRow} {
+		for _, row := range []*ebusstandard.TransportRow{enhRow, ensRow} {
 			if row.State != "blocked" {
 				t.Fatalf("canonical=%q: %s row.state = %q; want %q", canonical, row.Transport, row.State, "blocked")
 			}
@@ -303,7 +303,7 @@ func TestResponderCapabilityProvider_MuxBypass_DowngradesMatchingTransportRow(t 
 // assertI3ActiveScopeMatchesRow is the invariant I3 guard:
 // active.scope MUST equal transports[x].scope where x.transport ==
 // active.transport.
-func assertI3ActiveScopeMatchesRow(t *testing.T, cap ebus_standard.ResponderCapability) {
+func assertI3ActiveScopeMatchesRow(t *testing.T, cap ebusstandard.ResponderCapability) {
 	t.Helper()
 	for _, row := range cap.Transports {
 		if row.Transport == cap.Active.Transport {

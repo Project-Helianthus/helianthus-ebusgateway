@@ -10,7 +10,7 @@ import (
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux/v8classifier"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
-	"github.com/Project-Helianthus/helianthus-ebusgo/protocol/telegram_fsm"
+	"github.com/Project-Helianthus/helianthus-ebusgo/protocol/telegramfsm"
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
 )
 
@@ -94,7 +94,7 @@ func t02RequireResponsePhase(t *testing.T, m *Mux) {
 	if phase != wirePhaseWaitResponseBody || !live {
 		t.Fatalf("wire phase=%v live=%v, want response body", phase, live)
 	}
-	if state := m.v8.FSMInternalState(); state != telegram_fsm.StateSlaveData {
+	if state := m.v8.FSMInternalState(); state != telegramfsm.StateSlaveData {
 		t.Fatalf("classifier=%v, want responder data", state)
 	}
 }
@@ -155,7 +155,7 @@ func TestT02_LiveTelegramSurvivesOwnerRelease(t *testing.T) {
 						t.Fatalf("injected AA reached observers: %x", passive())
 					}
 				}
-				if state := m.v8.FSMInternalState(); state == telegram_fsm.StateIdle {
+				if state := m.v8.FSMInternalState(); state == telegramfsm.StateIdle {
 					t.Fatalf("classifier reset mid-telegram: %v", state)
 				}
 				// Rest of the response (two data bytes and CRC), ACK, then the real idle SYN.
@@ -164,7 +164,7 @@ func TestT02_LiveTelegramSurvivesOwnerRelease(t *testing.T) {
 					t.Fatalf("response body admitted START: %x -> %x", before, got)
 				}
 				plain(protocol.SymbolSyn)
-				if state := m.v8.FSMInternalState(); state != telegram_fsm.StateIdle {
+				if state := m.v8.FSMInternalState(); state != telegramfsm.StateIdle {
 					t.Fatalf("classifier after terminator=%v", state)
 				}
 				plain(protocol.SymbolSyn)
@@ -195,7 +195,7 @@ func TestT02_LiveTelegramAbandonedByOwnerReleasesAtIdle(t *testing.T) {
 		t.Fatalf("first AA admitted START: %x", got)
 	}
 	plain(protocol.SymbolSyn)
-	if state := m.v8.FSMInternalState(); state != telegram_fsm.StateIdle {
+	if state := m.v8.FSMInternalState(); state != telegramfsm.StateIdle {
 		t.Fatalf("classifier=%v", state)
 	}
 	plain(protocol.SymbolSyn)

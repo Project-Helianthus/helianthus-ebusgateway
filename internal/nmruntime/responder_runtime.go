@@ -1,9 +1,9 @@
-package nm_runtime
+package nmruntime
 
 // M4c2 — catalog-driven responder runtime (FF 03/04/05/06).
 //
 // Scope per decision doc @ 567a6798 §5:
-//   - Per-inbound emit consults execution_policy.Check with caller
+//   - Per-inbound emit consults executionpolicy.Check with caller
 //     CallerSystemNMRuntime before any byte hits the wire.
 //   - Dispatches via transport.ResponderTransport.SendResponderBytes
 //     (bypasses arbitration — the caller has already observed the
@@ -20,9 +20,9 @@ package nm_runtime
 import (
 	"fmt"
 
-	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/execution_policy"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/executionpolicy"
 	ebusgoxport "github.com/Project-Helianthus/helianthus-ebusgo/transport"
-	ebusstd "github.com/Project-Helianthus/helianthus-ebusreg/catalog/ebus_standard"
+	ebusstd "github.com/Project-Helianthus/helianthus-ebusreg/catalog/ebusstandard"
 )
 
 // ResponderRuntime is the gateway-side responder emit runtime for
@@ -47,14 +47,14 @@ type ResponderRuntime struct {
 // populates the capability provider with scope=none instead).
 func NewResponderRuntime(cat ebusstd.Catalog, tp ebusgoxport.ResponderTransport) (*ResponderRuntime, error) {
 	if tp == nil {
-		return nil, fmt.Errorf("nm_runtime: %w", execution_policy.ErrResponderTransportUnavailable)
+		return nil, fmt.Errorf("nm_runtime: %w", executionpolicy.ErrResponderTransportUnavailable)
 	}
 	return &ResponderRuntime{catalog: cat, transport: tp}, nil
 }
 
 // EmitResponder dispatches a responder-direction emission for cmd with
 // payload. The flow is:
-//  1. Consult execution_policy.Check with CallerSystemNMRuntime. On
+//  1. Consult executionpolicy.Check with CallerSystemNMRuntime. On
 //     denial, the error satisfies errors.Is(err, ErrSafetyClassDenied)
 //     and NO bytes hit the wire.
 //  2. On accept, dispatch via ResponderTransport.SendResponderBytes.
@@ -64,7 +64,7 @@ func NewResponderRuntime(cat ebusstd.Catalog, tp ebusgoxport.ResponderTransport)
 // M4c2 scope the caller is already expected to present a resolved
 // ebusstd.Command from the inbound-frame decoder.
 func (r *ResponderRuntime) EmitResponder(cmd ebusstd.Command, payload []byte) error {
-	if err := execution_policy.Check(cmd, execution_policy.CallerSystemNMRuntime); err != nil {
+	if err := executionpolicy.Check(cmd, executionpolicy.CallerSystemNMRuntime); err != nil {
 		return err
 	}
 	if _, err := r.transport.SendResponderBytes(payload); err != nil {

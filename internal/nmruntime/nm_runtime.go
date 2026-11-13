@@ -1,4 +1,4 @@
-// Package nm_runtime is the catalog-driven Network-Management emit path.
+// Package nmruntime is the catalog-driven Network-Management emit path.
 //
 // Per canonical plan §8, the gateway's NM runtime consumes catalog metadata
 // for 0xFF command emit (FF 00 = reset_status broadcast, FF 02 =
@@ -15,16 +15,16 @@
 // Responder emit (FF 03 / FF 04 / FF 05 / FF 06) is NOT implemented — that
 // scope is gated on M4b2 go/no-go (see canonical plan §8) and landed under
 // M4c.
-package nm_runtime
+package nmruntime
 
 import (
 	"context"
 	"errors"
 	"fmt"
 
-	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/execution_policy"
-	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/rpc_source"
-	ebusstd "github.com/Project-Helianthus/helianthus-ebusreg/catalog/ebus_standard"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/executionpolicy"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/rpcsource"
+	ebusstd "github.com/Project-Helianthus/helianthus-ebusreg/catalog/ebusstandard"
 )
 
 // EmitEvent names the NM emit events supported in M4b first-delivery. The
@@ -76,7 +76,7 @@ type Emitter interface {
 
 // Runtime is the catalog-driven NM emit runtime. It owns no hand-coded
 // FF 00 / FF 02 tables; all emit decisions are driven by the catalog +
-// shared execution_policy module.
+// shared executionpolicy module.
 type Runtime struct {
 	catalog ebusstd.Catalog
 	emitter Emitter
@@ -92,7 +92,7 @@ func NewRuntime(cat ebusstd.Catalog, emitter Emitter, source byte) (*Runtime, er
 	if emitter == nil {
 		return nil, ErrEmitterRequired
 	}
-	if err := rpc_source.Enforce(source); err != nil {
+	if err := rpcsource.Enforce(source); err != nil {
 		return nil, err
 	}
 	return &Runtime{catalog: cat, emitter: emitter, source: source}, nil
@@ -100,9 +100,9 @@ func NewRuntime(cat ebusstd.Catalog, emitter Emitter, source byte) (*Runtime, er
 
 // Emit dispatches the named NM emit event through the catalog + policy
 // gate. The policy gate is consulted with caller=system_nm_runtime so the
-// compile-time whitelist in execution_policy applies.
+// compile-time whitelist in executionpolicy applies.
 func (r *Runtime) Emit(ctx context.Context, event EmitEvent, payload []byte) error {
-	if err := rpc_source.Enforce(r.source); err != nil {
+	if err := rpcsource.Enforce(r.source); err != nil {
 		return err
 	}
 	if _, declared := declaredEmitEvents[event]; !declared {
@@ -112,7 +112,7 @@ func (r *Runtime) Emit(ctx context.Context, event EmitEvent, payload []byte) err
 	if !ok {
 		return fmt.Errorf("event=%q: %w", event, ErrNoCatalogEntry)
 	}
-	if err := execution_policy.Check(cmd, execution_policy.CallerSystemNMRuntime); err != nil {
+	if err := executionpolicy.Check(cmd, executionpolicy.CallerSystemNMRuntime); err != nil {
 		return err
 	}
 	pb := cmd.Identity.PBValue()

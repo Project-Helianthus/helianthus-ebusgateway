@@ -14,7 +14,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semanticview"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
-	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebus_standard"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebusstandard"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mdns"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal/catalogv1"
@@ -149,7 +149,7 @@ func startHTTPServer(
 	// ResponderTransport, so config-string "enh" + mux active path
 	// correctly downgrades to scope=none (see Codex P1 on PR #509).
 	if provider := buildResponderCapabilityProvider(cfg, gateway.Transport); provider != nil {
-		ebus_standard.SetResponderCapabilityProvider(provider)
+		ebusstandard.SetResponderCapabilityProvider(provider)
 	} else {
 		log.Printf("warning: meta.capabilities.responder omitted: transport protocol %q does not canonicalize to ENH/ENS/ebusd-tcp", cfg.TransportConfig.Protocol)
 	}

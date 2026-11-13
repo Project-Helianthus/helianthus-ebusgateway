@@ -1,4 +1,4 @@
-package ebus_standard_test
+package ebusstandard_test
 
 import (
 	"encoding/json"
@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	estd "github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebus_standard"
+	estd "github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebusstandard"
 )
 
 // Envelope-golden fixtures. Re-generate with UPDATE=1 and include rationale

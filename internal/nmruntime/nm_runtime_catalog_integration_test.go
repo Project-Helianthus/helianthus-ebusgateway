@@ -1,19 +1,19 @@
 //go:build !tinygo
 // +build !tinygo
 
-package nm_runtime_test
+package nmruntime_test
 
 import (
 	"context"
 	"testing"
 
-	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/nm_runtime"
-	ebusstd "github.com/Project-Helianthus/helianthus-ebusreg/catalog/ebus_standard"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/nmruntime"
+	ebusstd "github.com/Project-Helianthus/helianthus-ebusreg/catalog/ebusstandard"
 )
 
 // TestEmit_AgainstEmbeddedCatalog is the catalog-grounded regression gate
 // for issue #505 r3106832675. It loads the REAL embedded ebusreg catalog
-// and asserts that every nm_runtime.EmitEvent constant resolves to a
+// and asserts that every nmruntime.EmitEvent constant resolves to a
 // catalog command (no ErrNoCatalogEntry) AND emits successfully through
 // the policy gate. Drift between event constants and catalog
 // service_variant strings is caught at test time.
@@ -21,19 +21,19 @@ func TestEmit_AgainstEmbeddedCatalog(t *testing.T) {
 	cat := ebusstd.MustEmbeddedCatalog()
 
 	cases := []struct {
-		event  nm_runtime.EmitEvent
+		event  nmruntime.EmitEvent
 		wantPB byte
 		wantSB byte
 	}{
-		{nm_runtime.EventResetStatus, 0xFF, 0x00},
-		{nm_runtime.EventFailure, 0xFF, 0x02},
+		{nmruntime.EventResetStatus, 0xFF, 0x00},
+		{nmruntime.EventFailure, 0xFF, 0x02},
 	}
 
 	for _, tc := range cases {
 		tc := tc
 		t.Run(string(tc.event), func(t *testing.T) {
 			em := &recordingEmitter{}
-			rt, err := nm_runtime.NewRuntime(cat, em, testRuntimeSource)
+			rt, err := nmruntime.NewRuntime(cat, em, testRuntimeSource)
 			if err != nil {
 				t.Fatalf("NewRuntime err: %v", err)
 			}

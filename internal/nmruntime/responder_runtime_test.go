@@ -1,4 +1,4 @@
-package nm_runtime_test
+package nmruntime_test
 
 // M4c2 responder runtime tests — catalog-driven FF 03/04/05/06 emit path.
 //
@@ -6,7 +6,7 @@ package nm_runtime_test
 //   - Runtime construction MUST fail with ErrResponderTransportUnavailable
 //     when the active transport does not satisfy ResponderTransport OR when
 //     the capability signal reports scope=none.
-//   - Per-inbound emit MUST consult execution_policy.Check with
+//   - Per-inbound emit MUST consult executionpolicy.Check with
 //     CallerSystemNMRuntime before any byte hits the wire.
 //   - Dispatch MUST route through ResponderTransport.SendResponderBytes.
 
@@ -15,10 +15,10 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/execution_policy"
-	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/nm_runtime"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/executionpolicy"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/nmruntime"
 	ebusgoxport "github.com/Project-Helianthus/helianthus-ebusgo/transport"
-	ebusstd "github.com/Project-Helianthus/helianthus-ebusreg/catalog/ebus_standard"
+	ebusstd "github.com/Project-Helianthus/helianthus-ebusreg/catalog/ebusstandard"
 )
 
 // fakeResponderTransport implements ebusgoxport.ResponderTransport for
@@ -51,14 +51,14 @@ func loadTestCatalog(t *testing.T) ebusstd.Catalog {
 
 // TestResponderRuntime_ConstructionRequiresTransport asserts nil transport
 // fails construction with ErrResponderTransportUnavailable (mirrors
-// ErrEmitterRequired fail-fast pattern in nm_runtime.NewRuntime).
+// ErrEmitterRequired fail-fast pattern in nmruntime.NewRuntime).
 func TestResponderRuntime_ConstructionRequiresTransport(t *testing.T) {
 	cat := loadTestCatalog(t)
-	_, err := nm_runtime.NewResponderRuntime(cat, nil)
+	_, err := nmruntime.NewResponderRuntime(cat, nil)
 	if err == nil {
 		t.Fatal("expected ErrResponderTransportUnavailable on nil transport")
 	}
-	if !errors.Is(err, execution_policy.ErrResponderTransportUnavailable) {
+	if !errors.Is(err, executionpolicy.ErrResponderTransportUnavailable) {
 		t.Fatalf("err=%v, want ErrResponderTransportUnavailable", err)
 	}
 }
@@ -68,7 +68,7 @@ func TestResponderRuntime_ConstructionRequiresTransport(t *testing.T) {
 func TestResponderRuntime_ConstructionSucceedsOnENHLike(t *testing.T) {
 	cat := loadTestCatalog(t)
 	tp := &fakeResponderTransport{}
-	rt, err := nm_runtime.NewResponderRuntime(cat, tp)
+	rt, err := nmruntime.NewResponderRuntime(cat, tp)
 	if err != nil {
 		t.Fatalf("construction failed: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestResponderRuntime_ConstructionSucceedsOnENHLike(t *testing.T) {
 func TestResponderRuntime_PolicyGateEnforced(t *testing.T) {
 	cat := loadTestCatalog(t)
 	tp := &fakeResponderTransport{}
-	rt, err := nm_runtime.NewResponderRuntime(cat, tp)
+	rt, err := nmruntime.NewResponderRuntime(cat, tp)
 	if err != nil {
 		t.Fatalf("construction: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestResponderRuntime_PolicyGateEnforced(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected policy denial for non-whitelisted mutating row")
 	}
-	if !execution_policy.IsDenied(err) {
+	if !executionpolicy.IsDenied(err) {
 		t.Fatalf("err=%v, want ErrSafetyClassDenied", err)
 	}
 	if atomic.LoadInt64(&tp.calls) != 0 {
@@ -114,7 +114,7 @@ func TestResponderRuntime_PolicyGateEnforced(t *testing.T) {
 func TestResponderRuntime_DispatchesViaSendResponderBytes(t *testing.T) {
 	cat := loadTestCatalog(t)
 	tp := &fakeResponderTransport{}
-	rt, err := nm_runtime.NewResponderRuntime(cat, tp)
+	rt, err := nmruntime.NewResponderRuntime(cat, tp)
 	if err != nil {
 		t.Fatalf("construction: %v", err)
 	}

@@ -6,19 +6,19 @@ import (
 	"strings"
 	"testing"
 
-	estd "github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebus_standard"
-	ebusstd "github.com/Project-Helianthus/helianthus-ebusreg/catalog/ebus_standard"
+	mcpstandard "github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebusstandard"
+	ebusregstandard "github.com/Project-Helianthus/helianthus-ebusreg/catalog/ebusstandard"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 )
 
 func TestRegisterEbusStandardTools_AddsFourSurfaces(t *testing.T) {
 	s := &Server{}
-	RegisterEbusStandardTools(s, ebusstd.MustEmbeddedCatalog())
+	RegisterEbusStandardTools(s, ebusregstandard.MustEmbeddedCatalog())
 	want := map[string]bool{
-		estd.ToolServicesList: false,
-		estd.ToolCommandsList: false,
-		estd.ToolCommandGet:   false,
-		estd.ToolDecode:       false,
+		mcpstandard.ToolServicesList: false,
+		mcpstandard.ToolCommandsList: false,
+		mcpstandard.ToolCommandGet:   false,
+		mcpstandard.ToolDecode:       false,
 	}
 	for _, tool := range s.tools {
 		if _, ok := want[tool.Name]; ok {
@@ -34,8 +34,8 @@ func TestRegisterEbusStandardTools_AddsFourSurfaces(t *testing.T) {
 
 func TestHandleEbusStandardCall_ServicesList_EnvelopeShape(t *testing.T) {
 	s := &Server{}
-	RegisterEbusStandardTools(s, ebusstd.MustEmbeddedCatalog())
-	result, handled := s.handleEbusStandardCall(estd.ToolServicesList, map[string]any{})
+	RegisterEbusStandardTools(s, ebusregstandard.MustEmbeddedCatalog())
+	result, handled := s.handleEbusStandardCall(mcpstandard.ToolServicesList, map[string]any{})
 	if !handled {
 		t.Fatal("services.list must be handled")
 	}
@@ -62,7 +62,7 @@ func TestHandleEbusStandardCall_ServicesList_EnvelopeShape(t *testing.T) {
 
 func TestHandleEbusStandardCall_UnknownNotHandled(t *testing.T) {
 	s := &Server{}
-	RegisterEbusStandardTools(s, ebusstd.MustEmbeddedCatalog())
+	RegisterEbusStandardTools(s, ebusregstandard.MustEmbeddedCatalog())
 	_, handled := s.handleEbusStandardCall("ebus.v1.unknown", nil)
 	if handled {
 		t.Fatal("unknown tool must not be claimed by ebus_standard dispatcher")
@@ -71,8 +71,8 @@ func TestHandleEbusStandardCall_UnknownNotHandled(t *testing.T) {
 
 func TestHandleEbusStandardCall_CommandsListFiltersByPB(t *testing.T) {
 	s := &Server{}
-	RegisterEbusStandardTools(s, ebusstd.MustEmbeddedCatalog())
-	result, handled := s.handleEbusStandardCall(estd.ToolCommandsList, map[string]any{"pb": 3})
+	RegisterEbusStandardTools(s, ebusregstandard.MustEmbeddedCatalog())
+	result, handled := s.handleEbusStandardCall(mcpstandard.ToolCommandsList, map[string]any{"pb": 3})
 	if !handled {
 		t.Fatal("commands.list must be handled")
 	}
@@ -88,8 +88,8 @@ func TestHandleEbusStandardCall_CommandsListFiltersByPB(t *testing.T) {
 // unfiltered catalog as a success). Regression for PR #505 r3106745676.
 func TestHandleEbusStandardCall_CommandsListRejectsInvalidPB(t *testing.T) {
 	s := &Server{}
-	RegisterEbusStandardTools(s, ebusstd.MustEmbeddedCatalog())
-	result, handled := s.handleEbusStandardCall(estd.ToolCommandsList, map[string]any{"pb": "not-a-number"})
+	RegisterEbusStandardTools(s, ebusregstandard.MustEmbeddedCatalog())
+	result, handled := s.handleEbusStandardCall(mcpstandard.ToolCommandsList, map[string]any{"pb": "not-a-number"})
 	if !handled {
 		t.Fatal("commands.list must be handled")
 	}
@@ -115,8 +115,8 @@ func TestHandleEbusStandardCall_CommandsListRejectsInvalidPB(t *testing.T) {
 // behavior for well-formed input). Regression for PR #505 r3106745676.
 func TestHandleEbusStandardCall_CommandsListAbsentPBUnfiltered(t *testing.T) {
 	s := &Server{}
-	RegisterEbusStandardTools(s, ebusstd.MustEmbeddedCatalog())
-	result, handled := s.handleEbusStandardCall(estd.ToolCommandsList, map[string]any{})
+	RegisterEbusStandardTools(s, ebusregstandard.MustEmbeddedCatalog())
+	result, handled := s.handleEbusStandardCall(mcpstandard.ToolCommandsList, map[string]any{})
 	if !handled {
 		t.Fatal("commands.list must be handled")
 	}
@@ -132,8 +132,8 @@ func TestHandleEbusStandardCall_CommandsListAbsentPBUnfiltered(t *testing.T) {
 // r3106745674.
 func TestHandleEbusStandardCall_EnvelopeContainsConsistencyMeta(t *testing.T) {
 	s := &Server{}
-	RegisterEbusStandardTools(s, ebusstd.MustEmbeddedCatalog())
-	result, handled := s.handleEbusStandardCall(estd.ToolServicesList, map[string]any{})
+	RegisterEbusStandardTools(s, ebusregstandard.MustEmbeddedCatalog())
+	result, handled := s.handleEbusStandardCall(mcpstandard.ToolServicesList, map[string]any{})
 	if !handled {
 		t.Fatal("services.list must be handled")
 	}
@@ -163,10 +163,10 @@ func TestNewServer_WiresEbusStandardSurfaces(t *testing.T) {
 		t.Fatalf("NewServer: %v", err)
 	}
 	required := []string{
-		estd.ToolServicesList,
-		estd.ToolCommandsList,
-		estd.ToolCommandGet,
-		estd.ToolDecode,
+		mcpstandard.ToolServicesList,
+		mcpstandard.ToolCommandsList,
+		mcpstandard.ToolCommandGet,
+		mcpstandard.ToolDecode,
 	}
 	for _, name := range required {
 		if !server.hasToolNamed(name) {
@@ -185,9 +185,9 @@ func TestNewServer_WiresEbusStandardSurfaces(t *testing.T) {
 // command. Regression for PR #505 r3106756020.
 func TestHandleEbusStandardCall_DecodeRejectsMissingSelectors(t *testing.T) {
 	s := &Server{}
-	RegisterEbusStandardTools(s, ebusstd.MustEmbeddedCatalog())
+	RegisterEbusStandardTools(s, ebusregstandard.MustEmbeddedCatalog())
 	// direction + frame_type absent
-	result, handled := s.handleEbusStandardCall(estd.ToolDecode, map[string]any{
+	result, handled := s.handleEbusStandardCall(mcpstandard.ToolDecode, map[string]any{
 		"pb":          3,
 		"sb":          4,
 		"payload_hex": "0102",
@@ -217,8 +217,8 @@ func TestHandleEbusStandardCall_DecodeRejectsMissingSelectors(t *testing.T) {
 // payload_hex) still succeeds after the tightening above.
 func TestHandleEbusStandardCall_DecodeAcceptsFullSelectors(t *testing.T) {
 	s := &Server{}
-	RegisterEbusStandardTools(s, ebusstd.MustEmbeddedCatalog())
-	result, handled := s.handleEbusStandardCall(estd.ToolDecode, map[string]any{
+	RegisterEbusStandardTools(s, ebusregstandard.MustEmbeddedCatalog())
+	result, handled := s.handleEbusStandardCall(mcpstandard.ToolDecode, map[string]any{
 		"pb":          3,
 		"sb":          4,
 		"direction":   "request",
@@ -264,8 +264,8 @@ func TestToUint8_RejectsFractionalFloat64(t *testing.T) {
 // INVALID_PAYLOAD. Regression for PR #505 r3106756021.
 func TestHandleEbusStandardCall_DecodeRejectsFractionalPB(t *testing.T) {
 	s := &Server{}
-	RegisterEbusStandardTools(s, ebusstd.MustEmbeddedCatalog())
-	result, handled := s.handleEbusStandardCall(estd.ToolDecode, map[string]any{
+	RegisterEbusStandardTools(s, ebusregstandard.MustEmbeddedCatalog())
+	result, handled := s.handleEbusStandardCall(mcpstandard.ToolDecode, map[string]any{
 		"pb":          3.9,
 		"sb":          4,
 		"direction":   "request",
@@ -298,7 +298,7 @@ func TestHandleEbusStandardCall_DecodeRejectsFractionalPB(t *testing.T) {
 // Regression for PR #505 r3106794322 + r3106904917.
 func TestHandleEbusStandardCall_DecodeRejectsMissingPayloadHex(t *testing.T) {
 	s := &Server{}
-	RegisterEbusStandardTools(s, ebusstd.MustEmbeddedCatalog())
+	RegisterEbusStandardTools(s, ebusregstandard.MustEmbeddedCatalog())
 	cases := []struct {
 		name string
 		args map[string]any
@@ -326,7 +326,7 @@ func TestHandleEbusStandardCall_DecodeRejectsMissingPayloadHex(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			result, handled := s.handleEbusStandardCall(estd.ToolDecode, tc.args)
+			result, handled := s.handleEbusStandardCall(mcpstandard.ToolDecode, tc.args)
 			if !handled {
 				t.Fatal("decode must be handled")
 			}
@@ -352,7 +352,7 @@ func TestHandleEbusStandardCall_DecodeRejectsMissingPayloadHex(t *testing.T) {
 // r3106794325.
 func TestHandleEbusStandardCall_CommandGetRejectsMissingID(t *testing.T) {
 	s := &Server{}
-	RegisterEbusStandardTools(s, ebusstd.MustEmbeddedCatalog())
+	RegisterEbusStandardTools(s, ebusregstandard.MustEmbeddedCatalog())
 	cases := []struct {
 		name string
 		args map[string]any
@@ -364,7 +364,7 @@ func TestHandleEbusStandardCall_CommandGetRejectsMissingID(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			result, handled := s.handleEbusStandardCall(estd.ToolCommandGet, tc.args)
+			result, handled := s.handleEbusStandardCall(mcpstandard.ToolCommandGet, tc.args)
 			if !handled {
 				t.Fatal("command.get must be handled")
 			}
@@ -390,8 +390,8 @@ func TestHandleEbusStandardCall_CommandGetRejectsMissingID(t *testing.T) {
 // short-circuited by the new INVALID_PAYLOAD guard.
 func TestHandleEbusStandardCall_CommandGetDispatchesNonexistent(t *testing.T) {
 	s := &Server{}
-	RegisterEbusStandardTools(s, ebusstd.MustEmbeddedCatalog())
-	result, handled := s.handleEbusStandardCall(estd.ToolCommandGet, map[string]any{"id": "definitely-not-a-real-command-id"})
+	RegisterEbusStandardTools(s, ebusregstandard.MustEmbeddedCatalog())
+	result, handled := s.handleEbusStandardCall(mcpstandard.ToolCommandGet, map[string]any{"id": "definitely-not-a-real-command-id"})
 	if !handled {
 		t.Fatal("command.get must be handled")
 	}
@@ -419,7 +419,7 @@ func TestNewServer_DispatchesEbusStandardServicesList(t *testing.T) {
 		t.Fatalf("NewServer: %v", err)
 	}
 	params, err := json.Marshal(map[string]any{
-		"name":      estd.ToolServicesList,
+		"name":      mcpstandard.ToolServicesList,
 		"arguments": map[string]any{},
 	})
 	if err != nil {
@@ -456,7 +456,7 @@ func TestNewServer_DispatchesEbusStandardServicesList(t *testing.T) {
 //   - payload_hex: "00AA"        → VALID, 2-byte decode
 func TestHandleEbusStandardCall_DecodeAcceptsEmptyPayloadHex(t *testing.T) {
 	s := &Server{}
-	RegisterEbusStandardTools(s, ebusstd.MustEmbeddedCatalog())
+	RegisterEbusStandardTools(s, ebusregstandard.MustEmbeddedCatalog())
 
 	// Case 1: empty string — must NOT be INVALID_PAYLOAD. It may still
 	// produce UNKNOWN_COMMAND if the (pb,sb,direction,frame_type) tuple
@@ -468,7 +468,7 @@ func TestHandleEbusStandardCall_DecodeAcceptsEmptyPayloadHex(t *testing.T) {
 		"frame_type":  "addressed",
 		"payload_hex": "",
 	}
-	result, handled := s.handleEbusStandardCall(estd.ToolDecode, args)
+	result, handled := s.handleEbusStandardCall(mcpstandard.ToolDecode, args)
 	if !handled {
 		t.Fatal("decode must be handled")
 	}
@@ -491,7 +491,7 @@ func TestHandleEbusStandardCall_DecodeAcceptsEmptyPayloadHex(t *testing.T) {
 		"direction":  "request",
 		"frame_type": "addressed",
 	}
-	result2, _ := s.handleEbusStandardCall(estd.ToolDecode, absentArgs)
+	result2, _ := s.handleEbusStandardCall(mcpstandard.ToolDecode, absentArgs)
 	text2 := result2["content"].([]map[string]any)[0]["text"].(string)
 	var env2 map[string]any
 	if err := json.Unmarshal([]byte(text2), &env2); err != nil {
@@ -511,7 +511,7 @@ func TestHandleEbusStandardCall_DecodeAcceptsEmptyPayloadHex(t *testing.T) {
 		"frame_type":  "addressed",
 		"payload_hex": "00AA",
 	}
-	result3, _ := s.handleEbusStandardCall(estd.ToolDecode, hexArgs)
+	result3, _ := s.handleEbusStandardCall(mcpstandard.ToolDecode, hexArgs)
 	text3 := result3["content"].([]map[string]any)[0]["text"].(string)
 	var env3 map[string]any
 	if err := json.Unmarshal([]byte(text3), &env3); err != nil {

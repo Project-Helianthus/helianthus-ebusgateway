@@ -366,6 +366,8 @@ type vaillantSemanticPoller struct {
 	boilerThermal               *boilerThermalPublisher
 	regulatorCapability         productids.ControllerCapability
 	regAbsenceState             regulatorAbsenceState
+	discoveryFallbackSuspended  bool
+	controllerEverDiscovered    bool
 	regAbsenceSince             time.Time
 	registryDeviceCount         int
 	regulatorRecheckInterval    time.Duration
@@ -499,6 +501,50 @@ func (p *vaillantSemanticPoller) refreshRegulatorCapability(_ context.Context) {
 	}
 }
 
+// fallbackDiscoveryAllowed reports whether the state and configuration tasks
+// may run their fallback root discovery. On a bus where this process has never
+// discovered a B524 root, once the regulator absence state is ABSENT, root
+// discovery runs only from the discovery task at the configured discovery
+// interval and from event-driven refreshes (inventory change, passive
+// insertion and promotion). ABSENT alone does not prove that no controller
+// exists (an unclassified or structurally registered controller also reaches
+// it), so a process that has discovered a root once keeps the per-minute
+// recovery, and a known controller without zones keeps the fallback. The
+// fallback is suspended only while the periodic discovery task runs: the poll
+// schedule starts that task's loop only for a positive discovery interval, so
+// with the interval disabled the fallback stays the only periodic search.
+func (p *vaillantSemanticPoller) fallbackDiscoveryAllowed(controller byte) bool {
+	p.mu.Lock()
+	periodicDiscovery := p.discoveryInterval > 0
+	suspend := controller == 0 && p.regAbsenceState == regulatorAbsent && !p.controllerEverDiscovered && periodicDiscovery
+	logSuspension := suspend && !p.discoveryFallbackSuspended
+	p.discoveryFallbackSuspended = suspend
+	interval := p.discoveryInterval
+	p.mu.Unlock()
+	if logSuspension {
+		log.Printf("semantic_discovery_fallback_suspended regulator_state=%s discovery_interval=%s", regulatorAbsent, interval)
+	}
+	return !suspend
+}
+
+// refreshBoilerAddress applies the registry's boiler-class heat source without
+// a root discovery pass; it reads the registry only and sends nothing. While
+// the fallback discovery is suspended it keeps a heat source identified after
+// ABSENT on the state and configuration ticks.
+func (p *vaillantSemanticPoller) refreshBoilerAddress(ctx context.Context) {
+	boilerAddress := p.findBoilerAddress()
+	p.mu.Lock()
+	prevBoilerAddress := p.boilerAddress
+	p.boilerAddress = boilerAddress
+	p.mu.Unlock()
+	if boilerAddress != prevBoilerAddress && boilerAddress != 0 && boilerAddress != 0x08 {
+		log.Printf("semantic_boiler_discovery address=0x%02x source=nonstandard", boilerAddress)
+	}
+	if boilerAddress != prevBoilerAddress && boilerAddress != 0 {
+		p.enqueueBoilerStatusPriming(ctx)
+	}
+}
+
 func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 	// Regulator capability is always recomputed, even when no B524 root is found.
 	regCap := p.findRegulatorCapability()
@@ -575,6 +621,8 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 	prevController := p.controller
 	prevBoilerAddress := p.boilerAddress
 	p.controller = controller
+	p.controllerEverDiscovered = true
+	p.discoveryFallbackSuspended = false
 	if controller != prevController {
 		p.fm5EvidenceGeneration++
 	}
@@ -911,8 +959,12 @@ func (p *vaillantSemanticPoller) refreshConfig(ctx context.Context) {
 	controller, zones := p.snapshotZones()
 	grabHydrated := false
 	if controller == 0 || len(zones) == 0 {
-		p.refreshDiscovery(ctx)
-		controller, zones = p.snapshotZones()
+		if p.fallbackDiscoveryAllowed(controller) {
+			p.refreshDiscovery(ctx)
+			controller, zones = p.snapshotZones()
+		} else {
+			p.refreshBoilerAddress(ctx)
+		}
 	}
 	if controller == 0 || len(zones) == 0 {
 		if p.tryRefreshFromEbusdGrab(ctx) {
@@ -1214,8 +1266,12 @@ func (p *vaillantSemanticPoller) refreshState(ctx context.Context) {
 	controller, zones := p.snapshotZones()
 	grabHydrated := false
 	if controller == 0 || len(zones) == 0 {
-		p.refreshDiscovery(ctx)
-		controller, zones = p.snapshotZones()
+		if p.fallbackDiscoveryAllowed(controller) {
+			p.refreshDiscovery(ctx)
+			controller, zones = p.snapshotZones()
+		} else {
+			p.refreshBoilerAddress(ctx)
+		}
 	}
 	if controller == 0 || len(zones) == 0 {
 		if p.tryRefreshFromEbusdGrab(ctx) {

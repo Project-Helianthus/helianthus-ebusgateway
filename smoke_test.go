@@ -3,7 +3,10 @@ package ebusgateway
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"net/http"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -332,5 +335,127 @@ func TestSmokeParams_SelectsBASV2ExtRegister(t *testing.T) {
 	}
 	if got, ok := params["addr"].(uint16); !ok || got != 0x5C00 {
 		t.Fatalf("addr=%v (%T); want 0x5C00 uint16", params["addr"], params["addr"])
+	}
+}
+
+type smokeMCPTestHandler struct {
+	tools       []string
+	callIsError bool
+	callText    string
+	calledTools []string
+	methods     []string
+}
+
+func (h *smokeMCPTestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ID     any    `json:"id"`
+		Method string `json:"method"`
+		Params struct {
+			Name string `json:"name"`
+		} `json:"params"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	h.methods = append(h.methods, req.Method)
+	var result any
+	switch req.Method {
+	case "tools/list":
+		tools := make([]map[string]any, 0, len(h.tools))
+		for _, name := range h.tools {
+			tools = append(tools, map[string]any{"name": name})
+		}
+		result = map[string]any{"tools": tools}
+	case "tools/call":
+		h.calledTools = append(h.calledTools, req.Params.Name)
+		result = map[string]any{
+			"isError": h.callIsError,
+			"content": []any{map[string]any{"type": "text", "text": h.callText}},
+		}
+	default:
+		http.Error(w, "unexpected method", http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": result})
+}
+
+func TestSmokeMCPCheck_CallsRegisteredDevicesListTool(t *testing.T) {
+	handler := &smokeMCPTestHandler{
+		tools:    []string{"ebus_v1_rpc_invoke", "ebus_v1_registry_devices_list"},
+		callText: `{"devices":[]}`,
+	}
+	summary := runSmokeMCPHandlerCheck(context.Background(), handler)
+	if !summary.OK {
+		t.Fatalf("summary not OK: %+v", summary)
+	}
+	if want := "tools=2 (read-only tools/list + ebus_v1_registry_devices_list)"; summary.Details != want {
+		t.Fatalf("details = %q, want %q", summary.Details, want)
+	}
+	if want := []string{"ebus_v1_registry_devices_list"}; !reflect.DeepEqual(handler.calledTools, want) {
+		t.Fatalf("called tools = %v, want %v", handler.calledTools, want)
+	}
+	if want := []string{"tools/list", "tools/call"}; !reflect.DeepEqual(handler.methods, want) {
+		t.Fatalf("methods = %v, want %v", handler.methods, want)
+	}
+}
+
+func TestSmokeMCPCheck_ListingOnlyWithoutDevicesListTool(t *testing.T) {
+	handler := &smokeMCPTestHandler{
+		tools:    []string{"ebus.devices", "ebus.invoke", "ebus_v1_rpc_invoke"},
+		callText: `{"devices":[]}`,
+	}
+	summary := runSmokeMCPHandlerCheck(context.Background(), handler)
+	if !summary.OK {
+		t.Fatalf("summary not OK: %+v", summary)
+	}
+	if want := "tools=3 (listing only; no safe read-only MCP call available)"; summary.Details != want {
+		t.Fatalf("details = %q, want %q", summary.Details, want)
+	}
+	if len(handler.calledTools) != 0 {
+		t.Fatalf("unexpected tools/call: %v", handler.calledTools)
+	}
+}
+
+func TestSmokeMCPCheck_DevicesListToolFailureNamesTool(t *testing.T) {
+	cases := []struct {
+		name    string
+		handler *smokeMCPTestHandler
+		want    string
+	}{
+		{
+			name:    "is_error",
+			handler: &smokeMCPTestHandler{callIsError: true, callText: "boom"},
+			want:    "mcp tools/call ebus_v1_registry_devices_list returned isError=true",
+		},
+		{
+			name:    "empty_text",
+			handler: &smokeMCPTestHandler{callText: "  "},
+			want:    "mcp tools/call ebus_v1_registry_devices_list returned empty text",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.handler.tools = []string{"ebus_v1_registry_devices_list"}
+			summary := runSmokeMCPHandlerCheck(context.Background(), tc.handler)
+			if summary.OK {
+				t.Fatalf("summary OK, want failure: %+v", summary)
+			}
+			if summary.Error != tc.want {
+				t.Fatalf("error = %q, want %q", summary.Error, tc.want)
+			}
+		})
+	}
+}
+
+func TestSmokeMCPCheck_GatewayServerCallsDevicesListTool(t *testing.T) {
+	gateway := &Gateway{Registry: registry.NewDeviceRegistry(nil)}
+	summary := runSmokeMCPCheck(context.Background(), gateway, SmokeOptions{})
+	if !summary.OK {
+		t.Fatalf("summary not OK: %+v", summary)
+	}
+	if !strings.HasSuffix(summary.Details, "(read-only tools/list + ebus_v1_registry_devices_list)") {
+		t.Fatalf("details = %q, want read-only devices list call", summary.Details)
 	}
 }

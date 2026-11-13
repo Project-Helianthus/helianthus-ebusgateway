@@ -6,7 +6,8 @@ Run without arguments to move the four gateway package directories (files are
 moved, never copied), rewrite the package clauses, import paths, package
 qualifiers and package references in comments of FILES, drop import names that
 equal the new package name, gofmt the files and update
-the moved paths in the source_files list of docs/architecture/naming-inventory.json.
+every moved path in docs/architecture/naming-inventory.json (the source_files
+list and the nested source_file, full_identity and other path-bearing strings).
 Pass --require MODULE@VERSION (repeatable) to also re-pin a library with
 `go mod edit` and an offline `go mod tidy` against the local module cache.
 
@@ -17,7 +18,8 @@ Comment references to a historical revision of the ebusreg catalog keep the
 path of that revision.
 
 --check lists any Go package directory, package clause, import path or
-identifier in the repository's Go sources that still uses an old name and fails.
+identifier in the repository's Go sources that still uses an old name, and any
+inventory string that still names a moved directory, and fails.
 """
 import json
 import os
@@ -154,23 +156,42 @@ def move():
         source.rename(target)
 
 
-def update_inventory():
-    path = ROOT / INVENTORY
-    lines = path.read_text().split("\n")
-    start = lines.index('  "source_files": [')
-    end = lines.index("  ],", start)
-    entries = [json.loads(line.strip().rstrip(",")) for line in lines[start + 1:end]]
-    moved = []
-    for entry in entries:
-        for old, new in MOVES.items():
-            if entry.startswith(old + "/"):
-                entry = new + entry[len(old):]
-        moved.append(entry)
-    moved.sort()
-    body = ["    " + json.dumps(entry) + "," for entry in moved]
-    body[-1] = body[-1][:-1]
-    lines[start + 1:end] = body
-    path.write_text("\n".join(lines))
+OLD_PATH = re.compile(r"(?:^|(?<=/))(" + "|".join(re.escape(old) for old in MOVES) + r")(?=/|$)")
+
+
+def moved_path(text):
+    # A moved directory matches only as a whole path prefix or path segment, so
+    # files such as mcp/ebus_standard_wiring.go keep their names.
+    return OLD_PATH.sub(lambda match: MOVES[match[1]], text)
+
+
+def rewrite_paths(node):
+    if isinstance(node, dict):
+        return {key: rewrite_paths(value) for key, value in node.items()}
+    if isinstance(node, list):
+        return [rewrite_paths(value) for value in node]
+    return moved_path(node) if isinstance(node, str) else node
+
+
+def inventory_strings(node):
+    if isinstance(node, dict):
+        node = list(node.values())
+    if isinstance(node, list):
+        for value in node:
+            yield from inventory_strings(value)
+    elif isinstance(node, str):
+        yield node
+
+
+def update_inventory(root=ROOT):
+    # Every path-bearing string of the inventory (source_files, source_file,
+    # full_identity, consumer_files, ...) follows the move. Only source_files is
+    # re-sorted; rows and bounded_declarations keep their order, so the diff
+    # carries only the path changes.
+    path = root / INVENTORY
+    inventory = rewrite_paths(json.loads(path.read_text()))
+    inventory["source_files"].sort()
+    path.write_text(json.dumps(inventory, indent=2) + "\n")
 
 
 def repin(requirements):
@@ -179,16 +200,16 @@ def repin(requirements):
     subprocess.run(["go", "mod", "tidy"], cwd=ROOT, env=GO_ENV, check=True)
 
 
-def go_sources():
-    for path in sorted(ROOT.rglob("*.go")):
-        parts = path.relative_to(ROOT).parts
+def go_sources(root=ROOT):
+    for path in sorted(root.rglob("*.go")):
+        parts = path.relative_to(root).parts
         if not any(part.startswith(".") or part == "node_modules" for part in parts):
             yield path
 
 
-def remaining():
-    for path in go_sources():
-        relative = path.relative_to(ROOT)
+def remaining(root=ROOT):
+    for path in go_sources(root):
+        relative = path.relative_to(root)
         if "_" in relative.parent.as_posix() and "testdata" not in relative.parts:
             yield f"{relative}: package directory with an underscore"
         source = path.read_text()
@@ -199,6 +220,10 @@ def remaining():
                 yield f"{relative}:{line}: import {text}"
             elif text in IDENTIFIERS:
                 yield f"{relative}:{line}: {text}"
+    inventory = json.loads((root / INVENTORY).read_text())
+    for text in inventory_strings(inventory):
+        if OLD_PATH.search(text):
+            yield f"{INVENTORY}: moved path {text}"
 
 
 def main(argv):

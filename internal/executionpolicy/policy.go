@@ -1,4 +1,4 @@
-// Package execution_policy is the single shared execution-policy module for
+// Package executionpolicy is the single shared execution-policy module for
 // the ebus_standard L7 surface. It is consulted by:
 //
 //  1. The gateway MCP rpc.invoke path.
@@ -13,13 +13,13 @@
 //
 // This module NEVER widens the accept set at runtime. Configuration,
 // environment variables, and registry state MUST NOT affect its decisions.
-package execution_policy
+package executionpolicy
 
 import (
 	"errors"
 	"fmt"
 
-	ebusstd "github.com/Project-Helianthus/helianthus-ebusreg/catalog/ebus_standard"
+	ebusstd "github.com/Project-Helianthus/helianthus-ebusreg/catalog/ebusstandard"
 )
 
 // CallerContext identifies the call site for policy decisions.
@@ -37,7 +37,7 @@ const (
 // NOT compare by pointer or string.
 //
 // Interim (M2a / execution-plans#19): the original wrap of
-// ebusstd.ErrSafetyClassDenied from helianthus-ebusreg/catalog/ebus_standard
+// ebusstd.ErrSafetyClassDenied from helianthus-ebusreg/catalog/ebusstandard
 // cannot be honored because that upstream symbol is not yet exported,
 // leaving origin/main unbuildable. This local sentinel restores build;
 // parity-wrap MUST be reintroduced once upstream ships the symbol and

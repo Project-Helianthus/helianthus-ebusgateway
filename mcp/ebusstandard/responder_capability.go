@@ -1,4 +1,4 @@
-package ebus_standard
+package ebusstandard
 
 // M4c2 — meta.capabilities.responder signal (contract.minor = 1).
 //

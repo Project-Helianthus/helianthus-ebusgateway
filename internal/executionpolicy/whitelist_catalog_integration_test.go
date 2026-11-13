@@ -1,13 +1,13 @@
 //go:build !tinygo
 // +build !tinygo
 
-package execution_policy_test
+package executionpolicy_test
 
 import (
 	"testing"
 
-	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/execution_policy"
-	ebusstd "github.com/Project-Helianthus/helianthus-ebusreg/catalog/ebus_standard"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/executionpolicy"
+	ebusstd "github.com/Project-Helianthus/helianthus-ebusreg/catalog/ebusstandard"
 )
 
 // TestWhitelist_AgainstEmbeddedCatalog is the catalog-grounded regression
@@ -42,7 +42,7 @@ func TestWhitelist_AgainstEmbeddedCatalog(t *testing.T) {
 		{0x07, 0xFF, "sign_of_life", ebusstd.DirectionRequest, ebusstd.RoleOriginator, ebusstd.AddressedBroadcast},
 	}
 
-	if got, want := execution_policy.NMWhitelistSize(), len(refs); got != want {
+	if got, want := executionpolicy.NMWhitelistSize(), len(refs); got != want {
 		t.Fatalf("whitelist size = %d, want %d (catalog reference set)", got, want)
 	}
 
@@ -54,7 +54,7 @@ func TestWhitelist_AgainstEmbeddedCatalog(t *testing.T) {
 				t.Fatalf("catalog has no command pb=0x%02X sb=0x%02X variant=%q direction=%s role=%s addressing=%s",
 					r.pb, r.sb, r.serviceVariant, r.direction, r.role, r.broadcastAddressing)
 			}
-			if err := execution_policy.Check(cmd, execution_policy.CallerSystemNMRuntime); err != nil {
+			if err := executionpolicy.Check(cmd, executionpolicy.CallerSystemNMRuntime); err != nil {
 				t.Fatalf("whitelist must allow catalog command %q (pb=0x%02X sb=0x%02X variant=%q) for system_nm_runtime, got %v",
 					cmd.ID, r.pb, r.sb, r.serviceVariant, err)
 			}
@@ -62,7 +62,7 @@ func TestWhitelist_AgainstEmbeddedCatalog(t *testing.T) {
 			// to allow; assert user_facing is denied. Read-only commands are
 			// universally allowed by design and skip this check.
 			if cmd.SafetyClass != ebusstd.SafetyReadOnlySafe && cmd.SafetyClass != ebusstd.SafetyReadOnlyBusLoad {
-				if err := execution_policy.Check(cmd, execution_policy.CallerUserFacing); err == nil {
+				if err := executionpolicy.Check(cmd, executionpolicy.CallerUserFacing); err == nil {
 					t.Fatalf("user_facing must NOT allow whitelisted catalog command %q (class=%s)", cmd.ID, cmd.SafetyClass)
 				}
 			}

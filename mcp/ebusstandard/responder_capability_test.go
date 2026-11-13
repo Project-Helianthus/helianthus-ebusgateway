@@ -1,4 +1,4 @@
-package ebus_standard_test
+package ebusstandard_test
 
 // M4c2 envelope tests — meta.capabilities.responder.
 //
@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	estd "github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebus_standard"
+	estd "github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebusstandard"
 )
 
 // withProvider installs p for the duration of the test and restores the

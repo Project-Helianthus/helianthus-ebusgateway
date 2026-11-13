@@ -3,7 +3,7 @@ package adaptermux
 import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux/v8classifier"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
-	"github.com/Project-Helianthus/helianthus-ebusgo/protocol/telegram_fsm"
+	"github.com/Project-Helianthus/helianthus-ebusgo/protocol/telegramfsm"
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
 )
 
@@ -96,7 +96,7 @@ func (m *Mux) reconcileArbitrationClassifier(event transport.StreamEvent) {
 	case arbitrationRecoveryForeign, arbitrationRecoveryForeignAfterAA:
 		// An aborted classifier filters nothing and only a reset revives it.
 		reset = isSYN && (m.arbitrationRecovery == arbitrationRecoveryForeignAfterAA ||
-			m.v8.FSMInternalState() == telegram_fsm.StateAborted)
+			m.v8.FSMInternalState() == telegramfsm.StateAborted)
 		if isSYN {
 			m.arbitrationRecovery = arbitrationRecoveryForeignAfterAA
 		} else {

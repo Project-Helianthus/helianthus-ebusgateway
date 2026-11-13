@@ -1,14 +1,14 @@
-package nm_runtime_test
+package nmruntime_test
 
 import (
 	"context"
 	"errors"
 	"testing"
 
-	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/execution_policy"
-	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/nm_runtime"
-	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/rpc_source"
-	ebusstd "github.com/Project-Helianthus/helianthus-ebusreg/catalog/ebus_standard"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/executionpolicy"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/nmruntime"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/rpcsource"
+	ebusstd "github.com/Project-Helianthus/helianthus-ebusreg/catalog/ebusstandard"
 )
 
 const testRuntimeSource byte = 0x7F
@@ -21,7 +21,7 @@ type recordingEmitter struct {
 }
 
 func (r *recordingEmitter) EmitBroadcast(_ context.Context, src, pb, sb byte, payload []byte) error {
-	if err := rpc_source.Enforce(src); err != nil {
+	if err := rpcsource.Enforce(src); err != nil {
 		return err
 	}
 	r.calls = append(r.calls, struct {
@@ -76,11 +76,11 @@ func syntheticCatalog() ebusstd.Catalog {
 
 func TestRuntime_Emit_ResetStatus_PassesPolicyAndEmits(t *testing.T) {
 	em := &recordingEmitter{}
-	rt, err := nm_runtime.NewRuntime(syntheticCatalog(), em, testRuntimeSource)
+	rt, err := nmruntime.NewRuntime(syntheticCatalog(), em, testRuntimeSource)
 	if err != nil {
 		t.Fatalf("NewRuntime err: %v", err)
 	}
-	if err := rt.Emit(context.Background(), nm_runtime.EventResetStatus, []byte{0xAB}); err != nil {
+	if err := rt.Emit(context.Background(), nmruntime.EventResetStatus, []byte{0xAB}); err != nil {
 		t.Fatalf("Emit reset status err: %v", err)
 	}
 	if len(em.calls) != 1 {
@@ -97,11 +97,11 @@ func TestRuntime_Emit_ResetStatus_PassesPolicyAndEmits(t *testing.T) {
 
 func TestRuntime_Emit_FailureBroadcast(t *testing.T) {
 	em := &recordingEmitter{}
-	rt, err := nm_runtime.NewRuntime(syntheticCatalog(), em, testRuntimeSource)
+	rt, err := nmruntime.NewRuntime(syntheticCatalog(), em, testRuntimeSource)
 	if err != nil {
 		t.Fatalf("NewRuntime err: %v", err)
 	}
-	if err := rt.Emit(context.Background(), nm_runtime.EventFailure, []byte{0x01}); err != nil {
+	if err := rt.Emit(context.Background(), nmruntime.EventFailure, []byte{0x01}); err != nil {
 		t.Fatalf("Emit failure err: %v", err)
 	}
 	if len(em.calls) != 1 || em.calls[0].sb != 0x02 {
@@ -111,12 +111,12 @@ func TestRuntime_Emit_FailureBroadcast(t *testing.T) {
 
 func TestRuntime_Emit_RefusesIfCatalogMissing(t *testing.T) {
 	em := &recordingEmitter{}
-	rt, err := nm_runtime.NewRuntime(ebusstd.Catalog{Namespace: "ebus_standard"}, em, testRuntimeSource)
+	rt, err := nmruntime.NewRuntime(ebusstd.Catalog{Namespace: "ebus_standard"}, em, testRuntimeSource)
 	if err != nil {
 		t.Fatalf("NewRuntime err: %v", err)
 	}
-	err = rt.Emit(context.Background(), nm_runtime.EventResetStatus, nil)
-	if !errors.Is(err, nm_runtime.ErrNoCatalogEntry) {
+	err = rt.Emit(context.Background(), nmruntime.EventResetStatus, nil)
+	if !errors.Is(err, nmruntime.ErrNoCatalogEntry) {
 		t.Fatalf("want ErrNoCatalogEntry, got %v", err)
 	}
 }
@@ -126,11 +126,11 @@ func TestRuntime_Emit_RefusesIfCatalogMissing(t *testing.T) {
 // nil-panic on the first Emit call; now construction must reject it with
 // ErrEmitterRequired.
 func TestNewRuntime_RejectsNilEmitter(t *testing.T) {
-	rt, err := nm_runtime.NewRuntime(syntheticCatalog(), nil, testRuntimeSource)
+	rt, err := nmruntime.NewRuntime(syntheticCatalog(), nil, testRuntimeSource)
 	if err == nil {
 		t.Fatal("NewRuntime(nil emitter) must return error")
 	}
-	if !errors.Is(err, nm_runtime.ErrEmitterRequired) {
+	if !errors.Is(err, nmruntime.ErrEmitterRequired) {
 		t.Fatalf("want ErrEmitterRequired, got %v", err)
 	}
 	if rt != nil {
@@ -140,22 +140,22 @@ func TestNewRuntime_RejectsNilEmitter(t *testing.T) {
 
 // TestRuntime_Emit_RejectsUndeclaredEvent is the regression guard for
 // issue #505 r3106904915. Even if the caller casts a rogue string through
-// EmitEvent AND the execution_policy whitelist or catalog would otherwise
+// EmitEvent AND the executionpolicy whitelist or catalog would otherwise
 // permit it, Emit MUST reject it BEFORE any catalog lookup because M4
 // first-delivery scope is strictly the declared constants (reset_status,
 // failure_message). Extending the declared set requires locked-plan
 // approval.
 func TestRuntime_Emit_RejectsUndeclaredEvent(t *testing.T) {
 	em := &recordingEmitter{}
-	rt, err := nm_runtime.NewRuntime(syntheticCatalog(), em, testRuntimeSource)
+	rt, err := nmruntime.NewRuntime(syntheticCatalog(), em, testRuntimeSource)
 	if err != nil {
 		t.Fatalf("NewRuntime err: %v", err)
 	}
-	err = rt.Emit(context.Background(), nm_runtime.EmitEvent("sign_of_life"), nil)
+	err = rt.Emit(context.Background(), nmruntime.EmitEvent("sign_of_life"), nil)
 	if err == nil {
 		t.Fatal("undeclared emit event must be rejected")
 	}
-	if !errors.Is(err, nm_runtime.ErrUnknownEmitEvent) {
+	if !errors.Is(err, nmruntime.ErrUnknownEmitEvent) {
 		t.Fatalf("want ErrUnknownEmitEvent, got %v", err)
 	}
 	if len(em.calls) != 0 {
@@ -168,13 +168,13 @@ func TestRuntime_Emit_RejectsUndeclaredEvent(t *testing.T) {
 // findEmit and policy.
 func TestRuntime_Emit_DeclaredEventContinuesToCatalog(t *testing.T) {
 	em := &recordingEmitter{}
-	rt, err := nm_runtime.NewRuntime(syntheticCatalog(), em, testRuntimeSource)
+	rt, err := nmruntime.NewRuntime(syntheticCatalog(), em, testRuntimeSource)
 	if err != nil {
 		t.Fatalf("NewRuntime err: %v", err)
 	}
 	// EventResetStatus is declared AND present in syntheticCatalog, so
 	// Emit must succeed end-to-end.
-	if err := rt.Emit(context.Background(), nm_runtime.EventResetStatus, nil); err != nil {
+	if err := rt.Emit(context.Background(), nmruntime.EventResetStatus, nil); err != nil {
 		t.Fatalf("declared event must reach emitter, got err=%v", err)
 	}
 	if len(em.calls) != 1 {
@@ -198,9 +198,9 @@ func TestRuntime_Emit_PolicyDeniesWhenWhitelistMismatch(t *testing.T) {
 	// the whole point of declaration). So this test now instead asserts
 	// that an undeclared EmitEvent is refused WITHOUT reaching the
 	// policy layer (no emit, policy not consulted). The "policy denies"
-	// path is covered by internal/execution_policy own tests.
+	// path is covered by internal/executionpolicy own tests.
 	em := &recordingEmitter{}
-	rt, err := nm_runtime.NewRuntime(syntheticCatalog(), em, testRuntimeSource)
+	rt, err := nmruntime.NewRuntime(syntheticCatalog(), em, testRuntimeSource)
 	if err != nil {
 		t.Fatalf("NewRuntime err: %v", err)
 	}
@@ -210,10 +210,10 @@ func TestRuntime_Emit_PolicyDeniesWhenWhitelistMismatch(t *testing.T) {
 	}
 	// Must be ErrUnknownEmitEvent (pre-catalog guard), NOT policy-denied
 	// — refusal must happen before the whitelist is consulted.
-	if !errors.Is(err, nm_runtime.ErrUnknownEmitEvent) {
+	if !errors.Is(err, nmruntime.ErrUnknownEmitEvent) {
 		t.Fatalf("want ErrUnknownEmitEvent, got %v", err)
 	}
-	if execution_policy.IsDenied(err) {
+	if executionpolicy.IsDenied(err) {
 		t.Fatal("refusal must not come from policy — undeclared events are rejected upstream")
 	}
 	if len(em.calls) != 0 {

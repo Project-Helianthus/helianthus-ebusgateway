@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Project-Helianthus/helianthus-ebusgo/protocol/telegram_fsm"
+	"github.com/Project-Helianthus/helianthus-ebusgo/protocol/telegramfsm"
 )
 
 // Phase 3 Step B3.6a (frame-atomic-visibility v8 §1.1 / I1): the
@@ -52,7 +52,7 @@ const (
 	AdminEventKindNone AdminEventKind = iota
 
 	// AdminEventKindProtocolFault is emitted when the FSM returns
-	// telegram_fsm.DecisionProtocolFault for a byte. Per v8
+	// telegramfsm.DecisionProtocolFault for a byte. Per v8
 	// invariant I10 the byte is STILL forwarded to all observers
 	// (PROTOCOL_FAULT visibility); this admin event is the
 	// out-of-band notification for the proxy operator.
@@ -75,7 +75,7 @@ const (
 	AdminEventKindQueueOverflow
 
 	// AdminEventKindAaInjectionDrop is emitted when the FSM
-	// returns telegram_fsm.DecisionDropAaInjection — a mid-frame
+	// returns telegramfsm.DecisionDropAaInjection — a mid-frame
 	// wire AUTO-SYN (0xAA) the v8 classifier identifies as an
 	// AA-injection event. In ModeShadow the byte is COUNTED only
 	// (ShadowWouldHaveDroppedTotal increments); in ModeEnforce
@@ -138,7 +138,7 @@ type ClassifierAdminEvent struct {
 	// FSMState is the classifier's FSM state at the time of
 	// emission (collapsed via Machine.State). Lets operators
 	// correlate faults to the telegram phase they occurred in.
-	FSMState telegram_fsm.State
+	FSMState telegramfsm.State
 
 	// Byte is the wire byte that triggered the event (for
 	// ProtocolFault — the offending byte the FSM rejected).

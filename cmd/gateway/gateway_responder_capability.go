@@ -2,15 +2,15 @@ package main
 
 import (
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
-	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebus_standard"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebusstandard"
 	ebusgoTransport "github.com/Project-Helianthus/helianthus-ebusgo/transport"
 )
 
-func buildResponderCapabilityProvider(cfg ebusgateway.Config, actualTransport ebusgoTransport.RawTransport) ebus_standard.ResponderCapabilityProvider {
+func buildResponderCapabilityProvider(cfg ebusgateway.Config, actualTransport ebusgoTransport.RawTransport) ebusstandard.ResponderCapabilityProvider {
 	surfacesFF := []string{"FF_03", "FF_04", "FF_05", "FF_06"}
 	// transports[] is static at v1.1 — same three rows on every gateway
 	// regardless of deployment (I1 locks the count at exactly three).
-	transports := []ebus_standard.TransportRow{
+	transports := []ebusstandard.TransportRow{
 		{Transport: "ENH", State: "supported", Scope: "partial", Surfaces: surfacesFF, Reason: ""},
 		{Transport: "ENS", State: "supported", Scope: "partial", Surfaces: surfacesFF, Reason: ""},
 		{Transport: "ebusd-tcp", State: "blocked", Scope: "none", Surfaces: []string{}, Reason: "command_bridge_no_companion_listen"},
@@ -26,7 +26,7 @@ func buildResponderCapabilityProvider(cfg ebusgateway.Config, actualTransport eb
 	transportKnown := actualTransport != nil
 	_, responderCapable := actualTransport.(ebusgoTransport.ResponderTransport)
 	muxBypass := transportKnown && !responderCapable
-	muxBypassRefusal := &ebus_standard.ActiveRefusal{
+	muxBypassRefusal := &ebusstandard.ActiveRefusal{
 		Code:   "transport_mux_bypass",
 		Reason: "runtime transport does not satisfy ResponderTransport (e.g. adapter-direct mux)",
 	}
@@ -63,29 +63,29 @@ func buildResponderCapabilityProvider(cfg ebusgateway.Config, actualTransport eb
 		}
 	}
 
-	var active ebus_standard.ActiveResponder
+	var active ebusstandard.ActiveResponder
 	// Canonicalise raw TransportProtocol (handles "ebusd" alias, case,
 	// whitespace) into one of the enum constants so active.transport
 	// literally equals the transports[] row label (invariant I2).
 	switch ebusgateway.CanonicalTransportProtocol(cfg.TransportConfig.Protocol) {
 	case ebusgateway.TransportENH:
 		if muxBypass {
-			active = ebus_standard.ActiveResponder{Transport: "ENH", Scope: "none", Surfaces: []string{}, Refusal: muxBypassRefusal}
+			active = ebusstandard.ActiveResponder{Transport: "ENH", Scope: "none", Surfaces: []string{}, Refusal: muxBypassRefusal}
 		} else {
-			active = ebus_standard.ActiveResponder{Transport: "ENH", Scope: "partial", Surfaces: surfacesFF}
+			active = ebusstandard.ActiveResponder{Transport: "ENH", Scope: "partial", Surfaces: surfacesFF}
 		}
 	case ebusgateway.TransportENS:
 		if muxBypass {
-			active = ebus_standard.ActiveResponder{Transport: "ENS", Scope: "none", Surfaces: []string{}, Refusal: muxBypassRefusal}
+			active = ebusstandard.ActiveResponder{Transport: "ENS", Scope: "none", Surfaces: []string{}, Refusal: muxBypassRefusal}
 		} else {
-			active = ebus_standard.ActiveResponder{Transport: "ENS", Scope: "partial", Surfaces: surfacesFF}
+			active = ebusstandard.ActiveResponder{Transport: "ENS", Scope: "partial", Surfaces: surfacesFF}
 		}
 	case ebusgateway.TransportEbusdTCP:
-		active = ebus_standard.ActiveResponder{
+		active = ebusstandard.ActiveResponder{
 			Transport: "ebusd-tcp",
 			Scope:     "none",
 			Surfaces:  []string{},
-			Refusal:   &ebus_standard.ActiveRefusal{Code: "command_bridge_no_companion_listen", Reason: "ebusd command bridge does not expose a responder-role emission primitive"},
+			Refusal:   &ebusstandard.ActiveRefusal{Code: "command_bridge_no_companion_listen", Reason: "ebusd command bridge does not expose a responder-role emission primitive"},
 		}
 	default:
 		// Non-enumerated transports (udp-plain, tcp-plain,
@@ -97,12 +97,12 @@ func buildResponderCapabilityProvider(cfg ebusgateway.Config, actualTransport eb
 		return nil
 	}
 
-	cap := ebus_standard.ResponderCapability{
+	cap := ebusstandard.ResponderCapability{
 		Version:    "v1",
 		Active:     active,
 		Transports: transports,
 	}
-	return func() ebus_standard.ResponderCapability { return cap }
+	return func() ebusstandard.ResponderCapability { return cap }
 }
 
 // applyStaticSeedTable plants the productids static seed entries into

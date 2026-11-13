@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	rpcsource "github.com/Project-Helianthus/helianthus-ebusgateway/internal/rpc_source"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/rpcsource"
 	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"

@@ -1,9 +1,9 @@
-// Package rpc_source contains shared validation for caller-supplied RPC source
+// Package rpcsource contains shared validation for caller-supplied RPC source
 // bytes.
 //
 // Gateway-owned callers must pass the admitted source selected during startup.
 // This package intentionally does not define a fixed gateway initiator address.
-package rpc_source
+package rpcsource
 
 import (
 	"errors"

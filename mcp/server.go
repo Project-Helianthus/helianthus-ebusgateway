@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	rpcsource "github.com/Project-Helianthus/helianthus-ebusgateway/internal/rpc_source"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/rpcsource"
 	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 	"github.com/Project-Helianthus/helianthus-ebusreg/router"

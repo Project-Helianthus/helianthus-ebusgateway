@@ -1,4 +1,4 @@
-package ebus_standard_test
+package ebusstandard_test
 
 // M6a follow-up fold-in — forward-compat §4 rule 7 (M4D ch.13 §10.3).
 //
@@ -41,7 +41,7 @@ import (
 	"testing"
 	"time"
 
-	estd "github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebus_standard"
+	estd "github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebusstandard"
 )
 
 // knownV11Transports is the v1.1 enum set per M4D ch.13 §5. A consumer at

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	estd "github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebus_standard"
+	estd "github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebusstandard"
 )
 
 // fakeEbusStandardServer is a test double that implements

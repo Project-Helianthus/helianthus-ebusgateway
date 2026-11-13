@@ -12,7 +12,7 @@ import (
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux/v8classifier"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
-	"github.com/Project-Helianthus/helianthus-ebusgo/protocol/telegram_fsm"
+	"github.com/Project-Helianthus/helianthus-ebusgo/protocol/telegramfsm"
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
 )
 
@@ -460,7 +460,7 @@ func t02CheckArbitrationExit(t *testing.T, tc t02ExitCase, mode v8classifier.Mod
 	if !reflect.DeepEqual(passive, wantPassive) {
 		t.Fatalf("passive observations=%v want %v", passive, wantPassive)
 	}
-	if state := m.v8.FSMInternalState(); state != telegram_fsm.StateIdle {
+	if state := m.v8.FSMInternalState(); state != telegramfsm.StateIdle {
 		t.Fatalf("classifier after idle SYN=%v", state)
 	}
 	m.stateMu.Lock()
@@ -656,7 +656,7 @@ func TestT02_ForeignWinnerTelegramKeepsAAFilter(t *testing.T) {
 				}
 				// Its real terminator is a genuine idle SYN: recovery releases.
 				plain(protocol.SymbolSyn)
-				if state := m.v8.FSMInternalState(); state != telegram_fsm.StateIdle {
+				if state := m.v8.FSMInternalState(); state != telegramfsm.StateIdle {
 					t.Fatalf("classifier after terminator=%v", state)
 				}
 				m.stateMu.Lock()
@@ -699,7 +699,7 @@ func TestT02_ForeignRecoveryReleasesAtGenuineIdle(t *testing.T) {
 		if got := passive(); !reflect.DeepEqual(got, []byte{0x08, protocol.SymbolSyn}) {
 			t.Fatalf("passive=%x", got)
 		}
-		if state := m.v8.FSMInternalState(); state != telegram_fsm.StateIdle {
+		if state := m.v8.FSMInternalState(); state != telegramfsm.StateIdle {
 			t.Fatalf("classifier=%v", state)
 		}
 		if got := mock.getStartRequests(); !reflect.DeepEqual(got, []byte{0x7f, 0x31}) {
@@ -723,11 +723,11 @@ func TestT02_ForeignRecoveryReleasesAtGenuineIdle(t *testing.T) {
 		for _, b := range []byte{0x08, 0xb5, 0x04, 0x20} { // NN > 16 aborts
 			send(transport.StreamEvent{Kind: transport.StreamEventByte, Byte: b})
 		}
-		if state := m.v8.FSMInternalState(); state != telegram_fsm.StateAborted {
+		if state := m.v8.FSMInternalState(); state != telegramfsm.StateAborted {
 			t.Fatalf("classifier=%v, want aborted", state)
 		}
 		send(transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn})
-		if state := m.v8.FSMInternalState(); state != telegram_fsm.StateIdle {
+		if state := m.v8.FSMInternalState(); state != telegramfsm.StateIdle {
 			t.Fatalf("classifier=%v", state)
 		}
 		if got := mock.getStartRequests(); !reflect.DeepEqual(got, []byte{0x7f, 0x31}) {

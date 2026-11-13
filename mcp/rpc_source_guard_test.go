@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	rpcsource "github.com/Project-Helianthus/helianthus-ebusgateway/internal/rpc_source"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/rpcsource"
 )
 
 const admittedTestSource byte = 0x7F

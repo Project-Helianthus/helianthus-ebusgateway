@@ -4,12 +4,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Project-Helianthus/helianthus-ebusgo/protocol/telegram_fsm"
+	"github.com/Project-Helianthus/helianthus-ebusgo/protocol/telegramfsm"
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
 )
 
 // admin_event_aa_drop_test.go pins F-NEW-26 (2026-05-21): every
-// telegram_fsm.DecisionDropAaInjection in ModeShadow or ModeEnforce
+// telegramfsm.DecisionDropAaInjection in ModeShadow or ModeEnforce
 // emits a per-event ClassifierAdminEvent of kind
 // AdminEventKindAaInjectionDrop. Operators draining the ring via
 // /debug/v8/admin-events get the byte value + FSM state at decision
@@ -76,7 +76,7 @@ func TestClassifier_DropAaInjection_EmitsAdminEvent_ShadowMode(t *testing.T) {
 	// AA-injection detection runs. Exact state label varies
 	// with FSM internals; we only check non-zero so future
 	// FSM-state refactors don't break this regression.
-	if ev.FSMState == telegram_fsm.StateIdle {
+	if ev.FSMState == telegramfsm.StateIdle {
 		t.Errorf("event FSMState=%v; want non-idle (FSM was mid-telegram at drop time)", ev.FSMState)
 	}
 }

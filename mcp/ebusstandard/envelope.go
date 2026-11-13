@@ -1,4 +1,4 @@
-package ebus_standard
+package ebusstandard
 
 import (
 	"crypto/sha256"

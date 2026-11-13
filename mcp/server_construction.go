@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
-	ebusstdcat "github.com/Project-Helianthus/helianthus-ebusreg/catalog/ebus_standard"
+	ebusstdcat "github.com/Project-Helianthus/helianthus-ebusreg/catalog/ebusstandard"
 )
 
 func NewServer(reg Registry, invoker Invoker) (*Server, error) {

@@ -502,7 +502,7 @@ test("L7 decode form dropdown option values are catalog-canonical (legacy termin
   shell.render();
 
   // (a) The decode direction dropdown must carry the canonical enum values
-  //     from helianthus-ebusreg/catalog/ebus_standard/identity.go.
+  //     from helianthus-ebusreg/catalog/ebusstandard/identity.go.
   for (const canonical of ["request", "response"]) {
     assert.ok(
       capturedHTML.includes(`<option value="${canonical}">${canonical}</option>`),

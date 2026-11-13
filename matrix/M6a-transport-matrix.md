@@ -31,22 +31,22 @@ Rows cover the (transport × L7 surface × scenario) product at contract minor=1
 
 | # | Transport | L7 surface | Scenario | Status | Evidence (test / golden) |
 |---|-----------|------------|----------|--------|--------------------------|
-| CM-01 | ENH | `services.list` | happy-path determinism | PASS | `mcp/ebus_standard/golden_test.go` + `testdata/services_list.golden.json` |
-| CM-02 | ENH | `commands.list` | PB-03 filter coverage | PASS | `mcp/ebus_standard/golden_test.go` + `testdata/commands_list_pb03.golden.json` |
-| CM-03 | ENH | `command.get` | known-id (`alpha`) | PASS | `mcp/ebus_standard/golden_test.go` + `testdata/command_get_alpha.golden.json` |
-| CM-04 | ENH | `decode` | known payload (`alpha`) | PASS | `mcp/ebus_standard/golden_test.go` + `testdata/decode_alpha.golden.json` |
-| CM-05 | ENS | `services.list` | delegation-parity | PASS (inherited) | Delegation via shared envelope composer; `mcp/ebus_standard/server_test.go` covers composer. |
+| CM-01 | ENH | `services.list` | happy-path determinism | PASS | `mcp/ebusstandard/golden_test.go` + `testdata/services_list.golden.json` |
+| CM-02 | ENH | `commands.list` | PB-03 filter coverage | PASS | `mcp/ebusstandard/golden_test.go` + `testdata/commands_list_pb03.golden.json` |
+| CM-03 | ENH | `command.get` | known-id (`alpha`) | PASS | `mcp/ebusstandard/golden_test.go` + `testdata/command_get_alpha.golden.json` |
+| CM-04 | ENH | `decode` | known payload (`alpha`) | PASS | `mcp/ebusstandard/golden_test.go` + `testdata/decode_alpha.golden.json` |
+| CM-05 | ENS | `services.list` | delegation-parity | PASS (inherited) | Delegation via shared envelope composer; `mcp/ebusstandard/server_test.go` covers composer. |
 | CM-06 | ENS | `commands.list` | delegation-parity | PASS (inherited) | as CM-05 |
 | CM-07 | ENS | `command.get` | delegation-parity | PASS (inherited) | as CM-05 |
 | CM-08 | ENS | `decode` | delegation-parity | PASS (inherited) | as CM-05 |
 | CM-09 | ebusd-tcp | read-only L7 paths | legacy read surfaces | PASS | `cmd/gateway/wiring_test.go` (ebusd alias canonicalisation); responder emission blocked per `responder_capability_test.go`. |
-| CM-10 | all | any FF-responder surface | policy-denied path | PASS | `internal/execution_policy/policy_test.go` (`RequestOrResponseRole = RoleResponder` + `transport_capability_requirements`). |
-| FC-1 | synthetic v1.1 | envelope | unknown `transports[].state` | PASS | `mcp/ebus_standard/forward_compat_test.go` + `testdata/forward_compat_synthetic_v1_1.golden.json` |
+| CM-10 | all | any FF-responder surface | policy-denied path | PASS | `internal/executionpolicy/policy_test.go` (`RequestOrResponseRole = RoleResponder` + `transport_capability_requirements`). |
+| FC-1 | synthetic v1.1 | envelope | unknown `transports[].state` | PASS | `mcp/ebusstandard/forward_compat_test.go` + `testdata/forward_compat_synthetic_v1_1.golden.json` |
 | FC-2 | synthetic v1.1 | envelope | unknown `transports[].reason` | PASS | as FC-1 |
 | FC-3 | synthetic v1.1 | envelope | unknown `active.scope` | PASS | as FC-1 (rule 6) |
-| FC-7 | synthetic v1.1 | envelope | **unknown `active.transport` + known non-`none` `active.scope` (rule 7)** | PASS (new, this PR) | `mcp/ebus_standard/forward_compat_unknown_active_transport_test.go` + `testdata/forward_compat_unknown_active_transport_v1_1.golden.json` |
-| CM-11 | all | envelope | `meta.data_hash` determinism | PASS | `mcp/ebus_standard/envelope_test.go` (canonical-JSON + SHA-256) |
-| CM-12 | all | envelope | `contract.minor = 1` bump | PASS | `mcp/ebus_standard/responder_capability_test.go` |
+| FC-7 | synthetic v1.1 | envelope | **unknown `active.transport` + known non-`none` `active.scope` (rule 7)** | PASS (new, this PR) | `mcp/ebusstandard/forward_compat_unknown_active_transport_test.go` + `testdata/forward_compat_unknown_active_transport_v1_1.golden.json` |
+| CM-11 | all | envelope | `meta.data_hash` determinism | PASS | `mcp/ebusstandard/envelope_test.go` (canonical-JSON + SHA-256) |
+| CM-12 | all | envelope | `contract.minor = 1` bump | PASS | `mcp/ebusstandard/responder_capability_test.go` |
 
 **Nota bene.** Rows FC-1 through FC-7 enumerate the seven forward-compat consumer rules from M4D ch.13 §4. M4D §10 mandates these exist "continuously"; this matrix is the index.
 
@@ -74,9 +74,9 @@ The NM (network manager) stream has cadence + framing invariants that are indepe
 
 | Area | Invariant | Evidence |
 |------|-----------|----------|
-| NM runtime | stream wire framing stability | `internal/nm_runtime/nm_runtime_test.go` |
-| NM runtime | catalog integration (surface ↔ NM mapping) | `internal/nm_runtime/nm_runtime_catalog_integration_test.go` |
-| NM responder | FF 03-06 responder acceptance / refusal | `internal/nm_runtime/responder_runtime_test.go` |
+| NM runtime | stream wire framing stability | `internal/nmruntime/nm_runtime_test.go` |
+| NM runtime | catalog integration (surface ↔ NM mapping) | `internal/nmruntime/nm_runtime_catalog_integration_test.go` |
+| NM responder | FF 03-06 responder acceptance / refusal | `internal/nmruntime/responder_runtime_test.go` |
 | Adversarial | scenario replay / fault injection | `internal/adversarial/contract_v1_test.go` |
 
 ---
@@ -88,7 +88,7 @@ The 07 FF NM cadence contract is a merged normative obligation. M6a references �
 - [`helianthus-docs-ebus/architecture/ebus_standard/05-execution-safety.md`](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/architecture/ebus_standard/05-execution-safety.md) — execution-safety cadence floor.
 - [`helianthus-docs-ebus/architecture/ebus_standard/06-nm-adoption.md`](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/architecture/ebus_standard/06-nm-adoption.md) — NM adoption / stream invariants.
 
-Concrete obligation: the gateway NM runtime MUST NOT emit an unsolicited 07 FF at a rate that violates the arbitration floor documented in the two chapters above. Observed via `internal/nm_runtime/nm_runtime_test.go` cadence assertions. Any regression in those tests is a rollback trigger for the gateway (see §6).
+Concrete obligation: the gateway NM runtime MUST NOT emit an unsolicited 07 FF at a rate that violates the arbitration floor documented in the two chapters above. Observed via `internal/nmruntime/nm_runtime_test.go` cadence assertions. Any regression in those tests is a rollback trigger for the gateway (see §6).
 
 ---
 
@@ -116,14 +116,14 @@ Each subsection states (a) the concrete signals that would trigger rollback, (b)
 - **Rollback triggers:**
   - Breaking change to an exported type in the registered-catalog surface, detected by `golden_catalog_test.go` in gateway.
   - B524 dual-namespace opcode decoding drift for GG ∈ {0x08, 0x09, 0x0A, 0xEC}.
-- **Mechanism:** revert the merge SHA of the offending ebusreg PR; gateway pin-bump in `go.mod` reverted by a follow-up PR. Goldens in `helianthus-ebusgateway/mcp/ebus_standard/testdata/` remain stable because they are ebusreg-version-independent at v1.1.
+- **Mechanism:** revert the merge SHA of the offending ebusreg PR; gateway pin-bump in `go.mod` reverted by a follow-up PR. Goldens in `helianthus-ebusgateway/mcp/ebusstandard/testdata/` remain stable because they are ebusreg-version-independent at v1.1.
 
 ### §6.4 helianthus-ebusgateway
 
 - **Rollback triggers:**
   - Any FC-1..FC-7 row in §2 going from PASS to FAIL.
   - Any CM-01..CM-12 row in §2 going from PASS to FAIL.
-  - NM 07 FF cadence floor violation observed in `internal/nm_runtime/nm_runtime_test.go`.
+  - NM 07 FF cadence floor violation observed in `internal/nmruntime/nm_runtime_test.go`.
   - Responder capability provider returning a capability for a non-enumerated transport (regression of `cmd/gateway/wiring_test.go` nil-on-non-enumerated guarantee).
 - **Mechanism:**
   - For M4c2 regression: revert `547fd4e feat(M4c2): gateway responder runtime for FF 03-06 + meta.capabilities.responder emission` — the envelope composer reverts to minor=0 (no capability key); consumers fail-closed per rule 1.
@@ -148,7 +148,7 @@ Each subsection states (a) the concrete signals that would trigger rollback, (b)
 **Production sites of the placeholder.**
 
 1. [`helianthus-ebusgo/protocol/responder/timing_harness.go`](https://github.com/Project-Helianthus/helianthus-ebusgo/blob/main/protocol/responder/timing_harness.go) — the canonical site; exported as `responderAckBudget` (or equivalent symbol). This is the authoritative constant.
-2. `helianthus-ebusgateway/cmd/gateway/main.go` / `internal/nm_runtime/responder_runtime.go` — any gateway-side reflection of the budget used to decide cadence floor in responder emission. Grep for `15 * time.Millisecond` or direct import of `responderAckBudget` from ebusgo.
+2. `helianthus-ebusgateway/cmd/gateway/main.go` / `internal/nmruntime/responder_runtime.go` — any gateway-side reflection of the budget used to decide cadence floor in responder emission. Grep for `15 * time.Millisecond` or direct import of `responderAckBudget` from ebusgo.
 
 **Operator follow-up obligation (carry-forward).** The operator MUST, in a separate manual PR:
 

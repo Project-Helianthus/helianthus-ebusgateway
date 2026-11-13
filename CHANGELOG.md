@@ -1,5 +1,9 @@
 # Changelog
 
+## Hang-detection budgets in timing-sensitive tests
+
+Three tests that still failed on a short hang-detection budget under a loaded race run get a 60 second budget: the runtime-control test that observed transitions never bump the desired revision, where START after STOPPED is still retried only on `TRANSITION_BUSY`; the semantic-operations router waits for executor completion and for the late-evidence replay record; and the wait for the replaced generation in the Growatt managed sidecar restart test, now bounded by that test's deadline. Every behavioral, revision, event, timeout, replay and no-extra-dispatch assertion is unchanged. Only test files change, so the gateway binary is unchanged. The measured slow-test inventory, `testing.Short` skips and the remaining local-gate work stay open.
+
 ## Smoke check calls the registered devices list tool
 
 The gateway smoke command's MCP check now makes its read-only call to the registered `ebus_v1_registry_devices_list` tool when `tools/list` contains it, with the same result validation, and its summary detail and errors name that tool. Without that tool the check reports listing only. It no longer looks for the withdrawn `ebus.devices` route, so after that route's removal the check again makes a read-only call. There is no alias or compatibility layer. The gateway binary changes, so affected release evidence must be renewed before the final bill of materials freeze.

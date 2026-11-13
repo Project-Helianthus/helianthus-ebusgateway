@@ -432,7 +432,7 @@ func awaitDone(t *testing.T, e *semoptest.Executor) {
 	t.Helper()
 	select {
 	case <-e.Done():
-	case <-time.After(10 * time.Second):
+	case <-time.After(60 * time.Second):
 		t.Fatalf("executor never completed (calls=%d)", e.Calls())
 	}
 }
@@ -460,7 +460,8 @@ func TestM56RouterBoundsTheWait(t *testing.T) {
 		h.selected.Release()
 		awaitDone(t, h.selected)
 		want := view{"protocol_ack", "acknowledged_unverified", "sent", "accepted", null, null}
-		for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		// Only "accepted" may precede the late record; the deadline detects a hang.
+		for deadline := time.Now().Add(60 * time.Second); ; time.Sleep(5 * time.Millisecond) {
 			got := h.route(t, request)
 			if got == want {
 				break

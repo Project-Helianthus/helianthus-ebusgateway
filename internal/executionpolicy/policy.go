@@ -42,7 +42,7 @@ const (
 // leaving origin/main unbuildable. This local sentinel restores build;
 // parity-wrap MUST be reintroduced once upstream ships the symbol and
 // gateway go.mod is bumped. Tracked as follow-up task.
-var ErrSafetyClassDenied = errors.New("execution_policy: safety_class denied")
+var ErrSafetyClassDenied = errors.New("executionpolicy: safety_class denied")
 
 // ErrResponderTransportUnavailable is the capability-layer sentinel
 // returned when the responder runtime is constructed against a transport
@@ -52,7 +52,7 @@ var ErrSafetyClassDenied = errors.New("execution_policy: safety_class denied")
 // capability refusals MUST NOT surface as audit outcome=policy_denied;
 // conflating the two channels breaks denial-parity tests and misleads
 // consumers that treat blocked reasons as static transport constraints.
-var ErrResponderTransportUnavailable = errors.New("execution_policy: responder transport unavailable")
+var ErrResponderTransportUnavailable = errors.New("executionpolicy: responder transport unavailable")
 
 // Check evaluates the policy for (cmd, caller). It returns nil when the
 // call is permitted, otherwise a non-nil error that satisfies

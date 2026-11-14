@@ -26,7 +26,7 @@ import (
 
 const (
 	cfgKeysSystemAllowed = "adaptive_heating_curve_enabled, dhw_flow_temperature_setpoint_maximum, dhw_outdoor_bivalence_temperature_limit, heating_flow_temperature_setpoint_maximum_at_heat_pump_fault, heating_outdoor_bivalence_temperature_limit, installer_access_code, installer_name, installer_phone_number, maintenance_date, room_humidity_limit_maximum"
-	cfgKeysBoilerAllowed = "dhw_partial_load_power, heating_partial_load_power, installerMenuCode, installer_phone_number, maximum_dhw_flow_temperature_setpoint, maximum_heating_flow_temperature_setpoint"
+	cfgKeysBoilerAllowed = "central_heating_pump_mode, dhw_partial_load_power, heating_partial_load_power, installer_phone_number, maximum_dhw_flow_temperature_setpoint, maximum_heating_flow_temperature_setpoint"
 	cfgKeysBoilerAddress = byte(0x08)
 )
 
@@ -273,7 +273,8 @@ func cfgKeysSystemCases() []cfgKeysCase {
 }
 
 // cfgKeysBoilerCases covers every set_boiler_config key, including the
-// fallback selector of the heating flow maximum and the unchanged 0x4904 key.
+// fallback selector of the heating flow maximum and the 0x4904 key under its
+// documentation name, written as one unsigned byte as before.
 func cfgKeysBoilerCases() []cfgKeysCase {
 	return []cfgKeysCase{
 		{
@@ -319,7 +320,7 @@ func cfgKeysBoilerCases() []cfgKeysCase {
 			want: "0123456789",
 		},
 		{
-			key: "installerMenuCode", value: "17",
+			key: "central_heating_pump_mode", value: "17",
 			writes: []cfgKeysWrite{cfgKeysB509(0x4904, 0x11)},
 			published: func(provider *graphql.LiveSemanticProvider) any {
 				status := provider.BoilerStatus()
@@ -419,10 +420,11 @@ func TestConfigSetterNamesSystemPhoneValidationFollowsKey(t *testing.T) {
 	}
 }
 
-// TestConfigSetterNamesFormerKeysRejected sends every former camelCase key and
-// every name the setters no longer accept to the system and boiler setters on
-// both surfaces. Each must fail before any bus request with the exact list of
-// accepted keys.
+// TestConfigSetterNamesFormerKeysRejected sends every former camelCase key,
+// every name the setters no longer accept (among them the former boiler key
+// installerMenuCode) and spellings of the boiler pump mode key that differ from
+// the documentation name to the system and boiler setters on both surfaces.
+// Each must fail before any bus request with the exact list of accepted keys.
 func TestConfigSetterNamesFormerKeysRejected(t *testing.T) {
 	cases := []struct {
 		mutation, want string
@@ -441,7 +443,10 @@ func TestConfigSetterNamesFormerKeysRejected(t *testing.T) {
 		{
 			mutation: "set_boiler_config",
 			want:     "unknown boiler field %q (allowed: " + cfgKeysBoilerAllowed + ")",
-			keys:     []string{"flowsetHcMaxC", "flowsetHwcMaxC", "partloadHcKW", "partloadHwcKW", "phoneNumber", "phone_number", "installer_menu_code"},
+			keys: []string{
+				"flowsetHcMaxC", "flowsetHwcMaxC", "partloadHcKW", "partloadHwcKW", "phoneNumber", "phone_number", "installer_menu_code",
+				"installerMenuCode", "CentralHeatingPumpMode", "central_heating_pump_mode ",
+			},
 		},
 	}
 	for _, path := range []string{"GraphQL", "MCP"} {
@@ -481,7 +486,7 @@ type cfgKeysRowDoc struct {
 	} `json:"selector"`
 	ValueType    string            `json:"value_type"`
 	Enum         map[string]uint16 `json:"enum,omitempty"`
-	Open         bool              `json:"open"`
+	Provisional  bool              `json:"provisional"`
 	OpenQuestion string            `json:"open_question,omitempty"`
 }
 
@@ -537,11 +542,11 @@ func cfgKeysSystemRows(t *testing.T) []cfgKeysRowDoc {
 }
 
 // cfgKeysBoilerRows renders the boiler setter: the float specs and the two
-// writers with their own codec. The 0x4904 key is open.
+// writers with their own codec.
 func cfgKeysBoilerRows() []cfgKeysRowDoc {
 	rows := make([]cfgKeysRowDoc, 0, len(boilerConfigFieldSpecs)+2)
-	add := func(key, valueType string, open bool, addrs ...uint16) {
-		row := cfgKeysRowDoc{Key: key, ValueType: valueType, Open: open}
+	add := func(key, valueType string, addrs ...uint16) {
+		row := cfgKeysRowDoc{Key: key, ValueType: valueType}
 		for _, addr := range addrs {
 			row.Selector.Registers = append(row.Selector.Registers, fmt.Sprintf("0x%04X", addr))
 		}
@@ -555,10 +560,10 @@ func cfgKeysBoilerRows() []cfgKeysRowDoc {
 		case boilerConfigCodecUCH:
 			valueType = "uch"
 		}
-		add(key, valueType, false, spec.addrs...)
+		add(key, valueType, spec.addrs...)
 	}
-	add("installer_phone_number", "bcd", false, boiler_b509_phone_number)
-	add("installerMenuCode", "uch", true, boiler_b509_installer_menu_code)
+	add("installer_phone_number", "bcd", boiler_b509_phone_number)
+	add("central_heating_pump_mode", "uch", boiler_b509_installer_menu_code)
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Key < rows[j].Key })
 	return rows
 }
@@ -569,10 +574,9 @@ func cfgKeysDiff(name string, want, got []cfgKeysRowDoc) error {
 	}
 	for i := range want {
 		row := got[i]
-		// The open question is prose; its presence follows the open flag.
-		if row.Open != (row.OpenQuestion != "") {
-			return fmt.Errorf("%s key %s: open=%v with open_question %q", name, row.Key, row.Open, row.OpenQuestion)
-		}
+		// The documentation status is checked against the documentation in the
+		// graphql package; the setter fixes everything else of the row.
+		row.Provisional = false
 		row.OpenQuestion = ""
 		if !reflect.DeepEqual(want[i], row) {
 			return fmt.Errorf("%s key %d = %+v; setter gives %+v", name, i, row, want[i])
@@ -633,10 +637,9 @@ func TestConfigSetterNamesFixtureMatchesSystemAndBoilerSetters(t *testing.T) {
 	}
 }
 
-// TestConfigSetterNamesFixtureComparisonCoversEveryField changes each field of
-// each system and boiler row in turn (key, opcode, group, instance, registers,
-// value type, enum, open flag, open question) and requires the comparison to
-// fail.
+// TestConfigSetterNamesFixtureComparisonCoversEveryField changes each setter
+// field of each system and boiler row in turn (key, opcode, group, instance,
+// registers, value type, enum) and requires the comparison to fail.
 func TestConfigSetterNamesFixtureComparisonCoversEveryField(t *testing.T) {
 	mutations := map[string]func(*cfgKeysRowDoc){
 		"key":       func(row *cfgKeysRowDoc) { row.Key += "_x" },
@@ -647,35 +650,88 @@ func TestConfigSetterNamesFixtureComparisonCoversEveryField(t *testing.T) {
 		"registers": func(row *cfgKeysRowDoc) { row.Selector.Registers = append(row.Selector.Registers, "0xFFFF") },
 		"value":     func(row *cfgKeysRowDoc) { row.ValueType = "uint8" },
 		"enum":      func(row *cfgKeysRowDoc) { row.Enum = map[string]uint16{"other": 9} },
-		"open":      func(row *cfgKeysRowDoc) { row.Open = !row.Open },
-		"question":  func(row *cfgKeysRowDoc) { row.OpenQuestion = map[bool]string{true: "", false: "open?"}[row.Open] },
 	}
 	for name, want := range map[string][]cfgKeysRowDoc{"set_system_config": cfgKeysSystemRows(t), "set_boiler_config": cfgKeysBoilerRows()} {
-		withQuestions := func() []cfgKeysRowDoc {
+		clone := func() []cfgKeysRowDoc {
 			rows := make([]cfgKeysRowDoc, len(want))
 			for i, row := range want {
 				row.Selector.Registers = append([]string(nil), row.Selector.Registers...)
-				if row.Open {
-					row.OpenQuestion = "open"
-				}
 				rows[i] = row
 			}
 			return rows
 		}
-		if err := cfgKeysDiff(name, want, withQuestions()); err != nil {
+		if err := cfgKeysDiff(name, want, clone()); err != nil {
 			t.Fatalf("unchanged rows rejected: %v", err)
 		}
 		for i := range want {
 			for field, mutate := range mutations {
-				got := withQuestions()
+				got := clone()
 				mutate(&got[i])
 				if err := cfgKeysDiff(name, want, got); err == nil {
 					t.Fatalf("%s row %s: changed %s not detected", name, want[i].Key, field)
 				}
 			}
 		}
-		if err := cfgKeysDiff(name, want, withQuestions()[1:]); err == nil {
+		if err := cfgKeysDiff(name, want, clone()[1:]); err == nil {
 			t.Fatalf("%s: missing key not detected", name)
+		}
+	}
+}
+
+// TestConfigSetterNamesBoilerPumpModeKeepsItsBound catches a change of the
+// value type or bound of the renamed 0x4904 key: a value outside one unsigned
+// byte or a non-integer is rejected before any bus request on both surfaces.
+func TestConfigSetterNamesBoilerPumpModeKeepsItsBound(t *testing.T) {
+	for _, path := range []string{"GraphQL", "MCP"} {
+		for value, want := range map[string]string{
+			"256": "value 256 out of range [0, 255]",
+			"-1":  "value -1 out of range [0, 255]",
+			"1.5": `invalid integer "1.5"`,
+		} {
+			t.Run(path+"/"+value, func(t *testing.T) {
+				bus := newCfgKeysFakeBus()
+				poller, _ := newCfgKeysPoller(t, bus)
+				success, message := cfgKeysSet(t, path, "set_boiler_config", poller, "central_heating_pump_mode", value)
+				if success || !strings.HasPrefix(message, want) {
+					t.Fatalf("success=%v error=%q; want prefix %q", success, message, want)
+				}
+				if requests, _, _ := bus.snapshot(); requests != 0 {
+					t.Fatalf("bus requests = %d; want none", requests)
+				}
+			})
+		}
+	}
+}
+
+// TestConfigSetterNamesFieldDescriptionListsAcceptedKeys binds the key list of
+// the GraphQL field argument description of the system and boiler setters to
+// the keys those setters accept, so the description and the accepted keys
+// cannot drift.
+func TestConfigSetterNamesFieldDescriptionListsAcceptedKeys(t *testing.T) {
+	poller, _ := newCfgKeysPoller(t, newCfgKeysFakeBus())
+	schema, err := graphql.NewSchema(graphql.NewBuilder(poller.reg, nil), poller.reg, &dhwBoundInvoker{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"set_system_config", "set_boiler_config"} {
+		field, ok := schema.MutationType().Fields()[name]
+		if !ok {
+			t.Fatalf("mutation lacks %s", name)
+		}
+		description := ""
+		for _, arg := range field.Args {
+			if arg.Name() == "field" {
+				description = arg.Description()
+			}
+		}
+		const lead, tail = "Key of the value to write; one of: ", ". Any other key"
+		end := strings.Index(description, tail)
+		if !strings.HasPrefix(description, lead) || end < len(lead) {
+			t.Fatalf("%s field description %q lists no keys", name, description)
+		}
+		listed := strings.Split(description[len(lead):end], ", ")
+		if accepted := cfgKeysAllowedFromSetter(t, name); !reflect.DeepEqual(listed, accepted) {
+			t.Fatalf("%s field description lists %v; setter accepts %v", name, listed, accepted)
 		}
 	}
 }

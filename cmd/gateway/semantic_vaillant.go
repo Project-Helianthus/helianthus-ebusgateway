@@ -6235,6 +6235,14 @@ var boilerConfigFieldSpecs = map[string]boilerConfigFieldSpec{
 	"dhw_partial_load_power":                    {addrs: []uint16{boiler_b509_partload_hwc_kw}, min: 0, max: 40, codec: boilerConfigCodecUCH},
 }
 
+// Boiler setter keys with a writer of their own codec. The 0x4904 key carries
+// the documentation name of its register, which the documentation marks
+// provisional; its one-byte integer write is unchanged.
+const (
+	boilerConfigKeyInstallerPhoneNumber   = "installer_phone_number"
+	boilerConfigKeyCentralHeatingPumpMode = "central_heating_pump_mode"
+)
+
 // cstringPairSpec defines a paired CString field that spans 2 registers.
 type cstringPairSpec struct {
 	addr1 uint16 // first register (first 6 chars)
@@ -6382,11 +6390,11 @@ func (p *vaillantSemanticPoller) SetBoilerConfig(ctx context.Context, fieldName 
 	}
 
 	// Handle BCD phone number specially (not float64-based).
-	if fieldName == "installer_phone_number" {
+	if fieldName == boilerConfigKeyInstallerPhoneNumber {
 		return p.writeBoilerPhoneBCD(ctx, rawValue)
 	}
-	// Handle boiler installer menu code as integer (not float64-based).
-	if fieldName == "installerMenuCode" {
+	// Handle the 0x4904 register as a one-byte integer (not float64-based).
+	if fieldName == boilerConfigKeyCentralHeatingPumpMode {
 		return p.writeBoilerInstallerMenuCode(ctx, rawValue)
 	}
 
@@ -6396,7 +6404,7 @@ func (p *vaillantSemanticPoller) SetBoilerConfig(ctx context.Context, fieldName 
 		for key := range boilerConfigFieldSpecs {
 			allKeys = append(allKeys, key)
 		}
-		allKeys = append(allKeys, "installer_phone_number", "installerMenuCode")
+		allKeys = append(allKeys, boilerConfigKeyInstallerPhoneNumber, boilerConfigKeyCentralHeatingPumpMode)
 		slices.Sort(allKeys)
 		return graphql.BoilerConfigMutationResult{
 			Success: false,
@@ -6534,7 +6542,7 @@ func (p *vaillantSemanticPoller) writeBoilerInstallerMenuCode(ctx context.Contex
 	}
 
 	p.mu.Lock()
-	p.boiler = boilerSnapshotWithIntConfigValue(p.boiler, "installerMenuCode", value)
+	p.boiler = boilerSnapshotWithIntConfigValue(p.boiler, boilerConfigKeyCentralHeatingPumpMode, value)
 	p.mu.Unlock()
 
 	p.publishBoilerStatus(semanticSnapshotSourceLive)
@@ -6559,7 +6567,7 @@ func boilerSnapshotWithIntConfigValue(existing *vaillantBoilerSnapshot, fieldNam
 		snapshot = &vaillantBoilerSnapshot{}
 	}
 	switch fieldName {
-	case "installerMenuCode":
+	case boilerConfigKeyCentralHeatingPumpMode:
 		snapshot.InstallerMenuCode = &value
 	}
 	return snapshot

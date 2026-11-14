@@ -28,14 +28,16 @@
     "follow_up_limits": [
       "The existing discovery rows do not cover all public fields, returned map keys and dynamic/reflection declarations.",
       "The external file lists and exact-token matches do not establish consumer completeness.",
-      "The complete custom metric renderer, boiler setters, owned GraphQL type/enum tokens and full context-qualified value map remain to be reconciled."
+      "The complete custom metric renderer, owned GraphQL type/enum tokens and full context-qualified value map remain to be reconciled.",
+      "The six set_boiler_config keys (B509 registers 0x0704, 0x0804, 0x0E04 with its fallback 0xA500, 0x0F04, 0x4904 and 0x8104) have no bounded declaration. Their names, provisional flags and open questions are recorded in docs/testing/config-setter-keys.json, where central_heating_pump_mode (0x4904) is the only provisional key.",
+      "The ten set_system_config setter rows record their final documentation names as unchanged rather than ready: scripts/check_naming_contract.py binds a ready setter row to its declaration in graphql/mutations.go, and the system setter declarations are in internal/vaillant/systemconfig/write_specs.go."
     ],
     "identity": "A native value requires opcode, group, register and all instance/selector context. Identical spellings in zone, DHW, circuit and system contexts are never global substitutions.",
     "inventory_is_runtime_input": false,
     "library_repins_same_pull_request": true,
     "mcp": "Preserve namespace tokens and order, join with underscores. Remove ebus.invoke and ebus.devices without replacement. Preserve versioned invoke safety, permissions, idempotency and replay. Do not remove a name as dangling without registration/dispatch/scope/emitted-inventory reconciliation.",
     "metrics": "Use constant unit labels, retain _total counters and all numeric conversion behavior. Review the entire custom renderer and bound label cardinality. A library-label exception requires a proven impossibility of attaching labels.",
-    "other_public_names": "unchanged",
+    "other_public_names": "unchanged, except the config setter keys: every key the four config setters accept is the documentation name of its register, as docs/testing/config-setter-keys.json lists them",
     "pairing_status": "eebus.v1.pairing.status.get is not authorized for dangling-name removal.",
     "publication": "Only public source declarations and repository-relative consumer paths are represented.",
     "ready_rows_only": true,
@@ -590,7 +592,7 @@
     {
       "consumer_files": [],
       "context": "zoneConfigFieldSpecs",
-      "current_name": "operatingMode",
+      "current_name": "heating_zone_operating_mode",
       "declared_type": "configValueEnumU16",
       "evidence_class": "Unknown",
       "full_identity": "OP02/GG03/RR0006",
@@ -601,8 +603,8 @@
         "register": "0x0006"
       },
       "kind": "setter",
-      "open_question": "Bind the selector-qualified declaration to accepted vocabulary and unit/value roles before assigning a target; existing type, bounds, encoding and route must be preserved.",
-      "preserve_constraints": "valueType: configValueEnumU16, enum: map[string]uint16{\"off\": 0, \"auto\": 1, \"manual\": 2}",
+      "open_question": "Representation is not established; the relation to `OP=0x02, GG=0x03, RR=0x0006` (same name) is not established.",
+      "preserve_constraints": "group: 0x03, addr: 0x0006, valueType: configValueEnumU16, enum: map[string]uint16{\"off\": 0, \"auto\": 1, \"manual\": 2}",
       "role_decomposition": {
         "meaning": "not declared",
         "object": "zone"
@@ -617,9 +619,9 @@
     {
       "consumer_files": [],
       "context": "zoneConfigFieldSpecs",
-      "current_name": "quickVetoTemperature",
+      "current_name": "zone_room_temperature_setpoint_at_quick_veto",
       "declared_type": "configValueFloat32",
-      "evidence_class": "Unknown",
+      "evidence_class": "Proven",
       "full_identity": "OP02/GG03/RR0008",
       "identity_selectors": {
         "group": "0x03",
@@ -628,25 +630,25 @@
         "register": "0x0008"
       },
       "kind": "setter",
-      "open_question": "Bind the selector-qualified declaration to accepted vocabulary and unit/value roles before assigning a target; existing type, bounds, encoding and route must be preserved.",
-      "preserve_constraints": "valueType: configValueFloat32, min: 5.0, max: 30.0",
+      "open_question": "",
+      "preserve_constraints": "group: 0x03, addr: 0x0008, valueType: configValueFloat32, min: 5.0, max: 30.0",
       "role_decomposition": {
-        "meaning": "not declared",
-        "object": "zone"
+        "object": "zone",
+        "value_class": "setpoint"
       },
       "source_file": "graphql/mutations.go",
       "source_occurrence": 0,
-      "status": "provisional",
-      "target": null,
+      "status": "ready",
+      "target": "zone_room_temperature_setpoint_at_quick_veto",
       "unit": "not declared",
-      "value_class": "number"
+      "value_class": "setpoint"
     },
     {
       "consumer_files": [],
       "context": "zoneConfigFieldSpecs",
-      "current_name": "quickVetoDuration",
+      "current_name": "zone_quick_veto_time",
       "declared_type": "configValueFloat32",
-      "evidence_class": "Unknown",
+      "evidence_class": "Proven",
       "full_identity": "OP02/GG03/RR0026",
       "identity_selectors": {
         "group": "0x03",
@@ -655,25 +657,25 @@
         "register": "0x0026"
       },
       "kind": "setter",
-      "open_question": "Bind the selector-qualified declaration to accepted vocabulary and unit/value roles before assigning a target; existing type, bounds, encoding and route must be preserved.",
-      "preserve_constraints": "valueType: configValueFloat32, min: 0.5, max: 12.0",
+      "open_question": "",
+      "preserve_constraints": "group: 0x03, addr: 0x0026, valueType: configValueFloat32, min: 0.5, max: 12.0",
       "role_decomposition": {
-        "meaning": "not declared",
-        "object": "zone"
+        "object": "zone",
+        "value_class": "time"
       },
       "source_file": "graphql/mutations.go",
       "source_occurrence": 0,
-      "status": "provisional",
-      "target": null,
+      "status": "ready",
+      "target": "zone_quick_veto_time",
       "unit": "not declared",
-      "value_class": "number"
+      "value_class": "time"
     },
     {
       "consumer_files": [],
       "context": "zoneConfigFieldSpecs",
-      "current_name": "desiredSetpoint",
+      "current_name": "heating_zone_room_manual_temperature_setpoint",
       "declared_type": "configValueFloat32",
-      "evidence_class": "Unknown",
+      "evidence_class": "Proven",
       "full_identity": "OP02/GG03/RR0022",
       "identity_selectors": {
         "group": "0x03",
@@ -682,25 +684,25 @@
         "register": "0x0022"
       },
       "kind": "setter",
-      "open_question": "Bind the selector-qualified declaration to accepted vocabulary and unit/value roles before assigning a target; existing type, bounds, encoding and route must be preserved.",
-      "preserve_constraints": "valueType: configValueFloat32, min: 5.0, max: 30.0",
+      "open_question": "",
+      "preserve_constraints": "group: 0x03, addr: 0x0022, valueType: configValueFloat32, min: 5.0, max: 30.0",
       "role_decomposition": {
-        "meaning": "not declared",
-        "object": "zone"
+        "object": "zone",
+        "value_class": "setpoint"
       },
       "source_file": "graphql/mutations.go",
       "source_occurrence": 0,
-      "status": "provisional",
-      "target": null,
+      "status": "ready",
+      "target": "heating_zone_room_manual_temperature_setpoint",
       "unit": "not declared",
-      "value_class": "number"
+      "value_class": "setpoint"
     },
     {
       "consumer_files": [],
       "context": "zoneConfigFieldSpecs",
-      "current_name": "holidaySetpoint",
+      "current_name": "zone_room_temperature_setpoint_at_holiday",
       "declared_type": "configValueFloat32",
-      "evidence_class": "Unknown",
+      "evidence_class": "Proven",
       "full_identity": "OP02/GG03/RR0005",
       "identity_selectors": {
         "group": "0x03",
@@ -709,25 +711,25 @@
         "register": "0x0005"
       },
       "kind": "setter",
-      "open_question": "Bind the selector-qualified declaration to accepted vocabulary and unit/value roles before assigning a target; existing type, bounds, encoding and route must be preserved.",
-      "preserve_constraints": "valueType: configValueFloat32, min: 5.0, max: 30.0",
+      "open_question": "",
+      "preserve_constraints": "group: 0x03, addr: 0x0005, valueType: configValueFloat32, min: 5.0, max: 30.0",
       "role_decomposition": {
-        "meaning": "not declared",
-        "object": "zone"
+        "object": "zone",
+        "value_class": "setpoint"
       },
       "source_file": "graphql/mutations.go",
       "source_occurrence": 0,
-      "status": "provisional",
-      "target": null,
+      "status": "ready",
+      "target": "zone_room_temperature_setpoint_at_holiday",
       "unit": "not declared",
-      "value_class": "number"
+      "value_class": "setpoint"
     },
     {
       "consumer_files": [],
       "context": "systemConfigFieldSpecs",
-      "current_name": "dhwBivalencePointC",
+      "current_name": "dhw_outdoor_bivalence_temperature_limit",
       "declared_type": "ValueFloat32",
-      "evidence_class": "Unknown",
+      "evidence_class": "Proven",
       "full_identity": "OP02/GG00/RR0001",
       "identity_selectors": {
         "group": "0x00",
@@ -736,25 +738,25 @@
         "register": "0x0001"
       },
       "kind": "setter",
-      "open_question": "Bind the selector-qualified declaration to accepted vocabulary and unit/value roles before assigning a target; existing type, bounds, encoding and route must be preserved.",
+      "open_question": "",
       "preserve_constraints": "ValueType: ValueFloat32, Min: unmatchedDHWBivalenceMinC, Max: unmatchedDHWBivalenceMaxC",
       "role_decomposition": {
-        "meaning": "not declared",
-        "object": "system"
+        "object": "system",
+        "value_class": "limit"
       },
       "source_file": "internal/vaillant/systemconfig/write_specs.go",
       "source_occurrence": 0,
-      "status": "provisional",
-      "target": null,
+      "status": "unchanged",
+      "target": "dhw_outdoor_bivalence_temperature_limit",
       "unit": "not declared",
-      "value_class": "number"
+      "value_class": "limit"
     },
     {
       "consumer_files": [],
       "context": "systemConfigFieldSpecs",
-      "current_name": "maxRoomHumidityPct",
+      "current_name": "room_humidity_limit_maximum",
       "declared_type": "ValueUint16",
-      "evidence_class": "Unknown",
+      "evidence_class": "Proven",
       "full_identity": "OP02/GG00/RR000E",
       "identity_selectors": {
         "group": "0x00",
@@ -763,27 +765,25 @@
         "register": "0x000E"
       },
       "kind": "setter",
-      "open_question": "Bind the selector-qualified declaration to accepted vocabulary and unit/value roles before assigning a target; existing type, bounds, encoding and route must be preserved.",
+      "open_question": "",
       "preserve_constraints": "ValueType: ValueUint16, Min: 30, Max: 80",
       "role_decomposition": {
-        "meaning": "not declared",
-        "object": "system"
+        "object": "system",
+        "value_class": "limit"
       },
       "source_file": "internal/vaillant/systemconfig/write_specs.go",
       "source_occurrence": 0,
-      "status": "provisional",
-      "target": null,
+      "status": "unchanged",
+      "target": "room_humidity_limit_maximum",
       "unit": "not declared",
-      "value_class": "integer"
+      "value_class": "limit"
     },
     {
-      "consumer_files": [
-        "ha-integration/custom_components/helianthus/__init__.py"
-      ],
+      "consumer_files": [],
       "context": "systemConfigFieldSpecs",
-      "current_name": "adaptiveHeatingCurve",
+      "current_name": "adaptive_heating_curve_enabled",
       "declared_type": "ValueBoolU8",
-      "evidence_class": "Unknown",
+      "evidence_class": "Proven",
       "full_identity": "OP02/GG00/RR0014",
       "identity_selectors": {
         "group": "0x00",
@@ -792,25 +792,25 @@
         "register": "0x0014"
       },
       "kind": "setter",
-      "open_question": "Bind the selector-qualified declaration to accepted vocabulary and unit/value roles before assigning a target; existing type, bounds, encoding and route must be preserved.",
+      "open_question": "",
       "preserve_constraints": "ValueType: ValueBoolU8",
       "role_decomposition": {
-        "meaning": "not declared",
-        "object": "system"
+        "object": "system",
+        "value_class": "enabled"
       },
       "source_file": "internal/vaillant/systemconfig/write_specs.go",
       "source_occurrence": 0,
-      "status": "provisional",
-      "target": null,
+      "status": "unchanged",
+      "target": "adaptive_heating_curve_enabled",
       "unit": "not declared",
-      "value_class": "boolean"
+      "value_class": "enabled"
     },
     {
       "consumer_files": [],
       "context": "systemConfigFieldSpecs",
-      "current_name": "hcBivalencePointC",
+      "current_name": "heating_outdoor_bivalence_temperature_limit",
       "declared_type": "ValueFloat32",
-      "evidence_class": "Unknown",
+      "evidence_class": "Proven",
       "full_identity": "OP02/GG00/RR0023",
       "identity_selectors": {
         "group": "0x00",
@@ -819,25 +819,25 @@
         "register": "0x0023"
       },
       "kind": "setter",
-      "open_question": "Bind the selector-qualified declaration to accepted vocabulary and unit/value roles before assigning a target; existing type, bounds, encoding and route must be preserved.",
+      "open_question": "",
       "preserve_constraints": "ValueType: ValueFloat32, Min: -20.0, Max: 30.0",
       "role_decomposition": {
-        "meaning": "not declared",
-        "object": "system"
+        "object": "system",
+        "value_class": "limit"
       },
       "source_file": "internal/vaillant/systemconfig/write_specs.go",
       "source_occurrence": 0,
-      "status": "provisional",
-      "target": null,
+      "status": "unchanged",
+      "target": "heating_outdoor_bivalence_temperature_limit",
       "unit": "not declared",
-      "value_class": "number"
+      "value_class": "limit"
     },
     {
       "consumer_files": [],
       "context": "systemConfigFieldSpecs",
-      "current_name": "hcEmergencyTempC",
+      "current_name": "heating_flow_temperature_setpoint_maximum_at_heat_pump_fault",
       "declared_type": "ValueFloat32",
-      "evidence_class": "Unknown",
+      "evidence_class": "Proven",
       "full_identity": "OP02/GG00/RR0026",
       "identity_selectors": {
         "group": "0x00",
@@ -846,25 +846,25 @@
         "register": "0x0026"
       },
       "kind": "setter",
-      "open_question": "Bind the selector-qualified declaration to accepted vocabulary and unit/value roles before assigning a target; existing type, bounds, encoding and route must be preserved.",
+      "open_question": "",
       "preserve_constraints": "ValueType: ValueFloat32, Min: 20.0, Max: 80.0",
       "role_decomposition": {
-        "meaning": "not declared",
-        "object": "system"
+        "object": "system",
+        "value_class": "setpoint"
       },
       "source_file": "internal/vaillant/systemconfig/write_specs.go",
       "source_occurrence": 0,
-      "status": "provisional",
-      "target": null,
+      "status": "unchanged",
+      "target": "heating_flow_temperature_setpoint_maximum_at_heat_pump_fault",
       "unit": "not declared",
-      "value_class": "number"
+      "value_class": "setpoint"
     },
     {
       "consumer_files": [],
       "context": "systemConfigFieldSpecs",
-      "current_name": "hwcMaxFlowTempC",
+      "current_name": "dhw_flow_temperature_setpoint_maximum",
       "declared_type": "ValueFloat32",
-      "evidence_class": "Unknown",
+      "evidence_class": "Proven",
       "full_identity": "OP02/GG00/RR0046",
       "identity_selectors": {
         "group": "0x00",
@@ -873,25 +873,39 @@
         "register": "0x0046"
       },
       "kind": "setter",
-      "open_question": "Bind the selector-qualified declaration to accepted vocabulary and unit/value roles before assigning a target; existing type, bounds, encoding and route must be preserved.",
+      "open_question": "",
       "preserve_constraints": "ValueType: ValueFloat32, Min: 15.0, Max: 80.0",
       "role_decomposition": {
-        "meaning": "not declared",
-        "object": "system"
+        "object": "system",
+        "value_class": "setpoint"
       },
       "source_file": "internal/vaillant/systemconfig/write_specs.go",
       "source_occurrence": 0,
-      "status": "provisional",
-      "target": null,
+      "status": "unchanged",
+      "target": "dhw_flow_temperature_setpoint_maximum",
       "unit": "not declared",
-      "value_class": "number"
+      "value_class": "setpoint"
     },
     {
-      "consumer_files": [],
+      "consumer_files": [
+        "ha-integration/custom_components/helianthus/__init__.py",
+        "ha-integration/custom_components/helianthus/coordinator.py",
+        "ha-integration/custom_components/helianthus/date.py",
+        "ha-integration/tests/test_number_dhw_bivalence.py",
+        "ha-integration/tests/test_optional_query_sequences.py",
+        "ha-integration/tests/test_system.py",
+        "ha-integration/tests/test_system_bound_reprobe.py",
+        "vrc-explorer/fixtures/b524-basv0-description-profile-v1.json",
+        "vrc-explorer/fixtures/b524-basv0-register-observations-v1.json",
+        "vrc-explorer/fixtures/b524_shared/protocols/vaillant/fixtures/b524-basv0-description-profile-v1.json",
+        "vrc-explorer/fixtures/b524_shared/protocols/vaillant/fixtures/b524-basv0-register-observations-v1.json",
+        "vrc-explorer/src/helianthus_vrc_explorer/fixtures/b524-basv0-description-profile-v1.json",
+        "vrc-explorer/src/helianthus_vrc_explorer/fixtures/b524-basv0-register-observations-v1.json"
+      ],
       "context": "systemConfigFieldSpecs",
-      "current_name": "maintenanceDate",
+      "current_name": "maintenance_date",
       "declared_type": "ValueDateHDA3",
-      "evidence_class": "Unknown",
+      "evidence_class": "Proven",
       "full_identity": "OP02/GG00/RR002C",
       "identity_selectors": {
         "group": "0x00",
@@ -900,25 +914,32 @@
         "register": "0x002C"
       },
       "kind": "setter",
-      "open_question": "Bind the selector-qualified declaration to accepted vocabulary and unit/value roles before assigning a target; existing type, bounds, encoding and route must be preserved.",
+      "open_question": "",
       "preserve_constraints": "ValueType: ValueDateHDA3",
       "role_decomposition": {
-        "meaning": "not declared",
-        "object": "system"
+        "object": "system",
+        "value_class": "measured"
       },
       "source_file": "internal/vaillant/systemconfig/write_specs.go",
       "source_occurrence": 0,
-      "status": "provisional",
-      "target": null,
+      "status": "unchanged",
+      "target": "maintenance_date",
       "unit": "not declared",
-      "value_class": "date"
+      "value_class": "measured"
     },
     {
-      "consumer_files": [],
+      "consumer_files": [
+        "ha-integration/custom_components/helianthus/__init__.py",
+        "ha-integration/custom_components/helianthus/coordinator.py",
+        "ha-integration/custom_components/helianthus/entry_setup.py",
+        "ha-integration/custom_components/helianthus/text.py",
+        "ha-integration/tests/test_coordinator.py",
+        "ha-integration/tests/test_system.py"
+      ],
       "context": "systemConfigFieldSpecs",
-      "current_name": "installerName",
+      "current_name": "installer_name",
       "declared_type": "ValueCString",
-      "evidence_class": "Unknown",
+      "evidence_class": "Proven",
       "full_identity": "OP02/GG00/RR006C",
       "identity_selectors": {
         "group": "0x00",
@@ -927,25 +948,25 @@
         "register": "0x006C"
       },
       "kind": "setter",
-      "open_question": "Bind the selector-qualified declaration to accepted vocabulary and unit/value roles before assigning a target; existing type, bounds, encoding and route must be preserved.",
+      "open_question": "",
       "preserve_constraints": "ValueType: ValueCString, MaxLen: 12",
       "role_decomposition": {
-        "meaning": "not declared",
-        "object": "system"
+        "object": "system",
+        "value_class": "measured"
       },
       "source_file": "internal/vaillant/systemconfig/write_specs.go",
       "source_occurrence": 0,
-      "status": "provisional",
-      "target": null,
+      "status": "unchanged",
+      "target": "installer_name",
       "unit": "not declared",
-      "value_class": "string"
+      "value_class": "measured"
     },
     {
       "consumer_files": [],
       "context": "systemConfigFieldSpecs",
-      "current_name": "installerPhone",
+      "current_name": "installer_phone_number",
       "declared_type": "ValueCString",
-      "evidence_class": "Unknown",
+      "evidence_class": "Proven",
       "full_identity": "OP02/GG00/RR006F",
       "identity_selectors": {
         "group": "0x00",
@@ -954,25 +975,25 @@
         "register": "0x006F"
       },
       "kind": "setter",
-      "open_question": "Bind the selector-qualified declaration to accepted vocabulary and unit/value roles before assigning a target; existing type, bounds, encoding and route must be preserved.",
+      "open_question": "",
       "preserve_constraints": "ValueType: ValueCString, MaxLen: 12",
       "role_decomposition": {
-        "meaning": "not declared",
-        "object": "system"
+        "object": "system",
+        "value_class": "measured"
       },
       "source_file": "internal/vaillant/systemconfig/write_specs.go",
       "source_occurrence": 0,
-      "status": "provisional",
-      "target": null,
+      "status": "unchanged",
+      "target": "installer_phone_number",
       "unit": "not declared",
-      "value_class": "string"
+      "value_class": "measured"
     },
     {
       "consumer_files": [],
       "context": "systemConfigFieldSpecs",
-      "current_name": "installerMenuCode",
+      "current_name": "installer_access_code",
       "declared_type": "ValueUint16",
-      "evidence_class": "Unknown",
+      "evidence_class": "Proven",
       "full_identity": "OP02/GG00/RR0076",
       "identity_selectors": {
         "group": "0x00",
@@ -981,18 +1002,18 @@
         "register": "0x0076"
       },
       "kind": "setter",
-      "open_question": "Bind the selector-qualified declaration to accepted vocabulary and unit/value roles before assigning a target; existing type, bounds, encoding and route must be preserved.",
+      "open_question": "",
       "preserve_constraints": "ValueType: ValueUint16, Min: 0, Max: 999",
       "role_decomposition": {
-        "meaning": "not declared",
-        "object": "system"
+        "object": "system",
+        "value_class": "measured"
       },
       "source_file": "internal/vaillant/systemconfig/write_specs.go",
       "source_occurrence": 0,
-      "status": "provisional",
-      "target": null,
+      "status": "unchanged",
+      "target": "installer_access_code",
       "unit": "not declared",
-      "value_class": "integer"
+      "value_class": "measured"
     },
     {
       "consumer_files": [],
@@ -3430,7 +3451,7 @@
       " contract=d['atomic_adoption_contract']",
       " assert contract['ready_rows_only'] is True and contract['library_repins_same_pull_request'] is True",
       " assert contract['aliases_allowed'] is False and contract['shims_allowed'] is False",
-      " assert contract['other_public_names']=='unchanged'",
+      " assert contract['other_public_names']=='unchanged, except the config setter keys: every key the four config setters accept is the documentation name of its register, as docs/testing/config-setter-keys.json lists them'",
       " assert c['atomic_adoption_barrier']['exact_token_matches_prove_completeness'] is False",
       " def statuses(obj):",
       "  if isinstance(obj,dict):",
@@ -3521,7 +3542,9 @@
     "limits": [
       "The existing discovery rows do not cover all public fields, returned map keys and dynamic/reflection declarations.",
       "The external file lists and exact-token matches do not establish consumer completeness.",
-      "The complete custom metric renderer, boiler setters, owned GraphQL type/enum tokens and full context-qualified value map remain to be reconciled.",
+      "The complete custom metric renderer, owned GraphQL type/enum tokens and full context-qualified value map remain to be reconciled.",
+      "The six set_boiler_config keys (B509 registers 0x0704, 0x0804, 0x0E04 with its fallback 0xA500, 0x0F04, 0x4904 and 0x8104) have no bounded declaration. Their names, provisional flags and open questions are recorded in docs/testing/config-setter-keys.json, where central_heating_pump_mode (0x4904) is the only provisional key.",
+      "The ten set_system_config setter rows record their final documentation names as unchanged rather than ready: scripts/check_naming_contract.py binds a ready setter row to its declaration in graphql/mutations.go, and the system setter declarations are in internal/vaillant/systemconfig/write_specs.go.",
       "Merged library inventories and external source snapshots are not present in this worktree; no additional library meaning is asserted.",
       "Consumer matches are lexical candidates, not verified semantic bindings.",
       "Discovery identities identify source occurrences only; native_semantic_identity is not declared unless a bounded declaration supplies it."
@@ -3560,7 +3583,7 @@
     "Complete the stated coverage limits in the follow-up issues.",
     "Trace every targetTempC provider and context before assigning any canonical value target."
   ],
-  "purpose": "Non-shipped partial naming inventory and bounded atomic adoption contract. Only ready rows authorize rename targets; all other public names remain unchanged.",
+  "purpose": "Non-shipped partial naming inventory and bounded atomic adoption contract. Only ready rows authorize rename targets. The config setter keys already carry the documentation names of their registers (docs/testing/config-setter-keys.json); every other public name without a ready row remains unchanged.",
   "rows": [
     {
       "consumer_files": [

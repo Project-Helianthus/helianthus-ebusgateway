@@ -489,3 +489,27 @@ func TestForeignSourceHuaweiCapacityCountsEveryContributor(t *testing.T) {
 		})
 	}
 }
+
+// A retained-capacity refusal is named in the instance status, like the
+// binding-capacity refusal: the child has no asset and carries the reason.
+func TestForeignSourceHuaweiRetainedCapacityRefusalIsRecorded(t *testing.T) {
+	p := foreignSourceHuaweiPublication(t)
+	asset := semreg.AssetID("asset:synthetic-refusal")
+	epoch, generation := p.handle.Epoch(), p.handle.GenerationID()
+	snapshot := foreignSourceHuaweiSnapshot(p, asset, true)
+	foreignSourceAddHuaweiContributor(&snapshot, asset, "1", "2")
+	const unit = byte(7)
+	if _, _, err := p.admitRetained(unit, asset, snapshot, epoch, generation); !errors.Is(err, errHuaweiRetainedCapacityExhausted) {
+		t.Fatalf("admitRetained error = %v, want retained capacity exhaustion", err)
+	}
+	if got := p.refused[unit]; got != huaweiRefusalRetainedCapacity {
+		t.Fatalf("refusal = %q, want %q", got, huaweiRefusalRetainedCapacity)
+	}
+	single := foreignSourceHuaweiSnapshot(p, asset, true)
+	if _, _, err := p.admitRetained(8, asset, single, epoch, generation); err != nil {
+		t.Fatalf("single-source admission: %v", err)
+	}
+	if _, ok := p.refused[8]; ok {
+		t.Fatal("a successful admission recorded a refusal")
+	}
+}

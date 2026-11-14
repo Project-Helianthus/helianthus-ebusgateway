@@ -219,6 +219,10 @@ var errHuaweiBindingCapacityExhausted = errors.New("huawei semantic binding capa
 // publication refused because its re-admission would exceed the asset's bound.
 const huaweiRefusalBindingCapacity = "binding_capacity"
 
+// huaweiRefusalRetainedCapacity names a child whose successor publication could
+// not free retained-generation room among the publisher's own generations.
+const huaweiRefusalRetainedCapacity = "retained_capacity"
+
 // huaweiSourceCapacity refuses a new epoch when an asset of this source already
 // holds the kernel's source-descriptor bound: that epoch could never publish
 // on the asset, so the START fails instead of running without publication.
@@ -398,6 +402,19 @@ func huaweiNext(value semreg.Uint64) semreg.Uint64 {
 	return semreg.Uint64(strconv.FormatUint(n+1, 10))
 }
 
+// admitRetained frees retained-generation room for a unit and, when the own
+// generations cannot, records the refusal so the instance status names it.
+func (p *huaweiPVPublication) admitRetained(unit byte, asset semreg.AssetID, current semreg.Snapshot, epoch semreg.SourceEpochID, generation semreg.Uint64) ([]semreg.CandidateID, []huaweiRetainedWithdrawal, error) {
+	ids, records, err := p.capacityWithdrawals(asset, current, epoch, generation)
+	if err != nil {
+		if errors.Is(err, errHuaweiRetainedCapacityExhausted) {
+			p.refused[unit] = huaweiRefusalRetainedCapacity
+		}
+		return nil, nil, fmt.Errorf("unit %d: %w", unit, err)
+	}
+	return ids, records, nil
+}
+
 func (p *huaweiPVPublication) publishChild(asset semreg.AssetID, child modbusreg.HuaweiProviderChildObservation, cycle modbusreg.HuaweiProviderCycle, withdraw bool) error {
 	if !p.active() {
 		return errors.New("huawei publication generation withdrawn")
@@ -480,9 +497,9 @@ func (p *huaweiPVPublication) publishChild(asset semreg.AssetID, child modbusreg
 		if err != nil {
 			return err
 		}
-		retainedIDs, capacity, err = p.capacityWithdrawals(asset, current, epoch, generation)
+		retainedIDs, capacity, err = p.admitRetained(child.UnitID, asset, current, epoch, generation)
 		if err != nil {
-			return fmt.Errorf("unit %d: %w", child.UnitID, err)
+			return err
 		}
 		batch.FactWithdrawals = append(batch.FactWithdrawals, retainedIDs...)
 	}

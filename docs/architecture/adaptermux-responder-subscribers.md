@@ -46,7 +46,7 @@ The code read for this design is `internal/adaptermux` (`doc.go`, `session.go`
 with `handleMessage`, `handleSend`, `handleStart`, the session writer and its
 pacer, and the mux send loop) and the `transport.ResponderTransport`
 interface of the eBUS transport module, whose `SendResponderBytes` writes
-physical wire bytes through the same SEND path as an ordinary write without
+bytes through the same SEND path as an ordinary write without
 any START.
 
 ## 1. Registration and unregistration
@@ -135,6 +135,7 @@ Reason codes of `TARGET_ERROR`:
 | `0x08` | `stale`: `BEGIN` or `COMMIT` for a slot that is not current | no |
 | `0x09` | `late`: `COMMIT` after the request CRC was processed | no |
 | `0x0A` | `invalid_response`: committed bytes fail validation | no |
+| `0x0B` | `tag_exhausted`: tag 255 was offered; terminal for the session, which must reconnect and register again | yes, for every held address |
 
 ## 2. Destination-time reservation
 
@@ -149,7 +150,7 @@ Reason codes of `TARGET_ERROR`:
   The slot tag is a per-session counter over `1..255` that skips zero and is
   never reused during the life of the session: after tag 255 has been offered,
   the mux offers no further slot, revokes the session's registrations with
-  `tag_exhausted` and the subscriber must reconnect, which starts a new session
+  `TARGET_ERROR 0x0B` (`tag_exhausted`), each followed by `UNTARGETED`, and the subscriber must reconnect, which starts a new session
   with a new counter and discards every worker bound to the old one.
   Alternative: wrap the counter; rejected because `BEGIN` and `COMMIT` carry
   one byte, so a stale worker holding an old tag could stage into a later
@@ -196,11 +197,16 @@ Reason codes of `TARGET_ERROR`:
 
 - `SLOT <tag>` clears the session's staging. The subscriber sends
   `BEGIN <tag>`, the bytes as `STAGE <byte>`, then `COMMIT <count>`.
-- The staged bytes are the target part after the command CRC as physical wire
-  bytes: ACK `0x00`, then length, data and CRC of the response, escaped by the
-  subscriber as for SEND. The mux validates them before it accepts the commit:
-  first byte ACK, consistent length, well-formed escapes, response CRC over
-  length and data, total within the bound. A failing commit is refused with
+- The staged bytes are the target part after the command CRC as logical
+  bytes: ACK `0x00`, then length, data and CRC of the response, with a data
+  or CRC byte `0xA9` or `0xAA` staged as that single logical byte. The
+  encoding boundary is one: staging, validation and the committed buffer are
+  logical, and escape expansion happens exactly once, inside the mux emitter,
+  only when the upstream path takes physical bytes (a path whose adapter
+  performs the substitution, as the ENH SEND contract states, receives the
+  logical byte). The subscriber never stages an escape pair. The mux validates
+  before it accepts the commit: first byte ACK, consistent length, response
+  CRC over logical length and data, total within the bound. A failing commit is refused with
   `invalid_response` and leaves the slot without a commit. `COMMIT 0` with no
   staged bytes declines the transaction: the target stays silent.
 - `BEGIN` or `COMMIT` naming a tag that is not the current slot is refused with

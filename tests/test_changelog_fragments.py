@@ -71,6 +71,10 @@ class FragmentTextTests(unittest.TestCase):
             "conflict end": "## A title\n\nText.\n>>>>>>> theirs\n",
             "title after a closed fence": "## A title\n\n```\ncode\n```\n## Another\n",
             "unclosed fence": "## A title\n\nRun:\n\n```sh\ncode\n",
+            "unclosed tilde fence": "## A title\n\n~~~\n# comment\n",
+            "title after a tilde fence": "## A title\n\n~~~\ncode\n~~~\n## Another\n",
+            "info string does not close": "## A title\n\n```\ncode\n```sh\n",
+            "tilde does not close backticks": "## A title\n\n```\ncode\n~~~\n",
         }
         for label, text in faults.items():
             with self.subTest(label):
@@ -79,6 +83,13 @@ class FragmentTextTests(unittest.TestCase):
     def test_fenced_block_may_hold_hash_lines(self):
         text = "## A title\n\nRun:\n\n```sh\n# a shell comment\n## another\n```\n"
         self.assertEqual(FRAGMENTS.text_problems(text), [])
+
+    def test_other_fences_may_hold_hash_lines(self):
+        for text in ("## A title\n\n~~~sh\n# a shell comment\n~~~\n",
+                     "## A title\n\n````md\n```sh\n## inner\n```\n````\n",
+                     "## A title\n\n```\n~~~\n# comment\n```\n"):
+            with self.subTest(text):
+                self.assertEqual(FRAGMENTS.text_problems(text), [])
 
     def test_lower_headings_are_allowed(self):
         self.assertEqual(FRAGMENTS.text_problems("## A title\n\n### Detail\n\nText.\n"), [])
@@ -179,7 +190,9 @@ class NewFragmentRuleTests(unittest.TestCase):
         added = {"changelog.d/12-entry.md": "A"}
         cases = [
             ("adds a fragment", {"a.go": "M", **added}, True),
-            ("adds two fragments", {**added, "changelog.d/12-other.md": "A"}, False),
+            ("adds two fragments", {**added, "changelog.d/12-other.md": "A"}, True),
+            ("adds fragments for two issues", {**added, "changelog.d/13-other.md": "A",
+                                               "a.go": "M"}, True),
             ("corrects another fragment too", {**added, "changelog.d/7-old.md": "M"}, True),
             ("no fragment", {"a.go": "M"}, False),
             ("only the directory note", {"changelog.d/README.md": "A"}, False),

@@ -43,8 +43,8 @@ private network, Home Assistant instance, or physical bus.
 
 ## Changelog
 
-- Every pull request adds one new file `changelog.d/<issue-number>-<slug>.md`:
-  a `## ` title line, one blank line, then the entry text, written like the
+- Every pull request adds its entry as a new file
+  `changelog.d/<issue-number>-<slug>.md`: a `## ` title line, one blank line, then the entry text, written like the
   sections of `CHANGELOG.md`. Two pull requests for one issue use different
   slugs.
 - A pull request does not edit `CHANGELOG.md` and does not remove a fragment.

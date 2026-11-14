@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Changelog fragments: one entry file per pull request, assembled at release.
 
-A pull request adds one file changelog.d/<issue-number>-<slug>.md and leaves
+A pull request adds a file changelog.d/<issue-number>-<slug>.md and leaves
 CHANGELOG.md alone, so open pull requests never edit the same changelog lines.
 
   check                 validate every fragment
-  check --require-new   also require that the change against the base adds one
+  check --require-new   also require that the change against the base adds one or more
   assemble              print the complete changelog (fragments, then CHANGELOG.md)
   assemble --write      move the fragments into CHANGELOG.md (release pull request)
 
@@ -53,12 +53,26 @@ def is_conflict_marker(line):
     return line == "=======" or line.startswith(("<<<<<<< ", ">>>>>>> ", "||||||| "))
 
 
+FENCE = re.compile(r"(`{3,}|~{3,})(.*)")
+
+
+def next_fence(fence, line):
+    """Return the open fence after line: its opening marker, or "" outside a block."""
+    match = FENCE.fullmatch(line)
+    if not match:
+        return fence
+    marker, rest = match.groups()
+    if not fence:
+        return "" if marker[0] == "`" and "`" in rest else marker
+    closes = marker[0] == fence[0] and len(marker) >= len(fence) and not rest.strip()
+    return "" if closes else fence
+
+
 def body_problems(lines):
     """Problems on the lines after the title: whitespace, markers, extra titles."""
-    problems, fenced = [], False
+    problems, fenced = [], ""
     for number, line in enumerate(lines, start=2):
-        if line.startswith("```"):
-            fenced = not fenced
+        fenced = next_fence(fenced, line)
         if line != line.rstrip():
             problems.append(f"line {number}: trailing whitespace")
         if is_conflict_marker(line):
@@ -167,8 +181,6 @@ def new_fragment_problems(changes):
         return [f"fragments are removed only by a release assembly, together with {CHANGELOG}"]
     if not added:
         return [f"the change adds no {PATTERN}"]
-    if len(added) != 1:
-        return [f"the change adds {len(added)} fragments; it adds exactly one {PATTERN}"]
     return []
 
 

@@ -165,6 +165,8 @@ def new_fragment_problems(changes):
         return [f"fragments are removed only by a release assembly, together with {CHANGELOG}"]
     if not added:
         return [f"the change adds no {PATTERN}"]
+    if len(added) != 1:
+        return [f"the change adds {len(added)} fragments; it adds exactly one {PATTERN}"]
     return []
 
 
@@ -176,6 +178,15 @@ def release_assembly_problems(root, base, head, changes):
     removed = [path for path, status in changes.items()
                if status == "D" and path.startswith(DIRECTORY + "/")
                and NAME.fullmatch(Path(path).name)]
+    code, listing = git(root, "ls-tree", "-r", "--name-only", "-z", ancestor.strip(),
+                        "--", DIRECTORY)
+    if code:
+        return ["release assembly fragments are not available"]
+    pending = {path for path in listing.split("\0")
+               if path.startswith(DIRECTORY + "/") and NAME.fullmatch(Path(path).name)}
+    if pending != set(removed):
+        return ["release assembly must remove every pending fragment; left: "
+                + ", ".join(sorted(pending - set(removed)) or ["none"])]
     texts = []
     for path in [CHANGELOG, *sorted(removed, key=lambda path: order_key(Path(path).name))]:
         code, text = git(root, "show", ancestor.strip() + ":" + path)

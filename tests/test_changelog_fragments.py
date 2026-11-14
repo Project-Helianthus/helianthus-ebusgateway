@@ -178,7 +178,7 @@ class NewFragmentRuleTests(unittest.TestCase):
         added = {"changelog.d/12-entry.md": "A"}
         cases = [
             ("adds a fragment", {"a.go": "M", **added}, True),
-            ("adds two fragments", {**added, "changelog.d/12-other.md": "A"}, True),
+            ("adds two fragments", {**added, "changelog.d/12-other.md": "A"}, False),
             ("corrects another fragment too", {**added, "changelog.d/7-old.md": "M"}, True),
             ("no fragment", {"a.go": "M"}, False),
             ("only the directory note", {"changelog.d/README.md": "A"}, False),
@@ -201,6 +201,7 @@ class ReleaseValidationTests(unittest.TestCase):
         changes = {"CHANGELOG.md": "M", "changelog.d/7-old.md": "D",
                    "changelog.d/12-new.md": "D"}
         newer = GOOD.replace("A title", "Newer")
+        blobs_fragments = ["changelog.d/7-old.md", "changelog.d/12-new.md"]
         expected = FRAGMENTS.assemble(BASE, [newer, GOOD])
         for head in (None, "topic"):
             for actual in (BASE + "\nUnrelated edit.\n", FRAGMENTS.assemble(BASE, [GOOD]),
@@ -215,6 +216,8 @@ class ReleaseValidationTests(unittest.TestCase):
                         def read_git(_root, *args):
                             if args[0] == "merge-base":
                                 return 0, "ancestor\n"
+                            if args[0] == "ls-tree":
+                                return 0, "\0".join(blobs_fragments) + "\0"
                             revision, path = args[1].split(":", 1)
                             return 0, actual if revision == "topic" else blobs[path]
 
@@ -223,6 +226,26 @@ class ReleaseValidationTests(unittest.TestCase):
                                 mock.patch.object(FRAGMENTS, "git", side_effect=read_git):
                             problems, _ = FRAGMENTS.require_new(root, "main", head)
                         self.assertEqual(problems == [], actual == expected)
+
+    def test_release_leaving_a_base_fragment_pending_fails(self):
+        changes = {"CHANGELOG.md": "M", "changelog.d/12-new.md": "D"}
+        blobs = {"CHANGELOG.md": BASE, "changelog.d/12-new.md": GOOD}
+        expected = FRAGMENTS.assemble(BASE, [GOOD])
+
+        def read_git(_root, *args):
+            if args[0] == "merge-base":
+                return 0, "ancestor\n"
+            if args[0] == "ls-tree":
+                return 0, "changelog.d/7-old.md\0changelog.d/12-new.md\0"
+            return 0, blobs[args[1].split(":", 1)[1]]
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_tree(root, {"CHANGELOG.md": expected})
+            with mock.patch.object(FRAGMENTS, "change_set", return_value=changes), \
+                    mock.patch.object(FRAGMENTS, "git", side_effect=read_git):
+                problems, _ = FRAGMENTS.require_new(root, "main", None)
+        self.assertTrue(any("7-old.md" in problem for problem in problems))
 
     def test_unavailable_release_history_fails_closed(self):
         changes = {"CHANGELOG.md": "M", "changelog.d/7-old.md": "D"}

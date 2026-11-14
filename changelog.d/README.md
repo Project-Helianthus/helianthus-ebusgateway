@@ -7,7 +7,7 @@ open pull requests never edit the same changelog lines.
   `1234-startup-reason.md`. Two pull requests for one issue use different slugs.
 - Content: a `## ` title line, one blank line, then the entry text, written like
   the sections of `CHANGELOG.md`. One title per file; lower headings are allowed.
-- A pull request does not edit `CHANGELOG.md` and does not remove a fragment.
+- A pull request adds exactly one fragment, does not edit `CHANGELOG.md` and does not remove a fragment.
 
 ```sh
 python3 scripts/changelog_fragments.py check                 # validate the fragments
@@ -21,5 +21,6 @@ the sections already in `CHANGELOG.md`. The release pull request runs
 fragments into `CHANGELOG.md` and removes them from this directory.
 
 The release check compares the resulting changelog with the ordered assembly of
-the removed fragments from the merge base. Missing entries, altered entry text,
+the removed fragments from the merge base, and every fragment present at the merge base
+must be removed. Missing entries, altered entry text,
 and changes to existing sections fail the check.

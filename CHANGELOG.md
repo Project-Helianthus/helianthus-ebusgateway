@@ -1,5 +1,13 @@
 # Changelog
 
+## AdapterMux recovery after an abandoned or interrupted external grant
+
+With the classifier in enforce mode, an external grant its client never used, or an external owner that stopped in mid-telegram on a quiet bus, no longer stops idle SYN delivery and arbitration until other bus traffic arrives. The abandon watchdog's release of an unused grant now fences selection until the next SYN like a cancel, so both wire trackers are reset there and the waiting bid is selected. The watchdog decides under the same lock that counts an accepted SEND, so a SEND that passed its owner check keeps its grant, and a SEND after the release is refused with a host error as before.
+
+The 250 ms external idle gap and the 10 s ownership cap (the 1.5 s gateway ownership guard for the gateway's own grant) also apply to SYN symbols the classifier withholds; such a release also fences selection until SYN, and the withheld SYN stays withheld from sessions and the passive stream. An owner with wire activity inside the grace keeps the bus, and an injected AA inside a live telegram is still withheld. A release logs `adaptermux: ownership released for session <id> remote=<addr> (classifier withheld SYN: idle gap <gap> >= grace <grace>)` or `... (classifier withheld SYN: maximum ownership <limit> reached)`.
+
+The 75 ms abandon deadline, the graces and caps, the grant order and the classifier-off and shadow behaviour are unchanged; with the classifier off or in shadow mode the waiting bid is still selected at the first SYN after a watchdog release. Existing log lines and metrics are unchanged, and no configuration option is added. The gateway binary changes and this is adapter-direct transport work: the affected adapter-direct rows must be re-run in the consolidated hardware session, and the affected release evidence must be renewed before the final bill of materials freeze.
+
 ## Error texts with the package names and Growatt CAN contract names without work-item codes
 
 Error texts that reach logs and API errors now start with the package name without underscores, and one of them names the declared emit set instead of a work-item code. Each text is renamed directly, with no alias and no acceptance of the old text:

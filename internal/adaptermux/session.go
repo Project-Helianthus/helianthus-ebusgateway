@@ -535,10 +535,16 @@ func (s *session) handleSend(data byte) {
 	// STARTED can already be visible while completeArbitrationGrant holds
 	// stateMu. Wait for that commit before checking ownership, and release
 	// the lock before any potentially blocking send or transport operation.
+	//
+	// The bytes-since-grant counter lets the abandon watchdog tell a live
+	// transaction from a silently dropped grant. It is bumped in the same
+	// critical section as the owner check because the watchdog decides
+	// under stateMu: it either sees this SEND or releases the grant before it.
 	s.mux.stateMu.Lock()
 	isOwner := s.mux.arb.isOwner(s.id)
 	if isOwner {
 		s.mux.phase.markOwnerWrite()
+		s.bytesSentSinceGrant.Add(1)
 	}
 	s.mux.stateMu.Unlock()
 	if !isOwner {
@@ -575,11 +581,6 @@ func (s *session) handleSend(data byte) {
 		s.deliverErrorHost()
 		return
 	}
-	// F-34 (iter11): bump the bytes-since-grant counter so the
-	// abandon watchdog (started in completeArbitrationGrant) can
-	// distinguish a live transaction from a silently-dropped grant.
-	s.bytesSentSinceGrant.Add(1)
-
 	// F-6 observability: log accepted SEND bytes too. Without this, the
 	// happy-path forwarding to activeSendCh is silent and session logs
 	// can show START/INIT/INFO with no per-session SEND traffic even

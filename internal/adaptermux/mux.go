@@ -1830,6 +1830,12 @@ func (m *Mux) readLoop() {
 		}
 		if m.v8 != nil && event.Kind != 0 {
 			if m.v8.Observe(event, time.Now()) {
+				// A withheld wire SYN still counts toward the ownership
+				// limits; it stays withheld from sessions and observers.
+				if event.Kind == transport.StreamEventWireSyn ||
+					(event.Kind == transport.StreamEventByte && event.Byte == protocol.SymbolSyn && !event.WasEscaped) {
+					m.enforceOwnershipLimitsOnWithheldSYN()
+				}
 				continue
 			}
 		} else if m.v8 != nil && item.hasRaw && item.rawSymbol == protocol.SymbolSyn {
@@ -1837,6 +1843,7 @@ func (m *Mux) readLoop() {
 			// no logical item but is still a wire SYN the AA-injection
 			// filter must judge; a drop withholds it from sessions.
 			if m.v8.Observe(transport.StreamEvent{Kind: transport.StreamEventWireSyn, Byte: protocol.SymbolSyn}, time.Now()) {
+				m.enforceOwnershipLimitsOnWithheldSYN()
 				continue
 			}
 		}
@@ -4345,6 +4352,13 @@ const externalAbandonDeadline = 75 * time.Millisecond
 // for that grant was written to the client. The watchdog releases ownership
 // only when the same grant is still current, no SEND arrived for it and the
 // session still owns the bus.
+//
+// The checks and the release run in one stateMu critical section: handleSend
+// counts an accepted SEND under the same lock, so a SEND that passed its owner
+// check is always seen here. The release fences selection until the next SYN
+// like a cancel, so readLoop resets both wire trackers there even when the
+// classifier was following the grant's telegram. Lock order is stateMu, then
+// arb.mu; sessionsMu and connMu are not taken.
 func (m *Mux) armExternalAbandonWatchdog(sess *session, grantGen uint32) {
 	after := m.externalAbandonAfter
 	if after == nil {
@@ -4352,21 +4366,19 @@ func (m *Mux) armExternalAbandonWatchdog(sess *session, grantGen uint32) {
 	}
 	sessionID := sess.id
 	after(externalAbandonDeadline, func() {
-		if sess.closed.Load() {
+		m.stateMu.Lock()
+		if sess.closed.Load() ||
+			uint32(sess.grantGeneration.Load()) != grantGen || // superseded by a newer grant
+			sess.bytesSentSinceGrant.Load() > 0 || // grant was used
+			!m.arb.isOwner(sessionID) { // already released by some other path
+			m.stateMu.Unlock()
 			return
 		}
-		if uint32(sess.grantGeneration.Load()) != grantGen {
-			return // a newer grant superseded the one this timer was armed for
-		}
-		if sess.bytesSentSinceGrant.Load() > 0 {
-			return // grant was used; nothing to do
-		}
-		if !m.arb.isOwner(sessionID) {
-			return // ownership already released by some other path
-		}
+		m.arb.releaseOwnership(sessionID)
+		m.fenceArbitrationUntilSYNLocked()
+		m.stateMu.Unlock()
 		m.logger.Printf("adaptermux: F-34 abandon-watchdog firing for session %d gen=%d (no SEND within %v after STARTED reached the client) — force-releasing ownership",
 			sessionID, grantGen, externalAbandonDeadline)
-		m.arb.releaseOwnership(sessionID)
 	})
 }
 

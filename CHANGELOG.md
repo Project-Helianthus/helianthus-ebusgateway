@@ -1,5 +1,13 @@
 # Changelog
 
+## AdapterMux recovery after an abandoned or interrupted external grant
+
+With the classifier in enforce mode, an external grant its client never used, or an external owner that stopped in mid-telegram on a quiet bus, no longer stops idle SYN delivery and arbitration until other bus traffic arrives. The abandon watchdog's release of an unused grant now fences selection until the next SYN like a cancel, so both wire trackers are reset there and the waiting bid is selected. The watchdog decides under the same lock that counts an accepted SEND, so a SEND that passed its owner check keeps its grant, and a SEND after the release is refused with a host error as before.
+
+The 250 ms external idle gap and the 10 s ownership cap (the 1.5 s gateway ownership guard for the gateway's own grant) also apply to SYN symbols the classifier withholds; such a release also fences selection until SYN, and the withheld SYN stays withheld from sessions and the passive stream. An owner with wire activity inside the grace keeps the bus, and an injected AA inside a live telegram is still withheld. A release logs `adaptermux: ownership released for session <id> remote=<addr> (classifier withheld SYN: idle gap <gap> >= grace <grace>)` or `... (classifier withheld SYN: maximum ownership <limit> reached)`.
+
+The 75 ms abandon deadline, the graces and caps, the grant order and the classifier-off and shadow behaviour are unchanged; with the classifier off or in shadow mode the waiting bid is still selected at the first SYN after a watchdog release. Existing log lines and metrics are unchanged, and no configuration option is added. The gateway binary changes and this is adapter-direct transport work: the affected adapter-direct rows must be re-run in the consolidated hardware session, and the affected release evidence must be renewed before the final bill of materials freeze.
+
 ## snake_case keys for the system, zone and boiler config setters
 
 The `field` keys of the GraphQL mutations `set_system_config`, `set_zone_config` and `set_boiler_config`, and of the MCP tools `ebus_v1_semantic_system_set_config` and `ebus_v1_semantic_boiler_status_set_config`, move to the canonical register names, the rule the `set_circuit_config` keys already follow. The former keys are rejected; there is no alias and no normalisation, and each unknown-field error lists the accepted keys.

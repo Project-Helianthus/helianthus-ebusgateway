@@ -1,5 +1,9 @@
 # Changelog
 
+## Publisher withdrawals scoped to the publisher's own source
+
+The Huawei PV retained-generation withdrawal and the Growatt storage soft-start withdrawal now consider only the records of the publisher's own source. A candidate belongs to the publisher only when its binding or its source epoch resolves in the asset snapshot and every reference that resolves names the publisher's source; a candidate whose source cannot be resolved is never withdrawn. Retained generations of every contributor count toward the per-asset retention window; when the publisher's own generations cannot free enough room, the Huawei admission is refused instead of naming another source's records. This prepares an asset for a second contributor, whose records a withdrawal must not name. The Huawei capacity checks keep counting every binding, identity link and source descriptor of an asset against the shared per-asset bounds, which every contributor of the asset fills. With one source per asset nothing observable changes: published output, goldens, identifiers and wire values are unchanged. The gateway binary changes, so affected release evidence must be renewed before the final bill of materials freeze.
+
 ## AdapterMux recovery after an abandoned or interrupted external grant
 
 With the classifier in enforce mode, an external grant its client never used, or an external owner that stopped in mid-telegram on a quiet bus, no longer stops idle SYN delivery and arbitration until other bus traffic arrives. The abandon watchdog's release of an unused grant now fences selection until the next SYN like a cancel, so both wire trackers are reset there and the waiting bid is selected. The watchdog decides under the same lock that counts an accepted SEND, so a SEND that passed its owner check keeps its grant, and a SEND after the release is refused with a host error as before.

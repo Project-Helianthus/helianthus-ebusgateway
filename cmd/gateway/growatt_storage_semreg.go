@@ -338,8 +338,12 @@ func growattStorageBatch(inc semhub.Incarnation, status modbusreg.GrowattBMSType
 			if envelope.Key.FactID != "storage.status.operating" {
 				continue
 			}
+			// Another contributor's candidate of the same fact is not this
+			// publisher's to withdraw: SemReg would reject the whole batch.
 			for _, candidate := range envelope.Candidates {
-				batch.FactWithdrawals = append(batch.FactWithdrawals, candidate.CandidateID)
+				if semregCandidateOfSource(current, candidate, source) {
+					batch.FactWithdrawals = append(batch.FactWithdrawals, candidate.CandidateID)
+				}
 			}
 		}
 		sort.Slice(batch.FactWithdrawals, func(i, j int) bool { return batch.FactWithdrawals[i] < batch.FactWithdrawals[j] })
@@ -359,6 +363,37 @@ func growattStorageHasSourceEpoch(snapshot semreg.Snapshot, source semreg.Source
 		}
 	}
 	return false
+}
+
+// semregCandidateOfSource reports whether a candidate of snapshot belongs to
+// source. Its binding is resolved against the snapshot's bindings and its
+// source epoch against the snapshot's source descriptors. The candidate
+// belongs to source only when at least one of them resolves and every one
+// that resolves names source, so a candidate whose source cannot be resolved
+// is never claimed.
+func semregCandidateOfSource(snapshot semreg.Snapshot, candidate semreg.FactCandidate, source semreg.SourceID) bool {
+	resolved := false
+	if candidate.BindingID != nil {
+		for _, binding := range snapshot.Bindings {
+			if binding.BindingID == *candidate.BindingID {
+				if binding.SourceID != source {
+					return false
+				}
+				resolved = true
+			}
+		}
+	}
+	if candidate.SourceEpochID != nil {
+		for _, descriptor := range snapshot.Sources {
+			if descriptor.SourceEpochID == *candidate.SourceEpochID {
+				if descriptor.SourceID != source {
+					return false
+				}
+				resolved = true
+			}
+		}
+	}
+	return resolved
 }
 
 func growattStorageHasBinding(snapshot semreg.Snapshot, binding semreg.NativeBindingID) bool {

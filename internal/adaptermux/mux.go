@@ -164,6 +164,14 @@ type Config struct {
 	// or explicitly by tests. Mode parsing lives in
 	// v8classifier.ParseMode.
 	V8ClassifierMode v8classifier.Mode
+
+	// AdapterStepMemory is the out-of-step memory shared by the mux
+	// generations of one runtime: whether the single link reset of the
+	// current out-of-step episode is spent, and the active-arbitration
+	// hold. A lifecycle owner that replaces the mux after a connection
+	// loss passes the same memory to every generation. Nil means New
+	// allocates a private memory, kept across in-place reconnects.
+	AdapterStepMemory *AdapterStepMemory
 }
 
 func (c *Config) defaults() {
@@ -497,6 +505,11 @@ type Mux struct {
 	arbitrationRecovery      arbitrationRecovery // requested under stateMu, applied only by readLoop
 	retiredSelection         bool                // recognizes late results after the absorb budget and SYN fence end
 
+	// step is the out-of-step detector (adapter_step.go), guarded by
+	// stateMu; stepMemory is its lock-free cross-generation memory.
+	step       adapterStepDetector
+	stepMemory *AdapterStepMemory
+
 	// activeTxn is the diagnostics snapshot for the current/last gateway
 	// transaction. Updated under stateMu. Exposed via ActiveTxnSnapshot()
 	// for tests and production observability. Bounded — never grows.
@@ -686,6 +699,10 @@ func New(cfg Config) *Mux {
 		infoCache:    make(map[transport.AdapterInfoID][]byte),
 		activeSendCh: make(chan sendRequest, 256),  // AM49: increased from 16 for burst tolerance
 		activeCh:     make(chan activeEvent, 4096), // unified byte+error channel (4096: survives ~16s of bus traffic during arbitration waits)
+		stepMemory:   cfg.AdapterStepMemory,
+	}
+	if mux.stepMemory == nil {
+		mux.stepMemory = NewAdapterStepMemory()
 	}
 	mux.externalAbandonAfter = func(d time.Duration, f func()) { time.AfterFunc(d, f) }
 	// Phase 3 Step B3.2: instantiate the v8 classifier only when a
@@ -884,7 +901,9 @@ func (m *Mux) Close() error {
 		m.gatewayEcho.reset()
 		m.collisionResyncOwed = 0
 		m.activeTxn.firstByteSuspectArbLoss.Store(false)
+		wasHeld := m.stepBoundaryLocked()
 		m.stateMu.Unlock()
+		m.logStepHoldCleared(wasHeld, "close")
 		if pendingToCancel != nil {
 			// AM53: guarded send to avoid blocking Close if nobody reads notify.
 			select {
@@ -1583,7 +1602,9 @@ func (m *Mux) reconnect() (delegated bool, err error) {
 	if pendingToCancel != nil && pendingToCancel.deadline != nil {
 		pendingToCancel.deadline.Stop() // AM8: cancel deadline timer
 	}
+	wasHeld := m.stepBoundaryLocked()
 	m.stateMu.Unlock()
+	m.logStepHoldCleared(wasHeld, "reconnect")
 
 	// Cancel the pacer watchdog OUTSIDE stateMu (Codex round-2
 	// MUST FIX on PR #647 — see captured pacerToCancel above).
@@ -3039,6 +3060,9 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 			m.gatewayTxnActive = false
 			m.recordGatewayInactive(ReasonTransactionDone)
 		}
+		if ownerID != gatewaySessionID {
+			m.stepCompletedLocked()
+		}
 		hasOwner = false
 	}
 
@@ -3439,7 +3463,9 @@ func (m *Mux) handleReset() {
 	if pendingToCancel != nil && pendingToCancel.deadline != nil {
 		pendingToCancel.deadline.Stop() // AM8: cancel deadline timer
 	}
+	wasHeld := m.stepBoundaryLocked()
 	m.stateMu.Unlock()
+	m.logStepHoldCleared(wasHeld, "adapter_reset")
 
 	// Codex round-2 MUST FIX on PR #647: a RESETTED boundary
 	// erases any in-flight gateway transaction. Cancel the
@@ -3735,7 +3761,7 @@ func (m *Mux) expireGatewayAdmission(notify <-chan startResult) {
 	} else {
 		return
 	}
-	req.notify <- startResult{initiator: req.initiator, err: fmt.Errorf("adaptermux: gateway admission: %w", ebuserrors.ErrTimeout)}
+	req.notify <- startResult{initiator: req.initiator, err: m.gatewayAdmissionError()}
 }
 
 // Guard: only one pending START at a time. If pendingStart is non-nil,
@@ -3821,6 +3847,13 @@ func (m *Mux) tryGrantAndStartForBids(bids map[*startRequest]chan startResult) {
 	if m.deferRegrantUntilNextSyn {
 		m.logger.Printf("adaptermux: tryGrantAndStart skipped — undeliverable STARTED awaiting next SYN")
 		m.stateMu.Unlock()
+		return
+	}
+	if heldSkip, line := m.stepHoldSkipLocked(time.Now()); heldSkip {
+		m.stateMu.Unlock()
+		if line != "" {
+			m.logger.Print(line)
+		}
 		return
 	}
 
@@ -3993,6 +4026,9 @@ func (m *Mux) tryGrantAndStartForBids(bids map[*startRequest]chan startResult) {
 			m.stateMu.Unlock()
 		}
 	})
+	if hasRequestStart {
+		m.stepStartCycleLocked()
+	}
 	m.stateMu.Unlock()
 
 	// Forward START to adapter via non-blocking RequestStart.
@@ -4402,6 +4438,7 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) bool {
 	// initiator matching impossible) would incorrectly fail a newer
 	// pending request.
 	if m.pendingStartAbsorb > 0 {
+		m.stepInStepLocked()
 		m.fenceArbitrationUntilSYNLocked()
 		m.pendingStartAbsorb--
 		if m.pendingStartAbsorb == 0 {
@@ -4457,14 +4494,18 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) bool {
 
 	pending := m.pendingStart
 	if pending == nil {
+		stepAction := adapterStepNone
 		if m.retiredSelection {
 			m.fenceArbitrationUntilSYNLocked()
 			if started {
 				m.undeliverableStarted.Add(1)
 			}
+		} else if started {
+			stepAction = m.stepBadCycleLocked()
 		}
 		m.stateMu.Unlock()
 		m.logger.Printf("adaptermux: stale arbitration response (no pending START)")
+		m.applyStepAction(stepAction)
 		return false
 	}
 
@@ -4500,7 +4541,12 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) bool {
 				pending.deadline.Stop() // AM8: cancel deadline timer
 			}
 			m.lastWireActivity = time.Now()
+			stepAction := adapterStepNone
+			if !cancelledInFlight {
+				stepAction = m.stepBadCycleLocked()
+			}
 			m.stateMu.Unlock()
+			defer m.applyStepAction(stepAction)
 			if cancelledInFlight {
 				m.logger.Printf("adaptermux: suppressing STARTED-mismatch(0x%02X, pending 0x%02X) for session %d — request was cancelled/replaced; absorbed (C4/R4 AM56-half)", data, pending.initiator, pending.sessionID)
 				select {
@@ -4860,8 +4906,13 @@ func (m *Mux) fireAbsorbReset() {
 	// unlikely but possible if the runtime queued multiple fires)
 	// see the IsZero short-circuit and don't re-log.
 	m.pendingAbsorbResetDueAt = time.Time{}
+	stepAction := adapterStepNone
+	if reason == "deadline" || reason == "started-mismatch" {
+		stepAction = m.stepBadCycleLocked()
+	}
 
 	m.stateMu.Unlock()
+	m.applyStepAction(stepAction)
 
 	// F-22: NO transport-reconnect side effect.
 }

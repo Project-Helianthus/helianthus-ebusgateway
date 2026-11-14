@@ -272,6 +272,9 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 	// adapter-direct (no mux), classifier is nil and the provider
 	// stays unset — Prometheus surface degrades cleanly (the
 	// ebus_adaptermux_syn_seen_* metrics are simply absent).
+	if holder, ok := adapterClassifier.(activeArbitrationHolder); ok {
+		busObservability.SetActiveArbitrationHoldProvider(holder.ActiveArbitrationHoldReason)
+	}
 	if snap, ok := adapterClassifier.(adaptermuxDiagSnapshotter); ok {
 		busObservability.SetAdaptermuxDiagProvider(func() ebusgateway.AdaptermuxDiagSnapshot {
 			var s adaptermux.ActiveTxnSnapshot
@@ -294,6 +297,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 				ForeignInitiatorReleases:           s.ForeignInitiatorReleases,
 				EscapePairLeadFailures:             s.EscapePairLeadFailures,
 				EscapePairSuffixFailures:           s.EscapePairSuffixFailures,
+				ActiveArbitrationHeld:              activeArbitrationHoldReason(adapterClassifier) != "",
 			}
 		})
 		busObservability.SetEscapePairFailureGenerationProvider(func() (uint64, uint64, uint64) {
@@ -1389,4 +1393,19 @@ func inactiveReasonCounts(counts map[adaptermux.ActiveTxnInactiveReason]uint64) 
 		out[string(reason)] = count
 	}
 	return out
+}
+
+// activeArbitrationHolder is implemented by the adapter-direct classifiers
+// (the stable driver classifier and *adaptermux.Mux).
+type activeArbitrationHolder interface {
+	ActiveArbitrationHoldReason() string
+}
+
+// activeArbitrationHoldReason returns the classifier's active arbitration hold
+// reason, "" when it has none.
+func activeArbitrationHoldReason(classifier activeTxnClassifier) string {
+	if holder, ok := classifier.(activeArbitrationHolder); ok {
+		return holder.ActiveArbitrationHoldReason()
+	}
+	return ""
 }

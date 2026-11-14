@@ -237,7 +237,7 @@ func buildManagedAdapterDirectGeneration(factoryCtx context.Context, cfg ebusgat
 	adapterCtx, adapterCancel := context.WithCancel(factoryCtx)
 	generationCfg := cfg
 	health := &ebusGenerationHealth{}
-	closer, classifier, err := wireAdapterDirectWithConnectionLost(adapterCtx, &generationCfg, health.connectionLostBecause)
+	closer, classifier, err := wireAdapterDirectWithConnectionLost(adapterCtx, &generationCfg, health.connectionLostBecause, v8Counter.adapterStepMemory())
 	if err != nil {
 		adapterCancel()
 		return nil, err
@@ -1159,6 +1159,23 @@ type ebusV8CumulativeCounter struct {
 	generation  uint64
 	diagRetired ebusMuxDiagTotals
 	diagFloor   ebusMuxDiagTotals
+	// stepMemory is the runtime's single out-of-step memory, shared by
+	// every adapter-direct generation (created lazily).
+	stepMemory *adaptermux.AdapterStepMemory
+}
+
+// adapterStepMemory returns the runtime's out-of-step memory, creating it on
+// first use. A nil counter has none.
+func (counter *ebusV8CumulativeCounter) adapterStepMemory() *adaptermux.AdapterStepMemory {
+	if counter == nil {
+		return nil
+	}
+	counter.mu.Lock()
+	defer counter.mu.Unlock()
+	if counter.stepMemory == nil {
+		counter.stepMemory = adaptermux.NewAdapterStepMemory()
+	}
+	return counter.stepMemory
 }
 
 // ebusMuxDiagTotals is the set of lifetime mux counters exported as
@@ -1338,6 +1355,15 @@ func (classifier *ebusStableClassifier) withClassifier(callback func(activeTxnCl
 		}
 		return nil
 	})
+}
+
+// ActiveArbitrationHoldReason reports the runtime's active arbitration hold
+// reason from the shared out-of-step memory, without a driver invoke.
+func (classifier *ebusStableClassifier) ActiveArbitrationHoldReason() string {
+	if classifier == nil {
+		return ""
+	}
+	return classifier.counter.adapterStepMemory().ActiveArbitrationHoldReason()
 }
 
 func (classifier *ebusStableClassifier) LastTxnClass() (class string) {

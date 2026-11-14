@@ -183,6 +183,16 @@ Common lifecycle code must not switch on protocol, vendor, model, register,
 feature, or function code. Native mappings register against an exact protocol,
 profile, profile version, capability definition, and operation definition.
 
+An asset may name contributor sources when it is declared. The owner holds the
+asset claim and fixes its packs; each contributor names a subset of those
+packs. Contributors publish their own bindings, identity links, observed facts,
+services and capabilities. Binding, service and capability identifiers belong
+to the driver of the publishing source, and an inferred or operator-origin
+record on such an asset belongs to the driver that created it. The publication
+hub keeps one control gate per asset until per-contributor gates land, so a
+production hub refuses a contributor list for now. The service recorder of
+S3.7 to S3.9 still assumes one source per asset.
+
 ## 4. Control-plane types
 
 The subsequent Go implementation is versioned under the gateway module. The

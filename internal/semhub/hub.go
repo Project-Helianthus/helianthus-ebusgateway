@@ -94,6 +94,9 @@ type Hub struct {
 	// that an event is emitted inside the hub serialization.
 	trackOwner bool
 	owner      atomic.Uint64
+	// sharedAssets, set only by package tests, lets Declare accept a
+	// contributor list. A production hub refuses one.
+	sharedAssets bool
 }
 
 // lock takes the hub write lock.
@@ -142,6 +145,12 @@ type asset struct {
 	records       []AcceptedBatch
 	restoreFailed bool
 	restored      bool
+	// contributors are the declared contributor sources, ordered by source;
+	// nil for a single-source asset.
+	contributors []contributor
+	// inferred maps each candidate without a binding to the driver that first
+	// upserted it. It exists only on an asset with contributors.
+	inferred map[semreg.CandidateID]string
 }
 
 type source struct {
@@ -320,6 +329,9 @@ type AssetSpec struct {
 	// OnControl reprojects the declaring family's cache after a control
 	// commit. It runs outside every hub lock, in HubSeq order.
 	OnControl func(ControlEvent) error
+	// Contributors names the other sources that may publish on the asset.
+	// Empty for a single-source asset.
+	Contributors []ContributorSpec
 }
 
 // Declaration is one declared asset.
@@ -346,8 +358,10 @@ func (d *Declaration) SetReprojection(onControl func(ControlEvent) error) {
 	d.hub.unlock()
 }
 
-// Declare registers one asset with its single source. A repeated identical
-// declaration returns the existing one.
+// Declare registers one asset with its owner source and the contributor
+// sources the owner names. A repeated identical declaration returns the
+// existing one; a repeated declaration with another source, other packs or
+// another contributor list is ErrDeclarationConflict.
 func (h *Hub) Declare(spec AssetSpec) (*Declaration, error) {
 	if spec.Driver == "" || len(spec.Validators) == 0 || ValidateOpaque(string(spec.AssetID)) != nil || ValidateOpaque(string(spec.SourceID)) != nil || string(spec.AssetID) == string(spec.SourceID) {
 		return nil, ErrInvalidIdentity
@@ -359,6 +373,14 @@ func (h *Hub) Declare(spec AssetSpec) (*Declaration, error) {
 		}
 		packs = append(packs, validator.Pack())
 	}
+	// The per-contributor control gates slice removes this guard.
+	if len(spec.Contributors) != 0 && !h.sharedAssets {
+		return nil, errSharedAssetsDisabled
+	}
+	contributors, err := contributorsOf(spec, packs)
+	if err != nil {
+		return nil, err
+	}
 	h.lock()
 	if h.restoring {
 		h.unlock()
@@ -369,7 +391,7 @@ func (h *Hub) Declare(spec AssetSpec) (*Declaration, error) {
 		if existing.driver != spec.Driver {
 			return nil, &CollisionError{Drivers: [2]string{spec.Driver, existing.driver}}
 		}
-		if existing.source != spec.SourceID || !samePacks(existing.packs, packs) {
+		if existing.source != spec.SourceID || !samePacks(existing.packs, packs) || !sameContributors(existing.contributors, contributors) {
 			return nil, ErrDeclarationConflict
 		}
 		return &Declaration{hub: h, asset: existing}, nil
@@ -379,6 +401,9 @@ func (h *Hub) Declare(spec AssetSpec) (*Declaration, error) {
 	}
 	if owner, ok := h.ids[string(spec.AssetID)]; ok && (owner.driver != spec.Driver || owner.kind != KindAsset) {
 		return nil, &CollisionError{Drivers: [2]string{spec.Driver, owner.driver}}
+	}
+	if err := h.contributorsAvailableLocked(contributors); err != nil {
+		return nil, err
 	}
 	kernel, err := semreg.NewPublicationKernel(spec.AssetID, spec.Validators...)
 	if err != nil {
@@ -392,6 +417,12 @@ func (h *Hub) Declare(spec AssetSpec) (*Declaration, error) {
 		return nil, err
 	}
 	declared := &asset{id: spec.AssetID, source: spec.SourceID, driver: spec.Driver, packs: packs, kernel: kernel, onControl: spec.OnControl}
+	if len(contributors) != 0 {
+		declared.contributors, declared.inferred = contributors, make(map[semreg.CandidateID]string)
+	}
+	if err := h.attachContributorsLocked(declared); err != nil {
+		return nil, err
+	}
 	h.assets[spec.AssetID] = declared
 	src.assets[spec.AssetID] = struct{}{}
 	return &Declaration{hub: h, asset: declared}, nil
@@ -946,7 +977,8 @@ func publicationGateLocked(target *asset) error {
 	return nil
 }
 
-// Begin stages one publication of handle on asset.
+// Begin stages one publication of handle on asset. The handle's source is the
+// asset's owner source or one of its declared contributors.
 func (h *Hub) Begin(handle *Handle, id semreg.AssetID) (*Tx, error) {
 	h.mu.RLock()
 	target := h.assets[id]
@@ -954,7 +986,7 @@ func (h *Hub) Begin(handle *Handle, id semreg.AssetID) (*Tx, error) {
 	if target == nil {
 		return nil, ErrUnknownAsset
 	}
-	if handle != nil && handle.hub == h && target.source != handle.source {
+	if handle != nil && handle.hub == h && !target.publishes(handle.source) {
 		return nil, fmt.Errorf("%w: asset is declared with another source", ErrTransaction)
 	}
 	// Publication admission: an asset with outstanding control or
@@ -1300,8 +1332,17 @@ func (tx *Tx) Commit(onCommit func(Committed)) (outcome Outcome, err error) {
 	src := h.sources[tx.handle.source]
 	// The batch's nested identifiers are validated against every claimed
 	// identifier before anything is journalled or swapped, and claimed for
-	// the asset's driver atomically with the swap below.
+	// the publishing source's driver atomically with the swap below. On a
+	// single-source asset that is the asset's driver.
+	driver := h.publishingDriverLocked(tx)
 	claims, err := h.nestedClaimsLocked(tx)
+	if err != nil {
+		h.unlock()
+		return "", err
+	}
+	// On an asset with contributors, an inferred candidate belongs to the
+	// driver that created it.
+	inferred, err := h.inferredClaimsLocked(tx, driver)
 	if err != nil {
 		h.unlock()
 		return "", err
@@ -1392,7 +1433,10 @@ func (tx *Tx) Commit(onCommit func(Committed)) (outcome Outcome, err error) {
 		src.retired[retired] = true
 	}
 	for _, claim := range claims {
-		h.ids[claim.id] = idOwner{driver: tx.asset.driver, kind: claim.kind}
+		h.ids[claim.id] = idOwner{driver: driver, kind: claim.kind}
+	}
+	for _, id := range inferred {
+		tx.asset.inferred[id] = driver
 	}
 	tx.asset.kernel = tx.fork
 	if h.recovery != nil {
@@ -1512,10 +1556,11 @@ type nestedClaim struct {
 
 // nestedClaimsLocked validates the binding, service and capability
 // identifiers the applied batch upserts against every claimed identifier and
-// returns the ones not yet claimed. An identifier owned by another driver, or
-// by the same driver under another kind, is a collision. h.mu must be held.
+// returns the ones not yet claimed for the publishing source's driver. An
+// identifier owned by another driver, or by the same driver under another
+// kind, is a collision. h.mu must be held.
 func (h *Hub) nestedClaimsLocked(tx *Tx) ([]nestedClaim, error) {
-	driver := tx.asset.driver
+	driver := h.publishingDriverLocked(tx)
 	seen := make(map[string]Kind)
 	claims := []nestedClaim{}
 	check := func(id string, kind Kind) error {

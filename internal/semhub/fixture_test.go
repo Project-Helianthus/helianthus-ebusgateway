@@ -163,6 +163,15 @@ func newTestHub(t *testing.T) *Hub {
 	return hub
 }
 
+// newSharedTestHub returns a hub that accepts contributor lists, which a
+// production hub refuses until per-contributor control gates exist.
+func newSharedTestHub(t *testing.T) *Hub {
+	t.Helper()
+	hub := newTestHub(t)
+	hub.sharedAssets = true
+	return hub
+}
+
 func mustDeclare(t *testing.T, hub *Hub, id semreg.AssetID, src semreg.SourceID, driver string, onControl func(ControlEvent) error) *Declaration {
 	t.Helper()
 	declaration, err := hub.Declare(AssetSpec{AssetID: id, SourceID: src, Driver: driver, Validators: []semreg.PackValidator{newTestValidator()}, OnControl: onControl})

@@ -156,7 +156,7 @@ owns the other's semantics. Evaluate conflicts before forwarding or exposure:
 
 | Situation | Decision and expected rejection/loss |
 | --- | --- |
-| Two drivers claim one SourceID, or conflict with hub ownership | Refuse the entire registration before effects; no ownership transfer. |
+| Two drivers claim one SourceID, or conflict with hub ownership | Refuse the entire registration before effects; no ownership transfer. A contributor source that the asset's owner declares with the asset is not a conflict; an undeclared claimant still is. |
 | Two descriptors claim one output binding | Refuse the entire registration; no last-writer-wins endpoint. |
 | Several candidates describe one fact | Preserve alternatives/conflict and SemReg presentation policy; an unresolved projection is withheld with explicit loss, not selected by source count or display ID. |
 | Multiple possible native operation routes | Keep operation routing outside this slice; existing admission fails closed on ambiguity. Presentation selection never chooses a route. |

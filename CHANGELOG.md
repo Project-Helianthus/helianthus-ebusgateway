@@ -1,5 +1,9 @@
 # Changelog
 
+## Contributor sources on a hub asset
+
+A hub asset may now declare contributor sources: the owner names each contributor's source, driver, packs (a subset of the asset's packs) and reprojection callback, and a declared contributor may publish on the asset. An undeclared second claimant keeps its collision or declaration-conflict refusal. Binding, service and capability identifiers are claimed for the driver of the publishing source, which is the asset's driver when the asset has one source, so nothing changes for single-source assets. On an asset with contributors, an inferred or operator-origin candidate belongs to the driver that created it. Production refuses contributor lists until per-contributor control gates exist, so no production path declares such an asset yet (#1539). No published output, golden, identifier or wire value changes. The gateway binary changes, so affected release evidence must be renewed before the final bill of materials freeze.
+
 ## AdapterMux transition characterization
 
 A deterministic test harness drives the AdapterMux read loop, received-symbol, SYN-boundary and grant handlers through their inputs (SYN, received symbol, bid, STARTED, FAILED, START deadline, session close, reset) and pins the resulting mux state and the ordered effects on the adapter, the active path, sessions and the passive stream. Test-only; the gateway binary is unchanged.

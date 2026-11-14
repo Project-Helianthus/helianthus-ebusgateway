@@ -92,32 +92,58 @@ func (p *huaweiPVPublication) retainedWithdrawals() []huaweiRetainedWithdrawal {
 	return append([]huaweiRetainedWithdrawal(nil), p.capacity...)
 }
 
-// capacityWithdrawals selects the retained observations of every generation
-// older than the one before the publishing generation. Admitting a third
-// generation inside the retention window would otherwise exceed the
-// per-asset retained reservation, so those observations are withdrawn
-// explicitly in the admitting batch; the reservation is never raised. Only
-// this publisher's own source is considered: another contributor's retained
-// observations are not its to withdraw, and SemReg would reject the batch.
-func (p *huaweiPVPublication) capacityWithdrawals(asset semreg.AssetID, current semreg.Snapshot, epoch semreg.SourceEpochID, generation semreg.Uint64) ([]semreg.CandidateID, []huaweiRetainedWithdrawal) {
+// capacityWithdrawals selects the retained observations of the older
+// generations that must go for the publishing generation to fit the
+// per-asset retention window. Every retained generation of the asset counts
+// toward the window, whichever source holds it, because the reservation is
+// shared by every contributor. Only this publisher's own generations are ever
+// withdrawn: another contributor's retained observations are not its to
+// withdraw, and SemReg would reject the batch. When the own generations
+// cannot free enough room the admission is refused and nothing is withdrawn.
+// Admitting a generation inside the window is never done by raising the
+// reservation.
+func (p *huaweiPVPublication) capacityWithdrawals(asset semreg.AssetID, current semreg.Snapshot, epoch semreg.SourceEpochID, generation semreg.Uint64) ([]semreg.CandidateID, []huaweiRetainedWithdrawal, error) {
 	type key struct {
 		epoch      semreg.SourceEpochID
 		generation semreg.Uint64
 	}
-	groups := map[key][]semreg.CandidateID{}
+	type group struct {
+		own   []semreg.CandidateID
+		other int
+	}
+	all := map[key]*group{}
 	for _, record := range current.Retained {
 		candidate := record.Candidate
-		if candidate.SourceEpochID == nil || candidate.DriverGeneration == nil || !semregCandidateOfSource(current, candidate, p.handle.Source()) {
+		if candidate.SourceEpochID == nil || candidate.DriverGeneration == nil {
 			continue
 		}
 		k := key{*candidate.SourceEpochID, *candidate.DriverGeneration}
 		if k.epoch == epoch && k.generation == generation {
 			continue
 		}
-		groups[k] = append(groups[k], candidate.CandidateID)
+		g := all[k]
+		if g == nil {
+			g = &group{}
+			all[k] = g
+		}
+		if semregCandidateOfSource(current, candidate, p.handle.Source()) {
+			g.own = append(g.own, candidate.CandidateID)
+		} else {
+			g.other++
+		}
 	}
-	if len(groups)+1 <= huaweiRetainedGenerations {
-		return nil, nil
+	excess := len(all) + 1 - huaweiRetainedGenerations
+	if excess <= 0 {
+		return nil, nil, nil
+	}
+	groups := map[key][]semreg.CandidateID{}
+	for k, g := range all {
+		if len(g.own) > 0 && g.other == 0 {
+			groups[k] = g.own
+		}
+	}
+	if len(groups) < excess {
+		return nil, nil, fmt.Errorf("%w: %d retained generations, %d withdrawable", errHuaweiRetainedCapacityExhausted, len(all)+1, len(groups))
 	}
 	started := map[semreg.SourceEpochID]int64{}
 	for _, source := range current.Sources {
@@ -149,7 +175,7 @@ func (p *huaweiPVPublication) capacityWithdrawals(asset semreg.AssetID, current 
 	var ids []semreg.CandidateID
 	var records []huaweiRetainedWithdrawal
 	seen := map[semreg.CandidateID]bool{}
-	for _, k := range order[huaweiRetainedGenerations-1:] {
+	for _, k := range order[len(order)-excess:] {
 		count := 0
 		for _, id := range groups[k] {
 			count++
@@ -166,7 +192,7 @@ func (p *huaweiPVPublication) capacityWithdrawals(asset semreg.AssetID, current 
 		}
 		return records[i].Generation < records[j].Generation
 	})
-	return ids, records
+	return ids, records, nil
 }
 
 // huaweiMaxAssetSources is the pinned kernel's per-asset bound on source
@@ -184,6 +210,8 @@ const (
 	huaweiMaxAssetBindings      = 128
 	huaweiMaxAssetIdentityLinks = 128
 )
+
+var errHuaweiRetainedCapacityExhausted = errors.New("huawei semantic retained generation capacity exhausted")
 
 var errHuaweiBindingCapacityExhausted = errors.New("huawei semantic binding capacity exhausted")
 
@@ -452,7 +480,10 @@ func (p *huaweiPVPublication) publishChild(asset semreg.AssetID, child modbusreg
 		if err != nil {
 			return err
 		}
-		retainedIDs, capacity = p.capacityWithdrawals(asset, current, epoch, generation)
+		retainedIDs, capacity, err = p.capacityWithdrawals(asset, current, epoch, generation)
+		if err != nil {
+			return fmt.Errorf("unit %d: %w", child.UnitID, err)
+		}
 		batch.FactWithdrawals = append(batch.FactWithdrawals, retainedIDs...)
 	}
 	if withdraw {

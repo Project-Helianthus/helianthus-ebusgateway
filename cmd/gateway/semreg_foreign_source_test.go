@@ -189,7 +189,10 @@ func TestForeignSourceHuaweiCapacityWithdrawsOnlyOwnGenerations(t *testing.T) {
 
 	check := func(t *testing.T, snapshot semreg.Snapshot, wantIDs []semreg.CandidateID, wantRecords []huaweiRetainedWithdrawal) {
 		t.Helper()
-		ids, records := p.capacityWithdrawals(asset, snapshot, epoch, generation)
+		ids, records, err := p.capacityWithdrawals(asset, snapshot, epoch, generation)
+		if err != nil {
+			t.Fatalf("capacity withdrawals refused: %v", err)
+		}
 		if got, want := foreignSourceSortedIDs(ids), foreignSourceSortedIDs(wantIDs); !reflect.DeepEqual(got, want) {
 			t.Fatalf("withdrawn candidates=%v want %v", got, want)
 		}
@@ -202,30 +205,57 @@ func TestForeignSourceHuaweiCapacityWithdrawsOnlyOwnGenerations(t *testing.T) {
 			}
 		}
 	}
+	previousIDs := []semreg.CandidateID{"candidate:synthetic-own-previous-1", "candidate:synthetic-own-previous-2", "candidate:synthetic-own-previous-3"}
+	previousRecords := []huaweiRetainedWithdrawal{{AssetID: asset, SourceEpochID: p.predecessor, Generation: "1", Count: 3, Reason: "capacity"}}
 
 	t.Run("single source", func(t *testing.T) {
 		check(t, foreignSourceHuaweiSnapshot(p, asset, true), singleIDs, singleRecords)
 	})
+	// A foreign generation occupies the per-asset window: the own predecessor
+	// is the only group that can make room, and it alone is withdrawn.
 	t.Run("one foreign group beside the predecessor", func(t *testing.T) {
 		snapshot := foreignSourceHuaweiSnapshot(p, asset, false)
 		foreignSourceAddHuaweiContributor(&snapshot, asset, "1")
-		check(t, snapshot, nil, nil)
+		check(t, snapshot, previousIDs, previousRecords)
 	})
-	t.Run("two foreign groups beside three own generations", func(t *testing.T) {
+	// Two foreign groups and two own groups leave three to free, and only two
+	// are the publisher's own: the admission is refused, nothing is withdrawn.
+	t.Run("two foreign groups beside three own generations refuse", func(t *testing.T) {
 		snapshot := foreignSourceHuaweiSnapshot(p, asset, true)
 		foreignSourceAddHuaweiContributor(&snapshot, asset, "1", "2")
-		check(t, snapshot, singleIDs, singleRecords)
+		ids, records, err := p.capacityWithdrawals(asset, snapshot, epoch, generation)
+		if !errors.Is(err, errHuaweiRetainedCapacityExhausted) || len(ids) != 0 || len(records) != 0 {
+			t.Fatalf("ids=%v records=%+v err=%v want refusal", ids, records, err)
+		}
+	})
+	t.Run("one foreign group beside two own generations", func(t *testing.T) {
+		snapshot := foreignSourceHuaweiSnapshot(p, asset, true)
+		foreignSourceAddHuaweiContributor(&snapshot, asset, "1")
+		ids, records, err := p.capacityWithdrawals(asset, snapshot, epoch, generation)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Window of two: current plus one; three own and foreign groups
+		// leave two to free, both own.
+		want := append(append([]semreg.CandidateID{}, singleIDs...), previousIDs...)
+		if got := foreignSourceSortedIDs(ids); !reflect.DeepEqual(got, foreignSourceSortedIDs(want)) || len(records) != 2 {
+			t.Fatalf("ids=%v records=%+v", got, records)
+		}
+		for _, record := range records {
+			if record.SourceEpochID == foreignSourceEpoch {
+				t.Fatalf("foreign generation recorded as withdrawn: %+v", record)
+			}
+		}
 	})
 	for _, probe := range foreignSourceProbes {
 		t.Run(probe.name, func(t *testing.T) {
-			snapshot := foreignSourceHuaweiSnapshot(p, asset, true)
-			foreignSourceAddHuaweiContributor(&snapshot, asset, "1")
-			binding := probe.apply(&snapshot, asset, p.handle.Source(), "binding:synthetic-own-oldest")
+			snapshot := foreignSourceHuaweiSnapshot(p, asset, false)
+			binding := probe.apply(&snapshot, asset, p.handle.Source(), "binding:synthetic-own-previous")
 			snapshot.Retained = append(snapshot.Retained, foreignSourceRetained("candidate:synthetic-probe", binding, foreignProbeEpoch, "1"))
-			wantIDs, wantRecords := singleIDs, singleRecords
+			wantIDs, wantRecords := previousIDs, previousRecords
 			if probe.own {
-				wantIDs = append(append([]semreg.CandidateID{}, singleIDs...), "candidate:synthetic-probe")
-				wantRecords = append(append([]huaweiRetainedWithdrawal{}, singleRecords...), huaweiRetainedWithdrawal{AssetID: asset, SourceEpochID: foreignProbeEpoch, Generation: "1", Count: 1, Reason: "capacity"})
+				wantIDs = []semreg.CandidateID{"candidate:synthetic-probe"}
+				wantRecords = []huaweiRetainedWithdrawal{{AssetID: asset, SourceEpochID: foreignProbeEpoch, Generation: "1", Count: 1, Reason: "capacity"}}
 			}
 			check(t, snapshot, wantIDs, wantRecords)
 		})

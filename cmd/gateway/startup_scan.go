@@ -1131,9 +1131,9 @@ func startupScanHasVaillantInventory(gateway *ebusgateway.Gateway) bool {
 // startupScanInventoryHasNoRegulatorIdentity reports whether the product
 // catalog classifies every Vaillant identity in the registry as a
 // non-controller, the classification vaillant_regulator_capability publishes
-// as NONE. A Vaillant identity without a readable serial or with an
-// uncatalogued part number is unclassified and makes it false, as do a
-// registry without a Vaillant identity and a catalog that failed to load.
+// as NONE. A Vaillant identity without a readable serial or with a part
+// number the catalog does not list is unclassified and makes it false, as do
+// a registry without a Vaillant identity and a catalog that failed to load.
 func startupScanInventoryHasNoRegulatorIdentity(gateway *ebusgateway.Gateway) bool {
 	if gateway == nil || gateway.Registry == nil {
 		return false

@@ -128,6 +128,10 @@ type BusObservabilityStore struct {
 	// emits the batch-21 forensic counters
 	// (ebus_adaptermux_syn_seen_*) alongside the rest of the surface.
 	adaptermuxDiagProvider func() AdaptermuxDiagSnapshot
+	// activeArbitrationHoldProvider returns the adapter multiplexer's
+	// active arbitration hold reason, "" when not held. Set via
+	// SetActiveArbitrationHoldProvider; nil when no adaptermux is wired.
+	activeArbitrationHoldProvider func() string
 	// escapePairFailureProvider returns the mux escape-pair failure counts.
 	escapePairFailureProvider func() (lead, suffix, generation uint64)
 
@@ -1136,6 +1140,10 @@ type AdaptermuxDiagSnapshot struct {
 	// pair the verification failed on.
 	EscapePairLeadFailures   uint64
 	EscapePairSuffixFailures uint64
+	// ActiveArbitrationHeld reports whether the adapter multiplexer holds
+	// active arbitration (no START request is sent). Published as the
+	// gauge ebus_adaptermux_active_arbitration_held.
+	ActiveArbitrationHeld bool
 }
 
 // SetAdaptermuxDiagProvider registers a snapshot provider callback for
@@ -1151,6 +1159,34 @@ func (store *BusObservabilityStore) SetAdaptermuxDiagProvider(provider func() Ad
 	store.mu.Lock()
 	store.adaptermuxDiagProvider = provider
 	store.mu.Unlock()
+}
+
+// SetActiveArbitrationHoldProvider registers the source of the active
+// arbitration hold reason ("" when not held). A non-empty reason is listed in
+// the bus summary's degraded reasons. nil-store and nil-provider are no-ops for
+// the summary.
+func (store *BusObservabilityStore) SetActiveArbitrationHoldProvider(provider func() string) {
+	if store == nil {
+		return
+	}
+	store.mu.Lock()
+	store.activeArbitrationHoldProvider = provider
+	store.mu.Unlock()
+}
+
+// activeArbitrationHoldReason reads the hold provider outside store.mu, like
+// startupSurface: the provider reads adapter multiplexer state.
+func (store *BusObservabilityStore) activeArbitrationHoldReason() string {
+	if store == nil {
+		return ""
+	}
+	store.mu.RLock()
+	provider := store.activeArbitrationHoldProvider
+	store.mu.RUnlock()
+	if provider == nil {
+		return ""
+	}
+	return provider()
 }
 
 // V8RolloutSnapshot is the per-scrape view of the frame-atomic-visibility
@@ -1499,6 +1535,15 @@ func (store *BusObservabilityStore) RenderPrometheus() string {
 		writer.writeType("ebus_adaptermux_foreign_initiator_releases_total", "counter")
 		writer.writeCounterSample("ebus_adaptermux_foreign_initiator_releases_total",
 			float64(adaptermuxDiag.ForeignInitiatorReleases), nil)
+
+		activeArbitrationHeld := 0.0
+		if adaptermuxDiag.ActiveArbitrationHeld {
+			activeArbitrationHeld = 1
+		}
+		writer.writeHelp("ebus_adaptermux_active_arbitration_held",
+			"1 while the adapter multiplexer holds active arbitration because the adapter answers out of step (no START request is sent; passive reception continues), else 0.")
+		writer.writeType("ebus_adaptermux_active_arbitration_held", "gauge")
+		writer.writeGaugeSample("ebus_adaptermux_active_arbitration_held", activeArbitrationHeld, nil)
 	}
 
 	// v8 frame-atomic-visibility rollout counters — wired via

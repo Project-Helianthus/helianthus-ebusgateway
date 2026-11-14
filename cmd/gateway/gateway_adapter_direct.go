@@ -15,7 +15,7 @@ import (
 )
 
 func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() error, activeTxnClassifier, error) {
-	return wireAdapterDirectWithConnectionLost(ctx, cfg, nil)
+	return wireAdapterDirectWithConnectionLost(ctx, cfg, nil, nil)
 }
 
 const adapterDirectENSProtocol ebusgateway.TransportProtocol = "adapter-direct-ens"
@@ -34,7 +34,10 @@ var adapterDirectBlackholeThreshold time.Duration
 // failure is a rejected configuration (rejectEBusConfig). A failure of the
 // multiplexer's start is the adapter's outcome; when it reached the INIT
 // handshake it carries what the handshake saw.
-func wireAdapterDirectWithConnectionLost(ctx context.Context, cfg *ebusgateway.Config, onConnectionLost func(reason string)) (func() error, activeTxnClassifier, error) {
+//
+// stepMemory is the runtime's out-of-step memory shared by its generations;
+// nil gives the multiplexer a private one.
+func wireAdapterDirectWithConnectionLost(ctx context.Context, cfg *ebusgateway.Config, onConnectionLost func(reason string), stepMemory *adaptermux.AdapterStepMemory) (func() error, activeTxnClassifier, error) {
 	normalized, err := ebusgateway.NormalizeEBusDriverTransportConfig(cfg.TransportConfig)
 	if err != nil {
 		return nil, nil, rejectEBusConfig(err)
@@ -98,6 +101,7 @@ func wireAdapterDirectWithConnectionLost(ctx context.Context, cfg *ebusgateway.C
 		// notify gets the bidder's own initiator instead of the
 		// phantom, and the passive emit / logging still fires for
 		// observability.
+		AdapterStepMemory: stepMemory,
 	}
 	phantomBytes, err := parseHexByteList(cfg.PhantomInitiatorRejectBytes)
 	if err != nil {

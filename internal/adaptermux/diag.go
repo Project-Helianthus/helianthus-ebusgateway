@@ -373,6 +373,15 @@ type ActiveTxnSnapshot struct {
 	// UndeliverableStarted counts wire wins retired after cancellation or disconnect.
 	UndeliverableStarted uint64
 
+	// ActiveArbitrationHoldReason is the reason this mux holds active
+	// arbitration for ("adapter_out_of_step"), or "" when not held.
+	ActiveArbitrationHoldReason string
+	// OutOfStepDetections counts out-of-step detections of this mux.
+	OutOfStepDetections uint64
+	// AdapterLinkResets counts the link resets this mux requested on a
+	// detection.
+	AdapterLinkResets uint64
+
 	// Transaction-shape diagnostics (bounded).
 	WritePrefix []byte
 	ReadPrefix  []byte
@@ -437,6 +446,9 @@ func (m *Mux) ActiveTxnSnapshot() ActiveTxnSnapshot {
 		BytesDeliveredToActive:             m.activeTxn.bytesDeliveredToActive.Load(),
 		AbsorbResetTotal:                   m.absorbResetTotal.Load(),
 		UndeliverableStarted:               m.undeliverableStarted.Load(),
+		ActiveArbitrationHoldReason:        m.ActiveArbitrationHoldReason(),
+		OutOfStepDetections:                m.step.detections,
+		AdapterLinkResets:                  m.step.linkResets,
 		WritePrefix:                        wp,
 		ReadPrefix:                         rp,
 		EchoLike:                           m.activeTxn.echoLike.Load(),
@@ -685,6 +697,9 @@ func (m *Mux) recordGatewayInactive(reason ActiveTxnInactiveReason) {
 	}
 	m.activeTxn.inactiveAt = time.Now()
 	m.activeTxn.inactiveReas = reason
+	if reason == ReasonSYNTerminator || reason == ReasonTransactionDone {
+		m.stepCompletedLocked()
+	}
 	for i, known := range inactiveReasons {
 		if known == reason {
 			m.activeTxn.inactiveByReason[i].Add(1)

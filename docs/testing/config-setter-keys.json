@@ -1,0 +1,373 @@
+{
+  "format": "helianthus.ebusgateway.config_setter_keys.v1",
+  "description": "Accepted field keys of the GraphQL config setters (set_circuit_config, set_system_config, set_zone_config, set_boiler_config) and of the MCP system and boiler set_config tools. Each key names one write target: its register selector and value type. Any other key is rejected with the sorted list of these keys; there is no alias. A key marked open keeps its current name because the meaning of its register is open.",
+  "setters": {
+    "set_boiler_config": {
+      "service": "B509",
+      "keys": [
+        {
+          "key": "dhw_partial_load_power",
+          "selector": {
+            "registers": [
+              "0x0804"
+            ]
+          },
+          "value_type": "uch",
+          "open": false
+        },
+        {
+          "key": "heating_partial_load_power",
+          "selector": {
+            "registers": [
+              "0x0704"
+            ]
+          },
+          "value_type": "uch",
+          "open": false
+        },
+        {
+          "key": "installerMenuCode",
+          "selector": {
+            "registers": [
+              "0x4904"
+            ]
+          },
+          "value_type": "uch",
+          "open": true,
+          "open_question": "The meaning of B509 selector 0x4904 is open (candidate: central heating pump mode; another reading: installer access code). The key keeps its current name until the owner decides."
+        },
+        {
+          "key": "installer_phone_number",
+          "selector": {
+            "registers": [
+              "0x8104"
+            ]
+          },
+          "value_type": "bcd",
+          "open": false
+        },
+        {
+          "key": "maximum_dhw_flow_temperature_setpoint",
+          "selector": {
+            "registers": [
+              "0x0F04"
+            ]
+          },
+          "value_type": "data2c",
+          "open": false
+        },
+        {
+          "key": "maximum_heating_flow_temperature_setpoint",
+          "selector": {
+            "registers": [
+              "0x0E04",
+              "0xA500"
+            ]
+          },
+          "value_type": "data2c",
+          "open": false
+        }
+      ]
+    },
+    "set_circuit_config": {
+      "service": "B524",
+      "keys": [
+        {
+          "key": "circuit_cooling_enabled",
+          "selector": {
+            "opcode": "0x02",
+            "group": "0x02",
+            "instance": "index",
+            "registers": [
+              "0x0006"
+            ]
+          },
+          "value_type": "bool_u8",
+          "open": false
+        },
+        {
+          "key": "circuit_flow_temperature_setpoint_minimum",
+          "selector": {
+            "opcode": "0x02",
+            "group": "0x02",
+            "instance": "index",
+            "registers": [
+              "0x0012"
+            ]
+          },
+          "value_type": "float32",
+          "open": false
+        },
+        {
+          "key": "circuit_heating_curve_factor",
+          "selector": {
+            "opcode": "0x02",
+            "group": "0x02",
+            "instance": "index",
+            "registers": [
+              "0x000F"
+            ]
+          },
+          "value_type": "float32",
+          "open": false
+        },
+        {
+          "key": "circuit_room_temperature_influence_mode",
+          "selector": {
+            "opcode": "0x02",
+            "group": "0x02",
+            "instance": "index",
+            "registers": [
+              "0x0015"
+            ]
+          },
+          "value_type": "enum_u16",
+          "enum": {
+            "modulating": 1,
+            "off": 0,
+            "thermostat": 2
+          },
+          "open": false
+        },
+        {
+          "key": "heating_circuit_flow_temperature_setpoint_maximum",
+          "selector": {
+            "opcode": "0x02",
+            "group": "0x02",
+            "instance": "index",
+            "registers": [
+              "0x0010"
+            ]
+          },
+          "value_type": "float32",
+          "open": false
+        },
+        {
+          "key": "heating_circuit_outdoor_temperature_limit_maximum",
+          "selector": {
+            "opcode": "0x02",
+            "group": "0x02",
+            "instance": "index",
+            "registers": [
+              "0x0014"
+            ]
+          },
+          "value_type": "float32",
+          "open": false
+        }
+      ]
+    },
+    "set_system_config": {
+      "service": "B524",
+      "keys": [
+        {
+          "key": "adaptive_heating_curve_enabled",
+          "selector": {
+            "opcode": "0x02",
+            "group": "0x00",
+            "instance": "0x00",
+            "registers": [
+              "0x0014"
+            ]
+          },
+          "value_type": "bool_u8",
+          "open": false
+        },
+        {
+          "key": "dhw_flow_temperature_setpoint_maximum",
+          "selector": {
+            "opcode": "0x02",
+            "group": "0x00",
+            "instance": "0x00",
+            "registers": [
+              "0x0046"
+            ]
+          },
+          "value_type": "float32",
+          "open": false
+        },
+        {
+          "key": "dhw_outdoor_bivalence_temperature_limit",
+          "selector": {
+            "opcode": "0x02",
+            "group": "0x00",
+            "instance": "0x00",
+            "registers": [
+              "0x0001"
+            ]
+          },
+          "value_type": "float32",
+          "open": false
+        },
+        {
+          "key": "heating_flow_temperature_setpoint_maximum_at_heat_pump_fault",
+          "selector": {
+            "opcode": "0x02",
+            "group": "0x00",
+            "instance": "0x00",
+            "registers": [
+              "0x0026"
+            ]
+          },
+          "value_type": "float32",
+          "open": false
+        },
+        {
+          "key": "heating_outdoor_bivalence_temperature_limit",
+          "selector": {
+            "opcode": "0x02",
+            "group": "0x00",
+            "instance": "0x00",
+            "registers": [
+              "0x0023"
+            ]
+          },
+          "value_type": "float32",
+          "open": false
+        },
+        {
+          "key": "installer_access_code",
+          "selector": {
+            "opcode": "0x02",
+            "group": "0x00",
+            "instance": "0x00",
+            "registers": [
+              "0x0076"
+            ]
+          },
+          "value_type": "uint16",
+          "open": false
+        },
+        {
+          "key": "installer_name",
+          "selector": {
+            "opcode": "0x02",
+            "group": "0x00",
+            "instance": "0x00",
+            "registers": [
+              "0x006C",
+              "0x006D"
+            ]
+          },
+          "value_type": "cstring_pair",
+          "open": false
+        },
+        {
+          "key": "installer_phone_number",
+          "selector": {
+            "opcode": "0x02",
+            "group": "0x00",
+            "instance": "0x00",
+            "registers": [
+              "0x006F",
+              "0x0070"
+            ]
+          },
+          "value_type": "cstring_pair",
+          "open": false
+        },
+        {
+          "key": "maintenance_date",
+          "selector": {
+            "opcode": "0x02",
+            "group": "0x00",
+            "instance": "0x00",
+            "registers": [
+              "0x002C"
+            ]
+          },
+          "value_type": "date_hda3",
+          "open": false
+        },
+        {
+          "key": "room_humidity_limit_maximum",
+          "selector": {
+            "opcode": "0x02",
+            "group": "0x00",
+            "instance": "0x00",
+            "registers": [
+              "0x000E"
+            ]
+          },
+          "value_type": "uint16",
+          "open": false
+        }
+      ]
+    },
+    "set_zone_config": {
+      "service": "B524",
+      "keys": [
+        {
+          "key": "heating_zone_operating_mode",
+          "selector": {
+            "opcode": "0x02",
+            "group": "0x03",
+            "instance": "index",
+            "registers": [
+              "0x0006"
+            ]
+          },
+          "value_type": "enum_u16",
+          "enum": {
+            "auto": 1,
+            "manual": 2,
+            "off": 0
+          },
+          "open": false
+        },
+        {
+          "key": "heating_zone_room_manual_temperature_setpoint",
+          "selector": {
+            "opcode": "0x02",
+            "group": "0x03",
+            "instance": "index",
+            "registers": [
+              "0x0022"
+            ]
+          },
+          "value_type": "float32",
+          "open": false
+        },
+        {
+          "key": "zone_quick_veto_time",
+          "selector": {
+            "opcode": "0x02",
+            "group": "0x03",
+            "instance": "index",
+            "registers": [
+              "0x0026"
+            ]
+          },
+          "value_type": "float32",
+          "open": false
+        },
+        {
+          "key": "zone_room_temperature_setpoint_at_holiday",
+          "selector": {
+            "opcode": "0x02",
+            "group": "0x03",
+            "instance": "index",
+            "registers": [
+              "0x0005"
+            ]
+          },
+          "value_type": "float32",
+          "open": false
+        },
+        {
+          "key": "zone_room_temperature_setpoint_at_quick_veto",
+          "selector": {
+            "opcode": "0x02",
+            "group": "0x03",
+            "instance": "index",
+            "registers": [
+              "0x0008"
+            ]
+          },
+          "value_type": "float32",
+          "open": false
+        }
+      ]
+    }
+  }
+}

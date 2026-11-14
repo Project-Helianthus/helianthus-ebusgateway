@@ -2909,19 +2909,19 @@ func (p *vaillantSemanticPoller) refreshBoilerStatusB509(ctx context.Context, bo
 			updated = true
 		}
 	case boilerStatusTierMedium:
-		if value := p.readB509BoilerConfigFloat(ctx, boilerAddress, "flowsetHcMaxC"); value != nil {
+		if value := p.readB509BoilerConfigFloat(ctx, boilerAddress, "maximum_heating_flow_temperature_setpoint"); value != nil {
 			snapshot.FlowsetHcMaxC = value
 			updated = true
 		}
-		if value := p.readB509BoilerConfigFloat(ctx, boilerAddress, "flowsetHwcMaxC"); value != nil {
+		if value := p.readB509BoilerConfigFloat(ctx, boilerAddress, "maximum_dhw_flow_temperature_setpoint"); value != nil {
 			snapshot.FlowsetHwcMaxC = value
 			updated = true
 		}
-		if value := p.readB509BoilerConfigFloat(ctx, boilerAddress, "partloadHcKW"); value != nil {
+		if value := p.readB509BoilerConfigFloat(ctx, boilerAddress, "heating_partial_load_power"); value != nil {
 			snapshot.PartloadHcKW = value
 			updated = true
 		}
-		if value := p.readB509BoilerConfigFloat(ctx, boilerAddress, "partloadHwcKW"); value != nil {
+		if value := p.readB509BoilerConfigFloat(ctx, boilerAddress, "dhw_partial_load_power"); value != nil {
 			snapshot.PartloadHwcKW = value
 			updated = true
 		}
@@ -6229,10 +6229,10 @@ const (
 )
 
 var boilerConfigFieldSpecs = map[string]boilerConfigFieldSpec{
-	"flowsetHcMaxC":  {addrs: []uint16{boiler_b509_flowset_hc_max_c, boiler_b509_flowset_hc_max_c_fallback}, min: 20, max: 80, codec: boilerConfigCodecTempDATA2c},
-	"flowsetHwcMaxC": {addrs: []uint16{boiler_b509_flowset_hwc_max_c}, min: 30, max: 65, codec: boilerConfigCodecTempDATA2c},
-	"partloadHcKW":   {addrs: []uint16{boiler_b509_partload_hc_kw}, min: 0, max: 40, codec: boilerConfigCodecUCH},
-	"partloadHwcKW":  {addrs: []uint16{boiler_b509_partload_hwc_kw}, min: 0, max: 40, codec: boilerConfigCodecUCH},
+	"maximum_heating_flow_temperature_setpoint": {addrs: []uint16{boiler_b509_flowset_hc_max_c, boiler_b509_flowset_hc_max_c_fallback}, min: 20, max: 80, codec: boilerConfigCodecTempDATA2c},
+	"maximum_dhw_flow_temperature_setpoint":     {addrs: []uint16{boiler_b509_flowset_hwc_max_c}, min: 30, max: 65, codec: boilerConfigCodecTempDATA2c},
+	"heating_partial_load_power":                {addrs: []uint16{boiler_b509_partload_hc_kw}, min: 0, max: 40, codec: boilerConfigCodecUCH},
+	"dhw_partial_load_power":                    {addrs: []uint16{boiler_b509_partload_hwc_kw}, min: 0, max: 40, codec: boilerConfigCodecUCH},
 }
 
 // cstringPairSpec defines a paired CString field that spans 2 registers.
@@ -6242,8 +6242,8 @@ type cstringPairSpec struct {
 }
 
 var systemCStringPairSpecs = map[string]cstringPairSpec{
-	"installerName":  {addr1: system_installer_name_1, addr2: system_installer_name_2},
-	"installerPhone": {addr1: system_installer_phone_1, addr2: system_installer_phone_2},
+	"installer_name":         {addr1: system_installer_name_1, addr2: system_installer_name_2},
+	"installer_phone_number": {addr1: system_installer_phone_1, addr2: system_installer_phone_2},
 }
 
 func (p *vaillantSemanticPoller) SetSystemConfig(ctx context.Context, fieldName string, rawValue string) graphql.ConfigMutationResult {
@@ -6305,7 +6305,7 @@ func (p *vaillantSemanticPoller) writeSystemCStringPair(ctx context.Context, fie
 	// Validate characters.
 	for i := 0; i < len(trimmed); i++ {
 		b := trimmed[i]
-		if fieldName == "installerPhone" {
+		if fieldName == "installer_phone_number" {
 			if (b < '0' || b > '9') && b != '+' && b != '(' && b != ')' && b != ' ' {
 				return graphql.ConfigMutationResult{Success: false, Error: fmt.Sprintf("invalid character '%c' at position %d (allowed: digits, +, (, ), space)", b, i)}
 			}
@@ -6361,13 +6361,13 @@ func systemSnapshotWithConfigValue(existing *vaillantSystemSnapshot, fieldName, 
 		snapshot = &vaillantSystemSnapshot{}
 	}
 	switch fieldName {
-	case "maintenanceDate":
+	case "maintenance_date":
 		snapshot.MaintenanceDate = &rawValue
-	case "installerName":
+	case "installer_name":
 		snapshot.InstallerName = &rawValue
-	case "installerPhone":
+	case "installer_phone_number":
 		snapshot.InstallerPhone = &rawValue
-	case "installerMenuCode":
+	case "installer_access_code":
 		if v, err := strconv.Atoi(rawValue); err == nil {
 			u := uint16(v)
 			snapshot.InstallerMenuCode = &u
@@ -6382,7 +6382,7 @@ func (p *vaillantSemanticPoller) SetBoilerConfig(ctx context.Context, fieldName 
 	}
 
 	// Handle BCD phone number specially (not float64-based).
-	if fieldName == "phoneNumber" {
+	if fieldName == "installer_phone_number" {
 		return p.writeBoilerPhoneBCD(ctx, rawValue)
 	}
 	// Handle boiler installer menu code as integer (not float64-based).
@@ -6396,7 +6396,7 @@ func (p *vaillantSemanticPoller) SetBoilerConfig(ctx context.Context, fieldName 
 		for key := range boilerConfigFieldSpecs {
 			allKeys = append(allKeys, key)
 		}
-		allKeys = append(allKeys, "phoneNumber", "installerMenuCode")
+		allKeys = append(allKeys, "installer_phone_number", "installerMenuCode")
 		slices.Sort(allKeys)
 		return graphql.BoilerConfigMutationResult{
 			Success: false,
@@ -6501,7 +6501,7 @@ func (p *vaillantSemanticPoller) writeBoilerPhoneBCD(ctx context.Context, rawVal
 
 	decoded := string(digits)
 	p.mu.Lock()
-	p.boiler = boilerSnapshotWithStringConfigValue(p.boiler, "phoneNumber", decoded)
+	p.boiler = boilerSnapshotWithStringConfigValue(p.boiler, "installer_phone_number", decoded)
 	p.mu.Unlock()
 
 	p.publishBoilerStatus(semanticSnapshotSourceLive)
@@ -6547,7 +6547,7 @@ func boilerSnapshotWithStringConfigValue(existing *vaillantBoilerSnapshot, field
 		snapshot = &vaillantBoilerSnapshot{}
 	}
 	switch fieldName {
-	case "phoneNumber":
+	case "installer_phone_number":
 		snapshot.PhoneNumber = &value
 	}
 	return snapshot
@@ -6586,13 +6586,13 @@ func boilerSnapshotWithConfigValue(existing *vaillantBoilerSnapshot, fieldName s
 	}
 
 	switch fieldName {
-	case "flowsetHcMaxC":
+	case "maximum_heating_flow_temperature_setpoint":
 		snapshot.FlowsetHcMaxC = cloneFloat64Ptr(&value)
-	case "flowsetHwcMaxC":
+	case "maximum_dhw_flow_temperature_setpoint":
 		snapshot.FlowsetHwcMaxC = cloneFloat64Ptr(&value)
-	case "partloadHcKW":
+	case "heating_partial_load_power":
 		snapshot.PartloadHcKW = cloneFloat64Ptr(&value)
-	case "partloadHwcKW":
+	case "dhw_partial_load_power":
 		snapshot.PartloadHwcKW = cloneFloat64Ptr(&value)
 	}
 

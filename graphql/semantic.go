@@ -413,7 +413,7 @@ type SystemConfig struct {
 	AlternativePoint             *float64
 	HeatingCircuitBivalencePoint *float64
 	DhwBivalencePoint            *float64
-	// DhwBivalenceBound is the active write bound of dhwBivalencePointC
+	// DhwBivalenceBound is the active write bound of dhw_outdoor_bivalence_temperature_limit
 	// (controller profile or conservative unmatched policy). Nil only before
 	// the gateway has resolved it.
 	DhwBivalenceBound      *ConfigBound

@@ -127,6 +127,45 @@ func (a *asset) publishes(src semreg.SourceID) bool {
 	return false
 }
 
+// checkContributorPacks refuses a batch of a declared contributor that
+// publishes a fact, service or capability of a pack the contributor did not
+// declare. The owner's batches are bounded by the asset's packs only.
+func (a *asset) checkContributorPacks(batch semreg.PublicationBatch) error {
+	var own *contributor
+	for index := range a.contributors {
+		if a.contributors[index].source == batch.SourceID {
+			own = &a.contributors[index]
+		}
+	}
+	if own == nil {
+		return nil
+	}
+	declared := func(pack semreg.PackRef) error {
+		for _, held := range own.packs {
+			if held == pack {
+				return nil
+			}
+		}
+		return fmt.Errorf("%w: the contributor publishes a pack it did not declare", ErrTransaction)
+	}
+	for _, fact := range batch.FactUpserts {
+		if err := declared(semreg.PackRef{ID: fact.Key.PackID, Version: fact.Key.PackVersion}); err != nil {
+			return err
+		}
+	}
+	for _, service := range batch.ServiceUpserts {
+		if err := declared(service.Definition.Pack); err != nil {
+			return err
+		}
+	}
+	for _, capability := range batch.CapabilityUpserts {
+		if err := declared(capability.Definition.Pack); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // publishingDriverLocked returns the driver of the transaction's publishing
 // source; without a handle (a restored batch) it is the asset's driver.
 // h.mu must be held.

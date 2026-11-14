@@ -1240,6 +1240,9 @@ func (tx *Tx) Apply(batch semreg.PublicationBatch, monotonic semreg.MonotonicPoi
 	if batch.DriverGeneration != tx.generationID() {
 		return semreg.Snapshot{}, nil, &semreg.Error{ID: semreg.StaleDriverGeneration, Detail: "batch header does not match the publication handle"}
 	}
+	if err := tx.asset.checkContributorPacks(batch); err != nil {
+		return semreg.Snapshot{}, nil, err
+	}
 	if snapshot, ok := tx.Current(); ok {
 		if cursor, found := cursorFor(snapshot, batch.SourceID, batch.SourceEpochID, batch.DriverGeneration); found {
 			tx.priorKnown, tx.priorSeq = true, cursor.LastSequence

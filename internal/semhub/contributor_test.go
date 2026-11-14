@@ -386,6 +386,29 @@ func TestContributorPacksMustBeSubsetOfAssetPacks(t *testing.T) {
 	}
 }
 
+// TestContributorBatchStaysInDeclaredPacks refuses a contributor batch that
+// publishes a pack the contributor did not declare, while the owner may.
+func TestContributorBatchStaysInDeclaredPacks(t *testing.T) {
+	hub := newSharedTestHub(t)
+	other := otherValidator{testValidator{pack: testPackRef}}
+	if _, err := hub.Declare(AssetSpec{AssetID: sharedAsset, SourceID: sharedOwner, Driver: sharedDriver, Validators: []semreg.PackValidator{newTestValidator(), other},
+		Contributors: []ContributorSpec{{SourceID: sharedPeer, Driver: peerDriver, Validators: []semreg.PackValidator{other}}}}); err != nil {
+		t.Fatal(err)
+	}
+	a := mustAdmit(t, hub, sharedOwner, sharedDriver)
+	b := mustAdmit(t, hub, sharedPeer, peerDriver)
+	tx, err := hub.Begin(b, sharedAsset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = tx.Apply(testBatch(t, tx, "fam_b", 10, 1), testMono(1))
+	tx.Abort()
+	if !errors.Is(err, ErrTransaction) {
+		t.Fatalf("contributor batch in an undeclared pack=%v", err)
+	}
+	mustPublish(t, hub, a, sharedAsset, "fam_a", 20, 2)
+}
+
 // TestContributorPublishesOnSharedAsset admits a declared contributor and
 // publishes through it; a source the owner did not name is refused at Begin.
 func TestContributorPublishesOnSharedAsset(t *testing.T) {

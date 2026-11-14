@@ -146,6 +146,9 @@ func issue1373RequireRecovered(t *testing.T, process *rctlProcess, endpoint *iss
 // the third attempt, answered with features 0x01, recovers without a
 // restart.
 func TestIssue1373FailedInitHandshakeDuringRecoveryIsRetriedUntilTheAdapterAnswers(t *testing.T) {
+	if testing.Short() {
+		t.Skip("measured slow test: runs in the full suite (docs/testing/slow-test-inventory.md)")
+	}
 	for _, tc := range issue1373Handshakes {
 		t.Run(tc.name, func(t *testing.T) {
 			clock := newIssue1369Clock(issue1369NoJitter)

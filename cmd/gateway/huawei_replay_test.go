@@ -249,6 +249,9 @@ func h10Refresh(t *testing.T, provider huaweiRegistryProvider, clock *h10Clock) 
 	return cycle
 }
 func TestH10TCPProviderPVSnapshotParity(t *testing.T) {
+	if testing.Short() {
+		t.Skip("measured slow test: runs in the full suite (docs/testing/slow-test-inventory.md)")
+	}
 	for _, name := range []string{"smartlogger", "sdongle"} {
 		t.Run(name, func(t *testing.T) {
 			fixture := h10Load(t, name)
@@ -1184,6 +1187,9 @@ func h10AssertWithdrawn(t *testing.T, hub *semhub.Hub, asset semreg.AssetID) {
 }
 
 func TestH10PartialGroupFailurePreservesFactFreshness(t *testing.T) {
+	if testing.Short() {
+		t.Skip("measured slow test: runs in the full suite (docs/testing/slow-test-inventory.md)")
+	}
 	fixture := h10Load(t, "smartlogger")
 	groups := map[uint16]h10Step{}
 	for _, step := range fixture.Cycles[0].Steps {

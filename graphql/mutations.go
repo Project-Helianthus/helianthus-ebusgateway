@@ -121,6 +121,100 @@ var zoneConfigFieldSpecs = map[string]configFieldSpec{
 
 var systemConfigFieldSpecs = SystemConfigFieldSpecs()
 
+// configSetterKeyStatus is the documentation status of one accepted config
+// setter key: whether the documentation marks the name of its register
+// provisional, and the open question it records for that register.
+type configSetterKeyStatus struct {
+	provisional  bool
+	openQuestion string
+}
+
+const (
+	configSetterQuestionZoneOperatingMode = "Representation is not established; the relation to `OP=0x02, GG=0x03, RR=0x0006` (same name) is not established."
+	configSetterQuestionPartialLoad       = "One community configuration lists the unit as kW or %; the unit is unresolved."
+	configSetterQuestionHeatingFlowMax    = "Separate selector with the same community name; which devices of the class use which id is unresolved."
+	configSetterQuestionPumpMode          = "Candidate interpretation, unconfirmed on the wire: central heating pump mode (0 post-run, 1 permanent, 2 winter). Another reading is an installer access code (the legacy API path describes one); see the Open questions of the boiler map. Which devices of the class use which meaning is unresolved. The canonical name is provisional until this is resolved."
+)
+
+// configSetterKeys lists every key each config setter accepts with its
+// documentation status, as docs/testing/config-setter-keys.json publishes
+// them. The description of each setter's field argument is built from it.
+var configSetterKeys = map[string]map[string]configSetterKeyStatus{
+	"set_boiler_config": {
+		"central_heating_pump_mode":                 {provisional: true, openQuestion: configSetterQuestionPumpMode},
+		"dhw_partial_load_power":                    {openQuestion: configSetterQuestionPartialLoad},
+		"heating_partial_load_power":                {openQuestion: configSetterQuestionPartialLoad},
+		"installer_phone_number":                    {},
+		"maximum_dhw_flow_temperature_setpoint":     {},
+		"maximum_heating_flow_temperature_setpoint": {openQuestion: configSetterQuestionHeatingFlowMax},
+	},
+	"set_circuit_config": {
+		"circuit_cooling_enabled":                           {},
+		"circuit_flow_temperature_setpoint_minimum":         {},
+		"circuit_heating_curve_factor":                      {},
+		"circuit_room_temperature_influence_mode":           {},
+		"heating_circuit_flow_temperature_setpoint_maximum": {},
+		"heating_circuit_outdoor_temperature_limit_maximum": {},
+	},
+	"set_system_config": {
+		"adaptive_heating_curve_enabled":                               {},
+		"dhw_flow_temperature_setpoint_maximum":                        {},
+		"dhw_outdoor_bivalence_temperature_limit":                      {},
+		"heating_flow_temperature_setpoint_maximum_at_heat_pump_fault": {},
+		"heating_outdoor_bivalence_temperature_limit":                  {},
+		"installer_access_code":                                        {},
+		"installer_name":                                               {},
+		"installer_phone_number":                                       {},
+		"maintenance_date":                                             {},
+		"room_humidity_limit_maximum":                                  {},
+	},
+	"set_zone_config": {
+		"heating_zone_operating_mode":                   {provisional: true, openQuestion: configSetterQuestionZoneOperatingMode},
+		"heating_zone_room_manual_temperature_setpoint": {},
+		"zone_quick_veto_time":                          {},
+		"zone_room_temperature_setpoint_at_holiday":     {},
+		"zone_room_temperature_setpoint_at_quick_veto":  {},
+	},
+}
+
+// configSetterAcceptedKeys returns the sorted keys a config setter accepts.
+func configSetterAcceptedKeys(setter string) []string {
+	keys := make([]string, 0, len(configSetterKeys[setter]))
+	for key := range configSetterKeys[setter] {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// configSetterFieldDescription is the description of a config setter's field
+// argument: the accepted keys, then each key with a provisional name or an
+// open question, with the question the documentation records.
+func configSetterFieldDescription(setter string) string {
+	keys := configSetterAcceptedKeys(setter)
+	var b strings.Builder
+	b.WriteString("Key of the value to write; one of: " + strings.Join(keys, ", ") + ". Any other key is rejected with this list; there is no alias.")
+	provisional := 0
+	for _, key := range keys {
+		status := configSetterKeys[setter][key]
+		switch {
+		case status.provisional:
+			provisional++
+			b.WriteString(" Key " + key + " has a provisional name (the documentation name is not final): " + status.openQuestion)
+		case status.openQuestion != "":
+			b.WriteString(" Key " + key + " has an open question in the documentation: " + status.openQuestion)
+		}
+	}
+	if provisional == 0 {
+		b.WriteString(" No key of this setter has a provisional name.")
+	}
+	return b.String()
+}
+
+func configSetterFieldArgument(setter string) *graphqlgo.ArgumentConfig {
+	return &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String), Description: configSetterFieldDescription(setter)}
+}
+
 func adaptSystemConfigSpec(s systemconfig.ConfigFieldSpec) configFieldSpec {
 	out := configFieldSpec{group: s.RegisterGroup, addr: s.RegisterAddr, min: s.Min, max: s.Max, maxLen: s.MaxLen, enum: s.Enum}
 	switch s.ValueType {
@@ -450,7 +544,7 @@ func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter Bo
 			"set_boiler_config": &graphqlgo.Field{
 				Type: boilerConfigResultType,
 				Args: graphqlgo.FieldConfigArgument{
-					"field": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+					"field": configSetterFieldArgument("set_boiler_config"),
 					"value": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
 				},
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
@@ -467,7 +561,7 @@ func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter Bo
 				Type: configResultType,
 				Args: graphqlgo.FieldConfigArgument{
 					"index": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.Int)},
-					"field": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+					"field": configSetterFieldArgument("set_circuit_config"),
 					"value": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
 				},
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
@@ -479,7 +573,7 @@ func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter Bo
 			"set_system_config": &graphqlgo.Field{
 				Type: configResultType,
 				Args: graphqlgo.FieldConfigArgument{
-					"field": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+					"field": configSetterFieldArgument("set_system_config"),
 					"value": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
 				},
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
@@ -492,7 +586,7 @@ func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter Bo
 				Type: configResultType,
 				Args: graphqlgo.FieldConfigArgument{
 					"index": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.Int)},
-					"field": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+					"field": configSetterFieldArgument("set_zone_config"),
 					"value": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
 				},
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {

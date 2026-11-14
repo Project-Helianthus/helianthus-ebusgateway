@@ -640,3 +640,46 @@ func TestM06RealSunSpecFailedStartThenShutdownKeepsSiblingsRunning(t *testing.T)
 		}
 	}
 }
+
+// TestManagedSidecarRegistersGrowattCANContractNames pins the native contract
+// owner and name the gateway registers for each receive-only Growatt CAN
+// provider. The names follow the provider, not a work-item code.
+func TestManagedSidecarRegistersGrowattCANContractNames(t *testing.T) {
+	original := gatewayManagedSidecarDescriptorsFor
+	t.Cleanup(func() { gatewayManagedSidecarDescriptorsFor = original })
+	gatewayManagedSidecarDescriptorsFor = func(ds []runtimecontrol.Descriptor) []runtimecontrol.Descriptor {
+		for i := range ds {
+			if isGrowattCANDescriptor(ds[i].DriverID) {
+				ds[i].Adapter = runtimecontrol.NewAdapter(func(context.Context, runtimecontrol.Construction) (*m06Runtime, error) {
+					return &m06Runtime{}, nil
+				})
+			}
+		}
+		return ds
+	}
+	sidecars := prepareManagedSidecars(context.Background(), cx21Combined(t), newTestSemanticHub(t), "", nil, nil)
+	want := map[runtimecontrol.DriverID]struct{ owner, contract string }{
+		managedGrowattPCSID:  {"github.com/Project-Helianthus/helianthus-canbusreg", "GrowattPCSCANReceiveOnly"},
+		managedGrowattLINKID: {"github.com/Project-Helianthus/helianthus-canbusreg", "GrowattLINKCANReceiveOnly"},
+		managedGrowattCANID:  {"github.com/Project-Helianthus/helianthus-ebusgateway", "GrowattBMSCANReceiveOnly"},
+	}
+	seen := map[runtimecontrol.DriverID]bool{}
+	for _, d := range sidecars.registry.List().Drivers {
+		if strings.HasPrefix(d.NativeContract.Contract, "CX") {
+			t.Errorf("%s registers a work-item contract name %q", d.DriverID, d.NativeContract.Contract)
+		}
+		w, ok := want[d.DriverID]
+		if !ok {
+			continue
+		}
+		seen[d.DriverID] = true
+		if d.NativeContract.Owner != w.owner || d.NativeContract.Contract != w.contract {
+			t.Errorf("%s native contract = %s/%s, want %s/%s", d.DriverID, d.NativeContract.Owner, d.NativeContract.Contract, w.owner, w.contract)
+		}
+	}
+	for id := range want {
+		if !seen[id] {
+			t.Errorf("%s not registered", id)
+		}
+	}
+}

@@ -267,6 +267,29 @@ func TestWhitelistSize_MatchesPlan(t *testing.T) {
 	}
 }
 
+// TestErrorTexts_StartWithPackageName pins the sentinel texts that reach
+// logs and API errors: each starts with the package name executionpolicy.
+func TestErrorTexts_StartWithPackageName(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{executionpolicy.ErrSafetyClassDenied, "executionpolicy: safety_class denied"},
+		{executionpolicy.ErrResponderTransportUnavailable, "executionpolicy: responder transport unavailable"},
+	} {
+		if got := tc.err.Error(); got != tc.want {
+			t.Fatalf("error text = %q, want %q", got, tc.want)
+		}
+	}
+	err := executionpolicy.Check(cmd("synthetic.denied", ebusstd.SafetyMutating, ebusstd.IdentityKey{}), executionpolicy.CallerUserFacing)
+	if !errors.Is(err, executionpolicy.ErrSafetyClassDenied) {
+		t.Fatalf("want errors.Is(err, ErrSafetyClassDenied), got %v", err)
+	}
+	if want := `method="synthetic.denied" caller="user_facing" class=mutating: executionpolicy: safety_class denied`; err.Error() != want {
+		t.Fatalf("denial text = %q, want %q", err.Error(), want)
+	}
+}
+
 func TestIsDenied_ClassifiesViaErrorsIs(t *testing.T) {
 	c := cmd("x", ebusstd.SafetyMutating, ebusstd.IdentityKey{})
 	err := executionpolicy.Check(c, executionpolicy.CallerUserFacing)

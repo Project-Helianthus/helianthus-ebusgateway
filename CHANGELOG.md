@@ -10,6 +10,31 @@ The `field` keys of the GraphQL mutations `set_system_config`, `set_zone_config`
 
 Value types, bounds (including the controller-identity bound of the DHW bivalence limit), encodings, read-back confirmation and the published snapshot values are unchanged; the text-pair writer and the snapshot updates follow the new keys. The MCP system and boiler tool descriptions name the new keys. The new consumer fixture `docs/testing/config-setter-keys.json` lists the accepted keys of the four setters with their register selector and value type and marks the 0x4904 key as open; gateway tests fail when it and the setters differ. Until the Home Assistant integration sends these keys, its system and boiler configuration writes fail; the circuit keys do not change. The gateway binary changes, so the affected release evidence must be renewed before the final bill of materials freeze.
 
+## Error texts with the package names and Growatt CAN contract names without work-item codes
+
+Error texts that reach logs and API errors now start with the package name without underscores, and one of them names the declared emit set instead of a work-item code. Each text is renamed directly, with no alias and no acceptance of the old text:
+
+| Old | New |
+|---|---|
+| `execution_policy: safety_class denied` | `executionpolicy: safety_class denied` |
+| `execution_policy: responder transport unavailable` | `executionpolicy: responder transport unavailable` |
+| `execution_policy: nmWhitelist entry has incomplete identity axes …` (startup panic) | `executionpolicy: nmWhitelist entry has incomplete identity axes …` |
+| `nm_runtime: no catalog entry for emit event` | `nmruntime: no catalog entry for emit event` |
+| `nm_runtime: unknown emit event (not in declared M4 set)` | `nmruntime: unknown emit event (not in the declared emit set)` |
+| `nm_runtime: emitter is required` | `nmruntime: emitter is required` |
+| `nm_runtime: executionpolicy: responder transport unavailable` (wrapped) | `nmruntime: executionpolicy: responder transport unavailable` |
+| `nm_runtime: responder send: …` (wrapped) | `nmruntime: responder send: …` |
+| `rpc_source: source byte is invalid` | `rpcsource: source byte is invalid` |
+
+The native contract names the gateway registers for the receive-only Growatt PCS and LINK CAN providers (owner `helianthus-canbusreg`) follow their sibling `GrowattBMSCANReceiveOnly` instead of a work-item code:
+
+| Old | New |
+|---|---|
+| `CX17PCSReceiveOnly` | `GrowattPCSCANReceiveOnly` |
+| `CX17LINKReceiveOnly` | `GrowattLINKCANReceiveOnly` |
+
+Callers compare these errors with `errors.Is`; the sentinels are unchanged. The acceptance report key `catalogue_version`, the result schema and the hardware acceptance catalog signatures are unchanged here; their rename is tracked in #1545. Native records, admission, wire values and the `ebus_standard` MCP method strings are unchanged. The gateway binary changes, so affected release evidence must be renewed before the final bill of materials freeze.
+
 ## Startup reason for a heat-pump-class heat source without a controller
 
 The bus observability startup block (GraphQL `bus_summary.status.startup`, MCP `ebus_v1_bus_summary_get` `status.startup`) gains the additive field `reason`. It is `no_supported_heat_source_path` while the semantic poller has no supported heat-source data path: no B524 root and no boiler-class heat source, while the inventory holds a heat-pump-class identity (a heat-pump device-ID family `EHP`, `HMU`, `VWL`, `VWS` or `VWZ`, or a Vaillant serial whose part number the product catalog lists with role Heat Pump). The poller evaluates it after every discovery pass and on the registry-only heat-source refresh of the state and configuration ticks, and clears it as soon as a root or a boiler-class heat source exists. It stays clear when the process has discovered a root before or the catalog classifies an inventory identity as a controller, because a missing root is then a failing read. A heat source of unknown class sets no reason. Otherwise GraphQL returns `reason` as null and MCP omits it, so existing outputs are unchanged. Setting and clearing log `semantic_startup_reason reason=no_supported_heat_source_path state=set heat_source=0x<addr>` and `semantic_startup_reason reason=no_supported_heat_source_path state=cleared controller=0x<addr> boiler=0x<addr>`.

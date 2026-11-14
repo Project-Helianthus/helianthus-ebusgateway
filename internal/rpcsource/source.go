@@ -12,7 +12,7 @@ import (
 
 // ErrInvalidSource is the sentinel returned when an RPC-invoke call site
 // attempts to use an invalid source byte.
-var ErrInvalidSource = errors.New("rpc_source: source byte is invalid")
+var ErrInvalidSource = errors.New("rpcsource: source byte is invalid")
 
 // Enforce validates that the supplied source byte is usable as an active
 // initiator source. It returns a non-nil error wrapping ErrInvalidSource for

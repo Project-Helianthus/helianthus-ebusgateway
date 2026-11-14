@@ -61,6 +61,34 @@ func TestResponderRuntime_ConstructionRequiresTransport(t *testing.T) {
 	if !errors.Is(err, executionpolicy.ErrResponderTransportUnavailable) {
 		t.Fatalf("err=%v, want ErrResponderTransportUnavailable", err)
 	}
+	if want := "nmruntime: executionpolicy: responder transport unavailable"; err.Error() != want {
+		t.Fatalf("error text = %q, want %q", err.Error(), want)
+	}
+}
+
+// TestResponderRuntime_SendFailureTextStartsWithPackageName asserts a
+// transport send failure is wrapped (errors.Is keeps the cause) and that
+// the wrapped text starts with the package name nmruntime.
+func TestResponderRuntime_SendFailureTextStartsWithPackageName(t *testing.T) {
+	cat := loadTestCatalog(t)
+	sendErr := errors.New("synthetic send failure")
+	tp := &fakeResponderTransport{err: sendErr}
+	rt, err := nmruntime.NewResponderRuntime(cat, tp)
+	if err != nil {
+		t.Fatalf("construction: %v", err)
+	}
+	cmd := ebusstd.Command{
+		ID:          "synthetic.responder_probe",
+		Identity:    ebusstd.IdentityKey{Namespace: "ebus_standard"},
+		SafetyClass: ebusstd.SafetyReadOnlySafe,
+	}
+	err = rt.EmitResponder(cmd, []byte{0xAA})
+	if !errors.Is(err, sendErr) {
+		t.Fatalf("err=%v, want errors.Is send failure", err)
+	}
+	if want := "nmruntime: responder send: synthetic send failure"; err.Error() != want {
+		t.Fatalf("error text = %q, want %q", err.Error(), want)
+	}
 }
 
 // TestResponderRuntime_ConstructionSucceedsOnENHLike asserts a transport

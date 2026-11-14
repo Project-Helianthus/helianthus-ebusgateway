@@ -23,6 +23,17 @@ func TestEnforce_RejectsZeroSource(t *testing.T) {
 	if !errors.Is(err, rpcsource.ErrInvalidSource) {
 		t.Fatalf("Enforce(0x00) = %v, want errors.Is ErrInvalidSource", err)
 	}
+	if want := "got 0x00: rpcsource: source byte is invalid"; err.Error() != want {
+		t.Fatalf("Enforce(0x00) text = %q, want %q", err.Error(), want)
+	}
+}
+
+// TestErrInvalidSourceText_StartsWithPackageName pins the sentinel text
+// that reaches logs and API errors.
+func TestErrInvalidSourceText_StartsWithPackageName(t *testing.T) {
+	if got, want := rpcsource.ErrInvalidSource.Error(), "rpcsource: source byte is invalid"; got != want {
+		t.Fatalf("ErrInvalidSource text = %q, want %q", got, want)
+	}
 }
 
 func TestRequire_PanicsOnZeroSource(t *testing.T) {

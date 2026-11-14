@@ -123,10 +123,10 @@ func prepareManagedSidecars(ctx context.Context, cfg ebusgateway.Config, hub *se
 		log.Printf("Growatt CAN configuration refused: %v", canConfigErr)
 	}
 	if cfg.GrowattPCSCANConfig != (ebusgateway.GrowattProjectCANConfig{}) {
-		descriptors = append(descriptors, descriptor(managedGrowattPCSID, cfg.GrowattPCSCANConfig.Enabled, source(managedGrowattPCSID), sidecarNativeContract("github.com/Project-Helianthus/helianthus-canbusreg", "CX17PCSReceiveOnly"), newGrowattProjectCompositionAdapter(pcs, false)))
+		descriptors = append(descriptors, descriptor(managedGrowattPCSID, cfg.GrowattPCSCANConfig.Enabled, source(managedGrowattPCSID), sidecarNativeContract("github.com/Project-Helianthus/helianthus-canbusreg", "GrowattPCSCANReceiveOnly"), newGrowattProjectCompositionAdapter(pcs, false)))
 	}
 	if cfg.GrowattLINKCANConfig != (ebusgateway.GrowattProjectCANConfig{}) {
-		descriptors = append(descriptors, descriptor(managedGrowattLINKID, cfg.GrowattLINKCANConfig.Enabled, source(managedGrowattLINKID), sidecarNativeContract("github.com/Project-Helianthus/helianthus-canbusreg", "CX17LINKReceiveOnly"), newGrowattProjectCompositionAdapter(link, true)))
+		descriptors = append(descriptors, descriptor(managedGrowattLINKID, cfg.GrowattLINKCANConfig.Enabled, source(managedGrowattLINKID), sidecarNativeContract("github.com/Project-Helianthus/helianthus-canbusreg", "GrowattLINKCANReceiveOnly"), newGrowattProjectCompositionAdapter(link, true)))
 	}
 	descriptors = gatewayManagedSidecarDescriptorsFor(append(descriptors,
 		descriptor(managedGrowattID, cfg.ModbusTCPConfig.GrowattBMSRS485.Enabled, growattSource, sidecarNativeContract("github.com/Project-Helianthus/helianthus-modbus", "RTUProductionEndpoint"), newGrowattManagedDriverFactory(cfg.ModbusTCPConfig.GrowattBMSRS485, modbusProviderGrowattBMS, hub, openGrowattBMSRTUEndpoint)),

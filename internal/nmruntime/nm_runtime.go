@@ -40,7 +40,7 @@ const (
 
 // ErrNoCatalogEntry is returned when the catalog has no command matching
 // the requested emit event's 14-tuple identity.
-var ErrNoCatalogEntry = errors.New("nm_runtime: no catalog entry for emit event")
+var ErrNoCatalogEntry = errors.New("nmruntime: no catalog entry for emit event")
 
 // ErrUnknownEmitEvent is returned when Emit is called with an EmitEvent
 // value that is not one of the declared constants (EventResetStatus,
@@ -49,7 +49,7 @@ var ErrNoCatalogEntry = errors.New("nm_runtime: no catalog entry for emit event"
 // events BEFORE the catalog lookup prevents callers from reaching
 // catalog rows (e.g. a future `sign_of_life` row added by ebusreg) via
 // a string-typed EmitEvent cast (issue #505 r3106904915).
-var ErrUnknownEmitEvent = errors.New("nm_runtime: unknown emit event (not in declared M4 set)")
+var ErrUnknownEmitEvent = errors.New("nmruntime: unknown emit event (not in the declared emit set)")
 
 // declaredEmitEvents is the closed set of EmitEvent values Emit accepts.
 // Extending this set requires locked-plan approval (see package doc).
@@ -63,7 +63,7 @@ var declaredEmitEvents = map[EmitEvent]struct{}{
 // construction is always a wiring bug, and fail-fast at construction is
 // preferred over a lazy panic on the first Emit call (issue #505
 // r3106859312).
-var ErrEmitterRequired = errors.New("nm_runtime: emitter is required")
+var ErrEmitterRequired = errors.New("nmruntime: emitter is required")
 
 // Emitter is the transport-facing interface used by the NM runtime to push
 // catalog-driven frames onto the bus. Implementations receive the admitted

@@ -11,8 +11,8 @@ package main
 // (device-class table: heat source target 0x08 without B524, internet module
 // target 0xF6 with B524 as initiator only). No device answers B524, the worst
 // case for retries. Serial numbers are synthetic: zero date, plant and
-// sequence fields around a public product-catalogue part number that the test
-// selects by catalogue role at run time. No identifier of a real installation
+// sequence fields around a public product-catalog part number that the test
+// selects by catalog role at run time. No identifier of a real installation
 // is used.
 //
 // The scenario runs the production startup scan loop, registry scan, B524 root
@@ -473,14 +473,14 @@ func (s *controllerlessSite) countByTarget(kind string, from time.Duration) map[
 }
 
 // controllerlessCatalogPart selects a ten-digit part number that the public
-// product catalogue classifies with role and as a non-controller.
+// product catalog classifies with role and as a non-controller.
 func controllerlessCatalogPart(t *testing.T, role string) string {
 	t.Helper()
 	return controllerlessCatalogPartWith(t, role, productids.ControllerNone)
 }
 
 // controllerlessCatalogPartWith selects a ten-digit part number that the
-// public product catalogue classifies with role and capability.
+// public product catalog classifies with role and capability.
 func controllerlessCatalogPartWith(t *testing.T, role string, capability productids.ControllerCapability) string {
 	t.Helper()
 	catalog, err := productids.LoadCatalog()
@@ -496,7 +496,7 @@ func controllerlessCatalogPartWith(t *testing.T, role string, capability product
 			return part
 		}
 	}
-	t.Fatalf("product catalogue has no %q part number with capability %v", role, capability)
+	t.Fatalf("product catalog has no %q part number with capability %v", role, capability)
 	return ""
 }
 
@@ -1284,7 +1284,7 @@ func TestControllerlessSiteStartupWithoutController(t *testing.T) {
 			wantDelayedRetries: 1,
 		},
 		{
-			// A catalogued regulator identity without a B524 root keeps root
+			// A cataloged regulator identity without a B524 root keeps root
 			// confirmation required: two passes, then admission failure.
 			name: "explicit source, regulator identity", explicitSource: true,
 			atController: &controllerlessDevice{deviceID: "CTL00", serialRaw: controllerlessSerialRaw(regulatorPart)},
@@ -1437,7 +1437,7 @@ func TestControllerlessSitePollingOverSimulatedTime(t *testing.T) {
 	boilerPart := controllerlessCatalogPart(t, "Boiler")
 	heatPumpPart := controllerlessCatalogPart(t, "Heat Pump")
 	modulePart := controllerlessCatalogPart(t, "Gateway")
-	// A catalogued part of neither heat-source class: with an unknown device
+	// A cataloged part of neither heat-source class: with an unknown device
 	// ID the heat source's class is unknown.
 	unknownClassPart := controllerlessCatalogPart(t, "Module")
 	threeCandidates := func(int) int { return 3 }
@@ -1486,7 +1486,7 @@ func TestControllerlessSitePollingOverSimulatedTime(t *testing.T) {
 			wantPlan:  controllerlessDiscoveryPlan(moduleFromMinuteThree, map[int]int{2: 4}, controllerlessAbsentMinute),
 		},
 		{
-			// An identified Vaillant device without a catalogued serial keeps
+			// An identified Vaillant device without a cataloged serial keeps
 			// the public result UNKNOWN; the absence state still settles.
 			name: "boiler-class heat source and internet module without serial", heatSourceID: "BAI00", heatSourcePart: boilerPart, boilerClass: true,
 			moduleSerial: "-",
@@ -1619,7 +1619,7 @@ func TestControllerlessSiteControllerAppearsAfterAbsent(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		appear   time.Duration // polling-relative
-		registry bool          // the registry gains a catalogue-classified regulator identity
+		registry bool          // the registry gains a catalog-classified regulator identity
 		enqueue  bool          // a discovery refresh is enqueued (passive insertion or promotion)
 		// noPeriodic disables the periodic discovery task (interval zero).
 		noPeriodic bool
@@ -1802,7 +1802,7 @@ func TestControllerlessSiteHeatPumpClassUnitAdoptedAsRoot(t *testing.T) {
 // controller that appears on a bus whose heat source is heat-pump class: the
 // first discovery pass sets the startup reason, the boot-live deadline moves
 // the phase to DEGRADED with that reason, and after ABSENT a controller
-// becomes reachable at 0x15 while the registry gains a catalogue-classified
+// becomes reachable at 0x15 while the registry gains a catalog-classified
 // regulator identity. The next regulator recheck (13:00) enqueues a discovery
 // pass that finds the root, and the reason clears. As in
 // TestControllerlessSiteControllerAppearsAfterAbsent, the root probe of 0x15

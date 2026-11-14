@@ -5,7 +5,7 @@ This publication supplies offline inventory and result validation. It changes no
 active gate and reports no candidate, physical result, release closure or authority
 to access equipment. Nothing is stable before Helianthus 1.0.
 
-The v1-format artifacts (catalog version 2) are [catalog v1](hardware-acceptance-catalog-v1.json)
+The v1-format artifacts (catalog version 3) are [catalog v1](hardware-acceptance-catalog-v1.json)
 and [result schema v1](hardware-acceptance-result-v1.schema.json). The
 [standard-library reader](../../internal/acceptancecatalog/catalog.go) accepts
 only a version/signature pair in a separately trusted ledger. Consumers must
@@ -99,6 +99,12 @@ revision identifiers. Whitespace in either input is immaterial.
 |---|---|
 | 1 | dgQZfJpvcTWqfdroLGAAKl8T+/Th28VeKtZKOyPC/70= |
 | 2 | wRyjMhSFWd3AJtm3OPlrL1TgZavYzPatH+u9D1eBIcU= |
+| 3 | sZqH2XdQaX+rFACbTkYv6onReT1u32uPWzAE4qm33sw= |
+
+Version 3 renames the report key `catalogue_version` to the catalog spelling
+`catalog_version` and changes nothing else. A report written for an earlier
+version is read with a build of that version; the current reader refuses it by
+its version and by its key.
 
 Any added, removed or renamed gate/case, changed transition, category, result
 vocabulary or schema requires a new catalog version and a new ledger entry;

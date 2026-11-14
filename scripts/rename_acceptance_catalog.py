@@ -5,10 +5,9 @@ RENAMES drops the work-item prefix from the identifiers of
 internal/acceptancecatalog, uses the catalog spelling, and adopts the renamed
 helianthus-modbusreg exports that the gateway uses. Identifier tokens and
 identifier words inside comments are renamed. In comments and string literals
-only the spelling changes. The acceptance report JSON key catalogue_version is
-kept unchanged and is exempt. Run without arguments to rewrite FILES; --check
+only the spelling changes. Run without arguments to rewrite FILES; --check
 lists any remaining old name or file name in the repository, and any remaining
-old spelling in FILES, and fails.
+old spelling in FILES or DATA, and fails.
 """
 import os
 import re
@@ -64,8 +63,12 @@ FILES = [
 ]
 TOKEN = re.compile(r"//[^\n]*|/\*[\s\S]*?\*/|\"(?:\\.|[^\"\\])*\"|`[^`]*`|'(?:\\.|[^'\\])*'|\b[A-Za-z_]\w*\b")
 WORD = re.compile(r"\b[A-Za-z_]\w*\b")
+# The acceptance catalog data and result schema, checked for the spelling only.
+DATA = [
+    "docs/testing/hardware-acceptance-catalog-v1.json",
+    "docs/testing/hardware-acceptance-result-v1.schema.json",
+]
 SPELLING = re.compile(r"(?i:c)atalogue")
-KEPT_KEY = "catalogue_version"
 
 
 def rename(match):
@@ -73,8 +76,7 @@ def rename(match):
 
 
 def spell(text):
-    parts = text.split(KEPT_KEY)
-    return KEPT_KEY.join(SPELLING.sub(lambda match: match[0][0] + "atalog", part) for part in parts)
+    return SPELLING.sub(lambda match: match[0][0] + "atalog", text)
 
 
 def rewrite(source):
@@ -97,19 +99,31 @@ def repository_paths():
             yield Path(directory, name)
 
 
+def spelling_lines(path, name):
+    for number, line in enumerate(path.read_text().splitlines(), 1):
+        if SPELLING.search(line):
+            yield f"{name}:{number}: spelling"
+
+
+def old_names(path, name):
+    for number, line in enumerate(path.read_text().splitlines(), 1):
+        for match in WORD.finditer(line):
+            if match[0] in RENAMES:
+                yield f"{name}:{number}: {match[0]}"
+
+
 def remaining():
     for path in repository_paths():
         name = path.relative_to(ROOT)
         if "catalogue" in path.name.lower():
             yield f"{name}: file name"
+        if str(name) in DATA:
+            yield from spelling_lines(path, name)
         if path.suffix != ".go" or not path.is_file():
             continue
-        for number, line in enumerate(path.read_text().splitlines(), 1):
-            for match in WORD.finditer(line):
-                if match[0] in RENAMES:
-                    yield f"{name}:{number}: {match[0]}"
-            if str(name) in FILES and SPELLING.search(line.replace(KEPT_KEY, "")):
-                yield f"{name}:{number}: spelling"
+        yield from old_names(path, name)
+        if str(name) in FILES:
+            yield from spelling_lines(path, name)
 
 
 def main(argv):

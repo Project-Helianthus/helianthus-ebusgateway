@@ -3094,7 +3094,7 @@ func TestStartupScanB524InterfaceIdentityAfterSerialEnrichment(t *testing.T) {
 
 // TestSourceAdmissionInventoryHasNoRegulatorIdentity pins the classification
 // the explicit-source admission rule relies on: every Vaillant identity must be
-// catalogued as a non-controller.
+// classified by the catalog as a non-controller.
 func TestSourceAdmissionInventoryHasNoRegulatorIdentity(t *testing.T) {
 	boiler := registry.DeviceInfo{Address: 0x08, Manufacturer: "Vaillant", DeviceID: "BAI00", SerialNumber: controllerlessSerial(controllerlessCatalogPart(t, "Boiler"))}
 	module := registry.DeviceInfo{Address: 0xF6, Manufacturer: "Vaillant", DeviceID: "NET00", SerialNumber: controllerlessSerial(controllerlessCatalogPart(t, "Gateway"))}

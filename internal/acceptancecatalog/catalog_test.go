@@ -88,7 +88,7 @@ func handoffRows(text string) []Row {
 }
 func TestPublishedArtifacts(t *testing.T) {
 	c := loadCatalog(t)
-	if c.Version != "2" || c.ActiveForm != "full88" || len(c.HandoffRows) != 65 || len(c.Forms["full88"]) != 64 || len(c.V2Cells) != 173 || len(c.Forms["adaptermux-v2"]) != 220 {
+	if c.Version != "3" || c.ActiveForm != "full88" || len(c.HandoffRows) != 65 || len(c.Forms["full88"]) != 64 || len(c.V2Cells) != 173 || len(c.Forms["adaptermux-v2"]) != 220 {
 		t.Fatal("unexpected publication inventory")
 	}
 	equal(t, c.RetiredV2, []string{"AD11"})
@@ -99,7 +99,7 @@ func TestPublishedArtifacts(t *testing.T) {
 	if schema["$schema"] != "https://json-schema.org/draft/2020-12/schema" {
 		t.Fatal("schema draft")
 	}
-	if schema["properties"].(map[string]any)["catalogue_version"].(map[string]any)["const"] != c.Version {
+	if schema["properties"].(map[string]any)["catalog_version"].(map[string]any)["const"] != c.Version {
 		t.Fatal("schema catalog version mismatch")
 	}
 	// Independently require all serialized record/review fields in the schema.
@@ -131,6 +131,110 @@ func TestPublishedArtifacts(t *testing.T) {
 	var vocabulary []string
 	_ = json.Unmarshal(b, &vocabulary)
 	equal(t, c.ResultVocabulary, vocabulary)
+}
+
+// TestCatalogVersionThreeReportKey pins version 3: the report key uses the
+// catalog spelling, the earlier ledger entries stay as published, and a report
+// carrying the earlier key or an earlier version is refused.
+func TestCatalogVersionThreeReportKey(t *testing.T) {
+	// The report key of versions 1 and 2, assembled so that the spelling check
+	// of scripts/rename_acceptance_catalog.py needs no exemption.
+	earlierKey := "catalog" + "ue_version"
+	c := loadCatalog(t)
+	if c.Version != "3" {
+		t.Fatalf("catalog version %q, want 3", c.Version)
+	}
+	page := string(repoFile(t, "docs/testing/hardware-acceptance-catalog.md"))
+	rows := regexp.MustCompile(`(?m)^\| ([0-9]+) \| [A-Za-z0-9+/=]+ \|$`).FindAllStringSubmatch(page, -1)
+	var versions []string
+	for _, row := range rows {
+		versions = append(versions, row[1])
+	}
+	equal(t, versions, []string{"1", "2", "3"})
+	// The rows of versions 1 and 2 as published before version 3.
+	for _, row := range []string{
+		"| 1 | dgQZfJpvcTWqfdroLGAAKl8T+/Th28VeKtZKOyPC/70= |",
+		"| 2 | wRyjMhSFWd3AJtm3OPlrL1TgZavYzPatH+u9D1eBIcU= |",
+	} {
+		if !regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(row) + `$`).MatchString(page) {
+			t.Fatalf("earlier ledger entry changed: %s", row)
+		}
+	}
+	if repoLedger(t)["3"] != Signature(c) {
+		t.Fatal("version 3 ledger entry differs from the canonical catalog signature")
+	}
+
+	schema, err := ReadSchema(strings.NewReader(string(repoFile(t, "docs/testing/"+c.ResultSchema))), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	properties := schema["properties"].(map[string]any)
+	required := schema["required"].([]any)
+	requiredKey := func(key string) bool {
+		for _, r := range required {
+			if r == key {
+				return true
+			}
+		}
+		return false
+	}
+	if !requiredKey("catalog_version") || properties["catalog_version"] == nil {
+		t.Fatal("schema does not require and define catalog_version")
+	}
+	if requiredKey(earlierKey) || properties[earlierKey] != nil {
+		t.Fatal("schema still names the earlier report key")
+	}
+	if properties["catalog_version"].(map[string]any)["const"] != c.Version {
+		t.Fatal("schema catalog_version constant differs from the catalog version")
+	}
+
+	base := syntheticReport(c, "full88")
+	b, err := json.Marshal(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(b, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if wire["catalog_version"] != c.Version || wire[earlierKey] != nil {
+		t.Fatalf("report key: %v", wire)
+	}
+	parsed, err := ReadReport(strings.NewReader(string(b)))
+	if err != nil {
+		t.Fatalf("catalog_version report refused: %v", err)
+	}
+	if parsed.CatalogVersion != c.Version {
+		t.Fatalf("catalog_version not read: %q", parsed.CatalogVersion)
+	}
+	if done, err := ValidateReport(c, parsed, base.Identity); err != nil || done {
+		t.Fatalf("catalog_version synthetic report: %v %v", done, err)
+	}
+
+	for _, version := range []string{"2", c.Version} {
+		t.Run("earlier-key-version-"+version, func(t *testing.T) {
+			old := map[string]any{}
+			for key, value := range wire {
+				old[key] = value
+			}
+			delete(old, "catalog_version")
+			old[earlierKey] = version
+			input, err := json.Marshal(old)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ReadReport(strings.NewReader(string(input))); err == nil || !strings.Contains(err.Error(), "unknown field") {
+				t.Fatalf("report with the earlier key not refused as an unknown field: %v", err)
+			}
+		})
+	}
+	t.Run("earlier-version-new-key", func(t *testing.T) {
+		earlier := clone(parsed)
+		earlier.CatalogVersion = "2"
+		if _, err := ValidateReport(c, earlier, base.Identity); err == nil {
+			t.Fatal("version 2 report admitted by the version 3 reader")
+		}
+	})
 }
 func TestHandoffInventory(t *testing.T) {
 	c := loadCatalog(t)
@@ -263,7 +367,7 @@ func TestCatalogMutations(t *testing.T) {
 		},
 		"retired-required":        func(c *Catalog) { c.Forms["adaptermux-v2"] = append(c.Forms["adaptermux-v2"], "AD11") },
 		"unknown-version":         func(c *Catalog) { c.Version = "O22-unknown" },
-		"unreviewed-version-bump": func(c *Catalog) { c.Version = "3" },
+		"unreviewed-version-bump": func(c *Catalog) { c.Version = "4" },
 		"vocabulary":              func(c *Catalog) { c.ResultVocabulary = append(c.ResultVocabulary, "O22-unknown") },
 	}
 	for name, mutate := range mutations {

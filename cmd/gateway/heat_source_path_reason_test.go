@@ -4,8 +4,8 @@ package main
 // sets it while there is no B524 root and no boiler-class heat source and the
 // inventory holds a heat-pump-class identity, and clears it as soon as a root
 // or a boiler-class heat source exists. Identities and serials are synthetic:
-// zero date, plant and sequence fields around a public product-catalogue part
-// number selected by catalogue role at run time.
+// zero date, plant and sequence fields around a public product-catalog part
+// number selected by catalog role at run time.
 
 import (
 	"bytes"
@@ -78,8 +78,8 @@ const heatSourcePathSetLine = "semantic_startup_reason reason=no_supported_heat_
 // mutation each one catches:
 //   - heat-pump identity, device-ID family (EHP, HMU, VWL, VWS, VWZ): a family
 //     dropped from or misspelt in heatPumpDeviceIDFamilies;
-//   - heat-pump identity, catalogue role: the catalogue-role branch removed,
-//     the manufacturer or catalogue-availability check removed, or a role other
+//   - heat-pump identity, catalog role: the catalog-role branch removed,
+//     the manufacturer or catalog-availability check removed, or a role other
 //     than "Heat Pump" accepted;
 //   - unknown identity: any identity treated as heat-pump class;
 //   - boiler-class identity: boiler precedence in the predicate removed;
@@ -110,11 +110,11 @@ func TestHeatSourcePathReasonCondition(t *testing.T) {
 		{name: "device-ID family VWS", devices: []registry.DeviceInfo{vaillant(0x08, "VWS00", "")}, wantAddress: 0x08},
 		{name: "device-ID family VWZ", devices: []registry.DeviceInfo{vaillant(0x76, "VWZIO", "")}, wantAddress: 0x76},
 		{name: "lowest heat-pump-class address", devices: []registry.DeviceInfo{vaillant(0x76, "VWZIO", ""), vaillant(0x08, "HMU00", "")}, wantAddress: 0x08},
-		{name: "device-ID family without the catalogue", devices: []registry.DeviceInfo{vaillant(0x08, "EHP00", "")}, catalogErr: errors.New("synthetic"), wantAddress: 0x08},
-		{name: "catalogue role heat pump", devices: []registry.DeviceInfo{vaillant(0x08, "XYZ00", heatPumpSerial)}, wantAddress: 0x08},
-		{name: "catalogue role heat pump, catalogue unavailable", devices: []registry.DeviceInfo{vaillant(0x08, "XYZ00", heatPumpSerial)}, catalogErr: errors.New("synthetic")},
-		{name: "catalogue role heat pump, other manufacturer", devices: []registry.DeviceInfo{{Address: 0x08, Manufacturer: "Other", DeviceID: "XYZ00", SerialNumber: heatPumpSerial}}},
-		{name: "catalogue role boiler, unknown device ID", devices: []registry.DeviceInfo{vaillant(0x08, "XYZ00", boilerSerial)}},
+		{name: "device-ID family without the catalog", devices: []registry.DeviceInfo{vaillant(0x08, "EHP00", "")}, catalogErr: errors.New("synthetic"), wantAddress: 0x08},
+		{name: "catalog role heat pump", devices: []registry.DeviceInfo{vaillant(0x08, "XYZ00", heatPumpSerial)}, wantAddress: 0x08},
+		{name: "catalog role heat pump, catalog unavailable", devices: []registry.DeviceInfo{vaillant(0x08, "XYZ00", heatPumpSerial)}, catalogErr: errors.New("synthetic")},
+		{name: "catalog role heat pump, other manufacturer", devices: []registry.DeviceInfo{{Address: 0x08, Manufacturer: "Other", DeviceID: "XYZ00", SerialNumber: heatPumpSerial}}},
+		{name: "catalog role boiler, unknown device ID", devices: []registry.DeviceInfo{vaillant(0x08, "XYZ00", boilerSerial)}},
 		{name: "unknown identity", devices: []registry.DeviceInfo{vaillant(0x08, "XYZ00", "")}},
 		{name: "boiler-class device ID with a heat-pump part", devices: []registry.DeviceInfo{vaillant(0x08, "BAI00", heatPumpSerial)}},
 		{name: "empty inventory"},
@@ -217,7 +217,7 @@ func TestHeatSourcePathReasonClearedByBoilerClassHeatSource(t *testing.T) {
 	}
 }
 
-// A registry entry enriched with a serial the catalogue classifies as a
+// A registry entry enriched with a serial the catalog classifies as a
 // controller clears the reason at the next regulator capability recheck, with
 // an unchanged device count (no discovery pass is queued). Mutation caught:
 // the reason evaluation removed from refreshRegulatorCapability.

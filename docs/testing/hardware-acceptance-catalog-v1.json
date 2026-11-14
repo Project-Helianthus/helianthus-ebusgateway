@@ -1,7 +1,7 @@
 {
-  "version": "2",
+  "version": "3",
   "result_schema": "hardware-acceptance-result-v1.schema.json",
-  "result_schema_signature": "vhinMjlgGgPyqmYR1uxZSi1cxcYPFj8eX6XPEddJzeA=",
+  "result_schema_signature": "RgYQDcMKCdHEXPy1Jt3RX0M/u59nWeTWp6khYu3zNGQ=",
   "active_form": "full88",
   "handoff_rows": [
     {

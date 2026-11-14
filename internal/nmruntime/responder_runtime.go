@@ -47,7 +47,7 @@ type ResponderRuntime struct {
 // populates the capability provider with scope=none instead).
 func NewResponderRuntime(cat ebusstd.Catalog, tp ebusgoxport.ResponderTransport) (*ResponderRuntime, error) {
 	if tp == nil {
-		return nil, fmt.Errorf("nm_runtime: %w", executionpolicy.ErrResponderTransportUnavailable)
+		return nil, fmt.Errorf("nmruntime: %w", executionpolicy.ErrResponderTransportUnavailable)
 	}
 	return &ResponderRuntime{catalog: cat, transport: tp}, nil
 }
@@ -68,7 +68,7 @@ func (r *ResponderRuntime) EmitResponder(cmd ebusstd.Command, payload []byte) er
 		return err
 	}
 	if _, err := r.transport.SendResponderBytes(payload); err != nil {
-		return fmt.Errorf("nm_runtime: responder send: %w", err)
+		return fmt.Errorf("nmruntime: responder send: %w", err)
 	}
 	return nil
 }

@@ -4,6 +4,41 @@
 
 A deterministic test harness drives the AdapterMux read loop, received-symbol, SYN-boundary and grant handlers through their inputs (SYN, received symbol, bid, STARTED, FAILED, START deadline, session close, reset) and pins the resulting mux state and the ordered effects on the adapter, the active path, sessions and the passive stream. Test-only; the gateway binary is unchanged.
 
+## Error texts with the package names and Growatt CAN contract names without work-item codes
+
+Error texts that reach logs and API errors now start with the package name without underscores, and one of them names the declared emit set instead of a work-item code. Each text is renamed directly, with no alias and no acceptance of the old text:
+
+| Old | New |
+|---|---|
+| `execution_policy: safety_class denied` | `executionpolicy: safety_class denied` |
+| `execution_policy: responder transport unavailable` | `executionpolicy: responder transport unavailable` |
+| `execution_policy: nmWhitelist entry has incomplete identity axes …` (startup panic) | `executionpolicy: nmWhitelist entry has incomplete identity axes …` |
+| `nm_runtime: no catalog entry for emit event` | `nmruntime: no catalog entry for emit event` |
+| `nm_runtime: unknown emit event (not in declared M4 set)` | `nmruntime: unknown emit event (not in the declared emit set)` |
+| `nm_runtime: emitter is required` | `nmruntime: emitter is required` |
+| `nm_runtime: executionpolicy: responder transport unavailable` (wrapped) | `nmruntime: executionpolicy: responder transport unavailable` |
+| `nm_runtime: responder send: …` (wrapped) | `nmruntime: responder send: …` |
+| `rpc_source: source byte is invalid` | `rpcsource: source byte is invalid` |
+
+The native contract names the gateway registers for the receive-only Growatt PCS and LINK CAN providers (owner `helianthus-canbusreg`) follow their sibling `GrowattBMSCANReceiveOnly` instead of a work-item code:
+
+| Old | New |
+|---|---|
+| `CX17PCSReceiveOnly` | `GrowattPCSCANReceiveOnly` |
+| `CX17LINKReceiveOnly` | `GrowattLINKCANReceiveOnly` |
+
+Callers compare these errors with `errors.Is`; the sentinels are unchanged. The acceptance report key `catalogue_version`, the result schema and the hardware acceptance catalog signatures are unchanged here; their rename is tracked in #1545. Native records, admission, wire values and the `ebus_standard` MCP method strings are unchanged. The gateway binary changes, so affected release evidence must be renewed before the final bill of materials freeze.
+
+## Startup reason for a heat-pump-class heat source without a controller
+
+The bus observability startup block (GraphQL `bus_summary.status.startup`, MCP `ebus_v1_bus_summary_get` `status.startup`) gains the additive field `reason`. It is `no_supported_heat_source_path` while the semantic poller has no supported heat-source data path: no B524 root and no boiler-class heat source, while the inventory holds a heat-pump-class identity (a heat-pump device-ID family `EHP`, `HMU`, `VWL`, `VWS` or `VWZ`, or a Vaillant serial whose part number the product catalog lists with role Heat Pump). The poller evaluates it after every discovery pass and on the registry-only heat-source refresh of the state and configuration ticks, and clears it as soon as a root or a boiler-class heat source exists. It stays clear when the process has discovered a root before or the catalog classifies an inventory identity as a controller, because a missing root is then a failing read. A heat source of unknown class sets no reason. Otherwise GraphQL returns `reason` as null and MCP omits it, so existing outputs are unchanged. Setting and clearing log `semantic_startup_reason reason=no_supported_heat_source_path state=set heat_source=0x<addr>` and `semantic_startup_reason reason=no_supported_heat_source_path state=cleared controller=0x<addr> boiler=0x<addr>`.
+
+The phase vocabulary, the readiness predicate, the boot-live timeout and its default are unchanged: without live data the phase does not reach `LIVE_READY`, and the boot-live timer still moves it to `DEGRADED`. With the reason set, that transition logs `reason="boot_live_timeout elapsed=<timeout> startup_reason=no_supported_heat_source_path"`, so a bus with nothing the gateway can read is distinguishable from failing reads. Root discovery is unchanged, so a heat-pump-class unit that answers the root probe coherently is still adopted as semantic root, and the reason is then clear. No heat-pump register is read, no heat-pump value is published, and boiler-class and controller-present behaviour is unchanged. No configuration switch or metric is added.
+
+The controller-less site scenario (now also with a heat source of unknown class and a heat-pump-class unit adopted as root), the poller, provider, GraphQL and MCP tests and the reduced run sheet (row CL-11) cover the change. The gateway binary changes, so the affected release evidence must be renewed before the final bill of materials freeze.
+
+A test-only change: the Growatt CAN startup composition test now treats every `TRANSITION_BUSY` refusal of row 8 as the transient of the preceding restart while it waits to send STOP, with the same bound and revision.
+
 ## Gateway packages without underscores and the eBUS library package renames
 
 Four gateway packages move to names without underscores, with their tests and golden files: `internal/execution_policy` becomes `internal/executionpolicy` (package `executionpolicy`), `internal/nm_runtime` becomes `internal/nmruntime` (`nmruntime`), `internal/rpc_source` becomes `internal/rpcsource` (`rpcsource`) and `mcp/ebus_standard` becomes `mcp/ebusstandard` (`ebusstandard`). Every importer uses the new paths. Import names that only repeated the new package name are dropped, and the files that import both the gateway MCP package and the ebusreg catalog name them `mcpstandard` and `ebusregstandard`. The ebusreg pin moves to the main-branch revision where `catalog/ebus_standard` is `catalog/ebusstandard`, and the ebusgo pin moves to the main-branch revision where `protocol/telegram_fsm` is `protocol/telegramfsm` and `protocol/ebus_standard` is `protocol/ebusstandard`; the gateway imports follow. There is no alias, forwarding package or compatibility layer. `python3 scripts/rename_underscore_packages.py` reproduces the moves, the import and qualifier rewrite and the source list of the naming inventory offline, `--require MODULE@VERSION` also re-pins a library from the local module cache, and `--check` lists any remaining old package path or name.

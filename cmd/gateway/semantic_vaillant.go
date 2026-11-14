@@ -498,6 +498,11 @@ func (p *vaillantSemanticPoller) refreshRegulatorCapability(_ context.Context) {
 		log.Printf("semantic_regulator_absence state=%s capability=%s", newAbsence, regCap.String())
 	}
 
+	// The reason depends on the regulator capability: re-evaluate it here so
+	// an enrichment that classifies a registered identity as a controller
+	// clears it without waiting for a discovery pass.
+	p.refreshHeatSourcePathReason()
+
 	// If device count changed, enqueue an immediate full discovery refresh.
 	if deviceCount != prevDeviceCount && prevDeviceCount > 0 {
 		log.Printf("semantic_regulator_recheck inventory_change prev=%d curr=%d", prevDeviceCount, deviceCount)
@@ -541,6 +546,7 @@ func (p *vaillantSemanticPoller) refreshBoilerAddress(ctx context.Context) {
 	prevBoilerAddress := p.boilerAddress
 	p.boilerAddress = boilerAddress
 	p.mu.Unlock()
+	p.refreshHeatSourcePathReason()
 	if boilerAddress != prevBoilerAddress && boilerAddress != 0 && boilerAddress != 0x08 {
 		log.Printf("semantic_boiler_discovery address=0x%02x source=nonstandard", boilerAddress)
 	}
@@ -572,6 +578,7 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 		semanticZoneCount.Set(0)
 		p.mu.Unlock()
 		p.publishRegulatorCapability(regCap)
+		p.refreshHeatSourcePathReason()
 		if regCap != prev {
 			log.Printf("semantic_regulator_capability capability=%s", regCap.String())
 		}
@@ -638,6 +645,7 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 	}
 	p.mu.Unlock()
 	p.publishRegulatorCapability(regCap)
+	p.refreshHeatSourcePathReason()
 
 	if primeStartup {
 		p.refreshStartupCriticalSemanticPlanes(ctx)
@@ -5451,6 +5459,95 @@ func isBoilerDeviceSnapshotCandidate(snap registry.DeviceEntrySnapshot) bool {
 		return true
 	}
 	return strings.HasPrefix(normalizedID, "BMU")
+}
+
+// heatPumpDeviceIDFamilies are the identification prefixes that the public
+// device-class table lists for heat-pump-class devices. A prefix is an
+// identity hint only; it authorizes no register read or decoding.
+var heatPumpDeviceIDFamilies = []string{"EHP", "HMU", "VWL", "VWS", "VWZ"}
+
+// isHeatPumpDeviceSnapshotCandidate reports whether snap carries a
+// heat-pump-class identity: a heat-pump device-ID family or a Vaillant serial
+// whose part number the product catalog classifies with role "Heat Pump" in
+// every row. A boiler-class identity is never heat-pump class, and an
+// identity that is neither is unknown, not heat-pump class.
+func isHeatPumpDeviceSnapshotCandidate(snap registry.DeviceEntrySnapshot, catalog productids.Catalog, catalogErr error) bool {
+	if isBoilerDeviceSnapshotCandidate(snap) {
+		return false
+	}
+	normalizedID := normalizeDeviceID(snap.DeviceID)
+	for _, family := range heatPumpDeviceIDFamilies {
+		if strings.HasPrefix(normalizedID, family) {
+			return true
+		}
+	}
+	if catalogErr != nil || !strings.EqualFold(snap.Manufacturer, "Vaillant") {
+		return false
+	}
+	partNumber := strings.TrimSpace(extractPartNumberFromSerial(snap.SerialNumber))
+	if partNumber == "" {
+		return false
+	}
+	found := false
+	for _, record := range catalog.All {
+		if strings.TrimSpace(record.PartNumber) != partNumber {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(record.Role), "Heat Pump") {
+			return false
+		}
+		found = true
+	}
+	return found
+}
+
+// findHeatPumpClassAddress returns the routing address of the lowest-addressed
+// heat-pump-class identity in the registry, or 0 when there is none.
+func (p *vaillantSemanticPoller) findHeatPumpClassAddress() byte {
+	if p == nil || p.reg == nil {
+		return 0
+	}
+	selected := byte(0)
+	p.reg.IterateSnapshots(func(snap registry.DeviceEntrySnapshot) bool {
+		if !isHeatPumpDeviceSnapshotCandidate(snap, p.catalog, p.catalogErr) {
+			return true
+		}
+		if addr := ebusgateway.SnapshotTargetAddressForRouting(snap); addr != 0 && (selected == 0 || addr < selected) {
+			selected = addr
+		}
+		return true
+	})
+	return selected
+}
+
+// refreshHeatSourcePathReason sets the startup reason
+// no_supported_heat_source_path while the poller has no supported heat-source
+// data path: no B524 root, no boiler-class heat source, and a heat-pump-class
+// identity in the inventory. It clears the reason as soon as a root or a
+// boiler-class heat source exists. A process that has discovered a root once,
+// or an inventory the catalog classifies as holding a controller, keeps the
+// reason clear: there the missing root is a failing read, not a bus without a
+// supported path. It reads the registry only and sends nothing.
+func (p *vaillantSemanticPoller) refreshHeatSourcePathReason() {
+	if p == nil || p.provider == nil {
+		return
+	}
+	p.mu.Lock()
+	controller, boilerAddress := p.controller, p.boilerAddress
+	everDiscovered, regCap := p.controllerEverDiscovered, p.regulatorCapability
+	p.mu.Unlock()
+	heatPump := byte(0)
+	if controller == 0 && boilerAddress == 0 && !everDiscovered && regCap != productids.ControllerPresent {
+		heatPump = p.findHeatPumpClassAddress()
+	}
+	if !p.provider.SetNoSupportedHeatSourcePath(heatPump != 0) {
+		return
+	}
+	if heatPump != 0 {
+		log.Printf("semantic_startup_reason reason=%s state=set heat_source=0x%02x", graphql.SemanticStartupReasonNoSupportedHeatSourcePath, heatPump)
+		return
+	}
+	log.Printf("semantic_startup_reason reason=%s state=cleared controller=0x%02x boiler=0x%02x", graphql.SemanticStartupReasonNoSupportedHeatSourcePath, controller, boilerAddress)
 }
 
 func normalizeDeviceID(value string) string {

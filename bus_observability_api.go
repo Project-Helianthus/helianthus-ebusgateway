@@ -43,6 +43,9 @@ type BusObservabilityStartup struct {
 	Phase         string     `json:"phase"`
 	CacheEpoch    uint64     `json:"cache_epoch"`
 	LiveEpoch     uint64     `json:"live_epoch"`
+	// Reason explains the phase when a startup reason applies, for example
+	// no_supported_heat_source_path; omitted otherwise.
+	Reason string `json:"reason,omitempty"`
 }
 
 // BusAdmission is the additive data-body field surfaced in the

@@ -41,6 +41,20 @@ Use public GitHub URLs in tracked documentation. These instructions must work in
 a standalone clone and must not require a parent workspace, sibling checkout,
 private network, Home Assistant instance, or physical bus.
 
+## Changelog
+
+- Every pull request adds one new file `changelog.d/<issue-number>-<slug>.md`:
+  a `## ` title line, one blank line, then the entry text, written like the
+  sections of `CHANGELOG.md`. Two pull requests for one issue use different
+  slugs.
+- A pull request does not edit `CHANGELOG.md` and does not remove a fragment.
+  Only the release pull request does both, with
+  `python3 scripts/changelog_fragments.py assemble --write`.
+- `python3 scripts/changelog_fragments.py check --require-new` enforces both
+  rules in `./scripts/ci_local.sh` and in the pull request workflow;
+  `python3 scripts/changelog_fragments.py assemble` prints the complete
+  changelog.
+
 ## Architecture boundaries
 
 - Drivers own protocol-native connection, discovery, qualification, decoding,

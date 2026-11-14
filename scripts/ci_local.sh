@@ -19,6 +19,10 @@ echo "==> Python lint baseline"
 python3 scripts/check_python_lint.py
 python3 -m unittest discover -s tests -p test_python_lint.py -v
 
+echo "==> changelog fragments"
+python3 scripts/changelog_fragments.py check --require-new
+python3 -m unittest discover -s tests -p test_changelog_fragments.py -v
+
 echo "==> gofmt"
 unformatted="$(
   git ls-files --cached --others --exclude-standard '*.go' |

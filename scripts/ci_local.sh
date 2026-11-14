@@ -69,7 +69,7 @@ go test ./... -run "TestSourceSelectionArtifact_EmitValidatesAgainstSchema" -cou
 echo "==> python script tests"
 python3 -m venv .tmp/metrics-inventory-venv
 .tmp/metrics-inventory-venv/bin/python -m pip install pytest
-.tmp/metrics-inventory-venv/bin/python -m pytest tests/test_metrics_inventory_docs.py -q -p no:cacheprovider
+.tmp/metrics-inventory-venv/bin/python -m pytest tests/test_metrics_inventory_docs.py tests/test_naming_contract.py tests/test_dispatch_documentation.py tests/test_rename_underscore_packages.py -q -p no:cacheprovider
 python3 scripts/passive_canary_verifier_test.py
 python3 scripts/source_selection_m4_gate_test.py
 python3 scripts/transport_gate_test.py

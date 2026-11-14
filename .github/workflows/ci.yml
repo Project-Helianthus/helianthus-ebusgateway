@@ -76,7 +76,7 @@ jobs:
           python-version: '3.11'
       - run: python3 -m pip install pytest
       - run: python3 -m pip install -r requirements-lint.txt
-      - run: python3 -m pytest tests/test_metrics_inventory_docs.py -q -p no:cacheprovider
+      - run: python3 -m pytest tests/test_metrics_inventory_docs.py tests/test_naming_contract.py tests/test_dispatch_documentation.py tests/test_rename_underscore_packages.py -q -p no:cacheprovider
       # cmd/gateway runs at about 600 s under -race here, right at Go's 10-minute
       # default; 20 minutes keeps a margin inside the 45-minute job limit.
       - run: go test -race -count=1 -timeout 20m ./...

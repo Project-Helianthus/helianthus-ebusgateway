@@ -5,9 +5,10 @@ RENAMES drops the work-item prefix from the identifiers of
 internal/acceptancecatalog, uses the catalog spelling, and adopts the renamed
 helianthus-modbusreg exports that the gateway uses. Identifier tokens and
 identifier words inside comments are renamed. In comments and string literals
-only the spelling changes, including the acceptance report JSON key
-catalog_version. Run without arguments to rewrite FILES; --check
-lists any remaining old name, spelling or file name in the repository and fails.
+only the spelling changes. The acceptance report JSON key catalogue_version is
+kept unchanged and is exempt. Run without arguments to rewrite FILES; --check
+lists any remaining old name or file name in the repository, and any remaining
+old spelling in FILES, and fails.
 """
 import os
 import re
@@ -64,6 +65,7 @@ FILES = [
 TOKEN = re.compile(r"//[^\n]*|/\*[\s\S]*?\*/|\"(?:\\.|[^\"\\])*\"|`[^`]*`|'(?:\\.|[^'\\])*'|\b[A-Za-z_]\w*\b")
 WORD = re.compile(r"\b[A-Za-z_]\w*\b")
 SPELLING = re.compile(r"(?i:c)atalogue")
+KEPT_KEY = "catalogue_version"
 
 
 def rename(match):
@@ -71,7 +73,8 @@ def rename(match):
 
 
 def spell(text):
-    return SPELLING.sub(lambda match: match[0][0] + "atalog", text)
+    parts = text.split(KEPT_KEY)
+    return KEPT_KEY.join(SPELLING.sub(lambda match: match[0][0] + "atalog", part) for part in parts)
 
 
 def rewrite(source):
@@ -105,7 +108,7 @@ def remaining():
             for match in WORD.finditer(line):
                 if match[0] in RENAMES:
                     yield f"{name}:{number}: {match[0]}"
-            if SPELLING.search(line):
+            if str(name) in FILES and SPELLING.search(line.replace(KEPT_KEY, "")):
                 yield f"{name}:{number}: spelling"
 
 

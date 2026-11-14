@@ -1,6 +1,7 @@
 package adaptermux
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log"
@@ -420,4 +421,29 @@ func adapterStepForceHold(m *Mux) bool {
 		action = m.stepBadCycleLocked()
 	}
 	return action == adapterStepHoldSet
+}
+
+// A transport that only implements the blocking StartArbitration (the
+// adapter-direct ENS path) opens a START cycle per start like RequestStart.
+func TestAdapterOutOfStepBlockingStartPathOpensCycles(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mock := &blockingStartTransport{readCh: make(chan byte, 16)}
+	m := New(Config{Protocol: "enh", Network: "tcp", Address: "127.0.0.1:0", ReadTimeout: 200 * time.Millisecond})
+	m.ctx, m.cancel = ctx, cancel
+	m.connMu.Lock()
+	m.upstream = mock
+	m.connMu.Unlock()
+	m.upstreamFeatures.Store(0x01)
+
+	ch := m.arb.requestStart(gatewaySessionID, 0x31)
+	m.tryGrantAndStart()
+	select {
+	case <-ch:
+	case <-time.After(2 * time.Second):
+		t.Fatal("blocking start did not complete")
+	}
+	if got := adapterStepProbe(m).cycle; got != 1 {
+		t.Fatalf("START cycles on the blocking path = %d, want 1", got)
+	}
 }

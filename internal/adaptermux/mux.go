@@ -4026,9 +4026,9 @@ func (m *Mux) tryGrantAndStartForBids(bids map[*startRequest]chan startResult) {
 			m.stateMu.Unlock()
 		}
 	})
-	if hasRequestStart {
-		m.stepStartCycleLocked()
-	}
+	// Every START path opens a cycle: the blocking StartArbitration fallback
+	// (adapter-direct ENS) is detected like the non-blocking RequestStart.
+	m.stepStartCycleLocked()
 	m.stateMu.Unlock()
 
 	// Forward START to adapter via non-blocking RequestStart.

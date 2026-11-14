@@ -92,17 +92,26 @@ func (p *huaweiPVPublication) retainedWithdrawals() []huaweiRetainedWithdrawal {
 	return append([]huaweiRetainedWithdrawal(nil), p.capacity...)
 }
 
-// capacityWithdrawals selects the retained observations of every generation
-// older than the one before the publishing generation. Admitting a third
-// generation inside the retention window would otherwise exceed the
-// per-asset retained reservation, so those observations are withdrawn
-// explicitly in the admitting batch; the reservation is never raised.
-func (p *huaweiPVPublication) capacityWithdrawals(asset semreg.AssetID, current semreg.Snapshot, epoch semreg.SourceEpochID, generation semreg.Uint64) ([]semreg.CandidateID, []huaweiRetainedWithdrawal) {
+// capacityWithdrawals selects the retained observations of the older
+// generations that must go for the publishing generation to fit the
+// per-asset retention window. Every retained generation of the asset counts
+// toward the window, whichever source holds it, because the reservation is
+// shared by every contributor. Only this publisher's own generations are ever
+// withdrawn: another contributor's retained observations are not its to
+// withdraw, and SemReg would reject the batch. When the own generations
+// cannot free enough room the admission is refused and nothing is withdrawn.
+// Admitting a generation inside the window is never done by raising the
+// reservation.
+func (p *huaweiPVPublication) capacityWithdrawals(asset semreg.AssetID, current semreg.Snapshot, epoch semreg.SourceEpochID, generation semreg.Uint64) ([]semreg.CandidateID, []huaweiRetainedWithdrawal, error) {
 	type key struct {
 		epoch      semreg.SourceEpochID
 		generation semreg.Uint64
 	}
-	groups := map[key][]semreg.CandidateID{}
+	type group struct {
+		own   []semreg.CandidateID
+		other int
+	}
+	all := map[key]*group{}
 	for _, record := range current.Retained {
 		candidate := record.Candidate
 		if candidate.SourceEpochID == nil || candidate.DriverGeneration == nil {
@@ -112,10 +121,29 @@ func (p *huaweiPVPublication) capacityWithdrawals(asset semreg.AssetID, current 
 		if k.epoch == epoch && k.generation == generation {
 			continue
 		}
-		groups[k] = append(groups[k], candidate.CandidateID)
+		g := all[k]
+		if g == nil {
+			g = &group{}
+			all[k] = g
+		}
+		if semregCandidateOfSource(current, candidate, p.handle.Source()) {
+			g.own = append(g.own, candidate.CandidateID)
+		} else {
+			g.other++
+		}
 	}
-	if len(groups)+1 <= huaweiRetainedGenerations {
-		return nil, nil
+	excess := len(all) + 1 - huaweiRetainedGenerations
+	if excess <= 0 {
+		return nil, nil, nil
+	}
+	groups := map[key][]semreg.CandidateID{}
+	for k, g := range all {
+		if len(g.own) > 0 && g.other == 0 {
+			groups[k] = g.own
+		}
+	}
+	if len(groups) < excess {
+		return nil, nil, fmt.Errorf("%w: %d retained generations, %d withdrawable", errHuaweiRetainedCapacityExhausted, len(all)+1, len(groups))
 	}
 	started := map[semreg.SourceEpochID]int64{}
 	for _, source := range current.Sources {
@@ -147,7 +175,7 @@ func (p *huaweiPVPublication) capacityWithdrawals(asset semreg.AssetID, current 
 	var ids []semreg.CandidateID
 	var records []huaweiRetainedWithdrawal
 	seen := map[semreg.CandidateID]bool{}
-	for _, k := range order[huaweiRetainedGenerations-1:] {
+	for _, k := range order[len(order)-excess:] {
 		count := 0
 		for _, id := range groups[k] {
 			count++
@@ -164,7 +192,7 @@ func (p *huaweiPVPublication) capacityWithdrawals(asset semreg.AssetID, current 
 		}
 		return records[i].Generation < records[j].Generation
 	})
-	return ids, records
+	return ids, records, nil
 }
 
 // huaweiMaxAssetSources is the pinned kernel's per-asset bound on source
@@ -183,11 +211,17 @@ const (
 	huaweiMaxAssetIdentityLinks = 128
 )
 
+var errHuaweiRetainedCapacityExhausted = errors.New("huawei semantic retained generation capacity exhausted")
+
 var errHuaweiBindingCapacityExhausted = errors.New("huawei semantic binding capacity exhausted")
 
 // huaweiRefusalBindingCapacity names, in the instance status, a child the
 // publication refused because its re-admission would exceed the asset's bound.
 const huaweiRefusalBindingCapacity = "binding_capacity"
+
+// huaweiRefusalRetainedCapacity names a child whose successor publication could
+// not free retained-generation room among the publisher's own generations.
+const huaweiRefusalRetainedCapacity = "retained_capacity"
 
 // huaweiSourceCapacity refuses a new epoch when an asset of this source already
 // holds the kernel's source-descriptor bound: that epoch could never publish
@@ -198,14 +232,34 @@ func huaweiSourceCapacity(hub *semhub.Hub, source semreg.SourceID) error {
 		if err != nil {
 			continue
 		}
-		for _, descriptor := range view.Snapshot.Sources {
-			if descriptor.SourceID == source {
-				if len(view.Snapshot.Sources) >= huaweiMaxAssetSources {
-					return errHuaweiSourceCapacityExhausted
-				}
-				break
-			}
+		if err := huaweiAssetSourceCapacity(view.Snapshot, source); err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+// huaweiAssetSourceCapacity refuses an asset that holds a descriptor of source
+// and the kernel's source-descriptor bound. The bound is per asset and shared
+// by every contributor, so every descriptor counts, whatever its source.
+func huaweiAssetSourceCapacity(snapshot semreg.Snapshot, source semreg.SourceID) error {
+	for _, descriptor := range snapshot.Sources {
+		if descriptor.SourceID == source {
+			if len(snapshot.Sources) >= huaweiMaxAssetSources {
+				return errHuaweiSourceCapacityExhausted
+			}
+			break
+		}
+	}
+	return nil
+}
+
+// huaweiBindingCapacity refuses a new binding incarnation on an asset that
+// holds the kernel's binding or identity-link bound. Both bounds are per asset
+// and shared by every contributor, so every record counts, whatever its source.
+func huaweiBindingCapacity(current semreg.Snapshot) error {
+	if len(current.Bindings) >= huaweiMaxAssetBindings || len(current.IdentityLinks) >= huaweiMaxAssetIdentityLinks {
+		return errHuaweiBindingCapacityExhausted
 	}
 	return nil
 }
@@ -348,6 +402,19 @@ func huaweiNext(value semreg.Uint64) semreg.Uint64 {
 	return semreg.Uint64(strconv.FormatUint(n+1, 10))
 }
 
+// admitRetained frees retained-generation room for a unit and, when the own
+// generations cannot, records the refusal so the instance status names it.
+func (p *huaweiPVPublication) admitRetained(unit byte, asset semreg.AssetID, current semreg.Snapshot, epoch semreg.SourceEpochID, generation semreg.Uint64) ([]semreg.CandidateID, []huaweiRetainedWithdrawal, error) {
+	ids, records, err := p.capacityWithdrawals(asset, current, epoch, generation)
+	if err != nil {
+		if errors.Is(err, errHuaweiRetainedCapacityExhausted) {
+			p.refused[unit] = huaweiRefusalRetainedCapacity
+		}
+		return nil, nil, fmt.Errorf("unit %d: %w", unit, err)
+	}
+	return ids, records, nil
+}
+
 func (p *huaweiPVPublication) publishChild(asset semreg.AssetID, child modbusreg.HuaweiProviderChildObservation, cycle modbusreg.HuaweiProviderCycle, withdraw bool) error {
 	if !p.active() {
 		return errors.New("huawei publication generation withdrawn")
@@ -405,9 +472,9 @@ func (p *huaweiPVPublication) publishChild(asset semreg.AssetID, child modbusreg
 		if !hasBinding {
 			// A new incarnation must fit the kernel's bounds; refuse before any
 			// batch is applied so the asset and the siblings are left untouched.
-			if len(current.Bindings) >= huaweiMaxAssetBindings || len(current.IdentityLinks) >= huaweiMaxAssetIdentityLinks {
+			if err := huaweiBindingCapacity(current); err != nil {
 				p.refused[child.UnitID] = huaweiRefusalBindingCapacity
-				return fmt.Errorf("unit %d: %w", child.UnitID, errHuaweiBindingCapacityExhausted)
+				return fmt.Errorf("unit %d: %w", child.UnitID, err)
 			}
 			batch.BindingUpserts = append(batch.BindingUpserts, semreg.NativeBinding{BindingID: binding, AssetID: asset, SourceID: source, SourceEpochID: epoch, DriverGeneration: generation, NativeResource: huaweiEvidence("native.huawei.binding", struct {
 				Asset   semreg.AssetID
@@ -430,7 +497,10 @@ func (p *huaweiPVPublication) publishChild(asset semreg.AssetID, child modbusreg
 		if err != nil {
 			return err
 		}
-		retainedIDs, capacity = p.capacityWithdrawals(asset, current, epoch, generation)
+		retainedIDs, capacity, err = p.admitRetained(child.UnitID, asset, current, epoch, generation)
+		if err != nil {
+			return err
+		}
 		batch.FactWithdrawals = append(batch.FactWithdrawals, retainedIDs...)
 	}
 	if withdraw {

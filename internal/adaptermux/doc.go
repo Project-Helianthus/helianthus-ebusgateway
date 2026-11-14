@@ -55,6 +55,9 @@
 //     needed; a suppressed phantom still resets their advertised source.
 //     Phantom suppression applies to session source synthesis; the native
 //     FAILED byte remains visible as passive evidence, as before.
+//     An abandon-watchdog release of an unused grant fences admission like a
+//     cancel. The external idle gap and the ownership cap also apply to a SYN
+//     the classifier withholds; such a release fences admission as well.
 //   - Fence -> idle: before the classifier can filter that SYN, reset its
 //     abandoned header and the legacy phase tracker. Process and deliver the
 //     SYN normally, then clear the fence. Raw-only AA and escaped payload AA

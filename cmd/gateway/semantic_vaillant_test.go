@@ -1212,32 +1212,32 @@ func TestEncodeBoilerConfigPayload(t *testing.T) {
 	}{
 		{
 			name:        "temperature field uses DATA2c",
-			fieldName:   "flowsetHwcMaxC",
-			spec:        boilerConfigFieldSpecs["flowsetHwcMaxC"],
+			fieldName:   "maximum_dhw_flow_temperature_setpoint",
+			spec:        boilerConfigFieldSpecs["maximum_dhw_flow_temperature_setpoint"],
 			value:       59,
 			wantPayload: []byte{0xB0, 0x03},
 			wantValue:   59,
 		},
 		{
 			name:        "temperature field normalizes to wire precision",
-			fieldName:   "flowsetHcMaxC",
-			spec:        boilerConfigFieldSpecs["flowsetHcMaxC"],
+			fieldName:   "maximum_heating_flow_temperature_setpoint",
+			spec:        boilerConfigFieldSpecs["maximum_heating_flow_temperature_setpoint"],
 			value:       55.1,
 			wantPayload: []byte{0x71, 0x03},
 			wantValue:   55.0625,
 		},
 		{
 			name:        "partload field uses UCH",
-			fieldName:   "partloadHcKW",
-			spec:        boilerConfigFieldSpecs["partloadHcKW"],
+			fieldName:   "heating_partial_load_power",
+			spec:        boilerConfigFieldSpecs["heating_partial_load_power"],
 			value:       18,
 			wantPayload: []byte{0x12},
 			wantValue:   18,
 		},
 		{
 			name:      "fractional partload rejected",
-			fieldName: "partloadHwcKW",
-			spec:      boilerConfigFieldSpecs["partloadHwcKW"],
+			fieldName: "dhw_partial_load_power",
+			spec:      boilerConfigFieldSpecs["dhw_partial_load_power"],
 			value:     18.5,
 			wantErr:   "whole-number kW required",
 		},
@@ -1284,25 +1284,25 @@ func TestParseBoilerConfigValue(t *testing.T) {
 		{
 			name:      "accepts finite in-range value",
 			rawValue:  "59",
-			spec:      boilerConfigFieldSpecs["flowsetHwcMaxC"],
+			spec:      boilerConfigFieldSpecs["maximum_dhw_flow_temperature_setpoint"],
 			wantValue: 59,
 		},
 		{
 			name:     "rejects nan",
 			rawValue: "NaN",
-			spec:     boilerConfigFieldSpecs["flowsetHcMaxC"],
+			spec:     boilerConfigFieldSpecs["maximum_heating_flow_temperature_setpoint"],
 			wantErr:  "finite number required",
 		},
 		{
 			name:     "rejects infinity",
 			rawValue: "+Inf",
-			spec:     boilerConfigFieldSpecs["flowsetHcMaxC"],
+			spec:     boilerConfigFieldSpecs["maximum_heating_flow_temperature_setpoint"],
 			wantErr:  "finite number required",
 		},
 		{
 			name:     "rejects out of range value",
 			rawValue: "85",
-			spec:     boilerConfigFieldSpecs["flowsetHcMaxC"],
+			spec:     boilerConfigFieldSpecs["maximum_heating_flow_temperature_setpoint"],
 			wantErr:  "out of range",
 		},
 	}
@@ -1337,7 +1337,7 @@ func TestSetBoilerConfig_WriteConfirmForcesLiveReadAfterWrite(t *testing.T) {
 
 	const (
 		boilerAddress = byte(0x08)
-		fieldName     = "flowsetHwcMaxC"
+		fieldName     = "maximum_dhw_flow_temperature_setpoint"
 	)
 
 	spec := boilerConfigFieldSpecs[fieldName]
@@ -1437,7 +1437,7 @@ func TestSetBoilerConfig_WriteConfirmInvalidatesShadowBeforeReadback(t *testing.
 
 	const (
 		boilerAddress = byte(0x08)
-		fieldName     = "flowsetHwcMaxC"
+		fieldName     = "maximum_dhw_flow_temperature_setpoint"
 	)
 
 	spec := boilerConfigFieldSpecs[fieldName]
@@ -1564,7 +1564,7 @@ func TestBoilerSnapshotWithConfigValue_ClonesExistingSnapshot(t *testing.T) {
 		PartloadHcKW:  cloneFloat64Ptr(&existingPartload),
 	}
 
-	updated := boilerSnapshotWithConfigValue(existing, "flowsetHcMaxC", 55.0625)
+	updated := boilerSnapshotWithConfigValue(existing, "maximum_heating_flow_temperature_setpoint", 55.0625)
 	if updated == existing {
 		t.Fatal("boilerSnapshotWithConfigValue returned the original snapshot pointer")
 	}
@@ -1591,21 +1591,21 @@ func TestDecodeBoilerConfigRaw(t *testing.T) {
 	}{
 		{
 			name:      "temperature register decodes data2c",
-			spec:      boilerConfigFieldSpecs["flowsetHwcMaxC"],
+			spec:      boilerConfigFieldSpecs["maximum_dhw_flow_temperature_setpoint"],
 			raw:       []byte{0xB0, 0x03},
 			wantValue: 59,
 			wantOK:    true,
 		},
 		{
 			name:      "power register decodes uch",
-			spec:      boilerConfigFieldSpecs["partloadHwcKW"],
+			spec:      boilerConfigFieldSpecs["dhw_partial_load_power"],
 			raw:       []byte{0x16},
 			wantValue: 22,
 			wantOK:    true,
 		},
 		{
 			name:   "temperature register rejects one byte payload",
-			spec:   boilerConfigFieldSpecs["flowsetHcMaxC"],
+			spec:   boilerConfigFieldSpecs["maximum_heating_flow_temperature_setpoint"],
 			raw:    []byte{0xF0},
 			wantOK: false,
 		},
@@ -1630,10 +1630,10 @@ func TestDecodeBoilerConfigRaw(t *testing.T) {
 func TestFlowsetHcMaxSpecIncludesFallbackAddress(t *testing.T) {
 	t.Parallel()
 
-	spec := boilerConfigFieldSpecs["flowsetHcMaxC"]
+	spec := boilerConfigFieldSpecs["maximum_heating_flow_temperature_setpoint"]
 	want := []uint16{boiler_b509_flowset_hc_max_c, boiler_b509_flowset_hc_max_c_fallback}
 	if !slices.Equal(spec.addrs, want) {
-		t.Fatalf("flowsetHcMaxC addrs = %#v; want %#v", spec.addrs, want)
+		t.Fatalf("maximum_heating_flow_temperature_setpoint addrs = %#v; want %#v", spec.addrs, want)
 	}
 }
 

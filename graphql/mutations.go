@@ -112,11 +112,11 @@ var circuitConfigFieldSpecs = map[string]configFieldSpec{
 }
 
 var zoneConfigFieldSpecs = map[string]configFieldSpec{
-	"operatingMode":        {group: 0x03, addr: 0x0006, valueType: configValueEnumU16, enum: map[string]uint16{"off": 0, "auto": 1, "manual": 2}},
-	"quickVetoTemperature": {group: 0x03, addr: 0x0008, valueType: configValueFloat32, min: 5.0, max: 30.0},
-	"quickVetoDuration":    {group: 0x03, addr: 0x0026, valueType: configValueFloat32, min: 0.5, max: 12.0},
-	"desiredSetpoint":      {group: 0x03, addr: 0x0022, valueType: configValueFloat32, min: 5.0, max: 30.0},
-	"holidaySetpoint":      {group: 0x03, addr: 0x0005, valueType: configValueFloat32, min: 5.0, max: 30.0},
+	"heating_zone_operating_mode":                   {group: 0x03, addr: 0x0006, valueType: configValueEnumU16, enum: map[string]uint16{"off": 0, "auto": 1, "manual": 2}},
+	"zone_room_temperature_setpoint_at_quick_veto":  {group: 0x03, addr: 0x0008, valueType: configValueFloat32, min: 5.0, max: 30.0},
+	"zone_quick_veto_time":                          {group: 0x03, addr: 0x0026, valueType: configValueFloat32, min: 0.5, max: 12.0},
+	"heating_zone_room_manual_temperature_setpoint": {group: 0x03, addr: 0x0022, valueType: configValueFloat32, min: 5.0, max: 30.0},
+	"zone_room_temperature_setpoint_at_holiday":     {group: 0x03, addr: 0x0005, valueType: configValueFloat32, min: 5.0, max: 30.0},
 }
 
 var systemConfigFieldSpecs = SystemConfigFieldSpecs()

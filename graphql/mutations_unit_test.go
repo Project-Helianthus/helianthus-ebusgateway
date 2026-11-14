@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -271,7 +272,7 @@ func TestSetBoilerConfigMutation_UnsupportedInReducedProfile(t *testing.T) {
 	result := graphqlgo.Do(graphqlgo.Params{
 		Schema: schema,
 		RequestString: `mutation {
-			set_boiler_config(field: "flowsetHcMaxC", value: "55") {
+			set_boiler_config(field: "maximum_heating_flow_temperature_setpoint", value: "55") {
 				success
 				error
 			}
@@ -463,7 +464,7 @@ func TestSetBoilerConfigMutation_DelegatesToWriter(t *testing.T) {
 	}
 
 	data := executeMutation(t, buildMutationSchema(t, nil, nil, writer, nil), `mutation {
-		set_boiler_config(field: "flowsetHcMaxC", value: "55") {
+		set_boiler_config(field: "maximum_heating_flow_temperature_setpoint", value: "55") {
 			success
 			error
 		}
@@ -482,7 +483,7 @@ func TestSetBoilerConfigMutation_DelegatesToWriter(t *testing.T) {
 	if len(writer.calls) != 1 {
 		t.Fatalf("writer calls = %d; want 1", len(writer.calls))
 	}
-	if writer.calls[0].field != "flowsetHcMaxC" || writer.calls[0].value != "55" {
+	if writer.calls[0].field != "maximum_heating_flow_temperature_setpoint" || writer.calls[0].value != "55" {
 		t.Fatalf("writer call = %#v; want flowset_hc_max_c/55", writer.calls[0])
 	}
 }
@@ -504,7 +505,7 @@ func TestSetSystemConfigMutation_Success(t *testing.T) {
 	}
 
 	data := executeMutation(t, buildMutationSchema(t, registry, invoker, nil, nil), `mutation {
-		set_system_config(field: "adaptiveHeatingCurve", value: "true") {
+		set_system_config(field: "adaptive_heating_curve_enabled", value: "true") {
 			success
 			error
 		}
@@ -557,7 +558,7 @@ func TestSetSystemConfigMutation_IntegerLikeFloatString(t *testing.T) {
 	}
 
 	data := executeMutation(t, buildMutationSchema(t, registry, invoker, nil, nil), `mutation {
-		set_system_config(field: "maxRoomHumidityPct", value: "55.0") {
+		set_system_config(field: "room_humidity_limit_maximum", value: "55.0") {
 			success
 			error
 		}
@@ -652,7 +653,7 @@ func TestSetSystemConfigMutation_FailureScenarios(t *testing.T) {
 		}
 		invoker := &mutationTestInvoker{}
 		data := executeMutation(t, buildMutationSchema(t, registry, invoker, nil, nil), `mutation {
-			set_system_config(field: "adaptiveHeatingCurve", value: "maybe") { success error }
+			set_system_config(field: "adaptive_heating_curve_enabled", value: "maybe") { success error }
 		}`)
 		payload, _ := data["set_system_config"].(map[string]any)
 		if got, _ := payload["success"].(bool); got {
@@ -670,7 +671,7 @@ func TestSetSystemConfigMutation_FailureScenarios(t *testing.T) {
 		registry := mutationTestRegistry{}
 		invoker := &mutationTestInvoker{}
 		data := executeMutation(t, buildMutationSchema(t, registry, invoker, nil, nil), `mutation {
-			set_system_config(field: "adaptiveHeatingCurve", value: "true") { success error }
+			set_system_config(field: "adaptive_heating_curve_enabled", value: "true") { success error }
 		}`)
 		payload, _ := data["set_system_config"].(map[string]any)
 		if got, _ := payload["success"].(bool); got {
@@ -693,7 +694,7 @@ func TestSetSystemConfigMutation_FailureScenarios(t *testing.T) {
 		}
 		invoker := &mutationTestInvoker{}
 		data := executeMutation(t, buildMutationSchema(t, registry, invoker, nil, nil), `mutation {
-			set_system_config(field: "adaptiveHeatingCurve", value: "true") { success error }
+			set_system_config(field: "adaptive_heating_curve_enabled", value: "true") { success error }
 		}`)
 		payload, _ := data["set_system_config"].(map[string]any)
 		if got, _ := payload["success"].(bool); got {
@@ -1050,6 +1051,106 @@ func cloneMutationParams(params map[string]any) map[string]any {
 		out[key] = value
 	}
 	return out
+}
+
+// TestSetZoneConfigMutation_EveryCanonicalKey writes every zone key through
+// set_zone_config. Each case uses its own index, register and payload, so a
+// renamed key (unknown field), a moved register or group, a wrong instance or
+// a changed encoding (value type, enum mapping) fails its case; the second
+// call must read back the same register.
+func TestSetZoneConfigMutation_EveryCanonicalKey(t *testing.T) {
+	cases := []struct {
+		field   string
+		index   int
+		value   string
+		addr    uint16
+		payload []byte
+	}{
+		{field: "heating_zone_operating_mode", index: 0, value: "manual", addr: 0x0006, payload: []byte{0x02, 0x00}},
+		{field: "zone_room_temperature_setpoint_at_quick_veto", index: 1, value: "22.5", addr: 0x0008, payload: []byte{0x00, 0x00, 0xB4, 0x41}},
+		{field: "zone_quick_veto_time", index: 2, value: "3.5", addr: 0x0026, payload: []byte{0x00, 0x00, 0x60, 0x40}},
+		{field: "heating_zone_room_manual_temperature_setpoint", index: 3, value: "21", addr: 0x0022, payload: []byte{0x00, 0x00, 0xA8, 0x41}},
+		{field: "zone_room_temperature_setpoint_at_holiday", index: 4, value: "12", addr: 0x0005, payload: []byte{0x00, 0x00, 0x40, 0x41}},
+	}
+	if len(cases) != len(zoneConfigFieldSpecs) {
+		t.Fatalf("cases cover %d zone keys; specs have %d", len(cases), len(zoneConfigFieldSpecs))
+	}
+	for _, tc := range cases {
+		t.Run(tc.field, func(t *testing.T) {
+			reg := mutationTestRegistry{
+				entries: map[byte]registry.DeviceEntry{
+					0x15: testControllerEntryWithMethods(mutationSetExtRegisterMethod, mutationGetExtRegisterMethod),
+				},
+				order: []byte{0x15},
+			}
+			invoker := &mutationTestInvoker{responses: []any{
+				map[string]types.Value{},
+				map[string]types.Value{"value": {Value: append([]byte(nil), tc.payload...), Valid: true}},
+			}}
+			query := fmt.Sprintf(`mutation { set_zone_config(index: %d, field: %q, value: %q) { success error } }`, tc.index, tc.field, tc.value)
+			payload, _ := executeMutation(t, buildMutationSchema(t, reg, invoker, nil, nil), query)["set_zone_config"].(map[string]any)
+			if got, _ := payload["success"].(bool); !got || payload["error"] != nil {
+				t.Fatalf("set_zone_config(%s) = %#v; want success", tc.field, payload)
+			}
+			if len(invoker.calls) != 2 {
+				t.Fatalf("invoker calls = %d; want write and read-back", len(invoker.calls))
+			}
+			for i, method := range []string{mutationSetExtRegisterMethod, mutationGetExtRegisterMethod} {
+				call := invoker.calls[i]
+				if call.Plane != mutationSystemPlane || call.Method != method {
+					t.Fatalf("call %d = %s/%s; want %s/%s", i, call.Plane, call.Method, mutationSystemPlane, method)
+				}
+				if call.Params["opcode"] != byte(0x02) || call.Params["group"] != byte(0x03) || call.Params["instance"] != byte(tc.index) || call.Params["addr"] != tc.addr {
+					t.Fatalf("call %d selector = %#v; want opcode 0x02 group 0x03 instance %d addr 0x%04X", i, call.Params, tc.index, tc.addr)
+				}
+			}
+			if data, _ := invoker.calls[0].Params["data"].([]byte); !bytes.Equal(data, tc.payload) {
+				t.Fatalf("write payload = %x; want %x", data, tc.payload)
+			}
+		})
+	}
+}
+
+// TestConfigSetterCamelCaseKeysRejectedWithSnakeCaseList sends every former
+// camelCase key (and the withdrawn circuit frost-protection keys) to its
+// setter. Each must fail before any invoke, and the error must list exactly
+// the accepted snake_case keys.
+func TestConfigSetterCamelCaseKeysRejectedWithSnakeCaseList(t *testing.T) {
+	const (
+		circuitAllowed = "circuit_cooling_enabled, circuit_flow_temperature_setpoint_minimum, circuit_heating_curve_factor, circuit_room_temperature_influence_mode, heating_circuit_flow_temperature_setpoint_maximum, heating_circuit_outdoor_temperature_limit_maximum"
+		zoneAllowed    = "heating_zone_operating_mode, heating_zone_room_manual_temperature_setpoint, zone_quick_veto_time, zone_room_temperature_setpoint_at_holiday, zone_room_temperature_setpoint_at_quick_veto"
+		systemAllowed  = "adaptive_heating_curve_enabled, dhw_flow_temperature_setpoint_maximum, dhw_outdoor_bivalence_temperature_limit, heating_flow_temperature_setpoint_maximum_at_heat_pump_fault, heating_outdoor_bivalence_temperature_limit, installer_access_code, installer_name, installer_phone_number, maintenance_date, room_humidity_limit_maximum"
+	)
+	cases := []struct {
+		mutation, scope, allowed, index, value string
+		fields                                 []string
+	}{
+		{"set_circuit_config", "circuit", circuitAllowed, "index: 1, ", "1", []string{"heatingCurve", "flowTempMaxC", "flowTempMinC", "summerLimitC", "roomTempControl", "coolingEnabled", "frostProtC", "frost_prot_c"}},
+		{"set_zone_config", "zone", zoneAllowed, "index: 0, ", "1", []string{"operatingMode", "quickVetoTemperature", "quickVetoDuration", "desiredSetpoint", "holidaySetpoint"}},
+		{"set_system_config", "system", systemAllowed, "", "1", []string{"dhwBivalencePointC", "maxRoomHumidityPct", "adaptiveHeatingCurve", "hcBivalencePointC", "hcEmergencyTempC", "hwcMaxFlowTempC", "maintenanceDate", "installerName", "installerPhone", "installerMenuCode"}},
+	}
+	reg := mutationTestRegistry{
+		entries: map[byte]registry.DeviceEntry{
+			0x15: testControllerEntryWithMethods(mutationSetExtRegisterMethod, mutationGetExtRegisterMethod),
+		},
+		order: []byte{0x15},
+	}
+	for _, tc := range cases {
+		for _, field := range tc.fields {
+			t.Run(tc.mutation+"/"+field, func(t *testing.T) {
+				invoker := &mutationTestInvoker{}
+				query := fmt.Sprintf(`mutation { %s(%sfield: %q, value: %q) { success error } }`, tc.mutation, tc.index, field, tc.value)
+				payload, _ := executeMutation(t, buildMutationSchema(t, reg, invoker, nil, nil), query)[tc.mutation].(map[string]any)
+				want := fmt.Sprintf("unknown %s field %q (allowed: %s): %s", tc.scope, field, tc.allowed, ebuserrors.ErrInvalidPayload.Error())
+				if got, _ := payload["error"].(string); payload["success"] != false || got != want {
+					t.Fatalf("%s(%s) = %#v; want error %q", tc.mutation, field, payload, want)
+				}
+				if len(invoker.calls) != 0 {
+					t.Fatalf("invoker calls = %d; want none", len(invoker.calls))
+				}
+			})
+		}
+	}
 }
 
 var _ registry.FrameTemplate = schemaTemplate{}

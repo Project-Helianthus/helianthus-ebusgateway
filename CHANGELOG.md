@@ -23,7 +23,7 @@ The native contract names the gateway registers for the receive-only Growatt PCS
 | `CX17PCSReceiveOnly` | `GrowattPCSCANReceiveOnly` |
 | `CX17LINKReceiveOnly` | `GrowattLINKCANReceiveOnly` |
 
-Callers compare these errors with `errors.Is`; the sentinels are unchanged. The acceptance report key `catalogue_version` becomes `catalog_version` in the CatalogVersion field tag, the result schema (required list, property and the word Catalogue-aware, now Catalog-aware) and the catalog tests, with no dual acceptance. The result schema signature in the catalog data and the version 2 signature in the catalog document change with the schema text; the catalog version number is not bumped. Native records, admission, wire values and the `ebus_standard` MCP method strings are unchanged. The gateway binary changes, so affected release evidence must be renewed before the final bill of materials freeze.
+Callers compare these errors with `errors.Is`; the sentinels are unchanged. The acceptance report key `catalogue_version`, the result schema and the hardware acceptance catalog signatures are unchanged here; their rename is tracked in #1545. Native records, admission, wire values and the `ebus_standard` MCP method strings are unchanged. The gateway binary changes, so affected release evidence must be renewed before the final bill of materials freeze.
 
 ## Startup reason for a heat-pump-class heat source without a controller
 

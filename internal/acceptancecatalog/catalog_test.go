@@ -99,7 +99,7 @@ func TestPublishedArtifacts(t *testing.T) {
 	if schema["$schema"] != "https://json-schema.org/draft/2020-12/schema" {
 		t.Fatal("schema draft")
 	}
-	if schema["properties"].(map[string]any)["catalog_version"].(map[string]any)["const"] != c.Version {
+	if schema["properties"].(map[string]any)["catalogue_version"].(map[string]any)["const"] != c.Version {
 		t.Fatal("schema catalog version mismatch")
 	}
 	// Independently require all serialized record/review fields in the schema.

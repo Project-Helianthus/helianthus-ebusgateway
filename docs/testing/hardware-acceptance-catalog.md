@@ -98,7 +98,7 @@ revision identifiers. Whitespace in either input is immaterial.
 | Version | Canonical catalog signature (SHA-256 base64) |
 |---|---|
 | 1 | dgQZfJpvcTWqfdroLGAAKl8T+/Th28VeKtZKOyPC/70= |
-| 2 | mMkYaI4cMdn4ZX1MaGyg+zb8dM5swg5lMKtnTyZ6S6w= |
+| 2 | wRyjMhSFWd3AJtm3OPlrL1TgZavYzPatH+u9D1eBIcU= |
 
 Any added, removed or renamed gate/case, changed transition, category, result
 vocabulary or schema requires a new catalog version and a new ledger entry;

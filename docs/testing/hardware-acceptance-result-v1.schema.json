@@ -2,14 +2,14 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/Project-Helianthus/helianthus-ebusgateway/raw/main/docs/testing/hardware-acceptance-result-v1.schema.json",
   "title": "Transitional hardware acceptance result v1",
-  "description": "Shape only. Catalog-aware identity, exact inventory, review and category validation is additionally required. Synthetic records never establish live acceptance.",
+  "description": "Shape only. Catalogue-aware identity, exact inventory, review and category validation is additionally required. Synthetic records never establish live acceptance.",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "candidate",
     "session",
     "target",
-    "catalog_version",
+    "catalogue_version",
     "form",
     "source",
     "records"
@@ -27,7 +27,7 @@
       "type": "string",
       "minLength": 1
     },
-    "catalog_version": {
+    "catalogue_version": {
       "const": "2"
     },
     "form": {

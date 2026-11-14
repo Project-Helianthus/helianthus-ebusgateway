@@ -123,7 +123,7 @@ type Record struct {
 }
 type Report struct {
 	Identity
-	CatalogVersion string   `json:"catalog_version"`
+	CatalogVersion string   `json:"catalogue_version"`
 	Form           string   `json:"form"`
 	Source         string   `json:"source"`
 	Records        []Record `json:"records"`

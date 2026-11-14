@@ -10,6 +10,10 @@ The `field` keys of the GraphQL mutations `set_system_config`, `set_zone_config`
 
 Value types, bounds (including the controller-identity bound of the DHW bivalence limit), encodings, read-back confirmation and the published snapshot values are unchanged; the text-pair writer and the snapshot updates follow the new keys. The MCP system and boiler tool descriptions name the new keys. The new consumer fixture `docs/testing/config-setter-keys.json` lists the accepted keys of the four setters with their register selector and value type and marks the 0x4904 key as open; gateway tests fail when it and the setters differ. Until the Home Assistant integration sends these keys, its system and boiler configuration writes fail; the circuit keys do not change. The gateway binary changes, so the affected release evidence must be renewed before the final bill of materials freeze.
 
+## AdapterMux transition characterization
+
+A deterministic test harness drives the AdapterMux read loop, received-symbol, SYN-boundary and grant handlers through their inputs (SYN, received symbol, bid, STARTED, FAILED, START deadline, session close, reset) and pins the resulting mux state and the ordered effects on the adapter, the active path, sessions and the passive stream. Test-only; the gateway binary is unchanged.
+
 ## Error texts with the package names and Growatt CAN contract names without work-item codes
 
 Error texts that reach logs and API errors now start with the package name without underscores, and one of them names the declared emit set instead of a work-item code. Each text is renamed directly, with no alias and no acceptance of the old text:

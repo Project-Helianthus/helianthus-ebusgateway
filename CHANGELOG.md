@@ -1,5 +1,9 @@
 # Changelog
 
+## AdapterMux transition characterization
+
+A deterministic test harness drives the AdapterMux read loop, received-symbol, SYN-boundary and grant handlers through their inputs (SYN, received symbol, bid, STARTED, FAILED, START deadline, session close, reset) and pins the resulting mux state and the ordered effects on the adapter, the active path, sessions and the passive stream. Test-only; the gateway binary is unchanged.
+
 ## Gateway packages without underscores and the eBUS library package renames
 
 Four gateway packages move to names without underscores, with their tests and golden files: `internal/execution_policy` becomes `internal/executionpolicy` (package `executionpolicy`), `internal/nm_runtime` becomes `internal/nmruntime` (`nmruntime`), `internal/rpc_source` becomes `internal/rpcsource` (`rpcsource`) and `mcp/ebus_standard` becomes `mcp/ebusstandard` (`ebusstandard`). Every importer uses the new paths. Import names that only repeated the new package name are dropped, and the files that import both the gateway MCP package and the ebusreg catalog name them `mcpstandard` and `ebusregstandard`. The ebusreg pin moves to the main-branch revision where `catalog/ebus_standard` is `catalog/ebusstandard`, and the ebusgo pin moves to the main-branch revision where `protocol/telegram_fsm` is `protocol/telegramfsm` and `protocol/ebus_standard` is `protocol/ebusstandard`; the gateway imports follow. There is no alias, forwarding package or compatibility layer. `python3 scripts/rename_underscore_packages.py` reproduces the moves, the import and qualifier rewrite and the source list of the naming inventory offline, `--require MODULE@VERSION` also re-pins a library from the local module cache, and `--check` lists any remaining old package path or name.

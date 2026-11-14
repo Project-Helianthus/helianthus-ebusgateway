@@ -47,6 +47,7 @@ type BusObservabilityStartup struct {
 	Phase         string
 	CacheEpoch    uint64
 	LiveEpoch     uint64
+	Reason        string
 }
 
 type BusAdmission struct {
@@ -713,6 +714,21 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 						return "0", nil
 					}
 					return strconv.FormatUint(value.LiveEpoch, 10), nil
+				},
+			},
+			"reason": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					reason := ""
+					if startup, ok := params.Source.(*BusObservabilityStartup); ok && startup != nil {
+						reason = startup.Reason
+					} else if value, ok := params.Source.(BusObservabilityStartup); ok {
+						reason = value.Reason
+					}
+					if reason == "" {
+						return nil, nil
+					}
+					return reason, nil
 				},
 			},
 		},

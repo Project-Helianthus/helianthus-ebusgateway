@@ -428,6 +428,20 @@ func mapMCPBusStatus(status ebusgateway.BusObservabilityStatus) *mcp.BusObservab
 	}
 }
 
+// semanticStartupSurface is the bus observability startup block of the
+// semantic provider: phase, epochs, last update and the startup reason.
+func semanticStartupSurface(provider *graphql.LiveSemanticProvider) *ebusgateway.BusObservabilityStartup {
+	startupUpdatedAt := provider.StartupUpdatedAt()
+	cacheEpoch, liveEpoch := provider.StartupEpochs()
+	return &ebusgateway.BusObservabilityStartup{
+		LastUpdatedAt: &startupUpdatedAt,
+		Phase:         string(provider.StartupPhase()),
+		CacheEpoch:    cacheEpoch,
+		LiveEpoch:     liveEpoch,
+		Reason:        provider.StartupReason(),
+	}
+}
+
 func mapGraphQLBusStartup(startup *ebusgateway.BusObservabilityStartup) *graphql.BusObservabilityStartup {
 	if startup == nil {
 		return nil
@@ -437,6 +451,7 @@ func mapGraphQLBusStartup(startup *ebusgateway.BusObservabilityStartup) *graphql
 		Phase:         startup.Phase,
 		CacheEpoch:    startup.CacheEpoch,
 		LiveEpoch:     startup.LiveEpoch,
+		Reason:        startup.Reason,
 	}
 }
 
@@ -449,6 +464,7 @@ func mapMCPBusStartup(startup *ebusgateway.BusObservabilityStartup) *mcp.BusObse
 		Phase:         startup.Phase,
 		CacheEpoch:    startup.CacheEpoch,
 		LiveEpoch:     startup.LiveEpoch,
+		Reason:        startup.Reason,
 	}
 }
 

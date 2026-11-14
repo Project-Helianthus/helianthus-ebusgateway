@@ -168,6 +168,34 @@ def new_fragment_problems(changes):
     return []
 
 
+def release_assembly_problems(root, base, head, changes):
+    """Require the exact assembly of removed fragments from the merge base."""
+    code, ancestor = git(root, "merge-base", base, head or "HEAD")
+    if code:
+        return ["release assembly history is not available"]
+    removed = [path for path, status in changes.items()
+               if status == "D" and path.startswith(DIRECTORY + "/")
+               and NAME.fullmatch(Path(path).name)]
+    texts = []
+    for path in [CHANGELOG, *sorted(removed, key=lambda path: order_key(Path(path).name))]:
+        code, text = git(root, "show", ancestor.strip() + ":" + path)
+        if code:
+            return [f"release assembly source {path} is not available"]
+        texts.append(text)
+    try:
+        if head:
+            code, actual = git(root, "show", head + ":" + CHANGELOG)
+            if code:
+                return ["release changelog is not available"]
+        else:
+            actual = (Path(root) / CHANGELOG).read_bytes().decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ["release changelog is not available as UTF-8"]
+    if not removed or actual != assemble(texts[0], texts[1:]):
+        return ["release changelog does not match the assembly of removed fragments"]
+    return []
+
+
 def require_new(root, base, head):
     """Return (problems, notice) for the new-fragment rule."""
     explicit = base or os.environ.get("CHANGELOG_BASE")
@@ -181,7 +209,10 @@ def require_new(root, base, head):
         return [], f"base {reference} is not available; the new-fragment rule was not checked"
     if not changes:
         return [], f"no change against {reference}; the new-fragment rule does not apply"
-    return new_fragment_problems(changes), None
+    problems = new_fragment_problems(changes)
+    if not problems and CHANGELOG in changes:
+        problems = release_assembly_problems(root, reference, head, changes)
+    return problems, None
 
 
 def run_check(root, arguments):

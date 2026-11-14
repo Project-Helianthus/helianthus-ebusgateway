@@ -19,3 +19,7 @@ The complete changelog is the fragments, newest issue number first, followed by
 the sections already in `CHANGELOG.md`. The release pull request runs
 `python3 scripts/changelog_fragments.py assemble --write`, which moves the
 fragments into `CHANGELOG.md` and removes them from this directory.
+
+The release check compares the resulting changelog with the ordered assembly of
+the removed fragments from the merge base. Missing entries, altered entry text,
+and changes to existing sections fail the check.

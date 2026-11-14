@@ -196,6 +196,42 @@ class NewFragmentRuleTests(unittest.TestCase):
                 self.assertEqual(FRAGMENTS.new_fragment_problems(changes) == [], accepted)
 
 
+class ReleaseValidationTests(unittest.TestCase):
+    def test_release_requires_complete_assembly_for_working_tree_and_head(self):
+        changes = {"CHANGELOG.md": "M", "changelog.d/7-old.md": "D",
+                   "changelog.d/12-new.md": "D"}
+        newer = GOOD.replace("A title", "Newer")
+        expected = FRAGMENTS.assemble(BASE, [newer, GOOD])
+        for head in (None, "topic"):
+            for actual in (BASE + "\nUnrelated edit.\n", FRAGMENTS.assemble(BASE, [GOOD]),
+                           expected.replace("One paragraph.", "Lost text.", 1), expected):
+                with self.subTest(head=head, actual=actual):
+                    with tempfile.TemporaryDirectory() as directory:
+                        root = Path(directory)
+                        write_tree(root, {"CHANGELOG.md": actual})
+                        blobs = {"CHANGELOG.md": BASE, "changelog.d/7-old.md": GOOD,
+                                 "changelog.d/12-new.md": newer}
+
+                        def read_git(_root, *args):
+                            if args[0] == "merge-base":
+                                return 0, "ancestor\n"
+                            revision, path = args[1].split(":", 1)
+                            return 0, actual if revision == "topic" else blobs[path]
+
+                        with mock.patch.object(FRAGMENTS, "resolves", return_value=True), \
+                                mock.patch.object(FRAGMENTS, "change_set", return_value=changes), \
+                                mock.patch.object(FRAGMENTS, "git", side_effect=read_git):
+                            problems, _ = FRAGMENTS.require_new(root, "main", head)
+                        self.assertEqual(problems == [], actual == expected)
+
+    def test_unavailable_release_history_fails_closed(self):
+        changes = {"CHANGELOG.md": "M", "changelog.d/7-old.md": "D"}
+        with mock.patch.object(FRAGMENTS, "change_set", return_value=changes), \
+                mock.patch.object(FRAGMENTS, "git", return_value=(1, "")):
+            problems, _ = FRAGMENTS.require_new(ROOT, "main", None)
+        self.assertTrue(problems)
+
+
 class UnavailableGitTests(unittest.TestCase):
     """The new-fragment rule when Git itself cannot run."""
 

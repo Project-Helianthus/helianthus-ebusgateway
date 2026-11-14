@@ -38,17 +38,21 @@ type ConfigFieldSpec struct {
 	Enum          map[string]uint16
 }
 
+// System config keys are the canonical register names of the B524 OP02 GG00
+// catalog. installer_name and installer_phone_number each hold one text that
+// the writer splits across a prefix and a suffix register; the address below
+// is the prefix register.
 var systemConfigFieldSpecs = map[string]ConfigFieldSpec{
-	"dhwBivalencePointC":   {RegisterGroup: 0x00, RegisterAddr: 0x0001, ValueType: ValueFloat32, Min: unmatchedDHWBivalenceMinC, Max: unmatchedDHWBivalenceMaxC},
-	"maxRoomHumidityPct":   {RegisterGroup: 0x00, RegisterAddr: 0x000E, ValueType: ValueUint16, Min: 30, Max: 80},
-	"adaptiveHeatingCurve": {RegisterGroup: 0x00, RegisterAddr: 0x0014, ValueType: ValueBoolU8},
-	"hcBivalencePointC":    {RegisterGroup: 0x00, RegisterAddr: 0x0023, ValueType: ValueFloat32, Min: -20.0, Max: 30.0},
-	"hcEmergencyTempC":     {RegisterGroup: 0x00, RegisterAddr: 0x0026, ValueType: ValueFloat32, Min: 20.0, Max: 80.0},
-	"hwcMaxFlowTempC":      {RegisterGroup: 0x00, RegisterAddr: 0x0046, ValueType: ValueFloat32, Min: 15.0, Max: 80.0},
-	"maintenanceDate":      {RegisterGroup: 0x00, RegisterAddr: 0x002C, ValueType: ValueDateHDA3},
-	"installerName":        {RegisterGroup: 0x00, RegisterAddr: 0x006C, ValueType: ValueCString, MaxLen: 12},
-	"installerPhone":       {RegisterGroup: 0x00, RegisterAddr: 0x006F, ValueType: ValueCString, MaxLen: 12},
-	"installerMenuCode":    {RegisterGroup: 0x00, RegisterAddr: 0x0076, ValueType: ValueUint16, Min: 0, Max: 999},
+	"dhw_outdoor_bivalence_temperature_limit":                      {RegisterGroup: 0x00, RegisterAddr: 0x0001, ValueType: ValueFloat32, Min: unmatchedDHWBivalenceMinC, Max: unmatchedDHWBivalenceMaxC},
+	"room_humidity_limit_maximum":                                  {RegisterGroup: 0x00, RegisterAddr: 0x000E, ValueType: ValueUint16, Min: 30, Max: 80},
+	"adaptive_heating_curve_enabled":                               {RegisterGroup: 0x00, RegisterAddr: 0x0014, ValueType: ValueBoolU8},
+	"heating_outdoor_bivalence_temperature_limit":                  {RegisterGroup: 0x00, RegisterAddr: 0x0023, ValueType: ValueFloat32, Min: -20.0, Max: 30.0},
+	"heating_flow_temperature_setpoint_maximum_at_heat_pump_fault": {RegisterGroup: 0x00, RegisterAddr: 0x0026, ValueType: ValueFloat32, Min: 20.0, Max: 80.0},
+	"dhw_flow_temperature_setpoint_maximum":                        {RegisterGroup: 0x00, RegisterAddr: 0x0046, ValueType: ValueFloat32, Min: 15.0, Max: 80.0},
+	"maintenance_date":                                             {RegisterGroup: 0x00, RegisterAddr: 0x002C, ValueType: ValueDateHDA3},
+	"installer_name":                                               {RegisterGroup: 0x00, RegisterAddr: 0x006C, ValueType: ValueCString, MaxLen: 12},
+	"installer_phone_number":                                       {RegisterGroup: 0x00, RegisterAddr: 0x006F, ValueType: ValueCString, MaxLen: 12},
+	"installer_access_code":                                        {RegisterGroup: 0x00, RegisterAddr: 0x0076, ValueType: ValueUint16, Min: 0, Max: 999},
 }
 
 func EncodeSystemConfigValue(fieldName, rawValue string) ([]byte, ConfigFieldSpec, error) {

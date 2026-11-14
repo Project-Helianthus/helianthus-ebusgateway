@@ -138,7 +138,8 @@ representations are internal; this mapping does not add a GraphQL schema enum.
 ## Decision-D and compatibility invariants
 
 The released unmatched-controller policy remains the inclusive `[-20, 50]`
-window for `dhwBivalencePointC`. Only a found, qualified, finite, ordered native
+window for the `set_system_config` field `dhw_outdoor_bivalence_temperature_limit`
+(OP02 GG00 RR0001). Only a found, qualified, finite, ordered native
 profile bound may narrow that window through intersection. An empty
 intersection, invalid or unqualified bound, unknown register or unmatched
 identity retains the conservative policy with its existing reason. A profile

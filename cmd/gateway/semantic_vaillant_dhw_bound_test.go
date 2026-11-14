@@ -91,7 +91,7 @@ func TestSetSystemConfigDHWBivalenceBASV0WithoutAPIUsesPolicy(t *testing.T) {
 	poller, provider := newDHWBoundPoller(t, "BASV0", "0217", "8803", bus)
 
 	for _, value := range []string{"51", "-21", "50.5"} {
-		result := poller.SetSystemConfig(context.Background(), "dhwBivalencePointC", value)
+		result := poller.SetSystemConfig(context.Background(), "dhw_outdoor_bivalence_temperature_limit", value)
 		if result.Success {
 			t.Fatalf("BASV0 value %s accepted; want rejection", value)
 		}
@@ -107,7 +107,7 @@ func TestSetSystemConfigDHWBivalenceBASV0WithoutAPIUsesPolicy(t *testing.T) {
 	}
 
 	for _, value := range []string{"20", "-20", "21", "50", "20.5"} {
-		if result := poller.SetSystemConfig(context.Background(), "dhwBivalencePointC", value); !result.Success {
+		if result := poller.SetSystemConfig(context.Background(), "dhw_outdoor_bivalence_temperature_limit", value); !result.Success {
 			t.Fatalf("BASV0 value %s rejected: %q", value, result.Error)
 		}
 	}
@@ -128,7 +128,7 @@ func TestSetSystemConfigDHWBivalenceBASV2FallsToUnmatchedPolicy(t *testing.T) {
 	poller, provider := newDHWBoundPoller(t, "BASV2", "0507", "1704", bus)
 
 	for _, value := range []string{"51", "-21"} {
-		result := poller.SetSystemConfig(context.Background(), "dhwBivalencePointC", value)
+		result := poller.SetSystemConfig(context.Background(), "dhw_outdoor_bivalence_temperature_limit", value)
 		if result.Success {
 			t.Fatalf("BASV2 value %s accepted; want rejection under the unmatched policy", value)
 		}
@@ -143,7 +143,7 @@ func TestSetSystemConfigDHWBivalenceBASV2FallsToUnmatchedPolicy(t *testing.T) {
 		t.Fatalf("bus writes after rejected BASV2 values = %d; want 0", got)
 	}
 	for _, value := range []string{"21", "50"} {
-		if result := poller.SetSystemConfig(context.Background(), "dhwBivalencePointC", value); !result.Success {
+		if result := poller.SetSystemConfig(context.Background(), "dhw_outdoor_bivalence_temperature_limit", value); !result.Success {
 			t.Fatalf("BASV2 value %s rejected: %q", value, result.Error)
 		}
 	}
@@ -199,13 +199,13 @@ func TestSetSystemConfigOtherSystemNumbersUnchangedAndSkipOP00(t *testing.T) {
 		bus := &dhwBoundFakeBus{store: map[uint16][]byte{}}
 		poller, _ := newDHWBoundPoller(t, identity[0], identity[1], identity[2], bus)
 
-		accepted := map[string]string{"maxRoomHumidityPct": "80", "hcBivalencePointC": "30", "hcEmergencyTempC": "80", "hwcMaxFlowTempC": "80"}
+		accepted := map[string]string{"room_humidity_limit_maximum": "80", "heating_outdoor_bivalence_temperature_limit": "30", "heating_flow_temperature_setpoint_maximum_at_heat_pump_fault": "80", "dhw_flow_temperature_setpoint_maximum": "80"}
 		for field, value := range accepted {
 			if result := poller.SetSystemConfig(context.Background(), field, value); !result.Success {
 				t.Fatalf("%s %s=%s rejected: %q", identity[0], field, value, result.Error)
 			}
 		}
-		rejected := map[string]string{"maxRoomHumidityPct": "81", "hcBivalencePointC": "31", "hcEmergencyTempC": "81", "hwcMaxFlowTempC": "81"}
+		rejected := map[string]string{"room_humidity_limit_maximum": "81", "heating_outdoor_bivalence_temperature_limit": "31", "heating_flow_temperature_setpoint_maximum_at_heat_pump_fault": "81", "dhw_flow_temperature_setpoint_maximum": "81"}
 		for field, value := range rejected {
 			result := poller.SetSystemConfig(context.Background(), field, value)
 			if result.Success || strings.Contains(result.Error, "unmatched") || strings.Contains(result.Error, "controller profile") {
@@ -259,14 +259,14 @@ func TestMCPConfigWriterDHWBivalenceRejectsBeforeBusWrite(t *testing.T) {
 	poller, _ := newDHWBoundPoller(t, "BASV0", "0217", "8803", bus)
 	writer := &mcpConfigWriterAdapter{poller: poller}
 
-	result := writer.SetSystemConfig(context.Background(), "dhwBivalencePointC", "51")
+	result := writer.SetSystemConfig(context.Background(), "dhw_outdoor_bivalence_temperature_limit", "51")
 	if result.Success || !strings.Contains(result.Error, "conservative policy bound [-20, 50]") {
 		t.Fatalf("MCP set_config 51 on BASV0 = %+v; want rejection naming the unmatched policy bound", result)
 	}
 	if bus.writeCount() != 0 {
 		t.Fatalf("bus writes = %d; want 0", bus.writeCount())
 	}
-	if result := writer.SetSystemConfig(context.Background(), "dhwBivalencePointC", "50"); !result.Success {
+	if result := writer.SetSystemConfig(context.Background(), "dhw_outdoor_bivalence_temperature_limit", "50"); !result.Success {
 		t.Fatalf("MCP set_config 50 on BASV0 rejected: %q", result.Error)
 	}
 }
@@ -280,7 +280,7 @@ func (invoker *dhwBoundInvoker) Invoke(context.Context, router.Plane, string, ma
 }
 
 func TestSystemConfigNonFiniteRejectedBeforeBusIO(t *testing.T) {
-	fields := []string{"dhwBivalencePointC", "hcBivalencePointC", "hcEmergencyTempC", "hwcMaxFlowTempC", "maxRoomHumidityPct", "installerMenuCode"}
+	fields := []string{"dhw_outdoor_bivalence_temperature_limit", "heating_outdoor_bivalence_temperature_limit", "heating_flow_temperature_setpoint_maximum_at_heat_pump_fault", "dhw_flow_temperature_setpoint_maximum", "room_humidity_limit_maximum", "installer_access_code"}
 	for _, path := range []string{"GraphQL", "MCP"} {
 		for _, field := range fields {
 			for _, value := range []string{"NaN", "Inf", "-Inf"} {

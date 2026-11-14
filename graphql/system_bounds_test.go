@@ -46,7 +46,7 @@ func TestEncodeSystemConfigValueForControllerDHWBivalence(t *testing.T) {
 	for _, tc := range cases {
 		payload, spec, bound, err := systemconfig.EncodeSystemConfigValueForController(SystemConfigFieldDHWBivalencePoint, tc.value, tc.id)
 		if bound == nil {
-			t.Fatalf("%s: bound = nil; want the active bound for dhwBivalencePointC", tc.name)
+			t.Fatalf("%s: bound = nil; want the active bound for dhw_outdoor_bivalence_temperature_limit", tc.name)
 		}
 		if tc.wantErr {
 			if err == nil {
@@ -83,11 +83,11 @@ func TestEncodeSystemConfigValueForControllerKeepsOtherSystemNumbers(t *testing.
 		ok    []string
 		bad   []string
 	}{
-		{"maxRoomHumidityPct", []string{"30", "80"}, []string{"29", "81"}},
-		{"hcBivalencePointC", []string{"-20", "30"}, []string{"-21", "31"}},
-		{"hcEmergencyTempC", []string{"20", "80"}, []string{"19", "81"}},
-		{"hwcMaxFlowTempC", []string{"15", "80"}, []string{"14", "81"}},
-		{"installerMenuCode", []string{"0", "999"}, []string{"1000"}},
+		{"room_humidity_limit_maximum", []string{"30", "80"}, []string{"29", "81"}},
+		{"heating_outdoor_bivalence_temperature_limit", []string{"-20", "30"}, []string{"-21", "31"}},
+		{"heating_flow_temperature_setpoint_maximum_at_heat_pump_fault", []string{"20", "80"}, []string{"19", "81"}},
+		{"dhw_flow_temperature_setpoint_maximum", []string{"15", "80"}, []string{"14", "81"}},
+		{"installer_access_code", []string{"0", "999"}, []string{"1000"}},
 	}
 	for _, id := range identities {
 		for _, tc := range cases {
@@ -103,8 +103,8 @@ func TestEncodeSystemConfigValueForControllerKeepsOtherSystemNumbers(t *testing.
 			}
 		}
 	}
-	if got := systemConfigFieldSpecs["hcBivalencePointC"]; got.min != -20 || got.max != 30 {
-		t.Fatalf("hcBivalencePointC spec changed: %+v", got)
+	if got := systemConfigFieldSpecs["heating_outdoor_bivalence_temperature_limit"]; got.min != -20 || got.max != 30 {
+		t.Fatalf("heating_outdoor_bivalence_temperature_limit spec changed: %+v", got)
 	}
 }
 

@@ -80,13 +80,13 @@ func TestM13SystemConfigBoundMutationAdmission(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data := executeMutation(t, schema, `mutation { set_system_config(field: "dhwBivalencePointC", value: "5") { success error } }`)
+	data := executeMutation(t, schema, `mutation { set_system_config(field: "dhw_outdoor_bivalence_temperature_limit", value: "5") { success error } }`)
 	result := data["set_system_config"].(map[string]interface{})
 	if result["success"] != false || !strings.Contains(result["error"].(string), "[-2, 4]") || len(invoker.calls) != 0 {
 		t.Fatalf("result=%v calls=%d", data, len(invoker.calls))
 	}
 	provider.SetSystem(&SystemStatus{})
-	missing := executeMutation(t, schema, `mutation { set_system_config(field: "dhwBivalencePointC", value: "0") { success error } }`)["set_system_config"].(map[string]interface{})
+	missing := executeMutation(t, schema, `mutation { set_system_config(field: "dhw_outdoor_bivalence_temperature_limit", value: "0") { success error } }`)["set_system_config"].(map[string]interface{})
 	if missing["success"] != false || !strings.Contains(missing["error"].(string), "missing resolved driver bound") || len(invoker.calls) != 0 {
 		t.Fatalf("missing bound: %v calls=%d", missing, len(invoker.calls))
 	}
@@ -206,7 +206,7 @@ func TestInjectedBoundRefusesDifferentRoutedController(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result := executeMutation(t, schema, `mutation { set_system_config(field: "dhwBivalencePointC", value: "40") { success error } }`)["set_system_config"].(map[string]interface{})
+	result := executeMutation(t, schema, `mutation { set_system_config(field: "dhw_outdoor_bivalence_temperature_limit", value: "40") { success error } }`)["set_system_config"].(map[string]interface{})
 	if result["success"] != false || !strings.Contains(result["error"].(string), "does not match routed controller") || len(invoker.calls) != 0 {
 		t.Fatalf("result=%v calls=%d", result, len(invoker.calls))
 	}
@@ -237,7 +237,7 @@ func TestInjectedBoundRefusesSameAddressIdentityReplacement(t *testing.T) {
 	reg.entries[0x15] = replacement
 	invoker := &mutationTestInvoker{}
 	schema := buildMutationSchemaForM13(t, reg, invoker, func() *ConfigBound { return provider.System().Config.DhwBivalenceBound })
-	result := executeMutation(t, schema, `mutation { set_system_config(field: "dhwBivalencePointC", value: "40") { success error } }`)["set_system_config"].(map[string]interface{})
+	result := executeMutation(t, schema, `mutation { set_system_config(field: "dhw_outdoor_bivalence_temperature_limit", value: "40") { success error } }`)["set_system_config"].(map[string]interface{})
 	if result["success"] != false || !strings.Contains(result["error"].(string), "identity or qualification changed") || len(invoker.calls) != 0 {
 		t.Fatalf("result=%v calls=%d", result, len(invoker.calls))
 	}

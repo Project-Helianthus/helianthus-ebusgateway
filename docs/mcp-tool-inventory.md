@@ -1991,12 +1991,12 @@ This emitted snapshot covers default registration, including the standard eBUS s
   },
   {
     "name": "ebus_v1_semantic_system_set_config",
-    "description": "Write a system configuration field (B524 controller). Accepts camelCase field names matching GraphQL mutation fields.",
+    "description": "Write a system configuration field (B524 controller). Accepts the snake_case field names of the GraphQL set_system_config mutation.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
         "field": {
-          "description": "camelCase field name (e.g. installerName1, maintenanceDate, installerMenuCode)",
+          "description": "snake_case field name (e.g. installer_name, maintenance_date, installer_access_code)",
           "type": "string"
         },
         "value": {
@@ -2013,12 +2013,12 @@ This emitted snapshot covers default registration, including the standard eBUS s
   },
   {
     "name": "ebus_v1_semantic_boiler_status_set_config",
-    "description": "Write a boiler configuration field (B509 BAI00). Accepts camelCase field names matching GraphQL mutation fields.",
+    "description": "Write a boiler configuration field (B509 BAI00). Accepts the field names of the GraphQL set_boiler_config mutation.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
         "field": {
-          "description": "camelCase field name (e.g. installerMenuCode, phoneNumber)",
+          "description": "field name (e.g. installer_phone_number, maximum_heating_flow_temperature_setpoint)",
           "type": "string"
         },
         "value": {

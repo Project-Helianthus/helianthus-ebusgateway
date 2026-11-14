@@ -146,7 +146,14 @@ Reason codes of `TARGET_ERROR`:
   mux reserves the slot in the same read-loop step, before it processes the
   next symbol. The slot key is
   `(session, registration epoch, stream generation, transaction, slot tag)`.
-  The slot tag is a per-session counter over `1..255` that skips zero.
+  The slot tag is a per-session counter over `1..255` that skips zero and is
+  never reused during the life of the session: after tag 255 has been offered,
+  the mux offers no further slot, revokes the session's registrations with
+  `tag_exhausted` and the subscriber must reconnect, which starts a new session
+  with a new counter and discards every worker bound to the old one.
+  Alternative: wrap the counter; rejected because `BEGIN` and `COMMIT` carry
+  one byte, so a stale worker holding an old tag could stage into a later
+  transaction.
 - Delivery to the subscriber is the session's ordinary RECEIVED stream: the
   source symbol and the destination symbol were already queued in wire order,
   and the mux queues `SLOT <tag>` directly behind the destination symbol. Every
@@ -178,7 +185,12 @@ Reason codes of `TARGET_ERROR`:
   request, lost continuity): nothing is emitted and the slot ends. The
   protocol defines no target answer for an unrecognizable command.
 - Every emitted symbol is checked at its output boundary against the slot key,
-  the phase and the registration, not only when the slot is selected.
+  the phase and the stream generation, not only when the slot is selected.
+  Before the first emitted symbol the live registration is checked as well. At
+  that moment the mux takes an immutable emission lease holding the slot key and
+  the committed bytes; later symbols of that emission are checked against the
+  lease, so an `UNTARGET` or a disconnect during the emission does not truncate
+  it. Reset, reconnect, a stream generation change and a conflict still stop it.
 
 ### Staging
 
@@ -232,8 +244,8 @@ Reason codes of `TARGET_ERROR`:
   general session buffer. If the budget is exceeded when a slot would be
   reserved, no slot is offered and the session's registrations are revoked
   with `subscriber_failure`. A write error on the session closes it as today.
-  The budget is smaller than 255 slot notices, so a slot tag cannot alias a
-  stale tag of the same session.
+  Slot tags are never reused within a session (section 2), so a stale tag cannot
+  alias a later slot whatever the budget.
 - The emitter has no queue. The read-loop step that validates the CRC hands
   the committed bytes to the emitter directly. If the first symbol cannot be
   submitted within a fixed emission bound, measured on an injected monotonic
@@ -262,6 +274,7 @@ continuity loss and on close.
 | SYN while waiting | SYN in a request or response wait | `SLOT_END boundary` |
 | Initiator ownership released | a local initiator's grant ends during the slot (idle gap, ownership cap, cancel) | `SLOT_END boundary` |
 | Stale queued response | `BEGIN` or `COMMIT` with a tag that is not current, staging after `SLOT_END` | refused with `stale` or discarded, counted |
+| Tag exhaustion | tag 255 was offered | no further slot, registrations revoked with `tag_exhausted`, reconnect required |
 
 End codes of `SLOT_END`: `0x00` completed (initiator ACK of the response),
 `0x01` crc, `0x02` malformed, `0x03` not_ready, `0x04` declined (commit of
@@ -281,7 +294,7 @@ per acceptance criterion of the issue, each with sub-tests:
 | 3 provisional selection | `TestProvisionalSlotEmitsNothingBeforeValidatedRequest`: commit before CRC emits nothing early, single NACK on invalid CRC, silence on malformed framing, emissions only for the slot's address, transaction and phase |
 | 4 emission without START | `TestResponderEmissionWithoutStartFencesLocalTraffic`: no START written, owner `SEND` rejected in the window, queued write fails at commit, other sessions cannot stage, refusal without responder capability |
 | 5 latency and queueing | `TestResponderPathIsUnpacedAndBounded`: no pacing for a registered session, budget overflow revokes, prepared response emitted in full at the CRC, late commit refused and counted, emission bound exceeded emits nothing |
-| 6 invalidation | `TestResponderSlotInvalidation`: one table row per cause in section 6 |
+| 6 invalidation | `TestResponderSlotInvalidation`: one table row per cause in section 6, including unregister and disconnect after emission started (the committed bytes complete, checked against the lease), tag exhaustion (no tag reuse, registrations revoked), and a stale tag held by an old worker refused |
 | 7 determinism | `TestResponderSlotReplayIsDeterministic`: every scenario replayed twice with identical session frames, upstream writes and counters |
 | 8 hardware boundary | `TestResponderCellsStayPlannedWithoutWireEvidence` in the matrix runner: offline results never mark PX09 to PX11 hardware cells as passed |
 
@@ -295,7 +308,7 @@ each row catches:
 | registration epoch | a commit after unregister and re-register binds to the old slot |
 | stream generation | a slot reserved before a reset emits after it |
 | transaction | a commit for an ended transaction is used for the next one |
-| slot tag | a stale `BEGIN` or `COMMIT` is accepted |
+| slot tag | a stale `BEGIN` or `COMMIT` is accepted, or a tag is reused within a session |
 
 ## 8. Slice plan
 

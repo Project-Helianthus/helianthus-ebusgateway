@@ -96,7 +96,9 @@ func (p *huaweiPVPublication) retainedWithdrawals() []huaweiRetainedWithdrawal {
 // older than the one before the publishing generation. Admitting a third
 // generation inside the retention window would otherwise exceed the
 // per-asset retained reservation, so those observations are withdrawn
-// explicitly in the admitting batch; the reservation is never raised.
+// explicitly in the admitting batch; the reservation is never raised. Only
+// this publisher's own source is considered: another contributor's retained
+// observations are not its to withdraw, and SemReg would reject the batch.
 func (p *huaweiPVPublication) capacityWithdrawals(asset semreg.AssetID, current semreg.Snapshot, epoch semreg.SourceEpochID, generation semreg.Uint64) ([]semreg.CandidateID, []huaweiRetainedWithdrawal) {
 	type key struct {
 		epoch      semreg.SourceEpochID
@@ -105,7 +107,7 @@ func (p *huaweiPVPublication) capacityWithdrawals(asset semreg.AssetID, current 
 	groups := map[key][]semreg.CandidateID{}
 	for _, record := range current.Retained {
 		candidate := record.Candidate
-		if candidate.SourceEpochID == nil || candidate.DriverGeneration == nil {
+		if candidate.SourceEpochID == nil || candidate.DriverGeneration == nil || !semregCandidateOfSource(current, candidate, p.handle.Source()) {
 			continue
 		}
 		k := key{*candidate.SourceEpochID, *candidate.DriverGeneration}
@@ -198,14 +200,34 @@ func huaweiSourceCapacity(hub *semhub.Hub, source semreg.SourceID) error {
 		if err != nil {
 			continue
 		}
-		for _, descriptor := range view.Snapshot.Sources {
-			if descriptor.SourceID == source {
-				if len(view.Snapshot.Sources) >= huaweiMaxAssetSources {
-					return errHuaweiSourceCapacityExhausted
-				}
-				break
-			}
+		if err := huaweiAssetSourceCapacity(view.Snapshot, source); err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+// huaweiAssetSourceCapacity refuses an asset that holds a descriptor of source
+// and the kernel's source-descriptor bound. The bound is per asset and shared
+// by every contributor, so every descriptor counts, whatever its source.
+func huaweiAssetSourceCapacity(snapshot semreg.Snapshot, source semreg.SourceID) error {
+	for _, descriptor := range snapshot.Sources {
+		if descriptor.SourceID == source {
+			if len(snapshot.Sources) >= huaweiMaxAssetSources {
+				return errHuaweiSourceCapacityExhausted
+			}
+			break
+		}
+	}
+	return nil
+}
+
+// huaweiBindingCapacity refuses a new binding incarnation on an asset that
+// holds the kernel's binding or identity-link bound. Both bounds are per asset
+// and shared by every contributor, so every record counts, whatever its source.
+func huaweiBindingCapacity(current semreg.Snapshot) error {
+	if len(current.Bindings) >= huaweiMaxAssetBindings || len(current.IdentityLinks) >= huaweiMaxAssetIdentityLinks {
+		return errHuaweiBindingCapacityExhausted
 	}
 	return nil
 }
@@ -405,9 +427,9 @@ func (p *huaweiPVPublication) publishChild(asset semreg.AssetID, child modbusreg
 		if !hasBinding {
 			// A new incarnation must fit the kernel's bounds; refuse before any
 			// batch is applied so the asset and the siblings are left untouched.
-			if len(current.Bindings) >= huaweiMaxAssetBindings || len(current.IdentityLinks) >= huaweiMaxAssetIdentityLinks {
+			if err := huaweiBindingCapacity(current); err != nil {
 				p.refused[child.UnitID] = huaweiRefusalBindingCapacity
-				return fmt.Errorf("unit %d: %w", child.UnitID, errHuaweiBindingCapacityExhausted)
+				return fmt.Errorf("unit %d: %w", child.UnitID, err)
 			}
 			batch.BindingUpserts = append(batch.BindingUpserts, semreg.NativeBinding{BindingID: binding, AssetID: asset, SourceID: source, SourceEpochID: epoch, DriverGeneration: generation, NativeResource: huaweiEvidence("native.huawei.binding", struct {
 				Asset   semreg.AssetID

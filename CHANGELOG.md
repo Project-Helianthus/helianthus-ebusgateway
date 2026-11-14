@@ -1,5 +1,9 @@
 # Changelog
 
+## Publisher withdrawals scoped to the publisher's own source
+
+The Huawei PV retained-generation withdrawal and the Growatt storage soft-start withdrawal now consider only the records of the publisher's own source. A candidate belongs to the publisher only when its binding or its source epoch resolves in the asset snapshot and every reference that resolves names the publisher's source; a candidate whose source cannot be resolved is never withdrawn. This prepares an asset for a second contributor, whose records a withdrawal must not name. The Huawei capacity checks keep counting every binding, identity link and source descriptor of an asset against the shared per-asset bounds, which every contributor of the asset fills. With one source per asset nothing observable changes: published output, goldens, identifiers and wire values are unchanged. The gateway binary changes, so affected release evidence must be renewed before the final bill of materials freeze.
+
 ## AdapterMux transition characterization
 
 A deterministic test harness drives the AdapterMux read loop, received-symbol, SYN-boundary and grant handlers through their inputs (SYN, received symbol, bid, STARTED, FAILED, START deadline, session close, reset) and pins the resulting mux state and the ordered effects on the adapter, the active path, sessions and the passive stream. Test-only; the gateway binary is unchanged.

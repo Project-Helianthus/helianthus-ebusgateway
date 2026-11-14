@@ -11,7 +11,7 @@ import (
 
 // SystemConfigFieldDHWBivalencePoint is the system-config field whose bound is
 // conservatively narrowed by controller-profile evidence.
-const SystemConfigFieldDHWBivalencePoint = "dhwBivalencePointC"
+const SystemConfigFieldDHWBivalencePoint = "dhw_outdoor_bivalence_temperature_limit"
 
 type ControllerIdentity = vaillantsystem.B524ControllerIdentity
 
@@ -42,7 +42,7 @@ const (
 	ConfigBoundReasonInvalidBound     = "invalid_bound"
 )
 
-// Released compatibility policy window for dhwBivalencePointC. A controller-profile
+// Released compatibility policy window for dhw_outdoor_bivalence_temperature_limit. A controller-profile
 // match identifies an observation context, not the target installation; profile
 // evidence may narrow this window but must never widen it.
 
@@ -132,7 +132,7 @@ func controllerIdentityLabel(id vaillantsystem.B524ControllerIdentity) string {
 	return label
 }
 
-// ResolveDHWBivalenceBound resolves the dhwBivalencePointC bound from the exact
+// ResolveDHWBivalenceBound resolves the dhw_outdoor_bivalence_temperature_limit bound from the exact
 // controller identity through the ebusreg controller-profile lookup (OP02,
 // GG=0x00, RR=0x0001). Only a found, retained-record-qualified, sane bound is
 // intersected with the conservative policy window; an empty intersection or
@@ -176,7 +176,7 @@ func dhwBivalenceBoundFromResult(identity vaillantsystem.B524ControllerIdentity,
 }
 
 // EncodeSystemConfigValueForController validates and encodes a system config
-// value. For dhwBivalencePointC the range is the bound resolved from identity;
+// value. For dhw_outdoor_bivalence_temperature_limit the range is the bound resolved from identity;
 // every other field keeps its fixed spec range. The returned spec carries the
 // effective range, so the read-back checks are unchanged. A value outside the
 // bound fails here, before any bus write, and the error names the active bound.

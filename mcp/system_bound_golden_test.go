@@ -12,7 +12,7 @@ import (
 
 // TestSemanticSystemDHWBivalenceBoundGoldenEnvelope pins the
 // ebus_v1_semantic_system_get output (including data_hash) for the two shapes
-// of the active dhwBivalencePointC bound: a matched controller profile and the
+// of the active dhw_outdoor_bivalence_temperature_limit bound: a matched controller profile and the
 // conservative unmatched policy. Regenerate with
 // TZ=UTC UPDATE=1 go test ./mcp -run TestSemanticSystemDHWBivalenceBoundGoldenEnvelope.
 func TestSemanticSystemDHWBivalenceBoundGoldenEnvelope(t *testing.T) {

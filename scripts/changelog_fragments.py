@@ -65,6 +65,8 @@ def body_problems(lines):
             problems.append(f"line {number}: conflict marker")
         if not fenced and re.match(r"#{1,2} ", line):
             problems.append(f"line {number}: a fragment holds one '## ' title only")
+    if fenced:
+        problems.append("a fenced code block is not closed")
     return problems
 
 
@@ -170,11 +172,23 @@ def new_fragment_problems(changes):
     return []
 
 
-def release_assembly_problems(root, base, head, changes):
-    """Require the exact assembly of removed fragments from the merge base."""
+def release_source(root, base, head):
+    """Return (the base tip a release assembles from, problem); the head contains it."""
     code, ancestor = git(root, "merge-base", base, head or "HEAD")
     if code:
-        return ["release assembly history is not available"]
+        return None, "release assembly history is not available"
+    code, tip = git(root, "rev-parse", "--verify", "--quiet", base + "^{commit}")
+    if code or tip.strip() != ancestor.strip():
+        return None, (f"release assembly must start from the current tip of {base}; "
+                      "update the release branch and assemble again")
+    return ancestor, None
+
+
+def release_assembly_problems(root, base, head, changes):
+    """Require the exact assembly of every fragment pending at the base tip."""
+    ancestor, problem = release_source(root, base, head)
+    if problem:
+        return [problem]
     removed = [path for path, status in changes.items()
                if status == "D" and path.startswith(DIRECTORY + "/")
                and NAME.fullmatch(Path(path).name)]

@@ -70,6 +70,7 @@ class FragmentTextTests(unittest.TestCase):
             "conflict middle": "## A title\n\nText.\n=======\nOther.\n",
             "conflict end": "## A title\n\nText.\n>>>>>>> theirs\n",
             "title after a closed fence": "## A title\n\n```\ncode\n```\n## Another\n",
+            "unclosed fence": "## A title\n\nRun:\n\n```sh\ncode\n",
         }
         for label, text in faults.items():
             with self.subTest(label):
@@ -214,7 +215,7 @@ class ReleaseValidationTests(unittest.TestCase):
                                  "changelog.d/12-new.md": newer}
 
                         def read_git(_root, *args):
-                            if args[0] == "merge-base":
+                            if args[0] in ("merge-base", "rev-parse"):
                                 return 0, "ancestor\n"
                             if args[0] == "ls-tree":
                                 return 0, "\0".join(blobs_fragments) + "\0"
@@ -233,7 +234,7 @@ class ReleaseValidationTests(unittest.TestCase):
         expected = FRAGMENTS.assemble(BASE, [GOOD])
 
         def read_git(_root, *args):
-            if args[0] == "merge-base":
+            if args[0] in ("merge-base", "rev-parse"):
                 return 0, "ancestor\n"
             if args[0] == "ls-tree":
                 return 0, "changelog.d/7-old.md\0changelog.d/12-new.md\0"
@@ -391,6 +392,21 @@ class GitChangeSetTests(unittest.TestCase):
         self.assertEqual(sorted(path.name for path in (self.root / "changelog.d").iterdir()),
                          ["README.md"])
         self.assertEqual(run_main(self.root, "check", "--require-new", "--base", "topic")[0], 0)
+
+    def test_release_behind_the_base_tip_fails(self):
+        self.git("switch", "-q", "-c", "release", "main")
+        self.assertEqual(run_main(self.root, "assemble", "--write")[0], 0)
+        self.commit("release")
+        code, _, err = run_main(self.root, "check", "--require-new", "--base", "main",
+                                "--head", "release")
+        self.assertEqual((code, err), (0, ""))
+        self.git("switch", "-q", "main")
+        write_tree(self.root, {"changelog.d/13-late.md": GOOD.replace("A title", "Late")})
+        self.commit("late entry")
+        code, _, err = run_main(self.root, "check", "--require-new", "--base", "main",
+                                "--head", "release")
+        self.assertEqual(code, 1)
+        self.assertIn("current tip of main", err)
 
 
 class CommandTests(unittest.TestCase):

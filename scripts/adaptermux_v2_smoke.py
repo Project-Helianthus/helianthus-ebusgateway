@@ -328,9 +328,10 @@ def status_of(sample):
 
 
 def own_source(sample):
+    # The admission record nests the selected address; it has no flat source key.
     admission = status_of(sample).get("bus_admission") or {}
-    source = admission.get("source")
-    if not isinstance(source, int) or source <= 0 or source > 0xFF:
+    source = (admission.get("source_selection") or {}).get("selected_source")
+    if isinstance(source, bool) or not isinstance(source, int) or source <= 0 or source > 0xFF:
         return None
     return "0x%02x" % source
 
@@ -568,10 +569,26 @@ def mcp_semantic(urls, settings):
     envelope = read_json(content[0].get("text") or "", "MCP tool")
     data = envelope.get("data") or {}
     # The contract is the lineage AD10 compares; a blank one proves nothing.
-    contract = (envelope.get("meta") or {}).get("contract")
-    if not isinstance(contract, str) or not contract.strip():
+    contract = well_formed_contract((envelope.get("meta") or {}).get("contract"))
+    if contract is None:
         raise SurfaceError("MCP read tool answered without a meta.contract")
     return (data.get("state") or {}), contract
+
+
+def well_formed_contract(contract):
+    """Return the MCP contract object (name, major, minor) or None when malformed."""
+    if not isinstance(contract, dict):
+        return None
+    name = contract.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return None
+    version = {}
+    for key in ("major", "minor"):
+        number = contract.get(key)
+        if isinstance(number, bool) or not isinstance(number, int) or number < 0:
+            return None
+        version[key] = number
+    return {"name": name, "major": version["major"], "minor": version["minor"]}
 
 
 def json_type(value):

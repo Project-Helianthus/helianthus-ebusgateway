@@ -356,6 +356,23 @@ class ExecutableInvariantTests(SmokeTestCase):
                 self.assertEqual(status, SMOKE.EXIT_FAIL)
                 self.assertIn("external_identification_frames did not move", self.reasons(evidence))
 
+    def test_own_source_is_read_from_the_nested_source_selection(self):
+        self.stub.load(self.phases("mux", "enh"))
+        status, evidence = self.run_smoke(self.environ("AD06", "mux", "enh"))
+        self.assertEqual(status, SMOKE.EXIT_PASS, evidence and evidence["reasons"])
+        self.assertEqual(evidence["gateway_source"], "0x%02x" % DATA["gateway_source"])
+
+    def test_flat_admission_source_without_source_selection_cannot_measure_own_frames(self):
+        for invariant in ("AD02", "AD03", "AD06", "PX01", "PX12", "CX01"):
+            with self.subTest(invariant=invariant):
+                phases = self.phases("mux", "enh")
+                for phase in phases:
+                    phase.status["bus_admission"] = {"state": "active", "source": DATA["gateway_source"]}
+                self.stub.load(phases)
+                status, evidence = self.run_smoke(self.environ(invariant, "mux", "enh"))
+                self.assertEqual(status, SMOKE.EXIT_FAIL)
+                self.assertIn("the gateway reports no own source address", self.reasons(evidence))
+
 
 class WriteGuardAndTransportTests(SmokeTestCase):
     def test_write_policy_not_confirmed_by_the_gateway_fails(self):
@@ -582,7 +599,16 @@ class MigrationEquivalenceTests(SmokeTestCase):
         missing["meta"] = {}
         absent = json.dumps({"jsonrpc": "2.0", "id": 1, "result": {
             "content": [{"type": "text", "text": json.dumps(missing)}], "isError": False}})
-        for label, body in (("absent", absent), ("empty", mcp_body(state, "")), ("blank", mcp_body(state, "  "))):
+        contract = DATA["semantic"]["mcp_contract"]
+        malformed = (
+            ("absent", absent), ("empty", mcp_body(state, "")), ("blank", mcp_body(state, "  ")),
+            ("bare string", mcp_body(state, contract["name"])),
+            ("empty object", mcp_body(state, {})),
+            ("blank name", mcp_body(state, dict(contract, name="  "))),
+            ("no major", mcp_body(state, {"name": contract["name"], "minor": 0})),
+            ("textual minor", mcp_body(state, dict(contract, minor="0"))),
+        )
+        for label, body in malformed:
             for invariant, composition in (("DS01", "direct"), ("AD10", "mux")):
                 with self.subTest(contract=label, invariant=invariant):
                     if invariant == "AD10":
@@ -593,6 +619,15 @@ class MigrationEquivalenceTests(SmokeTestCase):
                     self.assertEqual(status, SMOKE.EXIT_FAIL)
                     self.assertIn("MCP read tool answered without a meta.contract", self.reasons(evidence))
                     self.assertNotIn("ad10", evidence)
+
+
+    def test_gateway_contract_object_is_recorded_as_lineage(self):
+        self.stub.load(self.phases("direct", "ens"))
+        status, evidence = self.run_smoke(self.environ("DS01", "direct", "ens"))
+        self.assertEqual(status, SMOKE.EXIT_PASS, evidence and evidence["reasons"])
+        for name, field in evidence["semantic_record"]["fields"].items():
+            with self.subTest(field=name):
+                self.assertEqual(field["lineage"]["mcp_contract"], DATA["semantic"]["mcp_contract"])
 
 
 class ReadOnlyTests(SmokeTestCase):

@@ -192,7 +192,7 @@ Every cell checks:
 Measures are differences between the first and the last reading. Frame counts
 come from the bus observability frame list. Partial frames are not counted.
 "Own" frames come from the gateway's source address, which the bus admission
-reports. "External identification" frames are passive `07 04` frames from
+reports as `bus_admission.source_selection.selected_source`. "External identification" frames are passive `07 04` frames from
 another source.
 
 | Invariant | Requires |
@@ -211,8 +211,10 @@ another source.
 
 The semantic record covers the `system` plane's state fields. For each field
 it holds presence, JSON type, unit, value and lineage (plane, path and MCP
-contract). It also lists the fields where the GraphQL value differs from the
-MCP value, and any such difference fails the cell.
+contract). The contract is the `meta.contract` object of the MCP answer, with
+its name, major and minor version; an absent or malformed one fails the cell.
+It also lists the fields where the GraphQL value differs from the MCP value,
+and any such difference fails the cell.
 
 AD10 reads `verdict.json` and `smoke_evidence.json` of every case in
 `MATRIX_AD10_PAIRED_CASES` from the same output directory. A paired case

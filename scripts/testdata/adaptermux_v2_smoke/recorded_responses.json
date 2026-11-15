@@ -18,9 +18,13 @@
       "external_write_policy": "record_only"
     },
     "bus_admission": {
-      "state": "active",
-      "source": 113,
-      "companion_target": 118
+      "source_selection": {
+        "state": "active",
+        "outcome": "active_probe_passed",
+        "selected_source": 113,
+        "companion_target": 118,
+        "reason": "active_probe_passed"
+      }
     }
   },
   "frames": {
@@ -105,7 +109,7 @@
       "outdoor_temperature": 12.0,
       "outdoor_temperature_avg24h": 6.0
     },
-    "mcp_contract": "ebus.v1.semantic.system.get",
-    "other_mcp_contract": "ebus.v1.semantic.system.get.replay"
+    "mcp_contract": {"name": "helianthus-ebus-mcp", "major": 1, "minor": 0},
+    "other_mcp_contract": {"name": "helianthus-ebus-mcp", "major": 1, "minor": 1}
   }
 }

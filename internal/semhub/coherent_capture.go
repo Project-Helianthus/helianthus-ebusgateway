@@ -66,6 +66,13 @@ func (h *Hub) capture(ctx context.Context, ids []semreg.AssetID, sample func() (
 	}
 	h.mu.RLock()
 	defer h.mu.RUnlock()
+	return h.captureLocked(ctx, ids, sample)
+}
+
+// captureLocked is the body of capture; the caller holds the hub read lock
+// and has bounded the selection. A nil evaluation context from sample reads
+// the admitted snapshots without evaluating them.
+func (h *Hub) captureLocked(ctx context.Context, ids []semreg.AssetID, sample func() (semreg.TimePoint, captureContext, error)) (CoherentCapture, error) {
 	if h.restoring {
 		return CoherentCapture{}, ErrCaptureUnavailable
 	}
@@ -126,9 +133,12 @@ func (h *Hub) capture(ctx context.Context, ids []semreg.AssetID, sample func() (
 					}
 				}
 				item.PublicAdmitted = current && publicCaptureEvidence(reflect.ValueOf(snapshot))
-				if !item.PublicAdmitted {
+				switch {
+				case !item.PublicAdmitted:
 					item.UnavailableReason = "semantic.read.reason.publication_withheld"
-				} else {
+				case contextFor == nil:
+					item.Snapshot = &snapshot
+				default:
 					evaluationContext, err := contextFor(snapshot)
 					if err != nil {
 						return CoherentCapture{}, err

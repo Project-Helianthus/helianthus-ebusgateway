@@ -163,7 +163,7 @@ func TestHandleArbitrationResponse_InFlightCancelled_FAILED_LogMarksSuppression(
 	mux.handleArbitrationResponse(false, 0x10)
 
 	got := buf.String()
-	if !strings.Contains(got, "FAILED-half") {
+	if !strings.Contains(got, "adaptermux: suppressing FAILED(0x10) for session 1 — request was cancelled/replaced; absorbed\n") {
 		t.Errorf("expected FAILED-half suppression log line, got:\n%s", got)
 	}
 }
@@ -284,7 +284,7 @@ func TestHandleArbitrationResponse_InFlightCancelled_AM56Mismatch_SuppressedSile
 	// F-NEW-5 log-marker invariant: AM56-half must emit a distinct
 	// log line so the diagnostic trail clearly shows the suppression.
 	got := buf.String()
-	if !strings.Contains(got, "AM56-half") {
+	if !strings.Contains(got, "adaptermux: suppressing STARTED-mismatch(0x10, pending 0x31) for session 1 — request was cancelled/replaced; absorbed\n") {
 		t.Errorf("expected AM56-half suppression log line, got:\n%s", got)
 	}
 	// And it must NOT emit the un-suppressed "STARTED mismatch:

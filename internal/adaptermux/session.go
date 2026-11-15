@@ -246,13 +246,13 @@ func (m *Mux) AddSession(conn net.Conn) uint64 {
 	managedGateHeld, admitted := m.beginManagedConnectionUse()
 	if !admitted {
 		_ = conn.Close()
-		m.logger.Printf("adaptermux: rejecting session — managed generation retired (AM13)")
+		m.logger.Printf("adaptermux: rejecting session — managed generation retired")
 		return 0
 	}
 	defer m.endManagedConnectionUse(managedGateHeld)
 	if m.ctx == nil || m.ctx.Err() != nil {
 		_ = conn.Close()
-		m.logger.Printf("adaptermux: rejecting session — mux not available (AM13)")
+		m.logger.Printf("adaptermux: rejecting session — mux not available")
 		return 0
 	}
 
@@ -274,13 +274,13 @@ func (m *Mux) AddSession(conn net.Conn) uint64 {
 	// insert after RetireManagedProxySessions detached the generation's map.
 	if m.connectionLossManaged.Load() && m.connectionLossDelegated.Load() {
 		m.sessionsMu.Unlock()
-		m.logger.Printf("adaptermux: rejecting session — managed generation retired (AM13)")
+		m.logger.Printf("adaptermux: rejecting session — managed generation retired")
 		_ = conn.Close()
 		return 0
 	}
 	if len(m.sessions) >= maxSessions {
 		m.sessionsMu.Unlock()
-		m.logger.Printf("adaptermux: rejecting session — max sessions (%d) reached (AM50)", maxSessions)
+		m.logger.Printf("adaptermux: rejecting session — max sessions (%d) reached", maxSessions)
 		_ = conn.Close()
 		return 0
 	}
@@ -391,7 +391,7 @@ func (s *session) close() {
 	select {
 	case <-waitDone:
 	case <-time.After(5 * time.Second):
-		s.mux.logger.Printf("adaptermux: session %d close timed out — wg.Wait pending, will self-resolve on I/O unblock (AM14)", s.id)
+		s.mux.logger.Printf("adaptermux: session %d close timed out — wg.Wait pending, will self-resolve on I/O unblock", s.id)
 	}
 }
 
@@ -726,7 +726,7 @@ func (s *session) handleInfo(id byte) {
 	// AM39: guard against payload >255 which would silently truncate
 	// via byte(len(data)) wrap-around.
 	if len(data) > 255 {
-		s.mux.logger.Printf("adaptermux: session %d INFO id=0x%02X payload too large (%d bytes, max 255) (AM39)", s.id, id, len(data))
+		s.mux.logger.Printf("adaptermux: session %d INFO id=0x%02X payload too large (%d bytes, max 255)", s.id, id, len(data))
 		s.deliverErrorHost()
 		return
 	}

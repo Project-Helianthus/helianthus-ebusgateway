@@ -909,7 +909,7 @@ func (m *Mux) Close() error {
 			select {
 			case pendingToCancel.notify <- startResult{granted: false, initiator: pendingToCancel.initiator, err: errors.New("adaptermux: closed")}:
 			case <-time.After(1 * time.Second):
-				m.logger.Printf("adaptermux: Close: timed out sending to pendingStart.notify (AM53)")
+				m.logger.Printf("adaptermux: Close: timed out sending to pendingStart.notify")
 			}
 		}
 
@@ -1627,7 +1627,7 @@ func (m *Mux) reconnect() (delegated bool, err error) {
 		select {
 		case pendingToCancel.notify <- startResult{granted: false, initiator: pendingToCancel.initiator, err: errors.New("adaptermux: adapter disconnected")}:
 		case <-time.After(1 * time.Second):
-			m.logger.Printf("adaptermux: reconnect: timed out sending to pendingStart.notify (AM53)")
+			m.logger.Printf("adaptermux: reconnect: timed out sending to pendingStart.notify")
 		}
 	}
 
@@ -1740,7 +1740,7 @@ func (m *Mux) readLoop() {
 				// cfg.BlackholeThreshold (default 30s) of consecutive
 				// timeouts since the bus was last active.
 				if !firstTimeoutTime.IsZero() && time.Since(firstTimeoutTime) > m.cfg.BlackholeThreshold {
-					m.logger.Printf("adaptermux: consecutive timeouts for %v (threshold %v), triggering reconnect (AM27)", time.Since(firstTimeoutTime).Round(time.Millisecond), m.cfg.BlackholeThreshold)
+					m.logger.Printf("adaptermux: consecutive timeouts for %v (threshold %v), triggering reconnect", time.Since(firstTimeoutTime).Round(time.Millisecond), m.cfg.BlackholeThreshold)
 					firstTimeoutTime = time.Time{}
 					lastDataTime = time.Time{} // reset after reconnect so quiet bus doesn't re-trigger
 					delegated, reconnErr := m.reconnect()
@@ -3053,7 +3053,7 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	// ownership, so this branch never fires for the gateway and the
 	// existing SYNIdle / IdleReleaseGrace contract is preserved.
 	if phaseEvent == wirePhaseEventTransactionDone && hasOwner {
-		m.logger.Printf("adaptermux: ownership released for session %d remote=%s (terminal SYN, F-21)",
+		m.logger.Printf("adaptermux: ownership released for session %d remote=%s (terminal SYN)",
 			ownerID, m.sessionRemoteAddrOrUnknown(ownerID))
 		m.arb.releaseOwnership(ownerID)
 		if ownerID == gatewaySessionID && m.gatewayTxnActive {
@@ -3107,7 +3107,7 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 			// the wire phase or trigger MaxOwnershipDuration.
 		}
 		if releaseNow {
-			m.logger.Printf("adaptermux: ownership released for session %d remote=%s (SYN timeout) (AM6)",
+			m.logger.Printf("adaptermux: ownership released for session %d remote=%s (SYN timeout)",
 				ownerID, m.sessionRemoteAddrOrUnknown(ownerID))
 			m.arb.releaseOwnership(ownerID)
 			if ownerID == gatewaySessionID && m.gatewayTxnActive {
@@ -3229,10 +3229,10 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 		}
 		if releaseNow {
 			if f26ExternalBypass {
-				m.logger.Printf("adaptermux: ownership released for session %d remote=%s (F-26 external START pending: elapsed %v skipping grace %v) (AM6)",
+				m.logger.Printf("adaptermux: ownership released for session %d remote=%s (external START pending: elapsed %v skipping grace %v)",
 					ownerID, m.sessionRemoteAddrOrUnknown(ownerID), elapsed, graceUsed)
 			} else {
-				m.logger.Printf("adaptermux: ownership released for session %d remote=%s (idle grace expired: %v ≥ %v) (AM6)",
+				m.logger.Printf("adaptermux: ownership released for session %d remote=%s (idle grace expired: %v ≥ %v)",
 					ownerID, m.sessionRemoteAddrOrUnknown(ownerID), elapsed, graceUsed)
 			}
 			m.arb.releaseOwnership(ownerID)
@@ -3488,7 +3488,7 @@ func (m *Mux) handleReset() {
 		select {
 		case pendingToCancel.notify <- startResult{granted: false, initiator: pendingToCancel.initiator, err: fmt.Errorf("adaptermux: %w", ebuserrors.ErrAdapterReset)}:
 		case <-time.After(1 * time.Second):
-			m.logger.Printf("adaptermux: handleReset: timed out sending to pendingStart.notify (AM53)")
+			m.logger.Printf("adaptermux: handleReset: timed out sending to pendingStart.notify")
 		}
 	}
 
@@ -3978,7 +3978,7 @@ func (m *Mux) tryGrantAndStartForBids(bids map[*startRequest]chan startResult) {
 			// the normal arrival.
 			cancelledInFlight := pending.req != nil && pending.req.cancelled.Load()
 			m.stateMu.Unlock()
-			m.logger.Printf("adaptermux: pendingStart deadline expired for session %d (AM8, wasBlocking=%v, cancelledInFlight=%v)", pending.sessionID, wasBlocking, cancelledInFlight)
+			m.logger.Printf("adaptermux: pendingStart deadline expired for session %d (wasBlocking=%v, cancelledInFlight=%v)", pending.sessionID, wasBlocking, cancelledInFlight)
 			// The hung START may never return, so its deferred loser ends here.
 			if m.arb.takeDeferredGatewayLoser(gatewayLoser) {
 				gatewayLoser.notify <- startResult{initiator: gatewayLoser.initiator, err: fmt.Errorf("adaptermux: START deadline expired: %w", ebuserrors.ErrTimeout)}
@@ -4018,7 +4018,7 @@ func (m *Mux) tryGrantAndStartForBids(bids map[*startRequest]chan startResult) {
 					if err := c.Close(); err != nil {
 						m.logger.Printf("adaptermux: deadline-triggered conn close: %v", err)
 					} else {
-						m.logger.Printf("adaptermux: deadline triggered transport reconnect to unstick hung StartArbitration (C2)")
+						m.logger.Printf("adaptermux: deadline triggered transport reconnect to unstick hung StartArbitration")
 					}
 				}
 			}
@@ -4413,7 +4413,7 @@ func (m *Mux) armExternalAbandonWatchdog(sess *session, grantGen uint32) {
 		m.arb.releaseOwnership(sessionID)
 		m.fenceArbitrationUntilSYNLocked()
 		m.stateMu.Unlock()
-		m.logger.Printf("adaptermux: F-34 abandon-watchdog firing for session %d gen=%d (no SEND within %v after STARTED reached the client) — force-releasing ownership",
+		m.logger.Printf("adaptermux: abandon-watchdog firing for session %d gen=%d (no SEND within %v after STARTED reached the client) — force-releasing ownership",
 			sessionID, grantGen, externalAbandonDeadline)
 	})
 }
@@ -4548,7 +4548,7 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) bool {
 			m.stateMu.Unlock()
 			defer m.applyStepAction(stepAction)
 			if cancelledInFlight {
-				m.logger.Printf("adaptermux: suppressing STARTED-mismatch(0x%02X, pending 0x%02X) for session %d — request was cancelled/replaced; absorbed (C4/R4 AM56-half)", data, pending.initiator, pending.sessionID)
+				m.logger.Printf("adaptermux: suppressing STARTED-mismatch(0x%02X, pending 0x%02X) for session %d — request was cancelled/replaced; absorbed", data, pending.initiator, pending.sessionID)
 				select {
 				case pending.notify <- startResult{
 					granted:   false,
@@ -4559,7 +4559,7 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) bool {
 				default:
 				}
 			} else {
-				m.logger.Printf("adaptermux: STARTED mismatch: got initiator 0x%02X, pending 0x%02X — failing pending session %d (AM56)", data, pending.initiator, pending.sessionID)
+				m.logger.Printf("adaptermux: STARTED mismatch: got initiator 0x%02X, pending 0x%02X — failing pending session %d", data, pending.initiator, pending.sessionID)
 				// Notify the bidder with the THIRD-PARTY winner byte (`data`),
 				// not the bidder's own `pending.initiator`. This matches the
 				// regular FAILED-path semantics below: the bidder's handleStart
@@ -4615,7 +4615,7 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) bool {
 			m.fenceArbitrationUntilSYNLocked()
 			m.undeliverableStarted.Add(1)
 			m.stateMu.Unlock()
-			m.logger.Printf("adaptermux: suppressing STARTED for session %d — request was cancelled/replaced; absorbed (C4/R4)", pending.sessionID)
+			m.logger.Printf("adaptermux: suppressing STARTED for session %d — request was cancelled/replaced; absorbed", pending.sessionID)
 			// F-17 follow-up (PR #626 review round-1, angry-tester
 			// finding F-1): the old notify channel MUST receive
 			// `cancelled: true` so session.go's handleStart goroutine
@@ -4693,7 +4693,7 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) bool {
 		}
 		m.stateMu.Unlock()
 		if cancelledInFlight {
-			m.logger.Printf("adaptermux: suppressing FAILED(0x%02X) for session %d — request was cancelled/replaced; absorbed (C4/R4 FAILED-half)", data, pending.sessionID)
+			m.logger.Printf("adaptermux: suppressing FAILED(0x%02X) for session %d — request was cancelled/replaced; absorbed", data, pending.sessionID)
 			// Best-effort send (cap-1 channel may already hold the
 			// replace's granted=false result).
 			select {
@@ -4895,9 +4895,9 @@ func (m *Mux) fireAbsorbReset() {
 	reason := m.pendingAbsorbLastReason
 	suppressed := m.absorbSkipLogSuppressedSince
 	if suppressed > 0 {
-		m.logger.Printf("adaptermux: absorb timeout reset reason=%s (was waiting for %d stale arbitration response(s)) (F-22 debounce) (%d suppressed)", reason, count, suppressed)
+		m.logger.Printf("adaptermux: absorb timeout reset reason=%s (was waiting for %d stale arbitration response(s)) (debounced) (%d suppressed)", reason, count, suppressed)
 	} else {
-		m.logger.Printf("adaptermux: absorb timeout reset reason=%s (was waiting for %d stale arbitration response(s)) (F-22 debounce)", reason, count)
+		m.logger.Printf("adaptermux: absorb timeout reset reason=%s (was waiting for %d stale arbitration response(s)) (debounced)", reason, count)
 	}
 	m.absorbResetTotal.Add(1)
 	m.pendingStartAbsorb = 0
@@ -5411,7 +5411,7 @@ func (m *Mux) broadcastResetToSessions() {
 	select {
 	case <-done:
 	case <-time.After(1 * time.Second):
-		m.logger.Printf("adaptermux: broadcastResetToSessions timed out after 1s — %d session(s) still pending (AM4)", len(sessions))
+		m.logger.Printf("adaptermux: broadcastResetToSessions timed out after 1s — %d session(s) still pending", len(sessions))
 	}
 }
 

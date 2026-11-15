@@ -139,7 +139,8 @@ def ebusd_address():
         raise UsageError("MATRIX_EBUSD_COMMAND_ADDR is required")
     host, sep, port = raw.rpartition(":")
     host = host[1:-1] if host.startswith("[") and host.endswith("]") else host
-    if not sep or not host or not port.isdigit() or not 0 < int(port) < 65536:
+    # ASCII digits only: str.isdigit() also accepts digits that int() rejects.
+    if not sep or not host or not port.isascii() or not port.isdigit() or not 0 < int(port) < 65536:
         raise UsageError("MATRIX_EBUSD_COMMAND_ADDR must be host:port")
     return host, int(port)
 

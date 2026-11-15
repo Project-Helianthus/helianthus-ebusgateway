@@ -403,6 +403,9 @@ class ClientStartedTest(CommandTestCase):
         cases = {
             "no ebusd port": {"MATRIX_EBUSD_COMMAND_ADDR": ""},
             "ebusd port without port": {"MATRIX_EBUSD_COMMAND_ADDR": "localhost"},
+            "ebusd port a superscript digit": {"MATRIX_EBUSD_COMMAND_ADDR": "localhost:\u00b2"},
+            "ebusd port a non-ASCII decimal digit": {"MATRIX_EBUSD_COMMAND_ADDR": "localhost:\u0663"},
+            "ebusd port out of range": {"MATRIX_EBUSD_COMMAND_ADDR": "localhost:65536"},
             "single reading": {"MATRIX_ADDON_WAIT_SEC": "0"},
             "credentials in the URL": {"MATRIX_GATEWAY_BASE_URL": "http://user:pw@127.0.0.1:1"},
             "unclosed IPv6 bracket": {"MATRIX_GATEWAY_BASE_URL": "http://[::1"},

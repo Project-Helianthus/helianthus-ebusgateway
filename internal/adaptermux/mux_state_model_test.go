@@ -1,6 +1,7 @@
 package adaptermux
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -104,6 +105,9 @@ type muxModelState struct {
 	blocking bool
 	// resyncOwed: wire SYNs still owed to the gateway active path.
 	resyncOwed uint8
+	// gateway: the selected party of a START in flight is the gateway rather
+	// than an external session.
+	gateway bool
 }
 
 // literal prints the state as the Go literal used in muxModelRows.
@@ -124,6 +128,9 @@ func (s muxModelState) literal() string {
 	}
 	if s.resyncOwed != 0 {
 		parts = append(parts, fmt.Sprintf("resyncOwed: %d", s.resyncOwed))
+	}
+	if s.gateway {
+		parts = append(parts, "gateway: true")
 	}
 	return "muxModelState{" + strings.Join(parts, ", ") + "}"
 }
@@ -162,6 +169,9 @@ func muxModelDerive(s transitionState, held bool) (muxModelState, error) {
 		out.phase = muxModelBidsQueued
 	default:
 		out.phase = muxModelIdle
+	}
+	if (out.phase == muxModelStartAsync || out.phase == muxModelStartBlocking) && strings.HasPrefix(s.start, "gateway ") {
+		out.gateway = true
 	}
 	if held && out.phase != muxModelHeld {
 		return out, fmt.Errorf("out-of-step hold under phase %s is not representable", out.phase)
@@ -234,23 +244,31 @@ const (
 	muxModelEventSessionClose
 	// muxModelEventReset: the adapter reports RESETTED.
 	muxModelEventReset
+	// muxModelEventStartCallReturns: the outstanding blocking
+	// StartArbitration call returns successfully.
+	muxModelEventStartCallReturns
+	// muxModelEventStartCallFails: the outstanding blocking StartArbitration
+	// call returns an error.
+	muxModelEventStartCallFails
 	muxModelEventCount
 )
 
 var muxModelEventNames = [...]string{
-	muxModelEventSYN:             "muxModelEventSYN",
-	muxModelEventSymbol:          "muxModelEventSymbol",
-	muxModelEventBid:             "muxModelEventBid",
-	muxModelEventStartedMatching: "muxModelEventStartedMatching",
-	muxModelEventStartedOther:    "muxModelEventStartedOther",
-	muxModelEventFailed:          "muxModelEventFailed",
-	muxModelEventStartDeadline:   "muxModelEventStartDeadline",
-	muxModelEventAbsorbDebounce:  "muxModelEventAbsorbDebounce",
-	muxModelEventIdleGrace:       "muxModelEventIdleGrace",
-	muxModelEventOwnershipLimit:  "muxModelEventOwnershipLimit",
-	muxModelEventAbandonWatchdog: "muxModelEventAbandonWatchdog",
-	muxModelEventSessionClose:    "muxModelEventSessionClose",
-	muxModelEventReset:           "muxModelEventReset",
+	muxModelEventSYN:              "muxModelEventSYN",
+	muxModelEventSymbol:           "muxModelEventSymbol",
+	muxModelEventBid:              "muxModelEventBid",
+	muxModelEventStartedMatching:  "muxModelEventStartedMatching",
+	muxModelEventStartedOther:     "muxModelEventStartedOther",
+	muxModelEventFailed:           "muxModelEventFailed",
+	muxModelEventStartDeadline:    "muxModelEventStartDeadline",
+	muxModelEventAbsorbDebounce:   "muxModelEventAbsorbDebounce",
+	muxModelEventIdleGrace:        "muxModelEventIdleGrace",
+	muxModelEventOwnershipLimit:   "muxModelEventOwnershipLimit",
+	muxModelEventAbandonWatchdog:  "muxModelEventAbandonWatchdog",
+	muxModelEventSessionClose:     "muxModelEventSessionClose",
+	muxModelEventReset:            "muxModelEventReset",
+	muxModelEventStartCallReturns: "muxModelEventStartCallReturns",
+	muxModelEventStartCallFails:   "muxModelEventStartCallFails",
 }
 
 func (e muxModelEvent) String() string {
@@ -266,6 +284,7 @@ const (
 	muxModelNoAbsorb        = "no stale result is to be absorbed, so the debounce clears nothing"
 	muxModelNoOwnerTimer    = "nobody owns the bus, so no ownership timer runs"
 	muxModelNoSessionGrant  = "no external session owns the bus, so no abandon watchdog runs"
+	muxModelNoBlockingCall  = "no blocking START call is outstanding, so none can return"
 )
 
 // muxModelEventCannotOccur is the validity rule of the table: it returns the
@@ -287,6 +306,10 @@ func muxModelEventCannotOccur(s muxModelState, e muxModelEvent) string {
 	case muxModelEventAbandonWatchdog:
 		if s.phase != muxModelSessionOwned {
 			return muxModelNoSessionGrant
+		}
+	case muxModelEventStartCallReturns, muxModelEventStartCallFails:
+		if !s.blocking {
+			return muxModelNoBlockingCall
 		}
 	}
 	return ""
@@ -479,6 +502,10 @@ var muxModelStates = map[string]muxModelNamedState{
 	// session, so two resynchronization SYNs are owed to its active path.
 	"start_async_resync_owed": {mode: transitionUpstreamAsync, build: muxModelFixture("start_async_local_losers"),
 		state: muxModelState{phase: muxModelStartAsync, resyncOwed: 2}},
+	// start_gateway: the gateway won the selection; the START waits for its
+	// adapter result through the stream.
+	"start_gateway": {mode: transitionUpstreamAsync, build: muxModelFixture("start_async_gateway"),
+		state: muxModelState{phase: muxModelStartAsync, gateway: true}},
 	"start_blocking": {mode: transitionUpstreamBlocking, build: muxModelFixture("start_blocking"),
 		state: muxModelState{phase: muxModelStartBlocking, blocking: true}},
 	"gateway_transaction": {mode: transitionUpstreamAsync, build: muxModelFixture("gateway_transaction"),
@@ -570,8 +597,12 @@ var muxModelDrivers = map[muxModelEvent]func(h *transitionHarness){
 		}
 		fire()
 	},
-	muxModelEventSessionClose: func(h *transitionHarness) { h.m.RemoveSession(1) },
-	muxModelEventReset:        func(h *transitionHarness) { h.feedReset() },
+	muxModelEventSessionClose:     func(h *transitionHarness) { h.m.RemoveSession(1) },
+	muxModelEventReset:            func(h *transitionHarness) { h.feedReset() },
+	muxModelEventStartCallReturns: func(h *transitionHarness) { h.releaseStartCall(nil, h.selected) },
+	muxModelEventStartCallFails: func(h *transitionHarness) {
+		h.releaseStartCall(errors.New("scripted START failure"), h.selected)
+	},
 }
 
 // muxModelOutcome is the defined outcome of a table row.
@@ -805,6 +836,48 @@ var muxModelRows = []muxModelRow{
 	muxModelNever("start_blocking", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
 	muxModelOn("start_blocking", muxModelEventSessionClose, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: true, blocking: true}, muxModelEffectResultCancelled),
 	muxModelOn("start_blocking", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset, muxModelEffectResultError),
+
+	muxModelNever("absorb_pending", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("absorb_pending", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelNever("bids_queued", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("bids_queued", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelNever("fenced", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("fenced", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelNever("fenced_absorb_pending", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("fenced_absorb_pending", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelNever("gateway_grace", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("gateway_grace", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelNever("gateway_transaction", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("gateway_transaction", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelNever("held", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("held", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelNever("idle", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("idle", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelNever("reset_recovery", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("reset_recovery", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelNever("session_owned", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("session_owned", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelNever("start_async", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("start_async", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelNever("start_async_resync_owed", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("start_async_resync_owed", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("start_blocking", muxModelEventStartCallReturns, muxModelState{phase: muxModelSessionOwned}, muxModelEffectSessionStarted, muxModelEffectResultGranted),
+	muxModelOn("start_blocking", muxModelEventStartCallFails, muxModelState{phase: muxModelIdle}, muxModelEffectResultError),
+	muxModelOn("start_gateway", muxModelEventSYN, muxModelState{phase: muxModelStartAsync, gateway: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("start_gateway", muxModelEventSymbol, muxModelState{phase: muxModelStartAsync, gateway: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("start_gateway", muxModelEventBid, muxModelState{phase: muxModelStartAsync, gateway: true}),
+	muxModelOn("start_gateway", muxModelEventStartedMatching, muxModelState{phase: muxModelGatewayGrace}, muxModelEffectSessionReceived, muxModelEffectResultGranted),
+	muxModelOn("start_gateway", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived, muxModelEffectResultError),
+	muxModelOn("start_gateway", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived, muxModelEffectResultError),
+	muxModelOn("start_gateway", muxModelEventStartDeadline, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: true}, muxModelEffectResultError),
+	muxModelNever("start_gateway", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("start_gateway", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("start_gateway", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("start_gateway", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("start_gateway", muxModelEventSessionClose, muxModelState{phase: muxModelStartAsync, gateway: true}),
+	muxModelOn("start_gateway", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset, muxModelEffectResultError),
+	muxModelNever("start_gateway", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("start_gateway", muxModelEventStartCallFails, muxModelNoBlockingCall),
 }
 
 // TestMuxStateModelTableIsComplete requires exactly one row per named state
@@ -911,6 +984,12 @@ func TestMuxStateModelDerivation(t *testing.T) {
 		{name: "start blocking", in: transitionState{start: "session 1 0x31", startBlocking: true},
 			want: muxModelState{phase: muxModelStartBlocking}},
 		{name: "start response is not a phase", in: transitionState{start: "session 1 0x31", startResponse: true},
+			want: muxModelState{phase: muxModelStartAsync}},
+		{name: "start gateway", in: transitionState{start: "gateway 0x7F"},
+			want: muxModelState{phase: muxModelStartAsync, gateway: true}},
+		{name: "start gateway blocking", in: transitionState{start: "gateway 0x7F", startBlocking: true},
+			want: muxModelState{phase: muxModelStartBlocking, gateway: true}},
+		{name: "gateway deferred loser is no selected party", in: transitionState{start: "session 1 0x31", bids: "deferred gateway 0x7F"},
 			want: muxModelState{phase: muxModelStartAsync}},
 		{name: "start before fence", in: transitionState{start: "session 1 0x31", regrantFence: true},
 			want: muxModelState{phase: muxModelStartAsync}},

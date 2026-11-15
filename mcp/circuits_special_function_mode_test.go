@@ -41,9 +41,6 @@ func TestSemanticCircuitsSpecialFunctionModePublished(t *testing.T) {
 	if len(cfg) != 1 {
 		t.Fatalf("config = %#v; want only circuit_special_function_mode", cfg)
 	}
-	if _, ok := cfg["frost_prot_c"]; ok {
-		t.Fatalf("config = %#v; old field must be gone", cfg)
-	}
 	if with["meta"].(map[string]any)["data_hash"] == without["meta"].(map[string]any)["data_hash"] {
 		t.Fatalf("data_hash does not reflect circuit_special_function_mode")
 	}

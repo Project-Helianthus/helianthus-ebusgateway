@@ -7943,7 +7943,7 @@ func (p *vaillantSemanticPoller) readEnergyRegister(ctx context.Context, q b524E
 		maxAgeOverride = 0
 	}
 	raw, ok := p.readB524ValueWithMaxAge(ctx, vaillantB524OpcodeLocal, localRegulator.group, regulatorInstance, q.addr, maxAgeOverride)
-	if !ok || len(raw) < 4 {
+	if !ok || !p.b524ReplyWidthMatches(b524ReaderKindUint32, vaillantB524OpcodeLocal, localRegulator.group, q.addr, len(raw), 4) {
 		return 0, false
 	}
 	v := binary.LittleEndian.Uint32(raw[:4])

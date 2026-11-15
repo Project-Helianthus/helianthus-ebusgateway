@@ -413,6 +413,11 @@ func TestB524ReplyWidthMismatchEveryFixedWidthReader(t *testing.T) {
 				_, ok := p.readB524Uint32LE(context.Background(), s.opcode, s.group, s.instance, s.addr)
 				return ok
 			}},
+		{"energy_register", "uint32le", sfmSelector{vaillantB524OpcodeLocal, localRegulator.group, regulatorInstance, b524EnergyQueries[0].addr}, []byte{0x10, 0x00, 0x00, 0x00, 0x00}, []byte{0x10, 0x00, 0x00, 0x00}, 4,
+			func(p *vaillantSemanticPoller, s sfmSelector) bool {
+				_, ok := p.readEnergyRegister(context.Background(), b524EnergyQueries[0])
+				return ok
+			}},
 		{"date_hda3", "date_hda3", sfmSelector{0x02, 0x00, 0x00, 0x002C}, []byte{0x02, 0x01}, []byte{0x02, 0x01, 0x18}, 3,
 			func(p *vaillantSemanticPoller, s sfmSelector) bool {
 				_, ok := p.readB524DateHDA3(context.Background(), s.opcode, s.group, s.instance, s.addr)

@@ -3,7 +3,6 @@ package main
 import (
 	"errors"
 	"flag"
-	"log"
 	"sort"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
@@ -20,16 +19,6 @@ func bindM2MGraphQLFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 	if fs == nil || cfg == nil {
 		return
 	}
-	warned := false
-	retired := func(string) error {
-		if !warned {
-			log.Print("M2M client-certificate flags are deprecated and ignored")
-			warned = true
-		}
-		return nil
-	}
-	fs.Func("m2m-graphql-client-ca", "deprecated: ignored", retired)
-	fs.Func("m2m-graphql-denied-principals", "deprecated: ignored", retired)
 	fs.StringVar(&cfg.M2MGraphQL.ListenAddr, "m2m-graphql-listen", cfg.M2MGraphQL.ListenAddr, "dedicated M2M API TLS listen address")
 	fs.StringVar(&cfg.M2MGraphQL.ServerName, "m2m-graphql-server-name", cfg.M2MGraphQL.ServerName, "dedicated M2M API server certificate identity")
 	fs.StringVar(&cfg.M2MGraphQL.ServerCertFile, "m2m-graphql-server-cert", cfg.M2MGraphQL.ServerCertFile, "server certificate file for the dedicated M2M API listener")

@@ -86,8 +86,9 @@ running incarnation and the recorded supersessions; the kernel's
 ## Home asset
 
 `Home(resource, asset)` records the one home asset of a resource the allocator
-returned. Recording the same asset again is accepted; a second asset is refused
-with `ErrSecondHome` and the recorded home.
+returned. The home is recorded in the `Store`, so every allocator over the same
+store sees the same home. Recording the same asset again is accepted; a second
+asset is refused with `ErrSecondHome` and the recorded home.
 
 ## Identity events
 

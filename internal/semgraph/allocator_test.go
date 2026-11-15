@@ -337,6 +337,19 @@ type failingStore struct {
 
 func (s failingStore) Lookup(AnchorKey) (Entry, bool, error) { return Entry{}, false, s.lookup }
 func (s failingStore) Commit(Supersession) error             { return s.commit }
+func (s failingStore) RecordHome(semreg.ResourceID, semreg.AssetID) (semreg.AssetID, error) {
+	return "", s.commit
+}
+
+// homeFailingStore refuses to record a home asset.
+type homeFailingStore struct {
+	*MemoryStore
+	err error
+}
+
+func (s homeFailingStore) RecordHome(semreg.ResourceID, semreg.AssetID) (semreg.AssetID, error) {
+	return "", s.err
+}
 
 // supersessionRefusingStore refuses every commit that changes a key.
 type supersessionRefusingStore struct {
@@ -420,6 +433,61 @@ func TestHomeRecordsOneHomeAsset(t *testing.T) {
 	}
 	if home, err := allocator.Home(id, "asset:b"); !errors.Is(err, ErrSecondHome) || home != "asset:a" {
 		t.Fatalf("second home = %q, %v; want the recorded home and ErrSecondHome", home, err)
+	}
+}
+
+// The home asset is recorded in the store: two allocators over one store that
+// resolve the same anchor share the one home of the resource.
+func TestHomeIsSharedAcrossAllocatorsOnASharedStore(t *testing.T) {
+	store := NewMemoryStore()
+	a, b := newTestAllocator(t, store), newTestAllocator(t, store)
+	anchor := tokenAnchor("token-a", "x")
+	id := mustResolve(t, a, kindEquipment, anchor)
+	if got := mustResolve(t, b, kindEquipment, anchor); got != id {
+		t.Fatalf("second allocator = %q, want %q", got, id)
+	}
+	if home, err := a.Home(id, "asset:a"); err != nil || home != "asset:a" {
+		t.Fatalf("first home = %q, %v", home, err)
+	}
+	if home, err := b.Home(id, "asset:b"); !errors.Is(err, ErrSecondHome) || home != "asset:a" {
+		t.Fatalf("second home through another allocator = %q, %v; want the recorded home and ErrSecondHome", home, err)
+	}
+	if home, err := b.Home(id, "asset:a"); err != nil || home != "asset:a" {
+		t.Fatalf("same home through another allocator = %q, %v", home, err)
+	}
+}
+
+func TestHomeStoreFailureFailsClosed(t *testing.T) {
+	failure := errors.New("unavailable")
+	allocator := newTestAllocator(t, homeFailingStore{MemoryStore: NewMemoryStore(), err: failure})
+	id := mustResolve(t, allocator, kindEquipment, tokenAnchor("token-a", "x"))
+	if home, err := allocator.Home(id, "asset:a"); !errors.Is(err, ErrStore) || !errors.Is(err, failure) || home != "" {
+		t.Fatalf("Home with a refusing store = %q, %v", home, err)
+	}
+}
+
+// The table refuses a record whose previous basis contradicts the recorded
+// basis of the current previous key, and records nothing for it.
+func TestMemoryStoreRefusesAFabricatedPreviousBasis(t *testing.T) {
+	store := NewMemoryStore()
+	key := AnchorKey{Kind: kindEquipment, Slot: "a"}
+	next := AnchorKey{Kind: kindEquipment, Key: "sha256:next"}
+	if err := store.Commit(Supersession{Resource: "resource:x", Class: semreg.AnchorEquipment, Previous: key, PreviousBasis: semreg.AnchorOperatorSlot, Next: key, NextBasis: semreg.AnchorOperatorSlot}); err != nil {
+		t.Fatal(err)
+	}
+	for name, record := range map[string]Supersession{
+		"another next key": {Resource: "resource:x", Class: semreg.AnchorEquipment, Previous: key, PreviousBasis: semreg.AnchorNativeSlot, Next: next, NextBasis: semreg.AnchorNativeIdentity},
+		"same key":         {Resource: "resource:x", Class: semreg.AnchorEquipment, Previous: key, PreviousBasis: semreg.AnchorNativeSlot, Next: key, NextBasis: semreg.AnchorNativeIdentity},
+	} {
+		if err := store.Commit(record); !errors.Is(err, ErrStoreConflict) {
+			t.Fatalf("%s: err=%v, want ErrStoreConflict", name, err)
+		}
+	}
+	if entry, ok, _ := store.Lookup(key); !ok || entry.Superseded || entry.Basis != semreg.AnchorOperatorSlot {
+		t.Fatalf("previous entry = %+v, %v; want the current operator slot", entry, ok)
+	}
+	if entry, ok, _ := store.Lookup(next); ok {
+		t.Fatalf("a refused commit recorded %+v", entry)
 	}
 }
 

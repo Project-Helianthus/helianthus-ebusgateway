@@ -83,24 +83,41 @@ type Supersession struct {
 	NextBasis     semreg.AnchorBasis
 }
 
-// Store is the supersession table. Commit is atomic: it records the previous
-// key as superseded (unless it equals the next) and the next key as current,
-// and refuses a record that contradicts what it holds, including a class
-// other than the previous key's recorded one.
+// Store is the supersession table and the home asset of each resource.
+// Commit is atomic: it records the previous key as superseded (unless it
+// equals the next) and the next key as current, and refuses a record that
+// contradicts what it holds, including a class or a previous basis other than
+// the previous key's recorded one. RecordHome records asset as the home of
+// resource when none is recorded and returns the recorded home, so every
+// allocator over the store sees one home per resource.
 type Store interface {
 	Lookup(key AnchorKey) (Entry, bool, error)
 	Commit(record Supersession) error
+	RecordHome(resource semreg.ResourceID, asset semreg.AssetID) (semreg.AssetID, error)
 }
 
 // MemoryStore is the in-memory Store.
 type MemoryStore struct {
 	mu      sync.Mutex
 	entries map[AnchorKey]Entry
+	homes   map[semreg.ResourceID]semreg.AssetID
 }
 
 // NewMemoryStore returns an empty in-memory supersession table.
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{entries: make(map[AnchorKey]Entry)}
+	return &MemoryStore{entries: make(map[AnchorKey]Entry), homes: make(map[semreg.ResourceID]semreg.AssetID)}
+}
+
+// RecordHome records asset as the home of resource unless one is recorded,
+// and returns the recorded home.
+func (s *MemoryStore) RecordHome(resource semreg.ResourceID, asset semreg.AssetID) (semreg.AssetID, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if home, ok := s.homes[resource]; ok {
+		return home, nil
+	}
+	s.homes[resource] = asset
+	return asset, nil
 }
 
 // Lookup returns the recorded entry of key.
@@ -115,7 +132,7 @@ func (s *MemoryStore) Lookup(key AnchorKey) (Entry, bool, error) {
 func (s *MemoryStore) Commit(record Supersession) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if previous, ok := s.entries[record.Previous]; ok && (previous.Superseded || previous.Resource != record.Resource || previous.Class != record.Class) {
+	if previous, ok := s.entries[record.Previous]; ok && (previous.Superseded || previous.Resource != record.Resource || previous.Class != record.Class || previous.Basis != record.PreviousBasis) {
 		return ErrStoreConflict
 	}
 	if record.Next != record.Previous {
@@ -137,7 +154,6 @@ type Allocator struct {
 	held map[AnchorKey]heldAnchor
 	// kinds holds every resource this allocator returned.
 	kinds map[semreg.ResourceID]semreg.DefinitionID
-	homes map[semreg.ResourceID]semreg.AssetID
 }
 
 // heldAnchor is the resource, class and basis an anchor key was resolved
@@ -161,7 +177,6 @@ func NewAllocator(store Store) (*Allocator, error) {
 		store: store,
 		held:  make(map[AnchorKey]heldAnchor),
 		kinds: make(map[semreg.ResourceID]semreg.DefinitionID),
-		homes: make(map[semreg.ResourceID]semreg.AssetID),
 	}, nil
 }
 
@@ -297,8 +312,9 @@ func (a *Allocator) Supersede(previous, next Claim, continuity Continuity) (semr
 }
 
 // Home records the one home asset of a resource this allocator returned and
-// returns it. Recording the same asset again is accepted; a second asset is
-// refused with the recorded home.
+// returns it. The home is recorded in the store, so it is shared by every
+// allocator over the store. Recording the same asset again is accepted; a
+// second asset is refused with the recorded home.
 func (a *Allocator) Home(resource semreg.ResourceID, asset semreg.AssetID) (semreg.AssetID, error) {
 	if err := resource.Validate(); err != nil {
 		return "", fmt.Errorf("%w: resource id", ErrUnknownResource)
@@ -313,14 +329,14 @@ func (a *Allocator) Home(resource semreg.ResourceID, asset semreg.AssetID) (semr
 	if _, known := a.kinds[resource]; !known {
 		return "", ErrUnknownResource
 	}
-	if home, recorded := a.homes[resource]; recorded {
-		if home != asset {
-			return home, ErrSecondHome
-		}
-		return home, nil
+	home, err := a.store.RecordHome(resource, asset)
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", ErrStore, err)
 	}
-	a.homes[resource] = asset
-	return asset, nil
+	if home != asset {
+		return home, ErrSecondHome
+	}
+	return home, nil
 }
 
 func (a *Allocator) parentKnown(anchor Anchor) error {

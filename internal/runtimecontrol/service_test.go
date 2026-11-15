@@ -3728,7 +3728,9 @@ func TestServiceMaxAttemptsOneReservesCleanupAttempt(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			id := DriverID("fam.alpha")
 			f := newFixture(t, svcOpts{drivers: enabled(string(id)),
-				opts: func(o *Options) { o.OperationBudget = 100 * time.Millisecond; o.MaxAttempts = 1 }})
+				// The budget also bounds the fixture's first START, which has a single attempt, so it
+				// must be long enough for a loaded host; the START under test ends at the budget by itself.
+				opts: func(o *Options) { o.OperationBudget = 2 * time.Second; o.MaxAttempts = 1 }})
 			f.waitSettled(id, drivermanager.ObservedRunning)
 			f.mustDecide(MethodStop, id)
 			f.waitSettled(id, drivermanager.ObservedStopped)

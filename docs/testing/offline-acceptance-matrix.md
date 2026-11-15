@@ -43,7 +43,7 @@ A Go test is named as `<package directory> <TestName>` and exists when a `_test.
 declares the `go test` entry point `func <TestName>(t *testing.T)`, where `TestName` is `Test` or `Test` followed
 by a character that is not a lower-case letter. A Python test is named as `<script path> <test_name>` and exists
 when `test_name` starts with `test` and that file declares `def <test_name>(`. A helper declared in a test file is
-never a test. Test names describe behaviour; normative conformance identifiers stay in the tests as
+never a test, and a declaration-like line inside a comment or a string literal is never a declaration. Test names describe behaviour; normative conformance identifiers stay in the tests as
 traceability only and claim no certification.
 
 ## How a cell is filled

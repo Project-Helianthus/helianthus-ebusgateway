@@ -37,14 +37,23 @@ GO_SOURCE = (
     "func feedPassiveSymbols(t *testing.T, symbols []byte) {}\n\n"
     "func TestHelperWithoutTestingT(count int) {}\n\n"
     "func Testlowercasesuffix(t *testing.T) {}\n\n"
-    "func TestMain(m *testing.M) {}\n"
+    "func TestMain(m *testing.M) {}\n\n"
+    "/*\nfunc TestGhostInABlockComment(t *testing.T) {}\n*/\n\n"
+    "var fixture = `\nfunc TestGhostInARawString(t *testing.T) {}\n/* not a comment opener`\n\n"
+    "var opener = \"/*\"\n\n"
+    "var tick = '`'\n\n"
+    "// a comment holding a backtick ` and a quote \"\n"
+    "func TestDeclaredAfterLiteralsAndComments(t *testing.T) {}\n"
 )
+GO_TEST_AFTER_LITERALS = "internal/sample TestDeclaredAfterLiteralsAndComments"
 OUTSIDE_SOURCE = "package outside\n\nimport \"testing\"\n\nfunc TestDeclaredOutsideTheRoot(t *testing.T) {}\n"
 GO_PRODUCTION = "package sample\n\nfunc TestOnlyDeclaredInProductionCode() {}\n"
 PY_SOURCE = (
     "import unittest\n\n\nclass Sample(unittest.TestCase):\n"
     "    def test_replayed_source_reaches_every_surface(self):\n        pass\n\n"
-    "    def replay_fixture(self):\n        pass\n"
+    "    def replay_fixture(self):\n        pass\n\n"
+    "    GHOST = \"\"\"\n    def test_ghost_in_a_string(self):\n    \"\"\"\n\n"
+    "    # def test_ghost_in_a_comment(self):\n"
 )
 
 
@@ -248,12 +257,20 @@ class OfflineAcceptanceMatrixTests(unittest.TestCase):
             "internal/sample Testlowercasesuffix",
             "internal/sample TestMain",
             "scripts/sample_test.py replay_fixture",
+            "internal/sample TestGhostInABlockComment",
+            "internal/sample TestGhostInARawString",
+            "scripts/sample_test.py test_ghost_in_a_string",
+            "scripts/sample_test.py test_ghost_in_a_comment",
         )
         for test in cases:
             with self.subTest(test=test):
                 document = synthetic_matrix()
                 document["cells"]["family_condition"]["family_1"]["condition_1"] = cell("pass", test=test)
                 self.assert_refused(document, "family_condition family_1 x condition_1")
+
+    def test_declaration_after_literals_and_comments_is_found(self):
+        self.assertIsNone(MATRIX.missing_test(self.repo.root, GO_TEST_AFTER_LITERALS))
+        self.assertIsNone(MATRIX.missing_test(self.repo.root, PY_TEST))
 
     def test_reasoned_state_without_one_line_reason_is_refused(self):
         for state in ("not_applicable", "not_in_0_7"):

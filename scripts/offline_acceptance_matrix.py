@@ -11,13 +11,15 @@ A Go test is named as '<package directory> <TestName>' and exists when a _test.g
 file in that directory declares the go test entry point 'func <TestName>(t *testing.T)',
 where TestName is Test or Test followed by a non-lower-case character. A Python test
 is named as '<script path> <test_name>' and exists when test_name starts with 'test'
-and that file declares 'def <test_name>('. A helper function is never a test.
+and that file declares 'def <test_name>('. A helper function is never a test, and a
+declaration-like line inside a comment or a string literal is never a declaration.
 Standard library only.
 """
 
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import pathlib
 import re
@@ -53,6 +55,16 @@ FUNCTION_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 # go test runs a top-level func TestXxx(t *testing.T) whose Xxx does not start with a lower-case letter.
 GO_TEST_NAME = re.compile(r"Test(?:[^a-z].*)?")
 GO_TEST_PARAMETER = r"[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]+\*[ \t]*testing\.T[ \t]*"
+# Go comments and string and rune literals, blanked before a declaration is matched so that
+# a declaration-like line inside a block comment or a raw string never counts as a test.
+GO_COMMENT_OR_LITERAL = re.compile(
+    r"//[^\n]*"
+    r"|/\*.*?(?:\*/|\Z)"
+    r"|`[^`]*(?:`|\Z)"
+    r"|\"(?:\\[^\n]|[^\"\\\n])*(?:\"|$)"
+    r"|'(?:\\[^\n]|[^'\\\n])*(?:'|$)",
+    re.DOTALL | re.MULTILINE,
+)
 # unittest and pytest collect only functions whose name starts with test.
 PYTHON_TEST_NAME = re.compile(r"test[A-Za-z0-9_]*")
 OWNER_ISSUE = re.compile(r"[a-z0-9][a-z0-9._-]*#[1-9][0-9]*")
@@ -148,12 +160,41 @@ def axis_cells(axis, table, rows, columns, errors):
     return present
 
 
-def _declares(path, pattern):
+def _read(path):
     try:
-        text = path.read_text(encoding="utf-8")
+        return path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _blank(match):
+    return re.sub(r"[^\n]", " ", match.group(0))
+
+
+def go_code(text):
+    """Return Go source with comments and string and rune literals blanked, line breaks kept."""
+    return GO_COMMENT_OR_LITERAL.sub(_blank, text)
+
+
+def _go_declares(path, function):
+    text = _read(path)
+    pattern = rf"^func[ \t]+{function}[ \t]*\({GO_TEST_PARAMETER}\)"
+    return text is not None and re.search(pattern, go_code(text), flags=re.MULTILINE) is not None
+
+
+def _python_declares(path, function):
+    """True when the parsed file defines a function of that name; comments and strings never count."""
+    text = _read(path)
+    if text is None:
         return False
-    return re.search(pattern, text, flags=re.MULTILINE) is not None
+    try:
+        tree = ast.parse(text, filename=str(path))
+    except (SyntaxError, ValueError):
+        return False
+    return any(
+        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == function
+        for node in ast.walk(tree)
+    )
 
 
 def missing_test(root, name):
@@ -169,13 +210,13 @@ def missing_test(root, name):
     if location.endswith(".py"):
         if not PYTHON_TEST_NAME.fullmatch(function):
             return f"names {function}, which the test runner does not collect: a Python test name starts with test"
-        if target.is_file() and _declares(target, rf"^[ \t]*(?:async[ \t]+)?def[ \t]+{function}[ \t]*\("):
+        if target.is_file() and _python_declares(target, function):
             return None
         return f"names {function} but {location} declares no def {function}("
     if not GO_TEST_NAME.fullmatch(function):
         return f"names {function}, which go test does not run: a Go test name is Test or Test followed by a non-lower-case character"
     tests = sorted(target.glob("*_test.go")) if target.is_dir() else []
-    if any(_declares(path, rf"^func[ \t]+{function}[ \t]*\({GO_TEST_PARAMETER}\)") for path in tests):
+    if any(_go_declares(path, function) for path in tests):
         return None
     return f"names {function} but no _test.go file in {location} declares func {function}(t *testing.T)"
 

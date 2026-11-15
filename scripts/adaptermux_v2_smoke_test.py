@@ -83,7 +83,7 @@ class Phase:
         raise AssertionError("no recorded series " + metric)
 
     def bodies(self):
-        observability = {"summary": {"status": self.status, "frames": self.frames}}
+        observability = {"status": self.status, "frames": self.frames}
         return {
             "/portal/api/v1/bus/observability": json.dumps(observability),
             "/metrics": render_metrics(self.metrics),
@@ -96,7 +96,9 @@ def graphql_body(state):
 
 
 def mcp_body(state, contract):
-    envelope = {"meta": {"contract": contract}, "data": {"state": state}, "error": None}
+    # The gateway omits nil fields of the MCP state.
+    present = {key: value for key, value in state.items() if value is not None}
+    envelope = {"meta": {"contract": contract}, "data": {"state": present}, "error": None}
     return json.dumps({"jsonrpc": "2.0", "id": 1,
                        "result": {"content": [{"type": "text", "text": json.dumps(envelope)}], "isError": False}})
 
@@ -280,6 +282,31 @@ class ExecutableInvariantTests(SmokeTestCase):
                     status, evidence = self.run_smoke(self.environ(invariant, "mux", southbound))
                     self.assertEqual(status, SMOKE.EXIT_FAIL)
                     self.assertIn("during the case window; it must stay", self.reasons(evidence))
+
+    def test_gauge_falling_is_not_a_backward_counter(self):
+        baseline, flow = self.phases("mux", "enh")
+        self.assertEqual(baseline.metrics[-1][0], "ebus_adaptermux_active_arbitration_held")
+        self.assertGreater(baseline.metrics[-1][2], flow.metrics[-1][2])
+        self.stub.load([baseline, flow])
+        status, evidence = self.run_smoke(self.environ("PX03", "mux", "enh"))
+        self.assertEqual(status, SMOKE.EXIT_PASS, evidence["reasons"])
+
+    def test_movement_after_the_flow_requirements_hold_still_fails(self):
+        baseline, flow = self.phases("mux", "enh")
+        late = self.phases("mux", "enh")[1]
+        late.bump("ebus_adaptermux_transaction_endings_total", {"reason": "syn_timeout"}, 1)
+        self.stub.load([baseline, flow, late])
+        status, evidence = self.run_smoke(self.environ("PX03", "mux", "enh"))
+        self.assertEqual(status, SMOKE.EXIT_FAIL)
+        self.assertIn("during the case window; it must stay", self.reasons(evidence))
+
+    def test_field_absent_on_both_surfaces_is_parity(self):
+        state = dict(DATA["semantic"]["state"], system_flow_temperature=None)
+        baseline, flow = self.phases("direct", "ens")
+        self.stub.load([baseline, flow], semantic_state=state)
+        status, evidence = self.run_smoke(self.environ("DS01", "direct", "ens"))
+        self.assertEqual(status, SMOKE.EXIT_PASS, evidence["reasons"])
+        self.assertEqual(evidence["semantic_record"]["parity_mismatches"], [])
 
     def test_self_echo_on_the_passive_path_fails(self):
         baseline, flow = self.phases("mux", "enh")

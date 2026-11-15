@@ -57,7 +57,8 @@
         ["ebus_adaptermux_transaction_endings_total", {"reason": "transaction_done"}, 52],
         ["ebus_adaptermux_foreign_initiator_releases_total", {}, 4],
         ["ebus_adaptermux_escape_pair_verify_failures_total", {"step": "lead"}, 0],
-        ["ebus_adaptermux_escape_pair_verify_failures_total", {"step": "suffix"}, 0]
+        ["ebus_adaptermux_escape_pair_verify_failures_total", {"step": "suffix"}, 0],
+        ["ebus_adaptermux_active_arbitration_held", {}, 1]
       ]
     },
     "flow": {
@@ -74,7 +75,8 @@
         ["ebus_adaptermux_transaction_endings_total", {"reason": "transaction_done"}, 60],
         ["ebus_adaptermux_foreign_initiator_releases_total", {}, 4],
         ["ebus_adaptermux_escape_pair_verify_failures_total", {"step": "lead"}, 0],
-        ["ebus_adaptermux_escape_pair_verify_failures_total", {"step": "suffix"}, 0]
+        ["ebus_adaptermux_escape_pair_verify_failures_total", {"step": "suffix"}, 0],
+        ["ebus_adaptermux_active_arbitration_held", {}, 0]
       ]
     }
   },

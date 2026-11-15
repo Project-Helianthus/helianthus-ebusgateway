@@ -154,7 +154,8 @@ GraphQL mutation or subscription and any MCP tool outside its read list, and
 it never invokes a bus method.
 
 The check reads every counter once when it starts, then again every poll
-interval until the invariant's flow requirements hold or the window ends.
+interval until the invariant's flow requirements hold or the window ends; an
+invariant that forbids a counter moving observes the whole window.
 After the requirements hold it reads once more and judges that last reading.
 A cell passes only when the gateway reports the transport class of the cell,
 the write guard is confirmed and eBUS frames moved on the selected southbound
@@ -186,7 +187,7 @@ Every cell checks:
 - **Write guard.** `MATRIX_EXTERNAL_WRITE_POLICY` is one of the gateway's
   policies, the gateway reports the same policy, and `configs/workload.json`
   carries exactly the read-only client allowlist.
-- **Counters.** No counter it reads moves backwards during the window.
+- **Counters.** No monotonic counter (the `_total` series and the frame counts) it reads moves backwards during the window; gauges may fall.
 
 Measures are differences between the first and the last reading. Frame counts
 come from the bus observability frame list. Partial frames are not counted.

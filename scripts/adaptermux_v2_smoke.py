@@ -324,8 +324,7 @@ def take_sample(urls, settings):
 
 
 def status_of(sample):
-    summary = sample["observability"].get("summary") or {}
-    return summary.get("status") or {}
+    return sample["observability"].get("status") or {}
 
 
 def own_source(sample):
@@ -338,7 +337,7 @@ def own_source(sample):
 
 def frame_series(sample):
     series = {}
-    for item in (sample["observability"].get("summary") or {}).get("frames") or []:
+    for item in sample["observability"].get("frames") or []:
         key = (item.get("scope"), item.get("source"), item.get("target"),
                item.get("family"), item.get("frame_type"))
         series[key] = float(item.get("count") or 0)
@@ -414,7 +413,8 @@ def tracked_counters(sample):
     counters = {"frames " + "/".join(str(part) for part in key): value
                 for key, value in frame_series(sample).items()}
     for (name, labels), value in sample["metrics"].items():
-        if name.startswith("ebus_adaptermux_") or name == PASSIVE_COMPLETED:
+        # Only monotonic series: gauges such as the held-arbitration flag may fall.
+        if (name.startswith("ebus_adaptermux_") and name.endswith("_total")) or name == PASSIVE_COMPLETED:
             counters[name + str(dict(labels))] = value
     adjudications = sample["vars"].get(DEDUP_ADJUDICATIONS) or {}
     if isinstance(adjudications, dict):
@@ -515,7 +515,13 @@ def flow_ready(check, measures):
 
 
 def observe_window(urls, settings, check, clock):
-    """Sample until the flow requirements hold or the window ends."""
+    """Sample until the flow requirements hold or the window ends.
+
+    A check that forbids a counter moving observes the whole window: the
+    concurrent client finishes only after this command returns, so a late
+    movement must still be seen.
+    """
+    full_window = any(rule == EQ0 for _, rule in check["requires"])
     baseline = take_sample(urls, settings)
     deadline = clock.monotonic() + settings["window"]
     samples = 1
@@ -524,7 +530,7 @@ def observe_window(urls, settings, check, clock):
         current = take_sample(urls, settings)
         samples += 1
         own = own_source(baseline) or own_source(current)
-        if flow_ready(check, compute_measures(baseline, current, own)):
+        if not full_window and flow_ready(check, compute_measures(baseline, current, own)):
             clock.sleep(settings["poll"])
             current = take_sample(urls, settings)
             return baseline, current, own, samples + 1
@@ -576,7 +582,8 @@ def semantic_record(urls, settings):
         fields[name] = {"present": value is not None, "type": json_type(value), "value": value,
                         "unit": spec["unit"],
                         "lineage": {"plane": SEMANTIC_PLANE, "path": "state." + name, "mcp_contract": contract}}
-        if name not in mcp_state or mcp_state.get(name) != value:
+        # An omitted MCP key and a GraphQL null are the same absence.
+        if mcp_state.get(name) != value:
             parity.append(name)
     return {"plane": SEMANTIC_PLANE, "fields": fields, "parity_mismatches": parity}
 

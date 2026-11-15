@@ -640,6 +640,49 @@ only a family-level withholding reports a closed disposition.
 The generic MCP snapshot and GraphQL snapshot share the existing hub; the
 SunSpec single-asset outputs keep their existing contracts.
 
+**Growth under identity loss.** Measured on the offline SmartLogger and
+S-Dongle replay fixtures by `TestHuaweiIdentityGrowthMeasurement`, not on a
+live installation. One event is one loss of one child's admission followed by
+its re-admission; counts are members of one PV asset snapshot, sampled after
+every event on the affected asset and on a sibling asset of the same instance.
+The S-Dongle fixture admits one child, so its sibling is decoded from the same
+answered groups under the next routed unit. Both fixtures measured the same
+growth. The time columns assume one event per two 60 s cycles and one event
+per hour.
+
+| Cause of one event | Affected asset per event | Sibling per event | Events to the first bound | One event per two cycles | One event per hour |
+|---|---|---|---|---|---|
+| Genuine identity change: withheld with `identity_mismatch` for one cycle | +1 binding, +1 identity link | none | 127 (bindings and identity links) | 4 h 14 min | 127 h |
+| Reconnect: new transport generation, child stale with its previous identified generation for one or for two cycles, then identified | +1 binding, +1 identity link | none | 127 | 4 h 14 min | 127 h |
+| Child timeout, read failure, backoff or unconfirmed listing in the same transport generation, reported stale as the native provider reports an identified child | none | none | never | never | never |
+| The same four reasons reported withheld | +1 binding, +1 identity link | none | 127 | 4 h 14 min | 127 h |
+| Absent from one complete listing | +1 binding, +1 identity link | none | 127 | 4 h 14 min | 127 h |
+| Absent from an incomplete listing | none | none | never | never | never |
+| Operator restart (STOP and START) | +1 source descriptor, +1 cursor, +1 binding, +1 identity link; the previous epoch's binding and link stay in the snapshot | the same | 31 (source descriptors) | 1 h 2 min | 31 h |
+
+No cause adds a generation fence, and only a restart adds a publication cursor.
+Every bound is reached as stated and then refused explicitly: the 128th
+re-admission of the affected child is refused with `binding_capacity` while the
+sibling keeps publishing, and the 32nd restart (the 33rd START) fails with the
+source-descriptor capacity error. An automatic restart after publication is not
+reachable offline: a running managed generation reports no failure to the
+manager, whose automatic retry follows only a failed START, and a failed START
+publishes nothing. On one published child of each fixture the pinned kernel
+accepted a batch that moves the identity link from `qualified` to `candidate`
+and withdraws its facts, then a batch that requalifies the same binding with a
+higher revision and republishes its facts; the asset gained no source
+descriptor, binding, identity link, fence or cursor.
+
+The remedy follows from these measurements. The kernel accepts the round trip
+and both reconnects and withheld transient reasons grow, so identity continuity
+belongs in the gateway driver: a transient loss moves the link to `candidate`
+and requalifies the same incarnation. Absence from one complete listing grows,
+so absence needs hysteresis: a child is withdrawn for absence only after three
+consecutive complete listings. A genuine identity change reaches the binding
+and identity-link bounds after 127 events without operator action, inside 168
+events at one per hour, and neither gateway remedy prevents that growth.
+Kernel compaction of withdrawn incarnations is therefore needed as well.
+
 The native status tools require `instance` and expose family, routing, evidence
 state, published asset IDs and categorical losses. The EMMA `status.get` reports
 its closed refusal; the existing supplied-evidence `identity.get` seam remains

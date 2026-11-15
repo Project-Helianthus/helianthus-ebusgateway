@@ -215,11 +215,16 @@ func TestGraphQLPublishesDocsEbusRegisterNames(t *testing.T) {
 			if row.Exemption != "" || row.PreviousName == row.DocsEbusName {
 				continue
 			}
-			query := "{ system { " + map[string]string{
-				"system_state":      "state",
-				"system_config":     "config",
-				"system_properties": "properties",
-			}[row.Surfaces["graphql"]] + " { " + row.PreviousName + " } } }"
+			path, ok := map[string]string{
+				"system_state":      "system { state",
+				"system_config":     "system { config",
+				"system_properties": "system { properties",
+				"circuit_config":    "circuits { config",
+			}[row.Surfaces["graphql"]]
+			if !ok {
+				t.Fatalf("no query path for GraphQL object %q", row.Surfaces["graphql"])
+			}
+			query := "{ " + path + " { " + row.PreviousName + " } } }"
 			if result := graphqlgo.Do(graphqlgo.Params{Schema: schema, RequestString: query}); len(result.Errors) == 0 {
 				t.Errorf("%s schema accepts previous name: %s", build.name, query)
 			}

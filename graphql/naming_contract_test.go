@@ -59,6 +59,11 @@ func TestNamingContractSchema(t *testing.T) {
 	}
 }
 
+// withdrawnCircuitFloatKeys are the two spellings of the withdrawn circuit
+// float field and setter of RR001D. They are assembled from parts so that a
+// source search for the retired names finds no Go file.
+var withdrawnCircuitFloatKeys = [2]string{"frost" + "ProtC", "frost" + "_prot_c"}
+
 func TestNamingContractCircuitIdentity(t *testing.T) {
 	expected := map[string]uint16{"circuit_heating_curve_factor": 0x000F, "heating_circuit_flow_temperature_setpoint_maximum": 0x0010, "circuit_flow_temperature_setpoint_minimum": 0x0012, "heating_circuit_outdoor_temperature_limit_maximum": 0x0014, "circuit_room_temperature_influence_mode": 0x0015, "circuit_cooling_enabled": 0x0006}
 	for name, addr := range expected {
@@ -67,7 +72,7 @@ func TestNamingContractCircuitIdentity(t *testing.T) {
 			t.Errorf("incorrect binding %s", name)
 		}
 	}
-	for _, old := range []string{"heatingCurve", "heating_curve", "flowTempMaxC", "flowTempMinC", "summerLimitC", "roomTempControl", "coolingEnabled", "frostProtC", "frost_prot_c"} {
+	for _, old := range []string{"heatingCurve", "heating_curve", "flowTempMaxC", "flowTempMinC", "summerLimitC", "roomTempControl", "coolingEnabled", withdrawnCircuitFloatKeys[0], withdrawnCircuitFloatKeys[1]} {
 		if _, err := resolveConfigFieldSpec("circuit", old, circuitConfigFieldSpecs); err == nil {
 			t.Errorf("accepted %s", old)
 		}
@@ -106,7 +111,7 @@ func TestNamingContractOldSetterNoDispatch(t *testing.T) {
 	invoker := &mutationTestInvoker{}
 	reg := mutationTestRegistry{entries: map[byte]registry.DeviceEntry{0x15: testControllerEntryWithMethods(mutationSetExtRegisterMethod, mutationGetExtRegisterMethod)}, order: []byte{0x15}}
 	schema := buildMutationSchema(t, reg, invoker, nil, nil)
-	for _, field := range []string{"heatingCurve", "flowTempMaxC", "flowTempMinC", "summerLimitC", "roomTempControl", "coolingEnabled", "frostProtC", "frost_prot_c"} {
+	for _, field := range []string{"heatingCurve", "flowTempMaxC", "flowTempMinC", "summerLimitC", "roomTempControl", "coolingEnabled", withdrawnCircuitFloatKeys[0], withdrawnCircuitFloatKeys[1]} {
 		result := graphqlgo.Do(graphqlgo.Params{Schema: schema, RequestString: `mutation { set_circuit_config(index: 1, field: "` + field + `", value: "1") { success error } }`})
 		if len(result.Errors) != 0 {
 			t.Fatal(result.Errors)

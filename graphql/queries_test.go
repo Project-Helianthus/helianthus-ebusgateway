@@ -1295,7 +1295,7 @@ func TestQueryResolvers_Integration(t *testing.T) {
 						flow_temp_max_c
 						flow_temp_min_c
 						summer_limit_c
-						frost_prot_c
+						circuit_special_function_mode
 						room_temp_control
 						cooling_enabled
 					}
@@ -1449,13 +1449,13 @@ func TestQueryResolvers_Integration(t *testing.T) {
 					PumpStarts       *int     `json:"pump_starts"`
 				} `json:"state"`
 				Config struct {
-					HeatingCurve    *float64 `json:"heating_curve"`
-					FlowTempMaxC    *float64 `json:"flow_temp_max_c"`
-					FlowTempMinC    *float64 `json:"flow_temp_min_c"`
-					SummerLimitC    *float64 `json:"summer_limit_c"`
-					FrostProtC      *float64 `json:"frost_prot_c"`
-					RoomTempControl *string  `json:"room_temp_control"`
-					CoolingEnabled  *bool    `json:"cooling_enabled"`
+					HeatingCurve        *float64 `json:"heating_curve"`
+					FlowTempMaxC        *float64 `json:"flow_temp_max_c"`
+					FlowTempMinC        *float64 `json:"flow_temp_min_c"`
+					SummerLimitC        *float64 `json:"summer_limit_c"`
+					SpecialFunctionMode *int     `json:"circuit_special_function_mode"`
+					RoomTempControl     *string  `json:"room_temp_control"`
+					CoolingEnabled      *bool    `json:"cooling_enabled"`
 				} `json:"config"`
 				ManagingDevice struct {
 					Role     string  `json:"role"`

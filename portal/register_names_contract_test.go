@@ -69,8 +69,9 @@ func TestPortalPublishesDocsEbusRegisterNames(t *testing.T) {
 		"SemanticSystemState":      reflect.TypeOf(SemanticSystemState{}),
 		"SemanticSystemConfig":     reflect.TypeOf(SemanticSystemConfig{}),
 		"SemanticSystemProperties": reflect.TypeOf(SemanticSystemProperties{}),
+		"SemanticCircuitConfig":    reflect.TypeOf(SemanticCircuitConfig{}),
 	}
-	// Every system object is scanned for previous names, including one the
+	// Every listed object is scanned for previous names, including one the
 	// fixture records no Portal row for.
 	published := map[string]map[string]bool{}
 	for object, typ := range types {

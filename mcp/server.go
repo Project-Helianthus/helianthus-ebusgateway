@@ -281,13 +281,13 @@ type CircuitState struct {
 }
 
 type CircuitConfig struct {
-	HeatingCurve    *float64 `json:"heating_curve,omitempty"`
-	FlowTempMaxC    *float64 `json:"flow_temp_max_c,omitempty"`
-	FlowTempMinC    *float64 `json:"flow_temp_min_c,omitempty"`
-	SummerLimitC    *float64 `json:"summer_limit_c,omitempty"`
-	FrostProtC      *float64 `json:"frost_prot_c,omitempty"`
-	RoomTempControl string   `json:"room_temp_control,omitempty"`
-	CoolingEnabled  *bool    `json:"cooling_enabled,omitempty"`
+	HeatingCurve        *float64 `json:"heating_curve,omitempty"`
+	FlowTempMaxC        *float64 `json:"flow_temp_max_c,omitempty"`
+	FlowTempMinC        *float64 `json:"flow_temp_min_c,omitempty"`
+	SummerLimitC        *float64 `json:"summer_limit_c,omitempty"`
+	SpecialFunctionMode *int     `json:"circuit_special_function_mode,omitempty"`
+	RoomTempControl     string   `json:"room_temp_control,omitempty"`
+	CoolingEnabled      *bool    `json:"cooling_enabled,omitempty"`
 }
 
 type ManagingDevice struct {
@@ -2273,9 +2273,9 @@ func cloneCircuitStatus(source CircuitStatus) CircuitStatus {
 		v := *source.Config.SummerLimitC
 		out.Config.SummerLimitC = &v
 	}
-	if source.Config.FrostProtC != nil {
-		v := *source.Config.FrostProtC
-		out.Config.FrostProtC = &v
+	if source.Config.SpecialFunctionMode != nil {
+		v := *source.Config.SpecialFunctionMode
+		out.Config.SpecialFunctionMode = &v
 	}
 	if source.Config.CoolingEnabled != nil {
 		v := *source.Config.CoolingEnabled

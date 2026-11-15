@@ -1125,7 +1125,7 @@ func TestConfigSetterCamelCaseKeysRejectedWithSnakeCaseList(t *testing.T) {
 		mutation, scope, allowed, index, value string
 		fields                                 []string
 	}{
-		{"set_circuit_config", "circuit", circuitAllowed, "index: 1, ", "1", []string{"heatingCurve", "flowTempMaxC", "flowTempMinC", "summerLimitC", "roomTempControl", "coolingEnabled", "frostProtC", "frost_prot_c"}},
+		{"set_circuit_config", "circuit", circuitAllowed, "index: 1, ", "1", []string{"heatingCurve", "flowTempMaxC", "flowTempMinC", "summerLimitC", "roomTempControl", "coolingEnabled", withdrawnCircuitFloatKeys[0], withdrawnCircuitFloatKeys[1]}},
 		{"set_zone_config", "zone", zoneAllowed, "index: 0, ", "1", []string{"operatingMode", "quickVetoTemperature", "quickVetoDuration", "desiredSetpoint", "holidaySetpoint"}},
 		{"set_system_config", "system", systemAllowed, "", "1", []string{"dhwBivalencePointC", "maxRoomHumidityPct", "adaptiveHeatingCurve", "hcBivalencePointC", "hcEmergencyTempC", "hwcMaxFlowTempC", "maintenanceDate", "installerName", "installerPhone", "installerMenuCode"}},
 	}

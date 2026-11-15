@@ -79,13 +79,15 @@ type CircuitState struct {
 }
 
 type CircuitConfig struct {
-	HeatingCurve    *float64
-	FlowTempMaxC    *float64
-	FlowTempMinC    *float64
-	SummerLimitC    *float64
-	FrostProtC      *float64
-	RoomTempControl string
-	CoolingEnabled  *bool
+	HeatingCurve *float64
+	FlowTempMaxC *float64
+	FlowTempMinC *float64
+	SummerLimitC *float64
+	// SpecialFunctionMode is the raw one-byte RR001D value. The name is
+	// provisional; the meaning and value table are unconfirmed on the wire.
+	SpecialFunctionMode *int
+	RoomTempControl     string
+	CoolingEnabled      *bool
 }
 
 type ManagingDeviceRole string

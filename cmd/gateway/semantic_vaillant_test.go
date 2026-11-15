@@ -3196,7 +3196,6 @@ func TestRefreshCircuits_PromotesDhwPseudoCircuitWithTemperatureEvidence(t *test
 				circuit_flow_temp_max,
 				circuit_flow_temp_min,
 				circuit_summer_limit,
-				circuit_frost_protection,
 				circuit_mixer_position,
 				circuit_humidity,
 				circuit_dew_point:

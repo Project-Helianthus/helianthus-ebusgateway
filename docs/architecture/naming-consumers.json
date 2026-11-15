@@ -1457,6 +1457,13 @@
     "circuitType": [
       "vrc-explorer/src/helianthus_vrc_explorer/ui/html_report.py"
     ],
+    "circuit_special_function_mode": [
+      "ha-integration/custom_components/helianthus/__init__.py",
+      "ha-integration/custom_components/helianthus/coordinator.py",
+      "ha-integration/custom_components/helianthus/number.py",
+      "ha-integration/tests/test_circuit.py",
+      "ha-integration/tests/test_entity_icon_gate.py"
+    ],
     "circuit_state": [
       "ha-integration/custom_components/helianthus/__init__.py",
       "ha-integration/custom_components/helianthus/coordinator.py",
@@ -6914,16 +6921,6 @@
       "ha-addon/tests/test_serial_can_options.py",
       "ha-addon/tests/test_source_addr_wrapper_m4.py",
       "ha-addon/tests/test_test_image_plan.py"
-    ],
-    "frostProtC": [
-      "ha-integration/custom_components/helianthus/__init__.py"
-    ],
-    "frost_prot_c": [
-      "ha-integration/custom_components/helianthus/__init__.py",
-      "ha-integration/custom_components/helianthus/coordinator.py",
-      "ha-integration/custom_components/helianthus/number.py",
-      "ha-integration/tests/test_circuit.py",
-      "ha-integration/tests/test_entity_icon_gate.py"
     ],
     "function": [
       "ha-integration/custom_components/helianthus/entry_setup.py",

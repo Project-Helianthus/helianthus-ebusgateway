@@ -1400,9 +1400,9 @@ func cloneCircuitConfig(config CircuitConfig) CircuitConfig {
 		v := *config.SummerLimitC
 		out.SummerLimitC = &v
 	}
-	if config.FrostProtC != nil {
-		v := *config.FrostProtC
-		out.FrostProtC = &v
+	if config.SpecialFunctionMode != nil {
+		v := *config.SpecialFunctionMode
+		out.SpecialFunctionMode = &v
 	}
 	if config.CoolingEnabled != nil {
 		v := *config.CoolingEnabled
@@ -1607,7 +1607,7 @@ func equalCircuitConfig(left CircuitConfig, right CircuitConfig) bool {
 		!equalFloat64Pointer(left.FlowTempMaxC, right.FlowTempMaxC) ||
 		!equalFloat64Pointer(left.FlowTempMinC, right.FlowTempMinC) ||
 		!equalFloat64Pointer(left.SummerLimitC, right.SummerLimitC) ||
-		!equalFloat64Pointer(left.FrostProtC, right.FrostProtC) ||
+		!equalIntPointer(left.SpecialFunctionMode, right.SpecialFunctionMode) ||
 		left.RoomTempControl != right.RoomTempControl ||
 		!equalBoolPointer(left.CoolingEnabled, right.CoolingEnabled) {
 		return false

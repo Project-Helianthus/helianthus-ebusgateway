@@ -95,15 +95,16 @@ type vaillantCircuitSnapshot struct {
 	RoomTempControlRaw *uint16
 	CircuitStateRaw    *uint16
 	CircuitStateLiveAt time.Time
-	FrostProtectionC   *float64
-	PumpStatusRaw      *uint16
-	PumpStatusLiveAt   time.Time
-	CalcFlowTempC      *float64
-	MixerPositionPct   *float64
-	HumidityPct        *float64
-	DewPointC          *float64
-	PumpHoursRaw       *uint32
-	PumpStartsRaw      *uint32
+	// SpecialFunctionMode is the raw RR001D byte (provisional name).
+	SpecialFunctionMode *uint8
+	PumpStatusRaw       *uint16
+	PumpStatusLiveAt    time.Time
+	CalcFlowTempC       *float64
+	MixerPositionPct    *float64
+	HumidityPct         *float64
+	DewPointC           *float64
+	PumpHoursRaw        *uint32
+	PumpStartsRaw       *uint32
 }
 
 type radioDeviceKey struct {

@@ -932,14 +932,15 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"frost_prot_c": &graphqlgo.Field{
-				Type: graphqlgo.Float,
+			"circuit_special_function_mode": &graphqlgo.Field{
+				Type:        graphqlgo.Int,
+				Description: "Raw one-byte value of the circuit register RR001D. Provisional name: the meaning and value table are unconfirmed on the wire.",
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					config, ok := params.Source.(CircuitConfig)
-					if !ok || config.FrostProtC == nil {
+					if !ok || config.SpecialFunctionMode == nil {
 						return nil, nil
 					}
-					return *config.FrostProtC, nil
+					return *config.SpecialFunctionMode, nil
 				},
 			},
 

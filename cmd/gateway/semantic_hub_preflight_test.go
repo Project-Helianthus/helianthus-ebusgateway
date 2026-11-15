@@ -3,7 +3,11 @@ package main
 import (
 	"context"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -12,6 +16,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/releasecheck"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
+	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/graph"
 )
 
 func newTestSemanticHub(t *testing.T) *semhub.Hub {
@@ -212,5 +217,106 @@ func TestRunGatewayLifecycleFailsOnADerivedIdentifierCollisionBeforeRuntimes(t *
 	}
 	if _, statErr := os.Stat(evidence.StateRoot); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("synchronized evidence runtime opened before the semantic preflight: %v", statErr)
+	}
+}
+
+// preflightCalls lists, in source order, the calls to the named functions in
+// every non-test file of this package, with the enclosing function of each.
+func preflightCalls(t *testing.T, names ...string) []string {
+	t.Helper()
+	want := map[string]bool{}
+	for _, name := range names {
+		want[name] = true
+	}
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := []string{}
+	for _, path := range files {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			ast.Inspect(fn.Body, func(node ast.Node) bool {
+				call, ok := node.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				name := ""
+				switch callee := call.Fun.(type) {
+				case *ast.Ident:
+					name = callee.Name
+				case *ast.SelectorExpr:
+					name = callee.Sel.Name
+				}
+				if want[name] {
+					calls = append(calls, fn.Name.Name+":"+name)
+				}
+				return true
+			})
+		}
+	}
+	return calls
+}
+
+// The preflight composes the pairings and then the operator records exactly
+// once each, after the PV class is declared; nothing else calls either seam.
+func TestSemanticHubPreflightCallsEachCompositionSeamOnce(t *testing.T) {
+	calls := []string{}
+	for _, call := range preflightCalls(t, "NewSemanticPVClass", "composeSemanticPairings", "composeOperatorRecords") {
+		// The PV class is also declared by the instance runtime; only the
+		// preflight's own order matters for it.
+		if strings.HasPrefix(call, "preflightSemanticHub:") || !strings.HasSuffix(call, ":NewSemanticPVClass") {
+			calls = append(calls, call)
+		}
+	}
+	got := strings.Join(calls, ",")
+	want := "preflightSemanticHub:NewSemanticPVClass,preflightSemanticHub:composeSemanticPairings,preflightSemanticHub:composeOperatorRecords"
+	if got != want {
+		t.Fatalf("composition calls=%s want %s", got, want)
+	}
+}
+
+// The empty seams compose nothing: the preflight declares the same sources as
+// before, every declared asset is not graph-enforced and the hub reports the
+// pinned catalog digest.
+func TestSemanticHubPreflightComposesNothingAndEnforcesNoAsset(t *testing.T) {
+	for name, cfg := range map[string]ebusgateway.Config{
+		"disabled": {},
+		"enabled":  {ModbusTCPConfig: ebusgateway.ModbusTCPConfig{GrowattBMSRS485: growattProductionConfig(), TeslaGen3HSC: teslaRetainedConfig()}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := composeSemanticPairings(newTestSemanticHub(t), cfg); err != nil {
+				t.Fatalf("pairings=%v", err)
+			}
+			if err := composeOperatorRecords(newTestSemanticHub(t), cfg); err != nil {
+				t.Fatalf("operator records=%v", err)
+			}
+			hub, err := preflightSemanticHub(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			state, err := hub.GraphState()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state.CatalogDigest != graph.PinnedDigest || len(state.Assets) != len(hub.Sources()) {
+				t.Fatalf("graph state=%+v sources=%+v", state, hub.Sources())
+			}
+			for _, asset := range state.Assets {
+				if asset.Enforcement != semhub.GraphNotEnforced {
+					t.Fatalf("asset %q is %q", asset.Asset, asset.Enforcement)
+				}
+			}
+		})
 	}
 }

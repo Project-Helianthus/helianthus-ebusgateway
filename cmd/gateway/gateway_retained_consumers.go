@@ -128,6 +128,9 @@ type retainedEBusConsumers struct {
 	insertSubscribeOnce sync.Once
 
 	admittedSourceMu sync.Mutex
+	// pollerRebound reports that a live admitted generation rebound the
+	// poller since the last withdrawal. Guarded by admittedSourceMu.
+	pollerRebound bool
 }
 
 // newRetainedEBusConsumers validates the collaborators and creates the
@@ -346,6 +349,9 @@ func (c *retainedEBusConsumers) installAdmittedSource(scope *ebusGenerationScope
 	return scope.Commit(func() {
 		c.admittedSourceMu.Lock()
 		c.builder.SetAdmittedMutationSource(source)
+		// On the source-selection path the source is installed after the
+		// surface task rebound the poller; resume it only now.
+		c.resumePollerLocked(scope.Context())
 		c.admittedSourceMu.Unlock()
 	})
 }
@@ -368,6 +374,7 @@ func (c *retainedEBusConsumers) withdrawAdmittedSource(force bool) {
 	defer c.admittedSourceMu.Unlock()
 	if force || !c.control.EBusAdmitted() {
 		c.builder.ClearAdmittedMutationSource()
+		c.pollerRebound = false
 		poller, _ := c.pollerAndPromoter()
 		poller.suspendAcquisition()
 	}
@@ -434,9 +441,25 @@ func (c *retainedEBusConsumers) rebindPollerSource(genCtx context.Context, polle
 	poller.setSourceAndCompanion(resolved.ScanSource, resolved.StartupCompanionTarget)
 	c.admittedSourceMu.Lock()
 	if genCtx.Err() == nil && c.control.EBusAdmitted() {
-		poller.resumeAcquisition()
+		c.pollerRebound = true
 	}
+	c.resumePollerLocked(genCtx)
 	c.admittedSourceMu.Unlock()
+}
+
+// resumePollerLocked resumes the retained poller's acquisition only while the
+// generation is live, admitted, has rebound the poller and has its source
+// installed (on the source-selection path that follows the active probe). The caller holds
+// admittedSourceMu.
+func (c *retainedEBusConsumers) resumePollerLocked(genCtx context.Context) {
+	if genCtx.Err() != nil || !c.control.EBusAdmitted() || !c.pollerRebound {
+		return
+	}
+	if _, ok := c.builder.AdmittedMutationSource(); !ok {
+		return
+	}
+	poller, _ := c.pollerAndPromoter()
+	poller.resumeAcquisition()
 }
 
 // startPoller starts the retained semantic poller on the process context.

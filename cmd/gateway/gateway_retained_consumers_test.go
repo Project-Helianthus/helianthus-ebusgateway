@@ -543,6 +543,8 @@ func (f *retainedPollerGateFixture) admitSource(ctx context.Context, scope *ebus
 	f.mu.Lock()
 	f.configs[scope.Key().Native] = cfg
 	f.mu.Unlock()
+	// Validation passed: install the source as the production admission does.
+	f.retained.installAdmittedSource(scope, source)
 	return nil
 }
 
@@ -762,7 +764,8 @@ func requirePollerSuspended(t *testing.T, poller *vaillantSemanticPoller, what s
 	}
 }
 
-// The resume needs both a live generation and an admitted one. Each condition
+// The resume needs a live generation, an admitted one and its installed
+// source. Each condition
 // is varied alone: a rebinding with a live context while no generation is
 // admitted, and a rebinding with an ended (fenced) context while the successor
 // is admitted, both leave acquisition suspended; the successor's own
@@ -791,6 +794,12 @@ func TestRetainedPollerWaitsForSuccessorSourceResumeNeedsLiveAdmittedGeneration(
 	if !f.retained.control.EBusAdmitted() {
 		t.Fatal("successor not admitted while its validation is held")
 	}
+	// Admitted and rebound, but the source is not installed yet (the
+	// validation is still held): the poller stays suspended.
+	f.retained.rebindPollerSource(context.Background(), poller, late)
+	requirePollerSuspended(t, poller, "a rebinding before the source is installed")
+	// With the source installed, only the ended context still blocks.
+	f.retained.builder.SetAdmittedMutationSource(late.ScanSource)
 	fenced, cancel := context.WithCancel(context.Background())
 	cancel()
 	f.retained.rebindPollerSource(fenced, poller, late)

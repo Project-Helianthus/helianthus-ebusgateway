@@ -2167,12 +2167,24 @@ unchanged.
    outside all of them. No path holds the control mutexes of two sources, so
    contributors of one asset never wait on each other's control operations.
 
-The other contributors' family caches are not yet reprojected when one
-contributor commits a publication, and the recovery record carries one control
-per asset (the owner's), so a shared asset is not yet represented in a
-recovery checkpoint. Synthetic hub tests in
+When one source of a shared asset commits a publication, every other
+publishing source with a bound reprojection callback receives the asset's
+current snapshot once, as a control event of kind `published` with a zero
+control, through the same scheduler and in `HubSeq` order. The attempt starts
+only after the publisher's cache swap has finished and the asset commit lock
+is released; the scheduler stops in front of an attempt its commit still
+holds instead of waiting on it, so a control operation, `RetryControl` or
+`Resettle` called from that commit's `onCommit` returns, and the commit
+restarts the scheduler once it releases the attempt. Reads of the asset stay
+withheld until every receiver has acknowledged the latest publication it is
+owed; publications never wait for a peer reprojection. A single-source asset
+queues nothing. The recovery record carries one control per asset (the
+owner's), so a shared asset is not yet represented in a recovery checkpoint.
+Synthetic hub tests in
 [internal/semhub/multisource_control_test.go](../../internal/semhub/multisource_control_test.go)
-cover items 1 to 6 under the race detector, and
+cover items 1 to 6 under the race detector,
+[internal/semhub/peer_reprojection_test.go](../../internal/semhub/peer_reprojection_test.go)
+covers the peer reprojection of a shared asset, and
 [internal/semanticoperations/router_multisource_test.go](../../internal/semanticoperations/router_multisource_test.go)
 shows that a contributor's capability routes by its own binding, epoch and
 generation and that a fenced contributor's capability is refused.

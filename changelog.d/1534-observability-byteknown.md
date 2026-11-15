@@ -1,0 +1,3 @@
+## Echo-mismatch subclass for an observed 0x00 byte
+
+Diagnostics only. The bus observability store now decides whether an echo-mismatch event carries its observed byte from the protocol layer's `ByteKnown` flag instead of guessing from a zero byte. An echo mismatch whose observed byte is `0x00` is now counted as `post_grant_ack` in `ebus_active_echo_mismatch_subclass_total`, and its byte-less outcome re-emit is merged with it, instead of being counted as `byte_unknown`; an event without an observed byte stays `byte_unknown`. The classification of every non-zero byte is unchanged. No change to bus traffic, arbitration, retry or any published name.

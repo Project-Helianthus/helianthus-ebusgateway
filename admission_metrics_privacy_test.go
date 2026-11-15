@@ -218,7 +218,7 @@ func TestM54AbsoluteMetricSeriesMatrix(t *testing.T) {
 		for _, echo := range echoes {
 			for _, item := range errors {
 				if err := store.OnBusEvent(protocol.BusEvent{
-					Kind: item.kind, Byte: echo.value, EchoWasEscaped: echo.escaped,
+					Kind: item.kind, Byte: echo.value, ByteKnown: true, EchoWasEscaped: echo.escaped,
 					Initiator: byte(i), Request: request, HasRequest: i%2 == 0,
 				}); err != nil {
 					t.Fatalf("record synthetic event: %v", err)

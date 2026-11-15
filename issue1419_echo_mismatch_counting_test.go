@@ -20,6 +20,7 @@ func echoMismatchEvent(observed byte, escaped bool) protocol.BusEvent {
 		Kind:           protocol.BusEventEchoMismatch,
 		Outcome:        protocol.BusOutcomeEchoMismatch,
 		Byte:           observed,
+		ByteKnown:      observed != 0,
 		EchoWasEscaped: escaped,
 	}
 }

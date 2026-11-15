@@ -164,9 +164,10 @@ func TestRecordActiveError_EchoMismatchSubclassPropagates(t *testing.T) {
 
 	// Simulate live echo_mismatch with byte=0xF1 (post_grant_collision_initiator).
 	err := store.OnBusEvent(protocol.BusEvent{
-		Kind:    protocol.BusEventEchoMismatch,
-		Outcome: protocol.BusOutcomeEchoMismatch,
-		Byte:    0xF1,
+		Kind:      protocol.BusEventEchoMismatch,
+		Outcome:   protocol.BusOutcomeEchoMismatch,
+		Byte:      0xF1,
+		ByteKnown: true,
 	})
 	if err != nil {
 		t.Fatalf("OnBusEvent error = %v", err)
@@ -207,6 +208,7 @@ func TestRecordActiveError_PreEchoSynSplitByWasEscaped(t *testing.T) {
 		Kind:           protocol.BusEventEchoMismatch,
 		Outcome:        protocol.BusOutcomeEchoMismatch,
 		Byte:           protocol.SymbolSyn,
+		ByteKnown:      true,
 		EchoWasEscaped: false,
 	}); err != nil {
 		t.Fatalf("OnBusEvent (raw) error = %v", err)
@@ -217,6 +219,7 @@ func TestRecordActiveError_PreEchoSynSplitByWasEscaped(t *testing.T) {
 		Kind:           protocol.BusEventEchoMismatch,
 		Outcome:        protocol.BusOutcomeEchoMismatch,
 		Byte:           protocol.SymbolSyn,
+		ByteKnown:      true,
 		EchoWasEscaped: true,
 	}); err != nil {
 		t.Fatalf("OnBusEvent (escaped) error = %v", err)

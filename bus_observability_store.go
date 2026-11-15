@@ -2608,15 +2608,12 @@ const (
 )
 
 // echoMismatchByteObserved reports whether the event carries the byte
-// that was read in place of the expected echo. The event has no
-// provenance flag yet. Events that carry the protocol's echo-mismatch
-// outcome marker (every event the protocol layer emits, including its
-// outcome re-emit) report a zero byte as not observed; an event without
-// that marker carries its byte literally, so a real zero byte stays
-// post_grant_ack. This is the single place to switch once the bus event
-// reports provenance.
+// that was read in place of the expected echo. The protocol layer sets
+// ByteKnown only when Byte holds a byte observed on the wire, so a real
+// 0x00 stays post_grant_ack and an event without an observed byte (such
+// as the outcome re-emit) is byte-less whatever its Byte value.
 func echoMismatchByteObserved(event protocol.BusEvent) bool {
-	return event.Byte != 0 || event.Outcome != protocol.BusOutcomeEchoMismatch
+	return event.ByteKnown
 }
 
 // attributeEchoMismatchLocked decides whether an echo_mismatch event is a

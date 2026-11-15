@@ -2046,3 +2046,91 @@ func TestRenderPrometheus_V8RolloutProviderInvokedPerScrape(t *testing.T) {
 		t.Errorf("third scrape missing fresh value=3; got:\n%s", third)
 	}
 }
+
+// Kills: deciding byte presence from a zero value instead of ByteKnown.
+// Varies Byte (0x00), ByteKnown and the outcome marker: a known 0x00 is
+// post_grant_ack with or without the marker, an unknown byte is
+// byte_unknown with or without it.
+func TestEchoMismatchZeroByteClassifiedByByteKnown(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name      string
+		outcome   protocol.BusOutcomeClass
+		byteKnown bool
+		want      string
+		notWant   string
+	}{
+		{"marker_known", protocol.BusOutcomeEchoMismatch, true, "post_grant_ack", "byte_unknown"},
+		{"marker_unknown", protocol.BusOutcomeEchoMismatch, false, "byte_unknown", "post_grant_ack"},
+		{"no_marker_known", 0, true, "post_grant_ack", "byte_unknown"},
+		{"no_marker_unknown", 0, false, "byte_unknown", "post_grant_ack"},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			store, _ := echoMismatchTestStore()
+			if err := store.OnBusEvent(protocol.BusEvent{
+				Kind:      protocol.BusEventEchoMismatch,
+				Outcome:   c.outcome,
+				Byte:      0x00,
+				ByteKnown: c.byteKnown,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			metricLine(t, store, echoMismatchErrorSeries, "1")
+			metricLine(t, store, subclassSeries(c.want), "1")
+			metricLine(t, store, subclassSeries(c.notWant), "0")
+		})
+	}
+}
+
+// Kills: a known 0x00 not arming the re-emit window, so the byte-less
+// outcome re-emit that follows it is counted a second time.
+func TestEchoMismatchKnownZeroByteReemitCountedOnce(t *testing.T) {
+	t.Parallel()
+	store, _ := echoMismatchTestStore()
+	_ = store.OnBusEvent(protocol.BusEvent{
+		Kind: protocol.BusEventEchoMismatch, Outcome: protocol.BusOutcomeEchoMismatch,
+		Byte: 0x00, ByteKnown: true,
+	})
+	_ = store.OnBusEvent(protocol.BusEvent{
+		Kind: protocol.BusEventEchoMismatch, Outcome: protocol.BusOutcomeEchoMismatch,
+	})
+	metricLine(t, store, echoMismatchErrorSeries, "1")
+	metricLine(t, store, subclassSeries("post_grant_ack"), "1")
+	metricLine(t, store, subclassSeries("byte_unknown"), "0")
+}
+
+// Kills: a ByteKnown change that alters the classification of a non-zero
+// observed byte. Varies Byte over three classes and EchoWasEscaped on the
+// SYN byte; the expected names are today's classification.
+func TestEchoMismatchNonZeroKnownByteClassificationUnchanged(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		observed byte
+		escaped  bool
+		want     string
+	}{
+		{0xF1, false, "post_grant_collision_initiator"},
+		{0x15, false, "post_grant_collision_target"},
+		{protocol.SymbolSyn, false, "pre_echo_syn_raw"},
+		{protocol.SymbolSyn, true, "pre_echo_syn_escaped_data"},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.want, func(t *testing.T) {
+			t.Parallel()
+			store, _ := echoMismatchTestStore()
+			if err := store.OnBusEvent(protocol.BusEvent{
+				Kind: protocol.BusEventEchoMismatch, Outcome: protocol.BusOutcomeEchoMismatch,
+				Byte: c.observed, ByteKnown: true, EchoWasEscaped: c.escaped,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			metricLine(t, store, echoMismatchErrorSeries, "1")
+			metricLine(t, store, subclassSeries(c.want), "1")
+			metricLine(t, store, subclassSeries("byte_unknown"), "0")
+		})
+	}
+}

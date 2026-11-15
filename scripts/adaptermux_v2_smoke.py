@@ -517,6 +517,8 @@ def flow_ready(check, measures):
 def observe_window(urls, settings, check, clock):
     """Sample until the flow requirements hold or the window ends.
 
+    Every consecutive pair of samples is compared for a counter moving
+    backwards, so a reset that recovers before the last sample is still seen.
     A check that forbids a counter moving observes the whole window: the
     concurrent client finishes only after this command returns, so a late
     movement must still be seen.
@@ -525,17 +527,22 @@ def observe_window(urls, settings, check, clock):
     baseline = take_sample(urls, settings)
     deadline = clock.monotonic() + settings["window"]
     samples = 1
+    previous = baseline
+    regressions = set(())
     while True:
         clock.sleep(settings["poll"])
         current = take_sample(urls, settings)
         samples += 1
+        regressions.update(backward_counters(previous, current))
+        previous = current
         own = own_source(baseline) or own_source(current)
         if not full_window and flow_ready(check, compute_measures(baseline, current, own)):
             clock.sleep(settings["poll"])
             current = take_sample(urls, settings)
-            return baseline, current, own, samples + 1
+            regressions.update(backward_counters(previous, current))
+            return baseline, current, own, samples + 1, sorted(regressions)
         if clock.monotonic() >= deadline:
-            return baseline, current, own, samples
+            return baseline, current, own, samples, sorted(regressions)
 
 
 # ---------------------------------------------------------------- semantic record
@@ -666,7 +673,7 @@ def compare_pairs(context, mux_record):
 
 def judge(context, check, urls, settings, clock):
     evidence = {}
-    baseline, current, own, samples = observe_window(urls, settings, check, clock)
+    baseline, current, own, samples, backwards = observe_window(urls, settings, check, clock)
     evidence["window"] = {"samples": samples, "window_seconds": settings["window"]}
     evidence["gateway_source"] = own
     evidence["transport"], reasons = check_transport(context, current, check)
@@ -674,7 +681,6 @@ def judge(context, check, urls, settings, clock):
     reasons += guard_reasons
     if check.get("passive_tap"):
         reasons += check_passive_tap(current)
-    backwards = backward_counters(baseline, current)
     if backwards:
         reasons.append("counters moved backwards during the case window: " + ", ".join(backwards))
     measures = compute_measures(baseline, current, own)

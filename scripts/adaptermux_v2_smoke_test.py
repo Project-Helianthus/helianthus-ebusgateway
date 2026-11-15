@@ -272,6 +272,17 @@ class ExecutableInvariantTests(SmokeTestCase):
                 self.assertEqual(status, SMOKE.EXIT_FAIL)
                 self.assertIn("counters moved backwards", self.reasons(evidence))
 
+    def test_counter_reset_that_recovers_before_the_last_sample_fails(self):
+        for invariant, composition, southbound in EXECUTABLE_CELLS:
+            with self.subTest(case=case_id(invariant, southbound)):
+                baseline, flow = self.phases(composition, southbound)
+                dipped = self.phases(composition, southbound)[1]
+                dipped.bump("ebus_passive_completed_transactions_total", {}, -400)
+                self.stub.load([baseline, dipped, flow])
+                status, evidence = self.run_smoke(self.environ(invariant, composition, southbound))
+                self.assertEqual(status, SMOKE.EXIT_FAIL)
+                self.assertIn("counters moved backwards", self.reasons(evidence))
+
     def test_counter_that_must_stay_moving_fails(self):
         for invariant, (metric, labels) in STAY_COUNTERS.items():
             for southbound in ("ens", "enh"):

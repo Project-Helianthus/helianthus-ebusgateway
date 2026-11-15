@@ -210,6 +210,27 @@ func TestRestoreMultiSourceRestoreRefusesSecondSource(t *testing.T) {
 			entry := entryOf(record)
 			entry.Accepted[0].Batch = resealedWithSource(t, entry.Accepted[0].Batch, secondSource)
 		},
+		"accepted-other-asset": func(record *RecoveryRecord) {
+			// A batch stored under one entry that names another asset with
+			// a source other than that asset's recorded source.
+			var other semreg.AssetID
+			for _, id := range recoveryAssets {
+				if id != target {
+					other = id
+				}
+			}
+			entry := entryOf(record)
+			var batch semreg.PublicationBatch
+			if err := json.Unmarshal(entry.Accepted[0].Batch, &batch); err != nil {
+				t.Fatal(err)
+			}
+			batch.AssetID = other
+			raw, err := json.Marshal(batch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			entry.Accepted[0].Batch = resealedWithSource(t, raw, secondSource)
+		},
 		"control": func(record *RecoveryRecord) {
 			entry := entryOf(record)
 			if entry.Control == nil || entry.Control.Status.ID == nil {

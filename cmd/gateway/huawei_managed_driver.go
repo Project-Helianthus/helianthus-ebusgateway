@@ -289,9 +289,11 @@ func huaweiStatusChildren(p *huaweiPVPublication, cycle modbusreg.HuaweiProvider
 			status.Refusal = refusal
 		}
 		if view, err := p.hub.Inspect(huaweiAssetID(p.label, "pv", child.UnitID)); err == nil && view.Present {
-			status.BindingIncarnations = len(view.Snapshot.Bindings)
-			status.SourceDescriptors = len(view.Snapshot.Sources)
-			status.IdentityLinkState = huaweiStatusLinkState(view.Snapshot, p.handle.Source(), p.handle.Epoch(), p.handle.GenerationID())
+			if state := huaweiStatusLinkState(view.Snapshot, p.handle.Source(), p.handle.Epoch(), p.handle.GenerationID()); state != "" {
+				status.IdentityLinkState = state
+				status.BindingIncarnations = len(view.Snapshot.Bindings)
+				status.SourceDescriptors = len(view.Snapshot.Sources)
+			}
 		}
 		out = append(out, status)
 	}

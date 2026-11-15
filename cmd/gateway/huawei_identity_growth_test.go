@@ -842,3 +842,28 @@ func TestHuaweiIdentityGrowthStatusLinkState(t *testing.T) {
 		}
 	}
 }
+
+// A restarted generation that holds no link on the child's asset reports no
+// link state and, with it, no counts: the three members are present together
+// or absent together.
+func TestHuaweiIdentityGrowthStatusAbsentWithoutPublishingLink(t *testing.T) {
+	t.Parallel()
+	cycle := growthFixtureCycle(t, "smartlogger")
+	r := growthSetup(t, cycle)
+	r.must(r.pub.Fence())
+	successor, err := newHuaweiPVPublication(r.hub, "growth-test", "source:synthetic", "alpha", r.pub.handle, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	successor.mu.Lock()
+	children := huaweiStatusChildren(successor, cycle)
+	successor.mu.Unlock()
+	if len(children) == 0 {
+		t.Fatal("no children reported")
+	}
+	for _, child := range children {
+		if child.IdentityLinkState != "" || child.BindingIncarnations != 0 || child.SourceDescriptors != 0 {
+			t.Fatalf("child without a publishing link reports %+v", child)
+		}
+	}
+}

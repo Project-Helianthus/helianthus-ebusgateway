@@ -509,3 +509,170 @@ func TestMatterProfileRoutesUseSharedBudgetOffline(t *testing.T) {
 		t.Fatal("feed route did not release")
 	}
 }
+
+// matterSharedAssetSource captures one asset with two sources through the
+// Portal's own selection, so the feed reads exactly what the catalog keeps.
+type matterSharedAssetSource struct {
+	contributions *gatewayPortalCatalogContributions
+	attribution   portalAttribution
+	snapshot      semreg.Snapshot
+	evaluation    semreg.EvaluationView
+}
+
+func (s *matterSharedAssetSource) PortalCatalogContributions() *gatewayPortalCatalogContributions {
+	return s.contributions
+}
+
+func (s *matterSharedAssetSource) Capture(time.Time) ([]catalogv1.Resource, []catalogv1.Field, error) {
+	resources, fields, _ := portalSnapshotCapture(s.attribution, gatewayPortalEVSEDescriptor(), s.snapshot, s.evaluation, []semreg.Selection{}, map[string]any{})
+	return resources, fields, nil
+}
+
+// matterSharedAssetFixture publishes the mapped current, the EVSE service and
+// its read capability from the owner, and the same service and capability plus
+// a short-lived voltage from a contributor, then evaluates after the voltage
+// has gone stale.
+func matterSharedAssetFixture(t *testing.T) (semreg.Snapshot, semreg.EvaluationView) {
+	t.Helper()
+	const asset = semreg.AssetID("asset:shared")
+	kernel, err := semreg.NewPublicationKernel(asset, evse.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence := semreg.EvidenceRef{Owner: "owner.test", Kind: "evidence.test", Digest: semreg.Digest(fmt.Sprintf("sha256:%x", sha256.Sum256([]byte("synthetic public shared asset evidence")))), Contract: "test.evidence/v1", Access: semreg.EvidenceAccessPublic, Redaction: semreg.RedactionNone}
+	point := semreg.TimePoint{UnixNanoseconds: "100", ClockID: "clock.utc", UncertaintyNS: "0"}
+	monotonic := semreg.MonotonicPoint{ClockEpochID: "clock-epoch:test", Nanoseconds: "100"}
+	pack := catalogv1.FivePacks[3]
+	definition := func(id string) semreg.DefinitionRef {
+		return semreg.DefinitionRef{Pack: semreg.PackRef{ID: semreg.DefinitionID(pack.ID), Version: semreg.SemanticVersion(pack.Version)}, ID: semreg.DefinitionID(id), Version: semreg.SemanticVersion(pack.Version)}
+	}
+	candidate := func(tag string, generation semreg.Uint64, fact, dimension, dimensionValue, coefficient, unit, freshFor string) semreg.FactCandidate {
+		binding, epoch, source := semreg.NativeBindingID("binding:"+tag), semreg.SourceEpochID("epoch:"+tag), semreg.SourceID("source:"+tag)
+		value := semreg.Value{Kind: semreg.ValueQuantity, Quantity: &semreg.Quantity{Number: semreg.Decimal{Coefficient: coefficient, Exponent10: -1}, Unit: semreg.DefinitionID(unit)}}
+		return semreg.FactCandidate{
+			CandidateID:     semreg.CandidateID("candidate:" + tag + ":" + fact),
+			Key:             semreg.FactKey{PackID: "helianthus.pack.evse", PackVersion: "1.0.0", FactID: semreg.DefinitionID(fact), Dimensions: []semreg.Dimension{{ID: semreg.DefinitionID(dimension), Value: semreg.Value{Kind: semreg.ValueText, Text: &dimensionValue}}}},
+			Value:           &value,
+			Quality:         semreg.Quality{Assertion: semreg.AssertionObserved, Qualification: semreg.QualificationQualified, Promotion: semreg.PromotionPromoted, Validity: semreg.ValidityGood, Availability: semreg.AvailabilityAvailable, Freshness: semreg.FreshnessFresh, Reasons: []semreg.DefinitionID{}},
+			Times:           semreg.Times{ReceivedAt: point, ReceiptMonotonic: monotonic, EvaluatedAt: point, EvaluateMonotonic: monotonic},
+			FreshnessPolicy: semreg.FreshnessPolicy{PolicyID: "policy.matter.current", Version: "1.0.0", FreshForNS: semreg.Uint64(freshFor), RetainForNS: "2000", MaxWallUncertaintyNS: "0"},
+			BindingID:       &binding, SourceEpochID: &epoch, DriverGeneration: &generation,
+			Origin:   semreg.OriginRef{OriginID: semreg.OriginID("origin:" + tag + ":" + fact), Kind: semreg.OriginNativeObservation, SourceID: &source, SourceEpochID: &epoch, BindingID: &binding, Evidence: []semreg.EvidenceRef{evidence}},
+			Evidence: []semreg.EvidenceRef{evidence}, Revision: "1",
+		}
+	}
+	expected := semreg.Uint64("0")
+	var snapshot semreg.Snapshot
+	for _, item := range []struct {
+		tag        string
+		generation semreg.Uint64
+		facts      []semreg.FactCandidate
+	}{
+		{"owner", "3", []semreg.FactCandidate{candidate("owner", "3", "evse.ac.current", "evse.dimension.phase", "l1", "32", "unit.ampere", "1000")}},
+		{"contributor", "5", []semreg.FactCandidate{candidate("contributor", "5", "evse.ac.voltage", "evse.dimension.phase", "l1", "2301", "unit.volt", "10")}},
+	} {
+		binding, epoch, source := semreg.NativeBindingID("binding:"+item.tag), semreg.SourceEpochID("epoch:"+item.tag), semreg.SourceID("source:"+item.tag)
+		service := semreg.ServiceInstanceID("service:" + item.tag)
+		batch := semreg.PublicationBatch{
+			Contract: semreg.ContractKernelV1, BatchID: semreg.BatchID("batch:" + item.tag), AssetID: asset,
+			SourceID: source, SourceEpochID: epoch, DriverGeneration: item.generation, Sequence: "1", ExpectedSemanticRevision: expected, ObservedAt: point,
+			SourceUpserts:         []semreg.SourceDescriptor{{SourceID: source, SourceEpochID: epoch, ProtocolID: "protocol.test", ProfileID: "profile.test", ProfileVersion: "1", RegistryEvidence: evidence, StartedAt: point, State: semreg.SourceCurrent, Revision: "1"}},
+			SourceRetirements:     []semreg.SourceEpochID{},
+			BindingUpserts:        []semreg.NativeBinding{{BindingID: binding, AssetID: asset, SourceID: source, SourceEpochID: epoch, DriverGeneration: item.generation, NativeResource: evidence, State: semreg.BindingCurrent, Revision: "1"}},
+			IdentityLinkUpserts:   []semreg.IdentityLink{{AssetID: asset, BindingID: binding, State: semreg.LinkQualified, Basis: []semreg.EvidenceRef{evidence}, Revision: "1"}},
+			FactUpserts:           item.facts,
+			FactWithdrawals:       []semreg.CandidateID{},
+			ServiceUpserts:        []semreg.ServiceInstance{{InstanceID: service, AssetID: asset, Definition: definition("evse.service.evse"), BindingID: binding, SourceEpochID: epoch, DriverGeneration: item.generation, Qualification: semreg.QualificationQualified, Availability: semreg.AvailabilityAvailable, Revision: "1"}},
+			ServiceWithdrawals:    []semreg.ServiceInstanceID{},
+			CapabilityUpserts:     []semreg.CapabilityInstance{{InstanceID: semreg.CapabilityInstanceID("capability:" + item.tag), AssetID: asset, ServiceInstance: service, Definition: definition("evse.capability.read.evse"), BindingID: binding, SourceEpochID: epoch, DriverGeneration: item.generation, Qualification: semreg.QualificationQualified, Availability: semreg.AvailabilityAvailable, Constraints: []semreg.TypedField{}, ActivationEvidence: []semreg.EvidenceRef{evidence}, Revision: "1"}},
+			CapabilityWithdrawals: []semreg.CapabilityInstanceID{},
+			GenerationFences:      []semreg.GenerationFence{},
+		}
+		batch.BatchDigest, err = batch.ComputedDigest()
+		if err != nil {
+			t.Fatal(err)
+		}
+		snapshot, _, err = kernel.Apply(batch, monotonic)
+		if err != nil {
+			t.Fatalf("batch %s: %v", item.tag, err)
+		}
+		expected = snapshot.Revisions.Semantic
+	}
+	evaluation, err := semreg.EvaluateSnapshot(snapshot, semreg.EvaluationContext{EvaluatedAt: semreg.TimePoint{UnixNanoseconds: "150", ClockID: "clock.utc", UncertaintyNS: "0"}, EvaluateMonotonic: semreg.MonotonicPoint{ClockEpochID: "clock-epoch:test", Nanoseconds: "150"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return snapshot, evaluation
+}
+
+func TestMatterBindingFeedKeepsSharedAssetResource(t *testing.T) {
+	contributions, err := newGatewayPortalCatalogContributions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := startPortalTestLease(t, contributions, gatewayPortalEVSEDescriptor())
+	defer lease.Stop()
+	snapshot, evaluation := matterSharedAssetFixture(t)
+	stale := 0
+	for _, item := range evaluation.Facts {
+		if item.Freshness != semreg.FreshnessFresh {
+			stale++
+		}
+	}
+	if len(snapshot.Services) != 2 || stale != 1 {
+		t.Fatalf("fixture services=%d stale=%d; want two carriers and one stale unmapped fact", len(snapshot.Services), stale)
+	}
+	source := &matterSharedAssetSource{contributions: contributions, snapshot: snapshot, evaluation: evaluation, attribution: portalAttribution{drivers: portalTestDrivers{"source:owner": "evse.primary", "source:contributor": "evse.contributor"}, accepted: contributions.snapshot().Accepted}}
+	provider, err := newGatewayMatterBindingFeedProvider(source, []string{"asset:shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	feed, err := provider.Capture(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(feed.Resources) != 1 {
+		t.Fatalf("feed resources=%+v; want the shared asset's resource", feed.Resources)
+	}
+	got := feed.Resources[0]
+	if got.AssetID != "asset:shared" || got.BindingID != "binding:owner" || got.SourceEpoch != "epoch:owner" || got.DriverGeneration != 3 {
+		t.Fatalf("feed resource=%+v; want the owner's binding", got)
+	}
+	if got.Projected == nil || len(got.Projected.Document.Attributes) != 1 || got.Projected.Document.Attributes[0].Value.Milliampere != "3200" {
+		t.Fatalf("projection=%+v", got.Projected)
+	}
+}
+
+func TestMatterBindingFeedOperationNamesTheBindingsDriver(t *testing.T) {
+	resource := feedv1.Resource{AssetID: "asset:shared", ResourceID: "connector", SnapshotID: "snapshot:shared", BindingID: "binding:contributor", SourceEpoch: "epoch:contributor", DriverGeneration: 5, State: feedv1.ResourceCurrent}
+	action := catalogv1.Action{
+		ID: "allocate", ResourceID: "connector", ServiceID: "evse.service.connector", CapabilityID: "evse.capability.set_allocated_current", OperationID: "evse.operation.set_allocated_current",
+		ContributionDriverID: "evse.contributor", ContributionManifestID: "portal.evse.contributed", ContributionManifestVersion: "1.1.0",
+		Source:       catalogv1.Source{AssetID: "asset:shared", SnapshotID: "snapshot:shared", Revision: "revision:shared", BindingID: "binding:contributor", SourceEpoch: "epoch:contributor", DriverGeneration: 5},
+		Discoverable: true, Enabled: true,
+	}
+	operation, err := matterBindingFeedOperation("catalog:revision", "digest:contributor", action, resource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := feedv1.OperationClaim{CatalogRevision: "catalog:revision", Digest: "digest:contributor", DriverID: "evse.contributor", ManifestID: "portal.evse.contributed", ManifestVersion: "1.1.0", ActionID: "allocate", ResourceID: "connector", CapabilityID: "evse.capability.set_allocated_current", OperationID: "evse.operation.set_allocated_current", SnapshotID: "snapshot:shared", Revision: "revision:shared", BindingID: "binding:contributor", SourceEpoch: "epoch:contributor", DriverGeneration: 5}
+	if operation.Claim != want || operation.AssetID != "asset:shared" {
+		t.Fatalf("claim=%+v; want %+v", operation.Claim, want)
+	}
+	// Each member of the binding path must agree between the action and its
+	// resource; a different owner's binding never stands in for it.
+	for name, mutate := range map[string]func(*feedv1.Resource){
+		"asset":      func(r *feedv1.Resource) { r.AssetID = "asset:other" },
+		"snapshot":   func(r *feedv1.Resource) { r.SnapshotID = "snapshot:other" },
+		"binding":    func(r *feedv1.Resource) { r.BindingID = "binding:owner" },
+		"epoch":      func(r *feedv1.Resource) { r.SourceEpoch = "epoch:owner" },
+		"generation": func(r *feedv1.Resource) { r.DriverGeneration = 3 },
+		"resource":   func(r *feedv1.Resource) { r.ResourceID = "evse" },
+	} {
+		other := resource
+		mutate(&other)
+		if _, err := matterBindingFeedOperation("catalog:revision", "digest:contributor", action, other); err == nil {
+			t.Fatalf("%s mismatch admitted an operation", name)
+		}
+	}
+}

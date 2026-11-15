@@ -153,10 +153,13 @@ func Project(snapshot semreg.Snapshot, evaluation semreg.EvaluationView) (Result
 	if err := validateEvaluationCorrespondence(snapshot, evaluation); err != nil {
 		return Result{}, err
 	}
-	if hasConflict(snapshot) {
+	// Eligibility is decided on the keys the mapping reads. An asset may hold
+	// several sources, and a conflict or a stale fact on a key that no mapping
+	// reads does not refuse the projection.
+	if hasMappedConflict(snapshot) {
 		return Result{}, &semreg.Error{ID: semreg.PreconditionFailed, Detail: "matter projection conflict"}
 	}
-	if err := eligibleEvaluation(evaluation); err != nil {
+	if err := eligibleMappedEvaluation(snapshot, evaluation); err != nil {
 		return Result{}, err
 	}
 
@@ -203,17 +206,37 @@ func validateEvaluationCorrespondence(snapshot semreg.Snapshot, evaluation semre
 	return nil
 }
 
-func hasConflict(snapshot semreg.Snapshot) bool {
+// mappedKey reports whether a mapping of this projection reads key. It is the
+// one place that names the keys eligibility is decided on.
+func mappedKey(key semreg.FactKey) bool {
+	return key.PackID == "helianthus.pack.evse" && key.PackVersion == "1.0.0" && key.FactID == "evse.ac.current"
+}
+
+func hasMappedConflict(snapshot semreg.Snapshot) bool {
 	for _, fact := range snapshot.Facts {
-		if len(fact.Conflicts) != 0 {
+		if mappedKey(fact.Key) && len(fact.Conflicts) != 0 {
 			return true
 		}
 	}
 	return false
 }
 
-func eligibleEvaluation(evaluation semreg.EvaluationView) error {
+// eligibleMappedEvaluation requires every evaluated candidate of a mapped key
+// to be fresh and available. Candidates of other keys are not consulted.
+func eligibleMappedEvaluation(snapshot semreg.Snapshot, evaluation semreg.EvaluationView) error {
+	mapped := make(map[semreg.CandidateID]struct{})
+	for _, fact := range snapshot.Facts {
+		if !mappedKey(fact.Key) {
+			continue
+		}
+		for _, candidate := range fact.Candidates {
+			mapped[candidate.CandidateID] = struct{}{}
+		}
+	}
 	for _, item := range evaluation.Facts {
+		if _, ok := mapped[item.CandidateID]; !ok {
+			continue
+		}
 		if item.Freshness != semreg.FreshnessFresh || item.EffectiveAvailability != semreg.AvailabilityAvailable {
 			return &semreg.Error{ID: semreg.PreconditionFailed, Detail: "matter projection freshness or availability"}
 		}
@@ -230,7 +253,7 @@ func mapEVSEActiveCurrent(snapshot semreg.Snapshot, evaluation semreg.Evaluation
 	var candidate *semreg.FactCandidate
 	for i := range snapshot.Facts {
 		fact := &snapshot.Facts[i]
-		if fact.Key.PackID != "helianthus.pack.evse" || fact.Key.PackVersion != "1.0.0" || fact.Key.FactID != "evse.ac.current" {
+		if !mappedKey(fact.Key) {
 			continue
 		}
 		for j := range fact.Candidates {

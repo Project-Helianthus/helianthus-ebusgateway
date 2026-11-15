@@ -20,6 +20,7 @@ import (
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter"
 	sunspectest "github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter/testfixture"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal/catalogv1"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal/contributionv1"
@@ -775,4 +776,169 @@ func TestCharacterizationConsumersOfAllThreeFamilies(t *testing.T) {
 		}
 	}
 	characterizationGolden(t, dir, "prometheus_semantic.txt", []byte(strings.Join(metrics, "\n")+"\n"))
+}
+
+// portalTestDrivers resolves a source to its driver the way the publication
+// hub does.
+type portalTestDrivers map[semreg.SourceID]string
+
+func (d portalTestDrivers) Source(id semreg.SourceID) (semhub.SourceInfo, bool) {
+	driver, ok := d[id]
+	return semhub.SourceInfo{Source: id, Driver: driver}, ok
+}
+
+// portalContributorGeneration varies the driver generation per source so a
+// test can tell which binding a resource or an action names.
+var portalContributorGeneration = map[string]semreg.Uint64{"owner": "3", "contributor": "5", "contributor-b": "9"}
+
+// portalContributorSnapshot builds one asset whose sources each hold a
+// current binding; carriers publish the service and capability instance.
+func portalContributorSnapshot(service, capability semreg.DefinitionRef, sources []string, carriers ...string) semreg.Snapshot {
+	snapshot := semreg.Snapshot{AssetID: "asset:shared", SnapshotID: "snapshot:shared"}
+	for _, tag := range sources {
+		snapshot.Sources = append(snapshot.Sources, semreg.SourceDescriptor{SourceID: semreg.SourceID("source:" + tag), SourceEpochID: semreg.SourceEpochID("epoch:" + tag), State: semreg.SourceCurrent})
+		snapshot.Bindings = append(snapshot.Bindings, semreg.NativeBinding{BindingID: semreg.NativeBindingID("binding:" + tag), AssetID: "asset:shared", SourceID: semreg.SourceID("source:" + tag), SourceEpochID: semreg.SourceEpochID("epoch:" + tag), DriverGeneration: portalContributorGeneration[tag], State: semreg.BindingCurrent})
+	}
+	for _, tag := range carriers {
+		snapshot.Services = append(snapshot.Services, semreg.ServiceInstance{InstanceID: semreg.ServiceInstanceID("service:" + tag), AssetID: "asset:shared", Definition: service, BindingID: semreg.NativeBindingID("binding:" + tag), SourceEpochID: semreg.SourceEpochID("epoch:" + tag), DriverGeneration: portalContributorGeneration[tag]})
+		snapshot.Capabilities = append(snapshot.Capabilities, semreg.CapabilityInstance{InstanceID: semreg.CapabilityInstanceID("capability:" + tag), AssetID: "asset:shared", Definition: capability, ServiceInstance: semreg.ServiceInstanceID("service:" + tag), BindingID: semreg.NativeBindingID("binding:" + tag), SourceEpochID: semreg.SourceEpochID("epoch:" + tag), DriverGeneration: portalContributorGeneration[tag]})
+	}
+	return snapshot
+}
+
+// portalAllocationDescriptor declares the EVSE allocation action on the
+// connector resource for one driver.
+func portalAllocationDescriptor(driver, manifest, version string) contributionv1.Manifest {
+	pack := catalogv1.FivePacks[3]
+	ref := func(id string) contributionv1.DefinitionRef {
+		return contributionv1.DefinitionRef{Pack: pack, ID: id, Version: pack.Version}
+	}
+	descriptor := newGatewayPortalDescriptor(driver, manifest, "connector", "evse.limit.allocated_current", "evse.service.connector", "evse.capability.set_allocated_current", "unit.ampere", pack)
+	descriptor.ManifestVersion = version
+	descriptor.Actions = []contributionv1.Action{{ID: "allocate", Group: "connector", Label: contributionv1.Label{Key: manifest + ".allocate", Default: "Allocate"}, OperationRef: ref("evse.operation.set_allocated_current"), CapabilityRef: ref("evse.capability.set_allocated_current"), ServiceRef: ref("evse.service.connector"), ArgumentRef: ref("evse.limit.allocated_current"), EffectRef: ref("evse.effect.set_allocated_current")}}
+	return descriptor
+}
+
+// portalStaticCapture replays fixed resources to the catalog composer.
+type portalStaticCapture []catalogv1.Resource
+
+func (s portalStaticCapture) Capture(time.Time) ([]catalogv1.Resource, []catalogv1.Field, error) {
+	return append([]catalogv1.Resource(nil), s...), []catalogv1.Field{}, nil
+}
+
+type portalTestInvoker struct{}
+
+func (portalTestInvoker) Invoke(catalogv1.Action, catalogv1.Claims) (json.RawMessage, error) {
+	return json.RawMessage(`{}`), nil
+}
+
+type portalTestRevalidator struct{}
+
+func (portalTestRevalidator) Revalidate(catalogv1.Action, catalogv1.Claims) error { return nil }
+
+func TestPortalCatalogKeepsResourceWithSeveralContributors(t *testing.T) {
+	contributions, err := newGatewayPortalCatalogContributions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The owner and the contributor publish the same action under different
+	// drivers, manifest identifiers and manifest versions.
+	owner := portalAllocationDescriptor("evse.primary", "portal.evse.allocation", "1.0.0")
+	contributor := portalAllocationDescriptor("evse.contributor", "portal.evse.contributed", "1.1.0")
+	for _, descriptor := range []contributionv1.Manifest{owner, contributor} {
+		lease := startPortalTestLease(t, contributions, descriptor)
+		defer lease.Stop()
+	}
+	attribution := portalAttribution{drivers: portalTestDrivers{"source:owner": "evse.primary", "source:contributor": "evse.contributor", "source:contributor-b": "evse.contributor-b"}, accepted: contributions.snapshot().Accepted}
+	service := semanticRef(owner.Fields[0].ServiceRef)
+	capability := semanticRef(owner.Fields[0].CapabilityRef)
+	twoSources := []string{"owner", "contributor"}
+
+	catalog := func(t *testing.T, resources []catalogv1.Resource) catalogv1.Catalog {
+		t.Helper()
+		composer := catalogv1.New(contributions.index, portalStaticCapture(resources), portalTestInvoker{})
+		registry := contributions.snapshot()
+		if err := composer.InstallDetachedRegistrySnapshot(registry.Accepted, registry.Quarantined); err != nil {
+			t.Fatal(err)
+		}
+		composer.SetRevalidator(portalTestRevalidator{})
+		out, err := composer.Catalog()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	kept := func(t *testing.T, snapshot semreg.Snapshot, attribution portalAttribution, tag, driver string, manifest contributionv1.Manifest) {
+		t.Helper()
+		resources, _, diagnostics := portalSnapshotCapture(attribution, owner, snapshot, semreg.EvaluationView{}, []semreg.Selection{}, map[string]any{})
+		if len(diagnostics) != 0 || len(resources) != 1 {
+			t.Fatalf("resources=%d diagnostics=%+v", len(resources), diagnostics)
+		}
+		got := resources[0]
+		generation := map[string]uint64{"owner": 3, "contributor": 5}[tag]
+		if got.ID != "connector" || got.Source.AssetID != "asset:shared" || got.Source.BindingID != "binding:"+tag || got.Source.SourceEpoch != "epoch:"+tag || got.Source.DriverGeneration != generation {
+			t.Fatalf("resource source=%+v; want the %s binding", got.Source, tag)
+		}
+		if got.ContributionDriverID != driver || got.ContributionManifestID != manifest.ManifestID || got.ContributionManifestVersion != manifest.ManifestVersion {
+			t.Fatalf("resource attributed to %s %s %s; want %s %s %s", got.ContributionDriverID, got.ContributionManifestID, got.ContributionManifestVersion, driver, manifest.ManifestID, manifest.ManifestVersion)
+		}
+		out := catalog(t, resources)
+		if len(out.Resources) != 1 || len(out.Actions) != 1 {
+			t.Fatalf("catalog resources=%+v actions=%+v", out.Resources, out.Actions)
+		}
+		action := out.Actions[0]
+		if action.ContributionDriverID != driver || action.ContributionManifestID != manifest.ManifestID || action.ContributionManifestVersion != manifest.ManifestVersion || action.Source.BindingID != "binding:"+tag || action.Source.SourceEpoch != "epoch:"+tag || action.Source.DriverGeneration != generation || !action.Enabled {
+			t.Fatalf("action=%+v; want it attributed to %s on the %s binding", action, driver, tag)
+		}
+	}
+	dropped := func(t *testing.T, snapshot semreg.Snapshot, attribution portalAttribution, reason string) {
+		t.Helper()
+		resources, _, diagnostics := portalSnapshotCapture(attribution, owner, snapshot, semreg.EvaluationView{}, []semreg.Selection{}, map[string]any{})
+		if len(resources) != 0 {
+			t.Fatalf("resource kept on binding %s attributed to %s", resources[0].Source.BindingID, resources[0].ContributionDriverID)
+		}
+		want := []gatewayPortalCatalogDiagnostic{{Domain: "helianthus.pack.evse", AssetID: "asset:shared", ResourceID: "connector", DriverID: "evse.primary", ManifestID: "portal.evse.allocation", Reason: reason}}
+		if fmt.Sprint(diagnostics) != fmt.Sprint(want) {
+			t.Fatalf("diagnostics=%+v; want %+v", diagnostics, want)
+		}
+	}
+
+	t.Run("owner and contributor carry the capability: the owner's instance", func(t *testing.T) {
+		kept(t, portalContributorSnapshot(service, capability, twoSources, "owner", "contributor"), attribution, "owner", "evse.primary", owner)
+	})
+	t.Run("only the contributor's binding carries the capability", func(t *testing.T) {
+		kept(t, portalContributorSnapshot(service, capability, twoSources, "contributor"), attribution, "contributor", "evse.contributor", contributor)
+	})
+	t.Run("a contributor without an admitted descriptor", func(t *testing.T) {
+		withoutContributor := attribution
+		withoutContributor.accepted = nil
+		for _, accepted := range attribution.accepted {
+			if accepted.Key.DriverID != "evse.contributor" {
+				withoutContributor.accepted = append(withoutContributor.accepted, accepted)
+			}
+		}
+		dropped(t, portalContributorSnapshot(service, capability, twoSources, "contributor"), withoutContributor, portalDropContributorUnadmitted)
+	})
+	t.Run("several sources and no driver resolution", func(t *testing.T) {
+		dropped(t, portalContributorSnapshot(service, capability, twoSources, "owner", "contributor"), portalAttribution{}, portalDropDriverUnresolved)
+	})
+	t.Run("a source the hub does not know", func(t *testing.T) {
+		unknown := attribution
+		unknown.drivers = portalTestDrivers{"source:owner": "evse.primary"}
+		dropped(t, portalContributorSnapshot(service, capability, twoSources, "contributor"), unknown, portalDropDriverUnresolved)
+	})
+	t.Run("two contributors and no owner carry the capability", func(t *testing.T) {
+		dropped(t, portalContributorSnapshot(service, capability, []string{"owner", "contributor", "contributor-b"}, "contributor", "contributor-b"), attribution, portalDropCapabilityAmbiguous)
+	})
+	t.Run("no source carries the capability", func(t *testing.T) {
+		dropped(t, portalContributorSnapshot(service, capability, twoSources), attribution, portalDropCapabilityUnbound)
+	})
+	t.Run("a service instance whose binding is unknown", func(t *testing.T) {
+		snapshot := portalContributorSnapshot(service, capability, twoSources, "owner")
+		snapshot.Services = append(snapshot.Services, semreg.ServiceInstance{InstanceID: "service:orphan", AssetID: "asset:shared", Definition: service, BindingID: "binding:orphan", SourceEpochID: "epoch:orphan", DriverGeneration: "1"})
+		dropped(t, snapshot, attribution, portalDropBindingUnresolved)
+	})
+	t.Run("one source keeps the manifest's driver without resolution", func(t *testing.T) {
+		kept(t, portalContributorSnapshot(service, capability, []string{"owner"}, "owner"), portalAttribution{}, "owner", "evse.primary", owner)
+	})
 }

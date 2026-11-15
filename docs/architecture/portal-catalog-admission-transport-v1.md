@@ -24,6 +24,27 @@ registry snapshot, so a driver addition, replacement, or withdrawal cannot
 produce a partial contribution set. A new valid driver uses this registry
 publication boundary and does not require a Portal handler or bootstrap switch
 edit.
+
+An asset may hold several sources: the owner, whose driver published the
+descriptor, and declared contributors. The catalog groups the service instances
+of the descriptor's service by the source of their binding and applies the
+single-source rules to each source: one service instance, one capability
+instance on it, and a current binding and source epoch that agree with both. It
+keeps the owner's path when the owner carries the capability, otherwise the path
+of the one contributor whose binding carries it, and attributes the resource and
+its actions to the driver of that binding. A contributor's path is kept only
+under that driver's own admitted descriptor for the same pack, resource context,
+service and capability, so the action, its claim and its binding, source epoch
+and generation all name the contributor. The driver of a source is resolved
+through the publication hub's source records when the composition supplies
+them; without that resolution only an asset with one current source is
+attributed, to the descriptor's driver, which keeps single-source output
+unchanged. A resource that is not kept is never dropped silently: the catalog
+source reports its domain, asset, resource context, descriptor and one reason
+(`descriptor_unusable`, `binding_unresolved`, `capability_unbound`,
+`capability_ambiguous`, `contributor_driver_unresolved`,
+`contributor_unadmitted` or `source_record_incomplete`) as a capture
+diagnostic. The catalog wire contract is unchanged.
 The action-stability catalog revision binds accepted contributions and
 quarantines, all resource and field bytes, action eligibility, source
 snapshot/revision/binding/epoch/generation vectors, lifecycle fence, pack refs,

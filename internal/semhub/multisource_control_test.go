@@ -15,13 +15,17 @@ import (
 // The two-contributor fixture: owner A and declared contributor B publish on
 // one shared asset. Each declared reprojection callback (A's as the owner's,
 // B's as the contributor's) records every control event it receives and can
-// be told to block or fail on the events of one controlling source.
+// be told to block or fail on the events of one controlling source. A peer
+// reprojection (an event without a control identifier, delivered after the
+// other source's publication) is recorded apart and always succeeds.
 type multiSourceFixture struct {
 	hub  *Hub
 	a, b *Handle
 
 	mu       sync.Mutex
 	seen     map[string][]ControlEvent
+	peerSeen map[string][]ControlEvent
+	arrivals map[string][]uint64
 	fail     map[semreg.SourceID]error
 	entered  map[semreg.SourceID]chan struct{}
 	released map[semreg.SourceID]chan struct{}
@@ -37,7 +41,7 @@ const (
 
 func newMultiSourceFixture(t *testing.T) *multiSourceFixture {
 	t.Helper()
-	f := &multiSourceFixture{hub: newTestHub(t), seen: map[string][]ControlEvent{}, fail: map[semreg.SourceID]error{}, entered: map[semreg.SourceID]chan struct{}{}, released: map[semreg.SourceID]chan struct{}{}}
+	f := &multiSourceFixture{hub: newTestHub(t), seen: map[string][]ControlEvent{}, peerSeen: map[string][]ControlEvent{}, arrivals: map[string][]uint64{}, fail: map[semreg.SourceID]error{}, entered: map[semreg.SourceID]chan struct{}{}, released: map[semreg.SourceID]chan struct{}{}}
 	peer := peerSpec()
 	peer.OnControl = f.callback(peerRecipient)
 	spec := sharedSpec(peer)
@@ -55,6 +59,12 @@ func newMultiSourceFixture(t *testing.T) *multiSourceFixture {
 func (f *multiSourceFixture) callback(recipient string) func(ControlEvent) error {
 	return func(event ControlEvent) error {
 		f.mu.Lock()
+		f.arrivals[recipient] = append(f.arrivals[recipient], event.HubSeq)
+		if event.Control == (ControlID{}) {
+			f.peerSeen[recipient] = append(f.peerSeen[recipient], event)
+			f.mu.Unlock()
+			return nil
+		}
 		f.seen[recipient] = append(f.seen[recipient], event)
 		err := f.fail[event.Control.Source]
 		entered, released := f.entered[event.Control.Source], f.released[event.Control.Source]
@@ -245,6 +255,7 @@ func TestMultiSourceControlAbandonedControlDoesNotStarvePeer(t *testing.T) {
 		t.Fatal("reads admitted while the peer's gate is open")
 	}
 	f.setFail(sharedPeer, nil)
+	waitFor(t, func() bool { return hubSchedulerIdle(f.hub) })
 	if err := f.hub.Resettle(sharedAsset); err != nil {
 		t.Fatalf("resettle=%v", err)
 	}
@@ -345,6 +356,7 @@ func TestMultiSourceControlTransitionCoverFencesOnlyItsSource(t *testing.T) {
 func TestMultiSourceControlReadsWithheldWhileAnyGateOpen(t *testing.T) {
 	f := newMultiSourceFixture(t)
 	f.publishBoth(t, 1)
+	waitFor(t, func() bool { return f.hub.Admitted(sharedAsset) })
 	if !f.hub.Admitted(sharedAsset) {
 		t.Fatal("published shared asset not admitted")
 	}
@@ -445,6 +457,7 @@ func TestMultiSourceControlCaptureAdmitsThroughAnyContributor(t *testing.T) {
 	admitted := captureDecision{Source: true, Read: true, Public: true, Snapshot: true}
 	// Only the contributor has published: admitted through B.
 	mustPublish(t, f.hub, f.b, sharedAsset, "fam_b", 2, 1)
+	waitFor(t, func() bool { return f.hub.Settled(sharedAsset) })
 	if _, got := bothCaptures(t, f.hub, sharedAsset); got != admitted {
 		t.Fatalf("contributor only=%+v", got)
 	}
@@ -492,6 +505,7 @@ func TestMultiSourceControlCaptureAdmitsThroughAnyContributor(t *testing.T) {
 		t.Fatalf("owner successor unpublished=%+v", got)
 	}
 	mustPublish(t, f.hub, nextA, sharedAsset, "fam_a", 3, 5)
+	waitFor(t, func() bool { return f.hub.Settled(sharedAsset) })
 	if _, got := bothCaptures(t, f.hub, sharedAsset); got != admitted {
 		t.Fatalf("owner successor published=%+v", got)
 	}
@@ -706,6 +720,19 @@ func TestMultiSourceControlConcurrentContributorCycles(t *testing.T) {
 				t.Fatalf("%s events out of HubSeq order", recipient)
 			}
 		}
+		// Control and peer reprojections interleave on the one scheduler;
+		// together they never move a receiver back to an older view.
+		f.mu.Lock()
+		arrivals, peers := append([]uint64(nil), f.arrivals[recipient]...), len(f.peerSeen[recipient])
+		f.mu.Unlock()
+		if peers == 0 {
+			t.Fatalf("%s received no peer reprojection", recipient)
+		}
+		for index := 1; index < len(arrivals); index++ {
+			if arrivals[index] < arrivals[index-1] {
+				t.Fatalf("%s moved back from HubSeq %d to %d", recipient, arrivals[index-1], arrivals[index])
+			}
+		}
 	}
 }
 
@@ -766,6 +793,7 @@ func TestMultiSourceControlRetryCoalescesOntoPeerPublication(t *testing.T) {
 	if committed.HubSeq <= fenced.Assets[0].HubSeq {
 		t.Fatalf("publication HubSeq %d is not after the control HubSeq %d", committed.HubSeq, fenced.Assets[0].HubSeq)
 	}
+	waitFor(t, func() bool { return hubSchedulerIdle(f.hub) })
 	before := map[string]int{ownerRecipient: len(f.events(ownerRecipient)), peerRecipient: len(f.events(peerRecipient))}
 	if err := f.hub.Resettle(sharedAsset); err != nil {
 		t.Fatalf("resettle=%v", err)
@@ -902,6 +930,7 @@ func TestMultiSourceControlPeerOutpacingReprojectionStaysUnsettled(t *testing.T)
 	if f.hub.Settled(sharedAsset) || f.hub.Admitted(sharedAsset) {
 		t.Fatal("an outpaced reprojection settled")
 	}
+	waitFor(t, func() bool { return hubSchedulerIdle(f.hub) })
 	if err := f.hub.Resettle(sharedAsset); err != nil {
 		t.Fatalf("resettle=%v", err)
 	}

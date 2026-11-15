@@ -200,6 +200,26 @@ func projectionExact(a semanticview.Asset, kind projection.ItemKind, id semreg.D
 	return false
 }
 
+// presentedCandidate returns the only presentation selection of key. No
+// selection, or several under different policies, presents nothing.
+func presentedCandidate(selections []semreg.Selection, key semreg.FactKey) (semreg.Selection, bool) {
+	want, err := semreg.CanonicalJSON(key)
+	if err != nil {
+		return semreg.Selection{}, false
+	}
+	var found []semreg.Selection
+	for _, selection := range selections {
+		got, err := semreg.CanonicalJSON(selection.Key)
+		if err == nil && string(got) == string(want) {
+			found = append(found, selection)
+		}
+	}
+	if len(found) != 1 {
+		return semreg.Selection{}, false
+	}
+	return found[0], true
+}
+
 func sample(a semanticview.Asset, b Binding, m metric, metadata *semreg.PackMetadataRegistry) (float64, bool) {
 	if a.UnavailableReason != "" || a.Snapshot == nil || a.Evaluation == nil || !projectionExact(a, projection.ItemFact, m.field) {
 		return 0, false
@@ -240,10 +260,30 @@ func sample(a semanticview.Asset, b Binding, m metric, metadata *semreg.PackMeta
 		if !reflect.DeepEqual(fact.Key, key) {
 			continue
 		}
-		if len(fact.Conflicts) != 0 || len(fact.Candidates) != 1 {
+		if len(fact.Conflicts) != 0 || len(fact.Candidates) == 0 {
 			return 0, false
 		}
 		c := fact.Candidates[0]
+		if len(fact.Candidates) > 1 {
+			// Candidates of several sources: the slot renders only the candidate
+			// named by the view's one presentation selection for this key. The
+			// gateway's presentation policy made that choice and the view
+			// validated it against this snapshot and evaluation; the checks below
+			// still require it to be the slot's own binding.
+			selected, ok := presentedCandidate(a.Selections, key)
+			if !ok {
+				return 0, false
+			}
+			found := false
+			for _, candidate := range fact.Candidates {
+				if candidate.CandidateID == selected.SelectedCandidate && candidate.Revision == selected.CandidateRevision {
+					c, found = candidate, true
+				}
+			}
+			if !found {
+				return 0, false
+			}
+		}
 		if c.BindingID == nil || *c.BindingID != b.BindingID || c.SourceEpochID == nil || *c.SourceEpochID != b.SourceEpochID || c.DriverGeneration == nil || *c.DriverGeneration != b.DriverGeneration || c.Value == nil || c.Quality.Qualification != semreg.QualificationQualified || c.Quality.Promotion != semreg.PromotionPromoted || c.Quality.Validity != semreg.ValidityGood {
 			return 0, false
 		}

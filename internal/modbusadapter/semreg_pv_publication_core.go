@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semselect"
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 	pvpack "github.com/Project-Helianthus/helianthus-semreg/semreg/v1/packs/pv"
@@ -509,6 +510,9 @@ type pvPublicationAsset struct {
 }
 
 type pvPublicationView struct {
+	// owner is the source the asset is declared with; it ranks first when a
+	// key carries candidates of several sources.
+	owner      semreg.SourceID
 	snapshot   semreg.Snapshot
 	canonical  []byte
 	wallFloor  semreg.TimePoint
@@ -921,7 +925,8 @@ func (c *pvPublicationCore) ingestWithOrderAndValidation(draft pvPublicationDraf
 	if err != nil {
 		return pvPublicationReceipt{}, err
 	}
-	selections, err := pvPresentationSelections(c.selection, snapshot, evaluation)
+	owner := asset.declaration.Source()
+	selections, err := pvPresentationSelections(c.selection, owner, snapshot, evaluation)
 	if err != nil {
 		return pvPublicationReceipt{}, err
 	}
@@ -941,7 +946,7 @@ func (c *pvPublicationCore) ingestWithOrderAndValidation(draft pvPublicationDraf
 	// A detached public view carries the wall coordinate at which its immutable
 	// snapshot was committed. Read-time wall clocks may roll back, but cannot be
 	// allowed to precede this snapshot's receipt/evaluation coordinate.
-	view := &pvPublicationView{snapshot: snapshot, canonical: canonical, wallFloor: floor, evaluation: evaluation, selections: selections, projection: report}
+	view := &pvPublicationView{owner: owner, snapshot: snapshot, canonical: canonical, wallFloor: floor, evaluation: evaluation, selections: selections, projection: report}
 	if !c.scope.valid() {
 		return pvPublicationReceipt{}, errors.New("PV managed generation withdrawn")
 	}
@@ -1026,9 +1031,23 @@ func pvHasSelectableCandidate(envelope semreg.FactEnvelope, evaluation semreg.Ev
 	return false, nil
 }
 
-func pvPresentationSelections(selection *semreg.SelectionKernel, snapshot semreg.Snapshot, evaluation semreg.EvaluationView) ([]semreg.Selection, error) {
+// pvPresentationSelections presents one candidate per key. A key with one
+// candidate keeps the PV policy; a key with candidates of several sources is
+// presented under the gateway's owner-first policy, and a key it selects no
+// candidate for has no selection instead of failing the read.
+func pvPresentationSelections(selection *semreg.SelectionKernel, owner semreg.SourceID, snapshot semreg.Snapshot, evaluation semreg.EvaluationView) ([]semreg.Selection, error) {
 	selections := make([]semreg.Selection, 0, len(snapshot.Facts))
 	for _, envelope := range snapshot.Facts {
+		if len(envelope.Candidates) > 1 {
+			selected, ok, err := semselect.Present(snapshot, evaluation, envelope, owner)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				selections = append(selections, selected)
+			}
+			continue
+		}
 		selectable, err := pvHasSelectableCandidate(envelope, evaluation)
 		if err != nil {
 			return nil, err
@@ -1087,7 +1106,7 @@ func (c *pvPublicationCore) evaluatePublicView(view pvPublicationView, context s
 	if err != nil {
 		return pvPublicationView{}, err
 	}
-	selections, err := pvPresentationSelections(c.selection, view.snapshot, evaluation)
+	selections, err := pvPresentationSelections(c.selection, view.owner, view.snapshot, evaluation)
 	if err != nil {
 		return pvPublicationView{}, err
 	}

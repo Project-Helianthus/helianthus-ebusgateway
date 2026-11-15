@@ -1,0 +1,3 @@
+## Route received symbols through the transition function and split the symbol handler
+
+The AdapterMux handles each received symbol in named steps that take their decisions from the transition function: an entry step that takes the bus owner from the typed state, tracks the wire phase and releases an owner past its ownership limit when the transition function says that event can occur; the wire-SYN path; the data-symbol decision over the owner, the pending echo and a foreign initiator first byte; the application of their effects; and the terminal release. Wire behaviour, timing and effect order are unchanged; the gateway binary changes.

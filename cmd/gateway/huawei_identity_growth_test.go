@@ -212,7 +212,8 @@ func growthRebase(child modbusreg.HuaweiProviderChildObservation, generation uin
 type growthMeasure struct {
 	victim, sibling []growthCounts
 	refused         int
-	// cycles is the number of cycles one event publishes, at least two.
+	// cycles is the number of cycles one event spans: at least two for events
+	// paced by the listing, the actual publication count for a restart.
 	cycles int
 }
 
@@ -237,7 +238,7 @@ func (r *growthRig) measure(events int, event func(*growthRig) error) growthMeas
 			r.t.Fatalf("event %d: %v", i, err)
 		}
 		if i == 1 {
-			m.cycles = int(r.cycle.Cycle - before)
+			m.cycles = max(int(r.cycle.Cycle-before), 2)
 		}
 		v, s = r.sample()
 		m.victim, m.sibling = append(m.victim, v), append(m.sibling, s)
@@ -307,7 +308,7 @@ type growthRow struct {
 }
 
 func growthRowOf(scenario, fixture string, class growthClass, m growthMeasure) growthRow {
-	row := growthRow{scenario: scenario, fixture: fixture, class: class, victim: m.victim[1].minus(m.victim[0]), sibling: m.sibling[1].minus(m.sibling[0]), cycles: max(m.cycles, 2)}
+	row := growthRow{scenario: scenario, fixture: fixture, class: class, victim: m.victim[1].minus(m.victim[0]), sibling: m.sibling[1].minus(m.sibling[0]), cycles: m.cycles}
 	row.events, row.member = growthFirstBound(m.victim[0], row.victim, true)
 	row.ruleEvents, _ = growthFirstBound(m.victim[0], row.victim, false)
 	return row
@@ -464,6 +465,7 @@ func growthRestarts(t *testing.T, cycle modbusreg.HuaweiProviderCycle, restarts 
 		m.victim = append(m.victim, growthSample(t, hub, assets[0], epoch))
 		m.sibling = append(m.sibling, growthSample(t, hub, assets[1], epoch))
 	}
+	m.cycles = 1
 	return m
 }
 

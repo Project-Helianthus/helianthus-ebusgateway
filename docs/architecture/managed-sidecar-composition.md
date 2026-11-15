@@ -659,7 +659,7 @@ per hour.
 | The same four reasons reported withheld | +1 binding, +1 identity link | none | 127 | 4 h 14 min | 127 h |
 | Absent from one complete listing | +1 binding, +1 identity link | none | 127 | 4 h 14 min | 127 h |
 | Absent from an incomplete listing | none | none | never | never | never |
-| Operator restart (STOP and START) | +1 source descriptor, +1 cursor, +1 binding, +1 identity link; the previous epoch's binding and link stay in the snapshot | the same | 31 (source descriptors) | 1 h 2 min | 31 h |
+| Operator restart (STOP and START) | +1 source descriptor, +1 cursor, +1 binding, +1 identity link; the previous epoch's binding and link stay in the snapshot | the same | 31 (source descriptors) | 31 min | 31 h |
 
 No cause adds a generation fence, and only a restart adds a publication cursor.
 Every bound is reached as stated and then refused explicitly: the 128th

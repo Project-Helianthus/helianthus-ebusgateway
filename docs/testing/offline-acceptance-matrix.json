@@ -53,6 +53,16 @@
       "release": "in_0_7"
     },
     {
+      "id": "growatt_bms_pcs_can",
+      "title": "Growatt battery management PCS link over CAN",
+      "release": "in_0_7"
+    },
+    {
+      "id": "growatt_bms_link_can",
+      "title": "Growatt battery management LINK link over CAN",
+      "release": "in_0_7"
+    },
+    {
       "id": "tesla_wall_connector",
       "title": "Tesla wall connector family",
       "release": "in_0_7"
@@ -690,6 +700,106 @@
           "issue": null
         }
       },
+      "growatt_bms_pcs_can": {
+        "native_mcp": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "semantic_mcp": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "graphql": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "portal": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "home_assistant": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "prometheus_semantic": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "prometheus_native": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "eebus_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "growatt_bms_link_can": {
+        "native_mcp": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "semantic_mcp": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "graphql": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "portal": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "home_assistant": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "prometheus_semantic": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "prometheus_native": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "eebus_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
       "tesla_wall_connector": {
         "native_mcp": {
           "state": "not_run",
@@ -1131,6 +1241,70 @@
         }
       },
       "growatt_bms_can": {
+        "resources": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "relations": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "plane_membership": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "lens_parity": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "target_reports": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "growatt_bms_pcs_can": {
+        "resources": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "relations": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "plane_membership": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "lens_parity": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "target_reports": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "growatt_bms_link_can": {
         "resources": {
           "state": "not_run",
           "test": null,
@@ -1711,6 +1885,106 @@
         }
       },
       "growatt_bms_can": {
+        "normal": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "degraded": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "reset": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "partial_failure": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "stale_generation": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "identity_conflict": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "unknown_capability": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "cleanup": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "growatt_bms_pcs_can": {
+        "normal": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "degraded": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "reset": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "partial_failure": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "stale_generation": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "identity_conflict": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "unknown_capability": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "cleanup": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "growatt_bms_link_can": {
         "normal": {
           "state": "not_run",
           "test": null,

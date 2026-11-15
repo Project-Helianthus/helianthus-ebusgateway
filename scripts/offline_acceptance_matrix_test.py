@@ -314,6 +314,14 @@ class OfflineAcceptanceMatrixTests(unittest.TestCase):
 
 
 class CommittedMatrixTests(unittest.TestCase):
+    def test_committed_matrix_has_a_row_per_composed_growatt_can_family(self):
+        document = MATRIX.load(COMMITTED_MATRIX)
+        families = {member["id"] for member in document["families"]}
+        for family in ("growatt_bms_can", "growatt_bms_pcs_can", "growatt_bms_link_can"):
+            self.assertIn(family, families)
+            for axis in ("family_surface", "family_graph", "family_condition"):
+                self.assertIn(family, document["cells"][axis])
+
     def test_committed_matrix_is_valid(self):
         document = MATRIX.load(COMMITTED_MATRIX)
         self.assertEqual(MATRIX.validate(document, REPO_ROOT), [])

@@ -64,11 +64,11 @@ acceptance is closed; it is not part of the local gate.
 
 | Axis | Cells | `not_run` | `pass` | `not_applicable` | `not_in_0_7` |
 |---|---|---|---|---|---|
-| `family_surface` | 104 | 102 | 0 | 0 | 2 |
-| `family_graph` | 65 | 60 | 0 | 0 | 5 |
-| `family_condition` | 104 | 104 | 0 | 0 | 0 |
+| `family_surface` | 120 | 118 | 0 | 0 | 2 |
+| `family_graph` | 75 | 70 | 0 | 0 | 5 |
+| `family_condition` | 120 | 120 | 0 | 0 | 0 |
 | `graph_negative` | 7 | 7 | 0 | 0 | 0 |
-| total | 280 | 273 | 0 | 0 | 7 |
+| total | 322 | 315 | 0 | 0 | 7 |
 
 ### Families
 
@@ -84,6 +84,8 @@ acceptance is closed; it is not part of the local gate.
 | `growatt_inverter_rtu` | Growatt inverter family over Modbus RTU | `in_0_7` |
 | `growatt_bms_rs485` | Growatt battery management over RS-485 | `in_0_7` |
 | `growatt_bms_can` | Growatt low-voltage battery management over CAN | `in_0_7` |
+| `growatt_bms_pcs_can` | Growatt battery management PCS link over CAN | `in_0_7` |
+| `growatt_bms_link_can` | Growatt battery management LINK link over CAN | `in_0_7` |
 | `tesla_wall_connector` | Tesla wall connector family | `in_0_7` |
 | `outback_power` | OutBack power system over Modbus TCP | `in_0_7` |
 | `gree_vrf_can` | Gree VRF over CAN, receive-only | `in_0_7` |
@@ -138,6 +140,8 @@ acceptance is closed; it is not part of the local gate.
 | `growatt_inverter_rtu` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
 | `growatt_bms_rs485` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
 | `growatt_bms_can` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
+| `growatt_bms_pcs_can` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
+| `growatt_bms_link_can` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
 | `tesla_wall_connector` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
 | `outback_power` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
 | `gree_vrf_can` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
@@ -156,6 +160,8 @@ acceptance is closed; it is not part of the local gate.
 | `growatt_inverter_rtu` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
 | `growatt_bms_rs485` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
 | `growatt_bms_can` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
+| `growatt_bms_pcs_can` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
+| `growatt_bms_link_can` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
 | `tesla_wall_connector` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
 | `outback_power` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
 | `gree_vrf_can` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
@@ -174,6 +180,8 @@ acceptance is closed; it is not part of the local gate.
 | `growatt_inverter_rtu` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
 | `growatt_bms_rs485` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
 | `growatt_bms_can` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
+| `growatt_bms_pcs_can` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
+| `growatt_bms_link_can` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
 | `tesla_wall_connector` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
 | `outback_power` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
 | `gree_vrf_can` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |

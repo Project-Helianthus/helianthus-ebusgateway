@@ -1,0 +1,2779 @@
+package adaptermux
+
+import (
+	"errors"
+	"fmt"
+	"sort"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux/v8classifier"
+	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
+)
+
+// The state model specifies the AdapterMux transition behaviour over explicit
+// states and events, in test code only:
+//
+//   - muxModelState is a typed state derived from the fields the transition
+//     handlers read and write: the arbitration phase, the recovery kind of the
+//     arbitration fence and three barriers (stale-response absorb pending,
+//     blocking START call active, resynchronization SYNs owed to the gateway
+//     active path), plus the provenance that changes how an event is handled
+//     (a deferred gateway loser, a gateway echo still awaited, an owner other
+//     than the session the close event removes) and the mux configuration;
+//   - muxModelEvent is the set of inputs the handlers react to;
+//   - muxModelRows is the transition table: for every named model state and
+//     every event either the next state and the ordered effect kinds, or an
+//     explicit row stating that the event cannot occur in that state. The
+//     table is closed: every next state is itself a named state with rows.
+//
+// The configuration that changes how an event is handled is part of the
+// state: whether the adapter offers only the blocking StartArbitration call,
+// and whether the classifier runs in enforce mode (the foreign recovery kinds
+// only arise there). No event changes it, so each configuration has its own
+// closed set of states, built from root fixtures in that configuration.
+//
+// The table pins today's behaviour, defects included. The conformance test
+// drives every valid row through the current handlers with the transition
+// harness (transition_harness_test.go) and compares the derived state and the
+// ordered effect kinds with the row.
+
+// muxModelPhase is the arbitration phase. When several phase conditions hold
+// at once the first in this order wins: owner, START in flight, fence, hold,
+// queued bids, idle. A hold under a higher phase is not representable and is
+// reported by muxModelDerive.
+type muxModelPhase uint8
+
+const (
+	// muxModelIdle: no owner, no START in flight, no fence, no hold, no bid.
+	muxModelIdle muxModelPhase = iota
+	// muxModelBidsQueued: at least one bid waits for an idle SYN.
+	muxModelBidsQueued
+	// muxModelStartAsync: a selected START waits for its adapter result
+	// through the stream (RequestStart).
+	muxModelStartAsync
+	// muxModelStartBlocking: a selected START uses the blocking
+	// StartArbitration call.
+	muxModelStartBlocking
+	// muxModelGatewayTransaction: the gateway owns the bus with an active
+	// transaction.
+	muxModelGatewayTransaction
+	// muxModelGatewayGrace: the gateway owns the bus, its transaction ended
+	// and the idle release grace still runs.
+	muxModelGatewayGrace
+	// muxModelSessionOwned: an external session owns the bus.
+	muxModelSessionOwned
+	// muxModelFenced: no selection before the next SYN; the state carries
+	// the recovery kind.
+	muxModelFenced
+	// muxModelHeld: active arbitration is held for an out-of-step adapter;
+	// selection is skipped until a lifecycle boundary.
+	muxModelHeld
+)
+
+var muxModelPhaseNames = [...]string{
+	muxModelIdle:               "muxModelIdle",
+	muxModelBidsQueued:         "muxModelBidsQueued",
+	muxModelStartAsync:         "muxModelStartAsync",
+	muxModelStartBlocking:      "muxModelStartBlocking",
+	muxModelGatewayTransaction: "muxModelGatewayTransaction",
+	muxModelGatewayGrace:       "muxModelGatewayGrace",
+	muxModelSessionOwned:       "muxModelSessionOwned",
+	muxModelFenced:             "muxModelFenced",
+	muxModelHeld:               "muxModelHeld",
+}
+
+func (p muxModelPhase) String() string {
+	if int(p) < len(muxModelPhaseNames) {
+		return muxModelPhaseNames[p]
+	}
+	return fmt.Sprintf("muxModelPhase(%d)", p)
+}
+
+func (p muxModelPhase) owned() bool {
+	return p == muxModelGatewayTransaction || p == muxModelGatewayGrace || p == muxModelSessionOwned
+}
+
+var muxModelRecoveryNames = map[arbitrationRecovery]string{
+	arbitrationRecoveryNone:           "arbitrationRecoveryNone",
+	arbitrationRecoveryAtSYN:          "arbitrationRecoveryAtSYN",
+	arbitrationRecoveryReset:          "arbitrationRecoveryReset",
+	arbitrationRecoveryForeign:        "arbitrationRecoveryForeign",
+	arbitrationRecoveryForeignAfterAA: "arbitrationRecoveryForeignAfterAA",
+}
+
+// muxModelState is the typed mux state of the model.
+type muxModelState struct {
+	phase muxModelPhase
+	// recovery is the arbitration recovery kind: the kind of the fence in
+	// muxModelFenced, and the pending lifecycle recovery after a reset.
+	recovery arbitrationRecovery
+	// absorb: the number of stale arbitration results still to be absorbed;
+	// each STARTED or FAILED absorbs one, so the count decides whether the
+	// barrier outlives the next result.
+	absorb int
+	// blocking: a blocking StartArbitration call is outstanding.
+	blocking bool
+	// resyncOwed: wire SYNs still owed to the gateway active path.
+	resyncOwed uint8
+	// gateway: the selected party of a START in flight is the gateway rather
+	// than an external session.
+	gateway bool
+	// deferred: the loss of the gateway to the selected START is deferred
+	// until the blocking call returns.
+	deferred bool
+	// echoPending: the gateway wrote a byte of its transaction whose echo has
+	// not arrived; only meaningful in muxModelGatewayTransaction.
+	echoPending bool
+	// otherOwner: the external session that owns the bus is not session 1;
+	// only meaningful in muxModelSessionOwned.
+	otherOwner bool
+	// blockingUpstream: the adapter offers only the blocking
+	// StartArbitration call, so a selection starts a blocking START.
+	blockingUpstream bool
+	// enforce: the classifier runs in enforce mode, so a result naming a
+	// real foreign winner fences for that winner's telegram.
+	enforce bool
+}
+
+// muxModelConfig is the configuration part of the model state: it is fixed
+// when the mux is built and no event changes it.
+type muxModelConfig struct {
+	blockingUpstream bool
+	enforce          bool
+}
+
+func (s muxModelState) config() muxModelConfig {
+	return muxModelConfig{blockingUpstream: s.blockingUpstream, enforce: s.enforce}
+}
+
+// literal prints the state as the Go literal used in muxModelRows.
+func (s muxModelState) literal() string {
+	parts := []string{"phase: " + s.phase.String()}
+	if s.recovery != arbitrationRecoveryNone {
+		name, ok := muxModelRecoveryNames[s.recovery]
+		if !ok {
+			name = fmt.Sprintf("arbitrationRecovery(%d)", s.recovery)
+		}
+		parts = append(parts, "recovery: "+name)
+	}
+	if s.absorb != 0 {
+		parts = append(parts, fmt.Sprintf("absorb: %d", s.absorb))
+	}
+	if s.blocking {
+		parts = append(parts, "blocking: true")
+	}
+	if s.resyncOwed != 0 {
+		parts = append(parts, fmt.Sprintf("resyncOwed: %d", s.resyncOwed))
+	}
+	if s.gateway {
+		parts = append(parts, "gateway: true")
+	}
+	if s.deferred {
+		parts = append(parts, "deferred: true")
+	}
+	if s.echoPending {
+		parts = append(parts, "echoPending: true")
+	}
+	if s.otherOwner {
+		parts = append(parts, "otherOwner: true")
+	}
+	if s.blockingUpstream {
+		parts = append(parts, "blockingUpstream: true")
+	}
+	if s.enforce {
+		parts = append(parts, "enforce: true")
+	}
+	return "muxModelState{" + strings.Join(parts, ", ") + "}"
+}
+
+// muxModelDerive derives the model state from the harness state, the mux
+// configuration, the out-of-step hold and whether the gateway echo queue still
+// waits for an echo. It fails when the hold coexists with a phase that hides
+// it, since the model has no state for that combination.
+func muxModelDerive(s transitionState, cfg muxModelConfig, held, echoPending bool) (muxModelState, error) {
+	out := muxModelState{
+		recovery:         arbitrationRecoveryNone,
+		absorb:           s.absorb,
+		blocking:         s.blockingCall,
+		resyncOwed:       s.resyncOwed,
+		blockingUpstream: cfg.blockingUpstream,
+		enforce:          cfg.enforce,
+	}
+	if s.absorb < 0 {
+		return out, fmt.Errorf("negative absorb count %d", s.absorb)
+	}
+	if r, ok := muxModelRecoveryFromText(s.recovery); ok {
+		out.recovery = r
+	} else {
+		return out, fmt.Errorf("unknown recovery %q", s.recovery)
+	}
+	switch {
+	case s.owner == "gateway" && s.gatewayTxn:
+		out.phase = muxModelGatewayTransaction
+		out.echoPending = echoPending
+	case s.owner == "gateway":
+		out.phase = muxModelGatewayGrace
+	case s.owner != "":
+		out.phase = muxModelSessionOwned
+		out.otherOwner = s.owner != "session 1"
+	case s.start != "" && s.startBlocking:
+		out.phase = muxModelStartBlocking
+	case s.start != "":
+		out.phase = muxModelStartAsync
+	case s.regrantFence:
+		out.phase = muxModelFenced
+	case held:
+		out.phase = muxModelHeld
+	case muxModelHasQueuedBid(s.bids):
+		out.phase = muxModelBidsQueued
+	default:
+		out.phase = muxModelIdle
+	}
+	if (out.phase == muxModelStartAsync || out.phase == muxModelStartBlocking) && strings.HasPrefix(s.start, "gateway ") {
+		out.gateway = true
+	}
+	out.deferred = strings.Contains(s.bids, "deferred ")
+	if held && out.phase != muxModelHeld {
+		return out, fmt.Errorf("out-of-step hold under phase %s is not representable", out.phase)
+	}
+	return out, nil
+}
+
+func muxModelRecoveryFromText(text string) (arbitrationRecovery, bool) {
+	for _, r := range []arbitrationRecovery{
+		arbitrationRecoveryNone,
+		arbitrationRecoveryAtSYN,
+		arbitrationRecoveryReset,
+		arbitrationRecoveryForeign,
+		arbitrationRecoveryForeignAfterAA,
+	} {
+		if transitionRecoveryText(r) == text {
+			return r, true
+		}
+	}
+	return arbitrationRecoveryNone, false
+}
+
+// muxModelHasQueuedBid reports whether the harness bid list names a bid that
+// waits for selection; a deferred gateway loser waits for a START outcome and
+// is no bid.
+func muxModelHasQueuedBid(bids string) bool {
+	if bids == "" {
+		return false
+	}
+	for _, entry := range strings.Split(bids, ", ") {
+		if !strings.HasPrefix(entry, "deferred ") {
+			return true
+		}
+	}
+	return false
+}
+
+// muxModelEvent is one input of the transition handlers.
+type muxModelEvent uint8
+
+const (
+	// muxModelEventSYN: a wire SYN.
+	muxModelEventSYN muxModelEvent = iota
+	// muxModelEventSymbol: a received data symbol.
+	muxModelEventSymbol
+	// muxModelEventBid: session 2 bids 0x71.
+	muxModelEventBid
+	// muxModelEventStartedMatching: STARTED naming the selected source
+	// (0x31 when none is selected).
+	muxModelEventStartedMatching
+	// muxModelEventStartedOther: STARTED naming a foreign source.
+	muxModelEventStartedOther
+	// muxModelEventFailed: FAILED naming a foreign winner.
+	muxModelEventFailed
+	// muxModelEventStartDeadline: the START deadline of the selection fires.
+	muxModelEventStartDeadline
+	// muxModelEventAbsorbDebounce: the absorb debounce deadline elapses.
+	muxModelEventAbsorbDebounce
+	// muxModelEventIdleGrace: a wire SYN after the idle release grace (the
+	// gateway grace since the grant, the external grace since the last wire
+	// activity) elapsed.
+	muxModelEventIdleGrace
+	// muxModelEventOwnershipLimit: a data symbol after the ownership limit
+	// elapsed.
+	muxModelEventOwnershipLimit
+	// muxModelEventAbandonWatchdog: the abandon watchdog of the owning
+	// session's grant fires with no SEND seen.
+	muxModelEventAbandonWatchdog
+	// muxModelEventSessionClose: session 1 disconnects.
+	muxModelEventSessionClose
+	// muxModelEventReset: the adapter reports RESETTED.
+	muxModelEventReset
+	// muxModelEventStartCallReturns: the outstanding blocking
+	// StartArbitration call returns successfully.
+	muxModelEventStartCallReturns
+	// muxModelEventStartCallFails: the outstanding blocking StartArbitration
+	// call returns an error.
+	muxModelEventStartCallFails
+	// muxModelEventInitiatorSymbol: a received unescaped symbol that is the
+	// initiator address of a bus participant outside the mux (0x10).
+	muxModelEventInitiatorSymbol
+	muxModelEventCount
+)
+
+var muxModelEventNames = [...]string{
+	muxModelEventSYN:              "muxModelEventSYN",
+	muxModelEventSymbol:           "muxModelEventSymbol",
+	muxModelEventBid:              "muxModelEventBid",
+	muxModelEventStartedMatching:  "muxModelEventStartedMatching",
+	muxModelEventStartedOther:     "muxModelEventStartedOther",
+	muxModelEventFailed:           "muxModelEventFailed",
+	muxModelEventStartDeadline:    "muxModelEventStartDeadline",
+	muxModelEventAbsorbDebounce:   "muxModelEventAbsorbDebounce",
+	muxModelEventIdleGrace:        "muxModelEventIdleGrace",
+	muxModelEventOwnershipLimit:   "muxModelEventOwnershipLimit",
+	muxModelEventAbandonWatchdog:  "muxModelEventAbandonWatchdog",
+	muxModelEventSessionClose:     "muxModelEventSessionClose",
+	muxModelEventReset:            "muxModelEventReset",
+	muxModelEventStartCallReturns: "muxModelEventStartCallReturns",
+	muxModelEventStartCallFails:   "muxModelEventStartCallFails",
+	muxModelEventInitiatorSymbol:  "muxModelEventInitiatorSymbol",
+}
+
+func (e muxModelEvent) String() string {
+	if int(e) < len(muxModelEventNames) {
+		return muxModelEventNames[e]
+	}
+	return fmt.Sprintf("muxModelEvent(%d)", e)
+}
+
+// Reasons of the pairs that cannot occur.
+const (
+	muxModelNoStartDeadline = "no START is in flight, so no START deadline is armed"
+	muxModelNoAbsorb        = "no stale result is to be absorbed, so the debounce clears nothing"
+	muxModelNoOwnerTimer    = "nobody owns the bus, so no ownership timer runs"
+	muxModelNoSessionGrant  = "no external session owns the bus, so no abandon watchdog runs"
+	muxModelNoBlockingCall  = "no blocking START call is outstanding, so none can return"
+)
+
+// muxModelEventCannotOccur is the validity rule of the table: it returns the
+// reason why the event cannot occur in the state, or "" when it can.
+func muxModelEventCannotOccur(s muxModelState, e muxModelEvent) string {
+	switch e {
+	case muxModelEventStartDeadline:
+		if s.phase != muxModelStartAsync && s.phase != muxModelStartBlocking {
+			return muxModelNoStartDeadline
+		}
+	case muxModelEventAbsorbDebounce:
+		if s.absorb == 0 {
+			return muxModelNoAbsorb
+		}
+	case muxModelEventIdleGrace, muxModelEventOwnershipLimit:
+		if !s.phase.owned() {
+			return muxModelNoOwnerTimer
+		}
+	case muxModelEventAbandonWatchdog:
+		if s.phase != muxModelSessionOwned {
+			return muxModelNoSessionGrant
+		}
+	case muxModelEventStartCallReturns, muxModelEventStartCallFails:
+		if !s.blocking {
+			return muxModelNoBlockingCall
+		}
+	}
+	return ""
+}
+
+// muxModelEffect is the kind of one handler effect.
+type muxModelEffect uint8
+
+const (
+	muxModelEffectPassiveSymbol muxModelEffect = iota
+	muxModelEffectPassiveReset
+	muxModelEffectPassiveLifecycle
+	muxModelEffectAdapterStart
+	muxModelEffectAdapterStartBlocking
+	muxModelEffectAdapterWrite
+	muxModelEffectWatchdogArmed
+	muxModelEffectActiveByte
+	muxModelEffectActiveError
+	muxModelEffectSessionReceived
+	muxModelEffectSessionStarted
+	muxModelEffectSessionFailed
+	muxModelEffectSessionReset
+	muxModelEffectSessionError
+	muxModelEffectSessionInfo
+	muxModelEffectResultGranted
+	muxModelEffectResultLost
+	muxModelEffectResultCancelled
+	muxModelEffectResultError
+)
+
+var muxModelEffectNames = [...]string{
+	muxModelEffectPassiveSymbol:        "muxModelEffectPassiveSymbol",
+	muxModelEffectPassiveReset:         "muxModelEffectPassiveReset",
+	muxModelEffectPassiveLifecycle:     "muxModelEffectPassiveLifecycle",
+	muxModelEffectAdapterStart:         "muxModelEffectAdapterStart",
+	muxModelEffectAdapterStartBlocking: "muxModelEffectAdapterStartBlocking",
+	muxModelEffectAdapterWrite:         "muxModelEffectAdapterWrite",
+	muxModelEffectWatchdogArmed:        "muxModelEffectWatchdogArmed",
+	muxModelEffectActiveByte:           "muxModelEffectActiveByte",
+	muxModelEffectActiveError:          "muxModelEffectActiveError",
+	muxModelEffectSessionReceived:      "muxModelEffectSessionReceived",
+	muxModelEffectSessionStarted:       "muxModelEffectSessionStarted",
+	muxModelEffectSessionFailed:        "muxModelEffectSessionFailed",
+	muxModelEffectSessionReset:         "muxModelEffectSessionReset",
+	muxModelEffectSessionError:         "muxModelEffectSessionError",
+	muxModelEffectSessionInfo:          "muxModelEffectSessionInfo",
+	muxModelEffectResultGranted:        "muxModelEffectResultGranted",
+	muxModelEffectResultLost:           "muxModelEffectResultLost",
+	muxModelEffectResultCancelled:      "muxModelEffectResultCancelled",
+	muxModelEffectResultError:          "muxModelEffectResultError",
+}
+
+func (e muxModelEffect) String() string {
+	if int(e) < len(muxModelEffectNames) {
+		return muxModelEffectNames[e]
+	}
+	return fmt.Sprintf("muxModelEffect(%d)", e)
+}
+
+// muxModelEffectKind classifies one entry of the harness effect log.
+func muxModelEffectKind(entry string) (muxModelEffect, error) {
+	switch {
+	case strings.HasPrefix(entry, "passive: symbol "):
+		return muxModelEffectPassiveSymbol, nil
+	case entry == "passive: reset":
+		return muxModelEffectPassiveReset, nil
+	case strings.HasPrefix(entry, "passive: "):
+		return muxModelEffectPassiveLifecycle, nil
+	case strings.HasPrefix(entry, "adapter: RequestStart "):
+		return muxModelEffectAdapterStart, nil
+	case strings.HasPrefix(entry, "adapter: StartArbitration "):
+		return muxModelEffectAdapterStartBlocking, nil
+	case strings.HasPrefix(entry, "adapter: Write "):
+		return muxModelEffectAdapterWrite, nil
+	case strings.HasPrefix(entry, "abandon watchdog armed"):
+		return muxModelEffectWatchdogArmed, nil
+	case strings.HasPrefix(entry, "active: error "):
+		return muxModelEffectActiveError, nil
+	case strings.HasPrefix(entry, "active: "):
+		return muxModelEffectActiveByte, nil
+	case strings.HasPrefix(entry, "session "):
+		_, frame, ok := strings.Cut(entry, ": ")
+		if !ok {
+			break
+		}
+		switch {
+		case strings.HasPrefix(frame, "RECEIVED "):
+			return muxModelEffectSessionReceived, nil
+		case strings.HasPrefix(frame, "STARTED "):
+			return muxModelEffectSessionStarted, nil
+		case strings.HasPrefix(frame, "FAILED "):
+			return muxModelEffectSessionFailed, nil
+		case strings.HasPrefix(frame, "RESETTED "):
+			return muxModelEffectSessionReset, nil
+		case strings.HasPrefix(frame, "ERROR_"):
+			return muxModelEffectSessionError, nil
+		case strings.HasPrefix(frame, "INFO "):
+			return muxModelEffectSessionInfo, nil
+		}
+	case strings.HasPrefix(entry, "result "):
+		_, result, ok := strings.Cut(entry, ": ")
+		if !ok {
+			break
+		}
+		switch {
+		case strings.HasPrefix(result, "granted"):
+			return muxModelEffectResultGranted, nil
+		case strings.HasPrefix(result, "cancelled"):
+			return muxModelEffectResultCancelled, nil
+		case strings.Contains(result, ", error "):
+			return muxModelEffectResultError, nil
+		default:
+			return muxModelEffectResultLost, nil
+		}
+	}
+	return 0, fmt.Errorf("unclassified effect %q", entry)
+}
+
+// muxModelEffectKinds classifies an effect log in order; consecutive effects
+// of the same kind count once.
+func muxModelEffectKinds(entries []string) ([]muxModelEffect, error) {
+	out := []muxModelEffect{}
+	for _, entry := range entries {
+		kind, err := muxModelEffectKind(entry)
+		if err != nil {
+			return nil, err
+		}
+		if len(out) > 0 && out[len(out)-1] == kind {
+			continue
+		}
+		out = append(out, kind)
+	}
+	return out, nil
+}
+
+func muxModelEffectsLiteral(effects []muxModelEffect) string {
+	names := make([]string, 0, len(effects))
+	for _, e := range effects {
+		names = append(names, e.String())
+	}
+	return strings.Join(names, ", ")
+}
+
+// muxModelNamedState is one state of the model and how the harness reaches it
+// through the real handlers: either a root fixture (build, on a harness
+// configured as the state's configuration says) or the named state from
+// followed by the event via, applied by its driver.
+type muxModelNamedState struct {
+	build func(h *transitionHarness)
+	from  string
+	via   muxModelEvent
+	state muxModelState
+}
+
+// muxModelReach names a state reached from the state from by the event via.
+func muxModelReach(from string, via muxModelEvent, state muxModelState) muxModelNamedState {
+	return muxModelNamedState{from: from, via: via, state: state}
+}
+
+// muxModelRoot returns the root fixture state a named state is reached from.
+func muxModelRoot(name string) (muxModelNamedState, error) {
+	seen := map[string]bool{}
+	for {
+		named, ok := muxModelStates[name]
+		if !ok {
+			return muxModelNamedState{}, fmt.Errorf("unknown model state %s", name)
+		}
+		if named.from == "" {
+			return named, nil
+		}
+		if seen[name] {
+			return muxModelNamedState{}, fmt.Errorf("model state %s reaches itself", name)
+		}
+		seen[name] = true
+		name = named.from
+	}
+}
+
+// muxModelHarness builds a harness and drives it into the named state.
+func muxModelHarness(t testing.TB, name string) *transitionHarness {
+	t.Helper()
+	root, err := muxModelRoot(name)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	mode := transitionUpstreamAsync
+	if root.state.blockingUpstream {
+		mode = transitionUpstreamBlocking
+	}
+	h := newTransitionHarness(t, mode)
+	if root.state.enforce {
+		// The read loop waits for the next item, so the classifier is in
+		// place before it handles anything.
+		h.m.v8 = v8classifier.New(v8classifier.ModeEnforce)
+	}
+	muxModelBuild(h, name)
+	return h
+}
+
+func muxModelBuild(h *transitionHarness, name string) {
+	h.t.Helper()
+	named := muxModelStates[name]
+	if named.from == "" {
+		named.build(h)
+		return
+	}
+	muxModelBuild(h, named.from)
+	muxModelDrivers[named.via](h)
+	muxModelTrackSelection(h)
+}
+
+// muxModelTrackSelection points the harness at the START in flight when an
+// event of a reached state selected a new one, so the drivers of the START
+// result, the deadline and the blocking call address it. On a blocking
+// upstream the new selection's StartArbitration call is accepted, as the root
+// fixtures accept theirs, so the call waits for its result.
+func muxModelTrackSelection(h *transitionHarness) {
+	h.t.Helper()
+	h.m.stateMu.Lock()
+	p := h.m.pendingStart
+	if p == nil {
+		h.m.stateMu.Unlock()
+		return
+	}
+	label := fmt.Sprintf("%s 0x%02X", transitionParty(p.sessionID), p.initiator)
+	if label == h.selected {
+		h.m.stateMu.Unlock()
+		return
+	}
+	h.selected, h.source, h.deadline = label, p.initiator, p.deadline
+	h.m.stateMu.Unlock()
+	if h.mode == transitionUpstreamBlocking {
+		h.awaitStartCall()
+	}
+}
+
+func muxModelFixture(name string) func(h *transitionHarness) {
+	return func(h *transitionHarness) {
+		fixture, ok := transitionFixtures[name]
+		if !ok {
+			h.t.Fatalf("unknown transition fixture %s", name)
+		}
+		fixture.build(h)
+	}
+}
+
+// muxModelBuildHeld holds active arbitration through the out-of-step detector
+// with the episode's link reset already spent, then queues the bid of session
+// 1 so a SYN shows the skipped selection.
+func muxModelBuildHeld(h *transitionHarness) {
+	h.t.Helper()
+	m := h.m
+	m.stateMu.Lock()
+	m.stepMemory.spendReset()
+	action := adapterStepNone
+	for i := 0; i < outOfStepBadCycles; i++ {
+		m.stepStartCycleLocked()
+		action = m.stepBadCycleLocked()
+	}
+	m.stateMu.Unlock()
+	if action != adapterStepHoldSet {
+		h.t.Fatalf("fixture: out-of-step detector action %d, want the hold", action)
+	}
+	h.bid(1, transitionSessionSource)
+}
+
+var muxModelStates = map[string]muxModelNamedState{
+	"idle": {build: muxModelFixture("idle"),
+		state: muxModelState{phase: muxModelIdle}},
+	"bids_queued": {build: muxModelFixture("bids_queued"),
+		state: muxModelState{phase: muxModelBidsQueued}},
+	"start_async": {build: muxModelFixture("start_async"),
+		state: muxModelState{phase: muxModelStartAsync}},
+	// start_async_resync_owed: the gateway lost locally to the selected
+	// session, so two resynchronization SYNs are owed to its active path.
+	"start_async_resync_owed": {build: muxModelFixture("start_async_local_losers"),
+		state: muxModelState{phase: muxModelStartAsync, resyncOwed: 2}},
+	// start_gateway: the gateway won the selection; the START waits for its
+	// adapter result through the stream.
+	"start_gateway": {build: muxModelFixture("start_async_gateway"),
+		state: muxModelState{phase: muxModelStartAsync, gateway: true}},
+	"start_blocking": {build: muxModelFixture("start_blocking"),
+		state: muxModelState{phase: muxModelStartBlocking, blocking: true, blockingUpstream: true}},
+	// gateway_awaiting_echo: the gateway wrote its first request byte and the
+	// echo has not arrived.
+	"gateway_awaiting_echo": {build: muxModelFixture("gateway_awaiting_echo"),
+		state: muxModelState{phase: muxModelGatewayTransaction, echoPending: true}},
+	"gateway_transaction": {build: muxModelFixture("gateway_transaction"),
+		state: muxModelState{phase: muxModelGatewayTransaction}},
+	// start_blocking_deferred_loser: session 1 was selected over session 2 and
+	// the gateway; the gateway's loss stays deferred until the blocking call
+	// returns.
+	"start_blocking_deferred_loser": {build: muxModelFixture("start_blocking_local_losers"),
+		state: muxModelState{phase: muxModelStartBlocking, blocking: true, deferred: true, blockingUpstream: true}},
+	"gateway_grace": {build: muxModelFixture("gateway_grace"),
+		state: muxModelState{phase: muxModelGatewayGrace}},
+	"session_owned": {build: muxModelFixture("session_owned"),
+		state: muxModelState{phase: muxModelSessionOwned}},
+	// session_owned_other: STARTED granted the bus to session 2, so session 1
+	// is not the owner.
+	"session_owned_other": {build: func(h *transitionHarness) {
+		h.bid(2, transitionOtherSource)
+		h.selected = "session 2 0x71"
+		h.source = transitionOtherSource
+		h.syn()
+		h.captureDeadline()
+		h.feedStarted(transitionOtherSource)
+	}, state: muxModelState{phase: muxModelSessionOwned, otherOwner: true}},
+	"fenced": {build: muxModelFixture("fenced"),
+		state: muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN}},
+	// fenced_foreign: with the classifier in enforce mode, FAILED naming a
+	// real foreign winner makes the fence wait for that winner's telegram.
+	"fenced_foreign": {build: muxModelFixture("fenced"),
+		state: muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeign, enforce: true}},
+	// fenced_foreign_absorb_pending: with the classifier in enforce mode,
+	// STARTED naming a real foreign winner fences for that winner's telegram
+	// and leaves the selected START's own result to absorb.
+	"fenced_foreign_absorb_pending": {build: func(h *transitionHarness) {
+		muxModelFixture("start_async")(h)
+		h.feedStarted(transitionForeignSource)
+	}, state: muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeign, absorb: 1, enforce: true}},
+	// fenced_absorb_pending: the selected session cancelled its START; the
+	// fence and the stale-result barrier both hold.
+	"fenced_absorb_pending": {build: muxModelFixture("absorb_pending"),
+		state: muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1}},
+	// absorb_pending: the SYN after the cancel cleared the fence; the
+	// stale-result barrier still holds.
+	"absorb_pending": {build: func(h *transitionHarness) {
+		muxModelFixture("absorb_pending")(h)
+		h.syn()
+	}, state: muxModelState{phase: muxModelIdle, absorb: 1}},
+	"held": {build: muxModelBuildHeld,
+		state: muxModelState{phase: muxModelHeld}},
+	// reset_recovery: the adapter reported RESETTED; the lifecycle recovery
+	// waits for the next stream item.
+	"reset_recovery": {build: func(h *transitionHarness) {
+		h.feedReset()
+	}, state: muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset}},
+	// The states below are the targets of the table's transitions, each reached
+	// from a state above by one event through its driver.
+	"bids_queued_absorb_pending":                                          muxModelReach("absorb_pending", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, absorb: 1}),
+	"bids_queued_absorb_pending_blocking_call":                            muxModelReach("idle_absorb_pending_blocking_call", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, absorb: 1, blocking: true, blockingUpstream: true}),
+	"bids_queued_absorb_pending_blocking_call_deferred_loser":             muxModelReach("idle_absorb_pending_blocking_call_deferred_loser", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, absorb: 1, blocking: true, deferred: true, blockingUpstream: true}),
+	"bids_queued_absorb_pending_enforce":                                  muxModelReach("idle_absorb_pending_enforce", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, absorb: 1, enforce: true}),
+	"bids_queued_absorb_pending_resync_owed_1":                            muxModelReach("idle_absorb_pending_resync_owed_1", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, absorb: 1, resyncOwed: 1}),
+	"bids_queued_blocking_call":                                           muxModelReach("idle_blocking_call", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, blocking: true, blockingUpstream: true}),
+	"bids_queued_blocking_call_deferred_loser":                            muxModelReach("idle_blocking_call_deferred_loser", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, blocking: true, deferred: true, blockingUpstream: true}),
+	"bids_queued_blocking_call_resync_owed_1_blocking_upstream":           muxModelReach("idle_blocking_call_resync_owed_1_blocking_upstream", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, blocking: true, resyncOwed: 1, blockingUpstream: true}),
+	"bids_queued_blocking_upstream":                                       muxModelReach("idle_blocking_upstream", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, blockingUpstream: true}),
+	"bids_queued_enforce":                                                 muxModelReach("idle_enforce", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, enforce: true}),
+	"bids_queued_reset":                                                   muxModelReach("reset_recovery", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, recovery: arbitrationRecoveryReset}),
+	"bids_queued_reset_blocking_upstream":                                 muxModelReach("idle_reset_blocking_upstream", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, recovery: arbitrationRecoveryReset, blockingUpstream: true}),
+	"bids_queued_reset_enforce":                                           muxModelReach("idle_reset_enforce", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, recovery: arbitrationRecoveryReset, enforce: true}),
+	"bids_queued_resync_owed_1":                                           muxModelReach("idle_resync_owed_1", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, resyncOwed: 1}),
+	"bids_queued_resync_owed_1_blocking_upstream":                         muxModelReach("idle_resync_owed_1_blocking_upstream", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, resyncOwed: 1, blockingUpstream: true}),
+	"bids_queued_resync_owed_2":                                           muxModelReach("idle_resync_owed_2", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, resyncOwed: 2}),
+	"bids_queued_resync_owed_2_blocking_upstream":                         muxModelReach("idle_resync_owed_2_blocking_upstream", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, resyncOwed: 2, blockingUpstream: true}),
+	"fenced_absorb_pending_blocking_call":                                 muxModelReach("start_blocking", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, blocking: true, blockingUpstream: true}),
+	"fenced_absorb_pending_blocking_call_deferred_loser":                  muxModelReach("start_blocking_deferred_loser", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, blocking: true, deferred: true, blockingUpstream: true}),
+	"fenced_absorb_pending_blocking_call_resync_owed_1_blocking_upstream": muxModelReach("start_blocking_resync_owed_1_blocking_upstream", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, blocking: true, resyncOwed: 1, blockingUpstream: true}),
+	"fenced_absorb_pending_enforce":                                       muxModelReach("start_async_enforce", muxModelEventStartDeadline, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, enforce: true}),
+	"fenced_absorb_pending_resync_owed_1":                                 muxModelReach("start_async_resync_owed_1", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, resyncOwed: 1}),
+	"fenced_absorb_pending_resync_owed_2":                                 muxModelReach("start_async_resync_owed", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, resyncOwed: 2}),
+	"fenced_blocking_call":                                                muxModelReach("start_blocking", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, blockingUpstream: true}),
+	"fenced_blocking_call_deferred_loser":                                 muxModelReach("start_blocking_deferred_loser", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, deferred: true, blockingUpstream: true}),
+	"fenced_blocking_call_resync_owed_1_blocking_upstream":                muxModelReach("start_blocking_resync_owed_1_blocking_upstream", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, resyncOwed: 1, blockingUpstream: true}),
+	"fenced_blocking_upstream":                                            muxModelReach("fenced_absorb_pending_blocking_call", muxModelEventStartCallReturns, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blockingUpstream: true}),
+	"fenced_enforce":                                                      muxModelReach("idle_enforce", muxModelEventStartedMatching, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, enforce: true}),
+	"fenced_foreign_after_syn":                                            muxModelReach("fenced_foreign", muxModelEventSYN, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeignAfterAA, enforce: true}),
+	"fenced_foreign_after_syn_absorb_pending":                             muxModelReach("fenced_foreign_absorb_pending", muxModelEventSYN, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeignAfterAA, absorb: 1, enforce: true}),
+	"fenced_no_recovery":                                                  muxModelReach("gateway_grace", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelFenced}),
+	"fenced_no_recovery_resync_owed_2":                                    muxModelReach("gateway_awaiting_echo", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelFenced, resyncOwed: 2}),
+	"fenced_resync_owed_1":                                                muxModelReach("start_async_resync_owed_1", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1}),
+	"fenced_resync_owed_1_blocking_upstream":                              muxModelReach("session_owned_resync_owed_1_blocking_upstream", muxModelEventAbandonWatchdog, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1, blockingUpstream: true}),
+	"fenced_resync_owed_2":                                                muxModelReach("start_async_resync_owed", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 2}),
+	"fenced_resync_owed_2_blocking_upstream":                              muxModelReach("fenced_absorb_pending_blocking_call_deferred_loser", muxModelEventStartCallReturns, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 2, blockingUpstream: true}),
+	"idle_absorb_pending_blocking_call":                                   muxModelReach("fenced_absorb_pending_blocking_call", muxModelEventSYN, muxModelState{phase: muxModelIdle, absorb: 1, blocking: true, blockingUpstream: true}),
+	"idle_absorb_pending_blocking_call_deferred_loser":                    muxModelReach("fenced_absorb_pending_blocking_call_deferred_loser", muxModelEventSYN, muxModelState{phase: muxModelIdle, absorb: 1, blocking: true, deferred: true, blockingUpstream: true}),
+	"idle_absorb_pending_enforce":                                         muxModelReach("fenced_foreign_after_syn_absorb_pending", muxModelEventSYN, muxModelState{phase: muxModelIdle, absorb: 1, enforce: true}),
+	"idle_absorb_pending_resync_owed_1":                                   muxModelReach("fenced_absorb_pending_resync_owed_2", muxModelEventSYN, muxModelState{phase: muxModelIdle, absorb: 1, resyncOwed: 1}),
+	"idle_blocking_call":                                                  muxModelReach("session_owned_blocking_call", muxModelEventIdleGrace, muxModelState{phase: muxModelIdle, blocking: true, blockingUpstream: true}),
+	"idle_blocking_call_deferred_loser":                                   muxModelReach("session_owned_blocking_call_deferred_loser", muxModelEventIdleGrace, muxModelState{phase: muxModelIdle, blocking: true, deferred: true, blockingUpstream: true}),
+	"idle_blocking_call_resync_owed_1_blocking_upstream":                  muxModelReach("session_owned_other_blocking_call_resync_owed_1_blocking_upstream", muxModelEventOwnershipLimit, muxModelState{phase: muxModelIdle, blocking: true, resyncOwed: 1, blockingUpstream: true}),
+	"idle_blocking_upstream":                                              muxModelReach("start_blocking", muxModelEventStartCallFails, muxModelState{phase: muxModelIdle, blockingUpstream: true}),
+	"idle_enforce":                                                        muxModelReach("fenced_foreign_after_syn", muxModelEventSYN, muxModelState{phase: muxModelIdle, enforce: true}),
+	"idle_reset_blocking_upstream":                                        muxModelReach("start_blocking", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}),
+	"idle_reset_enforce":                                                  muxModelReach("fenced_foreign", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, enforce: true}),
+	"idle_resync_owed_1":                                                  muxModelReach("fenced_no_recovery_resync_owed_2", muxModelEventSYN, muxModelState{phase: muxModelIdle, resyncOwed: 1}),
+	"idle_resync_owed_1_blocking_upstream":                                muxModelReach("session_owned_resync_owed_2_blocking_upstream", muxModelEventIdleGrace, muxModelState{phase: muxModelIdle, resyncOwed: 1, blockingUpstream: true}),
+	"idle_resync_owed_2":                                                  muxModelReach("session_owned_resync_owed_2", muxModelEventOwnershipLimit, muxModelState{phase: muxModelIdle, resyncOwed: 2}),
+	"idle_resync_owed_2_blocking_upstream":                                muxModelReach("session_owned_resync_owed_2_blocking_upstream", muxModelEventOwnershipLimit, muxModelState{phase: muxModelIdle, resyncOwed: 2, blockingUpstream: true}),
+	"session_owned_at_syn":                                                muxModelReach("session_owned_blocking_call", muxModelEventStartCallReturns, muxModelState{phase: muxModelSessionOwned, recovery: arbitrationRecoveryAtSYN, blockingUpstream: true}),
+	"session_owned_at_syn_other_blocking_upstream":                        muxModelReach("session_owned_other_blocking_call_blocking_upstream", muxModelEventStartCallReturns, muxModelState{phase: muxModelSessionOwned, recovery: arbitrationRecoveryAtSYN, otherOwner: true, blockingUpstream: true}),
+	"session_owned_at_syn_other_resync_owed_1_blocking_upstream":          muxModelReach("session_owned_other_blocking_call_resync_owed_1_blocking_upstream", muxModelEventStartCallReturns, muxModelState{phase: muxModelSessionOwned, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1, otherOwner: true, blockingUpstream: true}),
+	"session_owned_at_syn_resync_owed_2":                                  muxModelReach("session_owned_blocking_call_deferred_loser", muxModelEventStartCallReturns, muxModelState{phase: muxModelSessionOwned, recovery: arbitrationRecoveryAtSYN, resyncOwed: 2, blockingUpstream: true}),
+	"session_owned_blocking_call":                                         muxModelReach("start_blocking", muxModelEventStartedMatching, muxModelState{phase: muxModelSessionOwned, blocking: true, blockingUpstream: true}),
+	"session_owned_blocking_call_deferred_loser":                          muxModelReach("start_blocking_deferred_loser", muxModelEventStartedMatching, muxModelState{phase: muxModelSessionOwned, blocking: true, deferred: true, blockingUpstream: true}),
+	"session_owned_blocking_upstream":                                     muxModelReach("start_blocking", muxModelEventStartCallReturns, muxModelState{phase: muxModelSessionOwned, blockingUpstream: true}),
+	"session_owned_other_blocking_call_blocking_upstream":                 muxModelReach("session_owned_other_blocking_call_resync_owed_1_blocking_upstream", muxModelEventSYN, muxModelState{phase: muxModelSessionOwned, blocking: true, otherOwner: true, blockingUpstream: true}),
+	"session_owned_other_blocking_call_resync_owed_1_blocking_upstream":   muxModelReach("start_blocking_resync_owed_1_blocking_upstream", muxModelEventStartedMatching, muxModelState{phase: muxModelSessionOwned, blocking: true, resyncOwed: 1, otherOwner: true, blockingUpstream: true}),
+	"session_owned_other_blocking_upstream":                               muxModelReach("session_owned_other_resync_owed_1_blocking_upstream", muxModelEventSYN, muxModelState{phase: muxModelSessionOwned, otherOwner: true, blockingUpstream: true}),
+	"session_owned_other_enforce":                                         muxModelReach("start_async_enforce", muxModelEventStartedMatching, muxModelState{phase: muxModelSessionOwned, otherOwner: true, enforce: true}),
+	"session_owned_other_resync_owed_1_blocking_upstream":                 muxModelReach("start_blocking_resync_owed_1_blocking_upstream", muxModelEventStartCallReturns, muxModelState{phase: muxModelSessionOwned, resyncOwed: 1, otherOwner: true, blockingUpstream: true}),
+	"session_owned_resync_owed_1":                                         muxModelReach("start_async_resync_owed_1", muxModelEventStartedMatching, muxModelState{phase: muxModelSessionOwned, resyncOwed: 1}),
+	"session_owned_resync_owed_1_blocking_upstream":                       muxModelReach("session_owned_resync_owed_2_blocking_upstream", muxModelEventSYN, muxModelState{phase: muxModelSessionOwned, resyncOwed: 1, blockingUpstream: true}),
+	"session_owned_resync_owed_2":                                         muxModelReach("start_async_resync_owed", muxModelEventStartedMatching, muxModelState{phase: muxModelSessionOwned, resyncOwed: 2}),
+	"session_owned_resync_owed_2_blocking_upstream":                       muxModelReach("start_blocking_deferred_loser", muxModelEventStartCallReturns, muxModelState{phase: muxModelSessionOwned, resyncOwed: 2, blockingUpstream: true}),
+	"start_async_enforce":                                                 muxModelReach("bids_queued_reset_enforce", muxModelEventSYN, muxModelState{phase: muxModelStartAsync, enforce: true}),
+	"start_async_resync_owed_1":                                           muxModelReach("start_async_resync_owed", muxModelEventSYN, muxModelState{phase: muxModelStartAsync, resyncOwed: 1}),
+	"start_blocking_resync_owed_1_blocking_upstream":                      muxModelReach("bids_queued_resync_owed_2_blocking_upstream", muxModelEventSYN, muxModelState{phase: muxModelStartBlocking, blocking: true, resyncOwed: 1, blockingUpstream: true}),
+}
+
+// muxModelObserve reads the model state of the harness mux.
+func muxModelObserve(h *transitionHarness) (muxModelState, error) {
+	s := h.state()
+	h.m.stateMu.Lock()
+	held := h.m.step.held
+	echoPending := h.m.gatewayEcho.hasPendingEchoes()
+	h.m.stateMu.Unlock()
+	cfg := muxModelConfig{
+		blockingUpstream: h.mode == transitionUpstreamBlocking,
+		enforce:          h.m.v8 != nil && h.m.v8.Mode() == v8classifier.ModeEnforce,
+	}
+	return muxModelDerive(s, cfg, held, echoPending)
+}
+
+// muxModelFeedSymbol hands one received data symbol to the read loop.
+func muxModelFeedSymbol(h *transitionHarness) {
+	h.t.Helper()
+	h.feed(transitionItem{event: transport.StreamEvent{Kind: transport.StreamEventByte, Byte: transitionDataSymbol}})
+}
+
+// muxModelReleaseStartCall returns err from the held StartArbitration call.
+// While the selected START still waits for it, the call delivers the selected
+// waiter's result, which is awaited; once that START ended (granted through the
+// stream, timed out or cancelled), the call delivers no result and only its
+// blocking-call barrier is awaited.
+func muxModelReleaseStartCall(h *transitionHarness, err error) {
+	h.t.Helper()
+	h.m.stateMu.Lock()
+	p := h.m.pendingStart
+	waiting := p != nil && fmt.Sprintf("%s 0x%02X", transitionParty(p.sessionID), p.initiator) == h.selected
+	h.m.stateMu.Unlock()
+	if waiting {
+		h.releaseStartCall(err, h.selected)
+		return
+	}
+	select {
+	case h.blocking.release <- err:
+	case <-time.After(transitionWaitBudget):
+		h.t.Fatalf("StartArbitration was not waiting for its result")
+	}
+	deadline := time.Now().Add(transitionWaitBudget)
+	for {
+		h.m.stateMu.Lock()
+		active := h.m.blockingArbActive
+		h.m.stateMu.Unlock()
+		if !active {
+			return
+		}
+		if time.Now().After(deadline) {
+			h.t.Fatalf("blocking START call did not finish within %v", transitionWaitBudget)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// muxModelDrivers apply one event to the harness mux through the handlers.
+var muxModelDrivers = map[muxModelEvent]func(h *transitionHarness){
+	muxModelEventSYN:             func(h *transitionHarness) { h.feedWireSyn() },
+	muxModelEventSymbol:          func(h *transitionHarness) { muxModelFeedSymbol(h) },
+	muxModelEventBid:             func(h *transitionHarness) { h.bid(2, transitionOtherSource) },
+	muxModelEventStartedMatching: func(h *transitionHarness) { h.feedStarted(h.source) },
+	muxModelEventStartedOther:    func(h *transitionHarness) { h.feedStarted(transitionForeignSource) },
+	muxModelEventFailed:          func(h *transitionHarness) { h.feedFailed(transitionForeignSource) },
+	muxModelEventStartDeadline:   func(h *transitionHarness) { h.fireDeadline(h.selected) },
+	// The debounce timer runs for the harness horizon; clearing its due-at
+	// and running its callback is the deadline elapsing now.
+	muxModelEventAbsorbDebounce: func(h *transitionHarness) {
+		h.m.stateMu.Lock()
+		h.m.pendingAbsorbResetDueAt = time.Time{}
+		h.m.stateMu.Unlock()
+		h.m.fireAbsorbReset()
+	},
+	// The gateway grace runs from the grant, as the ownership limit does, so
+	// the grace is shortened instead of moving the grant back; the external
+	// grace runs from the last wire activity, which is moved back.
+	muxModelEventIdleGrace: func(h *transitionHarness) {
+		h.m.stateMu.Lock()
+		h.m.cfg.IdleReleaseGrace = 0
+		h.m.lastWireActivity = time.Now().Add(-2 * transitionTimerHorizon)
+		h.m.stateMu.Unlock()
+		h.feedWireSyn()
+	},
+	muxModelEventOwnershipLimit: func(h *transitionHarness) {
+		h.m.stateMu.Lock()
+		h.m.busOwned = h.m.busOwned.Add(-2 * transitionTimerHorizon)
+		h.m.stateMu.Unlock()
+		muxModelFeedSymbol(h)
+	},
+	// The session writer arms the watchdog once STARTED reached the client;
+	// the harness runs no writer, so the driver arms it for the current grant
+	// and runs the callback at once.
+	muxModelEventAbandonWatchdog: func(h *transitionHarness) {
+		h.t.Helper()
+		h.m.stateMu.Lock()
+		ownerID, _, _ := h.m.arb.owner()
+		h.m.stateMu.Unlock()
+		if ownerID == 0 || int(ownerID) > len(h.sessions) {
+			h.t.Fatalf("abandon watchdog: owner %d is no harness session", ownerID)
+		}
+		sess := h.sessions[ownerID-1]
+		var fire func()
+		h.m.externalAbandonAfter = func(_ time.Duration, f func()) { fire = f }
+		h.m.armExternalAbandonWatchdog(sess, uint32(sess.grantGeneration.Load()))
+		if fire == nil {
+			h.t.Fatalf("abandon watchdog was not armed")
+		}
+		fire()
+	},
+	muxModelEventSessionClose:     func(h *transitionHarness) { h.m.RemoveSession(1) },
+	muxModelEventReset:            func(h *transitionHarness) { h.feedReset() },
+	muxModelEventStartCallReturns: func(h *transitionHarness) { muxModelReleaseStartCall(h, nil) },
+	muxModelEventStartCallFails: func(h *transitionHarness) {
+		muxModelReleaseStartCall(h, errors.New("scripted START failure"))
+	},
+	muxModelEventInitiatorSymbol: func(h *transitionHarness) {
+		h.feed(transitionItem{event: transport.StreamEvent{Kind: transport.StreamEventByte, Byte: transitionForeignSource}})
+	},
+}
+
+// muxModelOutcome is the defined outcome of a table row.
+type muxModelOutcome uint8
+
+const (
+	// muxModelTransition: the event moves the state to next with effects.
+	muxModelTransition muxModelOutcome = iota
+	// muxModelCannotOccur: the event has no source in the state; the state
+	// stays and no effect is defined.
+	muxModelCannotOccur
+)
+
+type muxModelRow struct {
+	state   string
+	event   muxModelEvent
+	outcome muxModelOutcome
+	next    muxModelState
+	effects []muxModelEffect
+	reason  string
+}
+
+func muxModelOn(state string, event muxModelEvent, next muxModelState, effects ...muxModelEffect) muxModelRow {
+	if effects == nil {
+		effects = []muxModelEffect{}
+	}
+	return muxModelRow{state: state, event: event, outcome: muxModelTransition, next: next, effects: effects}
+}
+
+func muxModelNever(state string, event muxModelEvent, reason string) muxModelRow {
+	return muxModelRow{state: state, event: event, outcome: muxModelCannotOccur, reason: reason}
+}
+
+func muxModelRowLiteral(state string, event muxModelEvent, next muxModelState, effects []muxModelEffect) string {
+	args := []string{fmt.Sprintf("%q", state), event.String(), next.literal()}
+	if len(effects) > 0 {
+		args = append(args, muxModelEffectsLiteral(effects))
+	}
+	return "muxModelOn(" + strings.Join(args, ", ") + "),"
+}
+
+func muxModelStateNames() []string {
+	names := make([]string, 0, len(muxModelStates))
+	for name := range muxModelStates {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// muxModelRows is the transition table: one row per named state and event.
+var muxModelRows = []muxModelRow{
+	muxModelOn("absorb_pending", muxModelEventSYN, muxModelState{phase: muxModelIdle, absorb: 1}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("absorb_pending", muxModelEventSymbol, muxModelState{phase: muxModelIdle, absorb: 1}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("absorb_pending", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, absorb: 1}),
+	muxModelOn("absorb_pending", muxModelEventStartedMatching, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN}),
+	muxModelOn("absorb_pending", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("absorb_pending", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("absorb_pending", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelOn("absorb_pending", muxModelEventAbsorbDebounce, muxModelState{phase: muxModelIdle}),
+	muxModelNever("absorb_pending", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("absorb_pending", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("absorb_pending", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("absorb_pending", muxModelEventSessionClose, muxModelState{phase: muxModelIdle, absorb: 1}),
+	muxModelOn("absorb_pending", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("absorb_pending", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("absorb_pending", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("absorb_pending", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelIdle, absorb: 1}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("bids_queued", muxModelEventSYN, muxModelState{phase: muxModelStartAsync}, muxModelEffectPassiveSymbol, muxModelEffectAdapterStart, muxModelEffectSessionReceived),
+	muxModelOn("bids_queued", muxModelEventSymbol, muxModelState{phase: muxModelBidsQueued}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("bids_queued", muxModelEventBid, muxModelState{phase: muxModelBidsQueued}),
+	muxModelOn("bids_queued", muxModelEventStartedMatching, muxModelState{phase: muxModelBidsQueued}),
+	muxModelOn("bids_queued", muxModelEventStartedOther, muxModelState{phase: muxModelBidsQueued}),
+	muxModelOn("bids_queued", muxModelEventFailed, muxModelState{phase: muxModelBidsQueued}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("bids_queued", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("bids_queued", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("bids_queued", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("bids_queued", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("bids_queued", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("bids_queued", muxModelEventSessionClose, muxModelState{phase: muxModelIdle}, muxModelEffectResultCancelled),
+	muxModelOn("bids_queued", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset, muxModelEffectResultError),
+	muxModelNever("bids_queued", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("bids_queued", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("bids_queued", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelBidsQueued}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("bids_queued_absorb_pending", muxModelEventSYN, muxModelState{phase: muxModelBidsQueued, absorb: 1}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("bids_queued_absorb_pending", muxModelEventSymbol, muxModelState{phase: muxModelBidsQueued, absorb: 1}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("bids_queued_absorb_pending", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, absorb: 1}, muxModelEffectResultCancelled),
+	muxModelOn("bids_queued_absorb_pending", muxModelEventStartedMatching, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN}),
+	muxModelOn("bids_queued_absorb_pending", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("bids_queued_absorb_pending", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("bids_queued_absorb_pending", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelOn("bids_queued_absorb_pending", muxModelEventAbsorbDebounce, muxModelState{phase: muxModelBidsQueued}),
+	muxModelNever("bids_queued_absorb_pending", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("bids_queued_absorb_pending", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("bids_queued_absorb_pending", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("bids_queued_absorb_pending", muxModelEventSessionClose, muxModelState{phase: muxModelBidsQueued, absorb: 1}),
+	muxModelOn("bids_queued_absorb_pending", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset, muxModelEffectResultError),
+	muxModelNever("bids_queued_absorb_pending", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("bids_queued_absorb_pending", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("bids_queued_absorb_pending", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelBidsQueued, absorb: 1}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("bids_queued_absorb_pending_blocking_call", muxModelEventSYN, muxModelState{phase: muxModelBidsQueued, absorb: 1, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("bids_queued_absorb_pending_blocking_call", muxModelEventSymbol, muxModelState{phase: muxModelBidsQueued, absorb: 1, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("bids_queued_absorb_pending_blocking_call", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, absorb: 1, blocking: true, blockingUpstream: true}, muxModelEffectResultCancelled),
+	muxModelOn("bids_queued_absorb_pending_blocking_call", muxModelEventStartedMatching, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, blockingUpstream: true}),
+	muxModelOn("bids_queued_absorb_pending_blocking_call", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("bids_queued_absorb_pending_blocking_call", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("bids_queued_absorb_pending_blocking_call", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelOn("bids_queued_absorb_pending_blocking_call", muxModelEventAbsorbDebounce, muxModelState{phase: muxModelBidsQueued, blocking: true, blockingUpstream: true}),
+	muxModelNever("bids_queued_absorb_pending_blocking_call", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("bids_queued_absorb_pending_blocking_call", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("bids_queued_absorb_pending_blocking_call", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("bids_queued_absorb_pending_blocking_call", muxModelEventSessionClose, muxModelState{phase: muxModelBidsQueued, absorb: 1, blocking: true, blockingUpstream: true}),
+	muxModelOn("bids_queued_absorb_pending_blocking_call", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset, muxModelEffectResultError),
+	muxModelOn("bids_queued_absorb_pending_blocking_call", muxModelEventStartCallReturns, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blockingUpstream: true}),
+	muxModelOn("bids_queued_absorb_pending_blocking_call", muxModelEventStartCallFails, muxModelState{phase: muxModelBidsQueued, blockingUpstream: true}),
+	muxModelOn("bids_queued_absorb_pending_blocking_call", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelBidsQueued, absorb: 1, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("bids_queued_absorb_pending_blocking_call_deferred_loser", muxModelEventSYN, muxModelState{phase: muxModelBidsQueued, absorb: 1, blocking: true, deferred: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("bids_queued_absorb_pending_blocking_call_deferred_loser", muxModelEventSymbol, muxModelState{phase: muxModelBidsQueued, absorb: 1, blocking: true, deferred: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("bids_queued_absorb_pending_blocking_call_deferred_loser", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, absorb: 1, blocking: true, deferred: true, blockingUpstream: true}, muxModelEffectResultCancelled),
+	muxModelOn("bids_queued_absorb_pending_blocking_call_deferred_loser", muxModelEventStartedMatching, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, deferred: true, blockingUpstream: true}),
+	muxModelOn("bids_queued_absorb_pending_blocking_call_deferred_loser", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, deferred: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("bids_queued_absorb_pending_blocking_call_deferred_loser", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, deferred: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("bids_queued_absorb_pending_blocking_call_deferred_loser", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelOn("bids_queued_absorb_pending_blocking_call_deferred_loser", muxModelEventAbsorbDebounce, muxModelState{phase: muxModelBidsQueued, blocking: true, deferred: true, blockingUpstream: true}),
+	muxModelNever("bids_queued_absorb_pending_blocking_call_deferred_loser", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("bids_queued_absorb_pending_blocking_call_deferred_loser", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("bids_queued_absorb_pending_blocking_call_deferred_loser", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("bids_queued_absorb_pending_blocking_call_deferred_loser", muxModelEventSessionClose, muxModelState{phase: muxModelBidsQueued, absorb: 1, blocking: true, deferred: true, blockingUpstream: true}),
+	muxModelOn("bids_queued_absorb_pending_blocking_call_deferred_loser", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset, muxModelEffectResultError),
+	muxModelOn("bids_queued_absorb_pending_blocking_call_deferred_loser", muxModelEventStartCallReturns, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 2, blockingUpstream: true}, muxModelEffectResultLost),
+	muxModelOn("bids_queued_absorb_pending_blocking_call_deferred_loser", muxModelEventStartCallFails, muxModelState{phase: muxModelBidsQueued, blockingUpstream: true}, muxModelEffectResultError),
+	muxModelOn("bids_queued_absorb_pending_blocking_call_deferred_loser", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelBidsQueued, absorb: 1, blocking: true, deferred: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("bids_queued_absorb_pending_enforce", muxModelEventSYN, muxModelState{phase: muxModelBidsQueued, absorb: 1, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("bids_queued_absorb_pending_enforce", muxModelEventSymbol, muxModelState{phase: muxModelBidsQueued, absorb: 1, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("bids_queued_absorb_pending_enforce", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, absorb: 1, enforce: true}, muxModelEffectResultCancelled),
+	muxModelOn("bids_queued_absorb_pending_enforce", muxModelEventStartedMatching, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, enforce: true}),
+	muxModelOn("bids_queued_absorb_pending_enforce", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeign, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("bids_queued_absorb_pending_enforce", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeign, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("bids_queued_absorb_pending_enforce", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelOn("bids_queued_absorb_pending_enforce", muxModelEventAbsorbDebounce, muxModelState{phase: muxModelBidsQueued, enforce: true}),
+	muxModelNever("bids_queued_absorb_pending_enforce", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("bids_queued_absorb_pending_enforce", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("bids_queued_absorb_pending_enforce", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("bids_queued_absorb_pending_enforce", muxModelEventSessionClose, muxModelState{phase: muxModelBidsQueued, absorb: 1, enforce: true}),
+	muxModelOn("bids_queued_absorb_pending_enforce", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, enforce: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset, muxModelEffectResultError),
+	muxModelNever("bids_queued_absorb_pending_enforce", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("bids_queued_absorb_pending_enforce", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("bids_queued_absorb_pending_enforce", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelBidsQueued, absorb: 1, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("bids_queued_absorb_pending_resync_owed_1", muxModelEventSYN, muxModelState{phase: muxModelBidsQueued, absorb: 1}, muxModelEffectPassiveSymbol, muxModelEffectActiveByte, muxModelEffectSessionReceived),
+	muxModelOn("bids_queued_absorb_pending_resync_owed_1", muxModelEventSymbol, muxModelState{phase: muxModelBidsQueued, absorb: 1, resyncOwed: 1}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("bids_queued_absorb_pending_resync_owed_1", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, absorb: 1, resyncOwed: 1}, muxModelEffectResultCancelled),
+	muxModelOn("bids_queued_absorb_pending_resync_owed_1", muxModelEventStartedMatching, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1}),
+	muxModelOn("bids_queued_absorb_pending_resync_owed_1", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("bids_queued_absorb_pending_resync_owed_1", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("bids_queued_absorb_pending_resync_owed_1", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelOn("bids_queued_absorb_pending_resync_owed_1", muxModelEventAbsorbDebounce, muxModelState{phase: muxModelBidsQueued, resyncOwed: 1}),
+	muxModelNever("bids_queued_absorb_pending_resync_owed_1", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("bids_queued_absorb_pending_resync_owed_1", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("bids_queued_absorb_pending_resync_owed_1", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("bids_queued_absorb_pending_resync_owed_1", muxModelEventSessionClose, muxModelState{phase: muxModelBidsQueued, absorb: 1, resyncOwed: 1}),
+	muxModelOn("bids_queued_absorb_pending_resync_owed_1", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset, muxModelEffectResultError),
+	muxModelNever("bids_queued_absorb_pending_resync_owed_1", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("bids_queued_absorb_pending_resync_owed_1", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("bids_queued_absorb_pending_resync_owed_1", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelBidsQueued, absorb: 1, resyncOwed: 1}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("bids_queued_blocking_call", muxModelEventSYN, muxModelState{phase: muxModelBidsQueued, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("bids_queued_blocking_call", muxModelEventSymbol, muxModelState{phase: muxModelBidsQueued, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("bids_queued_blocking_call", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, blocking: true, blockingUpstream: true}, muxModelEffectResultCancelled),
+	muxModelOn("bids_queued_blocking_call", muxModelEventStartedMatching, muxModelState{phase: muxModelBidsQueued, blocking: true, blockingUpstream: true}),
+	muxModelOn("bids_queued_blocking_call", muxModelEventStartedOther, muxModelState{phase: muxModelBidsQueued, blocking: true, blockingUpstream: true}),
+	muxModelOn("bids_queued_blocking_call", muxModelEventFailed, muxModelState{phase: muxModelBidsQueued, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("bids_queued_blocking_call", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("bids_queued_blocking_call", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("bids_queued_blocking_call", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("bids_queued_blocking_call", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("bids_queued_blocking_call", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("bids_queued_blocking_call", muxModelEventSessionClose, muxModelState{phase: muxModelBidsQueued, blocking: true, blockingUpstream: true}),
+	muxModelOn("bids_queued_blocking_call", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset, muxModelEffectResultError),
+	muxModelOn("bids_queued_blocking_call", muxModelEventStartCallReturns, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blockingUpstream: true}),
+	muxModelOn("bids_queued_blocking_call", muxModelEventStartCallFails, muxModelState{phase: muxModelBidsQueued, blockingUpstream: true}),
+	muxModelOn("bids_queued_blocking_call", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelBidsQueued, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("bids_queued_blocking_call_deferred_loser", muxModelEventSYN, muxModelState{phase: muxModelBidsQueued, blocking: true, deferred: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("bids_queued_blocking_call_deferred_loser", muxModelEventSymbol, muxModelState{phase: muxModelBidsQueued, blocking: true, deferred: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("bids_queued_blocking_call_deferred_loser", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, blocking: true, deferred: true, blockingUpstream: true}, muxModelEffectResultCancelled),
+	muxModelOn("bids_queued_blocking_call_deferred_loser", muxModelEventStartedMatching, muxModelState{phase: muxModelBidsQueued, blocking: true, deferred: true, blockingUpstream: true}),
+	muxModelOn("bids_queued_blocking_call_deferred_loser", muxModelEventStartedOther, muxModelState{phase: muxModelBidsQueued, blocking: true, deferred: true, blockingUpstream: true}),
+	muxModelOn("bids_queued_blocking_call_deferred_loser", muxModelEventFailed, muxModelState{phase: muxModelBidsQueued, blocking: true, deferred: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("bids_queued_blocking_call_deferred_loser", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("bids_queued_blocking_call_deferred_loser", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("bids_queued_blocking_call_deferred_loser", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("bids_queued_blocking_call_deferred_loser", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("bids_queued_blocking_call_deferred_loser", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("bids_queued_blocking_call_deferred_loser", muxModelEventSessionClose, muxModelState{phase: muxModelBidsQueued, blocking: true, deferred: true, blockingUpstream: true}),
+	muxModelOn("bids_queued_blocking_call_deferred_loser", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset, muxModelEffectResultError),
+	muxModelOn("bids_queued_blocking_call_deferred_loser", muxModelEventStartCallReturns, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 2, blockingUpstream: true}, muxModelEffectResultLost),
+	muxModelOn("bids_queued_blocking_call_deferred_loser", muxModelEventStartCallFails, muxModelState{phase: muxModelBidsQueued, blockingUpstream: true}, muxModelEffectResultError),
+	muxModelOn("bids_queued_blocking_call_deferred_loser", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelBidsQueued, blocking: true, deferred: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("bids_queued_blocking_call_resync_owed_1_blocking_upstream", muxModelEventSYN, muxModelState{phase: muxModelBidsQueued, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectActiveByte, muxModelEffectSessionReceived),
+	muxModelOn("bids_queued_blocking_call_resync_owed_1_blocking_upstream", muxModelEventSymbol, muxModelState{phase: muxModelBidsQueued, blocking: true, resyncOwed: 1, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("bids_queued_blocking_call_resync_owed_1_blocking_upstream", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, blocking: true, resyncOwed: 1, blockingUpstream: true}, muxModelEffectResultCancelled),
+	muxModelOn("bids_queued_blocking_call_resync_owed_1_blocking_upstream", muxModelEventStartedMatching, muxModelState{phase: muxModelBidsQueued, blocking: true, resyncOwed: 1, blockingUpstream: true}),
+	muxModelOn("bids_queued_blocking_call_resync_owed_1_blocking_upstream", muxModelEventStartedOther, muxModelState{phase: muxModelBidsQueued, blocking: true, resyncOwed: 1, blockingUpstream: true}),
+	muxModelOn("bids_queued_blocking_call_resync_owed_1_blocking_upstream", muxModelEventFailed, muxModelState{phase: muxModelBidsQueued, blocking: true, resyncOwed: 1, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("bids_queued_blocking_call_resync_owed_1_blocking_upstream", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("bids_queued_blocking_call_resync_owed_1_blocking_upstream", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("bids_queued_blocking_call_resync_owed_1_blocking_upstream", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("bids_queued_blocking_call_resync_owed_1_blocking_upstream", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("bids_queued_blocking_call_resync_owed_1_blocking_upstream", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("bids_queued_blocking_call_resync_owed_1_blocking_upstream", muxModelEventSessionClose, muxModelState{phase: muxModelBidsQueued, blocking: true, resyncOwed: 1, blockingUpstream: true}),
+	muxModelOn("bids_queued_blocking_call_resync_owed_1_blocking_upstream", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset, muxModelEffectResultError),
+	muxModelOn("bids_queued_blocking_call_resync_owed_1_blocking_upstream", muxModelEventStartCallReturns, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1, blockingUpstream: true}),
+	muxModelOn("bids_queued_blocking_call_resync_owed_1_blocking_upstream", muxModelEventStartCallFails, muxModelState{phase: muxModelBidsQueued, resyncOwed: 1, blockingUpstream: true}),
+	muxModelOn("bids_queued_blocking_call_resync_owed_1_blocking_upstream", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelBidsQueued, blocking: true, resyncOwed: 1, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("bids_queued_blocking_upstream", muxModelEventSYN, muxModelState{phase: muxModelStartBlocking, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectAdapterStartBlocking, muxModelEffectSessionReceived),
+	muxModelOn("bids_queued_blocking_upstream", muxModelEventSymbol, muxModelState{phase: muxModelBidsQueued, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("bids_queued_blocking_upstream", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, blockingUpstream: true}, muxModelEffectResultCancelled),
+	muxModelOn("bids_queued_blocking_upstream", muxModelEventStartedMatching, muxModelState{phase: muxModelBidsQueued, blockingUpstream: true}),
+	muxModelOn("bids_queued_blocking_upstream", muxModelEventStartedOther, muxModelState{phase: muxModelBidsQueued, blockingUpstream: true}),
+	muxModelOn("bids_queued_blocking_upstream", muxModelEventFailed, muxModelState{phase: muxModelBidsQueued, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("bids_queued_blocking_upstream", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("bids_queued_blocking_upstream", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("bids_queued_blocking_upstream", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("bids_queued_blocking_upstream", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("bids_queued_blocking_upstream", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("bids_queued_blocking_upstream", muxModelEventSessionClose, muxModelState{phase: muxModelBidsQueued, blockingUpstream: true}),
+	muxModelOn("bids_queued_blocking_upstream", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset, muxModelEffectResultError),
+	muxModelNever("bids_queued_blocking_upstream", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("bids_queued_blocking_upstream", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("bids_queued_blocking_upstream", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelBidsQueued, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("bids_queued_enforce", muxModelEventSYN, muxModelState{phase: muxModelStartAsync, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectAdapterStart, muxModelEffectSessionReceived),
+	muxModelOn("bids_queued_enforce", muxModelEventSymbol, muxModelState{phase: muxModelBidsQueued, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("bids_queued_enforce", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, enforce: true}, muxModelEffectResultCancelled),
+	muxModelOn("bids_queued_enforce", muxModelEventStartedMatching, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, enforce: true}),
+	muxModelOn("bids_queued_enforce", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeign, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("bids_queued_enforce", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeign, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("bids_queued_enforce", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("bids_queued_enforce", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("bids_queued_enforce", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("bids_queued_enforce", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("bids_queued_enforce", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("bids_queued_enforce", muxModelEventSessionClose, muxModelState{phase: muxModelBidsQueued, enforce: true}),
+	muxModelOn("bids_queued_enforce", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, enforce: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset, muxModelEffectResultError),
+	muxModelNever("bids_queued_enforce", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("bids_queued_enforce", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("bids_queued_enforce", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelBidsQueued, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("bids_queued_reset", muxModelEventSYN, muxModelState{phase: muxModelStartAsync}, muxModelEffectPassiveSymbol, muxModelEffectAdapterStart, muxModelEffectSessionReceived),
+	muxModelOn("bids_queued_reset", muxModelEventSymbol, muxModelState{phase: muxModelBidsQueued}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("bids_queued_reset", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, recovery: arbitrationRecoveryReset}, muxModelEffectResultCancelled),
+	muxModelOn("bids_queued_reset", muxModelEventStartedMatching, muxModelState{phase: muxModelBidsQueued}),
+	muxModelOn("bids_queued_reset", muxModelEventStartedOther, muxModelState{phase: muxModelBidsQueued}),
+	muxModelOn("bids_queued_reset", muxModelEventFailed, muxModelState{phase: muxModelBidsQueued}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("bids_queued_reset", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("bids_queued_reset", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("bids_queued_reset", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("bids_queued_reset", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("bids_queued_reset", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("bids_queued_reset", muxModelEventSessionClose, muxModelState{phase: muxModelBidsQueued, recovery: arbitrationRecoveryReset}),
+	muxModelOn("bids_queued_reset", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset, muxModelEffectResultError),
+	muxModelNever("bids_queued_reset", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("bids_queued_reset", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("bids_queued_reset", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelBidsQueued}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("bids_queued_reset_blocking_upstream", muxModelEventSYN, muxModelState{phase: muxModelStartBlocking, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectAdapterStartBlocking, muxModelEffectSessionReceived),
+	muxModelOn("bids_queued_reset_blocking_upstream", muxModelEventSymbol, muxModelState{phase: muxModelBidsQueued, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("bids_queued_reset_blocking_upstream", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, recovery: arbitrationRecoveryReset, blockingUpstream: true}, muxModelEffectResultCancelled),
+	muxModelOn("bids_queued_reset_blocking_upstream", muxModelEventStartedMatching, muxModelState{phase: muxModelBidsQueued, blockingUpstream: true}),
+	muxModelOn("bids_queued_reset_blocking_upstream", muxModelEventStartedOther, muxModelState{phase: muxModelBidsQueued, blockingUpstream: true}),
+	muxModelOn("bids_queued_reset_blocking_upstream", muxModelEventFailed, muxModelState{phase: muxModelBidsQueued, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("bids_queued_reset_blocking_upstream", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("bids_queued_reset_blocking_upstream", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("bids_queued_reset_blocking_upstream", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("bids_queued_reset_blocking_upstream", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("bids_queued_reset_blocking_upstream", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("bids_queued_reset_blocking_upstream", muxModelEventSessionClose, muxModelState{phase: muxModelBidsQueued, recovery: arbitrationRecoveryReset, blockingUpstream: true}),
+	muxModelOn("bids_queued_reset_blocking_upstream", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset, muxModelEffectResultError),
+	muxModelNever("bids_queued_reset_blocking_upstream", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("bids_queued_reset_blocking_upstream", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("bids_queued_reset_blocking_upstream", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelBidsQueued, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("bids_queued_reset_enforce", muxModelEventSYN, muxModelState{phase: muxModelStartAsync, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectAdapterStart, muxModelEffectSessionReceived),
+	muxModelOn("bids_queued_reset_enforce", muxModelEventSymbol, muxModelState{phase: muxModelBidsQueued, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("bids_queued_reset_enforce", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, recovery: arbitrationRecoveryReset, enforce: true}, muxModelEffectResultCancelled),
+	muxModelOn("bids_queued_reset_enforce", muxModelEventStartedMatching, muxModelState{phase: muxModelBidsQueued, enforce: true}),
+	muxModelOn("bids_queued_reset_enforce", muxModelEventStartedOther, muxModelState{phase: muxModelBidsQueued, enforce: true}),
+	muxModelOn("bids_queued_reset_enforce", muxModelEventFailed, muxModelState{phase: muxModelBidsQueued, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("bids_queued_reset_enforce", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("bids_queued_reset_enforce", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("bids_queued_reset_enforce", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("bids_queued_reset_enforce", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("bids_queued_reset_enforce", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("bids_queued_reset_enforce", muxModelEventSessionClose, muxModelState{phase: muxModelBidsQueued, recovery: arbitrationRecoveryReset, enforce: true}),
+	muxModelOn("bids_queued_reset_enforce", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, enforce: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset, muxModelEffectResultError),
+	muxModelNever("bids_queued_reset_enforce", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("bids_queued_reset_enforce", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("bids_queued_reset_enforce", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelBidsQueued, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("bids_queued_resync_owed_1", muxModelEventSYN, muxModelState{phase: muxModelStartAsync}, muxModelEffectPassiveSymbol, muxModelEffectAdapterStart, muxModelEffectActiveByte, muxModelEffectSessionReceived),
+	muxModelOn("bids_queued_resync_owed_1", muxModelEventSymbol, muxModelState{phase: muxModelBidsQueued, resyncOwed: 1}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("bids_queued_resync_owed_1", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, resyncOwed: 1}, muxModelEffectResultCancelled),
+	muxModelOn("bids_queued_resync_owed_1", muxModelEventStartedMatching, muxModelState{phase: muxModelBidsQueued, resyncOwed: 1}),
+	muxModelOn("bids_queued_resync_owed_1", muxModelEventStartedOther, muxModelState{phase: muxModelBidsQueued, resyncOwed: 1}),
+	muxModelOn("bids_queued_resync_owed_1", muxModelEventFailed, muxModelState{phase: muxModelBidsQueued, resyncOwed: 1}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("bids_queued_resync_owed_1", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("bids_queued_resync_owed_1", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("bids_queued_resync_owed_1", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("bids_queued_resync_owed_1", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("bids_queued_resync_owed_1", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("bids_queued_resync_owed_1", muxModelEventSessionClose, muxModelState{phase: muxModelBidsQueued, resyncOwed: 1}),
+	muxModelOn("bids_queued_resync_owed_1", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset, muxModelEffectResultError),
+	muxModelNever("bids_queued_resync_owed_1", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("bids_queued_resync_owed_1", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("bids_queued_resync_owed_1", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelBidsQueued, resyncOwed: 1}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("bids_queued_resync_owed_1_blocking_upstream", muxModelEventSYN, muxModelState{phase: muxModelStartBlocking, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectAdapterStartBlocking, muxModelEffectActiveByte, muxModelEffectSessionReceived),
+	muxModelOn("bids_queued_resync_owed_1_blocking_upstream", muxModelEventSymbol, muxModelState{phase: muxModelBidsQueued, resyncOwed: 1, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("bids_queued_resync_owed_1_blocking_upstream", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, resyncOwed: 1, blockingUpstream: true}, muxModelEffectResultCancelled),
+	muxModelOn("bids_queued_resync_owed_1_blocking_upstream", muxModelEventStartedMatching, muxModelState{phase: muxModelBidsQueued, resyncOwed: 1, blockingUpstream: true}),
+	muxModelOn("bids_queued_resync_owed_1_blocking_upstream", muxModelEventStartedOther, muxModelState{phase: muxModelBidsQueued, resyncOwed: 1, blockingUpstream: true}),
+	muxModelOn("bids_queued_resync_owed_1_blocking_upstream", muxModelEventFailed, muxModelState{phase: muxModelBidsQueued, resyncOwed: 1, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("bids_queued_resync_owed_1_blocking_upstream", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("bids_queued_resync_owed_1_blocking_upstream", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("bids_queued_resync_owed_1_blocking_upstream", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("bids_queued_resync_owed_1_blocking_upstream", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("bids_queued_resync_owed_1_blocking_upstream", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("bids_queued_resync_owed_1_blocking_upstream", muxModelEventSessionClose, muxModelState{phase: muxModelBidsQueued, resyncOwed: 1, blockingUpstream: true}),
+	muxModelOn("bids_queued_resync_owed_1_blocking_upstream", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset, muxModelEffectResultError),
+	muxModelNever("bids_queued_resync_owed_1_blocking_upstream", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("bids_queued_resync_owed_1_blocking_upstream", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("bids_queued_resync_owed_1_blocking_upstream", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelBidsQueued, resyncOwed: 1, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("bids_queued_resync_owed_2", muxModelEventSYN, muxModelState{phase: muxModelStartAsync, resyncOwed: 1}, muxModelEffectPassiveSymbol, muxModelEffectAdapterStart, muxModelEffectActiveByte, muxModelEffectSessionReceived),
+	muxModelOn("bids_queued_resync_owed_2", muxModelEventSymbol, muxModelState{phase: muxModelBidsQueued, resyncOwed: 2}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("bids_queued_resync_owed_2", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, resyncOwed: 2}, muxModelEffectResultCancelled),
+	muxModelOn("bids_queued_resync_owed_2", muxModelEventStartedMatching, muxModelState{phase: muxModelBidsQueued, resyncOwed: 2}),
+	muxModelOn("bids_queued_resync_owed_2", muxModelEventStartedOther, muxModelState{phase: muxModelBidsQueued, resyncOwed: 2}),
+	muxModelOn("bids_queued_resync_owed_2", muxModelEventFailed, muxModelState{phase: muxModelBidsQueued, resyncOwed: 2}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("bids_queued_resync_owed_2", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("bids_queued_resync_owed_2", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("bids_queued_resync_owed_2", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("bids_queued_resync_owed_2", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("bids_queued_resync_owed_2", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("bids_queued_resync_owed_2", muxModelEventSessionClose, muxModelState{phase: muxModelBidsQueued, resyncOwed: 2}),
+	muxModelOn("bids_queued_resync_owed_2", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset, muxModelEffectResultError),
+	muxModelNever("bids_queued_resync_owed_2", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("bids_queued_resync_owed_2", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("bids_queued_resync_owed_2", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelBidsQueued, resyncOwed: 2}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("bids_queued_resync_owed_2_blocking_upstream", muxModelEventSYN, muxModelState{phase: muxModelStartBlocking, blocking: true, resyncOwed: 1, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectAdapterStartBlocking, muxModelEffectActiveByte, muxModelEffectSessionReceived),
+	muxModelOn("bids_queued_resync_owed_2_blocking_upstream", muxModelEventSymbol, muxModelState{phase: muxModelBidsQueued, resyncOwed: 2, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("bids_queued_resync_owed_2_blocking_upstream", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, resyncOwed: 2, blockingUpstream: true}, muxModelEffectResultCancelled),
+	muxModelOn("bids_queued_resync_owed_2_blocking_upstream", muxModelEventStartedMatching, muxModelState{phase: muxModelBidsQueued, resyncOwed: 2, blockingUpstream: true}),
+	muxModelOn("bids_queued_resync_owed_2_blocking_upstream", muxModelEventStartedOther, muxModelState{phase: muxModelBidsQueued, resyncOwed: 2, blockingUpstream: true}),
+	muxModelOn("bids_queued_resync_owed_2_blocking_upstream", muxModelEventFailed, muxModelState{phase: muxModelBidsQueued, resyncOwed: 2, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("bids_queued_resync_owed_2_blocking_upstream", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("bids_queued_resync_owed_2_blocking_upstream", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("bids_queued_resync_owed_2_blocking_upstream", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("bids_queued_resync_owed_2_blocking_upstream", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("bids_queued_resync_owed_2_blocking_upstream", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("bids_queued_resync_owed_2_blocking_upstream", muxModelEventSessionClose, muxModelState{phase: muxModelBidsQueued, resyncOwed: 2, blockingUpstream: true}),
+	muxModelOn("bids_queued_resync_owed_2_blocking_upstream", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset, muxModelEffectResultError),
+	muxModelNever("bids_queued_resync_owed_2_blocking_upstream", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("bids_queued_resync_owed_2_blocking_upstream", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("bids_queued_resync_owed_2_blocking_upstream", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelBidsQueued, resyncOwed: 2, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("fenced", muxModelEventSYN, muxModelState{phase: muxModelIdle}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced", muxModelEventSymbol, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced", muxModelEventBid, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN}),
+	muxModelOn("fenced", muxModelEventStartedMatching, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN}),
+	muxModelOn("fenced", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("fenced", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("fenced", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("fenced", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("fenced", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("fenced", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("fenced", muxModelEventSessionClose, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN}),
+	muxModelOn("fenced", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("fenced", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("fenced", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("fenced", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("fenced_absorb_pending", muxModelEventSYN, muxModelState{phase: muxModelIdle, absorb: 1}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_absorb_pending", muxModelEventSymbol, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_absorb_pending", muxModelEventBid, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1}),
+	muxModelOn("fenced_absorb_pending", muxModelEventStartedMatching, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN}),
+	muxModelOn("fenced_absorb_pending", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_absorb_pending", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("fenced_absorb_pending", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelOn("fenced_absorb_pending", muxModelEventAbsorbDebounce, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN}),
+	muxModelNever("fenced_absorb_pending", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("fenced_absorb_pending", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("fenced_absorb_pending", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("fenced_absorb_pending", muxModelEventSessionClose, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1}),
+	muxModelOn("fenced_absorb_pending", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("fenced_absorb_pending", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("fenced_absorb_pending", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("fenced_absorb_pending", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("fenced_absorb_pending_blocking_call", muxModelEventSYN, muxModelState{phase: muxModelIdle, absorb: 1, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_absorb_pending_blocking_call", muxModelEventSymbol, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_absorb_pending_blocking_call", muxModelEventBid, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, blocking: true, blockingUpstream: true}),
+	muxModelOn("fenced_absorb_pending_blocking_call", muxModelEventStartedMatching, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, blockingUpstream: true}),
+	muxModelOn("fenced_absorb_pending_blocking_call", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_absorb_pending_blocking_call", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("fenced_absorb_pending_blocking_call", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelOn("fenced_absorb_pending_blocking_call", muxModelEventAbsorbDebounce, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, blockingUpstream: true}),
+	muxModelNever("fenced_absorb_pending_blocking_call", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("fenced_absorb_pending_blocking_call", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("fenced_absorb_pending_blocking_call", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("fenced_absorb_pending_blocking_call", muxModelEventSessionClose, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, blocking: true, blockingUpstream: true}),
+	muxModelOn("fenced_absorb_pending_blocking_call", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelOn("fenced_absorb_pending_blocking_call", muxModelEventStartCallReturns, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blockingUpstream: true}),
+	muxModelOn("fenced_absorb_pending_blocking_call", muxModelEventStartCallFails, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blockingUpstream: true}),
+	muxModelOn("fenced_absorb_pending_blocking_call", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("fenced_absorb_pending_blocking_call_deferred_loser", muxModelEventSYN, muxModelState{phase: muxModelIdle, absorb: 1, blocking: true, deferred: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_absorb_pending_blocking_call_deferred_loser", muxModelEventSymbol, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, blocking: true, deferred: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_absorb_pending_blocking_call_deferred_loser", muxModelEventBid, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, blocking: true, deferred: true, blockingUpstream: true}),
+	muxModelOn("fenced_absorb_pending_blocking_call_deferred_loser", muxModelEventStartedMatching, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, deferred: true, blockingUpstream: true}),
+	muxModelOn("fenced_absorb_pending_blocking_call_deferred_loser", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, deferred: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_absorb_pending_blocking_call_deferred_loser", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, deferred: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("fenced_absorb_pending_blocking_call_deferred_loser", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelOn("fenced_absorb_pending_blocking_call_deferred_loser", muxModelEventAbsorbDebounce, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, deferred: true, blockingUpstream: true}),
+	muxModelNever("fenced_absorb_pending_blocking_call_deferred_loser", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("fenced_absorb_pending_blocking_call_deferred_loser", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("fenced_absorb_pending_blocking_call_deferred_loser", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("fenced_absorb_pending_blocking_call_deferred_loser", muxModelEventSessionClose, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, blocking: true, deferred: true, blockingUpstream: true}),
+	muxModelOn("fenced_absorb_pending_blocking_call_deferred_loser", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset, muxModelEffectResultError),
+	muxModelOn("fenced_absorb_pending_blocking_call_deferred_loser", muxModelEventStartCallReturns, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 2, blockingUpstream: true}, muxModelEffectResultLost),
+	muxModelOn("fenced_absorb_pending_blocking_call_deferred_loser", muxModelEventStartCallFails, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blockingUpstream: true}, muxModelEffectResultError),
+	muxModelOn("fenced_absorb_pending_blocking_call_deferred_loser", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, blocking: true, deferred: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("fenced_absorb_pending_blocking_call_resync_owed_1_blocking_upstream", muxModelEventSYN, muxModelState{phase: muxModelIdle, absorb: 1, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectActiveByte, muxModelEffectSessionReceived),
+	muxModelOn("fenced_absorb_pending_blocking_call_resync_owed_1_blocking_upstream", muxModelEventSymbol, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, blocking: true, resyncOwed: 1, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_absorb_pending_blocking_call_resync_owed_1_blocking_upstream", muxModelEventBid, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, blocking: true, resyncOwed: 1, blockingUpstream: true}),
+	muxModelOn("fenced_absorb_pending_blocking_call_resync_owed_1_blocking_upstream", muxModelEventStartedMatching, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, resyncOwed: 1, blockingUpstream: true}),
+	muxModelOn("fenced_absorb_pending_blocking_call_resync_owed_1_blocking_upstream", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, resyncOwed: 1, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_absorb_pending_blocking_call_resync_owed_1_blocking_upstream", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, resyncOwed: 1, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("fenced_absorb_pending_blocking_call_resync_owed_1_blocking_upstream", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelOn("fenced_absorb_pending_blocking_call_resync_owed_1_blocking_upstream", muxModelEventAbsorbDebounce, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, resyncOwed: 1, blockingUpstream: true}),
+	muxModelNever("fenced_absorb_pending_blocking_call_resync_owed_1_blocking_upstream", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("fenced_absorb_pending_blocking_call_resync_owed_1_blocking_upstream", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("fenced_absorb_pending_blocking_call_resync_owed_1_blocking_upstream", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("fenced_absorb_pending_blocking_call_resync_owed_1_blocking_upstream", muxModelEventSessionClose, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, blocking: true, resyncOwed: 1, blockingUpstream: true}),
+	muxModelOn("fenced_absorb_pending_blocking_call_resync_owed_1_blocking_upstream", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelOn("fenced_absorb_pending_blocking_call_resync_owed_1_blocking_upstream", muxModelEventStartCallReturns, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1, blockingUpstream: true}),
+	muxModelOn("fenced_absorb_pending_blocking_call_resync_owed_1_blocking_upstream", muxModelEventStartCallFails, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1, blockingUpstream: true}),
+	muxModelOn("fenced_absorb_pending_blocking_call_resync_owed_1_blocking_upstream", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, blocking: true, resyncOwed: 1, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("fenced_absorb_pending_enforce", muxModelEventSYN, muxModelState{phase: muxModelIdle, absorb: 1, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_absorb_pending_enforce", muxModelEventSymbol, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_absorb_pending_enforce", muxModelEventBid, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, enforce: true}),
+	muxModelOn("fenced_absorb_pending_enforce", muxModelEventStartedMatching, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, enforce: true}),
+	muxModelOn("fenced_absorb_pending_enforce", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeign, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_absorb_pending_enforce", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeign, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("fenced_absorb_pending_enforce", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelOn("fenced_absorb_pending_enforce", muxModelEventAbsorbDebounce, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, enforce: true}),
+	muxModelNever("fenced_absorb_pending_enforce", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("fenced_absorb_pending_enforce", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("fenced_absorb_pending_enforce", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("fenced_absorb_pending_enforce", muxModelEventSessionClose, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, enforce: true}),
+	muxModelOn("fenced_absorb_pending_enforce", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, enforce: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("fenced_absorb_pending_enforce", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("fenced_absorb_pending_enforce", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("fenced_absorb_pending_enforce", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("fenced_absorb_pending_resync_owed_1", muxModelEventSYN, muxModelState{phase: muxModelIdle, absorb: 1}, muxModelEffectPassiveSymbol, muxModelEffectActiveByte, muxModelEffectSessionReceived),
+	muxModelOn("fenced_absorb_pending_resync_owed_1", muxModelEventSymbol, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, resyncOwed: 1}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_absorb_pending_resync_owed_1", muxModelEventBid, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, resyncOwed: 1}),
+	muxModelOn("fenced_absorb_pending_resync_owed_1", muxModelEventStartedMatching, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1}),
+	muxModelOn("fenced_absorb_pending_resync_owed_1", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_absorb_pending_resync_owed_1", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("fenced_absorb_pending_resync_owed_1", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelOn("fenced_absorb_pending_resync_owed_1", muxModelEventAbsorbDebounce, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1}),
+	muxModelNever("fenced_absorb_pending_resync_owed_1", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("fenced_absorb_pending_resync_owed_1", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("fenced_absorb_pending_resync_owed_1", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("fenced_absorb_pending_resync_owed_1", muxModelEventSessionClose, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, resyncOwed: 1}),
+	muxModelOn("fenced_absorb_pending_resync_owed_1", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("fenced_absorb_pending_resync_owed_1", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("fenced_absorb_pending_resync_owed_1", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("fenced_absorb_pending_resync_owed_1", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, resyncOwed: 1}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("fenced_absorb_pending_resync_owed_2", muxModelEventSYN, muxModelState{phase: muxModelIdle, absorb: 1, resyncOwed: 1}, muxModelEffectPassiveSymbol, muxModelEffectActiveByte, muxModelEffectSessionReceived),
+	muxModelOn("fenced_absorb_pending_resync_owed_2", muxModelEventSymbol, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, resyncOwed: 2}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_absorb_pending_resync_owed_2", muxModelEventBid, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, resyncOwed: 2}),
+	muxModelOn("fenced_absorb_pending_resync_owed_2", muxModelEventStartedMatching, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 2}),
+	muxModelOn("fenced_absorb_pending_resync_owed_2", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 2}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_absorb_pending_resync_owed_2", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 2}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("fenced_absorb_pending_resync_owed_2", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelOn("fenced_absorb_pending_resync_owed_2", muxModelEventAbsorbDebounce, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 2}),
+	muxModelNever("fenced_absorb_pending_resync_owed_2", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("fenced_absorb_pending_resync_owed_2", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("fenced_absorb_pending_resync_owed_2", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("fenced_absorb_pending_resync_owed_2", muxModelEventSessionClose, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, resyncOwed: 2}),
+	muxModelOn("fenced_absorb_pending_resync_owed_2", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("fenced_absorb_pending_resync_owed_2", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("fenced_absorb_pending_resync_owed_2", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("fenced_absorb_pending_resync_owed_2", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, resyncOwed: 2}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("fenced_blocking_call", muxModelEventSYN, muxModelState{phase: muxModelIdle, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_blocking_call", muxModelEventSymbol, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_blocking_call", muxModelEventBid, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, blockingUpstream: true}),
+	muxModelOn("fenced_blocking_call", muxModelEventStartedMatching, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, blockingUpstream: true}),
+	muxModelOn("fenced_blocking_call", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_blocking_call", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("fenced_blocking_call", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("fenced_blocking_call", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("fenced_blocking_call", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("fenced_blocking_call", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("fenced_blocking_call", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("fenced_blocking_call", muxModelEventSessionClose, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, blockingUpstream: true}),
+	muxModelOn("fenced_blocking_call", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelOn("fenced_blocking_call", muxModelEventStartCallReturns, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blockingUpstream: true}),
+	muxModelOn("fenced_blocking_call", muxModelEventStartCallFails, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blockingUpstream: true}),
+	muxModelOn("fenced_blocking_call", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("fenced_blocking_call_deferred_loser", muxModelEventSYN, muxModelState{phase: muxModelIdle, blocking: true, deferred: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_blocking_call_deferred_loser", muxModelEventSymbol, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, deferred: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_blocking_call_deferred_loser", muxModelEventBid, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, deferred: true, blockingUpstream: true}),
+	muxModelOn("fenced_blocking_call_deferred_loser", muxModelEventStartedMatching, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, deferred: true, blockingUpstream: true}),
+	muxModelOn("fenced_blocking_call_deferred_loser", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, deferred: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_blocking_call_deferred_loser", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, deferred: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("fenced_blocking_call_deferred_loser", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("fenced_blocking_call_deferred_loser", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("fenced_blocking_call_deferred_loser", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("fenced_blocking_call_deferred_loser", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("fenced_blocking_call_deferred_loser", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("fenced_blocking_call_deferred_loser", muxModelEventSessionClose, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, deferred: true, blockingUpstream: true}),
+	muxModelOn("fenced_blocking_call_deferred_loser", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset, muxModelEffectResultError),
+	muxModelOn("fenced_blocking_call_deferred_loser", muxModelEventStartCallReturns, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 2, blockingUpstream: true}, muxModelEffectResultLost),
+	muxModelOn("fenced_blocking_call_deferred_loser", muxModelEventStartCallFails, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blockingUpstream: true}, muxModelEffectResultError),
+	muxModelOn("fenced_blocking_call_deferred_loser", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, deferred: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("fenced_blocking_call_resync_owed_1_blocking_upstream", muxModelEventSYN, muxModelState{phase: muxModelIdle, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectActiveByte, muxModelEffectSessionReceived),
+	muxModelOn("fenced_blocking_call_resync_owed_1_blocking_upstream", muxModelEventSymbol, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, resyncOwed: 1, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_blocking_call_resync_owed_1_blocking_upstream", muxModelEventBid, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, resyncOwed: 1, blockingUpstream: true}),
+	muxModelOn("fenced_blocking_call_resync_owed_1_blocking_upstream", muxModelEventStartedMatching, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, resyncOwed: 1, blockingUpstream: true}),
+	muxModelOn("fenced_blocking_call_resync_owed_1_blocking_upstream", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, resyncOwed: 1, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_blocking_call_resync_owed_1_blocking_upstream", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, resyncOwed: 1, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("fenced_blocking_call_resync_owed_1_blocking_upstream", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("fenced_blocking_call_resync_owed_1_blocking_upstream", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("fenced_blocking_call_resync_owed_1_blocking_upstream", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("fenced_blocking_call_resync_owed_1_blocking_upstream", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("fenced_blocking_call_resync_owed_1_blocking_upstream", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("fenced_blocking_call_resync_owed_1_blocking_upstream", muxModelEventSessionClose, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, resyncOwed: 1, blockingUpstream: true}),
+	muxModelOn("fenced_blocking_call_resync_owed_1_blocking_upstream", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelOn("fenced_blocking_call_resync_owed_1_blocking_upstream", muxModelEventStartCallReturns, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1, blockingUpstream: true}),
+	muxModelOn("fenced_blocking_call_resync_owed_1_blocking_upstream", muxModelEventStartCallFails, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1, blockingUpstream: true}),
+	muxModelOn("fenced_blocking_call_resync_owed_1_blocking_upstream", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, resyncOwed: 1, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("fenced_blocking_upstream", muxModelEventSYN, muxModelState{phase: muxModelIdle, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_blocking_upstream", muxModelEventSymbol, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_blocking_upstream", muxModelEventBid, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blockingUpstream: true}),
+	muxModelOn("fenced_blocking_upstream", muxModelEventStartedMatching, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blockingUpstream: true}),
+	muxModelOn("fenced_blocking_upstream", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_blocking_upstream", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("fenced_blocking_upstream", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("fenced_blocking_upstream", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("fenced_blocking_upstream", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("fenced_blocking_upstream", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("fenced_blocking_upstream", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("fenced_blocking_upstream", muxModelEventSessionClose, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blockingUpstream: true}),
+	muxModelOn("fenced_blocking_upstream", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("fenced_blocking_upstream", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("fenced_blocking_upstream", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("fenced_blocking_upstream", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("fenced_enforce", muxModelEventSYN, muxModelState{phase: muxModelIdle, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_enforce", muxModelEventSymbol, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_enforce", muxModelEventBid, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, enforce: true}),
+	muxModelOn("fenced_enforce", muxModelEventStartedMatching, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, enforce: true}),
+	muxModelOn("fenced_enforce", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeign, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_enforce", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeign, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("fenced_enforce", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("fenced_enforce", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("fenced_enforce", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("fenced_enforce", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("fenced_enforce", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("fenced_enforce", muxModelEventSessionClose, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, enforce: true}),
+	muxModelOn("fenced_enforce", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, enforce: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("fenced_enforce", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("fenced_enforce", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("fenced_enforce", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("fenced_foreign", muxModelEventSYN, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeignAfterAA, enforce: true}),
+	muxModelOn("fenced_foreign", muxModelEventSymbol, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeign, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_foreign", muxModelEventBid, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeign, enforce: true}),
+	muxModelOn("fenced_foreign", muxModelEventStartedMatching, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeign, enforce: true}),
+	muxModelOn("fenced_foreign", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeign, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_foreign", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeign, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("fenced_foreign", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("fenced_foreign", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("fenced_foreign", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("fenced_foreign", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("fenced_foreign", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("fenced_foreign", muxModelEventSessionClose, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeign, enforce: true}),
+	muxModelOn("fenced_foreign", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, enforce: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("fenced_foreign", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("fenced_foreign", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("fenced_foreign", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeign, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("fenced_foreign_absorb_pending", muxModelEventSYN, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeignAfterAA, absorb: 1, enforce: true}),
+	muxModelOn("fenced_foreign_absorb_pending", muxModelEventSymbol, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeign, absorb: 1, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_foreign_absorb_pending", muxModelEventBid, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeign, absorb: 1, enforce: true}),
+	muxModelOn("fenced_foreign_absorb_pending", muxModelEventStartedMatching, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeign, enforce: true}),
+	muxModelOn("fenced_foreign_absorb_pending", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeign, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_foreign_absorb_pending", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeign, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("fenced_foreign_absorb_pending", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelOn("fenced_foreign_absorb_pending", muxModelEventAbsorbDebounce, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeign, enforce: true}),
+	muxModelNever("fenced_foreign_absorb_pending", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("fenced_foreign_absorb_pending", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("fenced_foreign_absorb_pending", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("fenced_foreign_absorb_pending", muxModelEventSessionClose, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeign, absorb: 1, enforce: true}),
+	muxModelOn("fenced_foreign_absorb_pending", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, enforce: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("fenced_foreign_absorb_pending", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("fenced_foreign_absorb_pending", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("fenced_foreign_absorb_pending", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeign, absorb: 1, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("fenced_foreign_after_syn", muxModelEventSYN, muxModelState{phase: muxModelIdle, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_foreign_after_syn", muxModelEventSymbol, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeign, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_foreign_after_syn", muxModelEventBid, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeignAfterAA, enforce: true}),
+	muxModelOn("fenced_foreign_after_syn", muxModelEventStartedMatching, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeign, enforce: true}),
+	muxModelOn("fenced_foreign_after_syn", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeign, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_foreign_after_syn", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeign, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("fenced_foreign_after_syn", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("fenced_foreign_after_syn", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("fenced_foreign_after_syn", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("fenced_foreign_after_syn", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("fenced_foreign_after_syn", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("fenced_foreign_after_syn", muxModelEventSessionClose, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeignAfterAA, enforce: true}),
+	muxModelOn("fenced_foreign_after_syn", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, enforce: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("fenced_foreign_after_syn", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("fenced_foreign_after_syn", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("fenced_foreign_after_syn", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeign, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("fenced_foreign_after_syn_absorb_pending", muxModelEventSYN, muxModelState{phase: muxModelIdle, absorb: 1, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_foreign_after_syn_absorb_pending", muxModelEventSymbol, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeign, absorb: 1, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_foreign_after_syn_absorb_pending", muxModelEventBid, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeignAfterAA, absorb: 1, enforce: true}),
+	muxModelOn("fenced_foreign_after_syn_absorb_pending", muxModelEventStartedMatching, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeign, enforce: true}),
+	muxModelOn("fenced_foreign_after_syn_absorb_pending", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeign, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_foreign_after_syn_absorb_pending", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeign, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("fenced_foreign_after_syn_absorb_pending", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelOn("fenced_foreign_after_syn_absorb_pending", muxModelEventAbsorbDebounce, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeignAfterAA, enforce: true}),
+	muxModelNever("fenced_foreign_after_syn_absorb_pending", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("fenced_foreign_after_syn_absorb_pending", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("fenced_foreign_after_syn_absorb_pending", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("fenced_foreign_after_syn_absorb_pending", muxModelEventSessionClose, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeignAfterAA, absorb: 1, enforce: true}),
+	muxModelOn("fenced_foreign_after_syn_absorb_pending", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, enforce: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("fenced_foreign_after_syn_absorb_pending", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("fenced_foreign_after_syn_absorb_pending", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("fenced_foreign_after_syn_absorb_pending", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeign, absorb: 1, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("fenced_no_recovery", muxModelEventSYN, muxModelState{phase: muxModelIdle}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_no_recovery", muxModelEventSymbol, muxModelState{phase: muxModelFenced}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_no_recovery", muxModelEventBid, muxModelState{phase: muxModelFenced}),
+	muxModelOn("fenced_no_recovery", muxModelEventStartedMatching, muxModelState{phase: muxModelFenced}),
+	muxModelOn("fenced_no_recovery", muxModelEventStartedOther, muxModelState{phase: muxModelFenced}),
+	muxModelOn("fenced_no_recovery", muxModelEventFailed, muxModelState{phase: muxModelFenced}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("fenced_no_recovery", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("fenced_no_recovery", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("fenced_no_recovery", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("fenced_no_recovery", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("fenced_no_recovery", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("fenced_no_recovery", muxModelEventSessionClose, muxModelState{phase: muxModelFenced}),
+	muxModelOn("fenced_no_recovery", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("fenced_no_recovery", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("fenced_no_recovery", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("fenced_no_recovery", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelFenced}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("fenced_no_recovery_resync_owed_2", muxModelEventSYN, muxModelState{phase: muxModelIdle, resyncOwed: 1}, muxModelEffectPassiveSymbol, muxModelEffectActiveByte, muxModelEffectSessionReceived),
+	muxModelOn("fenced_no_recovery_resync_owed_2", muxModelEventSymbol, muxModelState{phase: muxModelFenced, resyncOwed: 2}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_no_recovery_resync_owed_2", muxModelEventBid, muxModelState{phase: muxModelFenced, resyncOwed: 2}),
+	muxModelOn("fenced_no_recovery_resync_owed_2", muxModelEventStartedMatching, muxModelState{phase: muxModelFenced, resyncOwed: 2}),
+	muxModelOn("fenced_no_recovery_resync_owed_2", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, resyncOwed: 2}),
+	muxModelOn("fenced_no_recovery_resync_owed_2", muxModelEventFailed, muxModelState{phase: muxModelFenced, resyncOwed: 2}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("fenced_no_recovery_resync_owed_2", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("fenced_no_recovery_resync_owed_2", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("fenced_no_recovery_resync_owed_2", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("fenced_no_recovery_resync_owed_2", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("fenced_no_recovery_resync_owed_2", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("fenced_no_recovery_resync_owed_2", muxModelEventSessionClose, muxModelState{phase: muxModelFenced, resyncOwed: 2}),
+	muxModelOn("fenced_no_recovery_resync_owed_2", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("fenced_no_recovery_resync_owed_2", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("fenced_no_recovery_resync_owed_2", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("fenced_no_recovery_resync_owed_2", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelFenced, resyncOwed: 2}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("fenced_resync_owed_1", muxModelEventSYN, muxModelState{phase: muxModelIdle}, muxModelEffectPassiveSymbol, muxModelEffectActiveByte, muxModelEffectSessionReceived),
+	muxModelOn("fenced_resync_owed_1", muxModelEventSymbol, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_resync_owed_1", muxModelEventBid, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1}),
+	muxModelOn("fenced_resync_owed_1", muxModelEventStartedMatching, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1}),
+	muxModelOn("fenced_resync_owed_1", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_resync_owed_1", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("fenced_resync_owed_1", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("fenced_resync_owed_1", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("fenced_resync_owed_1", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("fenced_resync_owed_1", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("fenced_resync_owed_1", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("fenced_resync_owed_1", muxModelEventSessionClose, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1}),
+	muxModelOn("fenced_resync_owed_1", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("fenced_resync_owed_1", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("fenced_resync_owed_1", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("fenced_resync_owed_1", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("fenced_resync_owed_1_blocking_upstream", muxModelEventSYN, muxModelState{phase: muxModelIdle, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectActiveByte, muxModelEffectSessionReceived),
+	muxModelOn("fenced_resync_owed_1_blocking_upstream", muxModelEventSymbol, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_resync_owed_1_blocking_upstream", muxModelEventBid, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1, blockingUpstream: true}),
+	muxModelOn("fenced_resync_owed_1_blocking_upstream", muxModelEventStartedMatching, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1, blockingUpstream: true}),
+	muxModelOn("fenced_resync_owed_1_blocking_upstream", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_resync_owed_1_blocking_upstream", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("fenced_resync_owed_1_blocking_upstream", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("fenced_resync_owed_1_blocking_upstream", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("fenced_resync_owed_1_blocking_upstream", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("fenced_resync_owed_1_blocking_upstream", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("fenced_resync_owed_1_blocking_upstream", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("fenced_resync_owed_1_blocking_upstream", muxModelEventSessionClose, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1, blockingUpstream: true}),
+	muxModelOn("fenced_resync_owed_1_blocking_upstream", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("fenced_resync_owed_1_blocking_upstream", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("fenced_resync_owed_1_blocking_upstream", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("fenced_resync_owed_1_blocking_upstream", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("fenced_resync_owed_2", muxModelEventSYN, muxModelState{phase: muxModelIdle, resyncOwed: 1}, muxModelEffectPassiveSymbol, muxModelEffectActiveByte, muxModelEffectSessionReceived),
+	muxModelOn("fenced_resync_owed_2", muxModelEventSymbol, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 2}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_resync_owed_2", muxModelEventBid, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 2}),
+	muxModelOn("fenced_resync_owed_2", muxModelEventStartedMatching, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 2}),
+	muxModelOn("fenced_resync_owed_2", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 2}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_resync_owed_2", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 2}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("fenced_resync_owed_2", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("fenced_resync_owed_2", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("fenced_resync_owed_2", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("fenced_resync_owed_2", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("fenced_resync_owed_2", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("fenced_resync_owed_2", muxModelEventSessionClose, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 2}),
+	muxModelOn("fenced_resync_owed_2", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("fenced_resync_owed_2", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("fenced_resync_owed_2", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("fenced_resync_owed_2", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 2}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("fenced_resync_owed_2_blocking_upstream", muxModelEventSYN, muxModelState{phase: muxModelIdle, resyncOwed: 1, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectActiveByte, muxModelEffectSessionReceived),
+	muxModelOn("fenced_resync_owed_2_blocking_upstream", muxModelEventSymbol, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 2, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_resync_owed_2_blocking_upstream", muxModelEventBid, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 2, blockingUpstream: true}),
+	muxModelOn("fenced_resync_owed_2_blocking_upstream", muxModelEventStartedMatching, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 2, blockingUpstream: true}),
+	muxModelOn("fenced_resync_owed_2_blocking_upstream", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 2, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("fenced_resync_owed_2_blocking_upstream", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 2, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("fenced_resync_owed_2_blocking_upstream", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("fenced_resync_owed_2_blocking_upstream", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("fenced_resync_owed_2_blocking_upstream", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("fenced_resync_owed_2_blocking_upstream", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("fenced_resync_owed_2_blocking_upstream", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("fenced_resync_owed_2_blocking_upstream", muxModelEventSessionClose, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 2, blockingUpstream: true}),
+	muxModelOn("fenced_resync_owed_2_blocking_upstream", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("fenced_resync_owed_2_blocking_upstream", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("fenced_resync_owed_2_blocking_upstream", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("fenced_resync_owed_2_blocking_upstream", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 2, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("gateway_awaiting_echo", muxModelEventSYN, muxModelState{phase: muxModelGatewayTransaction, echoPending: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("gateway_awaiting_echo", muxModelEventSymbol, muxModelState{phase: muxModelGatewayTransaction, echoPending: true}, muxModelEffectSessionReceived),
+	muxModelOn("gateway_awaiting_echo", muxModelEventBid, muxModelState{phase: muxModelGatewayTransaction, echoPending: true}),
+	muxModelOn("gateway_awaiting_echo", muxModelEventStartedMatching, muxModelState{phase: muxModelGatewayTransaction, echoPending: true}),
+	muxModelOn("gateway_awaiting_echo", muxModelEventStartedOther, muxModelState{phase: muxModelGatewayTransaction, echoPending: true}),
+	muxModelOn("gateway_awaiting_echo", muxModelEventFailed, muxModelState{phase: muxModelGatewayTransaction, echoPending: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("gateway_awaiting_echo", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("gateway_awaiting_echo", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelOn("gateway_awaiting_echo", muxModelEventIdleGrace, muxModelState{phase: muxModelIdle}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("gateway_awaiting_echo", muxModelEventOwnershipLimit, muxModelState{phase: muxModelIdle}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("gateway_awaiting_echo", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("gateway_awaiting_echo", muxModelEventSessionClose, muxModelState{phase: muxModelGatewayTransaction, echoPending: true}),
+	muxModelOn("gateway_awaiting_echo", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("gateway_awaiting_echo", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("gateway_awaiting_echo", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("gateway_awaiting_echo", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelFenced, resyncOwed: 2}, muxModelEffectPassiveSymbol, muxModelEffectActiveByte, muxModelEffectSessionReceived),
+
+	muxModelOn("gateway_grace", muxModelEventSYN, muxModelState{phase: muxModelGatewayGrace}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("gateway_grace", muxModelEventSymbol, muxModelState{phase: muxModelGatewayGrace}, muxModelEffectSessionReceived),
+	muxModelOn("gateway_grace", muxModelEventBid, muxModelState{phase: muxModelGatewayGrace}),
+	muxModelOn("gateway_grace", muxModelEventStartedMatching, muxModelState{phase: muxModelGatewayGrace}),
+	muxModelOn("gateway_grace", muxModelEventStartedOther, muxModelState{phase: muxModelGatewayGrace}),
+	muxModelOn("gateway_grace", muxModelEventFailed, muxModelState{phase: muxModelGatewayGrace}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("gateway_grace", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("gateway_grace", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelOn("gateway_grace", muxModelEventIdleGrace, muxModelState{phase: muxModelIdle}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("gateway_grace", muxModelEventOwnershipLimit, muxModelState{phase: muxModelIdle}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("gateway_grace", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("gateway_grace", muxModelEventSessionClose, muxModelState{phase: muxModelGatewayGrace}),
+	muxModelOn("gateway_grace", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("gateway_grace", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("gateway_grace", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("gateway_grace", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelFenced}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("gateway_transaction", muxModelEventSYN, muxModelState{phase: muxModelGatewayTransaction}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("gateway_transaction", muxModelEventSymbol, muxModelState{phase: muxModelGatewayTransaction}, muxModelEffectActiveByte, muxModelEffectSessionReceived),
+	muxModelOn("gateway_transaction", muxModelEventBid, muxModelState{phase: muxModelGatewayTransaction}),
+	muxModelOn("gateway_transaction", muxModelEventStartedMatching, muxModelState{phase: muxModelGatewayTransaction}),
+	muxModelOn("gateway_transaction", muxModelEventStartedOther, muxModelState{phase: muxModelGatewayTransaction}),
+	muxModelOn("gateway_transaction", muxModelEventFailed, muxModelState{phase: muxModelGatewayTransaction}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("gateway_transaction", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("gateway_transaction", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelOn("gateway_transaction", muxModelEventIdleGrace, muxModelState{phase: muxModelIdle}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("gateway_transaction", muxModelEventOwnershipLimit, muxModelState{phase: muxModelIdle}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("gateway_transaction", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("gateway_transaction", muxModelEventSessionClose, muxModelState{phase: muxModelGatewayTransaction}),
+	muxModelOn("gateway_transaction", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("gateway_transaction", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("gateway_transaction", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("gateway_transaction", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelGatewayTransaction}, muxModelEffectActiveByte, muxModelEffectSessionReceived),
+
+	muxModelOn("held", muxModelEventSYN, muxModelState{phase: muxModelHeld}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("held", muxModelEventSymbol, muxModelState{phase: muxModelHeld}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("held", muxModelEventBid, muxModelState{phase: muxModelHeld}),
+	muxModelOn("held", muxModelEventStartedMatching, muxModelState{phase: muxModelHeld}),
+	muxModelOn("held", muxModelEventStartedOther, muxModelState{phase: muxModelHeld}),
+	muxModelOn("held", muxModelEventFailed, muxModelState{phase: muxModelHeld}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("held", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("held", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("held", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("held", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("held", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("held", muxModelEventSessionClose, muxModelState{phase: muxModelHeld}, muxModelEffectResultCancelled),
+	muxModelOn("held", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset, muxModelEffectResultError),
+	muxModelNever("held", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("held", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("held", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelHeld}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("idle", muxModelEventSYN, muxModelState{phase: muxModelIdle}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("idle", muxModelEventSymbol, muxModelState{phase: muxModelIdle}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("idle", muxModelEventBid, muxModelState{phase: muxModelBidsQueued}),
+	muxModelOn("idle", muxModelEventStartedMatching, muxModelState{phase: muxModelIdle}),
+	muxModelOn("idle", muxModelEventStartedOther, muxModelState{phase: muxModelIdle}),
+	muxModelOn("idle", muxModelEventFailed, muxModelState{phase: muxModelIdle}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("idle", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("idle", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("idle", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("idle", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("idle", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("idle", muxModelEventSessionClose, muxModelState{phase: muxModelIdle}),
+	muxModelOn("idle", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("idle", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("idle", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("idle", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelIdle}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("idle_absorb_pending_blocking_call", muxModelEventSYN, muxModelState{phase: muxModelIdle, absorb: 1, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("idle_absorb_pending_blocking_call", muxModelEventSymbol, muxModelState{phase: muxModelIdle, absorb: 1, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("idle_absorb_pending_blocking_call", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, absorb: 1, blocking: true, blockingUpstream: true}),
+	muxModelOn("idle_absorb_pending_blocking_call", muxModelEventStartedMatching, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, blockingUpstream: true}),
+	muxModelOn("idle_absorb_pending_blocking_call", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("idle_absorb_pending_blocking_call", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("idle_absorb_pending_blocking_call", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelOn("idle_absorb_pending_blocking_call", muxModelEventAbsorbDebounce, muxModelState{phase: muxModelIdle, blocking: true, blockingUpstream: true}),
+	muxModelNever("idle_absorb_pending_blocking_call", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("idle_absorb_pending_blocking_call", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("idle_absorb_pending_blocking_call", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("idle_absorb_pending_blocking_call", muxModelEventSessionClose, muxModelState{phase: muxModelIdle, absorb: 1, blocking: true, blockingUpstream: true}),
+	muxModelOn("idle_absorb_pending_blocking_call", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelOn("idle_absorb_pending_blocking_call", muxModelEventStartCallReturns, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blockingUpstream: true}),
+	muxModelOn("idle_absorb_pending_blocking_call", muxModelEventStartCallFails, muxModelState{phase: muxModelIdle, blockingUpstream: true}),
+	muxModelOn("idle_absorb_pending_blocking_call", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelIdle, absorb: 1, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("idle_absorb_pending_blocking_call_deferred_loser", muxModelEventSYN, muxModelState{phase: muxModelIdle, absorb: 1, blocking: true, deferred: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("idle_absorb_pending_blocking_call_deferred_loser", muxModelEventSymbol, muxModelState{phase: muxModelIdle, absorb: 1, blocking: true, deferred: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("idle_absorb_pending_blocking_call_deferred_loser", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, absorb: 1, blocking: true, deferred: true, blockingUpstream: true}),
+	muxModelOn("idle_absorb_pending_blocking_call_deferred_loser", muxModelEventStartedMatching, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, deferred: true, blockingUpstream: true}),
+	muxModelOn("idle_absorb_pending_blocking_call_deferred_loser", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, deferred: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("idle_absorb_pending_blocking_call_deferred_loser", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, deferred: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("idle_absorb_pending_blocking_call_deferred_loser", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelOn("idle_absorb_pending_blocking_call_deferred_loser", muxModelEventAbsorbDebounce, muxModelState{phase: muxModelIdle, blocking: true, deferred: true, blockingUpstream: true}),
+	muxModelNever("idle_absorb_pending_blocking_call_deferred_loser", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("idle_absorb_pending_blocking_call_deferred_loser", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("idle_absorb_pending_blocking_call_deferred_loser", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("idle_absorb_pending_blocking_call_deferred_loser", muxModelEventSessionClose, muxModelState{phase: muxModelIdle, absorb: 1, blocking: true, deferred: true, blockingUpstream: true}),
+	muxModelOn("idle_absorb_pending_blocking_call_deferred_loser", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset, muxModelEffectResultError),
+	muxModelOn("idle_absorb_pending_blocking_call_deferred_loser", muxModelEventStartCallReturns, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 2, blockingUpstream: true}, muxModelEffectResultLost),
+	muxModelOn("idle_absorb_pending_blocking_call_deferred_loser", muxModelEventStartCallFails, muxModelState{phase: muxModelIdle, blockingUpstream: true}, muxModelEffectResultError),
+	muxModelOn("idle_absorb_pending_blocking_call_deferred_loser", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelIdle, absorb: 1, blocking: true, deferred: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("idle_absorb_pending_enforce", muxModelEventSYN, muxModelState{phase: muxModelIdle, absorb: 1, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("idle_absorb_pending_enforce", muxModelEventSymbol, muxModelState{phase: muxModelIdle, absorb: 1, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("idle_absorb_pending_enforce", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, absorb: 1, enforce: true}),
+	muxModelOn("idle_absorb_pending_enforce", muxModelEventStartedMatching, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, enforce: true}),
+	muxModelOn("idle_absorb_pending_enforce", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeign, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("idle_absorb_pending_enforce", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeign, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("idle_absorb_pending_enforce", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelOn("idle_absorb_pending_enforce", muxModelEventAbsorbDebounce, muxModelState{phase: muxModelIdle, enforce: true}),
+	muxModelNever("idle_absorb_pending_enforce", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("idle_absorb_pending_enforce", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("idle_absorb_pending_enforce", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("idle_absorb_pending_enforce", muxModelEventSessionClose, muxModelState{phase: muxModelIdle, absorb: 1, enforce: true}),
+	muxModelOn("idle_absorb_pending_enforce", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, enforce: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("idle_absorb_pending_enforce", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("idle_absorb_pending_enforce", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("idle_absorb_pending_enforce", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelIdle, absorb: 1, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("idle_absorb_pending_resync_owed_1", muxModelEventSYN, muxModelState{phase: muxModelIdle, absorb: 1}, muxModelEffectPassiveSymbol, muxModelEffectActiveByte, muxModelEffectSessionReceived),
+	muxModelOn("idle_absorb_pending_resync_owed_1", muxModelEventSymbol, muxModelState{phase: muxModelIdle, absorb: 1, resyncOwed: 1}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("idle_absorb_pending_resync_owed_1", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, absorb: 1, resyncOwed: 1}),
+	muxModelOn("idle_absorb_pending_resync_owed_1", muxModelEventStartedMatching, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1}),
+	muxModelOn("idle_absorb_pending_resync_owed_1", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("idle_absorb_pending_resync_owed_1", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("idle_absorb_pending_resync_owed_1", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelOn("idle_absorb_pending_resync_owed_1", muxModelEventAbsorbDebounce, muxModelState{phase: muxModelIdle, resyncOwed: 1}),
+	muxModelNever("idle_absorb_pending_resync_owed_1", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("idle_absorb_pending_resync_owed_1", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("idle_absorb_pending_resync_owed_1", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("idle_absorb_pending_resync_owed_1", muxModelEventSessionClose, muxModelState{phase: muxModelIdle, absorb: 1, resyncOwed: 1}),
+	muxModelOn("idle_absorb_pending_resync_owed_1", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("idle_absorb_pending_resync_owed_1", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("idle_absorb_pending_resync_owed_1", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("idle_absorb_pending_resync_owed_1", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelIdle, absorb: 1, resyncOwed: 1}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("idle_blocking_call", muxModelEventSYN, muxModelState{phase: muxModelIdle, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("idle_blocking_call", muxModelEventSymbol, muxModelState{phase: muxModelIdle, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("idle_blocking_call", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, blocking: true, blockingUpstream: true}),
+	muxModelOn("idle_blocking_call", muxModelEventStartedMatching, muxModelState{phase: muxModelIdle, blocking: true, blockingUpstream: true}),
+	muxModelOn("idle_blocking_call", muxModelEventStartedOther, muxModelState{phase: muxModelIdle, blocking: true, blockingUpstream: true}),
+	muxModelOn("idle_blocking_call", muxModelEventFailed, muxModelState{phase: muxModelIdle, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("idle_blocking_call", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("idle_blocking_call", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("idle_blocking_call", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("idle_blocking_call", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("idle_blocking_call", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("idle_blocking_call", muxModelEventSessionClose, muxModelState{phase: muxModelIdle, blocking: true, blockingUpstream: true}),
+	muxModelOn("idle_blocking_call", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelOn("idle_blocking_call", muxModelEventStartCallReturns, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blockingUpstream: true}),
+	muxModelOn("idle_blocking_call", muxModelEventStartCallFails, muxModelState{phase: muxModelIdle, blockingUpstream: true}),
+	muxModelOn("idle_blocking_call", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelIdle, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("idle_blocking_call_deferred_loser", muxModelEventSYN, muxModelState{phase: muxModelIdle, blocking: true, deferred: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("idle_blocking_call_deferred_loser", muxModelEventSymbol, muxModelState{phase: muxModelIdle, blocking: true, deferred: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("idle_blocking_call_deferred_loser", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, blocking: true, deferred: true, blockingUpstream: true}),
+	muxModelOn("idle_blocking_call_deferred_loser", muxModelEventStartedMatching, muxModelState{phase: muxModelIdle, blocking: true, deferred: true, blockingUpstream: true}),
+	muxModelOn("idle_blocking_call_deferred_loser", muxModelEventStartedOther, muxModelState{phase: muxModelIdle, blocking: true, deferred: true, blockingUpstream: true}),
+	muxModelOn("idle_blocking_call_deferred_loser", muxModelEventFailed, muxModelState{phase: muxModelIdle, blocking: true, deferred: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("idle_blocking_call_deferred_loser", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("idle_blocking_call_deferred_loser", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("idle_blocking_call_deferred_loser", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("idle_blocking_call_deferred_loser", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("idle_blocking_call_deferred_loser", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("idle_blocking_call_deferred_loser", muxModelEventSessionClose, muxModelState{phase: muxModelIdle, blocking: true, deferred: true, blockingUpstream: true}),
+	muxModelOn("idle_blocking_call_deferred_loser", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset, muxModelEffectResultError),
+	muxModelOn("idle_blocking_call_deferred_loser", muxModelEventStartCallReturns, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 2, blockingUpstream: true}, muxModelEffectResultLost),
+	muxModelOn("idle_blocking_call_deferred_loser", muxModelEventStartCallFails, muxModelState{phase: muxModelIdle, blockingUpstream: true}, muxModelEffectResultError),
+	muxModelOn("idle_blocking_call_deferred_loser", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelIdle, blocking: true, deferred: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("idle_blocking_call_resync_owed_1_blocking_upstream", muxModelEventSYN, muxModelState{phase: muxModelIdle, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectActiveByte, muxModelEffectSessionReceived),
+	muxModelOn("idle_blocking_call_resync_owed_1_blocking_upstream", muxModelEventSymbol, muxModelState{phase: muxModelIdle, blocking: true, resyncOwed: 1, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("idle_blocking_call_resync_owed_1_blocking_upstream", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, blocking: true, resyncOwed: 1, blockingUpstream: true}),
+	muxModelOn("idle_blocking_call_resync_owed_1_blocking_upstream", muxModelEventStartedMatching, muxModelState{phase: muxModelIdle, blocking: true, resyncOwed: 1, blockingUpstream: true}),
+	muxModelOn("idle_blocking_call_resync_owed_1_blocking_upstream", muxModelEventStartedOther, muxModelState{phase: muxModelIdle, blocking: true, resyncOwed: 1, blockingUpstream: true}),
+	muxModelOn("idle_blocking_call_resync_owed_1_blocking_upstream", muxModelEventFailed, muxModelState{phase: muxModelIdle, blocking: true, resyncOwed: 1, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("idle_blocking_call_resync_owed_1_blocking_upstream", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("idle_blocking_call_resync_owed_1_blocking_upstream", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("idle_blocking_call_resync_owed_1_blocking_upstream", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("idle_blocking_call_resync_owed_1_blocking_upstream", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("idle_blocking_call_resync_owed_1_blocking_upstream", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("idle_blocking_call_resync_owed_1_blocking_upstream", muxModelEventSessionClose, muxModelState{phase: muxModelIdle, blocking: true, resyncOwed: 1, blockingUpstream: true}),
+	muxModelOn("idle_blocking_call_resync_owed_1_blocking_upstream", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelOn("idle_blocking_call_resync_owed_1_blocking_upstream", muxModelEventStartCallReturns, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1, blockingUpstream: true}),
+	muxModelOn("idle_blocking_call_resync_owed_1_blocking_upstream", muxModelEventStartCallFails, muxModelState{phase: muxModelIdle, resyncOwed: 1, blockingUpstream: true}),
+	muxModelOn("idle_blocking_call_resync_owed_1_blocking_upstream", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelIdle, blocking: true, resyncOwed: 1, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("idle_blocking_upstream", muxModelEventSYN, muxModelState{phase: muxModelIdle, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("idle_blocking_upstream", muxModelEventSymbol, muxModelState{phase: muxModelIdle, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("idle_blocking_upstream", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, blockingUpstream: true}),
+	muxModelOn("idle_blocking_upstream", muxModelEventStartedMatching, muxModelState{phase: muxModelIdle, blockingUpstream: true}),
+	muxModelOn("idle_blocking_upstream", muxModelEventStartedOther, muxModelState{phase: muxModelIdle, blockingUpstream: true}),
+	muxModelOn("idle_blocking_upstream", muxModelEventFailed, muxModelState{phase: muxModelIdle, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("idle_blocking_upstream", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("idle_blocking_upstream", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("idle_blocking_upstream", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("idle_blocking_upstream", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("idle_blocking_upstream", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("idle_blocking_upstream", muxModelEventSessionClose, muxModelState{phase: muxModelIdle, blockingUpstream: true}),
+	muxModelOn("idle_blocking_upstream", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("idle_blocking_upstream", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("idle_blocking_upstream", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("idle_blocking_upstream", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelIdle, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("idle_enforce", muxModelEventSYN, muxModelState{phase: muxModelIdle, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("idle_enforce", muxModelEventSymbol, muxModelState{phase: muxModelIdle, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("idle_enforce", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, enforce: true}),
+	muxModelOn("idle_enforce", muxModelEventStartedMatching, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, enforce: true}),
+	muxModelOn("idle_enforce", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeign, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("idle_enforce", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeign, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("idle_enforce", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("idle_enforce", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("idle_enforce", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("idle_enforce", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("idle_enforce", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("idle_enforce", muxModelEventSessionClose, muxModelState{phase: muxModelIdle, enforce: true}),
+	muxModelOn("idle_enforce", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, enforce: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("idle_enforce", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("idle_enforce", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("idle_enforce", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelIdle, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("idle_reset_blocking_upstream", muxModelEventSYN, muxModelState{phase: muxModelIdle, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("idle_reset_blocking_upstream", muxModelEventSymbol, muxModelState{phase: muxModelIdle, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("idle_reset_blocking_upstream", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, recovery: arbitrationRecoveryReset, blockingUpstream: true}),
+	muxModelOn("idle_reset_blocking_upstream", muxModelEventStartedMatching, muxModelState{phase: muxModelIdle, blockingUpstream: true}),
+	muxModelOn("idle_reset_blocking_upstream", muxModelEventStartedOther, muxModelState{phase: muxModelIdle, blockingUpstream: true}),
+	muxModelOn("idle_reset_blocking_upstream", muxModelEventFailed, muxModelState{phase: muxModelIdle, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("idle_reset_blocking_upstream", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("idle_reset_blocking_upstream", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("idle_reset_blocking_upstream", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("idle_reset_blocking_upstream", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("idle_reset_blocking_upstream", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("idle_reset_blocking_upstream", muxModelEventSessionClose, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}),
+	muxModelOn("idle_reset_blocking_upstream", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("idle_reset_blocking_upstream", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("idle_reset_blocking_upstream", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("idle_reset_blocking_upstream", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelIdle, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("idle_reset_enforce", muxModelEventSYN, muxModelState{phase: muxModelIdle, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("idle_reset_enforce", muxModelEventSymbol, muxModelState{phase: muxModelIdle, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("idle_reset_enforce", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, recovery: arbitrationRecoveryReset, enforce: true}),
+	muxModelOn("idle_reset_enforce", muxModelEventStartedMatching, muxModelState{phase: muxModelIdle, enforce: true}),
+	muxModelOn("idle_reset_enforce", muxModelEventStartedOther, muxModelState{phase: muxModelIdle, enforce: true}),
+	muxModelOn("idle_reset_enforce", muxModelEventFailed, muxModelState{phase: muxModelIdle, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("idle_reset_enforce", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("idle_reset_enforce", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("idle_reset_enforce", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("idle_reset_enforce", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("idle_reset_enforce", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("idle_reset_enforce", muxModelEventSessionClose, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, enforce: true}),
+	muxModelOn("idle_reset_enforce", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, enforce: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("idle_reset_enforce", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("idle_reset_enforce", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("idle_reset_enforce", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelIdle, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("idle_resync_owed_1", muxModelEventSYN, muxModelState{phase: muxModelIdle}, muxModelEffectPassiveSymbol, muxModelEffectActiveByte, muxModelEffectSessionReceived),
+	muxModelOn("idle_resync_owed_1", muxModelEventSymbol, muxModelState{phase: muxModelIdle, resyncOwed: 1}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("idle_resync_owed_1", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, resyncOwed: 1}),
+	muxModelOn("idle_resync_owed_1", muxModelEventStartedMatching, muxModelState{phase: muxModelIdle, resyncOwed: 1}),
+	muxModelOn("idle_resync_owed_1", muxModelEventStartedOther, muxModelState{phase: muxModelIdle, resyncOwed: 1}),
+	muxModelOn("idle_resync_owed_1", muxModelEventFailed, muxModelState{phase: muxModelIdle, resyncOwed: 1}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("idle_resync_owed_1", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("idle_resync_owed_1", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("idle_resync_owed_1", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("idle_resync_owed_1", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("idle_resync_owed_1", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("idle_resync_owed_1", muxModelEventSessionClose, muxModelState{phase: muxModelIdle, resyncOwed: 1}),
+	muxModelOn("idle_resync_owed_1", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("idle_resync_owed_1", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("idle_resync_owed_1", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("idle_resync_owed_1", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelIdle, resyncOwed: 1}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("idle_resync_owed_1_blocking_upstream", muxModelEventSYN, muxModelState{phase: muxModelIdle, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectActiveByte, muxModelEffectSessionReceived),
+	muxModelOn("idle_resync_owed_1_blocking_upstream", muxModelEventSymbol, muxModelState{phase: muxModelIdle, resyncOwed: 1, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("idle_resync_owed_1_blocking_upstream", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, resyncOwed: 1, blockingUpstream: true}),
+	muxModelOn("idle_resync_owed_1_blocking_upstream", muxModelEventStartedMatching, muxModelState{phase: muxModelIdle, resyncOwed: 1, blockingUpstream: true}),
+	muxModelOn("idle_resync_owed_1_blocking_upstream", muxModelEventStartedOther, muxModelState{phase: muxModelIdle, resyncOwed: 1, blockingUpstream: true}),
+	muxModelOn("idle_resync_owed_1_blocking_upstream", muxModelEventFailed, muxModelState{phase: muxModelIdle, resyncOwed: 1, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("idle_resync_owed_1_blocking_upstream", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("idle_resync_owed_1_blocking_upstream", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("idle_resync_owed_1_blocking_upstream", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("idle_resync_owed_1_blocking_upstream", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("idle_resync_owed_1_blocking_upstream", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("idle_resync_owed_1_blocking_upstream", muxModelEventSessionClose, muxModelState{phase: muxModelIdle, resyncOwed: 1, blockingUpstream: true}),
+	muxModelOn("idle_resync_owed_1_blocking_upstream", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("idle_resync_owed_1_blocking_upstream", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("idle_resync_owed_1_blocking_upstream", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("idle_resync_owed_1_blocking_upstream", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelIdle, resyncOwed: 1, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("idle_resync_owed_2", muxModelEventSYN, muxModelState{phase: muxModelIdle, resyncOwed: 1}, muxModelEffectPassiveSymbol, muxModelEffectActiveByte, muxModelEffectSessionReceived),
+	muxModelOn("idle_resync_owed_2", muxModelEventSymbol, muxModelState{phase: muxModelIdle, resyncOwed: 2}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("idle_resync_owed_2", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, resyncOwed: 2}),
+	muxModelOn("idle_resync_owed_2", muxModelEventStartedMatching, muxModelState{phase: muxModelIdle, resyncOwed: 2}),
+	muxModelOn("idle_resync_owed_2", muxModelEventStartedOther, muxModelState{phase: muxModelIdle, resyncOwed: 2}),
+	muxModelOn("idle_resync_owed_2", muxModelEventFailed, muxModelState{phase: muxModelIdle, resyncOwed: 2}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("idle_resync_owed_2", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("idle_resync_owed_2", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("idle_resync_owed_2", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("idle_resync_owed_2", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("idle_resync_owed_2", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("idle_resync_owed_2", muxModelEventSessionClose, muxModelState{phase: muxModelIdle, resyncOwed: 2}),
+	muxModelOn("idle_resync_owed_2", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("idle_resync_owed_2", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("idle_resync_owed_2", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("idle_resync_owed_2", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelIdle, resyncOwed: 2}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("idle_resync_owed_2_blocking_upstream", muxModelEventSYN, muxModelState{phase: muxModelIdle, resyncOwed: 1, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectActiveByte, muxModelEffectSessionReceived),
+	muxModelOn("idle_resync_owed_2_blocking_upstream", muxModelEventSymbol, muxModelState{phase: muxModelIdle, resyncOwed: 2, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("idle_resync_owed_2_blocking_upstream", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, resyncOwed: 2, blockingUpstream: true}),
+	muxModelOn("idle_resync_owed_2_blocking_upstream", muxModelEventStartedMatching, muxModelState{phase: muxModelIdle, resyncOwed: 2, blockingUpstream: true}),
+	muxModelOn("idle_resync_owed_2_blocking_upstream", muxModelEventStartedOther, muxModelState{phase: muxModelIdle, resyncOwed: 2, blockingUpstream: true}),
+	muxModelOn("idle_resync_owed_2_blocking_upstream", muxModelEventFailed, muxModelState{phase: muxModelIdle, resyncOwed: 2, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("idle_resync_owed_2_blocking_upstream", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("idle_resync_owed_2_blocking_upstream", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("idle_resync_owed_2_blocking_upstream", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("idle_resync_owed_2_blocking_upstream", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("idle_resync_owed_2_blocking_upstream", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("idle_resync_owed_2_blocking_upstream", muxModelEventSessionClose, muxModelState{phase: muxModelIdle, resyncOwed: 2, blockingUpstream: true}),
+	muxModelOn("idle_resync_owed_2_blocking_upstream", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("idle_resync_owed_2_blocking_upstream", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("idle_resync_owed_2_blocking_upstream", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("idle_resync_owed_2_blocking_upstream", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelIdle, resyncOwed: 2, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("reset_recovery", muxModelEventSYN, muxModelState{phase: muxModelIdle}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("reset_recovery", muxModelEventSymbol, muxModelState{phase: muxModelIdle}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("reset_recovery", muxModelEventBid, muxModelState{phase: muxModelBidsQueued, recovery: arbitrationRecoveryReset}),
+	muxModelOn("reset_recovery", muxModelEventStartedMatching, muxModelState{phase: muxModelIdle}),
+	muxModelOn("reset_recovery", muxModelEventStartedOther, muxModelState{phase: muxModelIdle}),
+	muxModelOn("reset_recovery", muxModelEventFailed, muxModelState{phase: muxModelIdle}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("reset_recovery", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("reset_recovery", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("reset_recovery", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("reset_recovery", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("reset_recovery", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("reset_recovery", muxModelEventSessionClose, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset}),
+	muxModelOn("reset_recovery", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("reset_recovery", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("reset_recovery", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("reset_recovery", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelIdle}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("session_owned", muxModelEventSYN, muxModelState{phase: muxModelSessionOwned}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned", muxModelEventSymbol, muxModelState{phase: muxModelSessionOwned}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned", muxModelEventBid, muxModelState{phase: muxModelSessionOwned}),
+	muxModelOn("session_owned", muxModelEventStartedMatching, muxModelState{phase: muxModelSessionOwned}),
+	muxModelOn("session_owned", muxModelEventStartedOther, muxModelState{phase: muxModelSessionOwned}),
+	muxModelOn("session_owned", muxModelEventFailed, muxModelState{phase: muxModelSessionOwned}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("session_owned", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("session_owned", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelOn("session_owned", muxModelEventIdleGrace, muxModelState{phase: muxModelIdle}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned", muxModelEventOwnershipLimit, muxModelState{phase: muxModelIdle}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned", muxModelEventAbandonWatchdog, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN}),
+	muxModelOn("session_owned", muxModelEventSessionClose, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN}),
+	muxModelOn("session_owned", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("session_owned", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("session_owned", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("session_owned", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelSessionOwned}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("session_owned_at_syn", muxModelEventSYN, muxModelState{phase: muxModelSessionOwned, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_at_syn", muxModelEventSymbol, muxModelState{phase: muxModelSessionOwned, recovery: arbitrationRecoveryAtSYN, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_at_syn", muxModelEventBid, muxModelState{phase: muxModelSessionOwned, recovery: arbitrationRecoveryAtSYN, blockingUpstream: true}),
+	muxModelOn("session_owned_at_syn", muxModelEventStartedMatching, muxModelState{phase: muxModelSessionOwned, recovery: arbitrationRecoveryAtSYN, blockingUpstream: true}),
+	muxModelOn("session_owned_at_syn", muxModelEventStartedOther, muxModelState{phase: muxModelSessionOwned, recovery: arbitrationRecoveryAtSYN, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_at_syn", muxModelEventFailed, muxModelState{phase: muxModelSessionOwned, recovery: arbitrationRecoveryAtSYN, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("session_owned_at_syn", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("session_owned_at_syn", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelOn("session_owned_at_syn", muxModelEventIdleGrace, muxModelState{phase: muxModelIdle, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_at_syn", muxModelEventOwnershipLimit, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_at_syn", muxModelEventAbandonWatchdog, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blockingUpstream: true}),
+	muxModelOn("session_owned_at_syn", muxModelEventSessionClose, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blockingUpstream: true}),
+	muxModelOn("session_owned_at_syn", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("session_owned_at_syn", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("session_owned_at_syn", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("session_owned_at_syn", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelSessionOwned, recovery: arbitrationRecoveryAtSYN, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("session_owned_at_syn_other_blocking_upstream", muxModelEventSYN, muxModelState{phase: muxModelSessionOwned, otherOwner: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_at_syn_other_blocking_upstream", muxModelEventSymbol, muxModelState{phase: muxModelSessionOwned, recovery: arbitrationRecoveryAtSYN, otherOwner: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_at_syn_other_blocking_upstream", muxModelEventBid, muxModelState{phase: muxModelSessionOwned, recovery: arbitrationRecoveryAtSYN, otherOwner: true, blockingUpstream: true}),
+	muxModelOn("session_owned_at_syn_other_blocking_upstream", muxModelEventStartedMatching, muxModelState{phase: muxModelSessionOwned, recovery: arbitrationRecoveryAtSYN, otherOwner: true, blockingUpstream: true}),
+	muxModelOn("session_owned_at_syn_other_blocking_upstream", muxModelEventStartedOther, muxModelState{phase: muxModelSessionOwned, recovery: arbitrationRecoveryAtSYN, otherOwner: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_at_syn_other_blocking_upstream", muxModelEventFailed, muxModelState{phase: muxModelSessionOwned, recovery: arbitrationRecoveryAtSYN, otherOwner: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("session_owned_at_syn_other_blocking_upstream", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("session_owned_at_syn_other_blocking_upstream", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelOn("session_owned_at_syn_other_blocking_upstream", muxModelEventIdleGrace, muxModelState{phase: muxModelIdle, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_at_syn_other_blocking_upstream", muxModelEventOwnershipLimit, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_at_syn_other_blocking_upstream", muxModelEventAbandonWatchdog, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blockingUpstream: true}),
+	muxModelOn("session_owned_at_syn_other_blocking_upstream", muxModelEventSessionClose, muxModelState{phase: muxModelSessionOwned, recovery: arbitrationRecoveryAtSYN, otherOwner: true, blockingUpstream: true}),
+	muxModelOn("session_owned_at_syn_other_blocking_upstream", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("session_owned_at_syn_other_blocking_upstream", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("session_owned_at_syn_other_blocking_upstream", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("session_owned_at_syn_other_blocking_upstream", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelSessionOwned, recovery: arbitrationRecoveryAtSYN, otherOwner: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("session_owned_at_syn_other_resync_owed_1_blocking_upstream", muxModelEventSYN, muxModelState{phase: muxModelSessionOwned, otherOwner: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectActiveByte, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_at_syn_other_resync_owed_1_blocking_upstream", muxModelEventSymbol, muxModelState{phase: muxModelSessionOwned, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1, otherOwner: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_at_syn_other_resync_owed_1_blocking_upstream", muxModelEventBid, muxModelState{phase: muxModelSessionOwned, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1, otherOwner: true, blockingUpstream: true}),
+	muxModelOn("session_owned_at_syn_other_resync_owed_1_blocking_upstream", muxModelEventStartedMatching, muxModelState{phase: muxModelSessionOwned, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1, otherOwner: true, blockingUpstream: true}),
+	muxModelOn("session_owned_at_syn_other_resync_owed_1_blocking_upstream", muxModelEventStartedOther, muxModelState{phase: muxModelSessionOwned, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1, otherOwner: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_at_syn_other_resync_owed_1_blocking_upstream", muxModelEventFailed, muxModelState{phase: muxModelSessionOwned, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1, otherOwner: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("session_owned_at_syn_other_resync_owed_1_blocking_upstream", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("session_owned_at_syn_other_resync_owed_1_blocking_upstream", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelOn("session_owned_at_syn_other_resync_owed_1_blocking_upstream", muxModelEventIdleGrace, muxModelState{phase: muxModelIdle, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectActiveByte, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_at_syn_other_resync_owed_1_blocking_upstream", muxModelEventOwnershipLimit, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_at_syn_other_resync_owed_1_blocking_upstream", muxModelEventAbandonWatchdog, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1, blockingUpstream: true}),
+	muxModelOn("session_owned_at_syn_other_resync_owed_1_blocking_upstream", muxModelEventSessionClose, muxModelState{phase: muxModelSessionOwned, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1, otherOwner: true, blockingUpstream: true}),
+	muxModelOn("session_owned_at_syn_other_resync_owed_1_blocking_upstream", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("session_owned_at_syn_other_resync_owed_1_blocking_upstream", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("session_owned_at_syn_other_resync_owed_1_blocking_upstream", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("session_owned_at_syn_other_resync_owed_1_blocking_upstream", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelSessionOwned, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1, otherOwner: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("session_owned_at_syn_resync_owed_2", muxModelEventSYN, muxModelState{phase: muxModelSessionOwned, resyncOwed: 1, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectActiveByte, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_at_syn_resync_owed_2", muxModelEventSymbol, muxModelState{phase: muxModelSessionOwned, recovery: arbitrationRecoveryAtSYN, resyncOwed: 2, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_at_syn_resync_owed_2", muxModelEventBid, muxModelState{phase: muxModelSessionOwned, recovery: arbitrationRecoveryAtSYN, resyncOwed: 2, blockingUpstream: true}),
+	muxModelOn("session_owned_at_syn_resync_owed_2", muxModelEventStartedMatching, muxModelState{phase: muxModelSessionOwned, recovery: arbitrationRecoveryAtSYN, resyncOwed: 2, blockingUpstream: true}),
+	muxModelOn("session_owned_at_syn_resync_owed_2", muxModelEventStartedOther, muxModelState{phase: muxModelSessionOwned, recovery: arbitrationRecoveryAtSYN, resyncOwed: 2, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_at_syn_resync_owed_2", muxModelEventFailed, muxModelState{phase: muxModelSessionOwned, recovery: arbitrationRecoveryAtSYN, resyncOwed: 2, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("session_owned_at_syn_resync_owed_2", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("session_owned_at_syn_resync_owed_2", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelOn("session_owned_at_syn_resync_owed_2", muxModelEventIdleGrace, muxModelState{phase: muxModelIdle, resyncOwed: 1, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectActiveByte, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_at_syn_resync_owed_2", muxModelEventOwnershipLimit, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 2, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_at_syn_resync_owed_2", muxModelEventAbandonWatchdog, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 2, blockingUpstream: true}),
+	muxModelOn("session_owned_at_syn_resync_owed_2", muxModelEventSessionClose, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 2, blockingUpstream: true}),
+	muxModelOn("session_owned_at_syn_resync_owed_2", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("session_owned_at_syn_resync_owed_2", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("session_owned_at_syn_resync_owed_2", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("session_owned_at_syn_resync_owed_2", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelSessionOwned, recovery: arbitrationRecoveryAtSYN, resyncOwed: 2, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("session_owned_blocking_call", muxModelEventSYN, muxModelState{phase: muxModelSessionOwned, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_blocking_call", muxModelEventSymbol, muxModelState{phase: muxModelSessionOwned, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_blocking_call", muxModelEventBid, muxModelState{phase: muxModelSessionOwned, blocking: true, blockingUpstream: true}),
+	muxModelOn("session_owned_blocking_call", muxModelEventStartedMatching, muxModelState{phase: muxModelSessionOwned, blocking: true, blockingUpstream: true}),
+	muxModelOn("session_owned_blocking_call", muxModelEventStartedOther, muxModelState{phase: muxModelSessionOwned, blocking: true, blockingUpstream: true}),
+	muxModelOn("session_owned_blocking_call", muxModelEventFailed, muxModelState{phase: muxModelSessionOwned, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("session_owned_blocking_call", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("session_owned_blocking_call", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelOn("session_owned_blocking_call", muxModelEventIdleGrace, muxModelState{phase: muxModelIdle, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_blocking_call", muxModelEventOwnershipLimit, muxModelState{phase: muxModelIdle, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_blocking_call", muxModelEventAbandonWatchdog, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, blockingUpstream: true}),
+	muxModelOn("session_owned_blocking_call", muxModelEventSessionClose, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, blockingUpstream: true}),
+	muxModelOn("session_owned_blocking_call", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelOn("session_owned_blocking_call", muxModelEventStartCallReturns, muxModelState{phase: muxModelSessionOwned, recovery: arbitrationRecoveryAtSYN, blockingUpstream: true}),
+	muxModelOn("session_owned_blocking_call", muxModelEventStartCallFails, muxModelState{phase: muxModelSessionOwned, blockingUpstream: true}),
+	muxModelOn("session_owned_blocking_call", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelSessionOwned, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("session_owned_blocking_call_deferred_loser", muxModelEventSYN, muxModelState{phase: muxModelSessionOwned, blocking: true, deferred: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_blocking_call_deferred_loser", muxModelEventSymbol, muxModelState{phase: muxModelSessionOwned, blocking: true, deferred: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_blocking_call_deferred_loser", muxModelEventBid, muxModelState{phase: muxModelSessionOwned, blocking: true, deferred: true, blockingUpstream: true}),
+	muxModelOn("session_owned_blocking_call_deferred_loser", muxModelEventStartedMatching, muxModelState{phase: muxModelSessionOwned, blocking: true, deferred: true, blockingUpstream: true}),
+	muxModelOn("session_owned_blocking_call_deferred_loser", muxModelEventStartedOther, muxModelState{phase: muxModelSessionOwned, blocking: true, deferred: true, blockingUpstream: true}),
+	muxModelOn("session_owned_blocking_call_deferred_loser", muxModelEventFailed, muxModelState{phase: muxModelSessionOwned, blocking: true, deferred: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("session_owned_blocking_call_deferred_loser", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("session_owned_blocking_call_deferred_loser", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelOn("session_owned_blocking_call_deferred_loser", muxModelEventIdleGrace, muxModelState{phase: muxModelIdle, blocking: true, deferred: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_blocking_call_deferred_loser", muxModelEventOwnershipLimit, muxModelState{phase: muxModelIdle, blocking: true, deferred: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_blocking_call_deferred_loser", muxModelEventAbandonWatchdog, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, deferred: true, blockingUpstream: true}),
+	muxModelOn("session_owned_blocking_call_deferred_loser", muxModelEventSessionClose, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, deferred: true, blockingUpstream: true}),
+	muxModelOn("session_owned_blocking_call_deferred_loser", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset, muxModelEffectResultError),
+	muxModelOn("session_owned_blocking_call_deferred_loser", muxModelEventStartCallReturns, muxModelState{phase: muxModelSessionOwned, recovery: arbitrationRecoveryAtSYN, resyncOwed: 2, blockingUpstream: true}, muxModelEffectResultLost),
+	muxModelOn("session_owned_blocking_call_deferred_loser", muxModelEventStartCallFails, muxModelState{phase: muxModelSessionOwned, blockingUpstream: true}, muxModelEffectResultError),
+	muxModelOn("session_owned_blocking_call_deferred_loser", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelSessionOwned, blocking: true, deferred: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("session_owned_blocking_upstream", muxModelEventSYN, muxModelState{phase: muxModelSessionOwned, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_blocking_upstream", muxModelEventSymbol, muxModelState{phase: muxModelSessionOwned, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_blocking_upstream", muxModelEventBid, muxModelState{phase: muxModelSessionOwned, blockingUpstream: true}),
+	muxModelOn("session_owned_blocking_upstream", muxModelEventStartedMatching, muxModelState{phase: muxModelSessionOwned, blockingUpstream: true}),
+	muxModelOn("session_owned_blocking_upstream", muxModelEventStartedOther, muxModelState{phase: muxModelSessionOwned, blockingUpstream: true}),
+	muxModelOn("session_owned_blocking_upstream", muxModelEventFailed, muxModelState{phase: muxModelSessionOwned, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("session_owned_blocking_upstream", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("session_owned_blocking_upstream", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelOn("session_owned_blocking_upstream", muxModelEventIdleGrace, muxModelState{phase: muxModelIdle, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_blocking_upstream", muxModelEventOwnershipLimit, muxModelState{phase: muxModelIdle, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_blocking_upstream", muxModelEventAbandonWatchdog, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blockingUpstream: true}),
+	muxModelOn("session_owned_blocking_upstream", muxModelEventSessionClose, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blockingUpstream: true}),
+	muxModelOn("session_owned_blocking_upstream", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("session_owned_blocking_upstream", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("session_owned_blocking_upstream", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("session_owned_blocking_upstream", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelSessionOwned, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("session_owned_other", muxModelEventSYN, muxModelState{phase: muxModelSessionOwned, otherOwner: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_other", muxModelEventSymbol, muxModelState{phase: muxModelSessionOwned, otherOwner: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_other", muxModelEventBid, muxModelState{phase: muxModelSessionOwned, otherOwner: true}),
+	muxModelOn("session_owned_other", muxModelEventStartedMatching, muxModelState{phase: muxModelSessionOwned, otherOwner: true}),
+	muxModelOn("session_owned_other", muxModelEventStartedOther, muxModelState{phase: muxModelSessionOwned, otherOwner: true}),
+	muxModelOn("session_owned_other", muxModelEventFailed, muxModelState{phase: muxModelSessionOwned, otherOwner: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("session_owned_other", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("session_owned_other", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelOn("session_owned_other", muxModelEventIdleGrace, muxModelState{phase: muxModelIdle}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_other", muxModelEventOwnershipLimit, muxModelState{phase: muxModelIdle}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_other", muxModelEventAbandonWatchdog, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN}),
+	muxModelOn("session_owned_other", muxModelEventSessionClose, muxModelState{phase: muxModelSessionOwned, otherOwner: true}),
+	muxModelOn("session_owned_other", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("session_owned_other", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("session_owned_other", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("session_owned_other", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelSessionOwned, otherOwner: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("session_owned_other_blocking_call_blocking_upstream", muxModelEventSYN, muxModelState{phase: muxModelSessionOwned, blocking: true, otherOwner: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_other_blocking_call_blocking_upstream", muxModelEventSymbol, muxModelState{phase: muxModelSessionOwned, blocking: true, otherOwner: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_other_blocking_call_blocking_upstream", muxModelEventBid, muxModelState{phase: muxModelSessionOwned, blocking: true, otherOwner: true, blockingUpstream: true}),
+	muxModelOn("session_owned_other_blocking_call_blocking_upstream", muxModelEventStartedMatching, muxModelState{phase: muxModelSessionOwned, blocking: true, otherOwner: true, blockingUpstream: true}),
+	muxModelOn("session_owned_other_blocking_call_blocking_upstream", muxModelEventStartedOther, muxModelState{phase: muxModelSessionOwned, blocking: true, otherOwner: true, blockingUpstream: true}),
+	muxModelOn("session_owned_other_blocking_call_blocking_upstream", muxModelEventFailed, muxModelState{phase: muxModelSessionOwned, blocking: true, otherOwner: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("session_owned_other_blocking_call_blocking_upstream", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("session_owned_other_blocking_call_blocking_upstream", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelOn("session_owned_other_blocking_call_blocking_upstream", muxModelEventIdleGrace, muxModelState{phase: muxModelIdle, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_other_blocking_call_blocking_upstream", muxModelEventOwnershipLimit, muxModelState{phase: muxModelIdle, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_other_blocking_call_blocking_upstream", muxModelEventAbandonWatchdog, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, blockingUpstream: true}),
+	muxModelOn("session_owned_other_blocking_call_blocking_upstream", muxModelEventSessionClose, muxModelState{phase: muxModelSessionOwned, blocking: true, otherOwner: true, blockingUpstream: true}),
+	muxModelOn("session_owned_other_blocking_call_blocking_upstream", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelOn("session_owned_other_blocking_call_blocking_upstream", muxModelEventStartCallReturns, muxModelState{phase: muxModelSessionOwned, recovery: arbitrationRecoveryAtSYN, otherOwner: true, blockingUpstream: true}),
+	muxModelOn("session_owned_other_blocking_call_blocking_upstream", muxModelEventStartCallFails, muxModelState{phase: muxModelSessionOwned, otherOwner: true, blockingUpstream: true}),
+	muxModelOn("session_owned_other_blocking_call_blocking_upstream", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelSessionOwned, blocking: true, otherOwner: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("session_owned_other_blocking_call_resync_owed_1_blocking_upstream", muxModelEventSYN, muxModelState{phase: muxModelSessionOwned, blocking: true, otherOwner: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectActiveByte, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_other_blocking_call_resync_owed_1_blocking_upstream", muxModelEventSymbol, muxModelState{phase: muxModelSessionOwned, blocking: true, resyncOwed: 1, otherOwner: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_other_blocking_call_resync_owed_1_blocking_upstream", muxModelEventBid, muxModelState{phase: muxModelSessionOwned, blocking: true, resyncOwed: 1, otherOwner: true, blockingUpstream: true}),
+	muxModelOn("session_owned_other_blocking_call_resync_owed_1_blocking_upstream", muxModelEventStartedMatching, muxModelState{phase: muxModelSessionOwned, blocking: true, resyncOwed: 1, otherOwner: true, blockingUpstream: true}),
+	muxModelOn("session_owned_other_blocking_call_resync_owed_1_blocking_upstream", muxModelEventStartedOther, muxModelState{phase: muxModelSessionOwned, blocking: true, resyncOwed: 1, otherOwner: true, blockingUpstream: true}),
+	muxModelOn("session_owned_other_blocking_call_resync_owed_1_blocking_upstream", muxModelEventFailed, muxModelState{phase: muxModelSessionOwned, blocking: true, resyncOwed: 1, otherOwner: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("session_owned_other_blocking_call_resync_owed_1_blocking_upstream", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("session_owned_other_blocking_call_resync_owed_1_blocking_upstream", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelOn("session_owned_other_blocking_call_resync_owed_1_blocking_upstream", muxModelEventIdleGrace, muxModelState{phase: muxModelIdle, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectActiveByte, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_other_blocking_call_resync_owed_1_blocking_upstream", muxModelEventOwnershipLimit, muxModelState{phase: muxModelIdle, blocking: true, resyncOwed: 1, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_other_blocking_call_resync_owed_1_blocking_upstream", muxModelEventAbandonWatchdog, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, resyncOwed: 1, blockingUpstream: true}),
+	muxModelOn("session_owned_other_blocking_call_resync_owed_1_blocking_upstream", muxModelEventSessionClose, muxModelState{phase: muxModelSessionOwned, blocking: true, resyncOwed: 1, otherOwner: true, blockingUpstream: true}),
+	muxModelOn("session_owned_other_blocking_call_resync_owed_1_blocking_upstream", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelOn("session_owned_other_blocking_call_resync_owed_1_blocking_upstream", muxModelEventStartCallReturns, muxModelState{phase: muxModelSessionOwned, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1, otherOwner: true, blockingUpstream: true}),
+	muxModelOn("session_owned_other_blocking_call_resync_owed_1_blocking_upstream", muxModelEventStartCallFails, muxModelState{phase: muxModelSessionOwned, resyncOwed: 1, otherOwner: true, blockingUpstream: true}),
+	muxModelOn("session_owned_other_blocking_call_resync_owed_1_blocking_upstream", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelSessionOwned, blocking: true, resyncOwed: 1, otherOwner: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("session_owned_other_blocking_upstream", muxModelEventSYN, muxModelState{phase: muxModelSessionOwned, otherOwner: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_other_blocking_upstream", muxModelEventSymbol, muxModelState{phase: muxModelSessionOwned, otherOwner: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_other_blocking_upstream", muxModelEventBid, muxModelState{phase: muxModelSessionOwned, otherOwner: true, blockingUpstream: true}),
+	muxModelOn("session_owned_other_blocking_upstream", muxModelEventStartedMatching, muxModelState{phase: muxModelSessionOwned, otherOwner: true, blockingUpstream: true}),
+	muxModelOn("session_owned_other_blocking_upstream", muxModelEventStartedOther, muxModelState{phase: muxModelSessionOwned, otherOwner: true, blockingUpstream: true}),
+	muxModelOn("session_owned_other_blocking_upstream", muxModelEventFailed, muxModelState{phase: muxModelSessionOwned, otherOwner: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("session_owned_other_blocking_upstream", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("session_owned_other_blocking_upstream", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelOn("session_owned_other_blocking_upstream", muxModelEventIdleGrace, muxModelState{phase: muxModelIdle, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_other_blocking_upstream", muxModelEventOwnershipLimit, muxModelState{phase: muxModelIdle, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_other_blocking_upstream", muxModelEventAbandonWatchdog, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blockingUpstream: true}),
+	muxModelOn("session_owned_other_blocking_upstream", muxModelEventSessionClose, muxModelState{phase: muxModelSessionOwned, otherOwner: true, blockingUpstream: true}),
+	muxModelOn("session_owned_other_blocking_upstream", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("session_owned_other_blocking_upstream", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("session_owned_other_blocking_upstream", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("session_owned_other_blocking_upstream", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelSessionOwned, otherOwner: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("session_owned_other_enforce", muxModelEventSYN, muxModelState{phase: muxModelSessionOwned, otherOwner: true, enforce: true}),
+	muxModelOn("session_owned_other_enforce", muxModelEventSymbol, muxModelState{phase: muxModelSessionOwned, otherOwner: true, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_other_enforce", muxModelEventBid, muxModelState{phase: muxModelSessionOwned, otherOwner: true, enforce: true}),
+	muxModelOn("session_owned_other_enforce", muxModelEventStartedMatching, muxModelState{phase: muxModelSessionOwned, otherOwner: true, enforce: true}),
+	muxModelOn("session_owned_other_enforce", muxModelEventStartedOther, muxModelState{phase: muxModelSessionOwned, otherOwner: true, enforce: true}),
+	muxModelOn("session_owned_other_enforce", muxModelEventFailed, muxModelState{phase: muxModelSessionOwned, otherOwner: true, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("session_owned_other_enforce", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("session_owned_other_enforce", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelOn("session_owned_other_enforce", muxModelEventIdleGrace, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, enforce: true}),
+	muxModelOn("session_owned_other_enforce", muxModelEventOwnershipLimit, muxModelState{phase: muxModelIdle, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_other_enforce", muxModelEventAbandonWatchdog, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, enforce: true}),
+	muxModelOn("session_owned_other_enforce", muxModelEventSessionClose, muxModelState{phase: muxModelSessionOwned, otherOwner: true, enforce: true}),
+	muxModelOn("session_owned_other_enforce", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, enforce: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("session_owned_other_enforce", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("session_owned_other_enforce", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("session_owned_other_enforce", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelSessionOwned, otherOwner: true, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("session_owned_other_resync_owed_1_blocking_upstream", muxModelEventSYN, muxModelState{phase: muxModelSessionOwned, otherOwner: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectActiveByte, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_other_resync_owed_1_blocking_upstream", muxModelEventSymbol, muxModelState{phase: muxModelSessionOwned, resyncOwed: 1, otherOwner: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_other_resync_owed_1_blocking_upstream", muxModelEventBid, muxModelState{phase: muxModelSessionOwned, resyncOwed: 1, otherOwner: true, blockingUpstream: true}),
+	muxModelOn("session_owned_other_resync_owed_1_blocking_upstream", muxModelEventStartedMatching, muxModelState{phase: muxModelSessionOwned, resyncOwed: 1, otherOwner: true, blockingUpstream: true}),
+	muxModelOn("session_owned_other_resync_owed_1_blocking_upstream", muxModelEventStartedOther, muxModelState{phase: muxModelSessionOwned, resyncOwed: 1, otherOwner: true, blockingUpstream: true}),
+	muxModelOn("session_owned_other_resync_owed_1_blocking_upstream", muxModelEventFailed, muxModelState{phase: muxModelSessionOwned, resyncOwed: 1, otherOwner: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("session_owned_other_resync_owed_1_blocking_upstream", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("session_owned_other_resync_owed_1_blocking_upstream", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelOn("session_owned_other_resync_owed_1_blocking_upstream", muxModelEventIdleGrace, muxModelState{phase: muxModelIdle, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectActiveByte, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_other_resync_owed_1_blocking_upstream", muxModelEventOwnershipLimit, muxModelState{phase: muxModelIdle, resyncOwed: 1, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_other_resync_owed_1_blocking_upstream", muxModelEventAbandonWatchdog, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1, blockingUpstream: true}),
+	muxModelOn("session_owned_other_resync_owed_1_blocking_upstream", muxModelEventSessionClose, muxModelState{phase: muxModelSessionOwned, resyncOwed: 1, otherOwner: true, blockingUpstream: true}),
+	muxModelOn("session_owned_other_resync_owed_1_blocking_upstream", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("session_owned_other_resync_owed_1_blocking_upstream", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("session_owned_other_resync_owed_1_blocking_upstream", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("session_owned_other_resync_owed_1_blocking_upstream", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelSessionOwned, resyncOwed: 1, otherOwner: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("session_owned_resync_owed_1", muxModelEventSYN, muxModelState{phase: muxModelSessionOwned}, muxModelEffectPassiveSymbol, muxModelEffectActiveByte, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_resync_owed_1", muxModelEventSymbol, muxModelState{phase: muxModelSessionOwned, resyncOwed: 1}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_resync_owed_1", muxModelEventBid, muxModelState{phase: muxModelSessionOwned, resyncOwed: 1}),
+	muxModelOn("session_owned_resync_owed_1", muxModelEventStartedMatching, muxModelState{phase: muxModelSessionOwned, resyncOwed: 1}),
+	muxModelOn("session_owned_resync_owed_1", muxModelEventStartedOther, muxModelState{phase: muxModelSessionOwned, resyncOwed: 1}),
+	muxModelOn("session_owned_resync_owed_1", muxModelEventFailed, muxModelState{phase: muxModelSessionOwned, resyncOwed: 1}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("session_owned_resync_owed_1", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("session_owned_resync_owed_1", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelOn("session_owned_resync_owed_1", muxModelEventIdleGrace, muxModelState{phase: muxModelIdle}, muxModelEffectPassiveSymbol, muxModelEffectActiveByte, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_resync_owed_1", muxModelEventOwnershipLimit, muxModelState{phase: muxModelIdle, resyncOwed: 1}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_resync_owed_1", muxModelEventAbandonWatchdog, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1}),
+	muxModelOn("session_owned_resync_owed_1", muxModelEventSessionClose, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1}),
+	muxModelOn("session_owned_resync_owed_1", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("session_owned_resync_owed_1", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("session_owned_resync_owed_1", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("session_owned_resync_owed_1", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelSessionOwned, resyncOwed: 1}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("session_owned_resync_owed_1_blocking_upstream", muxModelEventSYN, muxModelState{phase: muxModelSessionOwned, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectActiveByte, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_resync_owed_1_blocking_upstream", muxModelEventSymbol, muxModelState{phase: muxModelSessionOwned, resyncOwed: 1, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_resync_owed_1_blocking_upstream", muxModelEventBid, muxModelState{phase: muxModelSessionOwned, resyncOwed: 1, blockingUpstream: true}),
+	muxModelOn("session_owned_resync_owed_1_blocking_upstream", muxModelEventStartedMatching, muxModelState{phase: muxModelSessionOwned, resyncOwed: 1, blockingUpstream: true}),
+	muxModelOn("session_owned_resync_owed_1_blocking_upstream", muxModelEventStartedOther, muxModelState{phase: muxModelSessionOwned, resyncOwed: 1, blockingUpstream: true}),
+	muxModelOn("session_owned_resync_owed_1_blocking_upstream", muxModelEventFailed, muxModelState{phase: muxModelSessionOwned, resyncOwed: 1, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("session_owned_resync_owed_1_blocking_upstream", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("session_owned_resync_owed_1_blocking_upstream", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelOn("session_owned_resync_owed_1_blocking_upstream", muxModelEventIdleGrace, muxModelState{phase: muxModelIdle, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectActiveByte, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_resync_owed_1_blocking_upstream", muxModelEventOwnershipLimit, muxModelState{phase: muxModelIdle, resyncOwed: 1, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_resync_owed_1_blocking_upstream", muxModelEventAbandonWatchdog, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1, blockingUpstream: true}),
+	muxModelOn("session_owned_resync_owed_1_blocking_upstream", muxModelEventSessionClose, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1, blockingUpstream: true}),
+	muxModelOn("session_owned_resync_owed_1_blocking_upstream", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("session_owned_resync_owed_1_blocking_upstream", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("session_owned_resync_owed_1_blocking_upstream", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("session_owned_resync_owed_1_blocking_upstream", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelSessionOwned, resyncOwed: 1, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("session_owned_resync_owed_2", muxModelEventSYN, muxModelState{phase: muxModelSessionOwned, resyncOwed: 1}, muxModelEffectPassiveSymbol, muxModelEffectActiveByte, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_resync_owed_2", muxModelEventSymbol, muxModelState{phase: muxModelSessionOwned, resyncOwed: 2}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_resync_owed_2", muxModelEventBid, muxModelState{phase: muxModelSessionOwned, resyncOwed: 2}),
+	muxModelOn("session_owned_resync_owed_2", muxModelEventStartedMatching, muxModelState{phase: muxModelSessionOwned, resyncOwed: 2}),
+	muxModelOn("session_owned_resync_owed_2", muxModelEventStartedOther, muxModelState{phase: muxModelSessionOwned, resyncOwed: 2}),
+	muxModelOn("session_owned_resync_owed_2", muxModelEventFailed, muxModelState{phase: muxModelSessionOwned, resyncOwed: 2}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("session_owned_resync_owed_2", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("session_owned_resync_owed_2", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelOn("session_owned_resync_owed_2", muxModelEventIdleGrace, muxModelState{phase: muxModelIdle, resyncOwed: 1}, muxModelEffectPassiveSymbol, muxModelEffectActiveByte, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_resync_owed_2", muxModelEventOwnershipLimit, muxModelState{phase: muxModelIdle, resyncOwed: 2}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_resync_owed_2", muxModelEventAbandonWatchdog, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 2}),
+	muxModelOn("session_owned_resync_owed_2", muxModelEventSessionClose, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 2}),
+	muxModelOn("session_owned_resync_owed_2", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("session_owned_resync_owed_2", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("session_owned_resync_owed_2", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("session_owned_resync_owed_2", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelSessionOwned, resyncOwed: 2}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("session_owned_resync_owed_2_blocking_upstream", muxModelEventSYN, muxModelState{phase: muxModelSessionOwned, resyncOwed: 1, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectActiveByte, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_resync_owed_2_blocking_upstream", muxModelEventSymbol, muxModelState{phase: muxModelSessionOwned, resyncOwed: 2, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_resync_owed_2_blocking_upstream", muxModelEventBid, muxModelState{phase: muxModelSessionOwned, resyncOwed: 2, blockingUpstream: true}),
+	muxModelOn("session_owned_resync_owed_2_blocking_upstream", muxModelEventStartedMatching, muxModelState{phase: muxModelSessionOwned, resyncOwed: 2, blockingUpstream: true}),
+	muxModelOn("session_owned_resync_owed_2_blocking_upstream", muxModelEventStartedOther, muxModelState{phase: muxModelSessionOwned, resyncOwed: 2, blockingUpstream: true}),
+	muxModelOn("session_owned_resync_owed_2_blocking_upstream", muxModelEventFailed, muxModelState{phase: muxModelSessionOwned, resyncOwed: 2, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("session_owned_resync_owed_2_blocking_upstream", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("session_owned_resync_owed_2_blocking_upstream", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelOn("session_owned_resync_owed_2_blocking_upstream", muxModelEventIdleGrace, muxModelState{phase: muxModelIdle, resyncOwed: 1, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectActiveByte, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_resync_owed_2_blocking_upstream", muxModelEventOwnershipLimit, muxModelState{phase: muxModelIdle, resyncOwed: 2, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_resync_owed_2_blocking_upstream", muxModelEventAbandonWatchdog, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 2, blockingUpstream: true}),
+	muxModelOn("session_owned_resync_owed_2_blocking_upstream", muxModelEventSessionClose, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 2, blockingUpstream: true}),
+	muxModelOn("session_owned_resync_owed_2_blocking_upstream", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("session_owned_resync_owed_2_blocking_upstream", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("session_owned_resync_owed_2_blocking_upstream", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("session_owned_resync_owed_2_blocking_upstream", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelSessionOwned, resyncOwed: 2, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("start_async", muxModelEventSYN, muxModelState{phase: muxModelStartAsync}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("start_async", muxModelEventSymbol, muxModelState{phase: muxModelStartAsync}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("start_async", muxModelEventBid, muxModelState{phase: muxModelStartAsync}),
+	muxModelOn("start_async", muxModelEventStartedMatching, muxModelState{phase: muxModelSessionOwned}, muxModelEffectPassiveSymbol, muxModelEffectSessionStarted, muxModelEffectSessionReceived, muxModelEffectResultGranted),
+	muxModelOn("start_async", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived, muxModelEffectResultError),
+	muxModelOn("start_async", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived, muxModelEffectResultError),
+	muxModelOn("start_async", muxModelEventStartDeadline, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1}, muxModelEffectResultError),
+	muxModelNever("start_async", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("start_async", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("start_async", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("start_async", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("start_async", muxModelEventSessionClose, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1}, muxModelEffectResultCancelled),
+	muxModelOn("start_async", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset, muxModelEffectResultError),
+	muxModelNever("start_async", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("start_async", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("start_async", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelStartAsync}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("start_async_enforce", muxModelEventSYN, muxModelState{phase: muxModelStartAsync, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("start_async_enforce", muxModelEventSymbol, muxModelState{phase: muxModelStartAsync, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("start_async_enforce", muxModelEventBid, muxModelState{phase: muxModelStartAsync, enforce: true}, muxModelEffectResultCancelled),
+	muxModelOn("start_async_enforce", muxModelEventStartedMatching, muxModelState{phase: muxModelSessionOwned, otherOwner: true, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived, muxModelEffectSessionStarted, muxModelEffectResultGranted),
+	muxModelOn("start_async_enforce", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeign, absorb: 1, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived, muxModelEffectResultError),
+	muxModelOn("start_async_enforce", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeign, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived, muxModelEffectResultError),
+	muxModelOn("start_async_enforce", muxModelEventStartDeadline, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, enforce: true}, muxModelEffectResultError),
+	muxModelNever("start_async_enforce", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("start_async_enforce", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("start_async_enforce", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("start_async_enforce", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("start_async_enforce", muxModelEventSessionClose, muxModelState{phase: muxModelStartAsync, enforce: true}),
+	muxModelOn("start_async_enforce", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, enforce: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset, muxModelEffectResultError),
+	muxModelNever("start_async_enforce", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("start_async_enforce", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("start_async_enforce", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelStartAsync, enforce: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("start_async_resync_owed", muxModelEventSYN, muxModelState{phase: muxModelStartAsync, resyncOwed: 1}, muxModelEffectPassiveSymbol, muxModelEffectActiveByte, muxModelEffectSessionReceived),
+	muxModelOn("start_async_resync_owed", muxModelEventSymbol, muxModelState{phase: muxModelStartAsync, resyncOwed: 2}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("start_async_resync_owed", muxModelEventBid, muxModelState{phase: muxModelStartAsync, resyncOwed: 2}),
+	muxModelOn("start_async_resync_owed", muxModelEventStartedMatching, muxModelState{phase: muxModelSessionOwned, resyncOwed: 2}, muxModelEffectPassiveSymbol, muxModelEffectSessionStarted, muxModelEffectResultGranted),
+	muxModelOn("start_async_resync_owed", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, resyncOwed: 2}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived, muxModelEffectResultError),
+	muxModelOn("start_async_resync_owed", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 2}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived, muxModelEffectResultError),
+	muxModelOn("start_async_resync_owed", muxModelEventStartDeadline, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, resyncOwed: 2}, muxModelEffectResultError),
+	muxModelNever("start_async_resync_owed", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("start_async_resync_owed", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("start_async_resync_owed", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("start_async_resync_owed", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("start_async_resync_owed", muxModelEventSessionClose, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, resyncOwed: 2}, muxModelEffectResultCancelled),
+	muxModelOn("start_async_resync_owed", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset, muxModelEffectResultError),
+	muxModelNever("start_async_resync_owed", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("start_async_resync_owed", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("start_async_resync_owed", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelStartAsync, resyncOwed: 2}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("start_async_resync_owed_1", muxModelEventSYN, muxModelState{phase: muxModelStartAsync}, muxModelEffectPassiveSymbol, muxModelEffectActiveByte, muxModelEffectSessionReceived),
+	muxModelOn("start_async_resync_owed_1", muxModelEventSymbol, muxModelState{phase: muxModelStartAsync, resyncOwed: 1}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("start_async_resync_owed_1", muxModelEventBid, muxModelState{phase: muxModelStartAsync, resyncOwed: 1}),
+	muxModelOn("start_async_resync_owed_1", muxModelEventStartedMatching, muxModelState{phase: muxModelSessionOwned, resyncOwed: 1}, muxModelEffectPassiveSymbol, muxModelEffectSessionStarted, muxModelEffectSessionReceived, muxModelEffectResultGranted),
+	muxModelOn("start_async_resync_owed_1", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, resyncOwed: 1}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived, muxModelEffectResultError),
+	muxModelOn("start_async_resync_owed_1", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, resyncOwed: 1}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived, muxModelEffectResultError),
+	muxModelOn("start_async_resync_owed_1", muxModelEventStartDeadline, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, resyncOwed: 1}, muxModelEffectResultError),
+	muxModelNever("start_async_resync_owed_1", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("start_async_resync_owed_1", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("start_async_resync_owed_1", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("start_async_resync_owed_1", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("start_async_resync_owed_1", muxModelEventSessionClose, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, resyncOwed: 1}, muxModelEffectResultCancelled),
+	muxModelOn("start_async_resync_owed_1", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset, muxModelEffectResultError),
+	muxModelNever("start_async_resync_owed_1", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("start_async_resync_owed_1", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("start_async_resync_owed_1", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelStartAsync, resyncOwed: 1}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("start_blocking", muxModelEventSYN, muxModelState{phase: muxModelStartBlocking, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("start_blocking", muxModelEventSymbol, muxModelState{phase: muxModelStartBlocking, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("start_blocking", muxModelEventBid, muxModelState{phase: muxModelStartBlocking, blocking: true, blockingUpstream: true}),
+	muxModelOn("start_blocking", muxModelEventStartedMatching, muxModelState{phase: muxModelSessionOwned, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionStarted, muxModelEffectSessionReceived, muxModelEffectResultGranted),
+	muxModelOn("start_blocking", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived, muxModelEffectResultError),
+	muxModelOn("start_blocking", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived, muxModelEffectResultError),
+	muxModelOn("start_blocking", muxModelEventStartDeadline, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, blocking: true, blockingUpstream: true}, muxModelEffectResultError),
+	muxModelNever("start_blocking", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("start_blocking", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("start_blocking", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("start_blocking", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("start_blocking", muxModelEventSessionClose, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, blocking: true, blockingUpstream: true}, muxModelEffectResultCancelled),
+	muxModelOn("start_blocking", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset, muxModelEffectResultError),
+	muxModelOn("start_blocking", muxModelEventStartCallReturns, muxModelState{phase: muxModelSessionOwned, blockingUpstream: true}, muxModelEffectSessionStarted, muxModelEffectResultGranted),
+	muxModelOn("start_blocking", muxModelEventStartCallFails, muxModelState{phase: muxModelIdle, blockingUpstream: true}, muxModelEffectResultError),
+	muxModelOn("start_blocking", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelStartBlocking, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("start_blocking_deferred_loser", muxModelEventSYN, muxModelState{phase: muxModelStartBlocking, blocking: true, deferred: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("start_blocking_deferred_loser", muxModelEventSymbol, muxModelState{phase: muxModelStartBlocking, blocking: true, deferred: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("start_blocking_deferred_loser", muxModelEventBid, muxModelState{phase: muxModelStartBlocking, blocking: true, deferred: true, blockingUpstream: true}),
+	muxModelOn("start_blocking_deferred_loser", muxModelEventStartedMatching, muxModelState{phase: muxModelSessionOwned, blocking: true, deferred: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionStarted, muxModelEffectResultGranted),
+	muxModelOn("start_blocking_deferred_loser", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, blocking: true, deferred: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived, muxModelEffectResultError),
+	muxModelOn("start_blocking_deferred_loser", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, deferred: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived, muxModelEffectResultError),
+	muxModelOn("start_blocking_deferred_loser", muxModelEventStartDeadline, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, blocking: true, blockingUpstream: true}, muxModelEffectResultError),
+	muxModelNever("start_blocking_deferred_loser", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("start_blocking_deferred_loser", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("start_blocking_deferred_loser", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("start_blocking_deferred_loser", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("start_blocking_deferred_loser", muxModelEventSessionClose, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, blocking: true, deferred: true, blockingUpstream: true}, muxModelEffectResultCancelled),
+	muxModelOn("start_blocking_deferred_loser", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset, muxModelEffectResultError),
+	muxModelOn("start_blocking_deferred_loser", muxModelEventStartCallReturns, muxModelState{phase: muxModelSessionOwned, resyncOwed: 2, blockingUpstream: true}, muxModelEffectSessionStarted, muxModelEffectResultGranted, muxModelEffectResultLost),
+	muxModelOn("start_blocking_deferred_loser", muxModelEventStartCallFails, muxModelState{phase: muxModelIdle, blockingUpstream: true}, muxModelEffectSessionReceived, muxModelEffectResultError),
+	muxModelOn("start_blocking_deferred_loser", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelStartBlocking, blocking: true, deferred: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("start_blocking_resync_owed_1_blocking_upstream", muxModelEventSYN, muxModelState{phase: muxModelStartBlocking, blocking: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectActiveByte, muxModelEffectSessionReceived),
+	muxModelOn("start_blocking_resync_owed_1_blocking_upstream", muxModelEventSymbol, muxModelState{phase: muxModelStartBlocking, blocking: true, resyncOwed: 1, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("start_blocking_resync_owed_1_blocking_upstream", muxModelEventBid, muxModelState{phase: muxModelStartBlocking, blocking: true, resyncOwed: 1, blockingUpstream: true}, muxModelEffectResultCancelled),
+	muxModelOn("start_blocking_resync_owed_1_blocking_upstream", muxModelEventStartedMatching, muxModelState{phase: muxModelSessionOwned, blocking: true, resyncOwed: 1, otherOwner: true, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived, muxModelEffectSessionStarted, muxModelEffectResultGranted),
+	muxModelOn("start_blocking_resync_owed_1_blocking_upstream", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, blocking: true, resyncOwed: 1, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived, muxModelEffectResultError),
+	muxModelOn("start_blocking_resync_owed_1_blocking_upstream", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, resyncOwed: 1, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived, muxModelEffectResultError),
+	muxModelOn("start_blocking_resync_owed_1_blocking_upstream", muxModelEventStartDeadline, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1, blocking: true, resyncOwed: 1, blockingUpstream: true}, muxModelEffectResultError),
+	muxModelNever("start_blocking_resync_owed_1_blocking_upstream", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("start_blocking_resync_owed_1_blocking_upstream", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("start_blocking_resync_owed_1_blocking_upstream", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("start_blocking_resync_owed_1_blocking_upstream", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("start_blocking_resync_owed_1_blocking_upstream", muxModelEventSessionClose, muxModelState{phase: muxModelStartBlocking, blocking: true, resyncOwed: 1, blockingUpstream: true}),
+	muxModelOn("start_blocking_resync_owed_1_blocking_upstream", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset, blockingUpstream: true}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset, muxModelEffectResultError),
+	muxModelOn("start_blocking_resync_owed_1_blocking_upstream", muxModelEventStartCallReturns, muxModelState{phase: muxModelSessionOwned, resyncOwed: 1, otherOwner: true, blockingUpstream: true}, muxModelEffectSessionStarted, muxModelEffectResultGranted),
+	muxModelOn("start_blocking_resync_owed_1_blocking_upstream", muxModelEventStartCallFails, muxModelState{phase: muxModelIdle, resyncOwed: 1, blockingUpstream: true}, muxModelEffectResultError),
+	muxModelOn("start_blocking_resync_owed_1_blocking_upstream", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelStartBlocking, blocking: true, resyncOwed: 1, blockingUpstream: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+
+	muxModelOn("start_gateway", muxModelEventSYN, muxModelState{phase: muxModelStartAsync, gateway: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("start_gateway", muxModelEventSymbol, muxModelState{phase: muxModelStartAsync, gateway: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("start_gateway", muxModelEventBid, muxModelState{phase: muxModelStartAsync, gateway: true}),
+	muxModelOn("start_gateway", muxModelEventStartedMatching, muxModelState{phase: muxModelGatewayGrace}, muxModelEffectSessionReceived, muxModelEffectResultGranted),
+	muxModelOn("start_gateway", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived, muxModelEffectResultError),
+	muxModelOn("start_gateway", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived, muxModelEffectResultError),
+	muxModelOn("start_gateway", muxModelEventStartDeadline, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: 1}, muxModelEffectResultError),
+	muxModelNever("start_gateway", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("start_gateway", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("start_gateway", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("start_gateway", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("start_gateway", muxModelEventSessionClose, muxModelState{phase: muxModelStartAsync, gateway: true}),
+	muxModelOn("start_gateway", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset, muxModelEffectResultError),
+	muxModelNever("start_gateway", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("start_gateway", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("start_gateway", muxModelEventInitiatorSymbol, muxModelState{phase: muxModelStartAsync, gateway: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+}
+
+// TestMuxStateModelTableIsComplete requires exactly one row per named state
+// and event, agreement of every row with the validity rule, distinct named
+// states and a driver for every event that occurs somewhere.
+func TestMuxStateModelTableIsComplete(t *testing.T) {
+	seenState := map[muxModelState]string{}
+	for _, name := range muxModelStateNames() {
+		named := muxModelStates[name]
+		if named.from == "" && named.build == nil {
+			t.Errorf("state %s has no fixture", name)
+		}
+		if named.from != "" && named.build != nil {
+			t.Errorf("state %s has a fixture and is reached from %s", name, named.from)
+		}
+		if _, err := muxModelRoot(name); err != nil {
+			t.Errorf("state %s: %v", name, err)
+		}
+		if other, dup := seenState[named.state]; dup {
+			t.Errorf("states %s and %s are the same model state %s", other, name, named.state.literal())
+		}
+		seenState[named.state] = name
+	}
+	seen := map[string]bool{}
+	validEvents := map[muxModelEvent]bool{}
+	valid, invalid := 0, 0
+	for _, row := range muxModelRows {
+		key := row.state + "/" + row.event.String()
+		if seen[key] {
+			t.Errorf("duplicate row %s", key)
+		}
+		seen[key] = true
+		named, ok := muxModelStates[row.state]
+		if !ok {
+			t.Errorf("row %s names no model state", key)
+			continue
+		}
+		if row.event >= muxModelEventCount {
+			t.Errorf("row %s names no model event", key)
+			continue
+		}
+		reason := muxModelEventCannotOccur(named.state, row.event)
+		switch row.outcome {
+		case muxModelTransition:
+			valid++
+			validEvents[row.event] = true
+			if reason != "" {
+				t.Errorf("row %s is a transition, but the event cannot occur: %s", key, reason)
+			}
+			if row.reason != "" || row.effects == nil {
+				t.Errorf("transition row %s: reason %q, effects %v", key, row.reason, row.effects)
+			}
+		case muxModelCannotOccur:
+			invalid++
+			if reason == "" || row.reason != reason {
+				t.Errorf("row %s: cannot occur because %q, the rule says %q", key, row.reason, reason)
+			}
+			if row.next != (muxModelState{}) || row.effects != nil {
+				t.Errorf("row %s cannot occur but defines next %s and effects %v", key, row.next.literal(), row.effects)
+			}
+		default:
+			t.Errorf("row %s has outcome %d", key, row.outcome)
+		}
+	}
+	var missing []string
+	for _, name := range muxModelStateNames() {
+		for e := muxModelEvent(0); e < muxModelEventCount; e++ {
+			if !seen[name+"/"+e.String()] {
+				missing = append(missing, name+"/"+e.String())
+			}
+		}
+	}
+	if len(missing) > 0 {
+		t.Errorf("missing rows:\n%s", strings.Join(missing, "\n"))
+	}
+	// The table is closed: every next state is a named state, so its own
+	// rows specify what follows. A state reached by an event is the next
+	// state of that event's row.
+	rows := map[string]muxModelRow{}
+	for _, row := range muxModelRows {
+		rows[row.state+"/"+row.event.String()] = row
+		if row.outcome != muxModelTransition {
+			continue
+		}
+		if _, ok := seenState[row.next]; !ok {
+			t.Errorf("row %s/%s leads to %s, which is no named state", row.state, row.event, row.next.literal())
+		}
+		if from := muxModelStates[row.state].state; row.next.config() != from.config() {
+			t.Errorf("row %s/%s changes the configuration from %+v to %+v", row.state, row.event, from.config(), row.next.config())
+		}
+	}
+	for _, name := range muxModelStateNames() {
+		named := muxModelStates[name]
+		if named.from == "" {
+			continue
+		}
+		row, ok := rows[named.from+"/"+named.via.String()]
+		if !ok || row.outcome != muxModelTransition || row.next != named.state {
+			t.Errorf("state %s is reached from %s by %s, but that row leads to %s", name, named.from, named.via, row.next.literal())
+		}
+	}
+	for e := muxModelEvent(0); e < muxModelEventCount; e++ {
+		if !validEvents[e] {
+			t.Errorf("event %s occurs in no state", e)
+		}
+		if muxModelDrivers[e] == nil {
+			t.Errorf("event %s has no driver", e)
+		}
+	}
+	if want := len(muxModelStates) * int(muxModelEventCount); valid+invalid != want {
+		t.Errorf("%d valid and %d invalid rows, want %d in total", valid, invalid, want)
+	}
+}
+
+// TestMuxStateModelDerivation varies every field the model state is derived
+// from and requires the derived state to follow.
+func TestMuxStateModelDerivation(t *testing.T) {
+	cases := []struct {
+		name string
+		in   transitionState
+		cfg  muxModelConfig
+		held bool
+		echo bool
+		want muxModelState
+		fail bool
+	}{
+		{name: "zero", want: muxModelState{phase: muxModelIdle}},
+		{name: "owner gateway with transaction", in: transitionState{owner: "gateway", gatewayTxn: true},
+			want: muxModelState{phase: muxModelGatewayTransaction}},
+		{name: "owner gateway", in: transitionState{owner: "gateway"},
+			want: muxModelState{phase: muxModelGatewayGrace}},
+		{name: "owner session", in: transitionState{owner: "session 1"},
+			want: muxModelState{phase: muxModelSessionOwned}},
+		{name: "owner before start", in: transitionState{owner: "session 1", start: "session 2 0x71"},
+			want: muxModelState{phase: muxModelSessionOwned}},
+		{name: "start", in: transitionState{start: "session 1 0x31"},
+			want: muxModelState{phase: muxModelStartAsync}},
+		{name: "start blocking", in: transitionState{start: "session 1 0x31", startBlocking: true},
+			want: muxModelState{phase: muxModelStartBlocking}},
+		{name: "start response is not a phase", in: transitionState{start: "session 1 0x31", startResponse: true},
+			want: muxModelState{phase: muxModelStartAsync}},
+		{name: "start gateway", in: transitionState{start: "gateway 0x7F"},
+			want: muxModelState{phase: muxModelStartAsync, gateway: true}},
+		{name: "start gateway blocking", in: transitionState{start: "gateway 0x7F", startBlocking: true},
+			want: muxModelState{phase: muxModelStartBlocking, gateway: true}},
+		{name: "gateway deferred loser is no selected party", in: transitionState{start: "session 1 0x31", bids: "deferred gateway 0x7F"},
+			want: muxModelState{phase: muxModelStartAsync, deferred: true}},
+		{name: "start before fence", in: transitionState{start: "session 1 0x31", regrantFence: true},
+			want: muxModelState{phase: muxModelStartAsync}},
+		{name: "fence", in: transitionState{regrantFence: true, recovery: "at_syn"},
+			want: muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN}},
+		{name: "fence foreign", in: transitionState{regrantFence: true, recovery: "foreign"},
+			want: muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeign}},
+		{name: "fence foreign after syn symbol", in: transitionState{regrantFence: true, recovery: "foreign_after_syn_symbol"},
+			want: muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryForeignAfterAA}},
+		{name: "fence without recovery", in: transitionState{regrantFence: true},
+			want: muxModelState{phase: muxModelFenced}},
+		{name: "fence before bids", in: transitionState{regrantFence: true, bids: "session 1 0x31"},
+			want: muxModelState{phase: muxModelFenced}},
+		{name: "reset recovery", in: transitionState{recovery: "reset"},
+			want: muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset}},
+		{name: "unknown recovery", in: transitionState{recovery: "other"}, fail: true},
+		{name: "held", held: true, want: muxModelState{phase: muxModelHeld}},
+		{name: "held before bids", in: transitionState{bids: "session 1 0x31"}, held: true,
+			want: muxModelState{phase: muxModelHeld}},
+		{name: "held under owner", in: transitionState{owner: "session 1"}, held: true, fail: true},
+		{name: "held under start", in: transitionState{start: "session 1 0x31"}, held: true, fail: true},
+		{name: "held under fence", in: transitionState{regrantFence: true}, held: true, fail: true},
+		{name: "bids", in: transitionState{bids: "session 1 0x31"},
+			want: muxModelState{phase: muxModelBidsQueued}},
+		{name: "deferred gateway loser is no bid", in: transitionState{bids: "deferred gateway 0x7F"},
+			want: muxModelState{phase: muxModelIdle, deferred: true}},
+		{name: "bid and deferred gateway loser", in: transitionState{bids: "session 2 0x71, deferred gateway 0x7F"},
+			want: muxModelState{phase: muxModelBidsQueued, deferred: true}},
+		{name: "deferred loser under a blocking start", in: transitionState{start: "session 1 0x31", startBlocking: true, blockingCall: true, bids: "deferred gateway 0x7F"},
+			want: muxModelState{phase: muxModelStartBlocking, blocking: true, deferred: true}},
+		{name: "owner session 2", in: transitionState{owner: "session 2"},
+			want: muxModelState{phase: muxModelSessionOwned, otherOwner: true}},
+		{name: "echo pending in a gateway transaction", in: transitionState{owner: "gateway", gatewayTxn: true}, echo: true,
+			want: muxModelState{phase: muxModelGatewayTransaction, echoPending: true}},
+		{name: "echo pending outside a gateway transaction is not modelled", in: transitionState{owner: "gateway"}, echo: true,
+			want: muxModelState{phase: muxModelGatewayGrace}},
+		{name: "absorb", in: transitionState{absorb: 1},
+			want: muxModelState{phase: muxModelIdle, absorb: 1}},
+		{name: "absorb counts", in: transitionState{absorb: 3},
+			want: muxModelState{phase: muxModelIdle, absorb: 3}},
+		{name: "negative absorb count", in: transitionState{absorb: -1}, fail: true},
+		{name: "blocking upstream", cfg: muxModelConfig{blockingUpstream: true},
+			want: muxModelState{phase: muxModelIdle, blockingUpstream: true}},
+		{name: "bids on a blocking upstream", in: transitionState{bids: "session 1 0x31"}, cfg: muxModelConfig{blockingUpstream: true},
+			want: muxModelState{phase: muxModelBidsQueued, blockingUpstream: true}},
+		{name: "enforce", cfg: muxModelConfig{enforce: true},
+			want: muxModelState{phase: muxModelIdle, enforce: true}},
+		{name: "start in enforce mode", in: transitionState{start: "session 1 0x31"}, cfg: muxModelConfig{enforce: true},
+			want: muxModelState{phase: muxModelStartAsync, enforce: true}},
+		{name: "blocking call", in: transitionState{blockingCall: true},
+			want: muxModelState{phase: muxModelIdle, blocking: true}},
+		{name: "resync owed", in: transitionState{resyncOwed: 2},
+			want: muxModelState{phase: muxModelIdle, resyncOwed: 2}},
+		{name: "fields outside the model", in: transitionState{retiredSelection: true, phase: "collect_request", localLosers: "session 2"},
+			want: muxModelState{phase: muxModelIdle}},
+	}
+	for _, tc := range cases {
+		got, err := muxModelDerive(tc.in, tc.cfg, tc.held, tc.echo)
+		if tc.fail {
+			if err == nil {
+				t.Errorf("%s: derived %s, want an error", tc.name, got.literal())
+			}
+			continue
+		}
+		if err != nil || got != tc.want {
+			t.Errorf("%s: derived %s (%v), want %s", tc.name, got.literal(), err, tc.want.literal())
+		}
+	}
+}
+
+// TestMuxStateModelEffectKinds classifies every effect form the harness logs
+// and counts consecutive effects of one kind once.
+func TestMuxStateModelEffectKinds(t *testing.T) {
+	cases := map[string]muxModelEffect{
+		"passive: symbol 0xAA":                                          muxModelEffectPassiveSymbol,
+		"passive: symbol 0xAA escaped":                                  muxModelEffectPassiveSymbol,
+		"passive: reset":                                                muxModelEffectPassiveReset,
+		"passive: connected":                                            muxModelEffectPassiveLifecycle,
+		"adapter: RequestStart 0x31":                                    muxModelEffectAdapterStart,
+		"adapter: StartArbitration 0x31":                                muxModelEffectAdapterStartBlocking,
+		"adapter: Write 15":                                             muxModelEffectAdapterWrite,
+		"abandon watchdog armed for 1s":                                 muxModelEffectWatchdogArmed,
+		"active: error ebus: x":                                         muxModelEffectActiveError,
+		"active: 0x52":                                                  muxModelEffectActiveByte,
+		"session 1: RECEIVED 0x52":                                      muxModelEffectSessionReceived,
+		"session 1: STARTED 0x31":                                       muxModelEffectSessionStarted,
+		"session 2: FAILED 0x31":                                        muxModelEffectSessionFailed,
+		"session 2: RESETTED 0x00":                                      muxModelEffectSessionReset,
+		"session 2: ERROR_EBUS":                                         muxModelEffectSessionError,
+		"session 2: INFO 0x00":                                          muxModelEffectSessionInfo,
+		"result session 1 0x31: granted, source 0x31":                   muxModelEffectResultGranted,
+		"result gateway 0x7F: source 0x31":                              muxModelEffectResultLost,
+		"result session 1 0x31: cancelled, source 0x31":                 muxModelEffectResultCancelled,
+		"result session 1 0x31: source 0x31, error adaptermux: expired": muxModelEffectResultError,
+	}
+	for entry, want := range cases {
+		got, err := muxModelEffectKind(entry)
+		if err != nil || got != want {
+			t.Errorf("%q: kind %s (%v), want %s", entry, got, err, want)
+		}
+	}
+	for _, entry := range []string{"session 1 RECEIVED", "session 1: OTHER", "result x", "other"} {
+		if got, err := muxModelEffectKind(entry); err == nil {
+			t.Errorf("%q: kind %s, want an error", entry, got)
+		}
+	}
+	got, err := muxModelEffectKinds([]string{"passive: symbol 0xAA", "session 1: RECEIVED 0xAA", "session 2: RECEIVED 0xAA", "passive: symbol 0x10"})
+	want := []muxModelEffect{muxModelEffectPassiveSymbol, muxModelEffectSessionReceived, muxModelEffectPassiveSymbol}
+	if err != nil || muxModelEffectsLiteral(got) != muxModelEffectsLiteral(want) {
+		t.Errorf("kinds %v (%v), want %v", got, err, want)
+	}
+	if got, err := muxModelEffectKinds(nil); err != nil || got == nil || len(got) != 0 {
+		t.Errorf("kinds of no effect %v (%v), want an empty list", got, err)
+	}
+}
+
+// TestMuxStateModelConformance drives every transition row through the
+// current handlers: the fixture must reach the row's state, and the event must
+// lead to the row's next state with the row's ordered effect kinds.
+func TestMuxStateModelConformance(t *testing.T) {
+	for _, row := range muxModelRows {
+		if row.outcome != muxModelTransition {
+			continue
+		}
+		row := row
+		t.Run(row.state+"/"+row.event.String(), func(t *testing.T) {
+			named, ok := muxModelStates[row.state]
+			if !ok {
+				t.Fatalf("unknown model state %s", row.state)
+			}
+			drive, ok := muxModelDrivers[row.event]
+			if !ok {
+				t.Fatalf("no driver for %s", row.event)
+			}
+			h := muxModelHarness(t, row.state)
+			h.discardEffects()
+			from, err := muxModelObserve(h)
+			if err != nil || from != named.state {
+				t.Fatalf("fixture reaches %s (%v), want %s", from.literal(), err, named.state.literal())
+			}
+			drive(h)
+			// A selection the event made starts its adapter call on its own
+			// goroutine; settling it orders the call's effect into the log.
+			muxModelTrackSelection(h)
+			got, err := muxModelObserve(h)
+			raw := h.effects()
+			h.stop()
+			if err != nil {
+				t.Fatalf("derive next state: %v", err)
+			}
+			effects, err := muxModelEffectKinds(raw)
+			if err != nil {
+				t.Fatalf("classify effects %#v: %v", raw, err)
+			}
+			if got != row.next || muxModelEffectsLiteral(effects) != muxModelEffectsLiteral(row.effects) {
+				t.Errorf("transition differs from the table\n got: %s\nwant: %s\neffect log: %#v",
+					muxModelRowLiteral(row.state, row.event, got, effects),
+					muxModelRowLiteral(row.state, row.event, row.next, row.effects), raw)
+			}
+		})
+	}
+}

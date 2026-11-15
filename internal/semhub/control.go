@@ -17,6 +17,12 @@ package semhub
 // and supersedes only that source's gate; a publication of a source checks
 // only its own gate; a read of the asset requires every gate to be resolved
 // and settled.
+//
+// A publication on an asset with contributors also queues, on the same
+// scheduler and in HubSeq order, a peer reprojection of the other publishing
+// sources' callbacks. A read of the asset requires every such receiver to
+// have acknowledged a view at least as new as the latest publication it is
+// owed; a publication never waits for it.
 
 import (
 	"encoding/json"
@@ -205,7 +211,10 @@ type InspectView struct {
 	Present   bool
 }
 
-// ControlEvent is passed to a declaration's OnControl callback.
+// ControlEvent is passed to a declaration's OnControl callback. A peer
+// reprojection, delivered after a publication of another source on an asset
+// with contributors, carries EventPublished, the asset's current snapshot and
+// HubSeq, and a zero Control.
 type ControlEvent struct {
 	Asset      semreg.AssetID
 	SnapshotID semreg.SnapshotID
@@ -251,11 +260,181 @@ type controlAsset struct {
 	undelivered bool
 }
 
-// reprojectionEntry is one scheduled reprojection attempt. done closes when
-// the attempt has run (or was found unnecessary).
+// reprojectionEntry is one scheduled reprojection attempt: of a control
+// gate (ca) or of the peers of a publication (peer). done closes when the
+// attempt has run (or was found unnecessary).
 type reprojectionEntry struct {
 	ca   *controlAsset
+	peer *peerAttempt
 	done chan struct{}
+}
+
+// peerView is the peer reprojection state of one receiving source's callback
+// on a shared asset: owed is the HubSeq of the latest publication of another
+// source that the callback has to receive, delivered the HubSeq of the latest
+// view it acknowledged, and err the failure of its latest attempt.
+type peerView struct {
+	owed, delivered uint64
+	err             error
+}
+
+// peerAttempt is one scheduled peer reprojection of a shared asset: the
+// receiving sources and the HubSeq they are owed.
+type peerAttempt struct {
+	asset     *asset
+	receivers []semreg.SourceID
+	hubSeq    uint64
+}
+
+// queuePeersLocked queues one peer reprojection after the publication of
+// publisher committed at seq: every other publishing source of the asset
+// whose callback is bound becomes owed seq. A single-source asset, or one
+// with no other bound callback, queues nothing. It reports whether an entry
+// was queued. h.mu must be held, in the critical section that emitted seq,
+// so the queue stays in HubSeq order.
+func (h *Hub) queuePeersLocked(target *asset, publisher semreg.SourceID, seq uint64) bool {
+	if target.peers == nil {
+		return false
+	}
+	var receivers []semreg.SourceID
+	for _, src := range target.publishingSources() {
+		if src == publisher || target.reprojectionOfLocked(src) == nil {
+			continue
+		}
+		view := target.peers[src]
+		if view == nil {
+			view = &peerView{}
+			target.peers[src] = view
+		}
+		view.owed = seq
+		receivers = append(receivers, src)
+	}
+	if len(receivers) == 0 {
+		return false
+	}
+	h.queue = append(h.queue, &reprojectionEntry{peer: &peerAttempt{asset: target, receivers: receivers, hubSeq: seq}, done: make(chan struct{})})
+	return true
+}
+
+// reprojectionOfLocked returns the reprojection callback of one publishing
+// source of the asset, or nil. h.mu must be held.
+func (a *asset) reprojectionOfLocked(src semreg.SourceID) func(ControlEvent) error {
+	if src == a.source {
+		return a.onControl
+	}
+	for _, item := range a.contributors {
+		if item.source == src {
+			return item.onControl
+		}
+	}
+	return nil
+}
+
+// peerPendingLocked reports whether a receiving source of the asset has not
+// acknowledged the latest publication it is owed. h.mu must be held.
+func (a *asset) peerPendingLocked() bool {
+	for _, view := range a.peers {
+		if view.owed > view.delivered {
+			return true
+		}
+	}
+	return false
+}
+
+// pendingPeersLocked returns the receiving sources still owed a publication,
+// in the order of publishingSources, and the newest HubSeq owed. h.mu must be
+// held.
+func (a *asset) pendingPeersLocked() ([]semreg.SourceID, uint64) {
+	var out []semreg.SourceID
+	newest := uint64(0)
+	for _, src := range a.publishingSources() {
+		if view := a.peers[src]; view != nil && view.owed > view.delivered {
+			out = append(out, src)
+			newest = max(newest, view.owed)
+		}
+	}
+	return out, newest
+}
+
+// peerDeliveredLocked records that every receiving source acknowledged the
+// asset's view at seq. h.mu must be held.
+func (a *asset) peerDeliveredLocked(seq uint64) {
+	for _, view := range a.peers {
+		if view.delivered < seq {
+			view.delivered, view.err = seq, nil
+		}
+	}
+}
+
+// peerEventsLocked samples the asset's current snapshot for the given
+// receivers and returns their callbacks, their events and the asset's HubSeq
+// at sampling. h.mu must be held.
+func (a *asset) peerEventsLocked(receivers []semreg.SourceID) ([]func(ControlEvent) error, []ControlEvent, uint64) {
+	view, canonical, present := a.kernel.Current()
+	callbacks := make([]func(ControlEvent) error, len(receivers))
+	events := make([]ControlEvent, len(receivers))
+	for index, src := range receivers {
+		callbacks[index] = a.reprojectionOfLocked(src)
+		events[index] = ControlEvent{Asset: a.id, SnapshotID: view.SnapshotID, HubSeq: a.hubSeq, Kind: EventPublished,
+			View: InspectView{Snapshot: cloneSnapshot(view), Canonical: append([]byte(nil), canonical...), Revisions: view.Revisions, HubSeq: a.hubSeq, Control: controlStatusLocked(a.statusGateLocked()), Present: present}}
+	}
+	return callbacks, events, a.hubSeq
+}
+
+// startPeerAttemptLocked starts one peer reprojection attempt in its own
+// goroutine and returns its completion channel, or nil when every receiver
+// already acknowledged a view at least as new as the publication. Each
+// receiver gets the asset's current snapshot, so a receiver never moves back
+// to an older view; a publication that commits while the callbacks run makes
+// the attempt redeliver the newer view, as for a control attempt. h.mu must be
+// held.
+func (h *Hub) startPeerAttemptLocked(p *peerAttempt) chan struct{} {
+	target := p.asset
+	var receivers []semreg.SourceID
+	for _, src := range p.receivers {
+		if view := target.peers[src]; view != nil && view.delivered < p.hubSeq {
+			receivers = append(receivers, src)
+		}
+	}
+	if len(receivers) == 0 {
+		return nil
+	}
+	callbacks, events, sampled := target.peerEventsLocked(receivers)
+	done := make(chan struct{})
+	go func() {
+		for round := 1; ; round++ {
+			failures := make([]error, len(callbacks))
+			failed := false
+			for index, callback := range callbacks {
+				failures[index] = runCallback(callback, events[index])
+				failed = failed || failures[index] != nil
+			}
+			h.lock()
+			if !failed && target.hubSeq != sampled && round < maxReprojectionRounds {
+				callbacks, events, sampled = target.peerEventsLocked(receivers)
+				h.unlock()
+				continue
+			}
+			outpaced := target.hubSeq != sampled
+			for index, src := range receivers {
+				view := target.peers[src]
+				switch {
+				case failures[index] != nil:
+					view.err = failures[index]
+				case outpaced:
+					view.err = errReprojectionOutpaced
+				case view.delivered < sampled:
+					view.delivered, view.err = sampled, nil
+				default:
+					view.err = nil
+				}
+			}
+			h.unlock()
+			close(done)
+			return
+		}
+	}()
+	return done
 }
 
 // enqueueLocked schedules one attempt for ca, or returns the one already
@@ -355,10 +534,10 @@ func readableGate(gate *controlAsset) bool {
 }
 
 // readAdmittedLocked is the read gate of the asset: the union of every
-// source's gate, so the asset is withheld while any one of them is open.
-// h.mu must be held.
+// source's gate, so the asset is withheld while any one of them is open, and
+// of every receiver's peer reprojection. h.mu must be held.
 func (a *asset) readAdmittedLocked() bool {
-	if a.restoreFailed {
+	if a.restoreFailed || a.peerPendingLocked() {
 		return false
 	}
 	for _, gate := range a.gates {
@@ -395,12 +574,13 @@ func (h *Hub) ReadAdmitted(id semreg.AssetID) bool {
 }
 
 // Settled reports whether every family cache of the asset acknowledged the
-// latest control snapshot of every source's gate.
+// latest control snapshot of every source's gate and, on an asset with
+// contributors, the latest publication of every other source.
 func (h *Hub) Settled(id semreg.AssetID) bool {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	target := h.assets[id]
-	if target == nil || target.restoreFailed {
+	if target == nil || target.restoreFailed || target.peerPendingLocked() {
 		return false
 	}
 	for _, gate := range target.gates {
@@ -1036,11 +1216,12 @@ func (h *Hub) reject(ca *controlAsset, err error) error {
 }
 
 // drain is the one reprojection scheduler. It runs queued attempts one at a
-// time, in queue order (control commits enqueue in HubSeq order), outside
-// every hub and source lock. Only one goroutine drains at a time; a callback
-// that triggers control merely enqueues and returns, and the active drainer
-// runs the new entries afterwards. An entry whose asset still has an attempt
-// in flight waits for it and then runs; it is never dropped.
+// time, in queue order (control commits and peer publications enqueue in
+// HubSeq order), outside every hub and source lock. Only one goroutine drains
+// at a time; a callback that triggers control or publishes merely enqueues
+// and returns, and the active drainer runs the new entries afterwards. An
+// entry whose asset still has an attempt in flight waits for it and then
+// runs; it is never dropped.
 func (h *Hub) drain() {
 	h.lock()
 	if h.draining {
@@ -1051,6 +1232,16 @@ func (h *Hub) drain() {
 	for len(h.queue) > 0 {
 		entry := h.queue[0]
 		h.queue = h.queue[1:]
+		if entry.peer != nil {
+			done := h.startPeerAttemptLocked(entry.peer)
+			h.unlock()
+			if done != nil {
+				<-done
+			}
+			h.lock()
+			close(entry.done)
+			continue
+		}
 		ca := entry.ca
 		for ca.inFlight != nil {
 			running := ca.inFlight
@@ -1134,6 +1325,10 @@ func (h *Hub) startAttemptLocked(ca *controlAsset) (chan struct{}, error) {
 					ca.reprojection, ca.reprojErr = ReprojectionUnsettled, err
 				} else {
 					ca.reprojection, ca.reprojErr = ReprojectionSettled, nil
+					// Every callback of the asset now holds the view at
+					// sampled, which satisfies any peer reprojection owed
+					// up to it.
+					ca.asset.peerDeliveredLocked(sampled)
 				}
 			}
 			ca.inFlight = nil
@@ -1219,7 +1414,10 @@ func cloneSnapshot(snapshot semreg.Snapshot) semreg.Snapshot {
 // needed an attempt or every attempt settled. When the scheduler is busy with
 // earlier attempts it returns ErrReprojectionQueued (the queued attempts then
 // run in order); otherwise it waits for its attempts and returns the first
-// reprojection error of a gate that stayed unsettled.
+// reprojection error of a gate that stayed unsettled. On an asset with
+// contributors it also retries, after the gates, the peer reprojection of
+// every receiver still owed a publication, and then returns the first such
+// receiver's error.
 func (h *Hub) Resettle(id semreg.AssetID) error {
 	h.lock()
 	target := h.assets[id]
@@ -1255,6 +1453,13 @@ func (h *Hub) Resettle(id semreg.AssetID) error {
 			entries = append(entries, h.enqueueLocked(ca))
 		}
 	}
+	// The receivers still owed a peer publication are retried after the
+	// gates, with the asset's current snapshot.
+	if receivers, newest := target.pendingPeersLocked(); len(receivers) != 0 {
+		entry := &reprojectionEntry{peer: &peerAttempt{asset: target, receivers: receivers, hubSeq: newest}, done: make(chan struct{})}
+		h.queue = append(h.queue, entry)
+		entries = append(entries, entry)
+	}
 	if len(entries) == 0 {
 		h.unlock()
 		return refusal
@@ -1273,6 +1478,11 @@ func (h *Hub) Resettle(id semreg.AssetID) error {
 	for _, ca := range pending {
 		if ca.reprojection != ReprojectionSettled {
 			return ca.reprojErr
+		}
+	}
+	for _, src := range target.publishingSources() {
+		if view := target.peers[src]; view != nil && view.owed > view.delivered && view.err != nil {
+			return view.err
 		}
 	}
 	return refusal

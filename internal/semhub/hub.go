@@ -85,7 +85,8 @@ type Hub struct {
 	// restoring is set while Restore installs state; declarations and
 	// admissions are refused meanwhile.
 	restoring bool
-	// queue holds accepted control assets awaiting their first reprojection,
+	// queue holds accepted control assets awaiting their first reprojection
+	// and the peer reprojections of publications on assets with contributors,
 	// appended in HubSeq order under mu; draining marks the one drainer.
 	queue    []*reprojectionEntry
 	draining bool
@@ -148,6 +149,11 @@ type asset struct {
 	// inferred maps each candidate without a binding to the driver that first
 	// upserted it. It exists only on an asset with contributors.
 	inferred map[semreg.CandidateID]string
+	// peers holds, per receiving publishing source, the peer reprojection
+	// state of its callback: the publications of the asset's other sources it
+	// is owed and the latest view it acknowledged. It exists only on an asset
+	// with contributors.
+	peers map[semreg.SourceID]*peerView
 }
 
 type source struct {
@@ -324,7 +330,8 @@ type AssetSpec struct {
 	Driver     string
 	Validators []semreg.PackValidator
 	// OnControl reprojects the declaring family's cache after a control
-	// commit. It runs outside every hub lock, in HubSeq order.
+	// commit and, on an asset with contributors, after a publication of a
+	// contributor. It runs outside every hub lock, in HubSeq order.
 	OnControl func(ControlEvent) error
 	// Contributors names the other sources that may publish on the asset.
 	// Empty for a single-source asset.
@@ -416,7 +423,7 @@ func (h *Hub) Declare(spec AssetSpec) (*Declaration, error) {
 	}
 	declared := &asset{id: spec.AssetID, source: spec.SourceID, driver: spec.Driver, packs: packs, kernel: kernel, onControl: spec.OnControl}
 	if len(contributors) != 0 {
-		declared.contributors, declared.inferred = contributors, make(map[semreg.CandidateID]string)
+		declared.contributors, declared.inferred, declared.peers = contributors, make(map[semreg.CandidateID]string), make(map[semreg.SourceID]*peerView, 1+len(contributors))
 	}
 	if err := h.attachContributorsLocked(declared); err != nil {
 		return nil, err
@@ -1268,6 +1275,16 @@ func (tx *Tx) Apply(batch semreg.PublicationBatch, monotonic semreg.MonotonicPoi
 // runs under the asset commit lock so the family cache swaps atomically with
 // the kernel.
 //
+// On an asset with contributors the commit also queues, in HubSeq order, a
+// peer reprojection of every other publishing source's bound callback, and
+// runs the scheduler after the asset commit lock is released, so those
+// callbacks run outside every lock. The scheduler runs on the caller's
+// goroutine, so the caller of Commit on such an asset must not hold a lock
+// that a reprojection callback takes. When another goroutine is already
+// running the scheduler, Commit returns at once and that goroutine runs the
+// entry; reads of the asset stay withheld until every receiver has settled.
+// A single-source asset queues nothing.
+//
 // When the commit installs a transition cover over the source's other assets
 // and the cover's initial submission fails (interrupted or rejected), Commit
 // still returns Accepted (the publication is committed and Handle is valid)
@@ -1283,6 +1300,14 @@ func (tx *Tx) Commit(onCommit func(Committed)) (outcome Outcome, err error) {
 		return "", ErrTransaction
 	}
 	h := tx.hub
+	// Registered first so it runs last: after the asset commit lock is
+	// released, a cover is submitted and the acceptance is exported.
+	peers := false
+	defer func() {
+		if peers {
+			h.drain()
+		}
+	}()
 	var recovery AcceptedBatch
 	defer func() {
 		if recovery.HubSeq != 0 {
@@ -1462,6 +1487,7 @@ func (tx *Tx) Commit(onCommit func(Committed)) (outcome Outcome, err error) {
 		tx.asset.records[len(tx.asset.records)-1].HubSeq = seq
 	}
 	recovery.HubSeq = seq
+	peers = h.queuePeersLocked(tx.asset, tx.applied.SourceID, seq)
 	h.unlock()
 	if onCommit != nil {
 		onCommit(Committed{Snapshot: tx.snapshot, Canonical: append([]byte(nil), tx.canonical...), HubSeq: seq})

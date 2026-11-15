@@ -15,13 +15,17 @@ import (
 // The two-contributor fixture: owner A and declared contributor B publish on
 // one shared asset. Each declared reprojection callback (A's as the owner's,
 // B's as the contributor's) records every control event it receives and can
-// be told to block or fail on the events of one controlling source.
+// be told to block or fail on the events of one controlling source. A peer
+// reprojection (an event without a control identifier, delivered after the
+// other source's publication) is recorded apart and always succeeds.
 type multiSourceFixture struct {
 	hub  *Hub
 	a, b *Handle
 
 	mu       sync.Mutex
 	seen     map[string][]ControlEvent
+	peerSeen map[string][]ControlEvent
+	arrivals map[string][]uint64
 	fail     map[semreg.SourceID]error
 	entered  map[semreg.SourceID]chan struct{}
 	released map[semreg.SourceID]chan struct{}
@@ -37,7 +41,7 @@ const (
 
 func newMultiSourceFixture(t *testing.T) *multiSourceFixture {
 	t.Helper()
-	f := &multiSourceFixture{hub: newTestHub(t), seen: map[string][]ControlEvent{}, fail: map[semreg.SourceID]error{}, entered: map[semreg.SourceID]chan struct{}{}, released: map[semreg.SourceID]chan struct{}{}}
+	f := &multiSourceFixture{hub: newTestHub(t), seen: map[string][]ControlEvent{}, peerSeen: map[string][]ControlEvent{}, arrivals: map[string][]uint64{}, fail: map[semreg.SourceID]error{}, entered: map[semreg.SourceID]chan struct{}{}, released: map[semreg.SourceID]chan struct{}{}}
 	peer := peerSpec()
 	peer.OnControl = f.callback(peerRecipient)
 	spec := sharedSpec(peer)
@@ -55,6 +59,12 @@ func newMultiSourceFixture(t *testing.T) *multiSourceFixture {
 func (f *multiSourceFixture) callback(recipient string) func(ControlEvent) error {
 	return func(event ControlEvent) error {
 		f.mu.Lock()
+		f.arrivals[recipient] = append(f.arrivals[recipient], event.HubSeq)
+		if event.Control == (ControlID{}) {
+			f.peerSeen[recipient] = append(f.peerSeen[recipient], event)
+			f.mu.Unlock()
+			return nil
+		}
 		f.seen[recipient] = append(f.seen[recipient], event)
 		err := f.fail[event.Control.Source]
 		entered, released := f.entered[event.Control.Source], f.released[event.Control.Source]
@@ -704,6 +714,19 @@ func TestMultiSourceControlConcurrentContributorCycles(t *testing.T) {
 		for index := 1; index < len(events); index++ {
 			if events[index].HubSeq <= events[index-1].HubSeq {
 				t.Fatalf("%s events out of HubSeq order", recipient)
+			}
+		}
+		// Control and peer reprojections interleave on the one scheduler;
+		// together they never move a receiver back to an older view.
+		f.mu.Lock()
+		arrivals, peers := append([]uint64(nil), f.arrivals[recipient]...), len(f.peerSeen[recipient])
+		f.mu.Unlock()
+		if peers == 0 {
+			t.Fatalf("%s received no peer reprojection", recipient)
+		}
+		for index := 1; index < len(arrivals); index++ {
+			if arrivals[index] < arrivals[index-1] {
+				t.Fatalf("%s moved back from HubSeq %d to %d", recipient, arrivals[index-1], arrivals[index])
 			}
 		}
 	}

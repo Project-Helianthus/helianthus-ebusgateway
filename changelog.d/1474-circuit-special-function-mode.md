@@ -1,0 +1,3 @@
+## Publish GG02 RR001D as the circuit special-function mode and report replies of the wrong width
+
+GG02 RR001D is read as one unsigned byte and published as `circuit_special_function_mode` (provisional name, value table unconfirmed) on the circuit configuration in GraphQL, MCP and the Portal. The float field `frost_prot_c` is removed without an alias; it was always empty because the register answers with one byte. A B524 reply whose width does not match its fixed-width reader is now counted in `semantic_b524_width_mismatch_total` (keyed by reader kind) and logged at most once per selector per ten minutes instead of being dropped silently; the reader still publishes no value for it. No write to this register is offered. The gateway binary changes.

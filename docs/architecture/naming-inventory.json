@@ -33531,9 +33531,9 @@
       "consumer_files": [
         "ha-integration/custom_components/helianthus/__init__.py"
       ],
-      "current_name": "frostProtC",
+      "current_name": "circuit_special_function_mode",
       "evidence_class": "Unknown",
-      "full_identity": "declaration/graphql/queries_test.go/json_tag/243/frostProtC",
+      "full_identity": "declaration/graphql/queries_test.go/json_tag/243/circuit_special_function_mode",
       "kind": "json_tag",
       "native_semantic_identity": "not declared",
       "open_question": "Native or semantic meaning and complete consumer binding are not declared for this discovery occurrence; retain its public spelling pending a separately scoped decision.",
@@ -115190,9 +115190,9 @@
         "ha-integration/tests/test_circuit.py",
         "ha-integration/tests/test_entity_icon_gate.py"
       ],
-      "current_name": "frost_prot_c",
+      "current_name": "circuit_special_function_mode",
       "evidence_class": "Unknown",
-      "full_identity": "declaration/mcp/server.go/json_tag/171/frost_prot_c",
+      "full_identity": "declaration/mcp/server.go/json_tag/171/circuit_special_function_mode",
       "kind": "json_tag",
       "native_semantic_identity": "not declared",
       "open_question": "Native or semantic meaning and complete consumer binding are not declared for this discovery occurrence; retain its public spelling pending a separately scoped decision.",

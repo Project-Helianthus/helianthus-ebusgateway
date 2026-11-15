@@ -407,13 +407,13 @@ type SemanticCircuitState struct {
 }
 
 type SemanticCircuitConfig struct {
-	HeatingCurve    *float64 `json:"heating_curve,omitempty"`
-	FlowTempMaxC    *float64 `json:"flow_temp_max_c,omitempty"`
-	FlowTempMinC    *float64 `json:"flow_temp_min_c,omitempty"`
-	SummerLimitC    *float64 `json:"summer_limit_c,omitempty"`
-	FrostProtC      *float64 `json:"frost_prot_c,omitempty"`
-	RoomTempControl string   `json:"room_temp_control,omitempty"`
-	CoolingEnabled  *bool    `json:"cooling_enabled,omitempty"`
+	HeatingCurve        *float64 `json:"heating_curve,omitempty"`
+	FlowTempMaxC        *float64 `json:"flow_temp_max_c,omitempty"`
+	FlowTempMinC        *float64 `json:"flow_temp_min_c,omitempty"`
+	SummerLimitC        *float64 `json:"summer_limit_c,omitempty"`
+	SpecialFunctionMode *int     `json:"circuit_special_function_mode,omitempty"`
+	RoomTempControl     string   `json:"room_temp_control,omitempty"`
+	CoolingEnabled      *bool    `json:"cooling_enabled,omitempty"`
 }
 
 type SemanticManagingDevice struct {

@@ -88,7 +88,10 @@ const (
 	circuit_flow_temp_min     = uint16(0x0012) // flow_temperature_min
 	circuit_summer_limit      = uint16(0x0014) // summer_limit
 	circuit_room_temp_control = uint16(0x0015) // room_temperature_control_mode
-	circuit_frost_protection  = uint16(0x001D) // frost_protection_threshold
+	// circuit_special_function_mode is one unsigned byte. The name is
+	// provisional; the meaning and value table are unconfirmed on the wire,
+	// so the raw byte is published and no write is offered.
+	circuit_special_function_mode = uint16(0x001D)
 
 	dhwPseudoCircuitInstance = byte(0x09)
 	dhwPseudoCircuitTypeRaw  = uint16(0x0003)
@@ -275,6 +278,9 @@ var (
 	semanticDHWUpdatesTotal              = expvar.NewInt("semantic_dhw_updates_total")
 	semanticRegulatorState               = expvar.NewString("semantic_regulator_state")
 	semanticRegulatorTransitionsTotal    = expvar.NewMap("semantic_regulator_transitions_total")
+	// semanticB524WidthMismatchTotal counts B524 replies whose value width
+	// does not match the fixed-width reader, keyed by reader kind.
+	semanticB524WidthMismatchTotal = expvar.NewMap("semantic_b524_width_mismatch_total")
 
 	passiveShadowSubscriberPriority = ebusgateway.DedupSubscriberCritical
 	passiveShadowSubscriberBuffer   = 256
@@ -415,6 +421,11 @@ type vaillantSemanticPoller struct {
 	// nil waits on the wall clock. Offline scenarios keep pauses on a
 	// simulated clock.
 	pauseFn func(context.Context, time.Duration) bool
+
+	// b524WidthMismatchLoggedAt holds, per logged selector, when the last
+	// width mismatch line was written.
+	b524WidthMismatchMu       sync.Mutex
+	b524WidthMismatchLoggedAt map[b524WidthMismatchSelector]time.Time
 }
 
 type regulatorEnrichment struct {
@@ -2000,9 +2011,8 @@ func (p *vaillantSemanticPoller) refreshCircuits(ctx context.Context) {
 			snapshot.CircuitStateLiveAt = now
 			anyRead = true
 		}
-		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_frost_protection); ok {
-			v := value
-			snapshot.FrostProtectionC = &v
+		if value := p.readB524U8(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_special_function_mode); value != nil {
+			snapshot.SpecialFunctionMode = cloneUint8Ptr(value)
 			anyRead = true
 		}
 		if raw, ok := p.readB524Uint16(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_pump_status); ok && raw != nil {
@@ -2192,8 +2202,8 @@ func mergeCircuitSnapshotNonDestructive(existing, incoming *vaillantCircuitSnaps
 		merged.CircuitStateRaw = cloneUint16Ptr(incoming.CircuitStateRaw)
 		merged.CircuitStateLiveAt = incoming.CircuitStateLiveAt
 	}
-	if incoming.FrostProtectionC != nil {
-		merged.FrostProtectionC = cloneFloat64Ptr(incoming.FrostProtectionC)
+	if incoming.SpecialFunctionMode != nil {
+		merged.SpecialFunctionMode = cloneUint8Ptr(incoming.SpecialFunctionMode)
 	}
 	if incoming.PumpStatusRaw != nil {
 		merged.PumpStatusRaw = cloneUint16Ptr(incoming.PumpStatusRaw)
@@ -2222,23 +2232,23 @@ func cloneCircuitSnapshot(snapshot *vaillantCircuitSnapshot) *vaillantCircuitSna
 		return nil
 	}
 	return &vaillantCircuitSnapshot{
-		Instance:           snapshot.Instance,
-		Active:             snapshot.Active,
-		Controller:         snapshot.Controller,
-		CircuitTypeRaw:     cloneUint16Ptr(snapshot.CircuitTypeRaw),
-		CoolingEnabledRaw:  cloneUint16Ptr(snapshot.CoolingEnabledRaw),
-		FlowSetpointC:      cloneFloat64Ptr(snapshot.FlowSetpointC),
-		FlowTemperatureC:   cloneFloat64Ptr(snapshot.FlowTemperatureC),
-		HeatingCurve:       cloneFloat64Ptr(snapshot.HeatingCurve),
-		FlowTempMaxC:       cloneFloat64Ptr(snapshot.FlowTempMaxC),
-		FlowTempMinC:       cloneFloat64Ptr(snapshot.FlowTempMinC),
-		SummerLimitC:       cloneFloat64Ptr(snapshot.SummerLimitC),
-		RoomTempControlRaw: cloneUint16Ptr(snapshot.RoomTempControlRaw),
-		CircuitStateRaw:    cloneUint16Ptr(snapshot.CircuitStateRaw),
-		CircuitStateLiveAt: snapshot.CircuitStateLiveAt,
-		FrostProtectionC:   cloneFloat64Ptr(snapshot.FrostProtectionC),
-		PumpStatusRaw:      cloneUint16Ptr(snapshot.PumpStatusRaw),
-		PumpStatusLiveAt:   snapshot.PumpStatusLiveAt,
+		Instance:            snapshot.Instance,
+		Active:              snapshot.Active,
+		Controller:          snapshot.Controller,
+		CircuitTypeRaw:      cloneUint16Ptr(snapshot.CircuitTypeRaw),
+		CoolingEnabledRaw:   cloneUint16Ptr(snapshot.CoolingEnabledRaw),
+		FlowSetpointC:       cloneFloat64Ptr(snapshot.FlowSetpointC),
+		FlowTemperatureC:    cloneFloat64Ptr(snapshot.FlowTemperatureC),
+		HeatingCurve:        cloneFloat64Ptr(snapshot.HeatingCurve),
+		FlowTempMaxC:        cloneFloat64Ptr(snapshot.FlowTempMaxC),
+		FlowTempMinC:        cloneFloat64Ptr(snapshot.FlowTempMinC),
+		SummerLimitC:        cloneFloat64Ptr(snapshot.SummerLimitC),
+		RoomTempControlRaw:  cloneUint16Ptr(snapshot.RoomTempControlRaw),
+		CircuitStateRaw:     cloneUint16Ptr(snapshot.CircuitStateRaw),
+		CircuitStateLiveAt:  snapshot.CircuitStateLiveAt,
+		SpecialFunctionMode: cloneUint8Ptr(snapshot.SpecialFunctionMode),
+		PumpStatusRaw:       cloneUint16Ptr(snapshot.PumpStatusRaw),
+		PumpStatusLiveAt:    snapshot.PumpStatusLiveAt,
 		// CalcFlowTempC stays unavailable, including snapshots retained before the RR0020 correction.
 		MixerPositionPct: cloneFloat64Ptr(snapshot.MixerPositionPct),
 		HumidityPct:      cloneFloat64Ptr(snapshot.HumidityPct),
@@ -2293,13 +2303,13 @@ func (p *vaillantSemanticPoller) publishCircuits(source semanticSnapshotSource) 
 				PumpStarts:       decodeUint32Int(snapshot.PumpStartsRaw),
 			},
 			Config: graphql.CircuitConfig{
-				HeatingCurve:    cloneFloat64Ptr(snapshot.HeatingCurve),
-				FlowTempMaxC:    cloneFloat64Ptr(snapshot.FlowTempMaxC),
-				FlowTempMinC:    cloneFloat64Ptr(snapshot.FlowTempMinC),
-				SummerLimitC:    cloneFloat64Ptr(snapshot.SummerLimitC),
-				FrostProtC:      cloneFloat64Ptr(snapshot.FrostProtectionC),
-				RoomTempControl: decodeRoomTempControlToken(snapshot.RoomTempControlRaw),
-				CoolingEnabled:  decodeUint16Bool(snapshot.CoolingEnabledRaw),
+				HeatingCurve:        cloneFloat64Ptr(snapshot.HeatingCurve),
+				FlowTempMaxC:        cloneFloat64Ptr(snapshot.FlowTempMaxC),
+				FlowTempMinC:        cloneFloat64Ptr(snapshot.FlowTempMinC),
+				SummerLimitC:        cloneFloat64Ptr(snapshot.SummerLimitC),
+				SpecialFunctionMode: decodeUint8Int(snapshot.SpecialFunctionMode),
+				RoomTempControl:     decodeRoomTempControlToken(snapshot.RoomTempControlRaw),
+				CoolingEnabled:      decodeUint16Bool(snapshot.CoolingEnabledRaw),
 			},
 			ManagingDevice: deriveCircuitManagingDevice(systemSnapshot, fm5Mode),
 		}
@@ -2387,7 +2397,7 @@ func circuitsEqual(a, b []graphql.CircuitStatus) bool {
 		if !floatPtrEquals(left.Config.SummerLimitC, right.Config.SummerLimitC) {
 			return false
 		}
-		if !floatPtrEquals(left.Config.FrostProtC, right.Config.FrostProtC) {
+		if !intPtrEquals(left.Config.SpecialFunctionMode, right.Config.SpecialFunctionMode) {
 			return false
 		}
 		if left.Config.RoomTempControl != right.Config.RoomTempControl {
@@ -2477,6 +2487,14 @@ func decodeUint32Float64(raw *uint32) *float64 {
 }
 
 func decodeUint32Int(raw *uint32) *int {
+	if raw == nil {
+		return nil
+	}
+	parsed := int(*raw)
+	return &parsed
+}
+
+func decodeUint8Int(raw *uint8) *int {
 	if raw == nil {
 		return nil
 	}
@@ -5940,7 +5958,7 @@ func semanticReadB524CircuitDescriptorPolicy(addr uint16) (ebusgateway.WatchSema
 		circuit_flow_temp_min,
 		circuit_summer_limit,
 		circuit_room_temp_control,
-		circuit_frost_protection:
+		circuit_special_function_mode:
 		return semanticReadConfigDescriptorPolicy()
 	default:
 		return semanticReadStateFastDescriptorPolicy()
@@ -7697,14 +7715,72 @@ func (p *vaillantSemanticPoller) readB524ValueLive(ctx context.Context, opcode, 
 	return nil, false
 }
 
+// Reader kinds of the fixed-width B524 readers, used as keys of
+// semantic_b524_width_mismatch_total.
+const (
+	b524ReaderKindU8       = "u8"
+	b524ReaderKindUint16   = "uint16"
+	b524ReaderKindFloat32  = "float32le"
+	b524ReaderKindUint32   = "uint32le"
+	b524ReaderKindDateHDA3 = "date_hda3"
+
+	// b524WidthMismatchLogInterval bounds the width mismatch log to one
+	// line per selector in this interval.
+	b524WidthMismatchLogInterval = 10 * time.Minute
+)
+
+// b524WidthMismatchSelector is the selector the width mismatch line names.
+type b524WidthMismatchSelector struct {
+	opcode byte
+	group  byte
+	addr   uint16
+}
+
+// b524ReplyWidthMatches reports whether a reply of got bytes fits a reader
+// that accepts exactly one of the widths in accepted. A mismatch is counted
+// under kind and logged at most once per selector per log interval; the
+// caller then returns no value. want is the first accepted width.
+func (p *vaillantSemanticPoller) b524ReplyWidthMatches(kind string, opcode, group byte, addr uint16, got int, accepted ...int) bool {
+	for _, width := range accepted {
+		if got == width {
+			return true
+		}
+	}
+	semanticB524WidthMismatchTotal.Add(kind, 1)
+	if p == nil {
+		return false
+	}
+	selector := b524WidthMismatchSelector{opcode: opcode, group: group, addr: addr}
+	now := p.now()
+	p.b524WidthMismatchMu.Lock()
+	last, seen := p.b524WidthMismatchLoggedAt[selector]
+	logLine := !seen || now.Sub(last) >= b524WidthMismatchLogInterval
+	if logLine {
+		if p.b524WidthMismatchLoggedAt == nil {
+			p.b524WidthMismatchLoggedAt = make(map[b524WidthMismatchSelector]time.Time)
+		}
+		p.b524WidthMismatchLoggedAt[selector] = now
+	}
+	p.b524WidthMismatchMu.Unlock()
+	if logLine {
+		want := 0
+		if len(accepted) > 0 {
+			want = accepted[0]
+		}
+		log.Printf("semantic: b524 reply width mismatch opcode=0x%02X group=0x%02X register=0x%04X want=%d got=%d", opcode, group, addr, want, got)
+	}
+	return false
+}
+
 func (p *vaillantSemanticPoller) readB524Float32LE(ctx context.Context, opcode, group, instance byte, addr uint16) (float64, bool) {
 	// The circuit RR0020 selector is raw evidence in the native catalog.
-	// Reject it before acquisition or cache lookup, regardless of payload width.
+	// Reject it before acquisition or cache lookup, regardless of payload
+	// width; this rejection is not a width mismatch.
 	if opcode == localCircuits.opcode && group == localCircuits.group && addr == circuit_calc_flow_temp {
 		return 0, false
 	}
 	raw, ok := p.readB524Value(ctx, opcode, group, instance, addr)
-	if !ok || len(raw) < 4 {
+	if !ok || !p.b524ReplyWidthMatches(b524ReaderKindFloat32, opcode, group, addr, len(raw), 4) {
 		return 0, false
 	}
 	bits := binary.LittleEndian.Uint32(raw[:4])
@@ -7717,7 +7793,7 @@ func (p *vaillantSemanticPoller) readB524Float32LE(ctx context.Context, opcode, 
 
 func (p *vaillantSemanticPoller) readB524U8(ctx context.Context, opcode, group, instance byte, addr uint16) *uint8 {
 	raw, ok := p.readB524Value(ctx, opcode, group, instance, addr)
-	if !ok || len(raw) == 0 {
+	if !ok || !p.b524ReplyWidthMatches(b524ReaderKindU8, opcode, group, addr, len(raw), 1) {
 		return nil
 	}
 	if raw[0] == 0xFF {
@@ -7811,7 +7887,7 @@ func (p *vaillantSemanticPoller) readB524CStringSanitized(ctx context.Context, o
 
 func (p *vaillantSemanticPoller) readB524DateHDA3(ctx context.Context, opcode, group, instance byte, addr uint16) (string, bool) {
 	raw, ok := p.readB524Value(ctx, opcode, group, instance, addr)
-	if !ok || len(raw) < 3 {
+	if !ok || !p.b524ReplyWidthMatches(b524ReaderKindDateHDA3, opcode, group, addr, len(raw), 3) {
 		return "", false
 	}
 	day, month, yearOffset := int(raw[0]), int(raw[1]), int(raw[2])
@@ -7833,7 +7909,8 @@ func (p *vaillantSemanticPoller) readB524ZoneNamePart(ctx context.Context, insta
 
 func (p *vaillantSemanticPoller) readB524Uint16(ctx context.Context, opcode, group, instance byte, addr uint16) (*uint16, bool) {
 	raw, ok := p.readB524Value(ctx, opcode, group, instance, addr)
-	if !ok || len(raw) == 0 {
+	// The codec takes the two-byte form and the one-byte form.
+	if !ok || !p.b524ReplyWidthMatches(b524ReaderKindUint16, opcode, group, addr, len(raw), 2, 1) {
 		return nil, false
 	}
 	parsed, ok := decodeB524Uint16(raw)
@@ -7845,7 +7922,7 @@ func (p *vaillantSemanticPoller) readB524Uint16(ctx context.Context, opcode, gro
 
 func (p *vaillantSemanticPoller) readB524Uint32LE(ctx context.Context, opcode, group, instance byte, addr uint16) (uint32, bool) {
 	raw, ok := p.readB524Value(ctx, opcode, group, instance, addr)
-	if !ok || len(raw) < 4 {
+	if !ok || !p.b524ReplyWidthMatches(b524ReaderKindUint32, opcode, group, addr, len(raw), 4) {
 		return 0, false
 	}
 	v := binary.LittleEndian.Uint32(raw[:4])
@@ -7866,7 +7943,7 @@ func (p *vaillantSemanticPoller) readEnergyRegister(ctx context.Context, q b524E
 		maxAgeOverride = 0
 	}
 	raw, ok := p.readB524ValueWithMaxAge(ctx, vaillantB524OpcodeLocal, localRegulator.group, regulatorInstance, q.addr, maxAgeOverride)
-	if !ok || len(raw) < 4 {
+	if !ok || !p.b524ReplyWidthMatches(b524ReaderKindUint32, vaillantB524OpcodeLocal, localRegulator.group, q.addr, len(raw), 4) {
 		return 0, false
 	}
 	v := binary.LittleEndian.Uint32(raw[:4])

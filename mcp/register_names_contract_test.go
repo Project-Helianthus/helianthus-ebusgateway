@@ -69,6 +69,7 @@ func TestMCPPublishesDocsEbusRegisterNames(t *testing.T) {
 		"SystemState":      reflect.TypeOf(SystemState{}),
 		"SystemConfig":     reflect.TypeOf(SystemConfig{}),
 		"SystemProperties": reflect.TypeOf(SystemProperties{}),
+		"CircuitConfig":    reflect.TypeOf(CircuitConfig{}),
 	}
 	published := map[string]map[string]bool{}
 	for _, row := range doc.Rows {

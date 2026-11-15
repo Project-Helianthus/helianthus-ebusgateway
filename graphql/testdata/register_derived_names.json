@@ -1,6 +1,6 @@
 {
   "format": "helianthus-register-derived-names/v1",
-  "description": "B524 register-derived value fields published by the gateway system plane, each with the published name, the native identity (opcode, group, register) and the docs-ebus name and previous_name of that register. The docs-ebus columns are copied from the docs-ebus fixture protocols/vaillant/fixtures/b524-op02-register-names.csv (B524 opcode 0x02 register name catalog). previous_name is a documentary column only: no surface publishes it. surfaces names the object that publishes the field on each surface (GraphQL type, MCP Go struct, Portal Go struct); an empty value means the surface does not publish the field. exemption marks the single row whose published name is not yet the docs-ebus name, with the docs-ebus issue that settles it.",
+  "description": "B524 register-derived value fields published by the gateway system and circuit planes, each with the published name, the native identity (opcode, group, register) and the docs-ebus name and previous_name of that register. The docs-ebus columns are copied from the docs-ebus fixture protocols/vaillant/fixtures/b524-op02-register-names.csv (B524 opcode 0x02 register name catalog). previous_name is a documentary column only: no surface publishes it. surfaces names the object that publishes the field on each surface (GraphQL type, MCP Go struct, Portal Go struct); an empty value means the surface does not publish the field. exemption marks the single row whose published name is not yet the docs-ebus name, with the docs-ebus issue that settles it.",
   "source": "helianthus-docs-ebus protocols/vaillant/fixtures/b524-op02-register-names.csv",
   "rows": [
     {
@@ -102,6 +102,15 @@
       "docs_ebus_name": "functional_module_configuration_code",
       "previous_name": "module_configuration_vr71",
       "surfaces": {"graphql": "system_properties", "mcp": "SystemProperties", "portal": "SemanticSystemProperties"}
+    },
+    {
+      "published_name": "circuit_special_function_mode",
+      "opcode": "0x02",
+      "group": "0x02",
+      "register": "0x001D",
+      "docs_ebus_name": "circuit_special_function_mode",
+      "previous_name": "circuit_dhw_quick_mode",
+      "surfaces": {"graphql": "circuit_config", "mcp": "CircuitConfig", "portal": "SemanticCircuitConfig"}
     }
   ]
 }

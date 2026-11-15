@@ -1691,7 +1691,7 @@
         "classification": "tool_name",
         "namespace_tokens": [
           "helianthus",
-          "experimental",
+          "v1",
           "leaf_promotion",
           "capture"
         ]
@@ -1699,7 +1699,7 @@
       "source_file": "mcp/leaf_promotion_capture.go",
       "source_occurrence": 0,
       "status": "ready",
-      "target": "helianthus_experimental_leaf_promotion_capture",
+      "target": "helianthus_v1_leaf_promotion_capture",
       "unit": "not_applicable",
       "value_class": "not_applicable"
     },
@@ -1738,15 +1738,15 @@
         "classification": "tool_name",
         "namespace_tokens": [
           "helianthus",
-          "experimental",
-          "m8_source_state",
+          "v1",
+          "source_state",
           "get"
         ]
       },
       "source_file": "mcp/m8_source_state.go",
       "source_occurrence": 0,
       "status": "ready",
-      "target": "helianthus_experimental_m8_source_state_get",
+      "target": "helianthus_v1_source_state_get",
       "unit": "not_applicable",
       "value_class": "not_applicable"
     },

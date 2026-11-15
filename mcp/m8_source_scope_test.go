@@ -184,7 +184,7 @@ func TestIssue788M8SourceScopeRejectsToolsOutsideFrozenInventory(t *testing.T) {
 		"ebus_v1_runtime_status_get",
 		"eebus_v1_semantic_system_set_config",
 		"eebus.v1.features.data.get",
-		"helianthus_experimental_leaf_promotion_capture",
+		leafPromotionCaptureToolName,
 	} {
 		request := httptest.NewRequest(http.MethodPost, "/mcp", issue788RPCBody(t, rpcRequest{
 			JSONRPC: "2.0", ID: 1, Method: "tools/call",

@@ -5,6 +5,7 @@ from pathlib import Path
 PRODUCTION_PATHS = (
     Path("config.go"), Path("modbus_config.go"),
     Path("cmd/gateway/gateway_run_lifecycle.go"),
+    Path("cmd/gateway/gateway_lifecycle_observability.go"),
     Path("cmd/gateway/gateway_run_setup.go"),
     Path("cmd/gateway/modbus_mcp_provider.go"),
     Path("cmd/gateway/m2m_graphql_runtime.go"),

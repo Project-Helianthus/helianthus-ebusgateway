@@ -209,10 +209,7 @@ func TestMSP06GatewayRegistersProviderConditionallyBeforeMCPMount(t *testing.T) 
 // behaviorally without constructing the unrelated eBUS transport lifecycle.
 func TestMSP06GatewayNormalizesTypedProviderBeforeHTTPBootstrap(t *testing.T) {
 	fset := token.NewFileSet()
-	mainFile, err := parser.ParseFile(fset, "gateway_run_lifecycle.go", nil, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	lifecycleFiles, _ := lifecycleCompositionSources(t, fset)
 	serverFile, err := parser.ParseFile(fset, "gateway_http_server.go", nil, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -244,7 +241,12 @@ func TestMSP06GatewayNormalizesTypedProviderBeforeHTTPBootstrap(t *testing.T) {
 			}
 		}
 	}
-	ast.Inspect(mainFile, func(node ast.Node) bool {
+	inspectLifecycle := func(visit func(ast.Node) bool) {
+		for _, file := range lifecycleFiles {
+			ast.Inspect(file.syntax, visit)
+		}
+	}
+	inspectLifecycle(func(node ast.Node) bool {
 		call, ok := node.(*ast.CallExpr)
 		if !ok {
 			return true
@@ -285,11 +287,14 @@ func TestMSP06GatewayNormalizesTypedProviderBeforeHTTPBootstrap(t *testing.T) {
 		t.Error("gateway bootstrap does not create the command router from eebusAdapter before startHTTPServerFn")
 	}
 
-	for filename, file := range map[string]*ast.File{
-		"gateway_run_lifecycle.go": mainFile,
+	inspected := map[string]*ast.File{
 		"gateway_http_server.go":   serverFile,
 		"eebus_runtime_adapter.go": adapterFile,
-	} {
+	}
+	for _, file := range lifecycleFiles {
+		inspected[file.name] = file.syntax
+	}
+	for filename, file := range inspected {
 		ast.Inspect(file, func(node ast.Node) bool {
 			identifier, ok := node.(*ast.Ident)
 			if !ok {

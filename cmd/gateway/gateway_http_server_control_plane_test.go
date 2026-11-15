@@ -207,7 +207,7 @@ func TestRunOrchestrationKeepsDeferredShutdownStackInAcquisitionOrder(t *testing
 		"control.CloseNative(closeCtx)",
 		"teslaHSCRetained.Close()",
 		"m2mRuntime.Close()",
-		"artifactBuilder.EmitToFile(artifactPath)",
+		"defer startupSelection.emitFinalArtifact()",
 		"gateway.Close()",
 		"defer consumerShutdown.shutdown()",
 	} {
@@ -248,7 +248,7 @@ func TestRunOrchestrationKeepsFlagsConfigurationAdmissionAndStartupBarriersOrder
 		"prepareGatewayRunConfig(&cfg)",
 		"prepareGatewayEBusDriver(&cfg, sidecars.driverConfigs()...)",
 		"startGatewayRuntimeControl(ctx",
-		"ResolveAdmissionPath(cfg.TransportConfig.Protocol)",
+		"newStartupSourceSelection(cfg)",
 	)
 	assertOrder(lifecycleText,
 		"semanticBarrier = make(chan struct{})",

@@ -27,7 +27,10 @@ namespace.
 Current entry is [main.go](../../cmd/gateway/main.go): `main` calls `run`, which
 delegates to `runGatewayLifecycle` in
 [gateway_run_lifecycle.go](../../cmd/gateway/gateway_run_lifecycle.go).
-The orchestration is in `gateway_run_lifecycle.go`; the observer factory
+The orchestration is in `gateway_run_lifecycle.go`, which calls the startup
+source-selection setup and the bus-observability providers in
+[gateway_lifecycle_observability.go](../../cmd/gateway/gateway_lifecycle_observability.go);
+the observer factory
 `wireObserveFirstObservers` is in
 [gateway_admission.go](../../cmd/gateway/gateway_admission.go).
 

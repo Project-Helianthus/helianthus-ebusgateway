@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"go/token"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -89,10 +90,7 @@ func TestIssue817OperatorBoundaryFailureKeepsPublicEEBusRuntimeRunning(t *testin
 }
 
 func TestIssue817GatewayMountsOneCredentialFreeTypedOperatorBoundary(t *testing.T) {
-	content, err := os.ReadFile("gateway_run_lifecycle.go")
-	if err != nil {
-		t.Fatal(err)
-	}
+	_, lifecycleText := lifecycleCompositionSources(t, token.NewFileSet())
 	httpContent, err := os.ReadFile("gateway_http_server.go")
 	if err != nil {
 		t.Fatal(err)
@@ -109,7 +107,7 @@ func TestIssue817GatewayMountsOneCredentialFreeTypedOperatorBoundary(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	source := string(compositionContent) + "\n" + string(content) + "\n" + string(httpContent) + "\n" + string(controlPlaneContent) + "\n" + string(configContent)
+	source := string(compositionContent) + "\n" + lifecycleText + "\n" + string(httpContent) + "\n" + string(controlPlaneContent) + "\n" + string(configContent)
 	for _, required := range []string{
 		`mux.Handle("/admin/eebus/v1/", eebusAdminHandler)`,
 		`eebusAdminHandler := http.HandlerFunc(bindings.serveEEBusAdmin)`,

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"expvar"
 	"fmt"
 	"log"
 	"net/http"
@@ -13,8 +12,6 @@ import (
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
-	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux"
-	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux/v8classifier"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/releasecheck"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimecontrol"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimestate"
@@ -188,62 +185,14 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 		log.Printf("warning: --proxy-listen requires adapter-direct transport; proxy endpoint not started")
 	}
 
-	// ResolveAdmissionPath centralises the adapter-direct -> source-selection
-	// special case so all classifier call sites (main.go run(),
-	// startup_scan.go startDiscoveryScanLoop, runBackgroundFullScan) agree
-	// on the dispatch. Adapter-direct multiplexer mode always wraps a
-	// source-selection-capable underlying transport (ENH/ENS), so source-address selector runs through
-	// the shared PassiveTransactionReconstructor regardless of multiplexer
-	// presence. Resolves cruise-run #20 M7 follow-up #1 + validation
-	// finding (source_selection.mode was incorrectly degraded_no_events
-	// on adapter-direct deployments).
-	admissionPath, adapterDirectSpecialCased := ebusgateway.ResolveAdmissionPath(cfg.TransportConfig.Protocol)
-	if adapterDirectSpecialCased {
-		log.Printf("startup source selection: adapter-direct multiplexer detected; treating as source-selection-capable (underlying transport is always ENH/ENS)")
-	} else if admissionPath == ebusgateway.TransportAdmissionStaticFallback && cfg.TransportConfig.Protocol != ebusgateway.TransportEbusdTCP {
-		log.Printf("startup source selection: classifier produced static-fallback for transport protocol=%q (unknown/empty)", cfg.TransportConfig.Protocol)
+	startupSelection, err := newStartupSourceSelection(cfg)
+	if err != nil {
+		return err
 	}
-	metrics := ebusgateway.GetOrInitStartupSourceSelectionMetrics()
-	artifactBuilder := ebusgateway.NewSourceSelectionArtifactBuilder(string(cfg.TransportConfig.Protocol))
-	if err := artifactBuilder.SetSourceSelectionMode("degraded_no_events"); err != nil {
-		return fmt.Errorf("set startup source-selection mode: %w", err)
-	}
-	overrideSet := admissionPath == ebusgateway.TransportAdmissionSourceSelectionCapable && cfg.StartupSource.Source != nil
-	overrideSource := byte(0x00)
-	if overrideSet {
-		overrideSource = *cfg.StartupSource.Source
-		log.Print(ebusgateway.FormatStartupSourceSelectionExplicitLog(overrideSource))
-		metrics.SetExplicitSourceActive(true)
-		metrics.RecordExplicitValidateOnly()
-		artifactBuilder.SetExplicitSource(overrideSource)
-		if err := artifactBuilder.SetSourceSelectionMode("explicit_validate_only"); err != nil {
-			return fmt.Errorf("set explicit source-selection mode: %w", err)
-		}
-		// Exact source is configured: state immediately becomes "active" because
-		// the explicit source is in use from the first active frame. The selector
-		// may still run advisory-only under Validate=true but does not gate.
-		artifactBuilder.SetActiveExplicitSource(overrideSource)
-	} else {
-		metrics.SetExplicitSourceActive(false)
-	}
-	const artifactPath = "/tmp/helianthus-source-selection-artifact.json"
-	go func() {
-		timer := time.NewTimer(60 * time.Second)
-		defer timer.Stop()
-		select {
-		case <-ctx.Done():
-			return
-		case <-timer.C:
-			if err := artifactBuilder.EmitToFile(artifactPath); err != nil {
-				log.Printf("startup source selection artifact emit: %v", err)
-			}
-		}
-	}()
-	defer func() {
-		if err := artifactBuilder.EmitToFile(artifactPath); err != nil {
-			log.Printf("startup source selection artifact emit: %v", err)
-		}
-	}()
+	admissionPath, metrics, artifactBuilder := startupSelection.admissionPath, startupSelection.metrics, startupSelection.artifactBuilder
+	overrideSet, overrideSource := startupSelection.overrideSet, startupSelection.overrideSource
+	startupSelection.startArtifactEmission(ctx)
+	defer startupSelection.emitFinalArtifact()
 
 	busObservability, deduplicator, err := wireObserveFirstObserversFn(&cfg)
 	if err != nil {
@@ -254,62 +203,9 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 		stopTransportWatch = bindings.observeTransports(ctx, cfg, busObservability)
 		defer stopTransportWatch()
 	}
-	if busObservability != nil && (cfg.ModbusTCPConfig.Enabled || cfg.ModbusTCPConfig.GrowattBMSRS485.Enabled || cfg.PrometheusEVSEEnabled) {
-		// This is intentionally wired before the HTTP control plane starts. The
-		// callback reaches only immutable SemReg current views; it cannot invoke
-		// the Growatt observe/publish path or any native transport operation.
-		busObservability.SetSemanticMetricsProvider(func(at time.Time) []ebusgateway.SemanticMetricsDomain {
-			// The Tesla owner supplies only its detached retained publication. It
-			// cannot acquire, publish, or execute a native operation from a scrape.
-			return bindings.semanticMetrics(cfg, teslaHSCRetained, at)
-		})
-	}
+	wireSemanticMetricsProvider(busObservability, cfg, bindings, teslaHSCRetained)
 
-	// batch-21 forensic counters — wire the adaptermux diagnostic
-	// snapshot through the BusObservabilityStore Prometheus surface.
-	// Type-assert through the optional adaptermuxDiagSnapshotter seam
-	// (satisfied by *adaptermux.Mux). When the active transport isn't
-	// adapter-direct (no mux), classifier is nil and the provider
-	// stays unset — Prometheus surface degrades cleanly (the
-	// ebus_adaptermux_syn_seen_* metrics are simply absent).
-	if holder, ok := adapterClassifier.(activeArbitrationHolder); ok {
-		busObservability.SetActiveArbitrationHoldProvider(holder.ActiveArbitrationHoldReason)
-	}
-	if snap, ok := adapterClassifier.(adaptermuxDiagSnapshotter); ok {
-		busObservability.SetAdaptermuxDiagProvider(func() ebusgateway.AdaptermuxDiagSnapshot {
-			var s adaptermux.ActiveTxnSnapshot
-			if cumulative, ok := adapterClassifier.(interface {
-				CumulativeActiveTxnSnapshot() adaptermux.ActiveTxnSnapshot
-			}); ok {
-				s = cumulative.CumulativeActiveTxnSnapshot()
-			} else {
-				s = snap.ActiveTxnSnapshot()
-			}
-			return ebusgateway.AdaptermuxDiagSnapshot{
-				SynSuppressedPreEcho:               s.SynSuppressedPreEcho,
-				SynSeenDuringGrantWindow:           s.SynSeenDuringGrantWindow,
-				SynSeenWhileInterWriteEmpty:        s.SynSeenWhileInterWriteEmpty,
-				SynSeenAfterTransportWindowExpired: s.SynSeenAfterTransportWindowExpired,
-				SynSuppressedBetweenWrites:         s.SynSuppressedBetweenWrites,
-				InactiveReasonCounts:               inactiveReasonCounts(s.InactiveReasonCounts),
-				StaleActiveBytesDiscarded:          s.StaleActiveBytesDiscarded,
-				InterWriteDrainTotal:               s.InterWriteDrainTotal,
-				ForeignInitiatorReleases:           s.ForeignInitiatorReleases,
-				EscapePairLeadFailures:             s.EscapePairLeadFailures,
-				EscapePairSuffixFailures:           s.EscapePairSuffixFailures,
-				ActiveArbitrationHeld:              activeArbitrationHoldReason(adapterClassifier) != "",
-			}
-		})
-		busObservability.SetEscapePairFailureGenerationProvider(func() (uint64, uint64, uint64) {
-			if live, ok := adapterClassifier.(interface {
-				LiveEscapePairFailures() (lead, suffix, generation uint64)
-			}); ok {
-				return live.LiveEscapePairFailures()
-			}
-			s := snap.ActiveTxnSnapshot()
-			return s.EscapePairLeadFailures, s.EscapePairSuffixFailures, 0
-		})
-	}
+	wireAdaptermuxDiagnosticProviders(busObservability, adapterClassifier)
 
 	gateway, err := ebusgateway.New(ctx, cfg)
 	if err != nil {
@@ -324,115 +220,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 
 	gateway.Start(ctx)
 
-	// v8 frame-atomic-visibility rollout counters — wire the four
-	// protocol.Bus counters (round-9 + payload_aa_*) and the v8
-	// classifier shadow-mode counter into the BusObservabilityStore
-	// Prometheus surface. When the active transport isn't adapter-
-	// direct (no mux, no classifier) we still publish the four bus
-	// counters so HelianthusRound9FiredUnderProxy can fire on any
-	// transport. The v8 classifier counter degrades to 0 when the
-	// classifier is nil (Classifier.ShadowWouldHaveDroppedTotal
-	// has nil-receiver handling — see
-	// internal/adaptermux/v8classifier/classifier.go:848).
-	if busObservability != nil && gateway.Bus != nil {
-		bus := gateway.Bus
-		withClassifier := func(func(*v8classifier.Classifier)) {}
-		if provider, ok := adapterClassifier.(interface {
-			WithV8Classifier(func(*v8classifier.Classifier))
-		}); ok {
-			withClassifier = provider.WithV8Classifier
-		}
-		shadowDropCountFn := func() uint64 {
-			var total uint64
-			withClassifier(func(classifier *v8classifier.Classifier) {
-				total = classifier.ShadowWouldHaveDroppedTotal()
-			})
-			return total
-		}
-		if provider, ok := adapterClassifier.(interface {
-			V8ShadowWouldHaveDroppedTotal() uint64
-		}); ok {
-			shadowDropCountFn = provider.V8ShadowWouldHaveDroppedTotal
-		}
-		busObservability.SetV8RolloutProvider(func() ebusgateway.V8RolloutSnapshot {
-			return ebusgateway.V8RolloutSnapshot{
-				Round9AbsorbEntered:            bus.Round9AbsorbEntered(),
-				PayloadAaAutoSynAbsorbed:       bus.PayloadAaAutoSynAbsorbed(),
-				PayloadAaAutoSynRecovered:      bus.PayloadAaAutoSynRecovered(),
-				PayloadAaAutoSynDrainExhausted: bus.PayloadAaAutoSynDrainExhausted(),
-				V8ShadowWouldHaveDroppedTotal:  shadowDropCountFn(),
-			}
-		})
-
-		// Mirror the same counters on /debug/vars (expvar) so
-		// operators can read them with curl + jq without
-		// scraping the Prometheus surface. expvar.Func re-reads
-		// the underlying atomic on every scrape — keeps the two
-		// surfaces in lock-step. Names match the Prometheus
-		// metric names 1:1 so dashboards built on either
-		// transport produce identical numbers.
-		//
-		// Stale-closure defense (PR #655 round-1, Codex MAJOR):
-		// the expvar.Publish calls themselves run ONCE per process
-		// (publish panics on duplicate names), but the closures
-		// dereference an atomic.Pointer that run() updates on each
-		// invocation. The test harness re-entering run() with a
-		// fresh gateway therefore swaps the pointer and /debug/vars
-		// immediately starts reading the new bus — no surface
-		// inconsistency between /metrics and /debug/vars.
-		v8RolloutExpvarCurrent.Store(&v8RolloutExpvarSource{
-			bus:               bus,
-			shadowDropCountFn: shadowDropCountFn,
-		})
-		// F-NEW-26: install the current-generation classifier callback for
-		// /debug/v8/admin-events. Production operations execute inside stable
-		// driver admission, so a classifier pointer cannot escape across
-		// replacement. A missing classifier (non-adapter-direct transport)
-		// leaves the response empty while preserving the HTTP contract.
-		v8AdminEventsCurrentClassifier.Store(nil)
-		v8AdminEventsCurrentProvider.Store(&v8AdminClassifierProvider{withClassifier: withClassifier})
-		v8RolloutExpvarPublishOnce.Do(func() {
-			expvar.Publish("helianthus_round9_absorb_entered_total",
-				expvar.Func(func() any {
-					if src := v8RolloutExpvarCurrent.Load(); src != nil {
-						return src.bus.Round9AbsorbEntered()
-					}
-					return uint64(0)
-				}))
-			expvar.Publish("helianthus_payload_aa_auto_syn_absorbed_total",
-				expvar.Func(func() any {
-					if src := v8RolloutExpvarCurrent.Load(); src != nil {
-						return src.bus.PayloadAaAutoSynAbsorbed()
-					}
-					return uint64(0)
-				}))
-			expvar.Publish("helianthus_payload_aa_auto_syn_recovered_total",
-				expvar.Func(func() any {
-					if src := v8RolloutExpvarCurrent.Load(); src != nil {
-						return src.bus.PayloadAaAutoSynRecovered()
-					}
-					return uint64(0)
-				}))
-			expvar.Publish("helianthus_payload_aa_auto_syn_drain_exhausted_total",
-				expvar.Func(func() any {
-					if src := v8RolloutExpvarCurrent.Load(); src != nil {
-						return src.bus.PayloadAaAutoSynDrainExhausted()
-					}
-					return uint64(0)
-				}))
-			expvar.Publish("helianthus_v8_shadow_would_have_dropped_total",
-				expvar.Func(func() any {
-					if src := v8RolloutExpvarCurrent.Load(); src != nil {
-						// Non-adapter-direct transports install no counter callback.
-						if src.shadowDropCountFn == nil {
-							return uint64(0)
-						}
-						return src.shadowDropCountFn()
-					}
-					return uint64(0)
-				}))
-		})
-	}
+	wireV8RolloutObservability(busObservability, gateway.Bus, adapterClassifier)
 
 	// P3 (post-Phase-C live validation 2026-05-08): when enabled,
 	// plant the productids static seed entries into the registry at
@@ -494,37 +282,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 	if busObservability != nil {
 		builder.SetBusObservabilityProvider(newGraphQLBusObservabilityProvider(busObservability))
 	}
-	// Wire baseline evidence provider so the artifact emitter populates
-	// per_baseline_address_evidence_counts at emit time. Reads the bus
-	// observability periodicity snapshot, filters to baseline addresses
-	// (Vaillant default), and counts cumulative observations per address.
-	// Resolves cruise-run #20 validation finding: artifact's per-baseline
-	// map was always empty even when the registry observed traffic to
-	// baseline addresses.
-	if busObservability != nil {
-		artifactBuilder.SetBaselineEvidenceProvider(func() map[string]int {
-			counts := make(map[string]int)
-			for _, addr := range ebusgateway.VaillantBaselineTopologySeed {
-				counts[fmt.Sprintf("%02X", addr)] = 0
-			}
-			// RecentMessages returns most recent observations; iterate
-			// and count per baseline address (as either source or
-			// target). 1024 is the default observe-first capacity, large
-			// enough to capture passive traffic to all baselines on a
-			// healthy bus.
-			for _, msg := range busObservability.RecentMessages(1024) {
-				srcKey := fmt.Sprintf("%02X", msg.Source)
-				if _, ok := counts[srcKey]; ok {
-					counts[srcKey]++
-				}
-				tgtKey := fmt.Sprintf("%02X", msg.Target)
-				if _, ok := counts[tgtKey]; ok {
-					counts[tgtKey]++
-				}
-			}
-			return counts
-		})
-	}
+	wireSourceSelectionBaselineEvidence(artifactBuilder, busObservability)
 	builder.SetGatewayIdentityProvider(newRuntimeGatewayIdentityProvider(cfg))
 	hub := graphql.NewBroadcastHub(nil)
 	gateway.AddRouterPlane(hub)
@@ -535,18 +293,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 	builder.SetStatusProvider(newRuntimeStatusProviderForControl(semanticRuntime.Provider(), liveAdmittedEBusSource, resolvedBuildInfo, daemonReleaseChecker.UpdatesAvailable, ebusAdapterLifecycleStatus(ebusDriver)))
 	semanticRuntime.SetBootLiveTimeout(cfg.BootLiveTimeout)
 	semanticRuntime.Start(ctx)
-	if busObservability != nil && semanticRuntime.Provider() != nil {
-		busObservability.SetStartupSurfaceProvider(func() *ebusgateway.BusObservabilityStartup {
-			return semanticStartupSurface(semanticRuntime.Provider())
-		})
-		semanticRuntime.Provider().SetEnergyPassiveStateProvider(func() string {
-			snapshot := busObservability.Snapshot()
-			return snapshot.Summary.Status.Capability.PassiveState
-		})
-		busObservability.SetEnergyFreshnessMetricsRefresher(func(now time.Time, passiveState string) {
-			semanticRuntime.Provider().RefreshEnergyFreshnessMetrics(now, passiveState)
-		})
-	}
+	wireSemanticStartupObservability(busObservability, semanticRuntime)
 	// The control plane is process-owned, not eBUS-owned. Start it before
 	// passive source-selection warmup so a slow or unavailable provider cannot
 	// delay the stable HTTP/API shell. Mutable eBUS surfaces use late bindings:
@@ -1403,27 +1150,4 @@ func publishManagedTransportRetirement(store *ebusgateway.BusObservabilityStore,
 		// revision supersedes every status published during its lifetime.
 		store.SetTransportRuntimeStatus(eebusRuntimeTransportStatus(eebusRuntimeLifecycleSnapshot{State: eebusLifecycleStopped, Revision: ^uint64(0)}))
 	}
-}
-
-func inactiveReasonCounts(counts map[adaptermux.ActiveTxnInactiveReason]uint64) map[string]uint64 {
-	out := make(map[string]uint64, len(counts))
-	for reason, count := range counts {
-		out[string(reason)] = count
-	}
-	return out
-}
-
-// activeArbitrationHolder is implemented by the adapter-direct classifiers
-// (the stable driver classifier and *adaptermux.Mux).
-type activeArbitrationHolder interface {
-	ActiveArbitrationHoldReason() string
-}
-
-// activeArbitrationHoldReason returns the classifier's active arbitration hold
-// reason, "" when it has none.
-func activeArbitrationHoldReason(classifier activeTxnClassifier) string {
-	if holder, ok := classifier.(activeArbitrationHolder); ok {
-		return holder.ActiveArbitrationHoldReason()
-	}
-	return ""
 }

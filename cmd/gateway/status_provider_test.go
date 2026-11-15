@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"go/token"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -301,11 +302,7 @@ func TestIssue851GraphQLAndExplorerRequireCurrentDriverWriteAdmission(t *testing
 }
 
 func TestIssue851MainWiresOneManagedSourceAuthorityToEveryEBusSurface(t *testing.T) {
-	source, err := os.ReadFile("gateway_run_lifecycle.go")
-	if err != nil {
-		t.Fatalf("read gateway_run_lifecycle.go: %v", err)
-	}
-	text := string(source)
+	_, text := lifecycleCompositionSources(t, token.NewFileSet())
 	staleWiring := []string{
 		"admitted: builder.AdmittedMutationSource",
 		"SetAdmittedRPCSourceProvider(builder.AdmittedMutationSource)",

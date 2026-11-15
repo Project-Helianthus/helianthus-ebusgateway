@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"go/ast"
-	"go/parser"
 	"go/token"
 	"net/http"
 	"net/http/httptest"
@@ -365,19 +364,18 @@ func TestM06ReplacementDrainsAndNeverServesRetiredGeneration(t *testing.T) {
 }
 
 func TestM06NoDuplicateEagerStarts(t *testing.T) {
-	file, err := parser.ParseFile(token.NewFileSet(), "gateway_run_lifecycle.go", nil, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	files, _ := lifecycleCompositionSources(t, token.NewFileSet())
 	forbidden := map[string]bool{"startModbusRuntime": true, "startGrowattBMSRS485Runtime": true, "startEEBusAdminAwareRuntime": true, "newGatewaySunSpecLiveSmokeWorker": true}
-	ast.Inspect(file, func(node ast.Node) bool {
-		if call, ok := node.(*ast.CallExpr); ok {
-			if id, ok := call.Fun.(*ast.Ident); ok && forbidden[id.Name] {
-				t.Errorf("duplicate eager call: %s", id.Name)
+	for _, file := range files {
+		ast.Inspect(file.syntax, func(node ast.Node) bool {
+			if call, ok := node.(*ast.CallExpr); ok {
+				if id, ok := call.Fun.(*ast.Ident); ok && forbidden[id.Name] {
+					t.Errorf("duplicate eager call in %s: %s", file.name, id.Name)
+				}
 			}
-		}
-		return true
-	})
+			return true
+		})
+	}
 	data, err := os.ReadFile("main.go")
 	if err != nil {
 		t.Fatal(err)

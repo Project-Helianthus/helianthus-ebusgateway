@@ -2153,7 +2153,10 @@ unchanged.
    with its own detached copy of the event, and events are delivered in
    `HubSeq` order through the one scheduler. The gate settles only when every
    callback returned without error; `Resettle` retries every unsettled gate of
-   the asset.
+   the asset. When another source committed a publication on the asset after
+   the control event, an attempt delivers the asset's current snapshot, which
+   already holds the control's effect, so a retry never replaces a newer view
+   with the older control snapshot.
 6. Locks. A path that takes several locks takes a source control mutex, then
    an asset commit lock, then the hub mutex. Reprojection callbacks run
    outside all of them. No path holds the control mutexes of two sources, so

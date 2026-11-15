@@ -726,3 +726,59 @@ func TestMultiSourceControlRetryDoesNotReplayOlderSnapshot(t *testing.T) {
 	}
 	waitFor(t, func() bool { return f.hub.Settled(sharedAsset) })
 }
+
+// A retry of one contributor's unsettled reprojection after a peer
+// publication committed on the asset delivers the asset's current snapshot,
+// which already holds the control's effect, so the retried callbacks never
+// replace the peer's newer view with the older control snapshot.
+func TestMultiSourceControlRetryCoalescesOntoPeerPublication(t *testing.T) {
+	f := newMultiSourceFixture(t)
+	f.publishBoth(t, 1)
+	f.setFail(sharedOwner, errors.New("reprojection refused"))
+	fenced, _ := f.hub.Fence(testFence(sharedOwner, "epoch:a", 1, 2))
+	if len(fenced.Assets) != 1 || !semanticSuccess(fenced.Assets[0].Outcome) {
+		t.Fatalf("owner fence=%+v", fenced.Assets)
+	}
+	waitFor(t, func() bool { return len(f.events(ownerRecipient)) > 0 })
+	if f.hub.Settled(sharedAsset) {
+		t.Fatal("the failed reprojection settled")
+	}
+	f.setFail(sharedOwner, nil)
+	tx, err := f.hub.Begin(f.b, sharedAsset)
+	if err != nil {
+		t.Fatalf("peer publication behind the owner's unsettled gate=%v", err)
+	}
+	defer tx.Abort()
+	if _, _, err := tx.Apply(testBatch(t, tx, "fam_b", 5, 3), testMono(3)); err != nil {
+		t.Fatal(err)
+	}
+	var committed Committed
+	if outcome, err := tx.Commit(func(c Committed) { committed = c }); err != nil || outcome != Accepted {
+		t.Fatalf("peer publication=%v/%v", outcome, err)
+	}
+	if committed.HubSeq <= fenced.Assets[0].HubSeq {
+		t.Fatalf("publication HubSeq %d is not after the control HubSeq %d", committed.HubSeq, fenced.Assets[0].HubSeq)
+	}
+	before := map[string]int{ownerRecipient: len(f.events(ownerRecipient)), peerRecipient: len(f.events(peerRecipient))}
+	if err := f.hub.Resettle(sharedAsset); err != nil {
+		t.Fatalf("resettle=%v", err)
+	}
+	for _, recipient := range []string{ownerRecipient, peerRecipient} {
+		retried := f.events(recipient)[before[recipient]:]
+		if len(retried) == 0 {
+			t.Fatalf("%s received no retried control event", recipient)
+		}
+		for _, event := range retried {
+			if event.Control != fenced.ID {
+				t.Fatalf("%s retried event names control %+v, want %+v", recipient, event.Control, fenced.ID)
+			}
+			if event.HubSeq < committed.HubSeq || event.View.HubSeq < committed.HubSeq || event.SnapshotID != committed.Snapshot.SnapshotID || event.View.Snapshot.SnapshotID != committed.Snapshot.SnapshotID {
+				t.Fatalf("%s retried event replays an older view: event=%d/%s view=%d/%s, peer publication=%d/%s", recipient, event.HubSeq, event.SnapshotID, event.View.HubSeq, event.View.Snapshot.SnapshotID, committed.HubSeq, committed.Snapshot.SnapshotID)
+			}
+			if cursor, ok := cursorFor(event.View.Snapshot, sharedOwner, "epoch:a", "1"); !ok || !cursor.Fenced {
+				t.Fatalf("%s retried view lacks the owner's fence", recipient)
+			}
+		}
+	}
+	waitFor(t, func() bool { return f.hub.Settled(sharedAsset) && f.hub.Admitted(sharedAsset) })
+}

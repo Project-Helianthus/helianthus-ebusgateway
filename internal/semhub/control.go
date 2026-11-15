@@ -1101,13 +1101,27 @@ func (h *Hub) startAttemptLocked(ca *controlAsset) (chan struct{}, error) {
 			return nil, nil
 		}
 	}
+	// A publication of another source committed after this control event (it
+	// does not consult this gate) forked from a kernel that already holds the
+	// control's effect, and its onCommit may have installed that newer view.
+	// The attempt coalesces onto the asset's current snapshot, so a retry
+	// never replaces the newer view with the older control snapshot. A source
+	// cannot publish while its own gate is open, so for an asset with one
+	// source no publication passes an unsettled gate and the event is the
+	// control snapshot.
+	view, canonical, viewSeq := ca.snapshot, ca.canonical, ca.hubSeq
+	if target.hubSeq > ca.hubSeq {
+		if current, raw, ok := target.kernel.Current(); ok {
+			view, canonical, viewSeq = current, raw, target.hubSeq
+		}
+	}
 	// Every reprojection callback of the asset (the owner's and each
 	// contributor's) receives the event, each with its own detached copy.
 	callbacks := target.reprojectionsLocked()
 	events := make([]ControlEvent, len(callbacks))
 	for index := range callbacks {
-		event := ControlEvent{Asset: target.id, SnapshotID: ca.snapshot.SnapshotID, HubSeq: ca.hubSeq, Kind: EventGenerationFenced, Control: ca.op.id,
-			View: InspectView{Snapshot: cloneSnapshot(ca.snapshot), Canonical: append([]byte(nil), ca.canonical...), Revisions: ca.snapshot.Revisions, HubSeq: ca.hubSeq, Control: controlStatusLocked(ca), Present: ca.snapshot.SnapshotID != ""}}
+		event := ControlEvent{Asset: target.id, SnapshotID: view.SnapshotID, HubSeq: viewSeq, Kind: EventGenerationFenced, Control: ca.op.id,
+			View: InspectView{Snapshot: cloneSnapshot(view), Canonical: append([]byte(nil), canonical...), Revisions: view.Revisions, HubSeq: viewSeq, Control: controlStatusLocked(ca), Present: view.SnapshotID != ""}}
 		if ca.op.kind == ControlRetire {
 			event.Kind = EventSourceRetired
 		}

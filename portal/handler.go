@@ -364,19 +364,19 @@ type SemanticSystemState struct {
 	SystemWaterPressure          *float64 `json:"water_pressure,omitempty"`
 	SystemFlowTemperature        *float64 `json:"flow_temperature,omitempty"`
 	OutdoorTemperature           *float64 `json:"outdoor_temperature,omitempty"`
-	OutdoorTemperatureAvg24h     *float64 `json:"outdoor_temperature_avg24h,omitempty"`
-	MaintenanceDue               *bool    `json:"maintenance_due,omitempty"`
-	HwcCylinderTemperatureTop    *float64 `json:"hwc_cylinder_temperature_top,omitempty"`
-	HwcCylinderTemperatureBottom *float64 `json:"hwc_cylinder_temperature_bottom,omitempty"`
+	OutdoorTemperatureAvg24h     *float64 `json:"outdoor_temperature_daily_average,omitempty"`
+	MaintenanceDue               *bool    `json:"maintenance_active,omitempty"`
+	HwcCylinderTemperatureTop    *float64 `json:"dhw_cylinder_top_temperature,omitempty"`
+	HwcCylinderTemperatureBottom *float64 `json:"dhw_cylinder_bottom_temperature,omitempty"`
 }
 
 type SemanticSystemConfig struct {
 	AdaptiveHeatingCurve         *bool    `json:"adaptive_heating_curve_enabled,omitempty"`
-	AlternativePoint             *float64 `json:"alternative_point,omitempty"`
+	AlternativePoint             *float64 `json:"heating_outdoor_alternative_temperature_limit,omitempty"`
 	HeatingCircuitBivalencePoint *float64 `json:"heating_outdoor_bivalence_temperature_limit,omitempty"`
-	DhwBivalencePoint            *float64 `json:"dhw_bivalence_point,omitempty"`
-	HcEmergencyTemperature       *float64 `json:"hc_emergency_temperature,omitempty"`
-	HwcMaxFlowTempDesired        *float64 `json:"hwc_max_flow_temp_desired,omitempty"`
+	DhwBivalencePoint            *float64 `json:"dhw_outdoor_bivalence_temperature_limit,omitempty"`
+	HcEmergencyTemperature       *float64 `json:"heating_flow_temperature_setpoint_maximum_at_heat_pump_fault,omitempty"`
+	HwcMaxFlowTempDesired        *float64 `json:"dhw_flow_temperature_setpoint_maximum,omitempty"`
 	MaxRoomHumidity              *int     `json:"room_humidity_limit_maximum,omitempty"`
 }
 

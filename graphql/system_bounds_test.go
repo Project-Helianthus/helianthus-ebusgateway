@@ -165,7 +165,7 @@ func TestSystemQueryExposesDHWBivalenceBound(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewHandler error = %v", err)
 			}
-			query := `{ system { config { dhw_bivalence_point dhw_bivalence_point_bound { min_c max_c source reason profile narrowed_only } alias_bound: dhw_bivalence_point_bound { min_c max_c source narrowed_only } } } }`
+			query := `{ system { config { dhw_outdoor_bivalence_temperature_limit dhw_outdoor_bivalence_temperature_limit_bound { min_c max_c source reason profile narrowed_only } alias_bound: dhw_outdoor_bivalence_temperature_limit_bound { min_c max_c source narrowed_only } } } }`
 			body, _ := json.Marshal(map[string]string{"query": query})
 			req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(string(body)))
 			req.Header.Set("Content-Type", "application/json")
@@ -178,7 +178,7 @@ func TestSystemQueryExposesDHWBivalenceBound(t *testing.T) {
 				Data struct {
 					System struct {
 						Config struct {
-							DhwBivalencePoint      float64 `json:"dhw_bivalence_point"`
+							DhwBivalencePoint      float64 `json:"dhw_outdoor_bivalence_temperature_limit"`
 							DhwBivalencePointBound struct {
 								NarrowedOnly *bool   `json:"narrowed_only"`
 								MinC         float64 `json:"min_c"`
@@ -186,7 +186,7 @@ func TestSystemQueryExposesDHWBivalenceBound(t *testing.T) {
 								Source       string  `json:"source"`
 								Reason       *string `json:"reason"`
 								Profile      *string `json:"profile"`
-							} `json:"dhw_bivalence_point_bound"`
+							} `json:"dhw_outdoor_bivalence_temperature_limit_bound"`
 							Snake struct {
 								NarrowedOnly *bool   `json:"narrowed_only"`
 								MinC         float64 `json:"min_c"`
@@ -203,7 +203,7 @@ func TestSystemQueryExposesDHWBivalenceBound(t *testing.T) {
 			}
 			bound := response.Data.System.Config.DhwBivalencePointBound
 			if bound.MinC != active.MinC || bound.MaxC != active.MaxC || bound.Source != active.Source || bound.NarrowedOnly == nil || *bound.NarrowedOnly != active.NarrowedOnly {
-				t.Fatalf("dhw_bivalence_point_bound = %+v; want %+v", bound, active)
+				t.Fatalf("dhw_outdoor_bivalence_temperature_limit_bound = %+v; want %+v", bound, active)
 			}
 			if (active.Reason == "" && bound.Reason != nil) || (active.Reason != "" && (bound.Reason == nil || *bound.Reason != active.Reason)) ||
 				(active.Profile == "" && bound.Profile != nil) || (active.Profile != "" && (bound.Profile == nil || *bound.Profile != active.Profile)) {

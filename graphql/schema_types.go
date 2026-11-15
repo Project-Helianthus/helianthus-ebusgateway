@@ -2001,7 +2001,7 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"outdoor_temperature_avg24h": &graphqlgo.Field{
+			"outdoor_temperature_daily_average": &graphqlgo.Field{
 				Type: graphqlgo.Float,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					state, ok := params.Source.(SystemState)
@@ -2012,8 +2012,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"maintenance_due": &graphqlgo.Field{
-				Type: graphqlgo.Boolean,
+			"maintenance_active": &graphqlgo.Field{
+				Type:        graphqlgo.Boolean,
+				Description: "Provisional: two readings of this register are unresolved; true means either that the system is in maintenance mode or that maintenance is due.",
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					state, ok := params.Source.(SystemState)
 					if !ok || state.MaintenanceDue == nil {
@@ -2023,7 +2024,7 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"hwc_cylinder_temperature_top": &graphqlgo.Field{
+			"dhw_cylinder_top_temperature": &graphqlgo.Field{
 				Type: graphqlgo.Float,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					state, ok := params.Source.(SystemState)
@@ -2034,7 +2035,7 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"hwc_cylinder_temperature_bottom": &graphqlgo.Field{
+			"dhw_cylinder_bottom_temperature": &graphqlgo.Field{
 				Type: graphqlgo.Float,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					state, ok := params.Source.(SystemState)
@@ -2125,7 +2126,7 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"alternative_point": &graphqlgo.Field{
+			"heating_outdoor_alternative_temperature_limit": &graphqlgo.Field{
 				Type: graphqlgo.Float,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					config, ok := params.Source.(SystemConfig)
@@ -2147,7 +2148,7 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"dhw_bivalence_point": &graphqlgo.Field{
+			"dhw_outdoor_bivalence_temperature_limit": &graphqlgo.Field{
 				Type: graphqlgo.Float,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					config, ok := params.Source.(SystemConfig)
@@ -2157,7 +2158,7 @@ func buildSchemaTypes() graphqlSchemaTypes {
 					return *config.DhwBivalencePoint, nil
 				},
 			},
-			"dhw_bivalence_point_bound": &graphqlgo.Field{
+			"dhw_outdoor_bivalence_temperature_limit_bound": &graphqlgo.Field{
 				Type: systemConfigBoundType,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					config, ok := params.Source.(SystemConfig)
@@ -2168,7 +2169,7 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"hc_emergency_temperature": &graphqlgo.Field{
+			"heating_flow_temperature_setpoint_maximum_at_heat_pump_fault": &graphqlgo.Field{
 				Type: graphqlgo.Float,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					config, ok := params.Source.(SystemConfig)
@@ -2179,7 +2180,7 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"hwc_max_flow_temp_desired": &graphqlgo.Field{
+			"dhw_flow_temperature_setpoint_maximum": &graphqlgo.Field{
 				Type: graphqlgo.Float,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					config, ok := params.Source.(SystemConfig)
@@ -2223,7 +2224,7 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"installer_phone": &graphqlgo.Field{
+			"installer_phone_number": &graphqlgo.Field{
 				Type: graphqlgo.String,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					config, ok := params.Source.(SystemConfig)

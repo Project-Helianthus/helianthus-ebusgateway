@@ -247,9 +247,9 @@ func TestSystemConfigBoundMCPGraphQLParity(t *testing.T) {
 		if err := json.Unmarshal(raw, &decoded); err != nil {
 			t.Fatal(err)
 		}
-		envelope, ok := decoded["dhw_bivalence_point_bound"].(map[string]any)
+		envelope, ok := decoded["dhw_outdoor_bivalence_temperature_limit_bound"].(map[string]any)
 		if !ok || envelope["min_c"] != float64(-20) || envelope["max_c"] != float64(50) || envelope["source"] != gql.Source || envelope["narrowed_only"] != gql.NarrowedOnly {
-			t.Fatalf("%s: MCP envelope bound = %#v; want dhw_bivalence_point_bound{min_c:-20,max_c:50,source:%s}", identity[0], decoded["dhw_bivalence_point_bound"], gql.Source)
+			t.Fatalf("%s: MCP envelope bound = %#v; want dhw_outdoor_bivalence_temperature_limit_bound{min_c:-20,max_c:50,source:%s}", identity[0], decoded["dhw_outdoor_bivalence_temperature_limit_bound"], gql.Source)
 		}
 	}
 }

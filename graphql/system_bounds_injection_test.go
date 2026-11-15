@@ -20,7 +20,7 @@ func TestM13InjectedSystemConfigBound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	query := `{ system { config { dhw_bivalence_point_bound { min_c max_c source reason profile narrowed_only } dhw_bivalence_point_bound { min_c max_c source reason profile narrowed_only } } } }`
+	query := `{ system { config { dhw_outdoor_bivalence_temperature_limit_bound { min_c max_c source reason profile narrowed_only } dhw_outdoor_bivalence_temperature_limit_bound { min_c max_c source reason profile narrowed_only } } } }`
 	for _, bound := range []*ConfigBound{
 		nil,
 		{MinC: -7, MaxC: 13, Source: "synthetic", Reason: "fixture", Profile: "family-a", NarrowedOnly: true},
@@ -32,7 +32,7 @@ func TestM13InjectedSystemConfigBound(t *testing.T) {
 			t.Fatal(result.Errors)
 		}
 		config := result.Data.(map[string]interface{})["system"].(map[string]interface{})["config"].(map[string]interface{})
-		for _, alias := range []string{"dhw_bivalence_point_bound", "dhw_bivalence_point_bound"} {
+		for _, alias := range []string{"dhw_outdoor_bivalence_temperature_limit_bound", "dhw_outdoor_bivalence_temperature_limit_bound"} {
 			if bound == nil {
 				if config[alias] != nil {
 					t.Fatalf("absent bound: %v", config)
@@ -40,7 +40,7 @@ func TestM13InjectedSystemConfigBound(t *testing.T) {
 				continue
 			}
 			min, max, narrowed := "min_c", "max_c", "narrowed_only"
-			if alias == "dhw_bivalence_point_bound" {
+			if alias == "dhw_outdoor_bivalence_temperature_limit_bound" {
 				min, max, narrowed = "min_c", "max_c", "narrowed_only"
 			}
 			want := map[string]interface{}{min: bound.MinC, max: bound.MaxC, narrowed: bound.NarrowedOnly, "source": bound.Source, "reason": bound.Reason, "profile": bound.Profile}

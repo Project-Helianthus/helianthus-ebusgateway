@@ -10,13 +10,13 @@ import (
 	graphqlgo "github.com/graphql-go/graphql"
 )
 
-// Computed by querySchemaShapeDigest after the eight system-plane register
-// fields took their docs-ebus names (issue #1483), the circuit configuration
-// published RR001D as the integer circuit_special_function_mode in place of
-// the removed float field (issue #1474), and the semantic snapshot gained the
-// additive optional resource and relation fields of the re-pinned semreg
-// snapshot records (issue #1554).
-var querySchemaShapeSHA256 = fmt.Sprintf("%x", [sha256.Size]byte{137, 212, 101, 105, 116, 50, 250, 208, 207, 225, 220, 131, 197, 86, 57, 229, 209, 35, 65, 187, 220, 179, 163, 103, 255, 75, 54, 223, 27, 201, 27, 172})
+// Computed by querySchemaShapeDigest after every system-plane register field
+// except system_off took its docs-ebus name (issue #1483), the circuit
+// configuration published RR001D as the integer circuit_special_function_mode
+// in place of the removed float field (issue #1474), and the semantic snapshot
+// gained the additive optional resource and relation fields of the re-pinned
+// semreg snapshot records (issue #1554).
+var querySchemaShapeSHA256 = fmt.Sprintf("%x", [sha256.Size]byte{54, 214, 31, 12, 92, 209, 237, 224, 160, 69, 226, 65, 201, 163, 171, 12, 10, 96, 41, 124, 179, 50, 221, 238, 94, 154, 11, 44, 241, 45, 78, 148})
 
 func TestQuerySchemaKeepsIntrospectionShape(t *testing.T) {
 	t.Parallel()

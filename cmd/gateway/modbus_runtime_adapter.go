@@ -35,7 +35,7 @@ func startModbusInstanceRuntimeWithPublication(ctx context.Context, config ebusg
 		if hub == nil {
 			return nil, fmt.Errorf("start Modbus TCP runtime: semantic hub unavailable")
 		}
-		if runtimeConfig.SemanticPV, err = modbusadapter.NewSemanticPVClass(hub); err != nil {
+		if runtimeConfig.SemanticPV, err = modbusadapter.NewSemanticPVClass(hub, semanticFamilyGraph(semanticFamilyPV)); err != nil {
 			return nil, fmt.Errorf("start Modbus TCP runtime: %w", err)
 		}
 	}

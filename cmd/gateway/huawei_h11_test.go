@@ -112,7 +112,7 @@ func h11CrossCycle(t *testing.T, declared modbusTCPFamily, faced h10Replay, unit
 		t.Fatal(err)
 	}
 	config.Clock = clock.Now
-	if config.SemanticPV, err = modbusadapter.NewSemanticPVClass(newTestSemanticHub(t)); err != nil {
+	if config.SemanticPV, err = modbusadapter.NewSemanticPVClass(newTestSemanticHub(t), false); err != nil {
 		t.Fatal(err)
 	}
 	config.Endpoint.Framing = modbus.TCPFramingTolerant

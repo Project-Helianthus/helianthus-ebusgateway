@@ -30,7 +30,7 @@ func newTestSemanticHub(t *testing.T) *semhub.Hub {
 
 func newTestSemanticPVClass(t *testing.T) *semhub.Class {
 	t.Helper()
-	class, err := modbusadapter.NewSemanticPVClass(newTestSemanticHub(t))
+	class, err := modbusadapter.NewSemanticPVClass(newTestSemanticHub(t), false)
 	if err != nil {
 		t.Fatal(err)
 	}

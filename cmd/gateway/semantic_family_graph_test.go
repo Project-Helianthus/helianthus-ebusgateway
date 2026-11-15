@@ -82,7 +82,7 @@ func TestSemanticFamilyGraphMatchesEveryComposedDeclaration(t *testing.T) {
 	})
 	t.Run("pv sunspec class", func(t *testing.T) {
 		hub := newTestSemanticHub(t)
-		class, err := modbusadapter.NewSemanticPVClass(hub)
+		class, err := modbusadapter.NewSemanticPVClass(hub, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -109,4 +109,57 @@ func TestSemanticFamilyGraphMatchesEveryComposedDeclaration(t *testing.T) {
 		}
 		requireFamilyGraph(t, publisher.hub, semanticFamilyThermal, string(primaryEBusDriverID))
 	})
+}
+
+// setSemanticFamilyGraph switches one table entry for the test and restores it.
+func setSemanticFamilyGraph(t *testing.T, family semanticFamily, value bool) {
+	t.Helper()
+	for index := range semanticFamilyGraphTable {
+		if semanticFamilyGraphTable[index].family == family {
+			previous := semanticFamilyGraphTable[index].graph
+			semanticFamilyGraphTable[index].graph = value
+			t.Cleanup(func() { semanticFamilyGraphTable[index].graph = previous })
+			return
+		}
+	}
+	t.Fatalf("family %q is not in the table", family)
+}
+
+// A table entry reaches its family's declarations: switching it on makes the
+// storage and EVSE specs ask for enforcement and makes the logger-attached PV
+// class declare enforced assets; the other families are unaffected.
+func TestSemanticFamilyGraphEntryReachesDeclarations(t *testing.T) {
+	setSemanticFamilyGraph(t, semanticFamilyStorage, true)
+	setSemanticFamilyGraph(t, semanticFamilyEVSE, true)
+	setSemanticFamilyGraph(t, semanticFamilyPV, true)
+	if !growattStorageAssetSpec("asset:synthetic-storage", "source:synthetic-storage").Graph {
+		t.Fatal("storage spec ignores the table")
+	}
+	if !teslaEVSEAssetSpec(teslaRetainedConfig()).Graph {
+		t.Fatal("EVSE spec ignores the table")
+	}
+	hub := newTestSemanticHub(t)
+	publication, err := newHuaweiPVPublication(hub, "pv.synthetic", "source:synthetic-logger", "alpha", nil, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := publication.class.Declare("asset:synthetic-logger-child", publication.handle.Source()); err != nil {
+		t.Fatal(err)
+	}
+	requireFamilyGraph(t, hub, semanticFamilyPV, "pv.synthetic")
+	state, _ := hub.GraphState()
+	for _, asset := range state.Assets {
+		if asset.Driver == "pv.synthetic" && asset.Enforcement != semhub.GraphEnforced {
+			t.Fatalf("asset %q not enforced", asset.Asset)
+		}
+	}
+	pvHub := newTestSemanticHub(t)
+	class, err := modbusadapter.NewSemanticPVClass(pvHub, semanticFamilyGraph(semanticFamilyPV))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := class.Declare("asset:synthetic-pv", "source:synthetic-pv"); err != nil {
+		t.Fatal(err)
+	}
+	requireFamilyGraph(t, pvHub, semanticFamilyPV, "pv_sunspec")
 }

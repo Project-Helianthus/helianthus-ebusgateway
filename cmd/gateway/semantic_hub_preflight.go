@@ -62,7 +62,7 @@ func preflightSemanticHub(cfg ebusgateway.Config) (*semhub.Hub, error) {
 			return nil, err
 		}
 	}
-	if _, err := modbusadapter.NewSemanticPVClass(hub); err != nil {
+	if _, err := modbusadapter.NewSemanticPVClass(hub, semanticFamilyGraph(semanticFamilyPV)); err != nil {
 		return nil, fmt.Errorf("semantic publication preflight: %w", err)
 	}
 	if err := composeSemanticPairings(hub, cfg); err != nil {

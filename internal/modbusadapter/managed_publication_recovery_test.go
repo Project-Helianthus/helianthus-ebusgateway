@@ -79,7 +79,7 @@ func TestManagedWithdrawalRecoversAfterPartialSourceFencing(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			class, err := NewSemanticPVClass(hub)
+			class, err := NewSemanticPVClass(hub, false)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -231,7 +231,7 @@ func TestManagedPartialActivationRecoversSameEpoch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	class, err := NewSemanticPVClass(hub)
+	class, err := NewSemanticPVClass(hub, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -355,7 +355,7 @@ func TestManagedInheritedReplayCoverDoesNotRepublish(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	class, err := NewSemanticPVClass(hub)
+	class, err := NewSemanticPVClass(hub, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -665,7 +665,7 @@ func TestM03PartialActivationCleanupObligationsProgressIndependently(t *testing.
 			if err != nil {
 				t.Fatal(err)
 			}
-			class, err := NewSemanticPVClass(hub)
+			class, err := NewSemanticPVClass(hub, false)
 			if err != nil {
 				t.Fatal(err)
 			}

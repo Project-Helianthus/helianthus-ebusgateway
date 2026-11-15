@@ -26,7 +26,7 @@ const teslaEVSEDriver = "tesla_evse"
 // teslaEVSEAssetSpec is the one declaration of the configured EVSE asset; the
 // startup preflight, the owner and its successors declare the same spec.
 func teslaEVSEAssetSpec(config ebusgateway.TeslaGen3HSCRetainedConfig) semhub.AssetSpec {
-	return semhub.AssetSpec{AssetID: semreg.AssetID(config.AssetID), SourceID: semreg.SourceID(config.SourceID), Driver: teslaEVSEDriver, Validators: []semreg.PackValidator{evse.New()}}
+	return semhub.AssetSpec{AssetID: semreg.AssetID(config.AssetID), SourceID: semreg.SourceID(config.SourceID), Driver: teslaEVSEDriver, Validators: []semreg.PackValidator{evse.New()}, Graph: semanticFamilyGraph(semanticFamilyEVSE)}
 }
 
 // newTeslaEVSESemanticPublication constructs the EVSE publication; a test

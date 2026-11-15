@@ -1,0 +1,3 @@
+## Route the SYN boundary through the transition function and split onSYNLocked
+
+The AdapterMux handles the SYN boundary in named steps that take their decisions from the transition function: an opening step that clears the fence and the recovery and delivers an owed resynchronization SYN; the classification against the gateway's expected echo with the echo-queue flush; the delivery of the gateway's frame terminator; the releases on a completed transaction, on a SYN timeout and on an idle SYN after its grace, where the idle release becomes the idle-grace event; the pre-echo suppression; and the SYN diagnostics. Wire behaviour, timing and effect order are unchanged; the gateway binary changes.

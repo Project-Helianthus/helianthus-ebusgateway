@@ -44,6 +44,8 @@ CELL_TRANSPORT = {
     ("ebusd-tcp", "ebusd-tcp"): "ebusd-tcp",
 }
 
+NON_FINITE_SETTINGS = ("MATRIX_ADDON_WAIT_SEC", "MATRIX_ADDON_POLL_SEC", "MATRIX_ADDON_HTTP_TIMEOUT_SEC")
+NON_FINITE_VALUES = ("nan", "inf", "Infinity")
 EBUSD_SIGNAL = "signal acquired, 40 symbols/sec, 80 max symbols/sec\n\n"
 UNREACHABLE_PROXY = "http://127.0.0.1:9"
 
@@ -67,6 +69,13 @@ def vars_body(session_frames):
             "le_1000": session_frames, "le_5000": session_frames,
             "le_25000": session_frames, "le_100000": session_frames, "gt_100000": 1}
     return json.dumps(variables)
+
+
+class Truncated:
+    """An answer whose Content-Length announces more bytes than are sent."""
+
+    def __init__(self, body):
+        self.body = body
 
 
 def closed_port():
@@ -120,11 +129,17 @@ class StubGateway:
             handler.send_response(404)
             handler.end_headers()
             return
-        payload = bodies[min(index, len(bodies) - 1)].encode("utf-8")
+        body = bodies[min(index, len(bodies) - 1)]
+        truncated = isinstance(body, Truncated)
+        payload = (body.body if truncated else body).encode("utf-8")
         handler.send_response(200)
-        handler.send_header("Content-Length", str(len(payload)))
+        # A truncated answer announces more bytes than it sends and the
+        # connection closes, as when the gateway restarts mid-answer.
+        handler.send_header("Content-Length", str(len(payload) + (64 if truncated else 0)))
         handler.end_headers()
         handler.wfile.write(payload)
+        if truncated:
+            handler.close_connection = True
 
     def paths(self):
         with self.lock:
@@ -271,6 +286,21 @@ class GatewayStartedTest(CommandTestCase):
         self.assertEqual(result.returncode, 10, result.stderr)
         self.assertNotIn("127.0.0.1", result.stdout + result.stderr)
 
+    def test_truncated_answer_is_no_answer(self):
+        truncated = Truncated(observability_body("adapter-direct"))
+        self.gateway.load({HEALTH: [health_body()], OBSERVABILITY: [truncated]})
+        result = self.run_command(GATEWAY_STARTED, self.matrix("mux", "enh"))
+        self.assertEqual(result.returncode, 10, result.stderr)
+        self.assertIn("did not answer (IncompleteRead)", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_waits_through_a_truncated_answer(self):
+        self.gateway.load({HEALTH: [Truncated(health_body()), health_body()],
+                           OBSERVABILITY: [observability_body("adapter-direct")]})
+        result = self.run_command(GATEWAY_STARTED, self.matrix("mux", "enh", MATRIX_ADDON_WAIT_SEC="20"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.gateway.paths().count(HEALTH), 2)
+
     def test_usage_errors_contact_nothing(self):
         cases = {
             "no gateway": {"MATRIX_GATEWAY_BASE_URL": ""},
@@ -280,11 +310,15 @@ class GatewayStartedTest(CommandTestCase):
             "no composition": {"MATRIX_COMPOSITION": ""},
             "bad wait": {"MATRIX_ADDON_WAIT_SEC": "soon"},
         }
+        for setting_name in NON_FINITE_SETTINGS:
+            for value in NON_FINITE_VALUES:
+                cases["%s=%s" % (setting_name, value)] = {setting_name: value}
         for name, override in cases.items():
             with self.subTest(case=name):
                 self.gateway.load({})
                 result = self.run_command(GATEWAY_STARTED, self.matrix("mux", "enh", **override))
                 self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
                 self.assertEqual(self.gateway.requests, [])
 
 
@@ -322,6 +356,14 @@ class ClientStartedTest(CommandTestCase):
         result = self.run_command(CLIENT_STARTED, self.client_matrix())
         self.assertEqual(result.returncode, 12, result.stderr)
         self.assertNotIn(VARS, self.gateway.paths())
+
+    def test_truncated_gateway_answer_is_no_answer(self):
+        self.gateway.load({HEALTH: [Truncated(health_body())], VARS: [vars_body(10), vars_body(25)]})
+        result = self.run_command(CLIENT_STARTED, self.client_matrix())
+        self.assertEqual(result.returncode, 10, result.stderr)
+        self.assertIn("did not answer (IncompleteRead)", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(self.ebusd.lines, [])
 
     def test_ebusd_command_port_absent(self):
         self.gateway.load({HEALTH: [health_body()], VARS: [vars_body(10), vars_body(25)]})
@@ -362,10 +404,15 @@ class ClientStartedTest(CommandTestCase):
             "single reading": {"MATRIX_ADDON_WAIT_SEC": "0"},
             "credentials in the URL": {"MATRIX_GATEWAY_BASE_URL": "http://user:pw@127.0.0.1:1"},
         }
+        for setting_name in NON_FINITE_SETTINGS:
+            for value in NON_FINITE_VALUES:
+                cases["%s=%s" % (setting_name, value)] = {setting_name: value}
         for name, override in cases.items():
             with self.subTest(case=name):
+                self.gateway.load({})
                 result = self.run_command(CLIENT_STARTED, self.client_matrix(**override))
                 self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
                 self.assertEqual(self.gateway.requests, [])
                 self.assertEqual(self.ebusd.lines, [])
 
@@ -434,6 +481,31 @@ class StopTest(CommandTestCase):
         self.assertLess(elapsed, 4.5, "the three reads must not add their timeouts")
         surfaces = self.record()["surfaces"]
         self.assertTrue(all(surface["read"] is False for surface in surfaces.values()))
+
+    def test_truncated_answer_is_recorded_as_not_read(self):
+        self.gateway.load({METRICS: [Truncated(METRICS_TEXT)], VARS: [vars_body(25)],
+                           OBSERVABILITY: [observability_body("adapter-direct")]})
+        result = self.run_command(STOP, self.matrix("mux", "enh"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        surfaces = self.record()["surfaces"]
+        self.assertEqual(surfaces["metrics"], {"read": False, "reason": "metrics did not answer (IncompleteRead)"})
+        self.assertTrue(surfaces["vars"]["read"])
+        self.assertTrue(surfaces["observability"]["read"])
+
+    def test_non_finite_timeout_is_recorded_as_usage(self):
+        for value in NON_FINITE_VALUES:
+            with self.subTest(value=value):
+                self.gateway.load({})
+                result = self.run_command(STOP, self.matrix("mux", "enh", MATRIX_ADDON_HTTP_TIMEOUT_SEC=value))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+                self.assertEqual(self.gateway.requests, [])
+                surfaces = self.record()["surfaces"]
+                self.assertEqual(sorted(surfaces), ["metrics", "observability", "vars"])
+                for surface in surfaces.values():
+                    self.assertEqual(surface, {"read": False, "reason":
+                                               "usage: MATRIX_ADDON_HTTP_TIMEOUT_SEC must be a finite number"})
 
     def test_missing_case_directory_is_a_usage_error(self):
         missing = str(self.root / "absent")

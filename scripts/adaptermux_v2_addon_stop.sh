@@ -23,7 +23,9 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 exec python3 -I - <<'PY'
+import http.client
 import json
+import math
 import os
 import re
 import sys
@@ -74,6 +76,8 @@ def timeout_setting():
         value = float(raw)
     except ValueError as error:
         raise UsageError("MATRIX_ADDON_HTTP_TIMEOUT_SEC is not a number") from error
+    if not math.isfinite(value):
+        raise UsageError("MATRIX_ADDON_HTTP_TIMEOUT_SEC must be a finite number")
     if value <= 0:
         raise UsageError("MATRIX_ADDON_HTTP_TIMEOUT_SEC must be positive")
     return value
@@ -111,7 +115,8 @@ def get_text(url, timeout, surface):
             return response.read().decode("utf-8")
     except urllib.error.HTTPError as error:
         raise NoAnswer(surface + " answered HTTP status " + str(error.code)) from error
-    except (urllib.error.URLError, OSError, ValueError) as error:
+    # A truncated body raises http.client.IncompleteRead, an HTTPException.
+    except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as error:
         raise NoAnswer(surface + " did not answer (" + type(error).__name__ + ")") from error
 
 

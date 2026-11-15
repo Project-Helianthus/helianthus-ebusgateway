@@ -34,7 +34,9 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 exec python3 -I - <<'PY'
+import http.client
 import json
+import math
 import os
 import socket
 import sys
@@ -92,6 +94,8 @@ def seconds(name, default, allow_zero):
         value = float(raw)
     except ValueError as error:
         raise UsageError(name + " is not a number") from error
+    if not math.isfinite(value):
+        raise UsageError(name + " must be a finite number")
     if value < 0 or (value == 0 and not allow_zero):
         raise UsageError(name + " must be positive")
     return value
@@ -144,7 +148,8 @@ def get_json(url, timeout, surface):
             body = response.read().decode("utf-8")
     except urllib.error.HTTPError as error:
         raise NoAnswer(surface + " answered HTTP status " + str(error.code)) from error
-    except (urllib.error.URLError, OSError, ValueError) as error:
+    # A truncated body raises http.client.IncompleteRead, an HTTPException.
+    except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as error:
         raise NoAnswer(surface + " did not answer (" + type(error).__name__ + ")") from error
     try:
         value = json.loads(body)

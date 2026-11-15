@@ -140,7 +140,7 @@ func readAssetState(h *Hub, id semreg.AssetID) assetState {
 	target := h.assets[id]
 	snapshot, canonical, present := target.kernel.Current()
 	src := h.sources[target.source]
-	return assetState{Snapshot: snapshot, Canonical: canonical, Present: present, HubSeq: target.hubSeq, Gate: target.gate, Source: []any{src.id, src.admitted, src.epoch, src.generation, src.live, src.fenced, maps.Clone(src.retired)}}
+	return assetState{Snapshot: snapshot, Canonical: canonical, Present: present, HubSeq: target.hubSeq, Gate: ownerGate(target), Source: []any{src.id, src.admitted, src.epoch, src.generation, src.live, src.fenced, maps.Clone(src.retired)}}
 }
 
 func exactSingleAsset(t *testing.T, at int64) (*Hub, semreg.AssetID) {
@@ -489,10 +489,10 @@ func TestExactCaptureAdmissionGates(t *testing.T) {
 		})},
 		"restore failed": {"semantic.read.reason.publication_withheld", direct(func(h *Hub, id semreg.AssetID) { h.assets[id].restoreFailed = true })},
 		"pending semantic": {"semantic.read.reason.publication_withheld", direct(func(h *Hub, id semreg.AssetID) {
-			h.assets[id].gate = &controlAsset{semantic: SemanticUnbuilt, reprojection: ReprojectionSettled}
+			setOwnerGate(h.assets[id], &controlAsset{semantic: SemanticUnbuilt, reprojection: ReprojectionSettled})
 		})},
 		"pending reprojection": {"semantic.read.reason.publication_withheld", direct(func(h *Hub, id semreg.AssetID) {
-			h.assets[id].gate = &controlAsset{semantic: SemanticAccepted, reprojection: ReprojectionUnsettled}
+			setOwnerGate(h.assets[id], &controlAsset{semantic: SemanticAccepted, reprojection: ReprojectionUnsettled})
 		})},
 		"current source":     {"semantic.read.reason.publication_withheld", direct(func(h *Hub, _ semreg.AssetID) { h.sources["source:gate"].id = "source:other" })},
 		"current epoch":      {"semantic.read.reason.publication_withheld", direct(func(h *Hub, _ semreg.AssetID) { h.sources["source:gate"].epoch = "epoch:other" })},

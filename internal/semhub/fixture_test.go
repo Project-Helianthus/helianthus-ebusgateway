@@ -163,13 +163,14 @@ func newTestHub(t *testing.T) *Hub {
 	return hub
 }
 
-// newSharedTestHub returns a hub that accepts contributor lists, which a
-// production hub refuses until per-contributor control gates exist.
-func newSharedTestHub(t *testing.T) *Hub {
-	t.Helper()
-	hub := newTestHub(t)
-	hub.sharedAssets = true
-	return hub
+// ownerGate returns the control gate of the asset's owner source. The caller
+// holds the hub mutex while the hub is shared.
+func ownerGate(target *asset) *controlAsset { return target.gates[target.source] }
+
+// setOwnerGate installs ca as the only control gate of the asset, on its
+// owner source. The caller holds the hub mutex while the hub is shared.
+func setOwnerGate(target *asset, ca *controlAsset) {
+	target.gates = map[semreg.SourceID]*controlAsset{target.source: ca}
 }
 
 func mustDeclare(t *testing.T, hub *Hub, id semreg.AssetID, src semreg.SourceID, driver string, onControl func(ControlEvent) error) *Declaration {

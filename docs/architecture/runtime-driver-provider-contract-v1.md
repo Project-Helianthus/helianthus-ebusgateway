@@ -189,9 +189,11 @@ packs. Contributors publish their own bindings, identity links, observed facts,
 services and capabilities. Binding, service and capability identifiers belong
 to the driver of the publishing source, and an inferred or operator-origin
 record on such an asset belongs to the driver that created it. The publication
-hub keeps one control gate per asset until per-contributor gates land, so a
-production hub refuses a contributor list for now. The service recorder of
-S3.7 to S3.9 still assumes one source per asset.
+hub keeps one control gate per asset and publishing source (the owner and each
+contributor), as section 7 describes under "Control gates of a shared asset",
+so a production hub accepts a contributor list. No production declaration names
+a contributor yet. The service recorder of S3.7 to S3.9 and the hub's recovery
+record still assume one source per asset.
 
 ## 4. Control-plane types
 
@@ -2104,6 +2106,68 @@ admission both succeed. Static catalog entries may remain `candidate`,
    non-overlap, fencing, drain, and ownership transfer; it still persists one
    exact withdrawal/reservation transition and satisfies the same semantic
    supersession and cursor rules.
+
+### Control gates of a shared asset
+
+`internal/semhub` keeps one control gate for each asset and each source that
+may publish on it: the owner source and every declared contributor. A source's
+gate is the latest control operation of that source that covered the asset (a
+`Fence`, a `RetireEpoch`, or the transition cover that a generation or epoch
+transition installs on the source's other assets). For an asset with one
+source this is the single gate it always had, and every result below is
+unchanged.
+
+1. Control. A control operation of source A installs, settles and supersedes
+   only A's gate. Its batch carries only A's fence or retirement, so a
+   transition cover over a shared asset fences only A's replaced generation and
+   leaves the other contributors' cursors, bindings and facts current. An
+   abandoned operation keeps only A's gate open until a later successful
+   control operation of A. The unfinished, settling and abandoned rules of
+   `Activate`, `AdmitSuccessor` and a new control request read A's own latest
+   operation only, so another contributor's open gate never delays A's
+   activation.
+2. Publication. A publication of source B is refused only while B's own gate
+   is open: `ErrControlPending` while B's latest control operation has no
+   successful semantic outcome, `ErrReprojectionPending` while its reprojection
+   has not settled. A pending or abandoned control of A never refuses B.
+3. Reads. `Admitted`, `ReadAdmitted` and `Readable` admit reads of the asset
+   only when every source's gate is absent or successful and settled;
+   `Settled` requires every gate's reprojection to have settled. The asset is
+   therefore withheld while any contributor's gate is open, because the
+   kernel has not yet recorded that contributor's fence or retirement.
+4. Capture. `Capture` and `CaptureExact` admit a source of the asset when it
+   is admitted, live, not fenced and its epoch is not retired.
+   `SourceAdmitted` holds when at least one source is admitted; otherwise the
+   reason is `semantic.read.reason.source_unavailable`. `ReadAdmitted` is the
+   read gate of item 3; a closed gate gives
+   `semantic.read.reason.publication_withheld`. A missing snapshot gives
+   `semantic.read.reason.snapshot_unavailable`. `PublicAdmitted` holds when at
+   least one admitted source has a published, unfenced cursor of its current
+   generation and the snapshot carries only public or metadata-only evidence;
+   otherwise the reason is `semantic.read.reason.publication_withheld`, so a
+   successor generation never exposes its predecessor's snapshot. The
+   captured snapshot is the complete stored snapshot: every contributor's
+   source descriptor and fenced cursors stay visible in it.
+5. Reprojection. Every control event of the asset reaches the owner's
+   reprojection callback and then each contributor's, in source order, each
+   with its own detached copy of the event, and events are delivered in
+   `HubSeq` order through the one scheduler. The gate settles only when every
+   callback returned without error; `Resettle` retries every unsettled gate of
+   the asset.
+6. Locks. A path that takes several locks takes a source control mutex, then
+   an asset commit lock, then the hub mutex. Reprojection callbacks run
+   outside all of them. No path holds the control mutexes of two sources, so
+   contributors of one asset never wait on each other's control operations.
+
+The other contributors' family caches are not yet reprojected when one
+contributor commits a publication, and the recovery record carries one control
+per asset (the owner's), so a shared asset is not yet represented in a
+recovery checkpoint. Synthetic hub tests in
+[internal/semhub/multisource_control_test.go](../../internal/semhub/multisource_control_test.go)
+cover items 1 to 6 under the race detector, and
+[internal/semanticoperations/router_multisource_test.go](../../internal/semanticoperations/router_multisource_test.go)
+shows that a contributor's capability routes by its own binding, epoch and
+generation and that a fenced contributor's capability is refused.
 
 ### Hub-native epoch succession
 

@@ -93,10 +93,17 @@ func (h *Hub) capture(ctx context.Context, ids []semreg.AssetID, sample func() (
 		case nil:
 			item.UnavailableReason = "semantic.read.reason.asset_unknown"
 		default:
-			src := h.sources[target.source]
-			item.SourceAdmitted = src != nil && src.admitted && src.live && !src.fenced && !src.retired[src.epoch]
-			gate := target.gate
-			item.ReadAdmitted = !target.restoreFailed && (gate == nil || semanticSuccess(gate.semantic) && gate.reprojection == ReprojectionSettled)
+			// The asset's publishing sources are its owner and its declared
+			// contributors; a source is admitted when it is admitted, live, not
+			// fenced and its epoch is not retired.
+			admitted := make([]*source, 0, 1+len(target.contributors))
+			for _, id := range target.publishingSources() {
+				if src := h.sources[id]; src != nil && src.admitted && src.live && !src.fenced && !src.retired[src.epoch] {
+					admitted = append(admitted, src)
+				}
+			}
+			item.SourceAdmitted = len(admitted) != 0
+			item.ReadAdmitted = target.readAdmittedLocked()
 			snapshot, _, present := target.kernel.Current()
 			switch {
 			case !item.SourceAdmitted:
@@ -106,9 +113,19 @@ func (h *Hub) capture(ctx context.Context, ids []semreg.AssetID, sample func() (
 			case !present:
 				item.UnavailableReason = "semantic.read.reason.snapshot_unavailable"
 			default:
-				// A successor admission must not expose its predecessor's snapshot.
-				cursor, current := cursorFor(snapshot, src.id, src.epoch, semreg.Uint64(strconv.FormatUint(src.generation, 10)))
-				item.PublicAdmitted = current && !cursor.Fenced && publicCaptureEvidence(reflect.ValueOf(snapshot))
+				// The asset is public when at least one admitted source has a
+				// published, unfenced cursor of its current generation, so a
+				// successor admission never exposes its predecessor's snapshot.
+				// Every other source's state (its descriptor and fenced cursors)
+				// stays in the snapshot.
+				current := false
+				for _, src := range admitted {
+					if cursor, ok := cursorFor(snapshot, src.id, src.epoch, semreg.Uint64(strconv.FormatUint(src.generation, 10))); ok && !cursor.Fenced {
+						current = true
+						break
+					}
+				}
+				item.PublicAdmitted = current && publicCaptureEvidence(reflect.ValueOf(snapshot))
 				if !item.PublicAdmitted {
 					item.UnavailableReason = "semantic.read.reason.publication_withheld"
 				} else {

@@ -583,7 +583,7 @@ func TestDrainWaitsForAnInFlightAttemptInsteadOfDroppingTheEntry(t *testing.T) {
 		t.Fatal(err)
 	}
 	hub.mu.Lock()
-	ca := hub.assets["asset:d"].gate
+	ca := ownerGate(hub.assets["asset:d"])
 	entry := hub.queue[0]
 	hub.queue = nil
 	inFlight, err := hub.startAttemptLocked(ca)
@@ -867,7 +867,7 @@ func TestAdmittedEvaluatesBothGatePredicatesOverOneGate(t *testing.T) {
 		f.hub.faults = nil
 		go func() {
 			f.hub.mu.Lock()
-			f.hub.assets[id].gate = &controlAsset{op: &controlOp{}, asset: f.hub.assets[id], semantic: SemanticUnbuilt, reprojection: ReprojectionSettled}
+			setOwnerGate(f.hub.assets[id], &controlAsset{op: &controlOp{}, asset: f.hub.assets[id], semantic: SemanticUnbuilt, reprojection: ReprojectionSettled})
 			f.hub.mu.Unlock()
 			close(installed)
 		}()
@@ -986,7 +986,7 @@ func transitionTwoAssetsWithHook(t *testing.T, hub *Hub, mbCallback func(Control
 	waitFor(t, func() bool {
 		hub.mu.RLock()
 		defer hub.mu.RUnlock()
-		gate := hub.assets["asset:mb"].gate
+		gate := ownerGate(hub.assets["asset:mb"])
 		return gate != nil && gate.semantic != SemanticUnbuilt
 	})
 	return tx, func() {
@@ -1020,7 +1020,7 @@ func TestPublicationBeforeReprojectionAckIsRefusedAndSucceedsAfterIt(t *testing.
 	waitFor(t, func() bool {
 		hub.mu.RLock()
 		defer hub.mu.RUnlock()
-		gate := hub.assets["asset:mb"].gate
+		gate := ownerGate(hub.assets["asset:mb"])
 		return semanticSuccess(gate.semantic) && gate.inFlight != nil
 	})
 	if _, err := publish(t, hub, tx.Handle(), "asset:mb", "m2", 3, 3); !errors.Is(err, ErrReprojectionPending) {
@@ -1414,11 +1414,11 @@ func TestEpochCoverRetiresAnAssetWhoseOldGenerationIsAlreadyFenced(t *testing.T)
 	waitFor(t, func() bool {
 		hub.mu.RLock()
 		defer hub.mu.RUnlock()
-		gate := hub.assets["asset:fb"].gate
+		gate := ownerGate(hub.assets["asset:fb"])
 		return gate != nil && gate.semantic != SemanticUnbuilt && gate.semantic != SemanticPending
 	})
 	hub.mu.RLock()
-	semantic, errID := hub.assets["asset:fb"].gate.semantic, hub.assets["asset:fb"].gate.errID
+	semantic, errID := ownerGate(hub.assets["asset:fb"]).semantic, ownerGate(hub.assets["asset:fb"]).errID
 	hub.mu.RUnlock()
 	if !semanticSuccess(semantic) {
 		t.Fatalf("epoch cover on the already fenced asset=%s %s", semantic, errID)

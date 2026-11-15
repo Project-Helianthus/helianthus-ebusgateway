@@ -1,5 +1,23 @@
 package semhub
 
+// Lock order. A path that takes more than one of these locks takes them in
+// this order:
+//
+//  1. the source control mutex (source.control) of one source; no path holds
+//     the control mutexes of two sources, so contributors of one asset never
+//     wait on each other's control operations;
+//  2. the asset commit lock (asset.commit) of one asset;
+//  3. the hub mutex (Hub.mu).
+//
+// Reprojection callbacks run outside every lock; a publication's onCommit
+// callback runs under its asset's commit lock only.
+//
+// Every asset holds one control gate per publishing source (its owner and
+// each declared contributor). A source's control operation installs, settles
+// and supersedes only that source's gate; a publication of a source checks
+// only its own gate; a read of the asset requires every gate to be resolved
+// and settled.
+
 import (
 	"encoding/json"
 	"errors"
@@ -295,28 +313,89 @@ func (op *controlOp) abandonedOpenLocked() bool {
 		return false
 	}
 	for _, ca := range op.assets {
-		if ca.semantic != SemanticRevokedUnpublished && !semanticSuccess(ca.semantic) && ca.asset.gate == ca {
+		if ca.semantic != SemanticRevokedUnpublished && !semanticSuccess(ca.semantic) && ca.currentLocked() {
 			return true
 		}
 	}
 	return false
 }
 
-// ReadAdmitted reports whether public reads of the asset are admitted by the
-// control gate: no control operation, or a terminal successful one.
+// setGateLocked makes ca the control gate of its operation's source on its
+// asset, replacing only that source's previous gate. h.mu must be held.
+func setGateLocked(ca *controlAsset) {
+	target := ca.asset
+	if target.gates == nil {
+		target.gates = make(map[semreg.SourceID]*controlAsset, 1+len(target.contributors))
+	}
+	target.gates[ca.op.src.id] = ca
+}
+
+// currentLocked reports whether ca is still its source's gate on its asset.
+// h.mu must be held.
+func (ca *controlAsset) currentLocked() bool {
+	return ca.asset.gates[ca.op.src.id] == ca
+}
+
+// gatesLocked returns the asset's gates in the order of publishingSources.
+// h.mu must be held.
+func (a *asset) gatesLocked() []*controlAsset {
+	out := make([]*controlAsset, 0, len(a.gates))
+	for _, src := range a.publishingSources() {
+		if gate := a.gates[src]; gate != nil {
+			out = append(out, gate)
+		}
+	}
+	return out
+}
+
+// readableGate reports whether one gate admits reads: no control operation,
+// or a successful one whose reprojection has settled.
+func readableGate(gate *controlAsset) bool {
+	return gate == nil || semanticSuccess(gate.semantic) && gate.reprojection == ReprojectionSettled
+}
+
+// readAdmittedLocked is the read gate of the asset: the union of every
+// source's gate, so the asset is withheld while any one of them is open.
+// h.mu must be held.
+func (a *asset) readAdmittedLocked() bool {
+	if a.restoreFailed {
+		return false
+	}
+	for _, gate := range a.gates {
+		if !readableGate(gate) {
+			return false
+		}
+	}
+	return true
+}
+
+// statusGateLocked is the gate Inspect reports: the first gate, in the order
+// of publishingSources, that withholds reads, otherwise the owner's gate.
+// h.mu must be held.
+func (a *asset) statusGateLocked() *controlAsset {
+	for _, gate := range a.gatesLocked() {
+		if !readableGate(gate) {
+			return gate
+		}
+	}
+	return a.gates[a.source]
+}
+
+// ReadAdmitted reports whether public reads of the asset are admitted by its
+// control gates: for every source, no control operation or a terminal
+// successful one.
 func (h *Hub) ReadAdmitted(id semreg.AssetID) bool {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	target := h.assets[id]
-	if target == nil || target.restoreFailed {
+	if target == nil {
 		return false
 	}
-	gate := target.gate
-	return gate == nil || semanticSuccess(gate.semantic) && gate.reprojection == ReprojectionSettled
+	return target.readAdmittedLocked()
 }
 
-// Settled reports whether the asset's family cache acknowledged the latest
-// control snapshot.
+// Settled reports whether every family cache of the asset acknowledged the
+// latest control snapshot of every source's gate.
 func (h *Hub) Settled(id semreg.AssetID) bool {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -324,12 +403,18 @@ func (h *Hub) Settled(id semreg.AssetID) bool {
 	if target == nil || target.restoreFailed {
 		return false
 	}
-	return target.gate == nil || target.gate.reprojection == ReprojectionSettled
+	for _, gate := range target.gates {
+		if gate != nil && gate.reprojection != ReprojectionSettled {
+			return false
+		}
+	}
+	return true
 }
 
-// Admitted is the condition of every public read: the control gate admits
-// reads and the reprojection acknowledged the latest control snapshot. Both
-// predicates are evaluated over one gate value under one read lock.
+// Admitted is the condition of every public read: every source's control
+// gate admits reads and its reprojection acknowledged the latest control
+// snapshot. Both predicates are evaluated over the same gates under one read
+// lock.
 func (h *Hub) Admitted(id semreg.AssetID) bool {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -337,9 +422,8 @@ func (h *Hub) Admitted(id semreg.AssetID) bool {
 	if target == nil || target.restoreFailed {
 		return false
 	}
-	gate := target.gate
 	h.fault("admitted-read", id)
-	return gate == nil || semanticSuccess(gate.semantic) && gate.reprojection == ReprojectionSettled
+	return target.readAdmittedLocked()
 }
 
 // Readable is Admitted.
@@ -353,7 +437,7 @@ func (h *Hub) Inspect(id semreg.AssetID) (InspectView, error) {
 		h.mu.RUnlock()
 		return InspectView{}, ErrUnknownAsset
 	}
-	kernel, hubSeq, status := target.kernel, target.hubSeq, controlStatusLocked(target.gate)
+	kernel, hubSeq, status := target.kernel, target.hubSeq, controlStatusLocked(target.statusGateLocked())
 	h.mu.RUnlock()
 	snapshot, canonical, ok := kernel.Current()
 	return InspectView{Snapshot: snapshot, Canonical: canonical, Revisions: snapshot.Revisions, HubSeq: hubSeq, Control: status, Present: ok}, nil
@@ -600,7 +684,7 @@ func (h *Hub) runControl(id semreg.SourceID, op *controlOp) (ControlResult, erro
 		if !published[target.id] {
 			ca.semantic = SemanticRevokedUnpublished
 		} else {
-			target.gate = ca
+			setGateLocked(ca)
 		}
 		op.assets = append(op.assets, ca)
 	}
@@ -857,7 +941,7 @@ func (h *Hub) submit(ca *controlAsset, mode submitMode) (failure error) {
 			return h.reject(ca, fmt.Errorf("%w: %w", &semreg.Error{ID: "semhub.control_export_refused", Detail: "BeforeControl refused submission"}, exportErr))
 		}
 		h.mu.RLock()
-		superseded := op.abandoned || target.gate != ca
+		superseded := op.abandoned || !ca.currentLocked()
 		h.mu.RUnlock()
 		if superseded {
 			return ErrControlAbandoned
@@ -1004,21 +1088,35 @@ func (h *Hub) startAttemptLocked(ca *controlAsset) (chan struct{}, error) {
 		return nil, nil
 	}
 	target := ca.asset
-	event := ControlEvent{Asset: target.id, SnapshotID: ca.snapshot.SnapshotID, HubSeq: ca.hubSeq, Kind: EventGenerationFenced, Control: ca.op.id,
-		View: InspectView{Snapshot: cloneSnapshot(ca.snapshot), Canonical: append([]byte(nil), ca.canonical...), Revisions: ca.snapshot.Revisions, HubSeq: ca.hubSeq, Control: controlStatusLocked(ca), Present: ca.snapshot.SnapshotID != ""}}
-	if ca.op.kind == ControlRetire {
-		event.Kind = EventSourceRetired
-	}
-	callback := target.onControl
-	if target.restored && callback == nil {
+	if target.restored && target.onControl == nil {
 		return nil, ErrReprojectionPending
 	}
+	// Every reprojection callback of the asset (the owner's and each
+	// contributor's) receives the event, each with its own detached copy.
+	callbacks := target.reprojectionsLocked()
+	events := make([]ControlEvent, len(callbacks))
+	for index := range callbacks {
+		event := ControlEvent{Asset: target.id, SnapshotID: ca.snapshot.SnapshotID, HubSeq: ca.hubSeq, Kind: EventGenerationFenced, Control: ca.op.id,
+			View: InspectView{Snapshot: cloneSnapshot(ca.snapshot), Canonical: append([]byte(nil), ca.canonical...), Revisions: ca.snapshot.Revisions, HubSeq: ca.hubSeq, Control: controlStatusLocked(ca), Present: ca.snapshot.SnapshotID != ""}}
+		if ca.op.kind == ControlRetire {
+			event.Kind = EventSourceRetired
+		}
+		events[index] = event
+	}
+	seq := ca.hubSeq
 	done := make(chan struct{})
 	ca.inFlight = done
 	go func() {
-		err := runCallback(callback, event)
+		// Every callback runs, in order, even after one fails; the attempt
+		// settles only when all of them succeeded.
+		var err error
+		for index, callback := range callbacks {
+			if failure := runCallback(callback, events[index]); failure != nil && err == nil {
+				err = failure
+			}
+		}
 		h.lock()
-		if target.gate == ca && ca.hubSeq == event.HubSeq {
+		if ca.currentLocked() && ca.hubSeq == seq {
 			if err != nil {
 				ca.reprojection, ca.reprojErr = ReprojectionUnsettled, err
 			} else {
@@ -1057,11 +1155,14 @@ func cloneSnapshot(snapshot semreg.Snapshot) semreg.Snapshot {
 }
 
 // Resettle retries only the reprojection of one asset through the one
-// scheduler. It refuses with ErrSemanticOutstanding, touching no gate, when
-// the asset's semantic control outcome is not accepted or replayed, with
-// ErrReprojectionInFlight while an attempt for the asset is running, and with
-// ErrReprojectionQueued when the scheduler is busy with earlier attempts (the
-// queued attempt then runs in order). Otherwise it waits for its attempt.
+// scheduler, for every source's gate of the asset in the order of
+// publishingSources. A gate whose semantic control outcome is not accepted or
+// replayed is left untouched and reported as ErrSemanticOutstanding, and a
+// gate with a running attempt as ErrReprojectionInFlight, when no other gate
+// needed an attempt or every attempt settled. When the scheduler is busy with
+// earlier attempts it returns ErrReprojectionQueued (the queued attempts then
+// run in order); otherwise it waits for its attempts and returns the first
+// reprojection error of a gate that stayed unsettled.
 func (h *Hub) Resettle(id semreg.AssetID) error {
 	h.lock()
 	target := h.assets[id]
@@ -1069,7 +1170,6 @@ func (h *Hub) Resettle(id semreg.AssetID) error {
 		h.unlock()
 		return ErrUnknownAsset
 	}
-	ca := target.gate
 	switch {
 	case target.restoreFailed:
 		h.unlock()
@@ -1077,33 +1177,46 @@ func (h *Hub) Resettle(id semreg.AssetID) error {
 	case target.restored && target.onControl == nil:
 		h.unlock()
 		return ErrReprojectionPending
-	case ca == nil:
-		h.unlock()
-		return nil
-	case !semanticSuccess(ca.semantic):
-		h.unlock()
-		return ErrSemanticOutstanding
-	case ca.inFlight != nil:
-		h.unlock()
-		return ErrReprojectionInFlight
-	case ca.reprojection == ReprojectionSettled:
-		h.unlock()
-		return nil
 	}
-	entry := h.enqueueLocked(ca)
+	var refusal error
+	var pending []*controlAsset
+	var entries []*reprojectionEntry
+	for _, ca := range target.gatesLocked() {
+		switch {
+		case !semanticSuccess(ca.semantic):
+			if refusal == nil {
+				refusal = ErrSemanticOutstanding
+			}
+		case ca.inFlight != nil:
+			if refusal == nil {
+				refusal = ErrReprojectionInFlight
+			}
+		case ca.reprojection != ReprojectionSettled:
+			pending = append(pending, ca)
+			entries = append(entries, h.enqueueLocked(ca))
+		}
+	}
+	if len(entries) == 0 {
+		h.unlock()
+		return refusal
+	}
 	busy := h.draining
 	h.unlock()
 	if busy {
 		return ErrReprojectionQueued
 	}
 	h.drain()
-	<-entry.done
+	for _, entry := range entries {
+		<-entry.done
+	}
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	if ca.reprojection != ReprojectionSettled {
-		return ca.reprojErr
+	for _, ca := range pending {
+		if ca.reprojection != ReprojectionSettled {
+			return ca.reprojErr
+		}
 	}
-	return nil
+	return refusal
 }
 
 // awaitFinished applies the unfinished and settling rules for the latest

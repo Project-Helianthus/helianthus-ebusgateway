@@ -119,9 +119,9 @@ func TestM11CaptureAdmissionAndExposure(t *testing.T) {
 			case "restore failed":
 				h.assets[id].restoreFailed = true
 			case "pending semantic":
-				h.assets[id].gate = &controlAsset{semantic: SemanticUnbuilt, reprojection: ReprojectionSettled}
+				setOwnerGate(h.assets[id], &controlAsset{semantic: SemanticUnbuilt, reprojection: ReprojectionSettled})
 			case "pending reprojection":
-				h.assets[id].gate = &controlAsset{semantic: SemanticAccepted, reprojection: ReprojectionUnsettled}
+				setOwnerGate(h.assets[id], &controlAsset{semantic: SemanticAccepted, reprojection: ReprojectionUnsettled})
 			}
 			h.mu.Unlock()
 			if got := m11Capture(t, h, id).Assets[0]; got.UnavailableReason != "semantic.read.reason.publication_withheld" || got.Snapshot != nil || got.Evaluation != nil {

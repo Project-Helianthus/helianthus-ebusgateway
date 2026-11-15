@@ -94,9 +94,6 @@ type Hub struct {
 	// that an event is emitted inside the hub serialization.
 	trackOwner bool
 	owner      atomic.Uint64
-	// sharedAssets, set only by package tests, lets Declare accept a
-	// contributor list. A production hub refuses one.
-	sharedAssets bool
 }
 
 // lock takes the hub write lock.
@@ -141,7 +138,7 @@ type asset struct {
 	kernel        *semreg.PublicationKernel
 	onControl     func(ControlEvent) error
 	hubSeq        uint64
-	gate          *controlAsset
+	gates         map[semreg.SourceID]*controlAsset // one control gate per publishing source
 	records       []AcceptedBatch
 	restoreFailed bool
 	restored      bool
@@ -372,10 +369,6 @@ func (h *Hub) Declare(spec AssetSpec) (*Declaration, error) {
 			return nil, ErrInvalidIdentity
 		}
 		packs = append(packs, validator.Pack())
-	}
-	// The per-contributor control gates slice removes this guard.
-	if len(spec.Contributors) != 0 && !h.sharedAssets {
-		return nil, errSharedAssetsDisabled
 	}
 	contributors, err := contributorsOf(spec, packs)
 	if err != nil {
@@ -957,12 +950,13 @@ type Tx struct {
 	done            bool
 }
 
-// publicationGateLocked refuses a publication on an asset whose latest
-// control operation is not semantically resolved (ErrControlPending) or whose
-// reprojection has not acknowledged it (ErrReprojectionPending). h.mu must be
-// held.
-func publicationGateLocked(target *asset) error {
-	gate := target.gate
+// publicationGateLocked refuses a publication of src on an asset whose latest
+// control operation of src is not semantically resolved (ErrControlPending)
+// or whose reprojection has not acknowledged it (ErrReprojectionPending).
+// Only src's own gate is consulted: an open gate of another contributor of
+// the asset never refuses src. h.mu must be held.
+func publicationGateLocked(target *asset, src semreg.SourceID) error {
+	gate := target.gates[src]
 	if target.restoreFailed {
 		return ErrControlPending
 	}
@@ -990,10 +984,15 @@ func (h *Hub) Begin(handle *Handle, id semreg.AssetID) (*Tx, error) {
 		return nil, fmt.Errorf("%w: asset is declared with another source", ErrTransaction)
 	}
 	// Publication admission: an asset with outstanding control or
-	// reprojection work refuses publications before taking its commit lock,
-	// which a pending control submission may hold.
+	// reprojection work of the publishing source refuses that source's
+	// publications before taking its commit lock, which a pending control
+	// submission may hold.
+	publisher := target.source
+	if handle != nil {
+		publisher = handle.source
+	}
 	h.mu.RLock()
-	err := publicationGateLocked(target)
+	err := publicationGateLocked(target, publisher)
 	h.mu.RUnlock()
 	if err != nil {
 		return nil, err
@@ -1131,8 +1130,8 @@ func (tx *Tx) coverEvidence() []semreg.EvidenceRef {
 }
 
 // installCoverLocked builds the control operation that fences the replaced
-// generation, or retires the replaced epoch, on others and closes their read
-// gates. h.mu must be held.
+// generation, or retires the replaced epoch, on others and closes the
+// source's gate on each of them. h.mu must be held.
 func (h *Hub) installCoverLocked(src *source, kind ControlKind, epoch semreg.SourceEpochID, old uint64, others []*asset, evidence []semreg.EvidenceRef, observedAt semreg.TimePoint, monotonic semreg.MonotonicPoint) *controlOp {
 	if len(others) == 0 {
 		return nil
@@ -1146,7 +1145,7 @@ func (h *Hub) installCoverLocked(src *source, kind ControlKind, epoch semreg.Sou
 		reason: reason, evidence: evidence, observedAt: observedAt, monotonic: monotonic}
 	for _, target := range others {
 		ca := &controlAsset{op: op, asset: target, semantic: SemanticUnbuilt, reprojection: ReprojectionSettled}
-		target.gate = ca
+		setGateLocked(ca)
 		op.assets = append(op.assets, ca)
 	}
 	src.ops[op.id.N] = op
@@ -1320,7 +1319,7 @@ func (tx *Tx) Commit(onCommit func(Committed)) (outcome Outcome, err error) {
 		h.unlock()
 		return "", err
 	}
-	if err := publicationGateLocked(tx.asset); err != nil {
+	if err := publicationGateLocked(tx.asset, tx.handle.source); err != nil {
 		h.unlock()
 		return "", err
 	}

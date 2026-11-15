@@ -488,6 +488,23 @@ class SemanticImportsTest(unittest.TestCase):
         self.assertIn("missing protected package", errors)
         self.assertIn("unresolved local dependency", errors)
 
+    def test_resource_allocator_is_a_semantic_owner(self):
+        owner = "internal/semgraph"
+        self.assertIn(owner, guard.PROTECTED)
+        self.write(f"{owner}/base.go", 'package semgraph\nimport (\n"crypto/sha256"\n"sync"\n"'
+                   + guard.ALLOWED_EXTERNAL[0] + '/semreg/v1"\n)\n')
+        self.assertEqual([], self.errors())
+        for imp in (NATIVE, f"{guard.MODULE}/internal/modbusadapter",
+                    f"{guard.MODULE}/cmd/gateway", f"{guard.MODULE}/internal/helper"):
+            with self.subTest(imp=imp):
+                self.write("internal/helper/base.go", "package helper\n")
+                self.write("cmd/gateway/main.go", "package main\n")
+                self.write(f"{owner}/base.go", f'package semgraph\nimport "{imp}"\n')
+                errors = "\n".join(self.errors())
+                self.assertIn(f"{guard.MODULE}/{owner} -> {imp}", errors)
+        (self.root / owner / "base.go").unlink()
+        self.assertIn(f"missing protected package: {guard.MODULE}/{owner}", "\n".join(self.errors()))
+
     def test_malformed_source_fails_parser(self):
         self.write("internal/semhub/broken.go", "package neutral\nimport (\n")
         with self.assertRaises(subprocess.CalledProcessError):

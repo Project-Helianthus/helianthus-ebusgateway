@@ -17,6 +17,7 @@ import tempfile
 
 MODULE = "github.com/Project-Helianthus/helianthus-ebusgateway"
 PROTECTED = (
+    "internal/semgraph",
     "internal/semhub",
     "internal/semanticmetrics",
     "internal/semanticoperations",

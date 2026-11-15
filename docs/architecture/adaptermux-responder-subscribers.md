@@ -127,7 +127,7 @@ Reason codes of `TARGET_ERROR`:
 | --- | --- | --- |
 | `0x01` | `duplicate`: another session holds the address | yes |
 | `0x02` | `inadmissible` address | yes |
-| `0x03` | `capacity` | yes |
+| `0x03` | `capacity`: the per-session address limit, or pending output over the responder budget (section 5) | yes |
 | `0x04` | `conflict`: a foreign responder answered for the address in this stream generation | yes |
 | `0x05` | `unavailable`: no responder capability upstream, or not connected | yes |
 | `0x06` | `subscriber_failure` (section 5) | yes, for every held address |
@@ -253,11 +253,28 @@ Reason codes of `TARGET_ERROR`:
   registration is written without pacing from its first `TARGETED` until it
   holds none.
 - Its pending output is bounded by a fixed responder budget, far below the
-  general session buffer. If the budget is exceeded when a slot would be
-  reserved, no slot is offered and the session's registrations are revoked
-  with `subscriber_failure`. A write error on the session closes it as today.
-  Slot tags are never reused within a session (section 2), so a stale tag cannot
-  alias a later slot whatever the budget.
+  general session buffer. The budget is checked on every enqueue to the
+  session while it holds a registration, whatever the traffic: RECEIVED
+  symbols of transactions for other addresses count exactly like `SLOT` and
+  the replies of section 1. A fixed headroom inside the budget is reserved for
+  the revocation notices (`SLOT_END revoked` for a reserved slot, then
+  `TARGET_ERROR subscriber_failure` and `UNTARGETED` per held address, a count
+  fixed by the per-session limit); no other frame may use it. The enqueue that
+  would reach into the headroom triggers the revocation at once: a reserved
+  slot ends without emission, every registration of the session is revoked
+  with `subscriber_failure`, the notices are queued into the headroom, and
+  only then is the triggering frame queued, under the ordinary rules of a
+  session without registrations (paced, general session buffer). The overflow
+  is therefore handled where it occurs and never carried into a later
+  reservation. A `TARGET` is accepted only while the session's pending
+  output leaves room for its own answer below the budget minus the headroom;
+  otherwise it is refused with `capacity`, so a registration never starts
+  with an inherited backlog. A write error on the session closes it as today.
+  Slot tags are never reused within a session (section 2), so a stale tag
+  cannot alias a later slot whatever the budget.
+  Alternative: a dedicated bounded responder queue beside the session buffer;
+  rejected because `SLOT` must stay ordered against the RECEIVED symbols of
+  the same stream (section 1).
 - The emitter has no queue. The read-loop step that validates the CRC hands
   the committed bytes to the emitter directly. If the first symbol cannot be
   submitted within a fixed emission bound, measured on an injected monotonic
@@ -280,7 +297,7 @@ continuity loss and on close.
 | Invalid CRC | request CRC check | one NACK, `SLOT_END crc` |
 | Malformed request | framing check | silence, `SLOT_END malformed` |
 | Missed deadline | no commit at the CRC, or the emission bound exceeded | silence, `SLOT_END not_ready` or `SLOT_END late`; a later commit is `late` and counted |
-| Subscriber failure | responder budget exceeded or session error | revoke all registrations of the session; a reserved slot ends without emission |
+| Subscriber failure | responder budget reached on any enqueue to a registered session, or session error | revoke all registrations of the session; a reserved slot ends without emission |
 | Unregister or disconnect | `UNTARGET`, close | a reserved slot ends without emission; an emission already started completes its committed bytes, because a truncated response corrupts the bus more than a finished one |
 | Reset or reconnect | lifecycle boundary | the stream generation ends; an emission in progress stops; registrations are removed (section 1) |
 | SYN while waiting | SYN in a request or response wait | `SLOT_END boundary` |
@@ -305,7 +322,7 @@ per acceptance criterion of the issue, each with sub-tests:
 | 2 destination-time reservation | `TestDestinationSymbolReservesSlotWithOrderedPrefix`: `SLOT` directly behind the destination symbol, raw escape pairs delivered once, no whole-frame wait |
 | 3 provisional selection | `TestProvisionalSlotEmitsNothingBeforeValidatedRequest`: commit before CRC emits nothing early, single NACK on invalid CRC, silence on malformed framing, emissions only for the slot's address, transaction and phase |
 | 4 emission without START | `TestResponderEmissionWithoutStartFencesLocalTraffic`: no START written, owner `SEND` rejected in the window, queued write fails at commit, other sessions cannot stage, refusal without responder capability |
-| 5 latency and queueing | `TestResponderPathIsUnpacedAndBounded`: no pacing for a registered session, budget overflow revokes, prepared response emitted in full at the CRC, late commit refused and counted, emission bound exceeded emits nothing |
+| 5 latency and queueing | `TestResponderPathIsUnpacedAndBounded`: no pacing for a registered session, budget checked on every enqueue (traffic for other addresses alone reaches it and revokes at once, the notices fit the reserved headroom, pending output never exceeds the budget while a registration is held, `TARGET` refused with `capacity` while the pending output is over the budget), prepared response emitted in full at the CRC, late commit refused and counted, emission bound exceeded emits nothing |
 | 6 invalidation | `TestResponderSlotInvalidation`: one table row per cause in section 6, including unregister and disconnect after emission started (the committed bytes complete, checked against the lease), tag exhaustion (the slot with tag 255 emits its committed response, registrations are revoked only after its `SLOT_END`, no tag reuse), and a stale tag held by an old worker refused |
 | 7 determinism | `TestResponderSlotReplayIsDeterministic`: every scenario replayed twice with identical session frames, upstream writes and counters |
 | 8 hardware boundary | `TestResponderCellsStayPlannedWithoutWireEvidence` in the matrix runner: offline results never mark PX09 to PX11 hardware cells as passed |

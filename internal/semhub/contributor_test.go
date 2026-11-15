@@ -175,9 +175,9 @@ func derivedCandidate(id semreg.CandidateID, input semreg.FactCandidate, revisio
 // second claimant the owner did not name keeps today's refusals, on a plain
 // asset and on an asset with a declared contributor.
 func TestContributorUndeclaredClaimantKeepsTodaysErrors(t *testing.T) {
-	plain := newSharedTestHub(t)
+	plain := newTestHub(t)
 	mustDeclare(t, plain, sharedAsset, sharedOwner, sharedDriver, nil)
-	shared := newSharedTestHub(t)
+	shared := newTestHub(t)
 	mustDeclareShared(t, shared)
 	for name, hub := range map[string]*Hub{"plain": plain, "shared": shared} {
 		before := claimsSnapshot(hub)
@@ -203,35 +203,31 @@ func TestContributorUndeclaredClaimantKeepsTodaysErrors(t *testing.T) {
 	}
 }
 
-// TestContributorProductionHubRefusesContributorList proves the production
-// guard: a hub built by New refuses a contributor list, declares nothing and
-// claims nothing.
-func TestContributorProductionHubRefusesContributorList(t *testing.T) {
+// TestContributorProductionHubAcceptsContributorList proves that a hub built
+// by New accepts a contributor list now that every contributor has its own
+// control gate: the asset is declared, both sources are claimed for their
+// drivers, and the declared contributor publishes.
+func TestContributorProductionHubAcceptsContributorList(t *testing.T) {
 	hub, err := New(Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = hub.Declare(sharedSpec(peerSpec()))
-	if !errors.Is(err, ErrDeclarationConflict) || !strings.Contains(err.Error(), "several sources per asset are not enabled") {
+	declaration, err := hub.Declare(sharedSpec(peerSpec()))
+	if err != nil {
 		t.Fatalf("production contributor list=%v", err)
 	}
-	hub.mu.RLock()
-	assets, sources, ids := len(hub.assets), len(hub.sources), len(hub.ids)
-	hub.mu.RUnlock()
-	if assets != 0 || sources != 0 || ids != 0 {
-		t.Fatalf("refused declaration left state: assets=%d sources=%d ids=%d", assets, sources, ids)
+	if declaration.Source() != sharedOwner {
+		t.Fatalf("declaration source=%s", declaration.Source())
 	}
-	if _, err := hub.Begin(nil, sharedAsset); !errors.Is(err, ErrUnknownAsset) {
-		t.Fatalf("refused asset is declared: %v", err)
+	claims := claimsSnapshot(hub)
+	if claims[string(sharedOwner)] != (idOwner{sharedDriver, KindSource}) || claims[string(sharedPeer)] != (idOwner{peerDriver, KindSource}) || claims[string(sharedAsset)] != (idOwner{sharedDriver, KindAsset}) {
+		t.Fatalf("claims=%+v", claims)
 	}
-	// Nothing was claimed: another driver may take the contributor source, and
-	// the owner may still declare the asset with its single source.
-	mustAdmit(t, hub, sharedPeer, otherDriver)
-	if _, err := hub.Declare(sharedSpec()); err != nil {
-		t.Fatalf("single-source declaration after the refusal: %v", err)
-	}
+	b := mustAdmit(t, hub, sharedPeer, peerDriver)
+	mustPublish(t, hub, b, sharedAsset, "fam_b", 1, 1)
+	// A repeated declaration with another contributor list stays a conflict.
 	if _, err := hub.Declare(sharedSpec(ContributorSpec{SourceID: "source:d", Driver: "driver-d", Validators: []semreg.PackValidator{newTestValidator()}})); !errors.Is(err, ErrDeclarationConflict) {
-		t.Fatalf("production redeclaration with a contributor=%v", err)
+		t.Fatalf("redeclaration with another contributor=%v", err)
 	}
 }
 
@@ -252,7 +248,7 @@ func TestContributorDeclarationRules(t *testing.T) {
 		"contributor with invalid source": {sharedSpec(ContributorSpec{SourceID: "", Driver: peerDriver, Validators: []semreg.PackValidator{newTestValidator()}}), false},
 	}
 	for name, refusal := range refusals {
-		hub := newSharedTestHub(t)
+		hub := newTestHub(t)
 		_, err := hub.Declare(refusal.spec)
 		if refusal.conflict && !errors.Is(err, ErrDeclarationConflict) || !refusal.conflict && !errors.Is(err, ErrInvalidIdentity) {
 			t.Fatalf("%s: error=%v", name, err)
@@ -264,7 +260,7 @@ func TestContributorDeclarationRules(t *testing.T) {
 
 	// A contributor source claimed by another driver stays a collision, and
 	// the refusal declares and claims nothing new.
-	hub := newSharedTestHub(t)
+	hub := newTestHub(t)
 	mustDeclare(t, hub, "asset:x", sharedPeer, "driver-x", nil)
 	before := claimsSnapshot(hub)
 	_, err := hub.Declare(sharedSpec(peerSpec()))
@@ -277,7 +273,7 @@ func TestContributorDeclarationRules(t *testing.T) {
 
 	// Accepted: the contributor source is claimed for its driver and the asset
 	// joins the contributor source's asset set.
-	hub = newSharedTestHub(t)
+	hub = newTestHub(t)
 	third := ContributorSpec{SourceID: sharedOther, Driver: otherDriver, Validators: []semreg.PackValidator{newTestValidator()}}
 	first, err := hub.Declare(sharedSpec(peerSpec(), third))
 	if err != nil {
@@ -336,7 +332,7 @@ func TestContributorDeclarationRules(t *testing.T) {
 		spec.Validators = []semreg.PackValidator{newTestValidator(), other}
 		return spec
 	}
-	hub = newSharedTestHub(t)
+	hub = newTestHub(t)
 	first, err = hub.Declare(twoPacks(newTestValidator()))
 	if err != nil {
 		t.Fatal(err)
@@ -366,7 +362,7 @@ func TestContributorPacksMustBeSubsetOfAssetPacks(t *testing.T) {
 		{"proper subset", []semreg.PackValidator{newTestValidator(), other}, []semreg.PackValidator{other}, true},
 	}
 	for _, c := range cases {
-		hub := newSharedTestHub(t)
+		hub := newTestHub(t)
 		_, err := hub.Declare(AssetSpec{AssetID: sharedAsset, SourceID: sharedOwner, Driver: sharedDriver, Validators: c.asset, Contributors: []ContributorSpec{{SourceID: sharedPeer, Driver: peerDriver, Validators: c.peer}}})
 		if c.accepted {
 			if err != nil {
@@ -389,7 +385,7 @@ func TestContributorPacksMustBeSubsetOfAssetPacks(t *testing.T) {
 // TestContributorBatchStaysInDeclaredPacks refuses a contributor batch that
 // publishes a pack the contributor did not declare, while the owner may.
 func TestContributorBatchStaysInDeclaredPacks(t *testing.T) {
-	hub := newSharedTestHub(t)
+	hub := newTestHub(t)
 	other := otherValidator{testValidator{pack: testPackRef}}
 	if _, err := hub.Declare(AssetSpec{AssetID: sharedAsset, SourceID: sharedOwner, Driver: sharedDriver, Validators: []semreg.PackValidator{newTestValidator(), other},
 		Contributors: []ContributorSpec{{SourceID: sharedPeer, Driver: peerDriver, Validators: []semreg.PackValidator{other}}}}); err != nil {
@@ -412,7 +408,7 @@ func TestContributorBatchStaysInDeclaredPacks(t *testing.T) {
 // TestContributorPublishesOnSharedAsset admits a declared contributor and
 // publishes through it; a source the owner did not name is refused at Begin.
 func TestContributorPublishesOnSharedAsset(t *testing.T) {
-	hub := newSharedTestHub(t)
+	hub := newTestHub(t)
 	mustDeclareShared(t, hub)
 	mustDeclare(t, hub, "asset:c", sharedOther, otherDriver, nil)
 	a := mustAdmit(t, hub, sharedOwner, sharedDriver)
@@ -460,7 +456,7 @@ func TestContributorPublishesOnSharedAsset(t *testing.T) {
 // TestContributorNestedClaimsFollowPublishingDriver claims a contributor's
 // binding, service and capability identifiers for the contributor's driver.
 func TestContributorNestedClaimsFollowPublishingDriver(t *testing.T) {
-	hub := newSharedTestHub(t)
+	hub := newTestHub(t)
 	mustDeclareShared(t, hub)
 	mustDeclare(t, hub, "asset:a-only", sharedOwner, sharedDriver, nil)
 	a := mustAdmit(t, hub, sharedOwner, sharedDriver)
@@ -533,7 +529,7 @@ func TestContributorNestedClaimsFollowPublishingDriver(t *testing.T) {
 // TestContributorInferredCandidateBelongsToCreator refuses another driver's
 // revision or withdrawal of an inferred candidate on a shared asset.
 func TestContributorInferredCandidateBelongsToCreator(t *testing.T) {
-	hub := newSharedTestHub(t)
+	hub := newTestHub(t)
 	mustDeclareShared(t, hub)
 	a := mustAdmit(t, hub, sharedOwner, sharedDriver)
 	b := mustAdmit(t, hub, sharedPeer, peerDriver)
@@ -587,7 +583,7 @@ func TestContributorInferredCandidateBelongsToCreator(t *testing.T) {
 // TestContributorSingleSourceAssetRecordsNoInferredCreator keeps a
 // single-source asset free of inferred-record ownership.
 func TestContributorSingleSourceAssetRecordsNoInferredCreator(t *testing.T) {
-	hub := newSharedTestHub(t)
+	hub := newTestHub(t)
 	mustDeclare(t, hub, sharedAsset, sharedOwner, sharedDriver, nil)
 	a := mustAdmit(t, hub, sharedOwner, sharedDriver)
 	mustPublish(t, hub, a, sharedAsset, "fam_a", 1, 1)
@@ -602,5 +598,22 @@ func TestContributorSingleSourceAssetRecordsNoInferredCreator(t *testing.T) {
 	hub.mu.RUnlock()
 	if recorded != 0 {
 		t.Fatalf("single-source asset recorded %d inferred creators", recorded)
+	}
+}
+
+// TestContributorRecoveryEnabledHubRefusesContributorList proves that a hub
+// with recovery hooks refuses a contributor list, because the recovery record
+// cannot carry a contributor's publications, and that a single-source asset
+// is still declared.
+func TestContributorRecoveryEnabledHubRefusesContributorList(t *testing.T) {
+	hub, err := New(Options{Recovery: &RecoveryHooks{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hub.Declare(sharedSpec(peerSpec())); !errors.Is(err, ErrDeclarationConflict) {
+		t.Fatalf("recovery contributor list=%v", err)
+	}
+	if _, err := hub.Declare(sharedSpec()); err != nil {
+		t.Fatalf("single-source declaration=%v", err)
 	}
 }

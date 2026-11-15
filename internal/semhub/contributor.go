@@ -31,9 +31,6 @@ type contributor struct {
 	onControl func(ControlEvent) error
 }
 
-// errSharedAssetsDisabled refuses a contributor list on a production hub.
-var errSharedAssetsDisabled = fmt.Errorf("%w: several sources per asset are not enabled yet", ErrDeclarationConflict)
-
 // contributorsOf validates the contributor list of spec against the owner's
 // source, asset and packs, and returns it ordered by source. It takes no lock.
 func contributorsOf(spec AssetSpec, packs []semreg.PackRef) ([]contributor, error) {
@@ -125,6 +122,29 @@ func (a *asset) publishes(src semreg.SourceID) bool {
 		}
 	}
 	return false
+}
+
+// publishingSources returns the owner source followed by the contributor
+// sources in bytewise order: one control gate exists per entry.
+func (a *asset) publishingSources() []semreg.SourceID {
+	out := make([]semreg.SourceID, 0, 1+len(a.contributors))
+	out = append(out, a.source)
+	for _, item := range a.contributors {
+		out = append(out, item.source)
+	}
+	return out
+}
+
+// reprojectionsLocked returns the reprojection callbacks that receive every
+// control event of the asset: the owner's, then each contributor's in source
+// order. An absent callback is nil. h.mu must be held.
+func (a *asset) reprojectionsLocked() []func(ControlEvent) error {
+	out := make([]func(ControlEvent) error, 0, 1+len(a.contributors))
+	out = append(out, a.onControl)
+	for _, item := range a.contributors {
+		out = append(out, item.onControl)
+	}
+	return out
 }
 
 // checkContributorPacks refuses a batch of a declared contributor that

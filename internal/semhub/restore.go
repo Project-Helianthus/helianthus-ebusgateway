@@ -178,7 +178,7 @@ func (h *Hub) ExportRecovery() RecoveryRecord {
 			head := entry.Accepted[len(entry.Accepted)-1]
 			entry.SnapshotID, entry.Revisions, entry.HubSeq = head.SnapshotID, head.Revisions, head.HubSeq
 		}
-		if ca := target.gate; ca != nil && ca.op.kind != "" {
+		if ca := target.gates[target.source]; ca != nil && ca.op.kind != "" {
 			entry.Control = &RecoveryControl{Monotonic: ca.op.monotonic, Abandoned: ca.op.abandoned, Status: controlStatusLocked(ca), Kind: ca.op.kind, Epoch: ca.op.epoch,
 				Generation: ca.op.generation, Attempts: append([]Attempt(nil), ca.attempts...)}
 		}
@@ -516,7 +516,7 @@ func (h *Hub) restoreAsset(target *asset, entry RecoveryAsset) (failure error) {
 		h.reserveRestoredEpochLocked(target.source, cursor.SourceEpochID)
 	}
 	target.kernel, target.hubSeq, target.records = kernel, lastSeq, entry.Accepted
-	target.gate, target.restored = gate, true
+	target.gates, target.restored = map[semreg.SourceID]*controlAsset{target.source: gate}, true
 	return nil
 }
 

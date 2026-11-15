@@ -36,6 +36,12 @@ const (
 	DefaultSemanticRegulatorRecheckInterval  = 60 * time.Second
 	DefaultSemanticRegulatorAbsenceGrace     = 5 * time.Minute
 
+	// DefaultPassiveCompanionCorroborationInterval is the minimum time
+	// between two positive acknowledgement observations of one source
+	// before the address-table inserter admits that source's canonical
+	// companion without an identity witness.
+	DefaultPassiveCompanionCorroborationInterval = 5 * time.Second
+
 	DefaultMetricsPath                             = "/metrics"
 	DefaultObserveFirstRecentMessageCapacity       = 1024
 	DefaultObserveFirstPeriodicityCapacity         = 256
@@ -426,6 +432,12 @@ type Config struct {
 	ObserveFirstWarmupPostResetTransactions int
 	ObserveFirstWarmupOuterWindow           time.Duration
 
+	// PassiveCompanionCorroborationInterval is the minimum time between the
+	// first qualifying positive acknowledgement of a source and a later one
+	// before the source's canonical companion is admitted. Zero or negative
+	// falls back to DefaultPassiveCompanionCorroborationInterval.
+	PassiveCompanionCorroborationInterval time.Duration
+
 	// EnableStaticSeedTable, when true, plants the
 	// helianthus-ebusreg/vaillant/productids static seed entries
 	// into the registry at gateway startup. Used to deterministically
@@ -513,6 +525,7 @@ func DefaultConfig() Config {
 		PassiveDedupPendingCapacity:             dedupDefaults.PendingCapacity,
 		PassiveDedupRecoveryHysteresis:          dedupDefaults.RecoveryHysteresis,
 		PassiveDedupRecoveryEventThreshold:      dedupDefaults.RecoveryEventThreshold,
+		PassiveCompanionCorroborationInterval:   DefaultPassiveCompanionCorroborationInterval,
 		HTTPAddr:                                ":8080",
 		MetricsPath:                             DefaultMetricsPath,
 		GraphQLPath:                             "/graphql",
@@ -549,6 +562,15 @@ func DefaultConfig() Config {
 		// filtering, CSV (e.g. "0x71,0xFD") extends it.
 		PhantomInitiatorRejectBytes: "0x71",
 	}
+}
+
+// passiveCompanionCorroborationInterval returns the configured companion
+// corroboration interval, or the default when it is zero or negative.
+func (cfg Config) passiveCompanionCorroborationInterval() time.Duration {
+	if cfg.PassiveCompanionCorroborationInterval <= 0 {
+		return DefaultPassiveCompanionCorroborationInterval
+	}
+	return cfg.PassiveCompanionCorroborationInterval
 }
 
 func applyDefaults(cfg Config) Config {
@@ -661,6 +683,7 @@ func applyDefaults(cfg Config) Config {
 	if cfg.PassiveDedupRecoveryEventThreshold <= 0 {
 		cfg.PassiveDedupRecoveryEventThreshold = dedupDefaults.RecoveryEventThreshold
 	}
+	cfg.PassiveCompanionCorroborationInterval = cfg.passiveCompanionCorroborationInterval()
 	if cfg.Transport == nil {
 		if cfg.TransportConfig.Protocol == "" {
 			cfg.TransportConfig.Protocol = TransportENH

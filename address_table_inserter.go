@@ -8,8 +8,20 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 )
 
+// AddressObservation is the corroboration state the inserter keeps for one
+// canonical source address. Only canonical sources that have a companion are
+// tracked, keyed by the exact source byte, so the state holds at most one
+// entry per canonical source.
 type AddressObservation struct {
+	// PositiveACKCount counts time-qualified positive observations of the
+	// source and saturates at two: one after the first qualifying
+	// observation, two once a later observation arrived at least the
+	// corroboration interval after it.
 	PositiveACKCount int
+	// FirstPositiveAt is the ObservedAt of the first qualifying positive
+	// observation. Later observations are measured against it and never
+	// move it, so repeated or reordered timestamps cannot corroborate.
+	FirstPositiveAt time.Time
 }
 
 // RuntimeStateObserver is the runtime-state cache notification hook.
@@ -214,16 +226,80 @@ func (i *AddressTableInserter) OnPassiveClassifiedEvent(event PassiveClassifiedE
 	i.maybeInsert(srcAddr, "initiator", admittedSrc, event.ObservedAt)
 
 	i.maybeInsert(dstAddr, "target", admittedSrc, event.ObservedAt)
-	observation := i.observationsByAddr[srcAddr]
-	observation.PositiveACKCount++
-	i.observationsByAddr[srcAddr] = observation
 
-	if observation.PositiveACKCount < 2 {
+	// Companion-pair corroboration, per
+	// architecture/atr/03-ack-nack-insertion-rules.md: the canonical
+	// companion of the source is admitted after two positive
+	// acknowledgements at least the corroboration interval apart, or after
+	// one positive acknowledgement while the registry holds a current
+	// qualified identity witness for this exact source.
+	// Only a canonical source has a companion; a companion-side or
+	// non-canonical source byte never produces one and keeps no state.
+	companion, ok := protocol.CompanionOfSource(srcAddr)
+	if !ok || companion == admittedSrc || event.ObservedAt.IsZero() {
 		return
 	}
-	if companion, ok := protocol.Companion(srcAddr); ok {
+	witnessAdmitted := false
+	if i.observationsByAddr[srcAddr].PositiveACKCount < 2 {
+		witnessAdmitted = i.admitCompanionWithIdentityWitness(srcAddr, admittedSrc, event.ObservedAt)
+	}
+	// The two-acknowledgement route stays independent of identity
+	// evidence: it is recorded on every qualifying observation whether
+	// or not the witness route admitted the companion.
+	if i.recordQualifyingPositiveObservation(srcAddr, event.ObservedAt) && !witnessAdmitted {
 		i.maybeInsert(companion, "target", admittedSrc, event.ObservedAt)
 	}
+}
+
+// recordQualifyingPositiveObservation updates the corroboration state of
+// source with one positive observation and reports whether the source is
+// corroborated: a later positive observation arrived at least the configured
+// interval after the first qualifying one. A zero timestamp never qualifies;
+// a repeated or earlier timestamp leaves the first observation in place.
+func (i *AddressTableInserter) recordQualifyingPositiveObservation(source byte, observedAt time.Time) bool {
+	if observedAt.IsZero() {
+		return false
+	}
+	observation, ok := i.observationsByAddr[source]
+	if !ok || observation.PositiveACKCount == 0 {
+		i.observationsByAddr[source] = AddressObservation{PositiveACKCount: 1, FirstPositiveAt: observedAt}
+		return false
+	}
+	if observation.PositiveACKCount >= 2 {
+		return true
+	}
+	if observedAt.Sub(observation.FirstPositiveAt) < i.cfg.passiveCompanionCorroborationInterval() {
+		return false
+	}
+	observation.PositiveACKCount = 2
+	i.observationsByAddr[source] = observation
+	return true
+}
+
+// admitCompanionWithIdentityWitness asks the registry to admit the canonical
+// companion of source on the strength of a current qualified identity
+// witness for that exact source. The registry derives the companion,
+// validates the witness and commits the passive target slot under one write
+// lock; the inserter performs no separate witness lookup and only runs the
+// follow-up bookkeeping for the companion the registry returns.
+func (i *AddressTableInserter) admitCompanionWithIdentityWitness(source, admittedSrc byte, observedAt time.Time) bool {
+	if i.table == nil || i.table.reg == nil {
+		return false
+	}
+	companion, admitted := i.table.reg.AdmitPassiveCompanionWithCurrentQualifiedIdentityWitness(source, observedAt)
+	if !admitted {
+		return false
+	}
+	if i.runtimeStateObserver != nil {
+		i.runtimeStateObserver(companion, observedAt, "passive_observed")
+	}
+	log.Printf("address_table_inserter companion_admitted addr=0x%02X source=0x%02X evidence=identity_witness admitted_src=0x%02X observed_at=%s",
+		companion, source, admittedSrc, observedAt.Format(time.RFC3339Nano))
+	i.maybeAliasCanonicalCompanion(companion)
+	if i.enrichmentIdentityProbeFn != nil {
+		i.enrichmentIdentityProbeFn(companion)
+	}
+	return true
 }
 
 // handleBroadcastFrameEvent inserts the broadcaster's source byte
@@ -277,17 +353,16 @@ func (i *AddressTableInserter) handleBroadcastFrameEvent(event PassiveClassified
 		return
 	}
 	// Treat each broadcast emission from a canonical source as one
-	// observation. Insert + alias only after 2× corroboration —
-	// matches the M-T path's PositiveACKCount<2 gate so a single
-	// stray frame can't promote a slot.
-	observation := i.observationsByAddr[srcAddr]
-	observation.PositiveACKCount++
-	i.observationsByAddr[srcAddr] = observation
-	if observation.PositiveACKCount < 2 {
+	// positive observation. Insert + alias only after the same
+	// time-qualified corroboration as the acknowledged path: a later
+	// emission at least the corroboration interval after the first
+	// qualifying one, so neither a single stray frame nor a quick
+	// duplicate can promote a slot.
+	if !i.recordQualifyingPositiveObservation(srcAddr, event.ObservedAt) {
 		return
 	}
 	i.maybeInsert(srcAddr, "initiator", admittedSrc, event.ObservedAt)
-	if companion, ok := protocol.Companion(srcAddr); ok {
+	if companion, ok := protocol.CompanionOfSource(srcAddr); ok {
 		i.maybeInsert(companion, "target", admittedSrc, event.ObservedAt)
 	}
 }

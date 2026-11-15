@@ -344,6 +344,39 @@ func TestApplyDefaults_PreservesExplicitSemanticEnergyInterval(t *testing.T) {
 	}
 }
 
+func TestDefaultConfig_SetsPassiveCompanionCorroborationInterval(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.PassiveCompanionCorroborationInterval != 5*time.Second {
+		t.Fatalf("expected PassiveCompanionCorroborationInterval=5s by default, got %s", cfg.PassiveCompanionCorroborationInterval)
+	}
+	if got := cfg.passiveCompanionCorroborationInterval(); got != 5*time.Second {
+		t.Fatalf("expected effective interval 5s by default, got %s", got)
+	}
+}
+
+func TestApplyDefaults_PassiveCompanionCorroborationIntervalFallback(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		configured time.Duration
+		want       time.Duration
+	}{
+		{name: "zero", configured: 0, want: 5 * time.Second},
+		{name: "negative", configured: -3 * time.Second, want: 5 * time.Second},
+		{name: "explicit", configured: 12 * time.Second, want: 12 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := Config{PassiveCompanionCorroborationInterval: tc.configured}
+			if got := raw.passiveCompanionCorroborationInterval(); got != tc.want {
+				t.Fatalf("effective interval for %s = %s; want %s", tc.configured, got, tc.want)
+			}
+			cfg := applyDefaults(raw)
+			if cfg.PassiveCompanionCorroborationInterval != tc.want {
+				t.Fatalf("applyDefaults interval for %s = %s; want %s", tc.configured, cfg.PassiveCompanionCorroborationInterval, tc.want)
+			}
+		})
+	}
+}
+
 func TestDefaultConfig_SetsPortalPath(t *testing.T) {
 	cfg := DefaultConfig()
 	if cfg.PortalPath != "/portal" {

@@ -205,6 +205,18 @@ func (p *vaillantSemanticPoller) resumeAcquisition() {
 	}
 }
 
+// lockPollResumed takes the acquisition lock through the suspension gate and
+// returns its unlock; ok is false when ctx ends while the poller is suspended.
+func (p *vaillantSemanticPoller) lockPollResumed(ctx context.Context) (unlock func(), ok bool) {
+	if p == nil {
+		return func() {}, false
+	}
+	if !(&semanticPollSchedule{pollMu: &p.pollMu}).lockResumed(ctx) {
+		return func() {}, false
+	}
+	return p.pollMu.Unlock, true
+}
+
 func (p *vaillantSemanticPoller) pollSchedule() *semanticPollSchedule {
 	if p == nil {
 		return nil

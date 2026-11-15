@@ -438,7 +438,11 @@ func (c *retainedEBusConsumers) rebindPollerSource(genCtx context.Context, polle
 		return c.control.bridge.PublicationHandle(view.Key)
 	})
 	resolved := resolveStartupScanSourceConfig(genCfg)
+	// Rebinding waits for an acquisition already in flight, so that it never
+	// continues with the successor's not yet validated source.
+	poller.pollMu.Lock()
 	poller.setSourceAndCompanion(resolved.ScanSource, resolved.StartupCompanionTarget)
+	poller.pollMu.Unlock()
 	c.admittedSourceMu.Lock()
 	if genCtx.Err() == nil && c.control.EBusAdmitted() {
 		c.pollerRebound = true

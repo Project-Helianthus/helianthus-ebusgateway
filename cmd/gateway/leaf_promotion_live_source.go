@@ -139,8 +139,10 @@ func newLeafPromotionLiveSource(
 		eebus:          &synchronizedEvidenceM625Runtime{provider: provider, router: router},
 		admittedSource: admittedSource,
 		windowLock: func() func() {
-			poller.pollMu.Lock()
-			return poller.pollMu.Unlock
+			// The capture window waits while the poller is suspended
+			// between generations, so it never reads on a withdrawn source.
+			unlock, _ := poller.lockPollResumed(context.Background())
+			return unlock
 		},
 		now: time.Now,
 	}

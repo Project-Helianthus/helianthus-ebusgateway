@@ -875,3 +875,62 @@ func TestRetainedPollerWaitsForSuccessorSourceScheduleGate(t *testing.T) {
 		t.Fatal("inline fallback skipped after resume")
 	}
 }
+
+// The leaf-promotion capture window takes the poll lock through the
+// suspension gate: while the poller is suspended between generations it
+// waits, and it proceeds once acquisition resumes.
+func TestRetainedPollerWaitsForSuccessorSourceCaptureWindowLock(t *testing.T) {
+	poller := &vaillantSemanticPoller{}
+	poller.suspendAcquisition()
+	t.Cleanup(poller.resumeAcquisition)
+	source := &leafPromotionLiveSource{windowLock: func() func() {
+		unlock, _ := poller.lockPollResumed(context.Background())
+		return unlock
+	}}
+	locked := make(chan func(), 1)
+	go func() { locked <- source.lockCaptureWindow() }()
+	select {
+	case <-locked:
+		t.Fatal("capture window locked the poller while it was suspended")
+	case <-time.After(50 * time.Millisecond):
+	}
+	poller.resumeAcquisition()
+	select {
+	case unlock := <-locked:
+		unlock()
+	case <-time.After(5 * time.Second):
+		t.Fatal("capture window did not proceed after resume")
+	}
+}
+
+// Rebinding the poller's source waits for an acquisition already in flight.
+func TestRetainedPollerWaitsForSuccessorSourceRebindWaitsForInFlightAcquisition(t *testing.T) {
+	f := newRetainedPollerGateFixture(t, ctlPlantOptions{budget: 1})
+	poller := f.startFirstGeneration(ctlCorr("inc.poller.rebind.e1", 1, 1))
+	first, _ := retainedPollerGateSource(1)
+	second, companion := retainedPollerGateSource(2)
+	cfg := ebusgateway.DefaultConfig()
+	cfg.ScanSource, cfg.ScanSourceAuto, cfg.StartupCompanionTarget = second, false, companion
+
+	poller.pollMu.Lock()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		f.retained.rebindPollerSource(f.ctx, poller, cfg)
+	}()
+	select {
+	case <-done:
+		poller.pollMu.Unlock()
+		t.Fatal("rebinding completed while an acquisition held the poll lock")
+	case <-time.After(50 * time.Millisecond):
+	}
+	if got, _ := poller.sourceAndCompanion(); got != first {
+		poller.pollMu.Unlock()
+		t.Fatalf("source rebound to %#02x while an acquisition was in flight", got)
+	}
+	poller.pollMu.Unlock()
+	scheduleWait(t, done)
+	if got, _ := poller.sourceAndCompanion(); got != second {
+		t.Fatalf("source = %#02x after rebinding; want %#02x", got, second)
+	}
+}

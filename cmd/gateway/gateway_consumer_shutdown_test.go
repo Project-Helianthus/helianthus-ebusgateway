@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go/printer"
+	"go/token"
 	"io"
 	"os"
 	"reflect"
@@ -100,6 +102,8 @@ func TestGatewayConsumerShutdownLifecycleWiring(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
+	fset := token.NewFileSet()
+	files, compositionText := lifecycleCompositionSources(t, fset)
 	last := -1
 	for _, step := range []string{"defer controlPlaneCancel()", "server, advertiser, err := startHTTPServerFn(", "consumerShutdown := gatewayConsumerShutdown{", "defer consumerShutdown.shutdown()", "control.CloseAdmission(closeCtx)", "control.BindTasks(ctx, generationTasks"} {
 		position := strings.Index(text, step)
@@ -115,13 +119,27 @@ func TestGatewayConsumerShutdownLifecycleWiring(t *testing.T) {
 		"stopTransportWatch: stopTransportWatch,",
 		"publishManagedTransportRetirement(busObservability, cfg)",
 		"return shutdownHTTPControlPlane(server)",
-		"surfaceMu.Lock()\n\t\t\tdefer surfaceMu.Unlock()",
-		"surface.listener = listener", "surface.reconstructor = reconstructor",
+		"surface: retained.surface,",
 		"consumerShutdown.deduplicator = deduplicator", "consumerShutdown.busObservability = busObservability",
 		"consumerShutdown.advertiser = advertiser",
 	} {
-		if strings.Count(text, binding) != 1 {
+		if strings.Count(compositionText, binding) != 1 {
 			t.Fatalf("shutdown binding %q must occur exactly once", binding)
+		}
+	}
+	// The retained owner snapshots the listener and reconstructor under its
+	// surface lock.
+	method := lifecycleMethodDecl(t, files, "retainedEBusConsumers", "surface")
+	var body strings.Builder
+	if err := printer.Fprint(&body, fset, method.Body); err != nil {
+		t.Fatal(err)
+	}
+	for _, binding := range []string{
+		"c.surfaceMu.Lock()\n\tdefer c.surfaceMu.Unlock()",
+		"surface.listener = c.listener", "surface.reconstructor = c.reconstructor",
+	} {
+		if strings.Count(body.String(), binding) != 1 {
+			t.Fatalf("surface binding %q must occur exactly once in (*retainedEBusConsumers).surface", binding)
 		}
 	}
 }

@@ -250,12 +250,17 @@ func TestRunOrchestrationKeepsFlagsConfigurationAdmissionAndStartupBarriersOrder
 		"startGatewayRuntimeControl(ctx",
 		"newStartupSourceSelection(cfg)",
 	)
+	// The semantic barrier and the once-only inserter subscription are owned
+	// by retainedEBusConsumers; TestRetainedEBusConsumersClosesSemanticBarrierOnce,
+	// TestRetainedEBusConsumersCreatesBarrierOnlyForDeferredStartupScan and
+	// TestRetainedEBusConsumersSubscribesInserterOnceAfterAdmission pin them.
+	// The lifecycle creates that owner before any generation scan starts.
 	assertOrder(lifecycleText,
-		"semanticBarrier = make(chan struct{})",
+		"newRetainedEBusConsumers(ctx",
+		"retained.openSemanticBarrierOnProcessExit()",
 		"startDiscoveryScanLoopFn(genCtx, startupCfg, gateway, builder, adapterClassifier)",
 		"startBackgroundFullScanFn(runCtx, startupCfg, gateway, builder, startupScanSignals.semanticBootstrapReady)",
 	)
-	assertOrder(lifecycleText, "insertSubscribeOnce sync.Once", "insertSubscribeOnce.Do(func()")
 }
 
 func TestHTTPPortalBootstrapMatchesMountedCatalog(t *testing.T) {

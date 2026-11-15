@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/http"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
@@ -15,7 +14,6 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/releasecheck"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimecontrol"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimestate"
-	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mdns"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal/catalogv1"
@@ -311,13 +309,33 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 	if err := builder.Start(ctx); err != nil {
 		return err
 	}
-	var (
-		// surfaceMu guards the process-scoped passive consumers, which the
-		// first admitted generation's task creates and teardown closes.
-		surfaceMu     sync.Mutex
-		listener      *ebusgateway.BroadcastListener
-		reconstructor *ebusgateway.PassiveTransactionReconstructor
-	)
+	sourceSelectionAdmit := admissionPath == ebusgateway.TransportAdmissionSourceSelectionCapable && !overrideSet
+	// The consumers that live across eBUS generations have one owner; the
+	// generation tasks below reach them only through its methods.
+	retained, err := newRetainedEBusConsumers(ctx, retainedEBusConsumerOptions{
+		Config:               cfg,
+		SourceSelectionAdmit: sourceSelectionAdmit,
+		LeafCaptureStateRoot: cfg.EEBusConfig.StateRoot,
+		Gateway:              gateway,
+		Builder:              builder,
+		SemanticRuntime:      semanticRuntime,
+		SemanticHub:          semanticHub,
+		Hub:                  hub,
+		Control:              control,
+		AddressTableInserter: addressTableInserter,
+		EEBusAdapter:         eebusAdapter,
+		AdmittedSource:       liveAdmittedEBusSource,
+		ScheduleWriter:       lateScheduleWriter,
+		ConfigWriter:         lateConfigWriter,
+		WatchProvider:        lateWatchProvider,
+		GraphQLWriter:        lateGraphQLWriter,
+		GraphQLWatchSource:   lateGraphQLWatchProvider,
+		BusObservability:     busObservability,
+		Deduplicator:         deduplicator,
+	})
+	if err != nil {
+		return err
+	}
 	startHTTPServerOverride := startHTTPServerFn
 	startHTTPServerFn := func(
 		ctx context.Context,
@@ -381,18 +399,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 			}
 			return nil
 		},
-		surface: func() gatewayConsumerSurface {
-			surfaceMu.Lock()
-			defer surfaceMu.Unlock()
-			var surface gatewayConsumerSurface
-			if listener != nil {
-				surface.listener = listener
-			}
-			if reconstructor != nil {
-				surface.reconstructor = reconstructor
-			}
-			return surface
-		},
+		surface: retained.surface,
 	}
 	if deduplicator != nil {
 		consumerShutdown.deduplicator = deduplicator
@@ -413,300 +420,13 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 	// including a later START from STOPPED and a manager-driven replacement,
 	// cancelled and joined before any successor. Process-scoped consumers
 	// (semantic poller, writers, passive reconstructor, listener, address
-	// inserter) are created once, by the first admitted generation, and
-	// survive stopped periods with truthful unavailability.
-	var (
-		surfaceReady         bool
-		surfacePollerStarted bool
-		surfaceCaptureDone   bool
-		surfaceShadowDone    bool
-		semanticPoller       *vaillantSemanticPoller
-		promoter             *ebusgateway.PassiveDiscoveryPromoter
-		probeReady           atomic.Bool
-		semanticBarrier      chan struct{}
-		semanticBarrierOnce  sync.Once
-		passiveAttached      bool
-		insertSubscribed     atomic.Bool
-		admittedSourceMu     sync.Mutex
-		observeFirstFlags    = ebusgateway.NormalizeObserveFirstFeatureFlags(cfg.ObserveFirstEnabled, cfg.PassiveStateDirectApply, cfg.PassiveConfigDirectApply, cfg.ExternalWritePolicy)
-		sourceSelectionAdmit = admissionPath == ebusgateway.TransportAdmissionSourceSelectionCapable && !overrideSet
-	)
-	var insertSubscribeOnce sync.Once
-	if cfg.ScanOnStart && (shouldStartPassiveObserveFirst(cfg) || sourceSelectionAdmit) {
-		semanticBarrier = make(chan struct{})
-	}
-	closeSemanticBarrier := func() {
-		if semanticBarrier != nil {
-			semanticBarrierOnce.Do(func() { close(semanticBarrier) })
-		}
-	}
+	// inserter) are created once, by the first admitted generation through
+	// their retained owner, and survive stopped periods with truthful
+	// unavailability.
+	//
 	// The process-level barrier opens on process exit even when no
 	// generation ever reported an admission outcome.
-	go func() {
-		<-ctx.Done()
-		closeSemanticBarrier()
-	}()
-	currentReconstructor := func() *ebusgateway.PassiveTransactionReconstructor {
-		surfaceMu.Lock()
-		defer surfaceMu.Unlock()
-		return reconstructor
-	}
-
-	// subscribeAddressTableInserter binds the AddressTableInserter to the
-	// active reconstructor at most once per process. Subscription is gated
-	// on the admitted source being finalized (builder.AdmittedMutationSource
-	// returns ok=true) so the inserter's self-source filter sees the real
-	// admitted address — never 0 — and cannot mistakenly insert the
-	// gateway's own active-probe targets/companions as passive_observed.
-	// Subscription failure is non-fatal; the inserter is a non-critical
-	// observer.
-	subscribeAddressTableInserter := func() {
-		active := currentReconstructor()
-		if insertSubscribed.Load() || active == nil {
-			return
-		}
-		if _, ok := builder.AdmittedMutationSource(); !ok {
-			return
-		}
-		insertSubscribeOnce.Do(func() {
-			sub, err := active.Subscribe(
-				"address_table_inserter",
-				ebusgateway.PassiveSubscriberNonCritical,
-				0,
-			)
-			if err != nil {
-				log.Printf("address_table_inserter subscribe failed: %v", err)
-				return
-			}
-			insertSubscribed.Store(true)
-			go func() {
-				for ev := range sub.Events() {
-					addressTableInserter.OnPassiveClassifiedEvent(ev)
-				}
-			}()
-		})
-	}
-	attachPassiveObserveFirst := func() error {
-		active := currentReconstructor()
-		if active == nil {
-			return nil
-		}
-		surfaceMu.Lock()
-		attached := passiveAttached
-		surfaceMu.Unlock()
-		if !attached {
-			if busObservability != nil {
-				if err := busObservability.AttachReconstructor(ctx, active); err != nil {
-					return err
-				}
-			}
-			if deduplicator != nil {
-				if err := deduplicator.AttachReconstructor(ctx, active); err != nil {
-					return err
-				}
-			}
-			surfaceMu.Lock()
-			passiveAttached = true
-			surfaceMu.Unlock()
-		}
-		surfaceMu.Lock()
-		needListener := listener == nil
-		surfaceMu.Unlock()
-		if needListener {
-			started, err := startBroadcastListenerWithReconstructorFn(ctx, gateway.Router, active)
-			if err != nil {
-				return err
-			}
-			surfaceMu.Lock()
-			listener = started
-			surfaceMu.Unlock()
-		}
-		// Best-effort early bind. If admission isn't finalized yet
-		// (sourceSelection path: waits on activeProbePassed), this
-		// returns silently and the wire-up below catches the signal.
-		subscribeAddressTableInserter()
-		return nil
-	}
-	// installAdmittedSource and clearAdmittedSource serialize the
-	// process-level admitted source with generation admission: a fenced
-	// generation can never install it (scope.Commit), and a clear after the
-	// lifecycle withdrew admission rechecks that no successor installed one.
-	installAdmittedSource := func(scope *ebusGenerationScope, source byte) bool {
-		return scope.Commit(func() {
-			admittedSourceMu.Lock()
-			builder.SetAdmittedMutationSource(source)
-			admittedSourceMu.Unlock()
-		})
-	}
-	clearAdmittedSource := func(scope *ebusGenerationScope) bool {
-		return scope.Commit(func() {
-			admittedSourceMu.Lock()
-			builder.ClearAdmittedMutationSource()
-			admittedSourceMu.Unlock()
-		})
-	}
-
-	// ensureProcessSurface creates the process-scoped eBUS consumers once,
-	// from the first admitted generation's validated configuration. They use
-	// the process context, so a stopped interval never tears them down.
-	ensureProcessSurface := func(genCfg ebusgateway.Config) error {
-		surfaceMu.Lock()
-		ready, pollerStarted, poller := surfaceReady, surfacePollerStarted, semanticPoller
-		surfaceMu.Unlock()
-		// Every admitted generation rebinds the retained poller to its own
-		// initiator and companion.
-		bindPollerSource := func(poller *vaillantSemanticPoller) {
-			if poller == nil {
-				return
-			}
-			poller.attachBoilerThermal(semanticHub, func() (*semhub.Handle, error) {
-				if control.bridge == nil {
-					return nil, errEBusControlNotPrepared
-				}
-				view := control.bridge.View()
-				return control.bridge.PublicationHandle(view.Key)
-			})
-			resolved := resolveStartupScanSourceConfig(genCfg)
-			poller.setSourceAndCompanion(resolved.ScanSource, resolved.StartupCompanionTarget)
-		}
-		bindPollerSource(poller)
-		if ready {
-			return nil
-		}
-		// Readiness is recorded only after every fallible step succeeded; a
-		// failed step is retried by the next generation, and the stages that
-		// already completed are not repeated.
-		if !pollerStarted {
-			semanticCfg := resolveStartupScanSourceConfig(genCfg)
-			poller = startVaillantSemanticPollingFn(ctx, semanticCfg, gateway, semanticRuntime.Provider(), hub, semanticBarrier)
-			surfaceMu.Lock()
-			semanticPoller, surfacePollerStarted = poller, true
-			surfaceMu.Unlock()
-			bindPollerSource(poller)
-		}
-		if !pollerStarted && poller != nil {
-			gatedGraphQLWriter := admittedGraphQLSemanticWriter{
-				boiler:   poller,
-				system:   poller,
-				schedule: poller,
-				admitted: liveAdmittedEBusSource,
-			}
-			lateGraphQLWriter.Bind(gatedGraphQLWriter)
-			lateGraphQLWatchProvider.Bind(newGraphQLWatchSummaryProvider(poller.shadow))
-		}
-		// Bound before any fallible step so a retried generation cannot
-		// leave the deduplicator as its own observer.
-		if !pollerStarted && poller != nil && poller.shadow != nil && deduplicator != nil {
-			// Use the semantic shadow directly here. The broader runtime
-			// observer can fall back to the deduplicator itself, which would
-			// re-enter dedup locks while passive fingerprints are being built.
-			deduplicator.SetWatchObserver(poller.shadow)
-		}
-		// Install the shell capture once; its binding checks admission per call.
-		if poller != nil && !surfaceCaptureDone {
-			captureSource := newLeafPromotionLiveSource(
-				poller,
-				eebusAdapter,
-				eebusMCPCommandRouter(eebusAdapter),
-				liveAdmittedEBusSource,
-			)
-			eebusAdapter.SetLeafPromotionCapture(&lazyLeafPromotionCapture{
-				construct: func() (mcp.LeafPromotionCapture, error) {
-					return newLeafPromotionCaptureRuntime(cfg.EEBusConfig.StateRoot, captureSource)
-				},
-			})
-			surfaceCaptureDone = true
-		}
-		passiveShadowLaneEnabled := observeFirstFlags.PassiveStateDirectApply() ||
-			observeFirstFlags.PassiveConfigDirectApply() ||
-			observeFirstFlags.ExternalWritePolicy() != ebusgateway.ObserveFirstExternalWritePolicyRecordOnly
-		if poller != nil && deduplicator != nil && observeFirstFlags.ObserveFirstEnabled() && passiveShadowLaneEnabled && !surfaceShadowDone {
-			if err := attachPassiveShadowProducerFn(poller, ctx, deduplicator); err != nil {
-				return err
-			}
-			surfaceShadowDone = true
-		}
-		// Runtime passive-promotion pipeline: late-arriving devices (e.g.
-		// the regulator boots after the gateway) accumulate passive evidence
-		// in busObservability's EvidenceBuffer; the promoter confirms
-		// candidates with B524 coherency, registers them in the registry,
-		// refreshes router planes, and signals semantic discovery refresh.
-		// The promoter is process-scoped; its loop runs per generation.
-		if busObservability != nil && busObservability.EvidenceBuffer() != nil && poller != nil {
-			busObservability.SetAdmittedSourceProvider(func() byte {
-				source, ok := builder.AdmittedMutationSource()
-				if !ok {
-					return 0
-				}
-				return source
-			})
-			created, err := ebusgateway.NewPassiveDiscoveryPromoter(ebusgateway.PassiveDiscoveryPromoterOptions{
-				Registry:          gateway.Registry,
-				EvidenceBuffer:    busObservability.EvidenceBuffer(),
-				ConfirmFn:         poller.ConfirmB524Coherent,
-				SemanticRefreshFn: poller.EnqueueDiscoveryRefresh,
-				RouterRefreshFn:   func() { _ = gateway.RefreshRouterPlanes() },
-				AdmittedSourceFn: func() byte {
-					source, ok := builder.AdmittedMutationSource()
-					if !ok {
-						return 0
-					}
-					return source
-				},
-			})
-			if err != nil {
-				log.Printf("passive_discovery_promoter init failed: %v", err)
-			} else {
-				surfaceMu.Lock()
-				promoter = created
-				surfaceMu.Unlock()
-			}
-		}
-		// M6 enrichment trigger and P5 per-address identity probe, gated on
-		// the startup admission barrier so no ScanDirected traffic races the
-		// startup directed scan; the post-barrier backfill catches up.
-		if poller != nil {
-			addressTableInserter.SetEnrichmentRefreshFn(poller.EnqueueDiscoveryRefresh)
-			if semanticBarrier == nil {
-				probeReady.Store(true)
-			}
-			addressTableInserter.SetEnrichmentIdentityProbeFn(func(addr byte) {
-				if !probeReady.Load() {
-					return
-				}
-				poller.EnqueueAddressIdentityProbe(addr)
-			})
-			if semanticBarrier != nil {
-				go func() {
-					select {
-					case <-ctx.Done():
-						return
-					case <-semanticBarrier:
-						probeReady.Store(true)
-						addressTableInserter.BackfillUnidentifiedAddresses()
-					}
-				}()
-			} else {
-				addressTableInserter.BackfillUnidentifiedAddresses()
-			}
-			lateScheduleWriter.Bind(admittedMCPScheduleWriter{
-				writer:   poller,
-				admitted: liveAdmittedEBusSource,
-			})
-			lateConfigWriter.Bind(admittedMCPConfigWriter{
-				writer:   &mcpConfigWriterAdapter{poller: poller},
-				admitted: liveAdmittedEBusSource,
-			})
-			lateWatchProvider.Bind(newMCPWatchSummaryProvider(poller.shadow))
-		}
-		if cfg.BroadcastListen && !shouldStartPassiveObserveFirst(cfg) {
-			log.Printf("passive observe-first unavailable on transport=%s; continuing degraded", cfg.TransportConfig.Protocol)
-		}
-		surfaceMu.Lock()
-		surfaceReady = true
-		surfaceMu.Unlock()
-		return nil
-	}
+	retained.openSemanticBarrierOnProcessExit()
 
 	// runEBusGenerationStartup is the generation-owned post-start task. It
 	// reuses the existing native selection, scan, revalidation, background
@@ -788,7 +508,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 		if runAdvisorySourceSelector {
 			// The passive reconstructor is a process handle: it is started
 			// once and reused by every later generation's warmup.
-			active := currentReconstructor()
+			active := retained.currentReconstructor()
 			if active == nil {
 				started, err := startPassiveTransactionReconstructor(ctx, genCfg)
 				if err != nil {
@@ -796,16 +516,10 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 				}
 				// Only a generation that is still live publishes the
 				// handle; a stopped or replaced one closes it and ends.
-				if !scope.Commit(func() {
-					surfaceMu.Lock()
-					reconstructor, active = started, started
-					surfaceMu.Unlock()
-				}) {
-					if cerr := started.Close(); cerr != nil {
-						log.Printf("passive reconstructor close after withdrawn generation: %v", cerr)
-					}
+				if !retained.publishReconstructor(scope, started) {
 					return nil
 				}
+				active = started
 				log.Printf("passive reconstructor started")
 			}
 			// The inserter is not subscribed here: warmup runs before the
@@ -869,19 +583,19 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 		}
 		syncStaticAdmittedSource, syncStaticAdmitted := admittedMutationSourceForGateway(genCfg, admissionPath, overrideSet)
 		if syncStaticAdmitted {
-			if !installAdmittedSource(scope, syncStaticAdmittedSource) {
+			if !retained.installAdmittedSource(scope, syncStaticAdmittedSource) {
 				return nil
 			}
 			// Admission resolved synchronously (override / static
 			// fallback): bind the inserter and write ebus.self now. The M5
 			// revalidator waits for activeProbePassed below.
-			subscribeAddressTableInserter()
+			retained.subscribeAddressTableInserter()
 			selectionMethod := runtimestate.SelectionMethodExplicitValidateOnly
 			if isEbusdTransportProtocol(genCfg.TransportConfig.Protocol) {
 				selectionMethod = runtimestate.SelectionMethodEbusdTCPFallback
 			}
 			recordAdmittedSourceInRuntimeState(runtimeStateMgr, syncStaticAdmittedSource, 0, selectionMethod, false)
-		} else if !clearAdmittedSource(scope) {
+		} else if !retained.clearAdmittedSource(scope) {
 			return nil
 		}
 		state := startupStateFor(scope)
@@ -904,7 +618,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 		}
 		// The install runs through the generation fence: a generation that
 		// was withdrawn before this point creates no process-scoped consumer.
-		return installProcessSurface(scope, func() error { return ensureProcessSurface(genCfg) })
+		return installProcessSurface(scope, func() error { return retained.ensureProcessSurface(genCfg) })
 	}
 
 	// runEBusStartupScan starts the startup discovery scan of the generation
@@ -919,9 +633,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 		if !ready {
 			return nil
 		}
-		surfaceMu.Lock()
-		poller, passivePromoter := semanticPoller, promoter
-		surfaceMu.Unlock()
+		poller, passivePromoter := retained.pollerAndPromoter()
 
 		startupCfg := resolveStartupScanSourceConfig(genCfg)
 		startupSourceProvenance := startupScanSourceMode(genCfg, startupCfg)
@@ -974,7 +686,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 			})
 		}
 
-		if semanticBarrier != nil || sourceSelection != nil {
+		if retained.hasSemanticBarrier() || sourceSelection != nil {
 			selection := sourceSelection
 			scope.Go(func(runCtx context.Context) {
 				select {
@@ -982,7 +694,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 					return
 				case <-startupScanSignals.activeProbePassed:
 					if selection != nil {
-						if !installAdmittedSource(scope, selection.Source) {
+						if !retained.installAdmittedSource(scope, selection.Source) {
 							return
 						}
 						artifactBuilder.SetSourceSelectionActive()
@@ -991,7 +703,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 						// Admission finalized asynchronously: bind the
 						// inserter now that AdmittedSource() returns the
 						// selected source (Codex P2 round 3).
-						subscribeAddressTableInserter()
+						retained.subscribeAddressTableInserter()
 						selectionMethod := runtimestate.SelectionMethodWarmup
 						if overrideSet {
 							selectionMethod = runtimestate.SelectionMethodExplicitValidateOnly
@@ -1003,7 +715,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 					}
 				case <-startupScanSignals.admissionFailed:
 					if selection != nil {
-						if !clearAdmittedSource(scope) {
+						if !retained.clearAdmittedSource(scope) {
 							return
 						}
 						artifactBuilder.SetDegraded("active_probe_failed")
@@ -1011,12 +723,12 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 						recordBusAdmissionTransitionWithStabilityRefresh(runCtx, busObservability, "degraded", selection.Source, selection.Companion, "active_probe_failed")
 					}
 					if shouldCloseSemanticBarrier(admissionPath, overrideSet, selection != nil) {
-						closeSemanticBarrier()
+						retained.closeSemanticBarrier()
 					}
 					return
 				}
 				if shouldCloseSemanticBarrier(admissionPath, overrideSet, selection != nil) {
-					closeSemanticBarrier()
+					retained.closeSemanticBarrier()
 				}
 			})
 		}
@@ -1042,7 +754,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 			return nil
 		}
 		if shouldStartPassiveObserveFirst(genCfg) {
-			if currentReconstructor() == nil {
+			if retained.currentReconstructor() == nil {
 				waitForStartupScanFirstPass(genCtx, genCfg, startupScanSignals.firstPassDone)
 				if genCtx.Err() != nil {
 					return nil
@@ -1053,18 +765,11 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 				}
 				// Only a generation that is still live publishes the
 				// handle; a stopped or replaced one closes it and ends.
-				if !scope.Commit(func() {
-					surfaceMu.Lock()
-					reconstructor = started
-					surfaceMu.Unlock()
-				}) {
-					if cerr := started.Close(); cerr != nil {
-						log.Printf("passive reconstructor close after withdrawn generation: %v", cerr)
-					}
+				if !retained.publishReconstructor(scope, started) {
 					return nil
 				}
 			}
-			if err := attachPassiveObserveFirst(); err != nil {
+			if err := retained.attachPassiveObserveFirst(); err != nil {
 				return err
 			}
 		}
@@ -1095,13 +800,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 			log.Printf("runtime control close: %v", err)
 		}
 	}()
-	control.BindTasks(ctx, generationTasks, func(force bool) {
-		admittedSourceMu.Lock()
-		defer admittedSourceMu.Unlock()
-		if force || !control.EBusAdmitted() {
-			builder.ClearAdmittedMutationSource()
-		}
-	})
+	control.BindTasks(ctx, generationTasks, retained.withdrawAdmittedSource)
 	<-ctx.Done()
 	return nil
 }

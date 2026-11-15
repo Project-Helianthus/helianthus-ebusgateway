@@ -204,6 +204,7 @@ func (store *BusObservabilityStore) Snapshot() BusObservabilitySnapshot {
 	}
 
 	startup := store.startupSurface()
+	holdReason := store.activeArbitrationHoldReason()
 
 	store.mu.Lock()
 	defer store.mu.Unlock()
@@ -214,7 +215,7 @@ func (store *BusObservabilityStore) Snapshot() BusObservabilitySnapshot {
 	store.evictStalePeriodicityLocked(now)
 
 	return BusObservabilitySnapshot{
-		Summary:     store.summaryLocked(now, reconstructor.TapStatus, startup, reconstructor),
+		Summary:     store.summaryLocked(now, reconstructor.TapStatus, startup, reconstructor, holdReason),
 		Messages:    store.recentMessagesLocked(store.recentLen),
 		Periodicity: store.periodicitySnapshotLocked(),
 	}
@@ -260,7 +261,7 @@ func (store *BusObservabilityStore) periodicitySnapshotLocked() []BusPeriodicity
 	return items
 }
 
-func (store *BusObservabilityStore) summaryLocked(now time.Time, tapStatus PassiveTapStatus, startup *BusObservabilityStartup, reconstructor PassiveReconstructorSnapshot) BusObservabilitySummary {
+func (store *BusObservabilityStore) summaryLocked(now time.Time, tapStatus PassiveTapStatus, startup *BusObservabilityStartup, reconstructor PassiveReconstructorSnapshot, holdReason string) BusObservabilitySummary {
 	passiveSupported := store.cfg.BroadcastListen && PassiveTransportSupported(store.cfg)
 	reasons := make([]string, 0, 2)
 	if store.passive.state == "unavailable" && store.passive.unavailableReason != "" {
@@ -268,6 +269,9 @@ func (store *BusObservabilityStore) summaryLocked(now time.Time, tapStatus Passi
 	}
 	if readDedupDegradedState() > 0 {
 		reasons = append(reasons, "dedup_degraded")
+	}
+	if holdReason != "" {
+		reasons = append(reasons, holdReason)
 	}
 
 	endpointState := string(tapStatus.EndpointState)

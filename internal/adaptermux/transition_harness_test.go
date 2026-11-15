@@ -304,7 +304,7 @@ func newTransitionHarness(t testing.TB, mode transitionUpstreamMode) *transition
 
 // stop cancels the context, closes the upstream so a blocked read or START
 // call returns, and waits for the mux goroutines while draining every channel
-// they might still send on.
+// they might still send on. It then stops the mux timers.
 func (h *transitionHarness) stop() {
 	if h.stopped {
 		return
@@ -321,9 +321,11 @@ func (h *transitionHarness) stop() {
 	for {
 		select {
 		case <-done:
+			h.stopTimers()
 			return
 		case <-deadline:
 			h.t.Errorf("transition harness: mux goroutines did not stop within %v", transitionWaitBudget)
+			h.stopTimers()
 			return
 		case <-time.After(time.Millisecond):
 			for _, bid := range h.bids {
@@ -339,6 +341,24 @@ func (h *transitionHarness) stop() {
 				}
 			}
 		}
+	}
+}
+
+// stopTimers stops the START deadline of a selection still in flight and the
+// absorb reset timer, and clears the absorb timer reference, so no mux timer
+// outlives the harness.
+func (h *transitionHarness) stopTimers() {
+	h.m.stateMu.Lock()
+	defer h.m.stateMu.Unlock()
+	if h.m.pendingStart != nil && h.m.pendingStart.deadline != nil {
+		h.m.pendingStart.deadline.Stop()
+	}
+	if h.deadline != nil {
+		h.deadline.Stop()
+	}
+	if h.m.pendingAbsorbResetTimer != nil {
+		h.m.pendingAbsorbResetTimer.Stop()
+		h.m.pendingAbsorbResetTimer = nil
 	}
 }
 

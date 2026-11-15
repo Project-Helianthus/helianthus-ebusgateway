@@ -90,6 +90,32 @@
 // gateway ownership guard from issue #1401 remains 1500ms. Add-on option wiring
 // is a separate companion change.
 //
+// Out-of-step adapter (adapter_step.go). The enhanced protocol does not tag
+// answers, so an adapter that runs one host command behind answers each START
+// only when the next host write arrives, and the START deadline, the
+// stale-answer barrier and the mismatch rule never converge with it. A START
+// cycle runs from one RequestStart write to the next; it is bad when, before
+// the next START write, a STARTED names another initiator than the pending
+// one, a barrier armed for "deadline" or "started-mismatch" is cleared without
+// its answer, or a STARTED arrives with nothing pending, no barrier and no
+// retired selection. Each cycle counts once. Three consecutive bad cycles are a
+// detection; the run ends at a completed transaction (a gateway transaction
+// ending with syn_terminator or transaction_done, an external owner released
+// at its terminal SYN), at an answer the barrier consumed, and at every
+// lifecycle boundary. The first detection of an episode resets the adapter
+// link once: the mux closes its upstream connection, so the read loop's
+// reconnect reopens it and repeats INIT (a lifecycle owner replaces the
+// generation instead). A further detection, while that reset is spent, holds
+// active arbitration with reason adapter_out_of_step: selection is skipped, no
+// START is written, queued external bids get no frame and a gateway bid ends at
+// its admission bound with an error naming the hold. Passive and session
+// delivery, ownership releases and lifecycle handling continue. The hold ends
+// only at an adapter RESETTED, a reconnect or Close; the reset becomes
+// available again after the next completed transaction, in any generation, as
+// AdapterStepMemory carries it across generations. Until a detection the
+// detector only observes, and it never adds a write: the link reset closes a
+// connection and the hold only skips selection.
+//
 // Proven: synthetic unit fixtures exercise selection, loser notification,
 // re-bidding and abandoned wins. Unknown: live scanner latency and physical
 // transport qualification; these require the declared transport gate and smoke

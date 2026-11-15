@@ -83,6 +83,19 @@
     },
     {
       "enablement": "Adaptermux diagnostic provider is non-nil.",
+      "labels": [],
+      "name": "ebus_adaptermux_active_arbitration_held",
+      "omission": "Entire family omitted without provider; scalar counters include zero; transaction endings include present reason entries only.",
+      "owner_page": "docs/observability/semantic-prometheus-coverage.md",
+      "production": "Bound only when the active classifier implements the diagnostic snapshot seam.",
+      "source": "bus_observability_store.go",
+      "source_guards": [
+        "haveAdaptermuxDiag"
+      ],
+      "type": "gauge"
+    },
+    {
+      "enablement": "Adaptermux diagnostic provider is non-nil.",
       "labels": [
         "step"
       ],

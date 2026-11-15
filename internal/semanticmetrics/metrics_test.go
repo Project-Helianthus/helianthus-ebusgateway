@@ -560,3 +560,163 @@ func TestM36BindingOrder(t *testing.T) {
 		}
 	}
 }
+
+// m36ConflictIdentity is the record whose digest names a value conflict.
+type m36ConflictIdentity struct {
+	Contract   semreg.ContractVersion `json:"contract"`
+	AssetID    semreg.AssetID         `json:"asset_id"`
+	Key        semreg.FactKey         `json:"key"`
+	Kind       semreg.ConflictKind    `json:"kind"`
+	Candidates []semreg.CandidateID   `json:"candidates"`
+}
+
+func (m36ConflictIdentity) Validate() error { return nil }
+
+// m36AddContributor adds a second current source with its own binding to the
+// fixture and a candidate of the same key observed through it. The kernel's
+// conflicts are recomputed for the envelope.
+func m36AddContributor(t *testing.T, s *semreg.Snapshot, value semreg.Value) {
+	t.Helper()
+	source, epoch, binding := semreg.SourceID("source:contributor"), semreg.SourceEpochID("epoch:contributor"), semreg.NativeBindingID("binding:contributor")
+	descriptor, nativeBinding, cursor := s.Sources[0], s.Bindings[0], s.Cursors[0]
+	descriptor.SourceID, descriptor.SourceEpochID = source, epoch
+	nativeBinding.BindingID, nativeBinding.SourceID, nativeBinding.SourceEpochID = binding, source, epoch
+	cursor.SourceID, cursor.SourceEpochID = source, epoch
+	// Each collection is ordered by identifier; the contributor sorts first.
+	s.Sources = append([]semreg.SourceDescriptor{descriptor}, s.Sources...)
+	s.Bindings = append([]semreg.NativeBinding{nativeBinding}, s.Bindings...)
+	s.Cursors = append([]semreg.PublicationCursor{cursor}, s.Cursors...)
+	envelope := &s.Facts[0]
+	c := envelope.Candidates[0]
+	c.CandidateID = "candidate:test-contributor"
+	c.Value = &value
+	c.BindingID, c.SourceEpochID = &binding, &epoch
+	c.Origin.OriginID = "origin:contributor"
+	c.Origin.SourceID, c.Origin.SourceEpochID, c.Origin.BindingID = &source, &epoch, &binding
+	envelope.Candidates = append(envelope.Candidates, c)
+	m36Rederive(t, envelope)
+}
+
+// m36Rederive recomputes the conflicts the kernel derives for an envelope:
+// promoted, qualified, valued candidates with differing values.
+func m36Rederive(t *testing.T, envelope *semreg.FactEnvelope) {
+	t.Helper()
+	values := map[string]bool{}
+	ids := []semreg.CandidateID{}
+	for _, c := range envelope.Candidates {
+		if c.Value == nil || c.Quality.Qualification != semreg.QualificationQualified || c.Quality.Promotion != semreg.PromotionPromoted {
+			continue
+		}
+		raw, err := semreg.CanonicalJSON(*c.Value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		values[string(raw)] = true
+		ids = append(ids, c.CandidateID)
+	}
+	envelope.Conflicts = []semreg.Conflict{}
+	if len(values) < 2 {
+		return
+	}
+	id, err := semreg.DigestRecord(m36ConflictIdentity{"helianthus.semantic.conflict-id/v1", envelope.AssetID, envelope.Key, semreg.ConflictValue, ids})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Every fixture candidate carries the same single evidence reference.
+	envelope.Conflicts = []semreg.Conflict{{ConflictID: semreg.ConflictID(id), Kind: semreg.ConflictValue, Candidates: ids, Evidence: envelope.Candidates[0].Evidence, State: semreg.ConflictOpen}}
+}
+
+// m36Pick is a synthetic presentation policy that names one candidate.
+type m36Pick struct {
+	policy    semreg.PolicyID
+	candidate semreg.CandidateID
+}
+
+func (p m36Pick) PolicyID() semreg.PolicyID     { return p.policy }
+func (m36Pick) Version() semreg.SemanticVersion { return "1.0.0" }
+func (p m36Pick) Select(semreg.FactEnvelope, []semreg.EvaluatedFact) (semreg.CandidateID, error) {
+	return p.candidate, nil
+}
+
+// m36SelectedView builds the view with one kernel-validated presentation
+// selection of the first fact per pick.
+func m36SelectedView(t *testing.T, s semreg.Snapshot, picks ...m36Pick) semanticview.View {
+	t.Helper()
+	m36Seal(t, &s)
+	e, err := semreg.EvaluateSnapshot(s, semreg.EvaluationContext{EvaluatedAt: s.EvaluatedAt, EvaluateMonotonic: s.EvaluateMonotonic})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selections := []semreg.Selection{}
+	for _, pick := range picks {
+		kernel, err := semreg.NewSelectionKernel(pick)
+		if err != nil {
+			t.Fatal(err)
+		}
+		selection, err := kernel.SelectPresentation(s, e, s.Facts[0].Key, pick.policy, "1.0.0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		selections = append(selections, selection)
+	}
+	metadata, err := packs.NewMetadataRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := semanticview.Build(metadata, []semanticview.Input{{AssetID: s.AssetID, Snapshot: &s, Evaluation: &e, Selections: selections}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v
+}
+
+// TestM36TwoSourceSelection: with a second source's candidate on the slot's
+// key, the slot exports the candidate named by the view's one presentation
+// selection of that key instead of dropping the fact. It withholds the field
+// without a selection, with two selections, when the selection names another
+// binding, when the named candidate is not exportable, and when the key is
+// conflicted.
+func TestM36TwoSourceSelection(t *testing.T) {
+	const slot, contributor = semreg.CandidateID("candidate:test"), semreg.CandidateID("candidate:test-contributor")
+	owner := func(id semreg.CandidateID) m36Pick { return m36Pick{policy: "policy:test-owner-first", candidate: id} }
+	for _, tc := range []struct {
+		name      string
+		value     string
+		promote   [2]bool // promotion of the slot's and the contributor's candidate
+		picks     []m36Pick
+		available int
+	}{
+		{name: "selected slot candidate", value: "230", promote: [2]bool{true, true}, picks: []m36Pick{owner(slot)}, available: 1},
+		// Single-candidate rendering never needed a selection; two candidates
+		// without one stay withheld.
+		{name: "no selection", value: "230", promote: [2]bool{true, true}, available: 0},
+		// Two selections of one key under different policies are ambiguous.
+		{name: "two selections", value: "230", promote: [2]bool{true, true}, picks: []m36Pick{owner(slot), {policy: "policy:test-other", candidate: slot}}, available: 0},
+		// The slot's binding does not pin the contributor's candidate.
+		{name: "selected contributor candidate", value: "230", promote: [2]bool{true, true}, picks: []m36Pick{owner(contributor)}, available: 0},
+		// The selected candidate still passes every per-candidate check.
+		{name: "selected slot candidate unpromoted", value: "231", promote: [2]bool{false, true}, picks: []m36Pick{owner(slot)}, available: 0},
+		{name: "contributor unpromoted", value: "231", promote: [2]bool{true, false}, picks: []m36Pick{owner(slot)}, available: 1},
+		// A conflicted key is never exact, whichever candidate is selected.
+		{name: "conflicting values", value: "231", promote: [2]bool{true, true}, picks: []m36Pick{owner(slot)}, available: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, r := m36Fixture(t, "infrastructure.ac.voltage", m36Quantity("230", "unit.volt"))
+			m36AddContributor(t, &s, m36Quantity(tc.value, "unit.volt"))
+			for index, promoted := range tc.promote {
+				if !promoted {
+					s.Facts[0].Candidates[index].Quality.Promotion = semreg.PromotionUnpromoted
+				}
+			}
+			m36Rederive(t, &s.Facts[0])
+			v := m36SelectedView(t, s, tc.picks...)
+			text := m36Render(t, v, r)
+			if !m36Available(text, r.Bindings[0], r.Bindings[0].Fields[0], tc.available) {
+				t.Fatal(text)
+			}
+			if exported := strings.Contains(text, "helianthus_infrastructure_ac_voltage_volts{slot=\"0\"} 230\n"); exported != (tc.available == 1) {
+				t.Fatalf("value exported %v want %v:\n%s", exported, tc.available == 1, text)
+			}
+		})
+	}
+}

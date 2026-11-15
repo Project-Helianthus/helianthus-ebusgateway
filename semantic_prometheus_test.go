@@ -303,3 +303,114 @@ func addEVSEAllocatedFixture(domain *SemanticMetricsDomain, connector string, ca
 	domain.Evaluation.Facts = append(domain.Evaluation.Facts, semreg.EvaluatedFact{CandidateID: candidateID, Freshness: semreg.FreshnessFresh, EffectiveAvailability: semreg.AvailabilityAvailable})
 	domain.Projection.Dispositions = append(domain.Projection.Dispositions, projection.ProjectionDisposition{ItemID: "evse.limit.allocated_current", Outcome: projection.ProjectionExact, SourceKeys: []semreg.FactKey{key}})
 }
+
+// addSemanticSourceCandidate attributes the fixture's candidate to first and
+// adds a second candidate of the same key observed by second. It sets the
+// envelope's conflict when the coefficients differ.
+func addSemanticSourceCandidate(domain *SemanticMetricsDomain, first, second semreg.SourceID, coefficient string, receivedSeconds int, freshness semreg.Freshness) {
+	envelope := &domain.Snapshot.Facts[0]
+	original := &envelope.Candidates[0]
+	original.Origin = semreg.OriginRef{OriginID: "origin:first", Kind: semreg.OriginNativeObservation, SourceID: &first}
+	candidate := *original
+	candidate.CandidateID = "candidate:test-second"
+	value := semreg.Value{Kind: semreg.ValueQuantity, Quantity: &semreg.Quantity{Number: semreg.Decimal{Coefficient: coefficient}, Unit: original.Value.Quantity.Unit}}
+	candidate.Value = &value
+	candidate.Origin = semreg.OriginRef{OriginID: "origin:second", Kind: semreg.OriginNativeObservation, SourceID: &second}
+	candidate.Times.ReceivedAt = semreg.TimePoint{UnixNanoseconds: semreg.Int64(strconv.Itoa(receivedSeconds) + "000000000"), ClockID: "clock.utc"}
+	envelope.Candidates = append(envelope.Candidates, candidate)
+	if coefficient != original.Value.Quantity.Number.Coefficient {
+		envelope.Conflicts = append(envelope.Conflicts, semreg.Conflict{ConflictID: "conflict:test", Kind: semreg.ConflictValue, Candidates: []semreg.CandidateID{original.CandidateID, candidate.CandidateID}, State: semreg.ConflictOpen})
+	}
+	domain.Evaluation.Facts = append(domain.Evaluation.Facts, semreg.EvaluatedFact{CandidateID: candidate.CandidateID, Freshness: freshness, EffectiveAvailability: semreg.AvailabilityAvailable})
+}
+
+// TestSemanticPrometheusTwoCandidatesExportSelected: a key with candidates of
+// two sources exports the candidate the presentation policy selects instead of
+// dropping the fact; a conflict still withholds the value.
+func TestSemanticPrometheusTwoCandidatesExportSelected(t *testing.T) {
+	const value = `helianthus_semantic_fact_value{dimension="inverter",domain="pv",fact_id="pv.ac.aggregate_active_power",pack="helianthus.pack.pv",unit="unit.watt"} `
+	const age = `helianthus_semantic_evidence_age{dimension="inverter",domain="pv",fact_id="pv.ac.aggregate_active_power",pack="helianthus.pack.pv",unit="seconds"} `
+	const conflicts = `helianthus_semantic_open_conflicts{dimension="inverter",domain="pv",fact_id="pv.ac.aggregate_active_power",pack="helianthus.pack.pv"} `
+	for _, tc := range []struct {
+		name        string
+		owner       semreg.SourceID
+		coefficient string
+		freshness   semreg.Freshness
+		value       string // empty: no value is exported
+		age         string // empty: no evidence age is exported
+		conflicts   string // empty: no conflict gauge is exported
+	}{
+		// The second candidate is stale, so the first is the single qualified one.
+		{name: "single qualified", coefficient: "42", freshness: semreg.FreshnessStale, value: "42", age: "1", conflicts: "0"},
+		// Two qualified candidates and no owner: nothing is selected.
+		{name: "two qualified without owner", coefficient: "42", freshness: semreg.FreshnessFresh, conflicts: "0"},
+		// The owner's candidate is selected, whichever identifier sorts first:
+		// the evidence age tells the two candidates apart.
+		{name: "owner first", owner: "source:first", coefficient: "42", freshness: semreg.FreshnessFresh, value: "42", age: "1", conflicts: "0"},
+		{name: "owner second", owner: "source:second", coefficient: "42", freshness: semreg.FreshnessFresh, value: "42", age: "10", conflicts: "0"},
+		// An owner that observed neither candidate selects nothing.
+		{name: "owner absent", owner: "source:third", coefficient: "42", freshness: semreg.FreshnessFresh, conflicts: "0"},
+		// The owner's candidate is stale: the other one is the single qualified.
+		{name: "owner stale", owner: "source:second", coefficient: "42", freshness: semreg.FreshnessStale, value: "42", age: "1", conflicts: "0"},
+		// A conflict keeps the owner's state and age but never a value.
+		{name: "owner under conflict", owner: "source:second", coefficient: "43", freshness: semreg.FreshnessFresh, age: "10", conflicts: "1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for run := 0; run < 16; run++ {
+				domain := semanticMetricsFixture("pv", true, semreg.FreshnessFresh, semreg.AvailabilityAvailable, semreg.ValidityGood, 0)
+				addSemanticSourceCandidate(&domain, "source:first", "source:second", tc.coefficient, 91, tc.freshness)
+				domain.Owner = tc.owner
+				var out bytes.Buffer
+				writeSemanticMetrics(newPrometheusWriter(&out), []SemanticMetricsDomain{domain}, time.Unix(101, 0))
+				metrics := out.String()
+				for _, expect := range []struct{ prefix, want string }{{value, tc.value}, {age, tc.age}, {conflicts, tc.conflicts}} {
+					if expect.want == "" {
+						if strings.Contains(metrics, expect.prefix) {
+							t.Fatalf("unexpected %q:\n%s", expect.prefix, metrics)
+						}
+						continue
+					}
+					if !strings.Contains(metrics, expect.prefix+expect.want+"\n") {
+						t.Fatalf("missing %q%s:\n%s", expect.prefix, expect.want, metrics)
+					}
+				}
+				if strings.Contains(metrics, "\nhelianthus_semantic_render_overflow ") {
+					t.Fatalf("two candidates overflowed:\n%s", metrics)
+				}
+			}
+		})
+	}
+}
+
+// TestSemanticPrometheusEVSEConnectorSlotTwoCandidates: a connector whose
+// allocated current has candidates of two sources receives a slot and exports
+// the owner's candidate; without an owner neither candidate is selected, so
+// the connector receives no slot and nothing is exported.
+func TestSemanticPrometheusEVSEConnectorSlotTwoCandidates(t *testing.T) {
+	const value = `helianthus_semantic_fact_value{connector="connector_1",dimension="connector",domain="evse",fact_id="evse.limit.allocated_current",pack="helianthus.pack.evse",unit="unit.ampere"} 16`
+	for _, tc := range []struct {
+		owner  semreg.SourceID
+		export bool
+	}{{"source:owner", true}, {"", false}} {
+		domain := semanticMetricsFixture("evse", true, semreg.FreshnessFresh, semreg.AvailabilityAvailable, semreg.ValidityGood, 0)
+		addEVSEAllocatedFixture(&domain, "connector:shared", "candidate:allocated")
+		envelope := &domain.Snapshot.Facts[len(domain.Snapshot.Facts)-1]
+		owner, contributor := semreg.SourceID("source:owner"), semreg.SourceID("source:contributor")
+		envelope.Candidates[0].Origin = semreg.OriginRef{OriginID: "origin:owner", Kind: semreg.OriginNativeObservation, SourceID: &owner}
+		second := envelope.Candidates[0]
+		second.CandidateID = "candidate:allocated-contributor"
+		second.Origin = semreg.OriginRef{OriginID: "origin:contributor", Kind: semreg.OriginNativeObservation, SourceID: &contributor}
+		envelope.Candidates = append(envelope.Candidates, second)
+		domain.Evaluation.Facts = append(domain.Evaluation.Facts, semreg.EvaluatedFact{CandidateID: second.CandidateID, Freshness: semreg.FreshnessFresh, EffectiveAvailability: semreg.AvailabilityAvailable})
+		domain.Owner = tc.owner
+		var out bytes.Buffer
+		writeSemanticMetrics(newPrometheusWriter(&out), []SemanticMetricsDomain{domain}, time.Unix(101, 0))
+		metrics := out.String()
+		if strings.Contains(metrics, value) != tc.export {
+			t.Fatalf("owner %q: connector value exported %v want %v:\n%s", tc.owner, !tc.export, tc.export, metrics)
+		}
+		if strings.Contains(metrics, "connector:shared") {
+			t.Fatalf("connector identity leaked through labels:\n%s", metrics)
+		}
+	}
+}

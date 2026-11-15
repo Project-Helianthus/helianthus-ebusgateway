@@ -47,6 +47,17 @@ appended after valid succession history. Retirement ordinals require a valid
 succession pair. Independent sources and new incarnations retain independent
 ordinal sequences.
 
+A version 1 checkpoint holds one Source, one Driver and one Control per asset,
+so it cannot represent an asset that has declared contributors. Export of a hub
+holding such an asset fails closed with `ErrRecoveryMultiSource` and yields the
+zero record, which no restore accepts. Restore refuses, with the same error and
+before any installation, a checkpoint that names a second source for an asset
+(a second entry, an accepted batch, the retained Control or an epoch event
+covering the asset) and a destination whose asset declares a contributor; every
+declared asset closes. A contributor-aware record is defined before any
+production use of the recovery seam; version 1 bytes of single-source hubs are
+unchanged.
+
 Rejected checkpoint structure closes declared empty assets before installation.
 Per-asset replay failures still preserve independent valid assets and do not
 install a partial snapshot for the failed asset. Valid restore preserves native

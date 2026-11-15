@@ -93,7 +93,7 @@ type leafPromotionLiveSource struct {
 	ebusFallback   leafPromotionB555Reader
 	eebus          leafPromotionEEBusRuntime
 	admittedSource func() (byte, bool)
-	windowLock     func() func()
+	windowLock     func(context.Context) (func(), error)
 	now            func() time.Time
 }
 
@@ -138,19 +138,28 @@ func newLeafPromotionLiveSource(
 		ebusFallback:   leafPromotionSemanticB524Reader{poller: poller},
 		eebus:          &synchronizedEvidenceM625Runtime{provider: provider, router: router},
 		admittedSource: admittedSource,
-		windowLock: func() func() {
-			poller.pollMu.Lock()
-			return poller.pollMu.Unlock
+		windowLock: func(ctx context.Context) (func(), error) {
+			// The capture window waits while the poller is suspended
+			// between generations, so it never reads on a withdrawn source;
+			// a capture whose request ends gives up instead.
+			unlock, ok := poller.lockPollResumed(ctx)
+			if !ok {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+				return nil, errors.New("leaf promotion capture window unavailable")
+			}
+			return unlock, nil
 		},
 		now: time.Now,
 	}
 }
 
-func (source *leafPromotionLiveSource) lockCaptureWindow() func() {
+func (source *leafPromotionLiveSource) lockCaptureWindow(ctx context.Context) (func(), error) {
 	if source == nil || source.windowLock == nil {
-		return func() {}
+		return func() {}, nil
 	}
-	return source.windowLock()
+	return source.windowLock(ctx)
 }
 
 func (source *leafPromotionLiveSource) prepare(

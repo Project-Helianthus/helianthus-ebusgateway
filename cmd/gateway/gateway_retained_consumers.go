@@ -128,6 +128,9 @@ type retainedEBusConsumers struct {
 	insertSubscribeOnce sync.Once
 
 	admittedSourceMu sync.Mutex
+	// pollerRebound reports that a live admitted generation rebound the
+	// poller since the last withdrawal. Guarded by admittedSourceMu.
+	pollerRebound bool
 }
 
 // newRetainedEBusConsumers validates the collaborators and creates the
@@ -346,6 +349,9 @@ func (c *retainedEBusConsumers) installAdmittedSource(scope *ebusGenerationScope
 	return scope.Commit(func() {
 		c.admittedSourceMu.Lock()
 		c.builder.SetAdmittedMutationSource(source)
+		// On the source-selection path the source is installed after the
+		// surface task rebound the poller; resume it only now.
+		c.resumePollerLocked(scope.Context())
 		c.admittedSourceMu.Unlock()
 	})
 }
@@ -358,13 +364,19 @@ func (c *retainedEBusConsumers) clearAdmittedSource(scope *ebusGenerationScope) 
 	})
 }
 
-// withdrawAdmittedSource clears the admitted source when the lifecycle
-// forces it or no longer admits eBUS.
+// withdrawAdmittedSource withdraws the generation's source when the lifecycle
+// forces it (STOP, RESTART, replacement) or no longer admits eBUS: it clears
+// the admitted source and suspends the retained poller's acquisition, which
+// still carries the withdrawn generation's initiator. Only the successor's
+// rebinding resumes it.
 func (c *retainedEBusConsumers) withdrawAdmittedSource(force bool) {
 	c.admittedSourceMu.Lock()
 	defer c.admittedSourceMu.Unlock()
 	if force || !c.control.EBusAdmitted() {
 		c.builder.ClearAdmittedMutationSource()
+		c.pollerRebound = false
+		poller, _ := c.pollerAndPromoter()
+		poller.suspendAcquisition()
 	}
 }
 
@@ -379,12 +391,13 @@ func (c *retainedEBusConsumers) admittedSourceOrZero() byte {
 
 // ensureProcessSurface creates the process-scoped eBUS consumers once,
 // from the first admitted generation's validated configuration. They use
-// the process context, so a stopped interval never tears them down.
-func (c *retainedEBusConsumers) ensureProcessSurface(genCfg ebusgateway.Config) error {
+// the process context, so a stopped interval never tears them down. genCtx is
+// the calling generation's context; it ends when that generation is fenced.
+func (c *retainedEBusConsumers) ensureProcessSurface(genCtx context.Context, genCfg ebusgateway.Config) error {
 	c.surfaceMu.Lock()
 	ready, pollerStarted, poller := c.surfaceReady, c.surfacePollerStarted, c.semanticPoller
 	c.surfaceMu.Unlock()
-	c.rebindPollerSource(poller, genCfg)
+	c.rebindPollerSource(genCtx, poller, genCfg)
 	if ready {
 		return nil
 	}
@@ -392,7 +405,7 @@ func (c *retainedEBusConsumers) ensureProcessSurface(genCfg ebusgateway.Config) 
 	// failed step is retried by the next generation, and the stages that
 	// already completed are not repeated.
 	if !pollerStarted {
-		poller = c.startPoller(genCfg)
+		poller = c.startPoller(genCtx, genCfg)
 		c.bindGraphQLWriters(poller)
 		c.bindWatchObserver(poller)
 	}
@@ -407,8 +420,13 @@ func (c *retainedEBusConsumers) ensureProcessSurface(genCfg ebusgateway.Config) 
 }
 
 // rebindPollerSource rebinds the retained poller to the initiator and
-// companion of the admitted generation. Every admitted generation calls it.
-func (c *retainedEBusConsumers) rebindPollerSource(poller *vaillantSemanticPoller, genCfg ebusgateway.Config) {
+// companion of the admitted generation and then resumes its acquisition.
+// Every admitted generation calls it after its source admission, inside the
+// generation fence. The resume is serialized with withdrawAdmittedSource and
+// happens only while the generation is live and admitted, so neither a
+// withdrawal nor an installation that outlived its generation's fence can
+// leave the poller running on a withdrawn source.
+func (c *retainedEBusConsumers) rebindPollerSource(genCtx context.Context, poller *vaillantSemanticPoller, genCfg ebusgateway.Config) {
 	if poller == nil {
 		return
 	}
@@ -420,17 +438,42 @@ func (c *retainedEBusConsumers) rebindPollerSource(poller *vaillantSemanticPolle
 		return c.control.bridge.PublicationHandle(view.Key)
 	})
 	resolved := resolveStartupScanSourceConfig(genCfg)
+	// Rebinding waits for an acquisition already in flight, so that it never
+	// continues with the successor's not yet validated source.
+	poller.pollMu.Lock()
 	poller.setSourceAndCompanion(resolved.ScanSource, resolved.StartupCompanionTarget)
+	poller.pollMu.Unlock()
+	c.admittedSourceMu.Lock()
+	if genCtx.Err() == nil && c.control.EBusAdmitted() {
+		c.pollerRebound = true
+	}
+	c.resumePollerLocked(genCtx)
+	c.admittedSourceMu.Unlock()
+}
+
+// resumePollerLocked resumes the retained poller's acquisition only while the
+// generation is live, admitted, has rebound the poller and has its source
+// installed (on the source-selection path that follows the active probe). The caller holds
+// admittedSourceMu.
+func (c *retainedEBusConsumers) resumePollerLocked(genCtx context.Context) {
+	if genCtx.Err() != nil || !c.control.EBusAdmitted() || !c.pollerRebound {
+		return
+	}
+	if _, ok := c.builder.AdmittedMutationSource(); !ok {
+		return
+	}
+	poller, _ := c.pollerAndPromoter()
+	poller.resumeAcquisition()
 }
 
 // startPoller starts the retained semantic poller on the process context.
-func (c *retainedEBusConsumers) startPoller(genCfg ebusgateway.Config) *vaillantSemanticPoller {
+func (c *retainedEBusConsumers) startPoller(genCtx context.Context, genCfg ebusgateway.Config) *vaillantSemanticPoller {
 	semanticCfg := resolveStartupScanSourceConfig(genCfg)
 	poller := startVaillantSemanticPollingFn(c.ctx, semanticCfg, c.gateway, c.semanticRuntime.Provider(), c.hub, c.semanticBarrier)
 	c.surfaceMu.Lock()
 	c.semanticPoller, c.surfacePollerStarted = poller, true
 	c.surfaceMu.Unlock()
-	c.rebindPollerSource(poller, genCfg)
+	c.rebindPollerSource(genCtx, poller, genCfg)
 	return poller
 }
 

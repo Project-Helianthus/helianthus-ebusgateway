@@ -295,6 +295,9 @@ func (i *AddressTableInserter) admitCompanionWithIdentityWitness(source, admitte
 	}
 	log.Printf("address_table_inserter companion_admitted addr=0x%02X source=0x%02X evidence=identity_witness admitted_src=0x%02X observed_at=%s",
 		companion, source, admittedSrc, observedAt.Format(time.RFC3339Nano))
+	if i.enrichmentRefreshFn != nil {
+		i.enrichmentRefreshFn()
+	}
 	i.maybeAliasCanonicalCompanion(companion)
 	if i.enrichmentIdentityProbeFn != nil {
 		i.enrichmentIdentityProbeFn(companion)

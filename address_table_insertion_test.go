@@ -351,13 +351,21 @@ func TestCompanionInsert_BroadcastPathUsesSameInterval(t *testing.T) {
 func TestCompanionInsert_CurrentIdentityWitnessAdmitsOnFirstACK(t *testing.T) {
 	table, inserter := newATRInsertionHarness(t, DefaultConfig())
 	var observed, probed []byte
+	refreshes := 0
 	inserter.SetRuntimeStateObserver(func(addr byte, _ time.Time, _ string) { observed = append(observed, addr) })
 	inserter.SetEnrichmentIdentityProbeFn(func(addr byte) { probed = append(probed, addr) })
+	inserter.SetEnrichmentRefreshFn(func() { refreshes++ })
 	table.reg.Register(atrQualifiedIdentity(0x10, "SN-SYNTH-WITNESS"))
 	base := atrBaseTime()
 
 	inserter.OnPassiveClassifiedEvent(atrPassiveTransactionEvent(base, 0x10, 0x99, protocol.SymbolAck))
 
+	// Source 0x10 and target 0x99 are inserted by the first-observation path
+	// (or already present); the witness-admitted companion must add one more
+	// discovery refresh on top of those.
+	if refreshes < 2 {
+		t.Fatalf("discovery refresh count = %d; want a refresh for the witness-admitted companion as well", refreshes)
+	}
 	companion := requireATRSlot(t, table, 0x15)
 	if companion.Role != "target" || companion.DiscoverySource != "passive_observed" || companion.VerificationState != "corroborated" {
 		t.Fatalf("slot[0x15] = %+v; want passive_observed corroborated target", companion)

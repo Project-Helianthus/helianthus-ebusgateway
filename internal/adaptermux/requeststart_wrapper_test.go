@@ -233,7 +233,7 @@ func TestCancelledStartedLog_DoesNotMentionReconnect(t *testing.T) {
 		}
 	}
 	// Sanity: positive marker for the absorb branch should appear.
-	if !strings.Contains(got, "absorbed (C4/R4)") {
+	if !strings.Contains(got, "adaptermux: suppressing STARTED for session 1 — request was cancelled/replaced; absorbed\n") {
 		t.Errorf("expected absorb-suppression log line, got:\n%s", got)
 	}
 }

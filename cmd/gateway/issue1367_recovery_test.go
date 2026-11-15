@@ -365,7 +365,7 @@ func (logs *issue1367Logs) requireOrdered(t *testing.T, fragments ...string) {
 func issue1367RecoveryLines(text string) string {
 	var lines []string
 	for _, line := range strings.Split(text, "\n") {
-		if strings.Contains(line, "ebus.primary:") || strings.Contains(line, "AM27") || strings.Contains(line, "lifecycle owner") {
+		if strings.Contains(line, "ebus.primary:") || strings.Contains(line, "triggering reconnect") || strings.Contains(line, "lifecycle owner") {
 			lines = append(lines, line)
 		}
 	}
@@ -574,11 +574,11 @@ func TestIssue1367AdapterDirectStallPastAM27RecoversThroughLoggedBackoff(t *test
 	// notified inside the mux's delegation, before the mux logs "connection
 	// recovery delegated to lifecycle owner".
 	logs.requireOrdered(t,
-		"triggering reconnect (AM27)",
+		"triggering reconnect\n",
 		fmt.Sprintf("ebus.primary: connection lost (reason=adapter_connection_lost, generation=%d); %s", first.Generation, issue1367ProductionSchedule),
 		"ebus.primary: recovery attempt 1 (reason=adapter_connection_lost, phase=fast)",
 	)
-	lines := append([]string{"triggering reconnect (AM27)"}, issue1369AttemptLines(retries, 1, ebusLossAdapterConnection)...)
+	lines := append([]string{"triggering reconnect\n"}, issue1369AttemptLines(retries, 1, ebusLossAdapterConnection)...)
 	lines = append(lines,
 		fmt.Sprintf("ebus.primary: recovery attempt 2 reconnected (generation=%d); awaiting admission", recovered.Generation),
 		fmt.Sprintf("ebus.primary: recovered on attempt 2 (generation=%d)", recovered.Generation),
@@ -593,7 +593,7 @@ func TestIssue1367AdapterDirectStallPastAM27RecoversThroughLoggedBackoff(t *test
 func issue1367RequireOneDelegation(t *testing.T, logs *issue1367Logs) {
 	t.Helper()
 	logs.waitContains(t, "adaptermux: connection recovery delegated to lifecycle owner")
-	if got := logs.count("triggering reconnect (AM27)"); got != 1 {
+	if got := logs.count("triggering reconnect\n"); got != 1 {
 		t.Fatalf("AM27 triggered %d times; want once", got)
 	}
 	if got := logs.count("adaptermux: connection recovery delegated to lifecycle owner"); got != 1 {

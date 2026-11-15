@@ -376,7 +376,7 @@ func TestIssue1369AdapterDirectStallHealsAfterFastAttemptsWithoutRestart(t *test
 	issue1369RequireNoTerminalEvent(t, process, cursor)
 
 	ordered := []string{
-		"triggering reconnect (AM27)",
+		"triggering reconnect\n",
 		fmt.Sprintf("ebus.primary: connection lost (reason=adapter_connection_lost, generation=%d); recovery continues while desired RUNNING (5 fast attempts, then backoff from 1s doubling to 5m0s)", first.Generation),
 		"ebus.primary: recovery attempt 1 (reason=adapter_connection_lost, phase=fast)",
 	}

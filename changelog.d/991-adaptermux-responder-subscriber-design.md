@@ -1,0 +1,3 @@
+## Specify registered target-address subscribers of the AdapterMux before any code
+
+A design page, `docs/architecture/adaptermux-responder-subscribers.md`, specifies registered target-address subscribers of the AdapterMux: how a session registers and unregisters a target address, the reservation of the responder slot when the destination symbol is received, validated emission through the responder path without arbitration, the bounded latency and queueing contract, every invalidation of a slot, the deterministic tests and the slice plan for the implementation. The PX09 to PX11 scope note of the conformance matrix links the page. There are no code changes; the gateway binary is unchanged.

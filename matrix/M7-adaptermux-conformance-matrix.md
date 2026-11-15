@@ -106,7 +106,9 @@ become cells of the mux, with these scope notes:
   one (its emulation target registry); the mux has none. Registered responder
   ownership in the mux is
   [#991](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/991),
-  which is deferred, so these cells are planned (PL-02).
+  which is deferred, so these cells are planned (PL-02). They wait for the
+  design in
+  [registered target-address subscribers](../docs/architecture/adaptermux-responder-subscribers.md).
 - The proxy's outcome policy carries over: `xpass` is never accepted.
 - The external contender in PX cells may be a synthetic ENH client from the
   test harness; that is software, not additional hardware.

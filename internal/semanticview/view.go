@@ -224,7 +224,7 @@ func project(metadata *semreg.PackMetadataRegistry, s semreg.Snapshot, e semreg.
 		if item.Kind == projection.ItemFact {
 			// Availability and exactness are tracked per complete source key: one
 			// available sibling must not hide an unavailable or withdrawn one.
-			hasValue, unsupported, found := false, true, false
+			hasValue, unsupported, found, conflicted := false, true, false, false
 			allKeysAvailable, allKeysExact, anyUnknown := true, true, false
 			for _, f := range s.Facts {
 				if f.Key.FactID != item.ItemID {
@@ -250,8 +250,13 @@ func project(metadata *semreg.PackMetadataRegistry, s semreg.Snapshot, e semreg.
 						}
 					}
 				}
+				// Candidates of several sources that disagree carry an open
+				// conflict; such a key is never exact, whichever candidate a
+				// presentation surface shows.
+				keyConflicted := openConflict(f)
+				conflicted = conflicted || keyConflicted
 				allKeysAvailable = allKeysAvailable && keyAvailable
-				allKeysExact = allKeysExact && keyExact
+				allKeysExact = allKeysExact && keyExact && !keyConflicted
 			}
 			switch {
 			case found && !allKeysAvailable:
@@ -261,6 +266,10 @@ func project(metadata *semreg.PackMetadataRegistry, s semreg.Snapshot, e semreg.
 				reason = reasonPrefix + "fact_unavailable"
 			case found && unsupported:
 				d.Outcome = projection.ProjectionUnsupported
+			case hasValue && conflicted:
+				// The sources disagree on the value: it is unknown, not withheld
+				// for a lack of qualification.
+				d.Outcome = projection.ProjectionUnknown
 			case hasValue && allKeysExact:
 				d.Outcome = projection.ProjectionExact
 			case hasValue && anyUnknown:
@@ -342,6 +351,16 @@ func project(metadata *semreg.PackMetadataRegistry, s semreg.Snapshot, e semreg.
 		dispositions = append(dispositions, d)
 	}
 	return projection.Project(s, manifest, requested, dispositions, nil)
+}
+
+// openConflict reports whether the envelope carries an open value conflict.
+func openConflict(f semreg.FactEnvelope) bool {
+	for _, conflict := range f.Conflicts {
+		if conflict.State == semreg.ConflictOpen {
+			return true
+		}
+	}
+	return false
 }
 
 // causalOutcomeCandidates selects whole source keys before native reason

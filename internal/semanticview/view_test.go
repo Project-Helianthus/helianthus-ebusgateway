@@ -990,3 +990,121 @@ func TestM08PerSourceKeyAvailability(t *testing.T) {
 		})
 	}
 }
+
+// m08ConflictIdentity is the record whose digest names a value conflict.
+type m08ConflictIdentity struct {
+	Contract   semreg.ContractVersion `json:"contract"`
+	AssetID    semreg.AssetID         `json:"asset_id"`
+	Key        semreg.FactKey         `json:"key"`
+	Kind       semreg.ConflictKind    `json:"kind"`
+	Candidates []semreg.CandidateID   `json:"candidates"`
+}
+
+func (m08ConflictIdentity) Validate() error { return nil }
+
+// m08WithSecondSource adds a second current source, binding and cursor to the
+// snapshot and returns a copy of the envelope's candidate observed through it.
+func m08WithSecondSource(t *testing.T, s *semreg.Snapshot, envelope semreg.FactEnvelope, value semreg.Value) semreg.FactCandidate {
+	t.Helper()
+	source, epoch, binding := semreg.SourceID("source:contributor"), semreg.SourceEpochID("epoch:contributor"), semreg.NativeBindingID("binding:contributor")
+	if len(s.Sources) == 1 {
+		descriptor := s.Sources[0]
+		descriptor.SourceID, descriptor.SourceEpochID = source, epoch
+		// Each collection is ordered by identifier; the contributor sorts first.
+		s.Sources = append([]semreg.SourceDescriptor{descriptor}, s.Sources...)
+		nativeBinding := s.Bindings[0]
+		nativeBinding.BindingID, nativeBinding.SourceID, nativeBinding.SourceEpochID = binding, source, epoch
+		s.Bindings = append([]semreg.NativeBinding{nativeBinding}, s.Bindings...)
+		cursor := s.Cursors[0]
+		cursor.SourceID, cursor.SourceEpochID = source, epoch
+		s.Cursors = append([]semreg.PublicationCursor{cursor}, s.Cursors...)
+	}
+	c := envelope.Candidates[0]
+	c.CandidateID = c.CandidateID + "-contributor"
+	c.Value = &value
+	c.BindingID, c.SourceEpochID = &binding, &epoch
+	c.Origin.OriginID = "origin:contributor"
+	c.Origin.SourceID, c.Origin.SourceEpochID, c.Origin.BindingID = &source, &epoch, &binding
+	return c
+}
+
+// m08DeriveConflicts computes the conflicts the kernel derives for an
+// envelope: promoted, qualified, valued candidates with differing values.
+func m08DeriveConflicts(t *testing.T, envelope semreg.FactEnvelope) []semreg.Conflict {
+	t.Helper()
+	values := map[string]bool{}
+	ids := []semreg.CandidateID{}
+	evidence := []semreg.EvidenceRef{}
+	for _, c := range envelope.Candidates {
+		if c.Value == nil || c.Quality.Qualification != semreg.QualificationQualified || c.Quality.Promotion != semreg.PromotionPromoted {
+			continue
+		}
+		raw, err := semreg.CanonicalJSON(*c.Value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		values[string(raw)] = true
+		ids = append(ids, c.CandidateID)
+		for _, e := range c.Evidence {
+			if len(evidence) == 0 || !reflect.DeepEqual(evidence[len(evidence)-1], e) {
+				evidence = append(evidence, e)
+			}
+		}
+	}
+	if len(values) < 2 {
+		return []semreg.Conflict{}
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	id, err := semreg.DigestRecord(m08ConflictIdentity{"helianthus.semantic.conflict-id/v1", envelope.AssetID, envelope.Key, semreg.ConflictValue, ids})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return []semreg.Conflict{{ConflictID: semreg.ConflictID(id), Kind: semreg.ConflictValue, Candidates: ids, Evidence: evidence, State: semreg.ConflictOpen}}
+}
+
+// TestM08TwoSourceConflictNeverExact: with candidates of two sources on one
+// key, agreeing values keep today's exact outcome and disagreeing values,
+// which the kernel marks as an open conflict, are never exact.
+func TestM08TwoSourceConflictNeverExact(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		coefficient string
+		conflicts   int
+		outcome     projection.ProjectionOutcome
+		reason      string
+	}{
+		{"agreeing_values", "0", 0, projection.ProjectionExact, ""},
+		{"conflicting_values", "1", 1, projection.ProjectionUnknown, reasonPrefix + "value_unknown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := m08Input(t)
+			envelope := &in.Snapshot.Facts[0]
+			first := envelope.Candidates[0]
+			first.Quality.Reasons = []semreg.DefinitionID{}
+			value := semreg.Value{Kind: semreg.ValueQuantity, Quantity: &semreg.Quantity{Number: semreg.Decimal{Coefficient: tc.coefficient}, Unit: first.Value.Quantity.Unit}}
+			second := m08WithSecondSource(t, in.Snapshot, *envelope, value)
+			// Drop the fixture's owner reason so the surface-owned code is visible.
+			second.Quality.Reasons = []semreg.DefinitionID{}
+			envelope.Candidates = []semreg.FactCandidate{first, second}
+			sort.Slice(envelope.Candidates, func(i, j int) bool { return envelope.Candidates[i].CandidateID < envelope.Candidates[j].CandidateID })
+			envelope.Conflicts = m08DeriveConflicts(t, *envelope)
+			if len(envelope.Conflicts) != tc.conflicts {
+				t.Fatalf("conflicts %d want %d", len(envelope.Conflicts), tc.conflicts)
+			}
+			m08Seal(t, in.Snapshot)
+			e := m08Evaluate(t, *in.Snapshot)
+			in.Evaluation = &e
+			v := m08Build(t, in)
+			d := m08FactDisposition(t, v, envelope.Key.FactID)
+			if d.Outcome != tc.outcome {
+				t.Fatalf("outcome %s want %s", d.Outcome, tc.outcome)
+			}
+			switch {
+			case tc.reason == "" && d.Reason != nil:
+				t.Fatalf("unexpected reason %s", *d.Reason)
+			case tc.reason != "" && (d.Reason == nil || string(*d.Reason) != tc.reason):
+				t.Fatalf("reason %v want %s", d.Reason, tc.reason)
+			}
+		})
+	}
+}

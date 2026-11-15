@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semselect"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/projection"
 )
@@ -17,13 +18,16 @@ import (
 const semanticMetricsSeriesBudget = 192
 
 // SemanticMetricsDomain is one coherent detached snapshot/evaluation/
-// projection tuple. Name is a fixed vocabulary value: pv or storage.
+// projection tuple. Name is a fixed vocabulary value: pv or storage. Owner is
+// the source of the asset's owning driver; it ranks first when a fact key
+// carries candidates of several sources, and an empty Owner names none.
 type SemanticMetricsDomain struct {
 	Name       string
 	Snapshot   semreg.Snapshot
 	Evaluation semreg.EvaluationView
 	Projection projection.ProjectionReport
 	Available  bool
+	Owner      semreg.SourceID
 }
 
 func writeSemanticMetrics(w *prometheusWriter, domains []SemanticMetricsDomain, now time.Time) {
@@ -89,7 +93,7 @@ func writeSemanticMetrics(w *prometheusWriter, domains []SemanticMetricsDomain, 
 		evaluated := evaluatedIndex(d.Evaluation)
 		dispositions := append([]projection.ProjectionDisposition(nil), d.Projection.Dispositions...)
 		sort.Slice(dispositions, func(i, j int) bool { return dispositions[i].ItemID < dispositions[j].ItemID })
-		connectorSlots := semanticEVSEConnectorSlots(d.Name, dispositions, facts, evaluated)
+		connectorSlots := semanticEVSEConnectorSlots(d.Name, dispositions, facts, evaluated, d.Owner)
 		for _, disposition := range dispositions {
 			outcome := string(disposition.Outcome)
 			if !validOutcome(outcome) || !validSemanticItem(d.Name, string(disposition.ItemID)) {
@@ -108,7 +112,7 @@ func writeSemanticMetrics(w *prometheusWriter, domains []SemanticMetricsDomain, 
 				continue
 			}
 			for _, key := range disposition.SourceKeys {
-				if renderSemanticFact(emit, d.Name, string(disposition.ItemID), key, facts, evaluated, connectorSlots, now) {
+				if renderSemanticFact(emit, d.Name, string(disposition.ItemID), key, facts, evaluated, connectorSlots, d.Owner, now) {
 					overflow++
 				}
 			}
@@ -136,54 +140,115 @@ func evaluatedIndex(view semreg.EvaluationView) map[semreg.CandidateID]semreg.Ev
 	return out
 }
 
-func renderSemanticFact(emit func(string, float64, map[string]string) bool, domain, item string, key semreg.FactKey, envelopes map[string]semreg.FactEnvelope, evaluated map[semreg.CandidateID]semreg.EvaluatedFact, connectorSlots map[string]string, now time.Time) bool {
+// semanticPresented returns the candidate of the envelope that the target
+// presents: the only candidate, or, with candidates of several sources, the
+// one the presentation policy selects. presented is false when the policy
+// selects none; invalid is true when a candidate has no evaluation.
+func semanticPresented(envelope semreg.FactEnvelope, evaluated map[semreg.CandidateID]semreg.EvaluatedFact, owner semreg.SourceID) (candidate semreg.FactCandidate, presented, invalid bool) {
+	if len(envelope.Candidates) == 1 {
+		return envelope.Candidates[0], true, false
+	}
+	facts := make([]semreg.EvaluatedFact, 0, len(envelope.Candidates))
+	for _, c := range envelope.Candidates {
+		e, ok := evaluated[c.CandidateID]
+		if !ok {
+			return semreg.FactCandidate{}, false, true
+		}
+		facts = append(facts, e)
+	}
+	selected, ok := semselect.Choose(envelope, facts, owner)
+	if !ok {
+		return semreg.FactCandidate{}, false, false
+	}
+	for _, c := range envelope.Candidates {
+		if c.CandidateID == selected {
+			return c, true, false
+		}
+	}
+	return semreg.FactCandidate{}, false, true
+}
+
+// semanticEnvelopeFor finds the envelope of a canonical fact key. Candidate
+// identifiers are visited in order, so the result never depends on map order.
+func semanticEnvelopeFor(targetKey string, envelopes map[string]semreg.FactEnvelope) (envelope semreg.FactEnvelope, found, invalidCandidate bool) {
+	ids := make([]string, 0, len(envelopes))
+	for id := range envelopes {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		candidate := envelopes[id]
+		for _, c := range candidate.Candidates {
+			if string(c.CandidateID) != id {
+				continue
+			}
+			candidateKey, ok := semanticFactKey(c.Key)
+			if !ok {
+				invalidCandidate = true
+				continue
+			}
+			if candidateKey == targetKey && !found {
+				envelope, found = candidate, true
+			}
+		}
+	}
+	return envelope, found, invalidCandidate
+}
+
+func renderSemanticFact(emit func(string, float64, map[string]string) bool, domain, item string, key semreg.FactKey, envelopes map[string]semreg.FactEnvelope, evaluated map[semreg.CandidateID]semreg.EvaluatedFact, connectorSlots map[string]string, owner semreg.SourceID, now time.Time) bool {
 	targetKey, targetOK := semanticFactKey(key)
 	schema, schemaOK := semanticFactSchemaFor(domain, item)
 	if !targetOK || !schemaOK {
 		return true
 	}
-	invalidCandidate := false
-	for _, envelope := range envelopes {
-		for _, candidate := range envelope.Candidates {
-			candidateKey, candidateOK := semanticFactKey(candidate.Key)
-			if !candidateOK {
-				invalidCandidate = true
-				continue
-			}
-			if candidateKey != targetKey {
-				continue
-			}
-			e, ok := evaluated[candidate.CandidateID]
-			if !ok {
-				return true
-			}
-			if !validSemanticState(candidate.Quality.Qualification, candidate.Quality.Promotion, candidate.Quality.Validity, e.EffectiveAvailability, e.Freshness) {
-				return true
-			}
-			if !schema.matches(key, candidate.Value) {
-				return true
-			}
-			dimension, connector, dimensionsOK := semanticDimensions(domain, item, key, connectorSlots)
-			if !dimensionsOK {
-				return true
-			}
-			labels := semanticFactLabels(domain, key, dimension, connector, "qualification", string(candidate.Quality.Qualification), "promotion", string(candidate.Quality.Promotion), "quality", string(candidate.Quality.Validity), "availability", string(e.EffectiveAvailability), "freshness", string(e.Freshness))
-			emit("helianthus_semantic_fact_state", 1, labels)
-			emit("helianthus_semantic_open_conflicts", float64(len(envelope.Conflicts)), semanticFactLabels(domain, key, dimension, connector))
-			if age, ok := semanticAge(candidate.Times.ReceivedAt, now); ok {
-				emit("helianthus_semantic_evidence_age", age, semanticFactLabels(domain, key, dimension, connector, "unit", "seconds"))
-			}
-			if len(envelope.Candidates) != 1 || len(envelope.Conflicts) != 0 || candidate.Quality.Qualification != semreg.QualificationQualified || candidate.Quality.Promotion != semreg.PromotionPromoted || candidate.Quality.Validity != semreg.ValidityGood || e.EffectiveAvailability != semreg.AvailabilityAvailable || e.Freshness != semreg.FreshnessFresh {
-				return false
-			}
-			value, unit, ok := semanticNumeric(candidate.Value)
-			if ok {
-				emit("helianthus_semantic_fact_value", value, semanticFactLabels(domain, key, dimension, connector, "unit", unit))
-			}
-			return false
-		}
+	envelope, found, invalidCandidate := semanticEnvelopeFor(targetKey, envelopes)
+	if !found {
+		return invalidCandidate
 	}
-	return invalidCandidate
+	candidate, presented, invalid := semanticPresented(envelope, evaluated, owner)
+	if invalid {
+		return true
+	}
+	if !presented {
+		// Several candidates and none selected: only the conflict state is
+		// observable; no candidate's state, age or value stands for the key.
+		dimension, connector, dimensionsOK := semanticDimensions(domain, item, key, connectorSlots)
+		if !dimensionsOK {
+			return true
+		}
+		emit("helianthus_semantic_open_conflicts", float64(len(envelope.Conflicts)), semanticFactLabels(domain, key, dimension, connector))
+		return false
+	}
+	e, ok := evaluated[candidate.CandidateID]
+	if !ok {
+		return true
+	}
+	if !validSemanticState(candidate.Quality.Qualification, candidate.Quality.Promotion, candidate.Quality.Validity, e.EffectiveAvailability, e.Freshness) {
+		return true
+	}
+	if !schema.matches(key, candidate.Value) {
+		return true
+	}
+	dimension, connector, dimensionsOK := semanticDimensions(domain, item, key, connectorSlots)
+	if !dimensionsOK {
+		return true
+	}
+	labels := semanticFactLabels(domain, key, dimension, connector, "qualification", string(candidate.Quality.Qualification), "promotion", string(candidate.Quality.Promotion), "quality", string(candidate.Quality.Validity), "availability", string(e.EffectiveAvailability), "freshness", string(e.Freshness))
+	emit("helianthus_semantic_fact_state", 1, labels)
+	emit("helianthus_semantic_open_conflicts", float64(len(envelope.Conflicts)), semanticFactLabels(domain, key, dimension, connector))
+	if age, ok := semanticAge(candidate.Times.ReceivedAt, now); ok {
+		emit("helianthus_semantic_evidence_age", age, semanticFactLabels(domain, key, dimension, connector, "unit", "seconds"))
+	}
+	// A conflicted key is never exported as a value, whichever candidate is
+	// presented.
+	if len(envelope.Conflicts) != 0 || candidate.Quality.Qualification != semreg.QualificationQualified || candidate.Quality.Promotion != semreg.PromotionPromoted || candidate.Quality.Validity != semreg.ValidityGood || e.EffectiveAvailability != semreg.AvailabilityAvailable || e.Freshness != semreg.FreshnessFresh {
+		return false
+	}
+	value, unit, ok := semanticNumeric(candidate.Value)
+	if ok {
+		emit("helianthus_semantic_fact_value", value, semanticFactLabels(domain, key, dimension, connector, "unit", unit))
+	}
+	return false
 }
 
 func validSemanticState(q semreg.Qualification, p semreg.Promotion, v semreg.Validity, a semreg.Availability, f semreg.Freshness) bool {
@@ -256,7 +321,7 @@ const semanticEVSEConnectorBudget = 8
 // exact or transformed allocated-current disposition and can actually emit a
 // value receives a slot. Raw identifiers are used only to order that detached
 // renderable set; they are never emitted as labels.
-func semanticEVSEConnectorSlots(domain string, dispositions []projection.ProjectionDisposition, envelopes map[string]semreg.FactEnvelope, evaluated map[semreg.CandidateID]semreg.EvaluatedFact) map[string]string {
+func semanticEVSEConnectorSlots(domain string, dispositions []projection.ProjectionDisposition, envelopes map[string]semreg.FactEnvelope, evaluated map[semreg.CandidateID]semreg.EvaluatedFact, owner semreg.SourceID) map[string]string {
 	if domain != "evse" {
 		return nil
 	}
@@ -275,10 +340,13 @@ func semanticEVSEConnectorSlots(domain string, dispositions []projection.Project
 				continue
 			}
 			for _, envelope := range envelopes {
-				if len(envelope.Candidates) != 1 || len(envelope.Conflicts) != 0 {
+				if len(envelope.Conflicts) != 0 {
 					continue
 				}
-				candidate := envelope.Candidates[0]
+				candidate, presented, invalid := semanticPresented(envelope, evaluated, owner)
+				if !presented || invalid {
+					continue
+				}
 				candidateKey, ok := semanticFactKey(candidate.Key)
 				if !ok || candidateKey != targetKey {
 					continue

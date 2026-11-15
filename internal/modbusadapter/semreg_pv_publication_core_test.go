@@ -1756,3 +1756,220 @@ func waitForPV(t *testing.T, condition func() bool) {
 		time.Sleep(time.Millisecond)
 	}
 }
+
+// pvCoreConflictIdentity is the record whose digest names a value conflict.
+type pvCoreConflictIdentity struct {
+	Contract   semreg.ContractVersion `json:"contract"`
+	AssetID    semreg.AssetID         `json:"asset_id"`
+	Key        semreg.FactKey         `json:"key"`
+	Kind       semreg.ConflictKind    `json:"kind"`
+	Candidates []semreg.CandidateID   `json:"candidates"`
+}
+
+func (pvCoreConflictIdentity) Validate() error { return nil }
+
+// pvCoreRederive recomputes the conflicts the kernel derives for an envelope:
+// promoted, qualified, valued candidates with differing values.
+func pvCoreRederive(t *testing.T, envelope *semreg.FactEnvelope) {
+	t.Helper()
+	values := map[string]bool{}
+	ids := []semreg.CandidateID{}
+	evidence := []semreg.EvidenceRef{}
+	for _, c := range envelope.Candidates {
+		if c.Value == nil || c.Quality.Qualification != semreg.QualificationQualified || c.Quality.Promotion != semreg.PromotionPromoted {
+			continue
+		}
+		raw, err := semreg.CanonicalJSON(*c.Value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		values[string(raw)] = true
+		ids = append(ids, c.CandidateID)
+		evidence = append(evidence, c.Evidence...)
+	}
+	envelope.Conflicts = []semreg.Conflict{}
+	if len(values) < 2 {
+		return
+	}
+	sort.Slice(evidence, func(i, j int) bool {
+		left, _ := json.Marshal(evidence[i])
+		right, _ := json.Marshal(evidence[j])
+		return bytes.Compare(left, right) < 0
+	})
+	unique := evidence[:0]
+	for _, item := range evidence {
+		if len(unique) == 0 || !reflect.DeepEqual(unique[len(unique)-1], item) {
+			unique = append(unique, item)
+		}
+	}
+	id, err := semreg.DigestRecord(pvCoreConflictIdentity{"helianthus.semantic.conflict-id/v1", envelope.AssetID, envelope.Key, semreg.ConflictValue, ids})
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope.Conflicts = []semreg.Conflict{{ConflictID: semreg.ConflictID(id), Kind: semreg.ConflictValue, Candidates: ids, Evidence: unique, State: semreg.ConflictOpen}}
+}
+
+// pvCoreSeal recomputes the snapshot identifier after a fixture edit.
+func pvCoreSeal(t *testing.T, snapshot *semreg.Snapshot) {
+	t.Helper()
+	raw, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(raw, &document); err != nil {
+		t.Fatal(err)
+	}
+	delete(document, "snapshot_id")
+	if raw, err = json.Marshal(document); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(raw)
+	snapshot.SnapshotID = semreg.SnapshotID("sha256:" + hex.EncodeToString(digest[:]))
+	if err := snapshot.Validate(); err != nil {
+		t.Fatalf("two-source PV snapshot: %v", err)
+	}
+}
+
+// pvCoreAddContributor adds a second current source with its own binding to
+// a published PV snapshot and a candidate of factID observed through it.
+func pvCoreAddContributor(t *testing.T, snapshot *semreg.Snapshot, factID semreg.DefinitionID, coefficient string) semreg.CandidateID {
+	t.Helper()
+	source, epoch, binding := semreg.SourceID("source:contributor"), semreg.SourceEpochID("epoch:contributor"), semreg.NativeBindingID("binding:contributor")
+	descriptor, nativeBinding, cursor := snapshot.Sources[0], snapshot.Bindings[0], snapshot.Cursors[0]
+	descriptor.SourceID, descriptor.SourceEpochID = source, epoch
+	nativeBinding.BindingID, nativeBinding.SourceID, nativeBinding.SourceEpochID = binding, source, epoch
+	cursor.SourceID, cursor.SourceEpochID = source, epoch
+	snapshot.Sources = append(snapshot.Sources, descriptor)
+	sort.Slice(snapshot.Sources, func(i, j int) bool { return snapshot.Sources[i].SourceID < snapshot.Sources[j].SourceID })
+	snapshot.Bindings = append(snapshot.Bindings, nativeBinding)
+	sort.Slice(snapshot.Bindings, func(i, j int) bool { return snapshot.Bindings[i].BindingID < snapshot.Bindings[j].BindingID })
+	snapshot.Cursors = append(snapshot.Cursors, cursor)
+	sort.Slice(snapshot.Cursors, func(i, j int) bool { return snapshot.Cursors[i].SourceID < snapshot.Cursors[j].SourceID })
+	for index := range snapshot.Facts {
+		envelope := &snapshot.Facts[index]
+		if envelope.Key.FactID != factID {
+			continue
+		}
+		c := envelope.Candidates[0]
+		c.CandidateID = c.CandidateID + "-contributor"
+		value := *c.Value
+		quantity := *value.Quantity
+		quantity.Number.Coefficient = coefficient
+		value.Quantity = &quantity
+		c.Value = &value
+		c.BindingID, c.SourceEpochID = &binding, &epoch
+		c.Origin.OriginID = "origin:contributor"
+		c.Origin.SourceID, c.Origin.SourceEpochID, c.Origin.BindingID = &source, &epoch, &binding
+		envelope.Candidates = append(envelope.Candidates, c)
+		sort.Slice(envelope.Candidates, func(i, j int) bool { return envelope.Candidates[i].CandidateID < envelope.Candidates[j].CandidateID })
+		pvCoreRederive(t, envelope)
+		return c.CandidateID
+	}
+	t.Fatalf("missing fact envelope %s", factID)
+	return ""
+}
+
+// TestPVPresentationTwoSourcesUseTheOwnerFirstPolicy: a key with candidates of
+// two sources no longer fails the whole read. The owner's qualified candidate
+// is selected under the owner-first policy, else the single qualified one;
+// every key with one candidate keeps the PV policy and its selection.
+func TestPVPresentationTwoSourcesUseTheOwnerFirstPolicy(t *testing.T) {
+	const power = semreg.DefinitionID("pv.ac.aggregate_active_power")
+	for _, tc := range []struct {
+		name         string
+		coefficient  string
+		unpromote    bool // the owner's candidate is not promoted
+		unpromoteAll bool // neither candidate is promoted
+		wantOwner    bool
+		wantNone     bool
+		wantConflict bool
+	}{
+		{name: "agreeing values", coefficient: "12345", wantOwner: true},
+		{name: "conflicting values", coefficient: "12346", wantOwner: true, wantConflict: true},
+		{name: "owner candidate unpromoted", coefficient: "12346", unpromote: true},
+		{name: "no candidate promoted", coefficient: "12346", unpromote: true, unpromoteAll: true, wantNone: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			core, err := newTestPVPublicationCore()
+			if err != nil {
+				t.Fatal(err)
+			}
+			words := observedFroniusFloatControlsWords()
+			pvCoreSetFloat(words, 20, 1_234.5)
+			draft := pvCoreDraft(t, words, "source-epoch:pv:two-source", 1, 2_000)
+			if _, err := core.ingest(draft); err != nil {
+				t.Fatal(err)
+			}
+			view, err := core.publicView(draft.assetID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := view.selections
+			snapshot := view.snapshot
+			owner := pvCoreEnvelope(t, snapshot, power).Candidates[0]
+			// The view's owner is the source the asset is declared with, which
+			// observed the published candidate.
+			if owner.Origin.SourceID == nil || *owner.Origin.SourceID != view.owner || view.owner == "" {
+				t.Fatalf("view owner %q does not observe the published candidate", view.owner)
+			}
+			contributor := pvCoreAddContributor(t, &snapshot, power, tc.coefficient)
+			if tc.unpromote {
+				for index := range snapshot.Facts {
+					envelope := &snapshot.Facts[index]
+					for c := range envelope.Candidates {
+						if envelope.Candidates[c].CandidateID == owner.CandidateID || (tc.unpromoteAll && envelope.Candidates[c].CandidateID == contributor) {
+							envelope.Candidates[c].Quality.Promotion = semreg.PromotionUnpromoted
+							envelope.Candidates[c].Revision = "2"
+							pvCoreRederive(t, envelope)
+						}
+					}
+				}
+			}
+			if got := len(pvCoreEnvelope(t, snapshot, power).Conflicts) != 0; got != tc.wantConflict {
+				t.Fatalf("conflict %v want %v", got, tc.wantConflict)
+			}
+			pvCoreSeal(t, &snapshot)
+			evaluation, err := semreg.EvaluateSnapshot(snapshot, view.evaluation.Context)
+			if err != nil {
+				t.Fatal(err)
+			}
+			selections, err := pvPresentationSelections(core.selection, view.owner, snapshot, evaluation)
+			if err != nil {
+				t.Fatalf("two-source read failed: %v", err)
+			}
+			if tc.wantNone {
+				// The key without a selection is absent; every other key keeps its
+				// one-candidate selection.
+				kept := make([]semreg.Selection, 0, len(before))
+				for _, selection := range before {
+					if selection.Key.FactID != power {
+						kept = append(kept, selection)
+					}
+				}
+				before = kept
+			}
+			if len(selections) != len(before) {
+				t.Fatalf("selections %d want %d", len(selections), len(before))
+			}
+			want := contributor
+			if tc.wantOwner {
+				want = owner.CandidateID
+			}
+			for index, selection := range selections {
+				if err := semreg.ValidateSelection(snapshot, evaluation, selection); err != nil {
+					t.Fatalf("selection %d: %v", index, err)
+				}
+				if selection.Key.FactID != power {
+					if selection.PolicyID != before[index].PolicyID || selection.PolicyVersion != before[index].PolicyVersion || selection.SelectedCandidate != before[index].SelectedCandidate {
+						t.Fatalf("one-candidate selection moved: %+v want %+v", selection, before[index])
+					}
+					continue
+				}
+				if selection.SelectedCandidate != want || selection.PolicyID != "policy:gateway-owner-first" || selection.PolicyVersion != "1.0.0" {
+					t.Fatalf("two-source selection %+v want candidate %s under the owner-first policy", selection, want)
+				}
+			}
+		})
+	}
+}

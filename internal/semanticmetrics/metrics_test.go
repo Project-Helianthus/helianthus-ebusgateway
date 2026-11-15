@@ -278,7 +278,7 @@ func TestM36Unavailable(t *testing.T) {
 			s.Facts[0].Candidates = append(s.Facts[0].Candidates, c)
 		},
 		"withheld_reason": func(s *semreg.Snapshot, _ *Registry) {
-			s.Facts[0].Candidates[0].Quality.Reasons = []semreg.DefinitionID{"unknown_pending_std_01"}
+			s.Facts[0].Candidates[0].Quality.Reasons = []semreg.DefinitionID{"unknown_pending_normative_source"}
 		},
 
 		"unqualified": func(s *semreg.Snapshot, _ *Registry) {

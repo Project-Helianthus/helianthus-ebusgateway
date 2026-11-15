@@ -70,7 +70,7 @@ Every mapping row has an evidence conclusion (`Proven`, `Hypothesis`,
 | --- | --- |
 | Native target meaning (use case, feature, function, element) | **Unknown.** STD-01 revisions are unresolved; no public native docs contract exists to cite. |
 | SemReg source items | Existing pack definitions for PV, Storage, EVSE, Thermal and Infrastructure. Their existence is not evidence of an eeBUS counterpart. |
-| eeBUS inbound family state | `eebus-inbound` stays `unknown` with reason `unknown_pending_std_01` in the SemReg family catalog; the shared view preserves that token verbatim. |
+| eeBUS inbound family state | `eebus-inbound` stays `unknown` with reason `unknown_pending_normative_source` in the SemReg family catalog; the shared view preserves that token verbatim. |
 | Normative mapping rows | **None frozen.** No row is `Proven`; a candidate row may be recorded only as `Hypothesis` with its public source, never projected as `exact` or `transformed`. |
 
 Consequences for the binding until the native docs contract cites STD-01
@@ -144,8 +144,8 @@ Rules specific to the output direction:
 - Every requested item appears exactly once. Before STD-01, with no item
   `Proven`, the only permitted outcomes are `withheld`, `unsupported` (with
   explicit supported evidence) and `unknown`.
-- Source reasons are preserved verbatim. `unknown_pending_std_01` keeps
-  precedence and is never prefixed or reinterpreted; candidate and unqualified
+- Source reasons are preserved verbatim. `unknown_pending_normative_source`
+  keeps precedence and is never prefixed or reinterpreted; candidate and unqualified
   capabilities stay `withheld` with the owner's reason or
   `semantic.read.reason.capability_unqualified`.
 - Unknown items never acquire a synthetic value, zero, empty symbol or default.
@@ -193,7 +193,7 @@ placeholders, not published identifiers):
           }
         ],
         "loss": [],
-        "reason": "unknown_pending_std_01"
+        "reason": "unknown_pending_normative_source"
       }
     ]
   },

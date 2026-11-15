@@ -16,6 +16,11 @@ import (
 
 const reasonPrefix = "semantic.read.reason."
 
+// PendingNormativeSourceReason is the source reason that keeps a fact unknown
+// while the normative source of its mapping is unresolved. The view preserves
+// it verbatim instead of folding it into the ordinary reason ordering.
+const PendingNormativeSourceReason = "unknown_pending_normative_source"
+
 // Input is captured coherently by the caller, including any publication safety
 // withholding. Build performs no acquisition or publication and reads no clock.
 type Input struct {
@@ -318,17 +323,17 @@ func project(metadata *semreg.PackMetadataRegistry, s semreg.Snapshot, e semreg.
 			}
 		}
 		for _, r := range reasons {
-			if r == "unknown_pending_std_01" {
+			if r == PendingNormativeSourceReason {
 				d.Outcome = projection.ProjectionUnknown
 				reason = r
 				break
 			}
 		}
 		if d.Outcome != projection.ProjectionExact {
-			if reason != "unknown_pending_std_01" {
+			if reason != PendingNormativeSourceReason {
 				reasons = outcomeReasons(reason, item.Kind, causalOutcomeCandidates(reason, item.Kind, candidates, e), reasons)
 			}
-			if len(reasons) > 0 && reason != "unknown_pending_std_01" {
+			if len(reasons) > 0 && reason != PendingNormativeSourceReason {
 				sort.Slice(reasons, func(i, j int) bool { return reasons[i] < reasons[j] })
 				reason = reasons[0]
 			}

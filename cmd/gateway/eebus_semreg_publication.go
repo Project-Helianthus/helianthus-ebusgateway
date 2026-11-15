@@ -5,7 +5,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/projection"
 )
 
-const eebusPendingNormativeRevision semreg.DefinitionID = "unknown_pending_std_01"
+const eebusPendingNormativeRevision semreg.DefinitionID = "unknown_pending_normative_source"
 
 // This is the eeBUS-local input hook for the shared publication consumer. It
 // carries no canonical FactKey, admitted capability, operation or output binding:

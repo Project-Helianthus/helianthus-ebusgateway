@@ -123,12 +123,12 @@ func TestOutcomeReasonPrecedence(t *testing.T) {
 	}
 }
 
-func TestOutcomeReasonSTD01(t *testing.T) {
+func TestOutcomeReasonPendingNormativeSource(t *testing.T) {
 	for _, state := range []string{"exact", "expired", "unavailable", "unqualified"} {
 		t.Run(state, func(t *testing.T) {
 			s := outcomeReasonFixture(t)
 			for i := range s.Facts {
-				s.Facts[i].Candidates[0].Quality.Reasons = []semreg.DefinitionID{"a.unrelated", "unknown_pending_std_01"}
+				s.Facts[i].Candidates[0].Quality.Reasons = []semreg.DefinitionID{"a.unrelated", "unknown_pending_normative_source"}
 			}
 			for i := range s.Capabilities {
 				if state == "unavailable" {
@@ -154,8 +154,8 @@ func TestOutcomeReasonSTD01(t *testing.T) {
 					continue
 				}
 				count++
-				if d.Outcome != projection.ProjectionUnknown || d.Reason == nil || *d.Reason != "unknown_pending_std_01" {
-					t.Errorf("STD-01 changed: %+v", d)
+				if d.Outcome != projection.ProjectionUnknown || d.Reason == nil || *d.Reason != "unknown_pending_normative_source" {
+					t.Errorf("pending normative source reason changed: %+v", d)
 				}
 			}
 			if count != 10 {

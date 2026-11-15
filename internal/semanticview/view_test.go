@@ -490,12 +490,12 @@ func TestM08FactKeyFields(t *testing.T) {
 	}
 }
 
-func TestM08STD01AndExactNumbers(t *testing.T) {
+func TestM08PendingNormativeSourceAndExactNumbers(t *testing.T) {
 	in := m08Input(t)
 	for i := range in.Snapshot.Facts {
 		c := &in.Snapshot.Facts[i].Candidates[0]
 		c.Value.Quantity.Number = semreg.Decimal{Coefficient: fmt.Sprint(i + 1), Exponent10: -9}
-		c.Quality.Reasons = []semreg.DefinitionID{"unknown_pending_std_01"}
+		c.Quality.Reasons = []semreg.DefinitionID{"unknown_pending_normative_source"}
 		c.Quality.Qualification = semreg.QualificationCandidate
 		c.Quality.Promotion = semreg.PromotionUnpromoted
 	}
@@ -511,8 +511,8 @@ func TestM08STD01AndExactNumbers(t *testing.T) {
 		}
 	}
 	for _, d := range out.Assets[0].Projection.Dispositions {
-		if len(d.SourceKeys) > 0 && (d.Outcome != projection.ProjectionUnknown || d.Reason == nil || *d.Reason != "unknown_pending_std_01") {
-			t.Fatal("STD-01 support inferred")
+		if len(d.SourceKeys) > 0 && (d.Outcome != projection.ProjectionUnknown || d.Reason == nil || *d.Reason != "unknown_pending_normative_source") {
+			t.Fatal("support inferred while the normative source is pending")
 		}
 	}
 }
@@ -859,9 +859,10 @@ func m08FactDisposition(t *testing.T, v View, id semreg.DefinitionID) projection
 // TestM08CandidateStateDisposition catches the mutation that ignores
 // qualification, promotion and validity when choosing ProjectionExact: a valued
 // candidate is exact only when qualified, promoted and valid; the
-// unknown_pending_std_01 reason keeps its special unknown outcome.
+// unknown_pending_normative_source reason keeps its special unknown outcome.
 func TestM08CandidateStateDisposition(t *testing.T) {
-	std01 := semreg.DefinitionID("unknown_pending_std_01")
+	pendingNormativeSource := semreg.DefinitionID("unknown_pending_normative_source")
+	retiredPendingToken := semreg.DefinitionID("unknown_pending_std_01")
 	cases := []struct {
 		name    string
 		mutate  func(q *semreg.Quality)
@@ -884,10 +885,15 @@ func TestM08CandidateStateDisposition(t *testing.T) {
 		{"unknown_qualification", func(q *semreg.Quality) {
 			q.Qualification, q.Promotion = semreg.QualificationUnknown, semreg.PromotionUnpromoted
 		}, projection.ProjectionUnknown, reasonPrefix + "value_unknown"},
-		{"std01_candidate", func(q *semreg.Quality) {
+		{"pending_normative_source_candidate", func(q *semreg.Quality) {
 			q.Qualification, q.Promotion = semreg.QualificationCandidate, semreg.PromotionUnpromoted
-			q.Reasons = []semreg.DefinitionID{std01}
-		}, projection.ProjectionUnknown, string(std01)},
+			q.Reasons = []semreg.DefinitionID{pendingNormativeSource}
+		}, projection.ProjectionUnknown, string(pendingNormativeSource)},
+		// The retired token has no alias: it is an unrelated owner reason.
+		{"retired_pending_token_is_ordinary", func(q *semreg.Quality) {
+			q.Qualification, q.Promotion = semreg.QualificationCandidate, semreg.PromotionUnpromoted
+			q.Reasons = []semreg.DefinitionID{retiredPendingToken}
+		}, projection.ProjectionWithheld, string(retiredPendingToken)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

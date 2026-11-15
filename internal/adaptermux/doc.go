@@ -75,7 +75,18 @@
 // The gateway's initiator address is its priority control. Its default 0x7f is in
 // the lowest priority class: a continuously bidding higher-priority scanner can
 // legitimately starve the gateway. This is standard address-priority behavior.
-// There is no software fairness rotation or request-age suppression. Deliverable
+// There is no software fairness rotation or request-age suppression. A waiting
+// external bid is therefore, while the mux and its upstream adapter connection
+// stay up, withdrawn only by its client: a SYN cancel, a newer request of the
+// same session with a different initiator (a repeat with the same initiator
+// replaces the waiter but keeps the queued bid and its age), or the session
+// closing. An adapter disconnect or reset, or mux
+// shutdown, fails every pending bid regardless of its client. A bid whose client
+// stopped waiting costs one START request and one grant held for at most the
+// abandon deadline (externalAbandonDeadline); the watchdog release fences
+// admission, and arbitration resumes at the next SYN. While active arbitration
+// is held for an out-of-step adapter, no START request is written for it at
+// all (stale_external_bid_test.go). Deliverable
 // STARTED responses always reach their session. A wire win abandoned through
 // cancellation or disconnect is held until the next SYN and counted by
 // ActiveTxnSnapshot.UndeliverableStarted; upstream reconnection is unnecessary.

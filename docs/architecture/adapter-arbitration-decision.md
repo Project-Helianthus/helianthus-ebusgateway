@@ -20,6 +20,26 @@ nibble, then lowest session identity. Equal priority keeps the first bid.
 Eligible losers keep gateway-first and external-list order. Ineligible bids
 keep their pending order for a later boundary.
 
+A waiting external bid has no age limit: there is no software fairness rotation
+or request-age suppression, and only the gateway's own bid is bounded by its
+admission wait. While the mux and its upstream adapter connection stay up, a
+waiting external bid is withdrawn only by its client: a SYN cancel, a newer
+request of the same session with a different initiator, or the session
+closing. A repeat START with the same initiator replaces the waiting
+notification but keeps the queued bid, its position and its age. An adapter disconnect or
+reset, or mux shutdown, fails every pending bid regardless of its client. A bid
+whose client stopped waiting is still selected at its SYN boundary and costs
+one START request and one grant held for at most the abandon deadline (75 ms
+after STARTED reached the client); the abandon-watchdog release fences
+admission, and the next waiting bid gets its START request at the next SYN.
+While active arbitration is held for an out-of-step adapter, no START request
+is written for a waiting bid. The tests that pin this bound are
+`TestStaleExternalBidSelectedAtSYNAfterStartDeadline`,
+`TestStaleExternalBidAbandonedGrantRecoversAtNextSYN`,
+`TestStaleExternalBidWithdrawnOnlyByItsClient` and
+`TestStaleExternalBidNotStartedDuringHold` in
+`internal/adaptermux/stale_external_bid_test.go`.
+
 Selection does not confirm ownership or send results. Deferred gateway loser
 tracking, cancellation, replacement, ownership tokens, and exactly-once result
 delivery remain responsibilities of the arbitrator and existing callers.

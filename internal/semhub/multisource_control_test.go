@@ -701,3 +701,28 @@ func TestMultiSourceControlConcurrentContributorCycles(t *testing.T) {
 		}
 	}
 }
+
+// A retry of one contributor's unsettled reprojection never delivers its older
+// snapshot after a newer control event of the asset has been delivered.
+func TestMultiSourceControlRetryDoesNotReplayOlderSnapshot(t *testing.T) {
+	f := newMultiSourceFixture(t)
+	f.publishBoth(t, 1)
+	f.setFail(sharedOwner, errors.New("reprojection refused"))
+	_, _ = f.hub.Fence(testFence(sharedOwner, "epoch:a", 1, 2))
+	f.setFail(sharedOwner, nil)
+	if result, err := f.hub.Fence(testFence(sharedPeer, "epoch:b", 1, 3)); err != nil || !semanticSuccess(result.Assets[0].Outcome) {
+		t.Fatalf("peer fence=%+v err=%v", result.Assets, err)
+	}
+	if err := f.hub.Resettle(sharedAsset); err != nil {
+		t.Fatalf("resettle=%v", err)
+	}
+	for _, recipient := range []string{ownerRecipient, peerRecipient} {
+		events := f.events(recipient)
+		for index := 1; index < len(events); index++ {
+			if events[index].HubSeq < events[index-1].HubSeq {
+				t.Fatalf("%s received an older snapshot after a newer one: %+v", recipient, events)
+			}
+		}
+	}
+	waitFor(t, func() bool { return f.hub.Settled(sharedAsset) })
+}

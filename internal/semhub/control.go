@@ -1091,6 +1091,16 @@ func (h *Hub) startAttemptLocked(ca *controlAsset) (chan struct{}, error) {
 	if target.restored && target.onControl == nil {
 		return nil, ErrReprojectionPending
 	}
+	// A gate whose control event is older than a newer event of the asset that
+	// has already been delivered is superseded: the newer snapshot contains
+	// its effects, so redelivering the older snapshot would only roll the
+	// receivers back. It settles without a callback.
+	for _, other := range target.gatesLocked() {
+		if other != ca && semanticSuccess(other.semantic) && other.hubSeq > ca.hubSeq && other.reprojection == ReprojectionSettled {
+			ca.reprojection, ca.reprojErr = ReprojectionSettled, nil
+			return nil, nil
+		}
+	}
 	// Every reprojection callback of the asset (the owner's and each
 	// contributor's) receives the event, each with its own detached copy.
 	callbacks := target.reprojectionsLocked()
@@ -1181,7 +1191,9 @@ func (h *Hub) Resettle(id semreg.AssetID) error {
 	var refusal error
 	var pending []*controlAsset
 	var entries []*reprojectionEntry
-	for _, ca := range target.gatesLocked() {
+	gates := target.gatesLocked()
+	sort.SliceStable(gates, func(i, j int) bool { return gates[i].hubSeq < gates[j].hubSeq })
+	for _, ca := range gates {
 		switch {
 		case !semanticSuccess(ca.semantic):
 			if refusal == nil {

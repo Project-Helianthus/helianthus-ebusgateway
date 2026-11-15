@@ -98,6 +98,10 @@ var ErrRestore = errors.New("semhub: recovery refused")
 // installing state: restore and admission never interleave.
 var ErrRestoreInProgress = errors.New("semhub: restore in progress")
 
+// ErrRecoveryMultiSource refuses to export or restore a version 1 checkpoint
+// for an asset with more than one source.
+var ErrRecoveryMultiSource = errors.New("semhub: recovery record holds one source per asset")
+
 func copyAttempt(in Attempt) Attempt {
 	in.Batch = append([]byte(nil), in.Batch...)
 	return in
@@ -153,14 +157,33 @@ func (h *Hub) exportAccepted(record AcceptedBatch) {
 
 // ExportRecovery copies a coherent checkpoint under bounded synchronization,
 // then copies buffers outside the hub lock. It performs no persistence or I/O.
+// It returns the zero record wherever ExportRecoveryChecked reports an error.
 func (h *Hub) ExportRecovery() RecoveryRecord {
+	record, _ := h.ExportRecoveryChecked()
+	return record
+}
+
+// ExportRecoveryChecked is ExportRecovery with the reason for a zero record.
+// A hub holding an asset with a declared contributor has no version 1
+// checkpoint, because the record holds one source per asset: the export fails
+// closed with ErrRecoveryMultiSource.
+func (h *Hub) ExportRecoveryChecked() (RecoveryRecord, error) {
 	h.mu.RLock()
 	record := RecoveryRecord{Version: 1, Regimes: map[semreg.SourceID]LegacyFamily{}}
-	// A hub that is still installing a restore has no coherent checkpoint:
-	// the zero record (version 0) is returned, which no Restore accepts.
-	if h.recovery == nil || h.restoring {
+	// A hub without recovery, a hub that is still installing a restore and a
+	// hub with a shared asset have no coherent checkpoint: the zero record
+	// (version 0) is returned, which no Restore accepts.
+	if h.recovery == nil {
 		h.mu.RUnlock()
-		return RecoveryRecord{}
+		return RecoveryRecord{}, fmt.Errorf("%w: recovery not enabled", ErrRestore)
+	}
+	if h.restoring {
+		h.mu.RUnlock()
+		return RecoveryRecord{}, ErrRestoreInProgress
+	}
+	if shared := h.sharedAssetLocked(); shared != "" {
+		h.mu.RUnlock()
+		return RecoveryRecord{}, fmt.Errorf("%w: asset %s", ErrRecoveryMultiSource, shared)
 	}
 	for id, family := range h.restoredRegimes {
 		record.Regimes[id] = family
@@ -218,7 +241,55 @@ func (h *Hub) ExportRecovery() RecoveryRecord {
 		record.Epochs[i] = cloneRecord(record.Epochs[i])
 	}
 	sort.Slice(record.Assets, func(i, j int) bool { return record.Assets[i].Asset < record.Assets[j].Asset })
-	return record
+	return record, nil
+}
+
+// sharedAssetLocked returns the bytewise-first declared asset that has a
+// contributor, or "" when every asset has one source. h.mu must be held.
+func (h *Hub) sharedAssetLocked() semreg.AssetID {
+	var shared semreg.AssetID
+	for id, target := range h.assets {
+		if len(target.contributors) > 0 && (shared == "" || id < shared) {
+			shared = id
+		}
+	}
+	return shared
+}
+
+// recoverySecondSource returns the first asset for which a version 1 record
+// names a source other than the asset entry's own: a second entry, an accepted
+// batch, the retained control or an epoch event covering the asset. It
+// returns "" when every asset has one source.
+func recoverySecondSource(record RecoveryRecord) semreg.AssetID {
+	sources := make(map[semreg.AssetID]semreg.SourceID, len(record.Assets))
+	for _, entry := range record.Assets {
+		prior, named := sources[entry.Asset]
+		if named && prior != entry.Source {
+			return entry.Asset
+		}
+		if !named {
+			sources[entry.Asset] = entry.Source
+		}
+	}
+	for _, entry := range record.Assets {
+		for _, accepted := range entry.Accepted {
+			var batch semreg.PublicationBatch
+			if json.Unmarshal(accepted.Batch, &batch) == nil && batch.AssetID == entry.Asset && batch.SourceID != "" && batch.SourceID != entry.Source {
+				return entry.Asset
+			}
+		}
+		if control := entry.Control; control != nil && control.Status.ID != nil && control.Status.ID.Source != "" && control.Status.ID.Source != entry.Source {
+			return entry.Asset
+		}
+	}
+	for _, epoch := range record.Epochs {
+		for _, id := range epoch.Assets {
+			if own, named := sources[id]; named && own != epoch.Source {
+				return id
+			}
+		}
+	}
+	return ""
 }
 
 // Restore replays complete accepted logs on detached empty kernels before any
@@ -237,6 +308,22 @@ func (h *Hub) Restore(input RecoveryRecord) error {
 	var record RecoveryRecord
 	if err := json.Unmarshal(raw, &record); err != nil {
 		return fmt.Errorf("%w: decode record: %v", ErrRestore, err)
+	}
+	// A version 1 record holds one source per asset, so a record that names a
+	// second source for an asset, or a destination asset with a contributor,
+	// is refused as a whole and closes every declared asset.
+	h.mu.RLock()
+	shared := h.sharedAssetLocked()
+	h.mu.RUnlock()
+	if shared == "" {
+		shared = recoverySecondSource(record)
+	}
+	if shared != "" {
+		h.mu.RLock()
+		closure := h.allRecoveryAssetsLocked(record)
+		h.mu.RUnlock()
+		h.failRestoreAssets(closure)
+		return fmt.Errorf("%w: %w: asset %s", ErrRestore, ErrRecoveryMultiSource, shared)
 	}
 	if record.Version != 1 || validateRecoveryHistory(record) != nil {
 		h.mu.RLock()

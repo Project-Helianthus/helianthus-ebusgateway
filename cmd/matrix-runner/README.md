@@ -254,6 +254,57 @@ status as a failed smoke step, so a refused cell never passes.
 synthetic responses in `scripts/testdata/adaptermux_v2_smoke/`, served by a
 local stub. `./scripts/ci_local.sh` runs it.
 
+### Add-on target commands
+
+On `--target ha-addon` the supervisor starts the gateway and the external
+client from their add-on options, and the operator prepares each hardware
+setup before its invocation: the adapter, the gateway's southbound transport,
+adapter-direct with the proxy listener for the mux cells, and the client.
+The harness changes no adapter setting and no add-on option, and never sends
+a credential. The start and stop commands therefore start and stop nothing.
+They verify:
+
+```sh
+matrix-runner --suite adaptermux-v2 --execute ... --target ha-addon \
+  --start-gateway 'sh scripts/adaptermux_v2_addon_gateway_started.sh' \
+  --start-ebusd 'sh scripts/adaptermux_v2_addon_client_started.sh' \
+  --stop-ebusd 'sh scripts/adaptermux_v2_addon_stop.sh' \
+  --stop-gateway 'sh scripts/adaptermux_v2_addon_stop.sh' \
+  --smoke-command 'python3 scripts/adaptermux_v2_smoke.py'
+```
+
+| Command | Checks | Exit statuses |
+|---|---|---|
+| `adaptermux_v2_addon_gateway_started.sh` | the gateway answers; the bus observability `transport_class` is the one of the cell (the table of the smoke command); for mux cells the health `readiness.proxy_readiness` is `READY`; the startup phase is `LIVE_READY` | 0 ready, 2 usage, 10 no answer, 11 wrong transport class, 12 proxy listener not ready, 13 startup phase not ready |
+| `adaptermux_v2_addon_client_started.sh` | mux cells with ebusd or the VRC Explorer: the proxy listener is `READY` and the expvar `adaptermux_session_frame_latency_us_bucket_total` delivery count grows between two readings, so an external session on the proxy listener receives bus symbols; every ebusd cell, `EBUSD-ES01` included: the command port in `MATRIX_EBUSD_COMMAND_ADDR` answers `state` with `signal acquired` | 0 connected, 2 usage, 3 refused (the cell has no external client started before its workload), 10 no answer, 12 proxy listener not ready, 14 no external session receives symbols, 15 ebusd did not answer or answered `ERR`, 16 ebusd has no signal |
+| `adaptermux_v2_addon_stop.sh` | writes `gateway_counters_end.json` into the case directory: the Prometheus `_total` samples, the numeric expvar counters (without `cmdline` and `memstats`) and the bus observability counters and frame counts per scope and frame type; a surface that does not answer is recorded as not read | 0 recorded, 2 usage (`MATRIX_CASE_DIR` is not a directory) |
+
+The runner runs `--start-ebusd` and `--stop-ebusd` only for the cells that
+use ebusd. The gateway lists no proxy session by client, so the session
+check shows that an external session is connected, not which one; on an
+add-on setup the operator runs the cell's client as the only proxy client.
+The command `state` is the only line sent to ebusd.
+
+The commands read only `MATRIX_*` variables: `MATRIX_GATEWAY_BASE_URL` (or
+the surface overrides `MATRIX_HEALTH_URL`, `MATRIX_BUS_OBSERVABILITY_URL`,
+`MATRIX_METRICS_URL` and `MATRIX_DEBUG_VARS_URL`), `MATRIX_EBUSD_COMMAND_ADDR`
+(the runner does not derive it from `--ebusd-command-addr`: export it in the
+runner's environment with the same host:port, which the commands inherit; an
+ebusd cell without it ends with usage status 2),
+the cell variables set by the runner, and `MATRIX_ADDON_WAIT_SEC`,
+`MATRIX_ADDON_POLL_SEC` and `MATRIX_ADDON_HTTP_TIMEOUT_SEC` (default 60, 2
+and 10 seconds). The start commands poll until the state holds or the wait
+ends and judge the last reading; the client check needs a wait of at least
+one poll interval. A URL carrying user information is rejected. They send
+HTTP GET only, use no HTTP proxy, print no URL or address, and only the stop
+command writes, inside `MATRIX_CASE_DIR`. Keep the wait of both start
+commands plus the smoke window inside `--case-timeout`.
+
+`scripts/adaptermux_v2_addon_commands_test.py` tests the ready, not-ready,
+wrong-transport and client-absent cases offline against a local stub, and
+checks that the commands contain no option write, no adapter request and no
+credential variable. `./scripts/ci_local.sh` runs it.
+
 ### Write safety
 
 No cell writes to a field device. Every client the harness drives passes an

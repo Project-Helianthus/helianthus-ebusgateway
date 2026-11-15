@@ -39,7 +39,7 @@ func TestIssue819ReleasedEEBusDependencyClosure(t *testing.T) {
 	}
 
 	want := map[string]string{
-		eebusregModule: "v0.1.37-0.20261111060854-871cb4c7c5c3",
+		eebusregModule: "v0.1.37-0.20261115013444-994c22de8a7b",
 		eebusgoModule:  "v0.7.1-helianthus.21",
 		shipgoModule:   "v0.6.1-helianthus.19",
 		spinegoModule:  "v0.7.1-helianthus.9",

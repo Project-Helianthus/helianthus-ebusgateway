@@ -212,7 +212,9 @@ Reason codes of `TARGET_ERROR`:
   performs the substitution, as the ENH SEND contract states, receives the
   logical byte). The subscriber never stages an escape pair. The mux validates
   before it accepts the commit: first byte ACK, consistent length, response
-  CRC over logical length and data, total within the bound. A failing commit is refused with
+  CRC over logical length and data, total within the bound. The first emission
+  sends the whole committed buffer; a retransmission after a response NACK
+  sends it from the second byte on (section 4). A failing commit is refused with
   `invalid_response` and leaves the slot without a commit. `COMMIT 0` with no
   staged bytes declines the transaction: the target stays silent.
 - `BEGIN` or `COMMIT` naming a tag that is not the current slot is refused with
@@ -235,7 +237,9 @@ Reason codes of `TARGET_ERROR`:
   observed, or at an invalidation that stops emission (section 6). It reopens
   once for a single retransmission of the response after the initiator's
   response NACK, as the protocol assigns that repetition to the target; a
-  second NACK ends the slot.
+  second NACK ends the slot. The retransmission is the committed buffer
+  without its first byte: length, data and CRC of the response, never the
+  command ACK `0x00`, with the same single escape expansion in the emitter.
 - Exactly one emitter exists in the mux, with a single in-flight emission. It
   commits each symbol under the same lock as every ownership transition, after
   checking the reset, reconnect and close fence.
@@ -321,7 +325,7 @@ per acceptance criterion of the issue, each with sub-tests:
 | 1 registration lifecycle | `TestTargetRegistrationLifecycle`: accept, exact retry, duplicate across sessions, capacity, inadmissible addresses, idempotent unregister, cleanup on disconnect, cleanup on reset, no START bid created |
 | 2 destination-time reservation | `TestDestinationSymbolReservesSlotWithOrderedPrefix`: `SLOT` directly behind the destination symbol, raw escape pairs delivered once, no whole-frame wait |
 | 3 provisional selection | `TestProvisionalSlotEmitsNothingBeforeValidatedRequest`: commit before CRC emits nothing early, single NACK on invalid CRC, silence on malformed framing, emissions only for the slot's address, transaction and phase |
-| 4 emission without START | `TestResponderEmissionWithoutStartFencesLocalTraffic`: no START written, owner `SEND` rejected in the window, queued write fails at commit, other sessions cannot stage, refusal without responder capability |
+| 4 emission without START | `TestResponderEmissionWithoutStartFencesLocalTraffic`: no START written, owner `SEND` rejected in the window, queued write fails at commit, other sessions cannot stage, refusal without responder capability, retransmission after one response NACK writes exactly length, data and CRC without the command ACK |
 | 5 latency and queueing | `TestResponderPathIsUnpacedAndBounded`: no pacing for a registered session, budget checked on every enqueue (traffic for other addresses alone reaches it and revokes at once, the notices fit the reserved headroom, pending output never exceeds the budget while a registration is held, `TARGET` refused with `capacity` while the pending output is over the budget), prepared response emitted in full at the CRC, late commit refused and counted, emission bound exceeded emits nothing |
 | 6 invalidation | `TestResponderSlotInvalidation`: one table row per cause in section 6, including unregister and disconnect after emission started (the committed bytes complete, checked against the lease), tag exhaustion (the slot with tag 255 emits its committed response, registrations are revoked only after its `SLOT_END`, no tag reuse), and a stale tag held by an old worker refused |
 | 7 determinism | `TestResponderSlotReplayIsDeterministic`: every scenario replayed twice with identical session frames, upstream writes and counters |

@@ -374,6 +374,11 @@ func (h *Hub) Declare(spec AssetSpec) (*Declaration, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The recovery record holds the owner's publications and gate only, so a
+	// recovery-enabled hub cannot checkpoint a contributor's publications.
+	if len(contributors) > 0 && h.recovery != nil {
+		return nil, fmt.Errorf("%w: a contributor list is not supported while recovery is enabled", ErrDeclarationConflict)
+	}
 	h.lock()
 	if h.restoring {
 		h.unlock()

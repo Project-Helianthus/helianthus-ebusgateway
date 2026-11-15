@@ -600,3 +600,20 @@ func TestContributorSingleSourceAssetRecordsNoInferredCreator(t *testing.T) {
 		t.Fatalf("single-source asset recorded %d inferred creators", recorded)
 	}
 }
+
+// TestContributorRecoveryEnabledHubRefusesContributorList proves that a hub
+// with recovery hooks refuses a contributor list, because the recovery record
+// cannot carry a contributor's publications, and that a single-source asset
+// is still declared.
+func TestContributorRecoveryEnabledHubRefusesContributorList(t *testing.T) {
+	hub, err := New(Options{Recovery: &RecoveryHooks{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hub.Declare(sharedSpec(peerSpec())); !errors.Is(err, ErrDeclarationConflict) {
+		t.Fatalf("recovery contributor list=%v", err)
+	}
+	if _, err := hub.Declare(sharedSpec()); err != nil {
+		t.Fatalf("single-source declaration=%v", err)
+	}
+}

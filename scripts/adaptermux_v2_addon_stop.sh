@@ -27,6 +27,8 @@ import json
 import os
 import re
 import sys
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -36,6 +38,9 @@ EXIT_RECORDED = 0
 EXIT_USAGE = 2
 RECORD_FILE = "gateway_counters_end.json"
 RECORD_SCHEMA = "adaptermux-v2-addon-counters/1"
+# The runner runs this command for both stop commands inside one shared
+# cleanup budget, so the three reads run together under one total deadline.
+TOTAL_DEADLINE_SEC = 10.0
 
 SURFACES = {
     "metrics": ("MATRIX_METRICS_URL", "/metrics"),
@@ -192,11 +197,23 @@ def main():
         urls = {}
         for key in SURFACES:
             record["surfaces"][key] = {"read": False, "reason": "usage: " + str(error)}
-    for key in sorted(urls):
+    deadline = min(timeout, TOTAL_DEADLINE_SEC) if urls else 0.0
+    outcomes = {}
+
+    def read(key):
         try:
-            record["surfaces"][key] = {"read": True, "counters": READERS[key](urls[key], timeout)}
+            outcomes[key] = {"read": True, "counters": READERS[key](urls[key], deadline)}
         except NoAnswer as error:
-            record["surfaces"][key] = {"read": False, "reason": str(error)}
+            outcomes[key] = {"read": False, "reason": str(error)}
+
+    threads = [threading.Thread(target=read, args=(key,), daemon=True) for key in sorted(urls)]
+    for thread in threads:
+        thread.start()
+    end = time.monotonic() + deadline
+    for thread in threads:
+        thread.join(max(0.0, end - time.monotonic()))
+    for key in sorted(urls):
+        record["surfaces"][key] = dict(outcomes.get(key) or {"read": False, "reason": key + " did not answer in time"})
 
     path = os.path.join(case_dir, RECORD_FILE)
     partial = path + ".partial"

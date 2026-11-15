@@ -16,6 +16,7 @@ import socketserver
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -418,6 +419,21 @@ class StopTest(CommandTestCase):
         self.assertEqual(sorted(surfaces), ["metrics", "observability", "vars"])
         self.assertTrue(all(surface["read"] is False for surface in surfaces.values()))
         self.assertNotIn("127.0.0.1", json.dumps(surfaces))
+
+    def test_unanswered_surfaces_are_read_together_within_one_deadline(self):
+        silent = socket.socket()
+        silent.bind(("127.0.0.1", 0))
+        silent.listen(8)
+        self.addCleanup(silent.close)
+        url = "http://127.0.0.1:%d" % silent.getsockname()[1]
+        started = time.monotonic()
+        result = self.run_command(STOP, self.matrix(
+            "mux", "enh", MATRIX_GATEWAY_BASE_URL=url, MATRIX_ADDON_HTTP_TIMEOUT_SEC="2"))
+        elapsed = time.monotonic() - started
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLess(elapsed, 4.5, "the three reads must not add their timeouts")
+        surfaces = self.record()["surfaces"]
+        self.assertTrue(all(surface["read"] is False for surface in surfaces.values()))
 
     def test_missing_case_directory_is_a_usage_error(self):
         missing = str(self.root / "absent")

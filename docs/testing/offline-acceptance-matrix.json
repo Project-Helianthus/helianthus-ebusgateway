@@ -1,0 +1,2327 @@
+{
+  "format": "helianthus-offline-acceptance-matrix/1",
+  "note": "Offline composition evidence at the candidate's bill of materials only; no cell is a hardware result and no cell qualifies a device. A cell is {state, test, reason, issue}; state is one of not_run, pass (test names an existing test), not_applicable (one-line reason), not_in_0_7 (one-line reason and an owner issue in the form <repo>#<number>). Validate with scripts/offline_acceptance_matrix.py check.",
+  "families": [
+    {
+      "id": "ebus_vaillant",
+      "title": "eBUS heating system with a vendor system controller",
+      "release": "in_0_7"
+    },
+    {
+      "id": "ebus_heat_source_only",
+      "title": "eBUS heat source without a system controller",
+      "release": "in_0_7"
+    },
+    {
+      "id": "eebus_energy_manager",
+      "title": "eeBUS peer (SHIP and SPINE)",
+      "release": "in_0_7"
+    },
+    {
+      "id": "sunspec_inverter",
+      "title": "SunSpec inverter family over Modbus TCP",
+      "release": "in_0_7"
+    },
+    {
+      "id": "huawei_smartlogger",
+      "title": "Huawei SmartLogger gateway over Modbus TCP",
+      "release": "in_0_7"
+    },
+    {
+      "id": "huawei_sdongle",
+      "title": "Huawei S-Dongle gateway over Modbus TCP",
+      "release": "in_0_7"
+    },
+    {
+      "id": "huawei_energy_manager",
+      "title": "Huawei energy manager over Modbus TCP",
+      "release": "withheld_by_contract"
+    },
+    {
+      "id": "growatt_inverter_rtu",
+      "title": "Growatt inverter family over Modbus RTU",
+      "release": "in_0_7"
+    },
+    {
+      "id": "growatt_bms_rs485",
+      "title": "Growatt battery management over RS-485",
+      "release": "in_0_7"
+    },
+    {
+      "id": "growatt_bms_can",
+      "title": "Growatt low-voltage battery management over CAN",
+      "release": "in_0_7"
+    },
+    {
+      "id": "growatt_bms_pcs_can",
+      "title": "Growatt battery management PCS link over CAN",
+      "release": "in_0_7"
+    },
+    {
+      "id": "growatt_bms_link_can",
+      "title": "Growatt battery management LINK link over CAN",
+      "release": "in_0_7"
+    },
+    {
+      "id": "tesla_wall_connector",
+      "title": "Tesla wall connector family",
+      "release": "in_0_7"
+    },
+    {
+      "id": "outback_power",
+      "title": "OutBack power system over Modbus TCP",
+      "release": "in_0_7"
+    },
+    {
+      "id": "gree_vrf_can",
+      "title": "Gree VRF over CAN, receive-only",
+      "release": "in_0_7"
+    }
+  ],
+  "surfaces": [
+    {
+      "id": "native_mcp",
+      "title": "Native MCP (raw and typed native points)"
+    },
+    {
+      "id": "semantic_mcp",
+      "title": "Semantic MCP"
+    },
+    {
+      "id": "graphql",
+      "title": "GraphQL"
+    },
+    {
+      "id": "portal",
+      "title": "Portal contribution and navigation"
+    },
+    {
+      "id": "home_assistant",
+      "title": "Home Assistant consumer contract (replayed against the gateway surface)"
+    },
+    {
+      "id": "prometheus_semantic",
+      "title": "Prometheus semantic families"
+    },
+    {
+      "id": "prometheus_native",
+      "title": "Prometheus native point families (optional export)"
+    },
+    {
+      "id": "eebus_output",
+      "title": "eeBUS output binding"
+    },
+    {
+      "id": "matter_output",
+      "title": "Matter output binding"
+    }
+  ],
+  "graph_rows": [
+    {
+      "id": "resources",
+      "title": "Canonical resources published with stable identity"
+    },
+    {
+      "id": "relations",
+      "title": "Relation instances published with both endpoints"
+    },
+    {
+      "id": "plane_membership",
+      "title": "Plane memberships equal the catalog for the resource kind"
+    },
+    {
+      "id": "lens_parity",
+      "title": "Lens retrieval returns the same resources and relations through GraphQL, semantic MCP and the Portal"
+    },
+    {
+      "id": "target_reports",
+      "title": "Target reports cite the lens they were produced from"
+    }
+  ],
+  "graph_negatives": [
+    {
+      "id": "duplicate_identity",
+      "title": "Two sources of one device do not produce two resources"
+    },
+    {
+      "id": "false_join",
+      "title": "Two devices are not joined into one resource"
+    },
+    {
+      "id": "missing_membership",
+      "title": "A resource without a plane membership is refused, not published"
+    },
+    {
+      "id": "stale_relation",
+      "title": "A relation from a retired generation is not served as current"
+    },
+    {
+      "id": "dangling_endpoint",
+      "title": "A relation whose endpoint is absent is not published"
+    },
+    {
+      "id": "identity_drift",
+      "title": "A resource keeps one identity across planes and across a restart"
+    },
+    {
+      "id": "unauthorized_control",
+      "title": "Visibility in a plane grants no operation: a write on a resource without an admitted operation is refused before the bus"
+    }
+  ],
+  "conditions": [
+    {
+      "id": "normal",
+      "title": "Normal acquisition and publication"
+    },
+    {
+      "id": "degraded",
+      "title": "Degraded source: explicit state, no invented value"
+    },
+    {
+      "id": "reset",
+      "title": "Source reset or reconnect: generation fenced, publication resumes"
+    },
+    {
+      "id": "partial_failure",
+      "title": "One instance fails, the others and the HTTP surfaces continue"
+    },
+    {
+      "id": "stale_generation",
+      "title": "A late result of a replaced generation is discarded"
+    },
+    {
+      "id": "identity_conflict",
+      "title": "Conflicting identity evidence withholds admission"
+    },
+    {
+      "id": "unknown_capability",
+      "title": "An unknown capability stays unknown on every surface"
+    },
+    {
+      "id": "cleanup",
+      "title": "Stop releases resources and leaves no publication behind"
+    }
+  ],
+  "cells": {
+    "family_surface": {
+      "ebus_vaillant": {
+        "native_mcp": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "semantic_mcp": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "graphql": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "portal": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "home_assistant": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "prometheus_semantic": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "prometheus_native": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "eebus_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "matter_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "ebus_heat_source_only": {
+        "native_mcp": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "semantic_mcp": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "graphql": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "portal": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "home_assistant": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "prometheus_semantic": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "prometheus_native": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "eebus_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "matter_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "eebus_energy_manager": {
+        "native_mcp": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "semantic_mcp": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "graphql": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "portal": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "home_assistant": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "prometheus_semantic": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "prometheus_native": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "eebus_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "matter_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "sunspec_inverter": {
+        "native_mcp": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "semantic_mcp": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "graphql": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "portal": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "home_assistant": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "prometheus_semantic": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "prometheus_native": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "eebus_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "matter_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "huawei_smartlogger": {
+        "native_mcp": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "semantic_mcp": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "graphql": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "portal": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "home_assistant": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "prometheus_semantic": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "prometheus_native": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "eebus_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "matter_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "huawei_sdongle": {
+        "native_mcp": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "semantic_mcp": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "graphql": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "portal": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "home_assistant": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "prometheus_semantic": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "prometheus_native": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "eebus_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "matter_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "huawei_energy_manager": {
+        "native_mcp": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "semantic_mcp": {
+          "state": "not_in_0_7",
+          "test": null,
+          "reason": "Semantic publication of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits acquisition; the composed instance publishes nothing.",
+          "issue": "helianthus-modbusreg#199"
+        },
+        "graphql": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "portal": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "home_assistant": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "prometheus_semantic": {
+          "state": "not_in_0_7",
+          "test": null,
+          "reason": "Semantic publication of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits acquisition; the composed instance publishes nothing.",
+          "issue": "helianthus-modbusreg#199"
+        },
+        "prometheus_native": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "eebus_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "matter_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "growatt_inverter_rtu": {
+        "native_mcp": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "semantic_mcp": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "graphql": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "portal": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "home_assistant": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "prometheus_semantic": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "prometheus_native": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "eebus_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "matter_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "growatt_bms_rs485": {
+        "native_mcp": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "semantic_mcp": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "graphql": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "portal": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "home_assistant": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "prometheus_semantic": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "prometheus_native": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "eebus_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "matter_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "growatt_bms_can": {
+        "native_mcp": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "semantic_mcp": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "graphql": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "portal": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "home_assistant": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "prometheus_semantic": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "prometheus_native": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "eebus_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "matter_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "growatt_bms_pcs_can": {
+        "native_mcp": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "semantic_mcp": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "graphql": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "portal": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "home_assistant": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "prometheus_semantic": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "prometheus_native": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "eebus_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "matter_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "growatt_bms_link_can": {
+        "native_mcp": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "semantic_mcp": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "graphql": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "portal": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "home_assistant": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "prometheus_semantic": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "prometheus_native": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "eebus_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "matter_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "tesla_wall_connector": {
+        "native_mcp": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "semantic_mcp": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "graphql": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "portal": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "home_assistant": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "prometheus_semantic": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "prometheus_native": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "eebus_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "matter_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "outback_power": {
+        "native_mcp": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "semantic_mcp": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "graphql": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "portal": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "home_assistant": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "prometheus_semantic": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "prometheus_native": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "eebus_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "matter_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "gree_vrf_can": {
+        "native_mcp": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "semantic_mcp": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "graphql": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "portal": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "home_assistant": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "prometheus_semantic": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "prometheus_native": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "eebus_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "matter_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      }
+    },
+    "family_graph": {
+      "ebus_vaillant": {
+        "resources": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "relations": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "plane_membership": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "lens_parity": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "target_reports": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "ebus_heat_source_only": {
+        "resources": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "relations": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "plane_membership": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "lens_parity": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "target_reports": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "eebus_energy_manager": {
+        "resources": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "relations": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "plane_membership": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "lens_parity": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "target_reports": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "sunspec_inverter": {
+        "resources": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "relations": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "plane_membership": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "lens_parity": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "target_reports": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "huawei_smartlogger": {
+        "resources": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "relations": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "plane_membership": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "lens_parity": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "target_reports": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "huawei_sdongle": {
+        "resources": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "relations": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "plane_membership": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "lens_parity": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "target_reports": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "huawei_energy_manager": {
+        "resources": {
+          "state": "not_in_0_7",
+          "test": null,
+          "reason": "Semantic publication of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits acquisition; the composed instance publishes nothing.",
+          "issue": "helianthus-modbusreg#199"
+        },
+        "relations": {
+          "state": "not_in_0_7",
+          "test": null,
+          "reason": "Semantic publication of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits acquisition; the composed instance publishes nothing.",
+          "issue": "helianthus-modbusreg#199"
+        },
+        "plane_membership": {
+          "state": "not_in_0_7",
+          "test": null,
+          "reason": "Semantic publication of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits acquisition; the composed instance publishes nothing.",
+          "issue": "helianthus-modbusreg#199"
+        },
+        "lens_parity": {
+          "state": "not_in_0_7",
+          "test": null,
+          "reason": "Semantic publication of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits acquisition; the composed instance publishes nothing.",
+          "issue": "helianthus-modbusreg#199"
+        },
+        "target_reports": {
+          "state": "not_in_0_7",
+          "test": null,
+          "reason": "Semantic publication of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits acquisition; the composed instance publishes nothing.",
+          "issue": "helianthus-modbusreg#199"
+        }
+      },
+      "growatt_inverter_rtu": {
+        "resources": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "relations": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "plane_membership": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "lens_parity": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "target_reports": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "growatt_bms_rs485": {
+        "resources": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "relations": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "plane_membership": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "lens_parity": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "target_reports": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "growatt_bms_can": {
+        "resources": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "relations": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "plane_membership": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "lens_parity": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "target_reports": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "growatt_bms_pcs_can": {
+        "resources": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "relations": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "plane_membership": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "lens_parity": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "target_reports": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "growatt_bms_link_can": {
+        "resources": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "relations": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "plane_membership": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "lens_parity": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "target_reports": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "tesla_wall_connector": {
+        "resources": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "relations": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "plane_membership": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "lens_parity": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "target_reports": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "outback_power": {
+        "resources": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "relations": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "plane_membership": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "lens_parity": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "target_reports": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "gree_vrf_can": {
+        "resources": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "relations": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "plane_membership": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "lens_parity": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "target_reports": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      }
+    },
+    "family_condition": {
+      "ebus_vaillant": {
+        "normal": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "degraded": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "reset": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "partial_failure": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "stale_generation": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "identity_conflict": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "unknown_capability": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "cleanup": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "ebus_heat_source_only": {
+        "normal": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "degraded": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "reset": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "partial_failure": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "stale_generation": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "identity_conflict": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "unknown_capability": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "cleanup": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "eebus_energy_manager": {
+        "normal": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "degraded": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "reset": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "partial_failure": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "stale_generation": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "identity_conflict": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "unknown_capability": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "cleanup": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "sunspec_inverter": {
+        "normal": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "degraded": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "reset": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "partial_failure": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "stale_generation": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "identity_conflict": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "unknown_capability": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "cleanup": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "huawei_smartlogger": {
+        "normal": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "degraded": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "reset": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "partial_failure": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "stale_generation": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "identity_conflict": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "unknown_capability": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "cleanup": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "huawei_sdongle": {
+        "normal": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "degraded": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "reset": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "partial_failure": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "stale_generation": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "identity_conflict": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "unknown_capability": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "cleanup": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "huawei_energy_manager": {
+        "normal": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "degraded": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "reset": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "partial_failure": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "stale_generation": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "identity_conflict": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "unknown_capability": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "cleanup": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "growatt_inverter_rtu": {
+        "normal": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "degraded": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "reset": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "partial_failure": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "stale_generation": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "identity_conflict": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "unknown_capability": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "cleanup": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "growatt_bms_rs485": {
+        "normal": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "degraded": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "reset": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "partial_failure": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "stale_generation": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "identity_conflict": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "unknown_capability": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "cleanup": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "growatt_bms_can": {
+        "normal": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "degraded": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "reset": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "partial_failure": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "stale_generation": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "identity_conflict": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "unknown_capability": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "cleanup": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "growatt_bms_pcs_can": {
+        "normal": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "degraded": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "reset": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "partial_failure": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "stale_generation": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "identity_conflict": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "unknown_capability": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "cleanup": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "growatt_bms_link_can": {
+        "normal": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "degraded": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "reset": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "partial_failure": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "stale_generation": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "identity_conflict": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "unknown_capability": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "cleanup": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "tesla_wall_connector": {
+        "normal": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "degraded": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "reset": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "partial_failure": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "stale_generation": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "identity_conflict": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "unknown_capability": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "cleanup": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "outback_power": {
+        "normal": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "degraded": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "reset": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "partial_failure": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "stale_generation": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "identity_conflict": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "unknown_capability": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "cleanup": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "gree_vrf_can": {
+        "normal": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "degraded": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "reset": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "partial_failure": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "stale_generation": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "identity_conflict": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "unknown_capability": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "cleanup": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      }
+    },
+    "graph_negative": {
+      "duplicate_identity": {
+        "state": "not_run",
+        "test": null,
+        "reason": null,
+        "issue": null
+      },
+      "false_join": {
+        "state": "not_run",
+        "test": null,
+        "reason": null,
+        "issue": null
+      },
+      "missing_membership": {
+        "state": "not_run",
+        "test": null,
+        "reason": null,
+        "issue": null
+      },
+      "stale_relation": {
+        "state": "not_run",
+        "test": null,
+        "reason": null,
+        "issue": null
+      },
+      "dangling_endpoint": {
+        "state": "not_run",
+        "test": null,
+        "reason": null,
+        "issue": null
+      },
+      "identity_drift": {
+        "state": "not_run",
+        "test": null,
+        "reason": null,
+        "issue": null
+      },
+      "unauthorized_control": {
+        "state": "not_run",
+        "test": null,
+        "reason": null,
+        "issue": null
+      }
+    }
+  }
+}

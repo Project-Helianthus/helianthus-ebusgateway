@@ -33,13 +33,18 @@ GO_SOURCE = (
     "package sample\n\nimport \"testing\"\n\n"
     "func TestComposedSourcePublishesEveryFact(t *testing.T) {}\n\n"
     "func (s *suite) TestMethodIsNotATopLevelTest(t *testing.T) {}\n\n"
-    "// Not a declaration: func TestOnlyMentionedInAComment(t *testing.T)\n"
+    "// Not a declaration: func TestOnlyMentionedInAComment(t *testing.T)\n\n"
+    "func feedPassiveSymbols(t *testing.T, symbols []byte) {}\n\n"
+    "func TestHelperWithoutTestingT(count int) {}\n\n"
+    "func Testlowercasesuffix(t *testing.T) {}\n\n"
+    "func TestMain(m *testing.M) {}\n"
 )
 OUTSIDE_SOURCE = "package outside\n\nimport \"testing\"\n\nfunc TestDeclaredOutsideTheRoot(t *testing.T) {}\n"
 GO_PRODUCTION = "package sample\n\nfunc TestOnlyDeclaredInProductionCode() {}\n"
 PY_SOURCE = (
     "import unittest\n\n\nclass Sample(unittest.TestCase):\n"
-    "    def test_replayed_source_reaches_every_surface(self):\n        pass\n"
+    "    def test_replayed_source_reaches_every_surface(self):\n        pass\n\n"
+    "    def replay_fixture(self):\n        pass\n"
 )
 
 
@@ -238,6 +243,11 @@ class OfflineAcceptanceMatrixTests(unittest.TestCase):
             "internal/../../outside TestDeclaredOutsideTheRoot",
             "/internal/sample TestComposedSourcePublishesEveryFact",
             "internal/sample Test(.*)",
+            "internal/sample feedPassiveSymbols",
+            "internal/sample TestHelperWithoutTestingT",
+            "internal/sample Testlowercasesuffix",
+            "internal/sample TestMain",
+            "scripts/sample_test.py replay_fixture",
         )
         for test in cases:
             with self.subTest(test=test):

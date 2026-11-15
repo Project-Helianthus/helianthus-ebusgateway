@@ -40,8 +40,10 @@ Driver or module readiness alone never fills a cell. Missing real acquisition in
 `not_run`, and the candidate is software-incomplete.
 
 A Go test is named as `<package directory> <TestName>` and exists when a `_test.go` file in that directory
-declares `func <TestName>(`. A Python test is named as `<script path> <test_name>` and exists when that file
-declares `def <test_name>(`. Test names describe behaviour; normative conformance identifiers stay in the tests as
+declares the `go test` entry point `func <TestName>(t *testing.T)`, where `TestName` is `Test` or `Test` followed
+by a character that is not a lower-case letter. A Python test is named as `<script path> <test_name>` and exists
+when `test_name` starts with `test` and that file declares `def <test_name>(`. A helper declared in a test file is
+never a test. Test names describe behaviour; normative conformance identifiers stay in the tests as
 traceability only and claim no certification.
 
 ## How a cell is filled

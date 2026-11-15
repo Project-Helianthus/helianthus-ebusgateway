@@ -8,8 +8,10 @@ check --require-complete  also fails on any not_run cell and prints the count pe
 render                    prints the page's generated tables
 
 A Go test is named as '<package directory> <TestName>' and exists when a _test.go
-file in that directory declares 'func <TestName>('. A Python test is named as
-'<script path> <test_name>' and exists when that file declares 'def <test_name>('.
+file in that directory declares the go test entry point 'func <TestName>(t *testing.T)',
+where TestName is Test or Test followed by a non-lower-case character. A Python test
+is named as '<script path> <test_name>' and exists when test_name starts with 'test'
+and that file declares 'def <test_name>('. A helper function is never a test.
 Standard library only.
 """
 
@@ -48,6 +50,11 @@ AXES = {
 }
 MEMBER_ID = re.compile(r"[a-z][a-z0-9_]*")
 FUNCTION_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# go test runs a top-level func TestXxx(t *testing.T) whose Xxx does not start with a lower-case letter.
+GO_TEST_NAME = re.compile(r"Test(?:[^a-z].*)?")
+GO_TEST_PARAMETER = r"[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]+\*[ \t]*testing\.T[ \t]*"
+# unittest and pytest collect only functions whose name starts with test.
+PYTHON_TEST_NAME = re.compile(r"test[A-Za-z0-9_]*")
 OWNER_ISSUE = re.compile(r"[a-z0-9][a-z0-9._-]*#[1-9][0-9]*")
 
 
@@ -160,13 +167,17 @@ def missing_test(root, name):
         return f"names a test outside the repository: {location}"
     target = pathlib.Path(root, *relative.parts)
     if location.endswith(".py"):
+        if not PYTHON_TEST_NAME.fullmatch(function):
+            return f"names {function}, which the test runner does not collect: a Python test name starts with test"
         if target.is_file() and _declares(target, rf"^[ \t]*(?:async[ \t]+)?def[ \t]+{function}[ \t]*\("):
             return None
         return f"names {function} but {location} declares no def {function}("
+    if not GO_TEST_NAME.fullmatch(function):
+        return f"names {function}, which go test does not run: a Go test name is Test or Test followed by a non-lower-case character"
     tests = sorted(target.glob("*_test.go")) if target.is_dir() else []
-    if any(_declares(path, rf"^func[ \t]+{function}[ \t]*\(") for path in tests):
+    if any(_declares(path, rf"^func[ \t]+{function}[ \t]*\({GO_TEST_PARAMETER}\)") for path in tests):
         return None
-    return f"names {function} but no _test.go file in {location} declares func {function}("
+    return f"names {function} but no _test.go file in {location} declares func {function}(t *testing.T)"
 
 
 def _state_rule(label, cell, root):

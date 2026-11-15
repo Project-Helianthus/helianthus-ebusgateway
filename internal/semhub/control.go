@@ -323,6 +323,26 @@ func (h *Hub) queuePeersLocked(target *asset, publisher semreg.SourceID, seq uin
 	return attempt
 }
 
+// heldPeerQueuedLocked reports whether the queue holds a peer reprojection
+// whose publishing commit has not released it yet. Such an entry cannot run
+// before that commit's onCommit returns, and the commit starts the scheduler
+// itself once it releases the entry, so a caller that may run inside that
+// onCommit treats the scheduler as busy instead of draining and waiting on
+// it. h.mu must be held.
+func (h *Hub) heldPeerQueuedLocked() bool {
+	for _, entry := range h.queue {
+		if entry.peer == nil || entry.peer.ready == nil {
+			continue
+		}
+		select {
+		case <-entry.peer.ready:
+		default:
+			return true
+		}
+	}
+	return false
+}
+
 // reprojectionOfLocked returns the reprojection callback of one publishing
 // source of the asset, or nil. h.mu must be held.
 func (a *asset) reprojectionOfLocked(src semreg.SourceID) func(ControlEvent) error {
@@ -1415,7 +1435,8 @@ func cloneSnapshot(snapshot semreg.Snapshot) semreg.Snapshot {
 // replayed is left untouched and reported as ErrSemanticOutstanding, and a
 // gate with a running attempt as ErrReprojectionInFlight, when no other gate
 // needed an attempt or every attempt settled. When the scheduler is busy with
-// earlier attempts it returns ErrReprojectionQueued (the queued attempts then
+// earlier attempts, or holds a peer reprojection whose commit has not
+// released it, it returns ErrReprojectionQueued (the queued attempts then
 // run in order); otherwise it waits for its attempts and returns the first
 // reprojection error of a gate that stayed unsettled. On an asset with
 // contributors it also retries, after the gates, the peer reprojection of
@@ -1467,7 +1488,11 @@ func (h *Hub) Resettle(id semreg.AssetID) error {
 		h.unlock()
 		return refusal
 	}
-	busy := h.draining
+	// A peer reprojection still held by an open commit (Resettle may run in
+	// that commit's onCommit) counts as an earlier queued attempt: the commit
+	// starts the scheduler when it releases the entry, which then runs these
+	// entries in order.
+	busy := h.draining || h.heldPeerQueuedLocked()
 	h.unlock()
 	if busy {
 		return ErrReprojectionQueued

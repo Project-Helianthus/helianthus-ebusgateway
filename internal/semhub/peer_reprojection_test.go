@@ -476,3 +476,72 @@ func TestPeerReprojectionHeldUntilTheCommitReleasedTheAssetLock(t *testing.T) {
 		t.Fatalf("receiver deliveries=%d after release", got)
 	}
 }
+
+// Resettle called from a commit's onCommit callback never waits on the peer
+// reprojection that commit still holds: it answers ErrReprojectionQueued, the
+// commit returns, and once the commit releases its entry the scheduler runs
+// the queued attempts in order. Both the committing asset and another shared
+// asset with a failed receiver are resettled from inside onCommit.
+func TestPeerReprojectionResettleInsideOnCommitIsQueued(t *testing.T) {
+	for _, resettled := range []semreg.AssetID{sharedAsset, sharedSecond} {
+		t.Run(string(resettled), func(t *testing.T) {
+			f := newPeerFixture(t)
+			if resettled != sharedAsset {
+				refused := errors.New("receiver refused")
+				f.setFail(sharedOther, refused)
+				commitPeer(t, f.hub, f.a, resettled, "fam_a", 1, 1)
+				waitFor(t, f.schedulerIdle)
+				if err := f.hub.Resettle(resettled); !errors.Is(err, refused) {
+					t.Fatalf("resettle while the receiver fails=%v", err)
+				}
+				f.setFail(sharedOther, nil)
+			}
+			before := map[semreg.SourceID]int{}
+			for _, recipient := range []semreg.SourceID{sharedPeer, sharedOther} {
+				before[recipient] = len(f.events(sharedAsset, recipient))
+			}
+			tx, err := f.hub.Begin(f.a, sharedAsset)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := tx.Apply(testBatch(t, tx, "fam_a", 2, 2), testMono(2)); err != nil {
+				tx.Abort()
+				t.Fatal(err)
+			}
+			resettle := make(chan error, 1)
+			returned := make(chan error, 1)
+			var committed Committed
+			go func() {
+				defer tx.Abort()
+				outcome, err := tx.Commit(func(c Committed) {
+					committed = c
+					resettle <- f.hub.Resettle(resettled)
+				})
+				if err == nil && outcome != Accepted {
+					err = fmt.Errorf("outcome %v", outcome)
+				}
+				returned <- err
+			}()
+			select {
+			case err := <-returned:
+				if err != nil {
+					t.Fatalf("commit=%v", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("Resettle inside onCommit deadlocked on the commit's own peer reprojection")
+			}
+			if err := <-resettle; !errors.Is(err, ErrReprojectionQueued) {
+				t.Fatalf("resettle inside onCommit=%v, want ErrReprojectionQueued", err)
+			}
+			waitFor(t, func() bool {
+				return f.schedulerIdle() && f.hub.Admitted(sharedAsset) && f.hub.Settled(sharedAsset) && f.hub.Admitted(resettled) && f.hub.Settled(resettled)
+			})
+			for _, recipient := range []semreg.SourceID{sharedPeer, sharedOther} {
+				got := f.events(sharedAsset, recipient)[before[recipient]:]
+				if len(got) != 1 || got[0].HubSeq != committed.HubSeq {
+					t.Fatalf("%s received %+v, want one event at HubSeq %d", recipient, got, committed.HubSeq)
+				}
+			}
+		})
+	}
+}

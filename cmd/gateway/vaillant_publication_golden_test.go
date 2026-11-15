@@ -367,21 +367,21 @@ func vaillantPublicationError(err error) any {
 
 // refreshPass runs one pass of every refresh task of the poll schedule, then
 // the FM5 refresh.
-func (h *vaillantPublicationHarness) refreshPass() {
+func (h *vaillantPublicationHarness) refreshPass(prefix string) {
 	p := h.poller
-	h.poll("refresh_regulator_capability", p.refreshRegulatorCapability)
-	h.poll("refresh_discovery", p.refreshDiscovery)
-	h.poll("refresh_state", p.refreshState)
-	h.poll("refresh_config", p.refreshConfig)
-	h.poll("refresh_circuits", p.refreshCircuits)
-	h.poll("refresh_system", p.refreshSystem)
-	h.poll("refresh_energy", p.refreshEnergy)
-	h.poll("refresh_schedules", p.refreshSchedules)
-	h.poll("refresh_boiler_fast", p.boilerStatusTierTask(boilerStatusTierFast))
-	h.poll("refresh_boiler_medium", p.boilerStatusTierTask(boilerStatusTierMedium))
-	h.poll("refresh_boiler_slow", p.boilerStatusTierTask(boilerStatusTierSlow))
-	h.poll("refresh_radio_devices", p.refreshRadioDevices)
-	h.poll("refresh_fm5", p.refreshFM5Semantic)
+	h.poll(prefix+"refresh_regulator_capability", p.refreshRegulatorCapability)
+	h.poll(prefix+"refresh_discovery", p.refreshDiscovery)
+	h.poll(prefix+"refresh_state", p.refreshState)
+	h.poll(prefix+"refresh_config", p.refreshConfig)
+	h.poll(prefix+"refresh_circuits", p.refreshCircuits)
+	h.poll(prefix+"refresh_system", p.refreshSystem)
+	h.poll(prefix+"refresh_energy", p.refreshEnergy)
+	h.poll(prefix+"refresh_schedules", p.refreshSchedules)
+	h.poll(prefix+"refresh_boiler_fast", p.boilerStatusTierTask(boilerStatusTierFast))
+	h.poll(prefix+"refresh_boiler_medium", p.boilerStatusTierTask(boilerStatusTierMedium))
+	h.poll(prefix+"refresh_boiler_slow", p.boilerStatusTierTask(boilerStatusTierSlow))
+	h.poll(prefix+"refresh_radio_devices", p.refreshRadioDevices)
+	h.poll(prefix+"refresh_fm5", p.refreshFM5Semantic)
 }
 
 func (h *vaillantPublicationHarness) writes() {
@@ -519,7 +519,7 @@ func vaillantPublicationRender(out *bytes.Buffer, value any, indent string) erro
 func runVaillantPublicationFullSite(t *testing.T) []byte {
 	h := newVaillantPublicationHarness(t, "")
 	h.poll("startup_discovery", h.poller.refreshDiscovery)
-	h.refreshPass()
+	h.refreshPass("")
 	h.writes()
 	return h.dump("full_site")
 }
@@ -541,14 +541,18 @@ var (
 	vaillantPublicationFailingB509 = []uint16{boiler_b509_flow_temperature, boiler_b509_water_pressure}
 )
 
-// runVaillantPublicationCacheHydrated: hydrate from the seed, then start and
-// run one refresh pass while a fixed subset of reads fails.
+// runVaillantPublicationCacheHydrated: hydrate from the seed, run one
+// successful pass, then a pass while a fixed subset of reads fails.
 func runVaillantPublicationCacheHydrated(t *testing.T) []byte {
 	h := newVaillantPublicationHarness(t, filepath.Join(vaillantPublicationDir, "semantic_cache_seed.json"))
 	h.step("cache_hydrated", func(context.Context) any { return nil })
-	h.site.failReads(vaillantPublicationFailingB524, vaillantPublicationFailingB509)
+	// A successful pass first gives every surface a last-known value; the
+	// failing pass then shows which of them survive.
 	h.poll("startup_discovery", h.poller.refreshDiscovery)
-	h.refreshPass()
+	h.refreshPass("")
+	h.site.failReads(vaillantPublicationFailingB524, vaillantPublicationFailingB509)
+	h.poll("failing_startup_discovery", h.poller.refreshDiscovery)
+	h.refreshPass("failing_")
 	return h.dump("cache_hydrated_partial_reads")
 }
 

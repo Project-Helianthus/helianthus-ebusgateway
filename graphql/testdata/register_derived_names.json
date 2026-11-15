@@ -1,0 +1,107 @@
+{
+  "format": "helianthus-register-derived-names/v1",
+  "description": "B524 register-derived value fields published by the gateway system plane, each with the published name, the native identity (opcode, group, register) and the docs-ebus name and previous_name of that register. The docs-ebus columns are copied from the docs-ebus fixture protocols/vaillant/fixtures/b524-op02-register-names.csv (B524 opcode 0x02 register name catalog). previous_name is a documentary column only: no surface publishes it. surfaces names the object that publishes the field on each surface (GraphQL type, MCP Go struct, Portal Go struct); an empty value means the surface does not publish the field. exemption marks the single row whose published name is not yet the docs-ebus name, with the docs-ebus issue that settles it.",
+  "source": "helianthus-docs-ebus protocols/vaillant/fixtures/b524-op02-register-names.csv",
+  "rows": [
+    {
+      "published_name": "water_pressure",
+      "opcode": "0x02",
+      "group": "0x00",
+      "register": "0x0039",
+      "docs_ebus_name": "water_pressure",
+      "previous_name": "system_water_pressure",
+      "surfaces": {"graphql": "system_state", "mcp": "SystemState", "portal": "SemanticSystemState"}
+    },
+    {
+      "published_name": "flow_temperature",
+      "opcode": "0x02",
+      "group": "0x00",
+      "register": "0x004B",
+      "docs_ebus_name": "flow_temperature",
+      "previous_name": "system_flow_temperature",
+      "surfaces": {"graphql": "system_state", "mcp": "SystemState", "portal": "SemanticSystemState"}
+    },
+    {
+      "published_name": "outdoor_temperature",
+      "opcode": "0x02",
+      "group": "0x00",
+      "register": "0x0073",
+      "docs_ebus_name": "outdoor_temperature",
+      "previous_name": "outside_temperature",
+      "surfaces": {"graphql": "system_state", "mcp": "SystemState", "portal": "SemanticSystemState"}
+    },
+    {
+      "published_name": "system_off",
+      "opcode": "0x02",
+      "group": "0x00",
+      "register": "0x0007",
+      "docs_ebus_name": "unknown_11",
+      "previous_name": "system_off",
+      "surfaces": {"graphql": "system_state", "mcp": "SystemState", "portal": "SemanticSystemState"},
+      "exemption": "Project-Helianthus/helianthus-docs-ebus#1145: the catalog carries a provisional placeholder until the final name is settled; the published name changes once, to that final name."
+    },
+    {
+      "published_name": "adaptive_heating_curve_enabled",
+      "opcode": "0x02",
+      "group": "0x00",
+      "register": "0x0014",
+      "docs_ebus_name": "adaptive_heating_curve_enabled",
+      "previous_name": "adaptive_heating_curve",
+      "surfaces": {"graphql": "system_config", "mcp": "SystemConfig", "portal": "SemanticSystemConfig"}
+    },
+    {
+      "published_name": "heating_outdoor_bivalence_temperature_limit",
+      "opcode": "0x02",
+      "group": "0x00",
+      "register": "0x0023",
+      "docs_ebus_name": "heating_outdoor_bivalence_temperature_limit",
+      "previous_name": "heating_circuit_bivalence_point",
+      "surfaces": {"graphql": "system_config", "mcp": "SystemConfig", "portal": "SemanticSystemConfig"}
+    },
+    {
+      "published_name": "room_humidity_limit_maximum",
+      "opcode": "0x02",
+      "group": "0x00",
+      "register": "0x000E",
+      "docs_ebus_name": "room_humidity_limit_maximum",
+      "previous_name": "max_room_humidity",
+      "surfaces": {"graphql": "system_config", "mcp": "SystemConfig", "portal": "SemanticSystemConfig"}
+    },
+    {
+      "published_name": "maintenance_date",
+      "opcode": "0x02",
+      "group": "0x00",
+      "register": "0x002C",
+      "docs_ebus_name": "maintenance_date",
+      "previous_name": "maintenance_date",
+      "surfaces": {"graphql": "system_config", "mcp": "SystemConfig", "portal": ""}
+    },
+    {
+      "published_name": "installer_access_code",
+      "opcode": "0x02",
+      "group": "0x00",
+      "register": "0x0076",
+      "docs_ebus_name": "installer_access_code",
+      "previous_name": "installer_menu_code",
+      "surfaces": {"graphql": "system_config", "mcp": "SystemConfig", "portal": ""}
+    },
+    {
+      "published_name": "hydraulic_scheme_code",
+      "opcode": "0x02",
+      "group": "0x00",
+      "register": "0x0036",
+      "docs_ebus_name": "hydraulic_scheme_code",
+      "previous_name": "system_scheme",
+      "surfaces": {"graphql": "system_properties", "mcp": "SystemProperties", "portal": "SemanticSystemProperties"}
+    },
+    {
+      "published_name": "functional_module_configuration_code",
+      "opcode": "0x02",
+      "group": "0x00",
+      "register": "0x002F",
+      "docs_ebus_name": "functional_module_configuration_code",
+      "previous_name": "module_configuration_vr71",
+      "surfaces": {"graphql": "system_properties", "mcp": "SystemProperties", "portal": "SemanticSystemProperties"}
+    }
+  ]
+}

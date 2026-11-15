@@ -18,7 +18,9 @@ import (
 //     handlers read and write: the arbitration phase, the recovery kind of the
 //     arbitration fence and three barriers (stale-response absorb pending,
 //     blocking START call active, resynchronization SYNs owed to the gateway
-//     active path);
+//     active path), plus the provenance that changes how an event is handled
+//     (a deferred gateway loser, a gateway echo still awaited, an owner other
+//     than the session the close event removes);
 //   - muxModelEvent is the set of inputs the handlers react to;
 //   - muxModelRows is the transition table: for every named model state and
 //     every event either the next state and the ordered effect kinds, or an
@@ -108,6 +110,15 @@ type muxModelState struct {
 	// gateway: the selected party of a START in flight is the gateway rather
 	// than an external session.
 	gateway bool
+	// deferred: the loss of the gateway to the selected START is deferred
+	// until the blocking call returns.
+	deferred bool
+	// echoPending: the gateway wrote a byte of its transaction whose echo has
+	// not arrived; only meaningful in muxModelGatewayTransaction.
+	echoPending bool
+	// otherOwner: the external session that owns the bus is not session 1;
+	// only meaningful in muxModelSessionOwned.
+	otherOwner bool
 }
 
 // literal prints the state as the Go literal used in muxModelRows.
@@ -132,13 +143,23 @@ func (s muxModelState) literal() string {
 	if s.gateway {
 		parts = append(parts, "gateway: true")
 	}
+	if s.deferred {
+		parts = append(parts, "deferred: true")
+	}
+	if s.echoPending {
+		parts = append(parts, "echoPending: true")
+	}
+	if s.otherOwner {
+		parts = append(parts, "otherOwner: true")
+	}
 	return "muxModelState{" + strings.Join(parts, ", ") + "}"
 }
 
-// muxModelDerive derives the model state from the harness state and the
-// out-of-step hold. It fails when the hold coexists with a phase that hides
-// it, since the model has no state for that combination.
-func muxModelDerive(s transitionState, held bool) (muxModelState, error) {
+// muxModelDerive derives the model state from the harness state, the
+// out-of-step hold and whether the gateway echo queue still waits for an echo.
+// It fails when the hold coexists with a phase that hides it, since the model
+// has no state for that combination.
+func muxModelDerive(s transitionState, held, echoPending bool) (muxModelState, error) {
 	out := muxModelState{
 		recovery:   arbitrationRecoveryNone,
 		absorb:     s.absorb > 0,
@@ -153,10 +174,12 @@ func muxModelDerive(s transitionState, held bool) (muxModelState, error) {
 	switch {
 	case s.owner == "gateway" && s.gatewayTxn:
 		out.phase = muxModelGatewayTransaction
+		out.echoPending = echoPending
 	case s.owner == "gateway":
 		out.phase = muxModelGatewayGrace
 	case s.owner != "":
 		out.phase = muxModelSessionOwned
+		out.otherOwner = s.owner != "session 1"
 	case s.start != "" && s.startBlocking:
 		out.phase = muxModelStartBlocking
 	case s.start != "":
@@ -173,6 +196,7 @@ func muxModelDerive(s transitionState, held bool) (muxModelState, error) {
 	if (out.phase == muxModelStartAsync || out.phase == muxModelStartBlocking) && strings.HasPrefix(s.start, "gateway ") {
 		out.gateway = true
 	}
+	out.deferred = strings.Contains(s.bids, "deferred ")
 	if held && out.phase != muxModelHeld {
 		return out, fmt.Errorf("out-of-step hold under phase %s is not representable", out.phase)
 	}
@@ -508,12 +532,31 @@ var muxModelStates = map[string]muxModelNamedState{
 		state: muxModelState{phase: muxModelStartAsync, gateway: true}},
 	"start_blocking": {mode: transitionUpstreamBlocking, build: muxModelFixture("start_blocking"),
 		state: muxModelState{phase: muxModelStartBlocking, blocking: true}},
+	// gateway_awaiting_echo: the gateway wrote its first request byte and the
+	// echo has not arrived.
+	"gateway_awaiting_echo": {mode: transitionUpstreamAsync, build: muxModelFixture("gateway_awaiting_echo"),
+		state: muxModelState{phase: muxModelGatewayTransaction, echoPending: true}},
 	"gateway_transaction": {mode: transitionUpstreamAsync, build: muxModelFixture("gateway_transaction"),
 		state: muxModelState{phase: muxModelGatewayTransaction}},
+	// start_blocking_deferred_loser: session 1 was selected over session 2 and
+	// the gateway; the gateway's loss stays deferred until the blocking call
+	// returns.
+	"start_blocking_deferred_loser": {mode: transitionUpstreamBlocking, build: muxModelFixture("start_blocking_local_losers"),
+		state: muxModelState{phase: muxModelStartBlocking, blocking: true, deferred: true}},
 	"gateway_grace": {mode: transitionUpstreamAsync, build: muxModelFixture("gateway_grace"),
 		state: muxModelState{phase: muxModelGatewayGrace}},
 	"session_owned": {mode: transitionUpstreamAsync, build: muxModelFixture("session_owned"),
 		state: muxModelState{phase: muxModelSessionOwned}},
+	// session_owned_other: STARTED granted the bus to session 2, so session 1
+	// is not the owner.
+	"session_owned_other": {mode: transitionUpstreamAsync, build: func(h *transitionHarness) {
+		h.bid(2, transitionOtherSource)
+		h.selected = "session 2 0x71"
+		h.source = transitionOtherSource
+		h.syn()
+		h.captureDeadline()
+		h.feedStarted(transitionOtherSource)
+	}, state: muxModelState{phase: muxModelSessionOwned, otherOwner: true}},
 	"fenced": {mode: transitionUpstreamAsync, build: muxModelFixture("fenced"),
 		state: muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN}},
 	// fenced_absorb_pending: the selected session cancelled its START; the
@@ -540,8 +583,9 @@ func muxModelObserve(h *transitionHarness) (muxModelState, error) {
 	s := h.state()
 	h.m.stateMu.Lock()
 	held := h.m.step.held
+	echoPending := h.m.gatewayEcho.hasPendingEchoes()
 	h.m.stateMu.Unlock()
-	return muxModelDerive(s, held)
+	return muxModelDerive(s, held, echoPending)
 }
 
 // muxModelFeedSymbol hands one received data symbol to the read loop.
@@ -588,7 +632,13 @@ var muxModelDrivers = map[muxModelEvent]func(h *transitionHarness){
 	// and runs the callback at once.
 	muxModelEventAbandonWatchdog: func(h *transitionHarness) {
 		h.t.Helper()
-		sess := h.sessions[0]
+		h.m.stateMu.Lock()
+		ownerID, _, _ := h.m.arb.owner()
+		h.m.stateMu.Unlock()
+		if ownerID == 0 || int(ownerID) > len(h.sessions) {
+			h.t.Fatalf("abandon watchdog: owner %d is no harness session", ownerID)
+		}
+		sess := h.sessions[ownerID-1]
 		var fire func()
 		h.m.externalAbandonAfter = func(_ time.Duration, f func()) { fire = f }
 		h.m.armExternalAbandonWatchdog(sess, uint32(sess.grantGeneration.Load()))
@@ -878,6 +928,51 @@ var muxModelRows = []muxModelRow{
 	muxModelOn("start_gateway", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset, muxModelEffectResultError),
 	muxModelNever("start_gateway", muxModelEventStartCallReturns, muxModelNoBlockingCall),
 	muxModelNever("start_gateway", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("gateway_awaiting_echo", muxModelEventSYN, muxModelState{phase: muxModelGatewayTransaction, echoPending: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("gateway_awaiting_echo", muxModelEventSymbol, muxModelState{phase: muxModelGatewayTransaction, echoPending: true}, muxModelEffectSessionReceived),
+	muxModelOn("gateway_awaiting_echo", muxModelEventBid, muxModelState{phase: muxModelGatewayTransaction, echoPending: true}),
+	muxModelOn("gateway_awaiting_echo", muxModelEventStartedMatching, muxModelState{phase: muxModelGatewayTransaction, echoPending: true}),
+	muxModelOn("gateway_awaiting_echo", muxModelEventStartedOther, muxModelState{phase: muxModelGatewayTransaction, echoPending: true}),
+	muxModelOn("gateway_awaiting_echo", muxModelEventFailed, muxModelState{phase: muxModelGatewayTransaction, echoPending: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("gateway_awaiting_echo", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("gateway_awaiting_echo", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelOn("gateway_awaiting_echo", muxModelEventIdleGrace, muxModelState{phase: muxModelIdle}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("gateway_awaiting_echo", muxModelEventOwnershipLimit, muxModelState{phase: muxModelIdle}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("gateway_awaiting_echo", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("gateway_awaiting_echo", muxModelEventSessionClose, muxModelState{phase: muxModelGatewayTransaction, echoPending: true}),
+	muxModelOn("gateway_awaiting_echo", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("gateway_awaiting_echo", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("gateway_awaiting_echo", muxModelEventStartCallFails, muxModelNoBlockingCall),
+	muxModelOn("start_blocking_deferred_loser", muxModelEventSYN, muxModelState{phase: muxModelStartBlocking, blocking: true, deferred: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("start_blocking_deferred_loser", muxModelEventSymbol, muxModelState{phase: muxModelStartBlocking, blocking: true, deferred: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("start_blocking_deferred_loser", muxModelEventBid, muxModelState{phase: muxModelStartBlocking, blocking: true, deferred: true}),
+	muxModelOn("start_blocking_deferred_loser", muxModelEventStartedMatching, muxModelState{phase: muxModelSessionOwned, blocking: true, deferred: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionStarted, muxModelEffectResultGranted),
+	muxModelOn("start_blocking_deferred_loser", muxModelEventStartedOther, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: true, blocking: true, deferred: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived, muxModelEffectResultError),
+	muxModelOn("start_blocking_deferred_loser", muxModelEventFailed, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, blocking: true, deferred: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived, muxModelEffectResultError),
+	muxModelOn("start_blocking_deferred_loser", muxModelEventStartDeadline, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: true, blocking: true}, muxModelEffectResultError),
+	muxModelNever("start_blocking_deferred_loser", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelNever("start_blocking_deferred_loser", muxModelEventIdleGrace, muxModelNoOwnerTimer),
+	muxModelNever("start_blocking_deferred_loser", muxModelEventOwnershipLimit, muxModelNoOwnerTimer),
+	muxModelNever("start_blocking_deferred_loser", muxModelEventAbandonWatchdog, muxModelNoSessionGrant),
+	muxModelOn("start_blocking_deferred_loser", muxModelEventSessionClose, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN, absorb: true, blocking: true, deferred: true}, muxModelEffectResultCancelled),
+	muxModelOn("start_blocking_deferred_loser", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset, muxModelEffectResultError),
+	muxModelOn("start_blocking_deferred_loser", muxModelEventStartCallReturns, muxModelState{phase: muxModelSessionOwned, resyncOwed: 2}, muxModelEffectSessionStarted, muxModelEffectResultGranted, muxModelEffectResultLost),
+	muxModelOn("start_blocking_deferred_loser", muxModelEventStartCallFails, muxModelState{phase: muxModelIdle}, muxModelEffectSessionReceived, muxModelEffectResultError),
+	muxModelOn("session_owned_other", muxModelEventSYN, muxModelState{phase: muxModelSessionOwned, otherOwner: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_other", muxModelEventSymbol, muxModelState{phase: muxModelSessionOwned, otherOwner: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_other", muxModelEventBid, muxModelState{phase: muxModelSessionOwned, otherOwner: true}),
+	muxModelOn("session_owned_other", muxModelEventStartedMatching, muxModelState{phase: muxModelSessionOwned, otherOwner: true}),
+	muxModelOn("session_owned_other", muxModelEventStartedOther, muxModelState{phase: muxModelSessionOwned, otherOwner: true}),
+	muxModelOn("session_owned_other", muxModelEventFailed, muxModelState{phase: muxModelSessionOwned, otherOwner: true}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelNever("session_owned_other", muxModelEventStartDeadline, muxModelNoStartDeadline),
+	muxModelNever("session_owned_other", muxModelEventAbsorbDebounce, muxModelNoAbsorb),
+	muxModelOn("session_owned_other", muxModelEventIdleGrace, muxModelState{phase: muxModelIdle}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_other", muxModelEventOwnershipLimit, muxModelState{phase: muxModelIdle}, muxModelEffectPassiveSymbol, muxModelEffectSessionReceived),
+	muxModelOn("session_owned_other", muxModelEventAbandonWatchdog, muxModelState{phase: muxModelFenced, recovery: arbitrationRecoveryAtSYN}),
+	muxModelOn("session_owned_other", muxModelEventSessionClose, muxModelState{phase: muxModelSessionOwned, otherOwner: true}),
+	muxModelOn("session_owned_other", muxModelEventReset, muxModelState{phase: muxModelIdle, recovery: arbitrationRecoveryReset}, muxModelEffectPassiveReset, muxModelEffectActiveError, muxModelEffectSessionReset),
+	muxModelNever("session_owned_other", muxModelEventStartCallReturns, muxModelNoBlockingCall),
+	muxModelNever("session_owned_other", muxModelEventStartCallFails, muxModelNoBlockingCall),
 }
 
 // TestMuxStateModelTableIsComplete requires exactly one row per named state
@@ -967,6 +1062,7 @@ func TestMuxStateModelDerivation(t *testing.T) {
 		name string
 		in   transitionState
 		held bool
+		echo bool
 		want muxModelState
 		fail bool
 	}{
@@ -990,7 +1086,7 @@ func TestMuxStateModelDerivation(t *testing.T) {
 		{name: "start gateway blocking", in: transitionState{start: "gateway 0x7F", startBlocking: true},
 			want: muxModelState{phase: muxModelStartBlocking, gateway: true}},
 		{name: "gateway deferred loser is no selected party", in: transitionState{start: "session 1 0x31", bids: "deferred gateway 0x7F"},
-			want: muxModelState{phase: muxModelStartAsync}},
+			want: muxModelState{phase: muxModelStartAsync, deferred: true}},
 		{name: "start before fence", in: transitionState{start: "session 1 0x31", regrantFence: true},
 			want: muxModelState{phase: muxModelStartAsync}},
 		{name: "fence", in: transitionState{regrantFence: true, recovery: "at_syn"},
@@ -1013,9 +1109,17 @@ func TestMuxStateModelDerivation(t *testing.T) {
 		{name: "bids", in: transitionState{bids: "session 1 0x31"},
 			want: muxModelState{phase: muxModelBidsQueued}},
 		{name: "deferred gateway loser is no bid", in: transitionState{bids: "deferred gateway 0x7F"},
-			want: muxModelState{phase: muxModelIdle}},
+			want: muxModelState{phase: muxModelIdle, deferred: true}},
 		{name: "bid and deferred gateway loser", in: transitionState{bids: "session 2 0x71, deferred gateway 0x7F"},
-			want: muxModelState{phase: muxModelBidsQueued}},
+			want: muxModelState{phase: muxModelBidsQueued, deferred: true}},
+		{name: "deferred loser under a blocking start", in: transitionState{start: "session 1 0x31", startBlocking: true, blockingCall: true, bids: "deferred gateway 0x7F"},
+			want: muxModelState{phase: muxModelStartBlocking, blocking: true, deferred: true}},
+		{name: "owner session 2", in: transitionState{owner: "session 2"},
+			want: muxModelState{phase: muxModelSessionOwned, otherOwner: true}},
+		{name: "echo pending in a gateway transaction", in: transitionState{owner: "gateway", gatewayTxn: true}, echo: true,
+			want: muxModelState{phase: muxModelGatewayTransaction, echoPending: true}},
+		{name: "echo pending outside a gateway transaction is not modelled", in: transitionState{owner: "gateway"}, echo: true,
+			want: muxModelState{phase: muxModelGatewayGrace}},
 		{name: "absorb", in: transitionState{absorb: 1},
 			want: muxModelState{phase: muxModelIdle, absorb: true}},
 		{name: "absorb counts", in: transitionState{absorb: 3},
@@ -1028,7 +1132,7 @@ func TestMuxStateModelDerivation(t *testing.T) {
 			want: muxModelState{phase: muxModelIdle}},
 	}
 	for _, tc := range cases {
-		got, err := muxModelDerive(tc.in, tc.held)
+		got, err := muxModelDerive(tc.in, tc.held, tc.echo)
 		if tc.fail {
 			if err == nil {
 				t.Errorf("%s: derived %s, want an error", tc.name, got.literal())

@@ -126,11 +126,11 @@ DEDUP_ADJUDICATIONS = "observe_first_dedup_adjudications_total"
 SEMANTIC_PLANE = "system"
 SEMANTIC_FIELDS = {
     "system_off": {"unit": "", "tolerance": None},
-    "maintenance_due": {"unit": "", "tolerance": None},
+    "maintenance_active": {"unit": "", "tolerance": None},
     "system_water_pressure": {"unit": "bar", "tolerance": 0.2},
     "system_flow_temperature": {"unit": "degC", "tolerance": 2.0},
     "outdoor_temperature": {"unit": "degC", "tolerance": 2.0},
-    "outdoor_temperature_avg24h": {"unit": "degC", "tolerance": 1.0},
+    "outdoor_temperature_daily_average": {"unit": "degC", "tolerance": 1.0},
 }
 GRAPHQL_SEMANTIC_QUERY = "query { system { state { " + " ".join(SEMANTIC_FIELDS) + " } } }"
 MCP_READ_TOOLS = ("ebus_v1_semantic_system_get",)

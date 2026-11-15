@@ -199,6 +199,13 @@ func (a *Allocator) Resolve(kind semreg.DefinitionID, anchor Anchor) (semreg.Res
 		}
 		id = held.resource
 	}
+	if !recorded || entry.Basis != anchor.Basis {
+		// Record the resolved key in the store, so that every allocator over
+		// the store sees it as held.
+		if err := a.store.Commit(Supersession{Resource: id, Previous: key, PreviousBasis: anchor.Basis, Next: key, NextBasis: anchor.Basis}); err != nil {
+			return "", semreg.ResourceAnchor{}, fmt.Errorf("%w: %w", ErrStore, err)
+		}
+	}
 	a.held[key] = heldAnchor{resource: id, basis: anchor.Basis}
 	a.kinds[id] = kind
 	return id, record, nil

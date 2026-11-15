@@ -331,15 +331,32 @@ type failingStore struct {
 func (s failingStore) Lookup(AnchorKey) (Entry, bool, error) { return Entry{}, false, s.lookup }
 func (s failingStore) Commit(Supersession) error             { return s.commit }
 
+// supersessionRefusingStore refuses every commit that changes a key.
+type supersessionRefusingStore struct {
+	*MemoryStore
+	err error
+}
+
+func (s supersessionRefusingStore) Commit(record Supersession) error {
+	if record.Previous != record.Next {
+		return s.err
+	}
+	return s.MemoryStore.Commit(record)
+}
+
 func TestStoreFailuresFailClosed(t *testing.T) {
 	failure := errors.New("unavailable")
 	broken := newTestAllocator(t, failingStore{lookup: failure})
 	if _, _, err := broken.Resolve(kindEquipment, tokenAnchor("token-a", "x")); !errors.Is(err, ErrStore) || !errors.Is(err, failure) {
 		t.Fatalf("Resolve: err=%v", err)
 	}
-	refusing := newTestAllocator(t, failingStore{commit: failure})
+	refusing := newTestAllocator(t, supersessionRefusingStore{MemoryStore: NewMemoryStore(), err: failure})
 	if _, _, err := refusing.Supersede(Claim{kindEquipment, operatorEquipment("unit-a", "x")}, Claim{kindEquipment, tokenAnchor("token-a", "x")}, continuity(ContinuityBinding, "x")); !errors.Is(err, ErrStore) || !errors.Is(err, failure) {
 		t.Fatalf("Supersede: err=%v", err)
+	}
+	// A store that refuses to record a resolved key fails the resolution.
+	if _, _, err := newTestAllocator(t, failingStore{commit: failure}).Resolve(kindEquipment, tokenAnchor("token-a", "x")); err == nil || !errors.Is(err, ErrStore) {
+		t.Fatalf("Resolve with a refusing store: err=%v", err)
 	}
 	// A refused commit hands out no new key.
 	if got := mustResolve(t, refusing, kindEquipment, tokenAnchor("token-a", "x")); got == mustResolve(t, refusing, kindEquipment, operatorEquipment("unit-a", "x")) {
@@ -480,5 +497,21 @@ func TestResolveIsAtomicWithSupersessionOnASharedStore(t *testing.T) {
 	wg.Wait()
 	if atomic.LoadInt32(&store.atCommit) != 1 {
 		t.Fatal("a supersession committed while another allocator was resolving the same key")
+	}
+}
+
+// A key resolved by one allocator is held for every allocator over the same
+// store: another allocator cannot supersede onto it.
+func TestResolvedKeyIsHeldAcrossAllocatorsOnASharedStore(t *testing.T) {
+	store := NewMemoryStore()
+	a, b := newTestAllocator(t, store), newTestAllocator(t, store)
+	labelA, tokenB := operatorEquipment("unit-a", "a"), tokenAnchor("token-b", "b")
+	mustResolve(t, a, kindEquipment, labelA)
+	idB := mustResolve(t, b, kindEquipment, tokenB)
+	if _, _, err := a.Supersede(Claim{kindEquipment, labelA}, Claim{kindEquipment, tokenB}, continuity(ContinuityBinding, "both")); !errors.Is(err, ErrKeyHeld) {
+		t.Fatalf("supersede onto a key resolved by another allocator: err=%v, want ErrKeyHeld", err)
+	}
+	if got := mustResolve(t, b, kindEquipment, tokenB); got != idB {
+		t.Fatalf("second resolution = %q, want %q", got, idB)
 	}
 }

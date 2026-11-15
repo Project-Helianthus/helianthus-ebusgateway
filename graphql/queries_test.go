@@ -1346,8 +1346,8 @@ func TestQueryResolvers_Integration(t *testing.T) {
 					system {
 						state {
 							system_off
-						system_water_pressure
-						system_flow_temperature
+						water_pressure
+						flow_temperature
 						outdoor_temperature
 						outdoor_temperature_avg24h
 						maintenance_due
@@ -1355,17 +1355,17 @@ func TestQueryResolvers_Integration(t *testing.T) {
 						hwc_cylinder_temperature_bottom
 					}
 					config {
-						adaptive_heating_curve
+						adaptive_heating_curve_enabled
 						alternative_point
-						heating_circuit_bivalence_point
+						heating_outdoor_bivalence_temperature_limit
 						dhw_bivalence_point
 						hc_emergency_temperature
 						hwc_max_flow_temp_desired
-						max_room_humidity
+						room_humidity_limit_maximum
 					}
 					properties {
-						system_scheme
-						module_configuration_vr71
+						hydraulic_scheme_code
+						functional_module_configuration_code
 					}
 				}
 				schedules {
@@ -1504,8 +1504,8 @@ func TestQueryResolvers_Integration(t *testing.T) {
 			System *struct {
 				State struct {
 					SystemOff                    *bool    `json:"system_off"`
-					SystemWaterPressure          *float64 `json:"system_water_pressure"`
-					SystemFlowTemperature        *float64 `json:"system_flow_temperature"`
+					SystemWaterPressure          *float64 `json:"water_pressure"`
+					SystemFlowTemperature        *float64 `json:"flow_temperature"`
 					OutdoorTemperature           *float64 `json:"outdoor_temperature"`
 					OutdoorTemperatureAvg24h     *float64 `json:"outdoor_temperature_avg24h"`
 					MaintenanceDue               *bool    `json:"maintenance_due"`
@@ -1513,17 +1513,17 @@ func TestQueryResolvers_Integration(t *testing.T) {
 					HwcCylinderTemperatureBottom *float64 `json:"hwc_cylinder_temperature_bottom"`
 				} `json:"state"`
 				Config struct {
-					AdaptiveHeatingCurve         *bool    `json:"adaptive_heating_curve"`
+					AdaptiveHeatingCurve         *bool    `json:"adaptive_heating_curve_enabled"`
 					AlternativePoint             *float64 `json:"alternative_point"`
-					HeatingCircuitBivalencePoint *float64 `json:"heating_circuit_bivalence_point"`
+					HeatingCircuitBivalencePoint *float64 `json:"heating_outdoor_bivalence_temperature_limit"`
 					DhwBivalencePoint            *float64 `json:"dhw_bivalence_point"`
 					HcEmergencyTemperature       *float64 `json:"hc_emergency_temperature"`
 					HwcMaxFlowTempDesired        *float64 `json:"hwc_max_flow_temp_desired"`
-					MaxRoomHumidity              *int     `json:"max_room_humidity"`
+					MaxRoomHumidity              *int     `json:"room_humidity_limit_maximum"`
 				} `json:"config"`
 				Properties struct {
-					SystemScheme            *int `json:"system_scheme"`
-					ModuleConfigurationVR71 *int `json:"module_configuration_vr71"`
+					SystemScheme            *int `json:"hydraulic_scheme_code"`
+					ModuleConfigurationVR71 *int `json:"functional_module_configuration_code"`
 				} `json:"properties"`
 			} `json:"system"`
 			Schedules *struct {

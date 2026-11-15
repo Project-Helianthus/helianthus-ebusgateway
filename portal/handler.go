@@ -361,8 +361,8 @@ type SemanticBoilerStatus struct {
 
 type SemanticSystemState struct {
 	SystemOff                    *bool    `json:"system_off,omitempty"`
-	SystemWaterPressure          *float64 `json:"system_water_pressure,omitempty"`
-	SystemFlowTemperature        *float64 `json:"system_flow_temperature,omitempty"`
+	SystemWaterPressure          *float64 `json:"water_pressure,omitempty"`
+	SystemFlowTemperature        *float64 `json:"flow_temperature,omitempty"`
 	OutdoorTemperature           *float64 `json:"outdoor_temperature,omitempty"`
 	OutdoorTemperatureAvg24h     *float64 `json:"outdoor_temperature_avg24h,omitempty"`
 	MaintenanceDue               *bool    `json:"maintenance_due,omitempty"`
@@ -371,18 +371,18 @@ type SemanticSystemState struct {
 }
 
 type SemanticSystemConfig struct {
-	AdaptiveHeatingCurve         *bool    `json:"adaptive_heating_curve,omitempty"`
+	AdaptiveHeatingCurve         *bool    `json:"adaptive_heating_curve_enabled,omitempty"`
 	AlternativePoint             *float64 `json:"alternative_point,omitempty"`
-	HeatingCircuitBivalencePoint *float64 `json:"heating_circuit_bivalence_point,omitempty"`
+	HeatingCircuitBivalencePoint *float64 `json:"heating_outdoor_bivalence_temperature_limit,omitempty"`
 	DhwBivalencePoint            *float64 `json:"dhw_bivalence_point,omitempty"`
 	HcEmergencyTemperature       *float64 `json:"hc_emergency_temperature,omitempty"`
 	HwcMaxFlowTempDesired        *float64 `json:"hwc_max_flow_temp_desired,omitempty"`
-	MaxRoomHumidity              *int     `json:"max_room_humidity,omitempty"`
+	MaxRoomHumidity              *int     `json:"room_humidity_limit_maximum,omitempty"`
 }
 
 type SemanticSystemProperties struct {
-	SystemScheme            *int `json:"system_scheme,omitempty"`
-	ModuleConfigurationVR71 *int `json:"module_configuration_vr71,omitempty"`
+	SystemScheme            *int `json:"hydraulic_scheme_code,omitempty"`
+	ModuleConfigurationVR71 *int `json:"functional_module_configuration_code,omitempty"`
 }
 
 type SemanticSystemStatus struct {

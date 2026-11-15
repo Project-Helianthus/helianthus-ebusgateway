@@ -10,9 +10,9 @@ import (
 	graphqlgo "github.com/graphql-go/graphql"
 )
 
-// Computed by querySchemaShapeDigest after the additive startup reason field
-// bus_observability_startup.reason (issue #1526).
-var querySchemaShapeSHA256 = fmt.Sprintf("%x", [sha256.Size]byte{28, 83, 149, 3, 139, 233, 248, 0, 178, 174, 123, 101, 203, 202, 87, 206, 190, 64, 135, 48, 26, 126, 228, 74, 51, 30, 39, 244, 71, 62, 194, 191})
+// Computed by querySchemaShapeDigest after the eight system-plane register
+// fields took their docs-ebus names (issue #1483).
+var querySchemaShapeSHA256 = fmt.Sprintf("%x", [sha256.Size]byte{25, 4, 13, 45, 140, 109, 53, 231, 59, 18, 23, 167, 194, 127, 27, 170, 203, 191, 239, 253, 246, 19, 141, 186, 17, 251, 181, 117, 200, 56, 239, 141})
 
 func TestQuerySchemaKeepsIntrospectionShape(t *testing.T) {
 	t.Parallel()

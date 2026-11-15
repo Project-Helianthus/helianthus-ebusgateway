@@ -3278,15 +3278,16 @@
       "value_class": "gauge"
     },
     {
-      "current_name": "semantic.v1.snapshot.get",
-      "target": "semantic_v1_snapshot_get",
-      "status": "ready",
-      "kind": "mcp_method",
       "action": "rename",
-      "source_file": "mcp/semantic_snapshot.go",
-      "full_identity": "mcp/semantic.v1.snapshot.get",
+      "consumer_files": [],
+      "current_name": "semantic.v1.snapshot.get",
       "evidence_class": "Proven",
+      "full_identity": "mcp/semantic.v1.snapshot.get",
+      "kind": "mcp_method",
       "open_question": "",
+      "preserve_safety": [
+        "Unchanged permission and descriptor ownership"
+      ],
       "role_decomposition": {
         "classification": "tool_name",
         "namespace_tokens": [
@@ -3296,23 +3297,23 @@
           "get"
         ]
       },
-      "consumer_files": [],
-      "preserve_safety": [
-        "Unchanged permission and descriptor ownership"
-      ],
+      "source_file": "mcp/semantic_snapshot.go",
+      "status": "ready",
+      "target": "semantic_v1_snapshot_get",
       "unit": "not_applicable",
       "value_class": "not_applicable"
     },
     {
-      "current_name": "semantic.v1.pv.current.get",
-      "target": "semantic_v1_pv_current_get",
-      "status": "ready",
-      "kind": "mcp_method",
       "action": "rename",
-      "source_file": "mcp/modbus_v1.go",
-      "full_identity": "mcp/semantic.v1.pv.current.get",
+      "consumer_files": [],
+      "current_name": "semantic.v1.pv.current.get",
       "evidence_class": "Proven",
+      "full_identity": "mcp/semantic.v1.pv.current.get",
+      "kind": "mcp_method",
       "open_question": "",
+      "preserve_safety": [
+        "Unchanged permission and descriptor ownership"
+      ],
       "role_decomposition": {
         "classification": "tool_name",
         "namespace_tokens": [
@@ -3323,23 +3324,23 @@
           "get"
         ]
       },
-      "consumer_files": [],
-      "preserve_safety": [
-        "Unchanged permission and descriptor ownership"
-      ],
+      "source_file": "mcp/modbus_v1.go",
+      "status": "ready",
+      "target": "semantic_v1_pv_current_get",
       "unit": "not_applicable",
       "value_class": "not_applicable"
     },
     {
-      "current_name": "semantic.v1.evse.current.get",
-      "target": "semantic_v1_evse_current_get",
-      "status": "ready",
-      "kind": "mcp_method",
       "action": "rename",
-      "source_file": "mcp/tesla_gen3_evse_semantic.go",
-      "full_identity": "mcp/semantic.v1.evse.current.get",
+      "consumer_files": [],
+      "current_name": "semantic.v1.evse.current.get",
       "evidence_class": "Proven",
+      "full_identity": "mcp/semantic.v1.evse.current.get",
+      "kind": "mcp_method",
       "open_question": "",
+      "preserve_safety": [
+        "Unchanged permission and descriptor ownership"
+      ],
       "role_decomposition": {
         "classification": "tool_name",
         "namespace_tokens": [
@@ -3350,23 +3351,23 @@
           "get"
         ]
       },
-      "consumer_files": [],
-      "preserve_safety": [
-        "Unchanged permission and descriptor ownership"
-      ],
+      "source_file": "mcp/tesla_gen3_evse_semantic.go",
+      "status": "ready",
+      "target": "semantic_v1_evse_current_get",
       "unit": "not_applicable",
       "value_class": "not_applicable"
     },
     {
-      "current_name": "semantic.v1.storage.growatt.current.get",
-      "target": "semantic_v1_storage_growatt_current_get",
-      "status": "ready",
-      "kind": "mcp_method",
       "action": "rename",
-      "source_file": "mcp/growatt_storage_semantic.go",
-      "full_identity": "mcp/semantic.v1.storage.growatt.current.get",
+      "consumer_files": [],
+      "current_name": "semantic.v1.storage.growatt.current.get",
       "evidence_class": "Proven",
+      "full_identity": "mcp/semantic.v1.storage.growatt.current.get",
+      "kind": "mcp_method",
       "open_question": "",
+      "preserve_safety": [
+        "Unchanged permission and descriptor ownership"
+      ],
       "role_decomposition": {
         "classification": "tool_name",
         "namespace_tokens": [
@@ -3378,10 +3379,9 @@
           "get"
         ]
       },
-      "consumer_files": [],
-      "preserve_safety": [
-        "Unchanged permission and descriptor ownership"
-      ],
+      "source_file": "mcp/growatt_storage_semantic.go",
+      "status": "ready",
+      "target": "semantic_v1_storage_growatt_current_get",
       "unit": "not_applicable",
       "value_class": "not_applicable"
     }
@@ -113082,17 +113082,17 @@
         "vrc-explorer/fixtures/b524_shared/protocols/vaillant/fixtures/b524-basv0-register-observations-v1.json",
         "vrc-explorer/src/helianthus_vrc_explorer/fixtures/b524-basv0-register-observations-v1.json"
       ],
-      "current_name": "system_water_pressure",
+      "current_name": "water_pressure",
       "evidence_class": "Unknown",
-      "full_identity": "declaration/mcp/server.go/json_tag/121/system_water_pressure",
+      "full_identity": "declaration/mcp/server.go/json_tag/121/water_pressure",
       "kind": "json_tag",
       "native_semantic_identity": "not declared",
-      "open_question": "Native or semantic meaning and complete consumer binding are not declared for this discovery occurrence; retain its public spelling pending a separately scoped decision.",
+      "open_question": "",
       "role_decomposition": "not declared",
       "source_file": "mcp/server.go",
       "source_occurrence": 121,
-      "status": "provisional",
-      "target": null,
+      "status": "unchanged",
+      "target": "water_pressure",
       "unit": "not declared",
       "value_class": "not declared"
     },
@@ -113106,17 +113106,17 @@
         "vrc-explorer/fixtures/b524_shared/protocols/vaillant/fixtures/b524-basv0-register-observations-v1.json",
         "vrc-explorer/src/helianthus_vrc_explorer/fixtures/b524-basv0-register-observations-v1.json"
       ],
-      "current_name": "system_flow_temperature",
+      "current_name": "flow_temperature",
       "evidence_class": "Unknown",
-      "full_identity": "declaration/mcp/server.go/json_tag/122/system_flow_temperature",
+      "full_identity": "declaration/mcp/server.go/json_tag/122/flow_temperature",
       "kind": "json_tag",
       "native_semantic_identity": "not declared",
-      "open_question": "Native or semantic meaning and complete consumer binding are not declared for this discovery occurrence; retain its public spelling pending a separately scoped decision.",
+      "open_question": "",
       "role_decomposition": "not declared",
       "source_file": "mcp/server.go",
       "source_occurrence": 122,
-      "status": "provisional",
-      "target": null,
+      "status": "unchanged",
+      "target": "flow_temperature",
       "unit": "not declared",
       "value_class": "not declared"
     },
@@ -113959,17 +113959,17 @@
         "vrc-explorer/src/helianthus_vrc_explorer/fixtures/b524-basv0-description-profile-v1.json",
         "vrc-explorer/src/helianthus_vrc_explorer/fixtures/b524-basv0-register-observations-v1.json"
       ],
-      "current_name": "adaptive_heating_curve",
+      "current_name": "adaptive_heating_curve_enabled",
       "evidence_class": "Unknown",
-      "full_identity": "declaration/mcp/server.go/json_tag/136/adaptive_heating_curve",
+      "full_identity": "declaration/mcp/server.go/json_tag/136/adaptive_heating_curve_enabled",
       "kind": "json_tag",
       "native_semantic_identity": "not declared",
-      "open_question": "Native or semantic meaning and complete consumer binding are not declared for this discovery occurrence; retain its public spelling pending a separately scoped decision.",
+      "open_question": "",
       "role_decomposition": "not declared",
       "source_file": "mcp/server.go",
       "source_occurrence": 136,
-      "status": "provisional",
-      "target": null,
+      "status": "unchanged",
+      "target": "adaptive_heating_curve_enabled",
       "unit": "not declared",
       "value_class": "not declared"
     },
@@ -114001,17 +114001,17 @@
         "vrc-explorer/src/helianthus_vrc_explorer/fixtures/b524-basv0-description-profile-v1.json",
         "vrc-explorer/src/helianthus_vrc_explorer/fixtures/b524-basv0-register-observations-v1.json"
       ],
-      "current_name": "heating_circuit_bivalence_point",
+      "current_name": "heating_outdoor_bivalence_temperature_limit",
       "evidence_class": "Unknown",
-      "full_identity": "declaration/mcp/server.go/json_tag/138/heating_circuit_bivalence_point",
+      "full_identity": "declaration/mcp/server.go/json_tag/138/heating_outdoor_bivalence_temperature_limit",
       "kind": "json_tag",
       "native_semantic_identity": "not declared",
-      "open_question": "Native or semantic meaning and complete consumer binding are not declared for this discovery occurrence; retain its public spelling pending a separately scoped decision.",
+      "open_question": "",
       "role_decomposition": "not declared",
       "source_file": "mcp/server.go",
       "source_occurrence": 138,
-      "status": "provisional",
-      "target": null,
+      "status": "unchanged",
+      "target": "heating_outdoor_bivalence_temperature_limit",
       "unit": "not declared",
       "value_class": "not declared"
     },
@@ -114114,17 +114114,17 @@
         "vrc-explorer/src/helianthus_vrc_explorer/fixtures/b524-basv0-description-profile-v1.json",
         "vrc-explorer/src/helianthus_vrc_explorer/fixtures/b524-basv0-register-observations-v1.json"
       ],
-      "current_name": "max_room_humidity",
+      "current_name": "room_humidity_limit_maximum",
       "evidence_class": "Unknown",
-      "full_identity": "declaration/mcp/server.go/json_tag/143/max_room_humidity",
+      "full_identity": "declaration/mcp/server.go/json_tag/143/room_humidity_limit_maximum",
       "kind": "json_tag",
       "native_semantic_identity": "not declared",
-      "open_question": "Native or semantic meaning and complete consumer binding are not declared for this discovery occurrence; retain its public spelling pending a separately scoped decision.",
+      "open_question": "",
       "role_decomposition": "not declared",
       "source_file": "mcp/server.go",
       "source_occurrence": 143,
-      "status": "provisional",
-      "target": null,
+      "status": "unchanged",
+      "target": "room_humidity_limit_maximum",
       "unit": "not declared",
       "value_class": "not declared"
     },
@@ -114220,17 +114220,17 @@
         "vrc-explorer/src/helianthus_vrc_explorer/fixtures/b524-basv0-description-profile-v1.json",
         "vrc-explorer/src/helianthus_vrc_explorer/fixtures/b524-basv0-register-observations-v1.json"
       ],
-      "current_name": "installer_menu_code",
+      "current_name": "installer_access_code",
       "evidence_class": "Unknown",
-      "full_identity": "declaration/mcp/server.go/json_tag/147/installer_menu_code",
+      "full_identity": "declaration/mcp/server.go/json_tag/147/installer_access_code",
       "kind": "json_tag",
       "native_semantic_identity": "not declared",
-      "open_question": "Native or semantic meaning and complete consumer binding are not declared for this discovery occurrence; retain its public spelling pending a separately scoped decision.",
+      "open_question": "",
       "role_decomposition": "not declared",
       "source_file": "mcp/server.go",
       "source_occurrence": 147,
-      "status": "provisional",
-      "target": null,
+      "status": "unchanged",
+      "target": "installer_access_code",
       "unit": "not declared",
       "value_class": "not declared"
     },
@@ -114268,17 +114268,17 @@
         "vrc-explorer/fixtures/b524_shared/protocols/vaillant/fixtures/b524-basv0-register-observations-v1.json",
         "vrc-explorer/src/helianthus_vrc_explorer/fixtures/b524-basv0-register-observations-v1.json"
       ],
-      "current_name": "system_scheme",
+      "current_name": "hydraulic_scheme_code",
       "evidence_class": "Unknown",
-      "full_identity": "declaration/mcp/server.go/json_tag/149/system_scheme",
+      "full_identity": "declaration/mcp/server.go/json_tag/149/hydraulic_scheme_code",
       "kind": "json_tag",
       "native_semantic_identity": "not declared",
-      "open_question": "Native or semantic meaning and complete consumer binding are not declared for this discovery occurrence; retain its public spelling pending a separately scoped decision.",
+      "open_question": "",
       "role_decomposition": "not declared",
       "source_file": "mcp/server.go",
       "source_occurrence": 149,
-      "status": "provisional",
-      "target": null,
+      "status": "unchanged",
+      "target": "hydraulic_scheme_code",
       "unit": "not declared",
       "value_class": "not declared"
     },
@@ -114294,17 +114294,17 @@
         "vrc-explorer/src/helianthus_vrc_explorer/fixtures/b524-basv0-description-profile-v1.json",
         "vrc-explorer/src/helianthus_vrc_explorer/fixtures/b524-basv0-register-observations-v1.json"
       ],
-      "current_name": "module_configuration_vr71",
+      "current_name": "functional_module_configuration_code",
       "evidence_class": "Unknown",
-      "full_identity": "declaration/mcp/server.go/json_tag/150/module_configuration_vr71",
+      "full_identity": "declaration/mcp/server.go/json_tag/150/functional_module_configuration_code",
       "kind": "json_tag",
       "native_semantic_identity": "not declared",
-      "open_question": "Native or semantic meaning and complete consumer binding are not declared for this discovery occurrence; retain its public spelling pending a separately scoped decision.",
+      "open_question": "",
       "role_decomposition": "not declared",
       "source_file": "mcp/server.go",
       "source_occurrence": 150,
-      "status": "provisional",
-      "target": null,
+      "status": "unchanged",
+      "target": "functional_module_configuration_code",
       "unit": "not declared",
       "value_class": "not declared"
     },
@@ -141005,47 +141005,47 @@
   },
   "validation_scope": "The exhaustive-coverage assertions remain unchanged; partial coverage is accepted by owner decision. Bounded validators enforce explicit row status and bounded targets. Both scope and byte-neutrality validators compare tracked inputs against the PR merge base and permit changes only in the two inventories and the source-selection gate and its tests. They do not claim exhaustive coverage.",
   "adoption": {
-    "status": "bounded",
     "evidence_class": "S",
+    "native_authorization_boundary": {
+      "native_identity": "Library-owned raw eeBUS ToolV1 values and permission scopes remain unchanged within authorization, results and hashes.",
+      "public_registration": "Join namespace tokens with underscores; accept exactly one public spelling.",
+      "registered_commands": [
+        {
+          "current_name": "eebus.v1.features.get",
+          "status": "ready",
+          "target": "eebus_v1_features_get"
+        },
+        {
+          "current_name": "eebus.v1.features.data.get",
+          "status": "ready",
+          "target": "eebus_v1_features_data_get"
+        },
+        {
+          "current_name": "eebus.v1.features.data.set",
+          "status": "ready",
+          "target": "eebus_v1_features_data_set"
+        },
+        {
+          "current_name": "eebus.v1.mutations.get",
+          "status": "ready",
+          "target": "eebus_v1_mutations_get"
+        },
+        {
+          "current_name": "eebus.v1.mutations.rollback",
+          "status": "ready",
+          "target": "eebus_v1_mutations_rollback"
+        }
+      ],
+      "status": "structural"
+    },
     "qualification": "not established by synthetic checks",
-    "supported_changes": "Bounded naming maps, structural GraphQL syntax, registered MCP tokens, six circuit setters and explicit control withdrawals. Other vocabulary retains its recorded status.",
+    "release_requirement": "Renew affected security, hardware and candidate evidence; complete independent review, full repository gates and affected transport/conformance before release.",
     "remaining_questions": [
       "Selector-dependent target_temp_c retains its existing snake_case spelling.",
       "energy_accumulated retains its provisional spelling.",
       "Other unresolved native value and setter names remain provisional."
     ],
-    "release_requirement": "Renew affected security, hardware and candidate evidence; complete independent review, full repository gates and affected transport/conformance before release.",
-    "native_authorization_boundary": {
-      "status": "structural",
-      "public_registration": "Join namespace tokens with underscores; accept exactly one public spelling.",
-      "native_identity": "Library-owned raw eeBUS ToolV1 values and permission scopes remain unchanged within authorization, results and hashes.",
-      "registered_commands": [
-        {
-          "current_name": "eebus.v1.features.get",
-          "target": "eebus_v1_features_get",
-          "status": "ready"
-        },
-        {
-          "current_name": "eebus.v1.features.data.get",
-          "target": "eebus_v1_features_data_get",
-          "status": "ready"
-        },
-        {
-          "current_name": "eebus.v1.features.data.set",
-          "target": "eebus_v1_features_data_set",
-          "status": "ready"
-        },
-        {
-          "current_name": "eebus.v1.mutations.get",
-          "target": "eebus_v1_mutations_get",
-          "status": "ready"
-        },
-        {
-          "current_name": "eebus.v1.mutations.rollback",
-          "target": "eebus_v1_mutations_rollback",
-          "status": "ready"
-        }
-      ]
-    }
+    "status": "bounded",
+    "supported_changes": "Bounded naming maps, structural GraphQL syntax, registered MCP tokens, six circuit setters and explicit control withdrawals. Other vocabulary retains its recorded status."
   }
 }

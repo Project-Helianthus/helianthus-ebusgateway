@@ -545,3 +545,137 @@ func TestPeerReprojectionResettleInsideOnCommitIsQueued(t *testing.T) {
 		})
 	}
 }
+
+// A control operation called from a publisher's onCommit on a shared asset
+// never waits on the peer reprojection that commit still holds. The
+// scheduler stops in front of the held entry, so a fence of an unrelated
+// source returns with its reprojection queued, RetryControl of a settling
+// operation returns, and a fence while that operation settles answers
+// SettlePending at once, leaving that operation for the next request outside
+// onCommit. Commit returns well within the settle timeout, the commit
+// restarts the scheduler, and every queued attempt then settles: each
+// receiver gets exactly one peer event and the unrelated asset its control
+// event.
+func TestPeerReprojectionControlInsideOnCommitDoesNotWaitOnTheHeldEntry(t *testing.T) {
+	const (
+		unrelated       semreg.AssetID  = "asset:peer-control"
+		unrelatedSource semreg.SourceID = "source:peer-control"
+		unrelatedEpoch                  = semreg.SourceEpochID("epoch:peer-control")
+	)
+	cases := []struct {
+		name     string
+		settling bool
+		inCommit func(f *peerFixture, settling ControlID) error
+		want     func(error) bool
+	}{
+		{name: "fence", inCommit: func(f *peerFixture, _ ControlID) error {
+			_, err := f.hub.Fence(testFence(unrelatedSource, unrelatedEpoch, 1, 3))
+			return err
+		}, want: func(err error) bool { return err == nil }},
+		{name: "retry-control", settling: true, inCommit: func(f *peerFixture, settling ControlID) error {
+			_, err := f.hub.RetryControl(settling)
+			return err
+		}, want: func(err error) bool { return err == nil }},
+		{name: "fence-while-settling", settling: true, inCommit: func(f *peerFixture, _ ControlID) error {
+			_, err := f.hub.Fence(testFence(unrelatedSource, unrelatedEpoch, 1, 4))
+			return err
+		}, want: func(err error) bool {
+			var settle *SettlePendingError
+			return errors.As(err, &settle)
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newPeerFixture(t)
+			var mu sync.Mutex
+			var controlEvents []ControlEvent
+			var failure error
+			mustDeclare(t, f.hub, unrelated, unrelatedSource, "driver-peer-control", func(event ControlEvent) error {
+				mu.Lock()
+				defer mu.Unlock()
+				controlEvents = append(controlEvents, event)
+				return failure
+			})
+			handle := admitLegacy(t, f.hub, unrelatedSource, "driver-peer-control", unrelatedEpoch, 1)
+			mustPublish(t, f.hub, handle, unrelated, "control", 1, 1)
+			var settling ControlID
+			if c.settling {
+				mu.Lock()
+				failure = errors.New("cache rebuild failed")
+				mu.Unlock()
+				result, err := f.hub.Fence(testFence(unrelatedSource, unrelatedEpoch, 1, 3))
+				if err != nil {
+					t.Fatal(err)
+				}
+				settling = result.ID
+				waitFor(t, f.schedulerIdle)
+				if f.hub.Settled(unrelated) {
+					t.Fatal("the failing fence settled")
+				}
+				mu.Lock()
+				failure = nil
+				mu.Unlock()
+			}
+			mu.Lock()
+			controlBefore := len(controlEvents)
+			mu.Unlock()
+			before := map[semreg.SourceID]int{}
+			for _, recipient := range []semreg.SourceID{sharedPeer, sharedOther} {
+				before[recipient] = len(f.events(sharedAsset, recipient))
+			}
+			tx, err := f.hub.Begin(f.a, sharedAsset)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := tx.Apply(testBatch(t, tx, "fam_a", 2, 2), testMono(2)); err != nil {
+				tx.Abort()
+				t.Fatal(err)
+			}
+			inner := make(chan error, 1)
+			returned := make(chan error, 1)
+			var committed Committed
+			go func() {
+				defer tx.Abort()
+				outcome, err := tx.Commit(func(cm Committed) {
+					committed = cm
+					inner <- c.inCommit(f, settling)
+				})
+				if err == nil && outcome != Accepted {
+					err = fmt.Errorf("outcome %v", outcome)
+				}
+				returned <- err
+			}()
+			select {
+			case err := <-returned:
+				if err != nil {
+					t.Fatalf("commit=%v", err)
+				}
+			case <-time.After(ControlSettleTimeout / 2):
+				t.Fatal("a control operation inside onCommit waited on the commit's own peer reprojection")
+			}
+			if err := <-inner; !c.want(err) {
+				t.Fatalf("control inside onCommit=%v", err)
+			}
+			waitFor(t, func() bool { return f.schedulerIdle() && f.hub.Settled(sharedAsset) && f.hub.Admitted(sharedAsset) })
+			if c.name == "fence-while-settling" {
+				// The refused request left the settling operation as it was;
+				// the next request outside onCommit resettles it and proceeds.
+				if _, err := f.hub.Fence(testFence(unrelatedSource, unrelatedEpoch, 1, 5)); errorID(err) != semreg.StaleDriverGeneration {
+					t.Fatalf("fence after the commit=%v", err)
+				}
+			}
+			waitFor(t, func() bool { return f.schedulerIdle() && f.hub.Settled(unrelated) && f.hub.Readable(unrelated) })
+			for _, recipient := range []semreg.SourceID{sharedPeer, sharedOther} {
+				got := f.events(sharedAsset, recipient)[before[recipient]:]
+				if len(got) != 1 || got[0].HubSeq != committed.HubSeq {
+					t.Fatalf("%s received %+v, want one event at HubSeq %d", recipient, got, committed.HubSeq)
+				}
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if len(controlEvents) == controlBefore {
+				t.Fatal("the unrelated asset's control reprojection never ran after the commit")
+			}
+		})
+	}
+}

@@ -331,16 +331,26 @@ func (h *Hub) queuePeersLocked(target *asset, publisher semreg.SourceID, seq uin
 // it. h.mu must be held.
 func (h *Hub) heldPeerQueuedLocked() bool {
 	for _, entry := range h.queue {
-		if entry.peer == nil || entry.peer.ready == nil {
-			continue
-		}
-		select {
-		case <-entry.peer.ready:
-		default:
+		if entry.peer != nil && entry.peer.heldLocked() {
 			return true
 		}
 	}
 	return false
+}
+
+// heldLocked reports whether the publishing commit of p has not released it
+// yet. A retry entry (Resettle) has no open commit and is never held. h.mu
+// must be held.
+func (p *peerAttempt) heldLocked() bool {
+	if p.ready == nil {
+		return false
+	}
+	select {
+	case <-p.ready:
+		return false
+	default:
+		return true
+	}
 }
 
 // reprojectionOfLocked returns the reprojection callback of one publishing
@@ -1243,6 +1253,15 @@ func (h *Hub) reject(ca *controlAsset, err error) error {
 // and returns, and the active drainer runs the new entries afterwards. An
 // entry whose asset still has an attempt in flight waits for it and then
 // runs; it is never dropped.
+//
+// A peer reprojection still held by its publishing commit is never waited
+// for: the scheduler stops in front of it, leaving it and every later entry
+// queued, and the commit starts the scheduler again once it releases the
+// entry. A drain called from inside that commit's onCommit (a control
+// operation, RetryControl or Resettle) therefore returns instead of waiting
+// on the commit that is waiting for it. The check and the stop form one
+// critical section, and the commit checks for an active scheduler only after
+// releasing the entry, so a stopped queue is always restarted.
 func (h *Hub) drain() {
 	h.lock()
 	if h.draining {
@@ -1252,15 +1271,11 @@ func (h *Hub) drain() {
 	h.draining = true
 	for len(h.queue) > 0 {
 		entry := h.queue[0]
+		if entry.peer != nil && entry.peer.heldLocked() {
+			break
+		}
 		h.queue = h.queue[1:]
 		if entry.peer != nil {
-			// Held until the publisher released its asset commit lock. A
-			// retry entry (Resettle) has no open commit and is never held.
-			if entry.peer.ready != nil {
-				h.unlock()
-				<-entry.peer.ready
-				h.lock()
-			}
 			h.runPeerAttemptLocked(entry.peer)
 			close(entry.done)
 			continue
@@ -1543,7 +1558,10 @@ func (h *Hub) awaitFinished(src *source, activation bool) error {
 			h.unlock()
 			return nil
 		}
-		busy := h.draining
+		// A peer reprojection still held by an open commit (this request may
+		// run in that commit's onCommit) is an earlier queued attempt the
+		// scheduler cannot pass until the commit releases it.
+		busy := h.draining || h.heldPeerQueuedLocked()
 		for _, ca := range op.assets {
 			if semanticSuccess(ca.semantic) && ca.reprojection != ReprojectionSettled && ca.inFlight != nil {
 				busy = true

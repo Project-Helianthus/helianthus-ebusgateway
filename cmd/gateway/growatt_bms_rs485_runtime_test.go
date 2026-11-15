@@ -380,10 +380,15 @@ func TestGrowattSourceEpochIsAdmittedBeforeEndpointOpen(t *testing.T) {
 
 func startGrowattRuntimeWithFake(t *testing.T, config ebusgateway.GrowattBMSRS485Config, fake *growattEndpointFake) *growattBMSRS485ProductionProvider {
 	t.Helper()
+	return startGrowattRuntimeWithFakeOn(t, config, fake, newTestSemanticHub(t))
+}
+
+func startGrowattRuntimeWithFakeOn(t *testing.T, config ebusgateway.GrowattBMSRS485Config, fake *growattEndpointFake, hub *semhub.Hub) *growattBMSRS485ProductionProvider {
+	t.Helper()
 	original := openGrowattBMSRTUEndpoint
 	openGrowattBMSRTUEndpoint = func(modbus.RTUProductionConfig) (growattBMSRTUEndpoint, error) { return fake, nil }
 	t.Cleanup(func() { openGrowattBMSRTUEndpoint = original })
-	runtime, err := startGrowattBMSRS485Runtime(config, newTestSemanticHub(t))
+	runtime, err := startGrowattBMSRS485Runtime(config, hub)
 	if err != nil {
 		t.Fatal(err)
 	}

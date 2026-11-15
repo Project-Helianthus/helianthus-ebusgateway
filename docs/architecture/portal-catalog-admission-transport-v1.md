@@ -25,14 +25,17 @@ produce a partial contribution set. A new valid driver uses this registry
 publication boundary and does not require a Portal handler or bootstrap switch
 edit.
 
-An asset may hold several sources: the owner, whose driver published the
-descriptor, and declared contributors. The catalog groups the service instances
+An asset may hold several sources: the owner, whose source is held by the
+publication the catalog reads the descriptor's snapshot from, and declared
+contributors. The catalog groups the service instances
 of the descriptor's service by the source of their binding and applies the
 single-source rules to each source: one service instance, one capability
 instance on it, and a current binding and source epoch that agree with both. It
 keeps the owner's path when the owner carries the capability, otherwise the path
 of the one contributor whose binding carries it, and attributes the resource and
-its actions to the driver of that binding. A contributor's path is kept only
+its actions to the driver of that binding. The owner's path keeps the
+descriptor's own attribution even though the hub names its source by the
+publication's runtime driver. A contributor's path is kept only
 under that driver's own admitted descriptor for the same pack, resource context,
 service and capability, so the action, its claim and its binding, source epoch
 and generation all name the contributor. The driver of a source is resolved

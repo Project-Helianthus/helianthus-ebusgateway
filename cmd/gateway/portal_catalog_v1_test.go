@@ -119,6 +119,41 @@ func TestPortalCatalogProductionResourcesBindExactSemanticContext(t *testing.T) 
 	}
 }
 
+// Each production descriptor is published under a runtime driver that differs
+// from its contribution driver; with the hub's resolution the one source of
+// the asset is still the owner's and the resource keeps the descriptor's
+// attribution.
+func TestPortalCatalogAttributesProductionRuntimeDriversToTheirDescriptors(t *testing.T) {
+	contributions, err := newGatewayPortalCatalogContributions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, lease := range startPortalTestBaseline(t, contributions) {
+		defer lease.Stop()
+	}
+	for _, family := range []struct {
+		descriptor contributionv1.Manifest
+		runtime    string
+	}{{gatewayPortalPVDescriptor(), gatewayPortalPVPublisherDriver}, {gatewayPortalStorageDescriptor(), growattStorageDriver}, {gatewayPortalEVSEDescriptor(), teslaEVSEDriver}} {
+		t.Run(family.descriptor.ManifestID, func(t *testing.T) {
+			if family.runtime == family.descriptor.Contributor.DriverID {
+				t.Fatalf("runtime driver %q equals the contribution driver", family.runtime)
+			}
+			service := semanticRef(family.descriptor.Fields[0].ServiceRef)
+			capability := semanticRef(family.descriptor.Fields[0].CapabilityRef)
+			snapshot := portalContributorSnapshot(service, capability, []string{"owner"}, "owner")
+			attribution := portalAttribution{drivers: portalTestDrivers{"source:owner": family.runtime}, accepted: contributions.snapshot().Accepted}.publishedBy(family.runtime)
+			resources, _, diagnostics := portalSnapshotCapture(attribution, family.descriptor, snapshot, semreg.EvaluationView{}, []semreg.Selection{}, map[string]any{})
+			if len(diagnostics) != 0 || len(resources) != 1 {
+				t.Fatalf("resources=%d diagnostics=%+v", len(resources), diagnostics)
+			}
+			if got := resources[0]; got.ContributionDriverID != family.descriptor.Contributor.DriverID || got.ContributionManifestID != family.descriptor.ManifestID || got.Source.BindingID != "binding:owner" {
+				t.Fatalf("resource attributed to %s %s on %s", got.ContributionDriverID, got.ContributionManifestID, got.Source.BindingID)
+			}
+		})
+	}
+}
+
 func TestAppendPortalSnapshotUsesMatchedCurrentBindingAndEpochScalars(t *testing.T) {
 	descriptor := gatewayPortalPVDescriptor()
 	serviceRef := semanticRef(descriptor.Fields[0].ServiceRef)
@@ -546,7 +581,15 @@ func injectTeslaCharacterizationClock(t *testing.T, owner *teslaHSCRetainedOwner
 // outcome on the first incarnation with an injected publication clock.
 func startTeslaCharacterizationOwner(t *testing.T) (*teslaHSCRetainedOwner, *characterizationClock) {
 	t.Helper()
-	owner := startTeslaRetainedFixture(t, teslaRetainedConfig())
+	return startTeslaCharacterizationOwnerOn(t, newTestSemanticHub(t))
+}
+
+func startTeslaCharacterizationOwnerOn(t *testing.T, hub *semhub.Hub) (*teslaHSCRetainedOwner, *characterizationClock) {
+	t.Helper()
+	owner, err := startTeslaHSCRetainedOwner(teslaRetainedConfig(), hub)
+	if err != nil {
+		t.Fatal(err)
+	}
 	clock := &characterizationClock{}
 	injectTeslaCharacterizationClock(t, owner, clock)
 	clock.set(characterizationAnchor.Add(1500*time.Millisecond), 0)
@@ -661,6 +704,19 @@ type characterizationFamilies struct {
 // paths with deterministic native fixtures and injected clocks.
 func startCharacterizationFamilies(t *testing.T) characterizationFamilies {
 	t.Helper()
+	return startCharacterizationFamiliesOn(t, nil)
+}
+
+// startCharacterizationFamiliesOn composes the three families on one
+// publication hub, as the gateway does; a nil hub gives each family its own.
+func startCharacterizationFamiliesOn(t *testing.T, hub *semhub.Hub) characterizationFamilies {
+	t.Helper()
+	familyHub := func() *semhub.Hub {
+		if hub != nil {
+			return hub
+		}
+		return newTestSemanticHub(t)
+	}
 	config, err := mapModbusRuntimeConfig(ebusgateway.ModbusTCPConfig{Enabled: true, Endpoint: "tcp://127.0.0.1:1502", DialTimeout: time.Second})
 	if err != nil {
 		t.Fatal(err)
@@ -684,7 +740,11 @@ func startCharacterizationFamilies(t *testing.T) characterizationFamilies {
 	}
 	client, peer := net.Pipe()
 	t.Cleanup(func() { _ = peer.Close() })
-	config.SemanticPV = newTestSemanticPVClass(t)
+	pvClass, err := modbusadapter.NewSemanticPVClass(familyHub())
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.SemanticPV = pvClass
 	adapter, err := modbusadapter.Start(context.Background(), config,
 		func(context.Context, string, string) (net.Conn, error) { advance(); return client, nil },
 		func(modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) {
@@ -714,11 +774,11 @@ func startCharacterizationFamilies(t *testing.T) characterizationFamilies {
 	if !ok {
 		t.Fatal("PV publication unavailable")
 	}
-	growatt := startGrowattRuntimeWithFake(t, growattProductionConfig(), &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 4})
+	growatt := startGrowattRuntimeWithFakeOn(t, growattProductionConfig(), &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 4}, familyHub())
 	if _, err := growatt.GrowattStorageSemanticCurrent(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	tesla, clock := startTeslaCharacterizationOwner(t)
+	tesla, clock := startTeslaCharacterizationOwnerOn(t, familyHub())
 	return characterizationFamilies{pv: adapter, pvProfile: qualified.Capability().ProfileID(), pvSample: qualified.SampleID(), pvAsset: string(current.Snapshot.AssetID), growatt: growatt, tesla: tesla, clock: clock}
 }
 
@@ -850,7 +910,9 @@ func TestPortalCatalogKeepsResourceWithSeveralContributors(t *testing.T) {
 		lease := startPortalTestLease(t, contributions, descriptor)
 		defer lease.Stop()
 	}
-	attribution := portalAttribution{drivers: portalTestDrivers{"source:owner": "evse.primary", "source:contributor": "evse.contributor", "source:contributor-b": "evse.contributor-b"}, accepted: contributions.snapshot().Accepted}
+	// The hub names the owner's source by the runtime driver of the EVSE
+	// publication, not by the descriptor's contribution driver.
+	attribution := portalAttribution{drivers: portalTestDrivers{"source:owner": teslaEVSEDriver, "source:contributor": "evse.contributor", "source:contributor-b": "evse.contributor-b"}, accepted: contributions.snapshot().Accepted}.publishedBy(teslaEVSEDriver)
 	service := semanticRef(owner.Fields[0].ServiceRef)
 	capability := semanticRef(owner.Fields[0].CapabilityRef)
 	twoSources := []string{"owner", "contributor"}
@@ -925,7 +987,7 @@ func TestPortalCatalogKeepsResourceWithSeveralContributors(t *testing.T) {
 	})
 	t.Run("a source the hub does not know", func(t *testing.T) {
 		unknown := attribution
-		unknown.drivers = portalTestDrivers{"source:owner": "evse.primary"}
+		unknown.drivers = portalTestDrivers{"source:owner": teslaEVSEDriver}
 		dropped(t, portalContributorSnapshot(service, capability, twoSources, "contributor"), unknown, portalDropDriverUnresolved)
 	})
 	t.Run("two contributors and no owner carry the capability", func(t *testing.T) {
@@ -984,6 +1046,80 @@ func TestPortalCatalogKeepsResourceWithSeveralContributors(t *testing.T) {
 	t.Run("one source keeps the manifest's driver without resolution", func(t *testing.T) {
 		kept(t, portalContributorSnapshot(service, capability, []string{"owner"}, "owner"), portalAttribution{}, "owner", "evse.primary", owner)
 	})
+}
+
+// startSharedHubPortalSource composes the three families on one publication
+// hub, as the gateway does, and returns the hub and their Portal catalog source.
+func startSharedHubPortalSource(t *testing.T) (*semhub.Hub, characterizationFamilies, *gatewayPortalCatalogSource, time.Time) {
+	t.Helper()
+	hub := newTestSemanticHub(t)
+	families := startCharacterizationFamiliesOn(t, hub)
+	at := characterizationAnchor.Add(10 * time.Second)
+	families.clock.set(at, 9*time.Second)
+	contributions, err := newGatewayPortalCatalogContributions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pvLease, err := startGatewayPortalPVContribution(families.pv, contributions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pvLease.Stop)
+	if err := attachGatewayPortalStorageContribution(families.growatt, contributions); err != nil {
+		t.Fatal(err)
+	}
+	if err := attachGatewayPortalEVSEContribution(families.tesla, contributions); err != nil {
+		t.Fatal(err)
+	}
+	source := newGatewayPortalCatalogSource(families.pv, gatewayPortalStoragePublication(families.growatt), families.tesla, contributions).(*gatewayPortalCatalogSource)
+	return hub, families, source, at
+}
+
+// The hub names each family's source by its runtime driver, which differs from
+// the contribution driver of the descriptor the family publishes; installing
+// the hub as the resolver keeps every single-source resource and its
+// attribution.
+func TestPortalCatalogKeepsSingleSourceFamiliesWithTheHubResolver(t *testing.T) {
+	hub, _, source, at := startSharedHubPortalSource(t)
+	before, beforeFields, beforeDiagnostics, err := source.CaptureDiagnostics(at)
+	// The storage fixture publishes no capability instance, so only the PV and
+	// EVSE resources are kept, as in the characterization capture.
+	if err != nil || len(before) != 2 {
+		t.Fatalf("without the resolver resources=%d diagnostics=%+v err=%v", len(before), beforeDiagnostics, err)
+	}
+	source.contributions.UseSourceDrivers(hub)
+	if source.attribution().drivers == nil {
+		t.Fatal("the hub is not installed as the driver resolver")
+	}
+	after, afterFields, afterDiagnostics, err := source.CaptureDiagnostics(at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := characterizationJSON(t, map[string]any{"resources": after, "fields": afterFields, "diagnostics": afterDiagnostics}), characterizationJSON(t, map[string]any{"resources": before, "fields": beforeFields, "diagnostics": beforeDiagnostics}); !bytes.Equal(got, want) {
+		t.Fatalf("the hub resolver changed single-source output:\n%s\nwant\n%s", got, want)
+	}
+	runtime := map[string]string{"pv.primary": gatewayPortalPVPublisherDriver, "evse.primary": teslaEVSEDriver}
+	for _, resource := range after {
+		var snapshot semreg.Snapshot
+		if err := json.Unmarshal(resource.Source.Snapshot, &snapshot); err != nil {
+			t.Fatal(err)
+		}
+		var sourceID semreg.SourceID
+		for _, binding := range snapshot.Bindings {
+			if string(binding.BindingID) == resource.Source.BindingID {
+				sourceID = binding.SourceID
+			}
+		}
+		info, ok := hub.Source(sourceID)
+		want, known := runtime[resource.ContributionDriverID]
+		if !ok || !known || info.Driver != want || info.Driver == resource.ContributionDriverID {
+			t.Fatalf("resource %s attributed to %s: hub driver %q known=%t; want runtime driver %q", resource.ID, resource.ContributionDriverID, info.Driver, ok, want)
+		}
+		delete(runtime, resource.ContributionDriverID)
+	}
+	if len(runtime) != 0 {
+		t.Fatalf("resources missing for %v", runtime)
+	}
 }
 
 func TestPortalCatalogLogsDroppedResourceOnceWhileItsReasonIsUnchanged(t *testing.T) {

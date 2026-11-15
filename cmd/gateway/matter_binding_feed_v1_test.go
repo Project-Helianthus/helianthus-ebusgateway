@@ -427,6 +427,36 @@ func TestMatterProfileCharacterizationFeed(t *testing.T) {
 	characterizationGolden(t, dir, "matter_feed.json", characterizationJSON(t, snapshot))
 }
 
+// With the publication hub installed as the driver resolver, the families'
+// runtime drivers still attribute each single-source resource to its
+// descriptor, so the feed keeps every projection, the EVSE one included.
+func TestMatterBindingFeedKeepsSingleSourceFamiliesWithTheHubResolver(t *testing.T) {
+	hub, families, source, at := startSharedHubPortalSource(t)
+	feed, err := newGatewayMatterBindingFeedProvider(characterizationFixedSource{source: source, at: at}, []string{families.pvAsset, string(families.growatt.storage.assetID), families.tesla.cfg.AssetID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := feed.Capture(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.contributions.UseSourceDrivers(hub)
+	after, err := feed.Capture(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := characterizationJSON(t, after), characterizationJSON(t, before); !bytes.Equal(got, want) {
+		t.Fatalf("the hub resolver changed the feed:\n%s\nwant\n%s", got, want)
+	}
+	evse := false
+	for _, resource := range after.Resources {
+		evse = evse || resource.AssetID == families.tesla.cfg.AssetID
+	}
+	if !evse {
+		t.Fatalf("feed resources=%+v; want the EVSE projection", after.Resources)
+	}
+}
+
 // characterizationFixedSource evaluates every capture at one fixed instant,
 // because the Matter feed captures at the process wall clock.
 type characterizationFixedSource struct {
@@ -622,7 +652,7 @@ func TestMatterBindingFeedKeepsSharedAssetResource(t *testing.T) {
 	if len(snapshot.Services) != 2 || stale != 1 {
 		t.Fatalf("fixture services=%d stale=%d; want two carriers and one stale unmapped fact", len(snapshot.Services), stale)
 	}
-	source := &matterSharedAssetSource{contributions: contributions, snapshot: snapshot, evaluation: evaluation, attribution: portalAttribution{drivers: portalTestDrivers{"source:owner": "evse.primary", "source:contributor": "evse.contributor"}, accepted: contributions.snapshot().Accepted}}
+	source := &matterSharedAssetSource{contributions: contributions, snapshot: snapshot, evaluation: evaluation, attribution: portalAttribution{drivers: portalTestDrivers{"source:owner": teslaEVSEDriver, "source:contributor": "evse.contributor"}, accepted: contributions.snapshot().Accepted}.publishedBy(teslaEVSEDriver)}
 	provider, err := newGatewayMatterBindingFeedProvider(source, []string{"asset:shared"})
 	if err != nil {
 		t.Fatal(err)

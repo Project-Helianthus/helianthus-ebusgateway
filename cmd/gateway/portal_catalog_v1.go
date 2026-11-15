@@ -208,17 +208,17 @@ func (s *gatewayPortalCatalogSource) CaptureDiagnostics(at time.Time) ([]catalog
 	attribution := s.attribution()
 	if s.pv != nil && s.contributions != nil && s.contributions.accepts("pv.primary", "portal.pv") {
 		if v, ok := s.pv.SemanticPVCurrentSingleAt(at); ok {
-			out.add(attribution, gatewayPortalPVDescriptor(), v.Snapshot, v.Evaluation, v.Selections, v.Projection)
+			out.add(attribution.publishedBy(gatewayPortalPVPublisherDriver), gatewayPortalPVDescriptor(), v.Snapshot, v.Evaluation, v.Selections, v.Projection)
 		}
 	}
 	if s.storage != nil && s.contributions != nil && s.contributions.accepts("storage.primary", "portal.storage") {
 		if v, ok := s.storage.CurrentAt(string(s.storage.assetID), at); ok {
-			out.add(attribution, gatewayPortalStorageDescriptor(), v.Snapshot, v.Evaluation, []semreg.Selection{}, v.Projection)
+			out.add(attribution.publishedBy(growattStorageDriver), gatewayPortalStorageDescriptor(), v.Snapshot, v.Evaluation, []semreg.Selection{}, v.Projection)
 		}
 	}
 	if s.evse != nil && s.contributions != nil && s.contributions.accepts("evse.primary", "portal.evse") {
 		if v, ok := s.evse.SemanticEVSECurrentAt(at); ok {
-			out.add(attribution, gatewayPortalEVSEDescriptor(), v.Snapshot, v.Evaluation, v.Selections, v.Projection)
+			out.add(attribution.publishedBy(teslaEVSEDriver), gatewayPortalEVSEDescriptor(), v.Snapshot, v.Evaluation, v.Selections, v.Projection)
 		}
 	}
 	return out.resources, out.fields, out.diagnostics, nil
@@ -280,9 +280,23 @@ const (
 	portalDropSourceIncomplete = "source_record_incomplete"
 )
 
+// gatewayPortalPVPublisherDriver is the driver under which the Modbus
+// adapter's PV class admits its sources on the publication hub.
+const gatewayPortalPVPublisherDriver = "pv_sunspec"
+
 type portalAttribution struct {
 	drivers  gatewayPortalSourceDrivers
 	accepted []contributionv1.AcceptedDescriptor
+	// publisher is the hub driver of the publication the capture read the
+	// snapshot from. Its source is the owner's, and the owner's path is
+	// attributed to the descriptor that publication contributes.
+	publisher string
+}
+
+// publishedBy names the hub driver of the publication a snapshot was read from.
+func (a portalAttribution) publishedBy(driver string) portalAttribution {
+	a.publisher = driver
+	return a
 }
 
 type portalCapture struct {
@@ -490,7 +504,9 @@ func portalSourcePath(snapshot semreg.Snapshot, source semreg.SourceID, service 
 
 // choose keeps the owner's path, or the path of the one contributor whose
 // binding carries the capability, and names the driver of that binding. The
-// owner is the source whose driver published the descriptor.
+// owner is the source held by the publication the snapshot was read from; its
+// path is attributed to the descriptor that publication contributes, while a
+// contributor's path is attributed to its own driver's admitted descriptor.
 func (a portalAttribution) choose(descriptor contributionv1.Manifest, resourceID string, snapshot semreg.Snapshot, paths []portalPath) (portalPath, portalContributor, string) {
 	owner := portalContributor{driver: descriptor.Contributor.DriverID, manifest: descriptor.ManifestID, version: descriptor.ManifestVersion}
 	if a.drivers == nil {
@@ -512,7 +528,7 @@ func (a portalAttribution) choose(descriptor contributionv1.Manifest, resourceID
 			return portalPath{}, portalContributor{}, portalDropDriverUnresolved
 		}
 		drivers[index] = info.Driver
-		if info.Driver == owner.driver {
+		if a.publisher != "" && info.Driver == a.publisher {
 			owners = append(owners, index)
 		}
 	}

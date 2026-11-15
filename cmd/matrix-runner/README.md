@@ -287,7 +287,10 @@ The command `state` is the only line sent to ebusd.
 
 The commands read only `MATRIX_*` variables: `MATRIX_GATEWAY_BASE_URL` (or
 the surface overrides `MATRIX_HEALTH_URL`, `MATRIX_BUS_OBSERVABILITY_URL`,
-`MATRIX_METRICS_URL` and `MATRIX_DEBUG_VARS_URL`), `MATRIX_EBUSD_COMMAND_ADDR`,
+`MATRIX_METRICS_URL` and `MATRIX_DEBUG_VARS_URL`), `MATRIX_EBUSD_COMMAND_ADDR`
+(the runner does not derive it from `--ebusd-command-addr`: export it in the
+runner's environment with the same host:port, which the commands inherit; an
+ebusd cell without it ends with usage status 2),
 the cell variables set by the runner, and `MATRIX_ADDON_WAIT_SEC`,
 `MATRIX_ADDON_POLL_SEC` and `MATRIX_ADDON_HTTP_TIMEOUT_SEC` (default 60, 2
 and 10 seconds). The start commands poll until the state holds or the wait

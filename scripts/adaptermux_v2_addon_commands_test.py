@@ -527,5 +527,14 @@ class SafetyTest(unittest.TestCase):
                     self.assertNotIn("makedirs", code)
 
 
+class ReadmeContractTest(unittest.TestCase):
+    def test_readme_says_ebusd_address_is_exported_not_derived(self):
+        readme = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "cmd", "matrix-runner", "README.md")
+        with open(readme, encoding="utf-8") as handle:
+            text = " ".join(handle.read().split())
+        self.assertIn("does not derive it from `--ebusd-command-addr`", text)
+        self.assertIn("export it in the runner's environment", text)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -76,8 +76,10 @@
 // the lowest priority class: a continuously bidding higher-priority scanner can
 // legitimately starve the gateway. This is standard address-priority behavior.
 // There is no software fairness rotation or request-age suppression. A waiting
-// external bid is therefore withdrawn only by its client: a SYN cancel, a newer
-// request of the same session, or the session closing. A bid whose client
+// external bid is therefore, while the mux and its upstream adapter connection
+// stay up, withdrawn only by its client: a SYN cancel, a newer request of the
+// same session, or the session closing. An adapter disconnect or reset, or mux
+// shutdown, fails every pending bid regardless of its client. A bid whose client
 // stopped waiting costs one START request and one grant held for at most the
 // abandon deadline (externalAbandonDeadline); the watchdog release fences
 // admission, and arbitration resumes at the next SYN. While active arbitration

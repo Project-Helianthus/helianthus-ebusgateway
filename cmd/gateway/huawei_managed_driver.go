@@ -15,6 +15,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal/contributionv1"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 )
 
 type huaweiRegistryProvider interface {
@@ -275,7 +276,9 @@ func (p *managedModbusMCPProvider) HuaweiInstanceStatus(ctx context.Context, fam
 
 // huaweiStatusChildren reports the latest cycle's children with the asset each
 // published child holds and the refusal, if any, the publication recorded for
-// a child the provider admitted. The caller holds the publication lock.
+// a child the provider admitted. Each child also reports its identity-link
+// state and the binding and source-descriptor counts of its asset, read from
+// the in-memory snapshot. The caller holds the publication lock.
 func huaweiStatusChildren(p *huaweiPVPublication, cycle modbusreg.HuaweiProviderCycle) []mcp.HuaweiInstanceChildStatus {
 	var out []mcp.HuaweiInstanceChildStatus
 	for _, child := range cycle.Children {
@@ -285,9 +288,39 @@ func huaweiStatusChildren(p *huaweiPVPublication, cycle modbusreg.HuaweiProvider
 		} else if refusal, ok := p.refused[child.UnitID]; ok {
 			status.Refusal = refusal
 		}
+		if view, err := p.hub.Inspect(huaweiAssetID(p.label, "pv", child.UnitID)); err == nil && view.Present {
+			if state := huaweiStatusLinkState(view.Snapshot, p.handle.Source(), p.handle.Epoch(), p.handle.GenerationID()); state != "" {
+				status.IdentityLinkState = state
+				status.BindingIncarnations = len(view.Snapshot.Bindings)
+				status.SourceDescriptors = len(view.Snapshot.Sources)
+			}
+		}
 		out = append(out, status)
 	}
 	return out
+}
+
+// huaweiStatusLinkState reports the identity-link state of the bindings the
+// publishing source epoch and generation hold current on an asset. A qualified
+// link outranks a candidate, a candidate outranks a withdrawn link; links of
+// another source, epoch or generation, of a binding that is not current, or in
+// a state the publication never writes, are not reported.
+func huaweiStatusLinkState(snapshot semreg.Snapshot, source semreg.SourceID, epoch semreg.SourceEpochID, generation semreg.Uint64) string {
+	current := map[semreg.NativeBindingID]bool{}
+	for _, binding := range snapshot.Bindings {
+		if binding.SourceID == source && binding.SourceEpochID == epoch && binding.DriverGeneration == generation && binding.State == semreg.BindingCurrent {
+			current[binding.BindingID] = true
+		}
+	}
+	rank := map[semreg.LinkState]int{semreg.LinkWithdrawn: 1, semreg.LinkCandidate: 2, semreg.LinkQualified: 3}
+	name := map[int]string{1: mcp.HuaweiIdentityLinkWithdrawn, 2: mcp.HuaweiIdentityLinkCandidate, 3: mcp.HuaweiIdentityLinkQualified}
+	best := 0
+	for _, link := range snapshot.IdentityLinks {
+		if current[link.BindingID] && rank[link.State] > best {
+			best = rank[link.State]
+		}
+	}
+	return name[best]
 }
 
 // huaweiStatusRetainedWithdrawals reports the capacity withdrawals this

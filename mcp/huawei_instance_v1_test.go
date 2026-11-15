@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"os"
 	"reflect"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
@@ -27,7 +29,13 @@ func (p *h10InstanceFixture) HuaweiInstanceStatus(_ context.Context, family, lab
 		childFamily, profile = "SUN2000 M1 series", "huawei.sun2000.m1.monitoring-readonly@1.0.0"
 	}
 	asset := "pv-asset-demo-" + label
-	return HuaweiInstanceStatus{Instance: label, Family: family, Disposition: "COMPLETE", Qualified: true, Children: []HuaweiInstanceChildStatus{{Unit: 1, Family: childFamily, Profile: profile, Evidence: "CURRENT", Reason: "read", AssetID: asset}}, PublishedAssetIDs: []string{asset}, Loss: []string{"BATTERY_NOT_ADMITTED", "METER_NOT_ADMITTED"}}, nil
+	children := []HuaweiInstanceChildStatus{{Unit: 1, Family: childFamily, Profile: profile, Evidence: "CURRENT", Reason: "read", AssetID: asset, IdentityLinkState: HuaweiIdentityLinkQualified, BindingIncarnations: 2, SourceDescriptors: 1}}
+	if family == "huawei.smartlogger" {
+		// A child refused at the binding bound reports its withdrawn link and
+		// the exhausted count of its asset.
+		children = append(children, HuaweiInstanceChildStatus{Unit: 2, Family: childFamily, Profile: profile, Evidence: "CURRENT", Reason: "read", Refusal: "binding_capacity", IdentityLinkState: HuaweiIdentityLinkWithdrawn, BindingIncarnations: HuaweiAssetBindingBound, SourceDescriptors: 3})
+	}
+	return HuaweiInstanceStatus{Instance: label, Family: family, Disposition: "COMPLETE", Qualified: true, Children: children, PublishedAssetIDs: []string{asset}, Loss: []string{"BATTERY_NOT_ADMITTED", "METER_NOT_ADMITTED"}}, nil
 }
 func TestH10NativeInstanceSchemaAndEnvelope(t *testing.T) {
 	s, err := NewServer(&testRegistry{entries: map[byte]registry.DeviceEntry{}}, &testInvoker{})
@@ -134,5 +142,32 @@ func TestH10HuaweiInstanceToolsRegisterWithoutSunSpecCore(t *testing.T) {
 	}
 	if have[ModbusV1RawReadTool] {
 		t.Fatal("SunSpec tool registered without core")
+	}
+}
+
+// A child without an asset or without a link of the publishing generation
+// omits the identity members instead of reporting zero.
+func TestHuaweiInstanceChildIdentityMembersAbsentWithoutAsset(t *testing.T) {
+	encoded, err := json.Marshal(HuaweiInstanceChildStatus{Unit: 3, Family: "SUN2000 M3 series", Profile: "huawei.sun2000.m3.monitoring-readonly@1.0.0", Evidence: "WITHHELD", Reason: "identity_mismatch"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var members map[string]any
+	if err := json.Unmarshal(encoded, &members); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"identity_link_state", "binding_incarnations", "source_descriptors"} {
+		if _, ok := members[name]; ok {
+			t.Fatalf("member %s present without an asset: %s", name, encoded)
+		}
+	}
+}
+
+// The tool schema states the reported link states and both bounds.
+func TestHuaweiInstanceSchemaStatesIdentityBounds(t *testing.T) {
+	for _, fragment := range []string{"identity_link_state", HuaweiIdentityLinkQualified, HuaweiIdentityLinkCandidate, HuaweiIdentityLinkWithdrawn, "binding_incarnations against the bound of " + strconv.Itoa(HuaweiAssetBindingBound), "source_descriptors against the bound of " + strconv.Itoa(HuaweiAssetSourceDescriptorBound)} {
+		if !strings.Contains(huaweiInstanceStatusSchemaDescription, fragment) {
+			t.Fatalf("schema description lacks %q: %s", fragment, huaweiInstanceStatusSchemaDescription)
+		}
 	}
 }

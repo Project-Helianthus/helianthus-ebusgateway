@@ -629,6 +629,17 @@ incarnation and an identity link, and the kernel bounds an asset at 128 of
 each. A re-admission that would exceed the bound is refused before any batch
 is applied: the child stays unpublished with the refusal `binding_capacity`
 in the instance status while its siblings keep publishing.
+Each child of the instance status also reports the headroom of its asset as
+JSON members, without a metric label: `identity_link_state` is the state of
+the child's identity link in the publishing source epoch and generation
+(`qualified`, `candidate` or `withdrawn`, a qualified link outranking a
+candidate and a candidate outranking a withdrawn one), and
+`binding_incarnations` and `source_descriptors` count the asset's native
+bindings and source descriptors, every contributor's and every epoch's
+included, against the bounds of 128 and 32 that the tool schema states. The
+members are read from the in-memory snapshot without I/O and are absent while
+the asset, or a link of the publishing generation, does not exist; a count is
+never reported as zero.
 A retained group keeps the cycle and transport generation at which it was
 last answered. After a reconnect the publication accepts a retained group of
 an earlier generation and publishes its facts stale with the child-stale
@@ -683,6 +694,11 @@ consecutive complete listings. A genuine identity change reaches the binding
 and identity-link bounds after 127 events without operator action, inside 168
 events at one per hour, and neither gateway remedy prevents that growth.
 Kernel compaction of withdrawn incarnations is therefore needed as well.
+Because compaction is needed, the gateway does not yet change its publication:
+the withdrawal and the new incarnation on re-admission described above stay in
+force for every cause in the table, and the instance status reports each
+child's link state and its asset's binding and source-descriptor counts so the
+growth toward a bound is visible before the refusal.
 
 The native status tools require `instance` and expose family, routing, evidence
 state, published asset IDs and categorical losses. The EMMA `status.get` reports

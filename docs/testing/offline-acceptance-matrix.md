@@ -15,8 +15,8 @@ fails when they differ, so the page and the matrix cannot drift.
 ## Axes
 
 1. **Family x surface.** Every device family by native MCP, semantic MCP, GraphQL, the Portal, the Home Assistant
-   consumer contract, the Prometheus semantic families, the Prometheus native point families and the eeBUS output
-   binding. Families are device families, never models.
+   consumer contract, the Prometheus semantic families, the Prometheus native point families, the eeBUS output
+   binding and the Matter output binding. Families are device families, never models.
 2. **Family x graph.** Per family: canonical resources, relation instances, plane memberships, lens retrieval
    parity across GraphQL, semantic MCP and the Portal, and target reports that cite their lens.
 3. **Family x condition.** Normal, degraded, reset, partial failure, stale generation, identity conflict, unknown
@@ -64,11 +64,11 @@ acceptance is closed; it is not part of the local gate.
 
 | Axis | Cells | `not_run` | `pass` | `not_applicable` | `not_in_0_7` |
 |---|---|---|---|---|---|
-| `family_surface` | 120 | 118 | 0 | 0 | 2 |
+| `family_surface` | 135 | 133 | 0 | 0 | 2 |
 | `family_graph` | 75 | 70 | 0 | 0 | 5 |
 | `family_condition` | 120 | 120 | 0 | 0 | 0 |
 | `graph_negative` | 7 | 7 | 0 | 0 | 0 |
-| total | 322 | 315 | 0 | 0 | 7 |
+| total | 337 | 330 | 0 | 0 | 7 |
 
 ### Families
 
@@ -102,6 +102,7 @@ acceptance is closed; it is not part of the local gate.
 | `prometheus_semantic` | Prometheus semantic families |
 | `prometheus_native` | Prometheus native point families (optional export) |
 | `eebus_output` | eeBUS output binding |
+| `matter_output` | Matter output binding |
 
 ### Graph rows
 
@@ -128,23 +129,23 @@ acceptance is closed; it is not part of the local gate.
 
 ### Family x surface
 
-| Family | `native_mcp` | `semantic_mcp` | `graphql` | `portal` | `home_assistant` | `prometheus_semantic` | `prometheus_native` | `eebus_output` |
-|---|---|---|---|---|---|---|---|---|
-| `ebus_vaillant` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
-| `ebus_heat_source_only` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
-| `eebus_energy_manager` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
-| `sunspec_inverter` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
-| `huawei_smartlogger` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
-| `huawei_sdongle` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
-| `huawei_energy_manager` | `not_run` | `not_in_0_7` | `not_run` | `not_run` | `not_run` | `not_in_0_7` | `not_run` | `not_run` |
-| `growatt_inverter_rtu` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
-| `growatt_bms_rs485` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
-| `growatt_bms_can` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
-| `growatt_bms_pcs_can` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
-| `growatt_bms_link_can` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
-| `tesla_wall_connector` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
-| `outback_power` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
-| `gree_vrf_can` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
+| Family | `native_mcp` | `semantic_mcp` | `graphql` | `portal` | `home_assistant` | `prometheus_semantic` | `prometheus_native` | `eebus_output` | `matter_output` |
+|---|---|---|---|---|---|---|---|---|---|
+| `ebus_vaillant` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
+| `ebus_heat_source_only` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
+| `eebus_energy_manager` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
+| `sunspec_inverter` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
+| `huawei_smartlogger` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
+| `huawei_sdongle` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
+| `huawei_energy_manager` | `not_run` | `not_in_0_7` | `not_run` | `not_run` | `not_run` | `not_in_0_7` | `not_run` | `not_run` | `not_run` |
+| `growatt_inverter_rtu` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
+| `growatt_bms_rs485` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
+| `growatt_bms_can` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
+| `growatt_bms_pcs_can` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
+| `growatt_bms_link_can` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
+| `tesla_wall_connector` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
+| `outback_power` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
+| `gree_vrf_can` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
 
 ### Family x graph
 

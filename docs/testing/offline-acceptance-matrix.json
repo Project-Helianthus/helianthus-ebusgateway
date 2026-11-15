@@ -110,6 +110,10 @@
     {
       "id": "eebus_output",
       "title": "eeBUS output binding"
+    },
+    {
+      "id": "matter_output",
+      "title": "Matter output binding"
     }
   ],
   "graph_rows": [
@@ -248,6 +252,12 @@
           "test": null,
           "reason": null,
           "issue": null
+        },
+        "matter_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
         }
       },
       "ebus_heat_source_only": {
@@ -294,6 +304,12 @@
           "issue": null
         },
         "eebus_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "matter_output": {
           "state": "not_run",
           "test": null,
           "reason": null,
@@ -348,6 +364,12 @@
           "test": null,
           "reason": null,
           "issue": null
+        },
+        "matter_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
         }
       },
       "sunspec_inverter": {
@@ -394,6 +416,12 @@
           "issue": null
         },
         "eebus_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "matter_output": {
           "state": "not_run",
           "test": null,
           "reason": null,
@@ -448,6 +476,12 @@
           "test": null,
           "reason": null,
           "issue": null
+        },
+        "matter_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
         }
       },
       "huawei_sdongle": {
@@ -494,6 +528,12 @@
           "issue": null
         },
         "eebus_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "matter_output": {
           "state": "not_run",
           "test": null,
           "reason": null,
@@ -548,6 +588,12 @@
           "test": null,
           "reason": null,
           "issue": null
+        },
+        "matter_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
         }
       },
       "growatt_inverter_rtu": {
@@ -594,6 +640,12 @@
           "issue": null
         },
         "eebus_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "matter_output": {
           "state": "not_run",
           "test": null,
           "reason": null,
@@ -648,6 +700,12 @@
           "test": null,
           "reason": null,
           "issue": null
+        },
+        "matter_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
         }
       },
       "growatt_bms_can": {
@@ -694,6 +752,12 @@
           "issue": null
         },
         "eebus_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "matter_output": {
           "state": "not_run",
           "test": null,
           "reason": null,
@@ -748,6 +812,12 @@
           "test": null,
           "reason": null,
           "issue": null
+        },
+        "matter_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
         }
       },
       "growatt_bms_link_can": {
@@ -794,6 +864,12 @@
           "issue": null
         },
         "eebus_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "matter_output": {
           "state": "not_run",
           "test": null,
           "reason": null,
@@ -848,6 +924,12 @@
           "test": null,
           "reason": null,
           "issue": null
+        },
+        "matter_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
         }
       },
       "outback_power": {
@@ -898,6 +980,12 @@
           "test": null,
           "reason": null,
           "issue": null
+        },
+        "matter_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
         }
       },
       "gree_vrf_can": {
@@ -944,6 +1032,12 @@
           "issue": null
         },
         "eebus_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "matter_output": {
           "state": "not_run",
           "test": null,
           "reason": null,

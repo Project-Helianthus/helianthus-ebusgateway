@@ -322,6 +322,14 @@ class CommittedMatrixTests(unittest.TestCase):
             for axis in ("family_surface", "family_graph", "family_condition"):
                 self.assertIn(family, document["cells"][axis])
 
+    def test_committed_matrix_tracks_every_output_binding_surface(self):
+        document = MATRIX.load(COMMITTED_MATRIX)
+        surfaces = {member["id"] for member in document["surfaces"]}
+        for surface in ("eebus_output", "matter_output"):
+            self.assertIn(surface, surfaces)
+            for family in document["families"]:
+                self.assertIn(surface, document["cells"]["family_surface"][family["id"]])
+
     def test_committed_matrix_is_valid(self):
         document = MATRIX.load(COMMITTED_MATRIX)
         self.assertEqual(MATRIX.validate(document, REPO_ROOT), [])

@@ -157,7 +157,9 @@ The check reads every counter once when it starts, then again every poll
 interval until the invariant's flow requirements hold or the window ends; an
 invariant that forbids a counter moving observes the whole window.
 After the requirements hold it reads once more and judges that last reading.
-A cell passes only when the gateway reports the transport class of the cell,
+No poll sleeps past the end of the window, and a reading that completes after
+the window ends is discarded: the check judges the last reading completed
+inside the window, so traffic after the window never counts. A cell passes only when the gateway reports the transport class of the cell,
 the write guard is confirmed and eBUS frames moved on the selected southbound
 transport. A surface that answers without bus flow fails the cell.
 
@@ -230,7 +232,8 @@ AD10 runs before the compatibility cells of its setup, so run those first
 paired case runs again later, run AD10 again too.
 
 Every run writes one JSON object, `smoke_evidence.json`, into the case
-directory. It holds the cell, the result, the reasons, the window, the
+directory. It holds the cell, the result, the reasons, the window (readings
+judged and readings discarded after the window), the
 measures with each requirement and whether it was met, the transport and
 write-guard evidence, and, where taken, the semantic record and the AD10
 decisions. It holds no URL and no time.

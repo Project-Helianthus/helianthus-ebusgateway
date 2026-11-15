@@ -522,28 +522,35 @@ def observe_window(urls, settings, check, clock):
     backwards, so a reset that recovers before the last sample is still seen.
     A check that forbids a counter moving observes the whole window: the
     concurrent client finishes only after this command returns, so a late
-    movement must still be seen.
+    movement must still be seen. Once the requirements hold, one more sample
+    confirms that no counter fell. A sample whose sleep or reads complete
+    after the window ends may count traffic outside the window, so it is
+    discarded and the last sample completed inside the window is judged.
     """
     full_window = any(rule == EQ0 for _, rule in check["requires"])
     baseline = take_sample(urls, settings)
     deadline = clock.monotonic() + settings["window"]
-    samples = 1
-    previous = baseline
+    window = {"samples": 1, "discarded_after_window": 0}
+    final = baseline
     regressions = set(())
+    ready = False
     while True:
-        clock.sleep(settings["poll"])
+        remaining = deadline - clock.monotonic()
+        if remaining <= 0:
+            break
+        clock.sleep(min(settings["poll"], remaining))
         current = take_sample(urls, settings)
-        samples += 1
-        regressions.update(backward_counters(previous, current))
-        previous = current
-        own = own_source(baseline) or own_source(current)
-        if not full_window and flow_ready(check, compute_measures(baseline, current, own)):
-            clock.sleep(settings["poll"])
-            current = take_sample(urls, settings)
-            regressions.update(backward_counters(previous, current))
-            return baseline, current, own, samples + 1, sorted(regressions)
-        if clock.monotonic() >= deadline:
-            return baseline, current, own, samples, sorted(regressions)
+        if clock.monotonic() > deadline:
+            window["discarded_after_window"] += 1
+            break
+        window["samples"] += 1
+        regressions.update(backward_counters(final, current))
+        final = current
+        if ready:
+            break
+        own = own_source(baseline) or own_source(final)
+        ready = not full_window and flow_ready(check, compute_measures(baseline, final, own))
+    return baseline, final, own_source(baseline) or own_source(final), window, sorted(regressions)
 
 
 # ---------------------------------------------------------------- semantic record
@@ -694,8 +701,8 @@ def compare_pairs(context, mux_record):
 
 def judge(context, check, urls, settings, clock):
     evidence = {}
-    baseline, current, own, samples, backwards = observe_window(urls, settings, check, clock)
-    evidence["window"] = {"samples": samples, "window_seconds": settings["window"]}
+    baseline, current, own, window, backwards = observe_window(urls, settings, check, clock)
+    evidence["window"] = dict(window, window_seconds=settings["window"])
     evidence["gateway_source"] = own
     evidence["transport"], reasons = check_transport(context, current, check)
     evidence["write_guard"], guard_reasons = check_write_guard(context, current)

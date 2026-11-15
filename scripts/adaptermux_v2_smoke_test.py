@@ -110,6 +110,7 @@ class StubGateway:
         self.requests = []
         self.answers = {}
         self.cursor = {}
+        self.on_request = None
         stub = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -147,6 +148,8 @@ class StubGateway:
     def serve(self, handler, body):
         path = handler.path
         self.requests.append((handler.command, path, body.decode("utf-8")))
+        if self.on_request is not None:
+            self.on_request()
         answers = self.answers.get(path)
         if not answers:
             handler.send_response(404)
@@ -161,6 +164,27 @@ class StubGateway:
         handler.wfile.write(payload)
 
 
+class SteppedClock:
+    """A monotonic clock that sleeps exactly and charges every gateway read."""
+
+    def __init__(self, read_seconds):
+        self.now = 0.0
+        self.read_seconds = read_seconds
+        self.lock = threading.Lock()
+
+    def monotonic(self):
+        with self.lock:
+            return self.now
+
+    def sleep(self, seconds):
+        with self.lock:
+            self.now += seconds
+
+    def charge_read(self):
+        with self.lock:
+            self.now += self.read_seconds
+
+
 class SmokeTestCase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -172,6 +196,7 @@ class SmokeTestCase(unittest.TestCase):
 
     def setUp(self):
         self.stub.requests.clear()
+        self.stub.on_request = None
         self.temp = tempfile.TemporaryDirectory()
         self.output_dir = pathlib.Path(self.temp.name)
 
@@ -200,8 +225,15 @@ class SmokeTestCase(unittest.TestCase):
         environ.update(overrides)
         return environ
 
-    def run_smoke(self, environ):
-        status = SMOKE.run(environ, stream=io.StringIO())
+    def run_smoke(self, environ, clock=None):
+        if clock is None:
+            status = SMOKE.run(environ, stream=io.StringIO())
+        else:
+            self.stub.on_request = clock.charge_read
+            try:
+                status = SMOKE.run(environ, stream=io.StringIO(), clock=clock)
+            finally:
+                self.stub.on_request = None
         evidence_path = pathlib.Path(environ["MATRIX_CASE_DIR"]) / SMOKE.EVIDENCE_FILE
         evidence = json.loads(evidence_path.read_text(encoding="utf-8")) if evidence_path.exists() else None
         return status, evidence
@@ -261,6 +293,34 @@ class ExecutableInvariantTests(SmokeTestCase):
                 self.assertEqual(status, SMOKE.EXIT_FAIL)
                 self.assertIn("did not move during the case window", self.reasons(evidence))
                 self.assertGreater(evidence["window"]["samples"], 2)
+
+    # Window 1 s after a baseline read of 0.3 s; each later sample sleeps
+    # 0.25 s and reads for 0.3 s, so the second one completes past the window.
+    STEPPED_WINDOW = {"MATRIX_SMOKE_WINDOW_SEC": "1.0", "MATRIX_SMOKE_POLL_SEC": "0.25"}
+
+    def test_flow_seen_only_after_the_window_ends_fails(self):
+        for invariant, composition, southbound in EXECUTABLE_CELLS:
+            with self.subTest(case=case_id(invariant, southbound)):
+                baseline, flow = self.phases(composition, southbound)
+                self.stub.load([baseline, Phase("baseline", composition, southbound), flow])
+                environ = self.environ(invariant, composition, southbound, **self.STEPPED_WINDOW)
+                status, evidence = self.run_smoke(environ, clock=SteppedClock(0.1))
+                self.assertEqual(status, SMOKE.EXIT_FAIL)
+                self.assertIn("did not move during the case window", self.reasons(evidence))
+                self.assertEqual(evidence["window"]["samples"], 2)
+                self.assertEqual(evidence["window"]["discarded_after_window"], 1)
+
+    def test_flow_inside_the_window_passes_when_the_next_sample_ends_late(self):
+        for invariant, composition, southbound in EXECUTABLE_CELLS:
+            with self.subTest(case=case_id(invariant, southbound)):
+                if invariant == "AD10":
+                    self.prepare_pairs(southbound)
+                self.stub.load(self.phases(composition, southbound))
+                environ = self.environ(invariant, composition, southbound, **self.STEPPED_WINDOW)
+                status, evidence = self.run_smoke(environ, clock=SteppedClock(0.1))
+                self.assertEqual(status, SMOKE.EXIT_PASS, evidence["reasons"])
+                self.assertEqual(evidence["window"]["samples"], 2)
+                self.assertEqual(evidence["window"]["discarded_after_window"], 1)
 
     def test_counter_moving_backwards_fails(self):
         for invariant, composition, southbound in EXECUTABLE_CELLS:

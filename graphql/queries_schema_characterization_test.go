@@ -11,10 +11,12 @@ import (
 )
 
 // Computed by querySchemaShapeDigest after the eight system-plane register
-// fields took their docs-ebus names (issue #1483) and the circuit
-// configuration published RR001D as the integer circuit_special_function_mode
-// in place of the removed float field (issue #1474).
-var querySchemaShapeSHA256 = fmt.Sprintf("%x", [sha256.Size]byte{136, 250, 38, 246, 128, 88, 108, 133, 220, 174, 36, 163, 78, 192, 21, 163, 2, 207, 77, 169, 95, 169, 107, 84, 97, 142, 166, 169, 30, 166, 195, 67})
+// fields took their docs-ebus names (issue #1483), the circuit configuration
+// published RR001D as the integer circuit_special_function_mode in place of
+// the removed float field (issue #1474), and the semantic snapshot gained the
+// additive optional resource and relation fields of the re-pinned semreg
+// snapshot records (issue #1554).
+var querySchemaShapeSHA256 = fmt.Sprintf("%x", [sha256.Size]byte{137, 212, 101, 105, 116, 50, 250, 208, 207, 225, 220, 131, 197, 86, 57, 229, 209, 35, 65, 187, 220, 179, 163, 103, 255, 75, 54, 223, 27, 201, 27, 172})
 
 func TestQuerySchemaKeepsIntrospectionShape(t *testing.T) {
 	t.Parallel()

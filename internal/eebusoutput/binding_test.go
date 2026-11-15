@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	m40Std01   semreg.DefinitionID = "unknown_pending_std_01"
+	m40Pending semreg.DefinitionID = "unknown_pending_normative_source"
 	m40OtherID semreg.AssetID      = "asset:synthetic-other"
 )
 
@@ -211,10 +211,10 @@ func TestM40LedgerAccountsForEveryItemWithoutExactMapping(t *testing.T) {
 			c.Quality.Qualification = semreg.QualificationUnsupported
 			c.Quality.Promotion = semreg.PromotionUnpromoted
 		}, projection.ProjectionUnsupported, projection.ProjectionUnsupported, "semantic.read.reason.value_unknown"},
-		{"STD-01 reason keeps precedence", func(c *semreg.FactCandidate) {
+		{"pending normative source reason keeps precedence", func(c *semreg.FactCandidate) {
 			c.Quality.Qualification = semreg.QualificationQualified
-			c.Quality.Reasons = []semreg.DefinitionID{"a.unrelated", m40Std01}
-		}, projection.ProjectionUnknown, projection.ProjectionUnknown, m40Std01},
+			c.Quality.Reasons = []semreg.DefinitionID{"a.unrelated", m40Pending}
+		}, projection.ProjectionUnknown, projection.ProjectionUnknown, m40Pending},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f := semoptest.New(t)
@@ -295,7 +295,7 @@ func TestM40MappingRowKeyCoversKindAndItemID(t *testing.T) {
 	// A hypothesis row never overrides a non-exact source disposition.
 	t.Run("hypothesis row keeps source reason", func(t *testing.T) {
 		f := semoptest.New(t)
-		input := m40Input(t, f, func(c *semreg.FactCandidate) { c.Quality.Reasons = []semreg.DefinitionID{m40Std01} })
+		input := m40Input(t, f, func(c *semreg.FactCandidate) { c.Quality.Reasons = []semreg.DefinitionID{m40Pending} })
 		capture := &m40Capture{}
 		capture.set(m40Fixed(registry, input))
 		binding := m40Binding(t, eebusoutput.Config{Snapshots: capture, Mappings: []eebusoutput.MappingRow{

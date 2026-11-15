@@ -257,7 +257,7 @@ func sample(a semanticview.Asset, b Binding, m metric, metadata *semreg.PackMeta
 			return 0, false
 		}
 		for _, reason := range c.Quality.Reasons {
-			if reason == "unknown_pending_std_01" {
+			if reason == semanticview.PendingNormativeSourceReason {
 				return 0, false
 			}
 		}

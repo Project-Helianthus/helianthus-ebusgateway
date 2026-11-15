@@ -29,8 +29,9 @@ const (
 	MappingRevision semreg.Uint64       = "1"
 )
 
-// Binding-owned reasons. Source reasons, including unknown_pending_std_01, are
-// carried verbatim and never replaced by these.
+// Binding-owned reasons. Source reasons, including
+// unknown_pending_normative_source, are carried verbatim and never replaced by
+// these.
 const (
 	ReasonMappingUnknown   semreg.DefinitionID = "eebus.output.reason.mapping_unknown"
 	ReasonMappingCandidate semreg.DefinitionID = "eebus.output.reason.mapping_candidate"

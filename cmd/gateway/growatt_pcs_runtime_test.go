@@ -602,6 +602,31 @@ func TestCX19UnknownCachedMemberAgeRemainsWithheld(t *testing.T) {
 		t.Fatal(s)
 	}
 }
+
+// The public worked example of the standard-PCS slot report: 326 =
+// 02 14 BE 10 9A DA 00 00 reports slot 2 and 25.0 A in the ordinary bank,
+// whose wire code is biased by 4000 in tenths of an ampere.
+func TestCX19OrdinaryBankSlotCurrentIsDecoded(t *testing.T) {
+	c := cx19Config(t, "pcs-standard")
+	if c.Native.Bank != "ordinary" {
+		t.Fatal(c.Native.Bank)
+	}
+	d, r := cx19New(t, c, func(s canbusreg.Selection, e canbusreg.Evidence) canbusreg.ReplayInput {
+		i := cx19Association(s, e)
+		i.PCS.SlotValid = true
+		i.PCS.NativeSlot = 2
+		return i
+	})
+	record := cx19Record(c, 1)
+	binary.NativeEndian.PutUint32(record.Raw, 0x326)
+	copy(record.Raw[8:], []byte{0x02, 0x14, 0xbe, 0x10, 0x9a, 0xda, 0x00, 0x00})
+	cx19Send(t, r, record)
+	s := cx19Raw(t, d, 1)
+	f, ok := s.Current["slots/unassociated/current"]
+	if !ok || f.Status != "accepted" || f.Numerator != 250 || f.Denominator != 10 || f.Unit != "A" || f.Bank != "ordinary" || !reflect.DeepEqual(s.Raw[0].NativeRecord, record.Raw) {
+		t.Fatalf("ordinary-bank slot current not decoded: present=%v field=%+v", ok, f)
+	}
+}
 func TestCX19SelectionIdentityEveryField(t *testing.T) {
 	mutations := map[string]func(*canbusreg.SelectionSpec){
 		"interface-name":  func(c *canbusreg.SelectionSpec) { c.Interface, _ = canbus.NewInterfaceIdentity("synthetic1", 7) },

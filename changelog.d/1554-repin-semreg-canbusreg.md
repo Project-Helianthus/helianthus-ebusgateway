@@ -1,0 +1,3 @@
+## Re-pin semreg and canbusreg and adopt the renamed pending-source reason
+
+The semreg and canbusreg pins move to the libraries' current main revisions. The reason for an eeBUS mapping whose normative source is unresolved changes from `unknown_pending_std_01` to `unknown_pending_normative_source` in the eeBUS publication, the semantic view and the semantic metrics; the old value is rejected, with no alias. The slot current of the ordinary bank is now decoded instead of staying raw. The gateway binary and one wire value change, so the affected release evidence is renewed before the bill-of-materials freeze.

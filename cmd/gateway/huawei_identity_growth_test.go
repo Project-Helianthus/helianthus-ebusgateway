@@ -14,6 +14,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/drivermanager"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
@@ -252,8 +253,12 @@ func (r *growthRig) measure(events int, event func(*growthRig) error) growthMeas
 	r.pub.mu.Lock()
 	children := huaweiStatusChildren(r.pub, r.pub.latest)
 	r.pub.mu.Unlock()
+	// The refused child's asset holds the binding bound and only withdrawn
+	// links of this generation; the sibling's asset keeps its headroom.
 	for _, child := range children {
-		if child.Unit == r.victim.UnitID && (child.Refusal != huaweiRefusalBindingCapacity || child.AssetID != "") || child.Unit == r.sibling.UnitID && child.AssetID == "" {
+		victim := child.Unit == r.victim.UnitID && (child.Refusal != huaweiRefusalBindingCapacity || child.AssetID != "" || child.BindingIncarnations != mcp.HuaweiAssetBindingBound || child.SourceDescriptors != 1 || child.IdentityLinkState != mcp.HuaweiIdentityLinkWithdrawn)
+		sibling := child.Unit == r.sibling.UnitID && (child.AssetID == "" || child.BindingIncarnations != 1 || child.SourceDescriptors != 1 || child.IdentityLinkState != mcp.HuaweiIdentityLinkQualified)
+		if victim || sibling {
 			r.t.Fatalf("status after the refusal: %+v", children)
 		}
 	}
@@ -445,6 +450,19 @@ func growthRestarts(t *testing.T, cycle modbusreg.HuaweiProviderCycle, restarts 
 			epoch = pubs[n-1].handle.Epoch()
 			return len(pubs[n-1].published) == len(assets)
 		})
+		// Every epoch adds one descriptor and one binding to each asset, and
+		// only the publishing epoch's link is reported.
+		mu.Lock()
+		publication := pubs[n-1]
+		mu.Unlock()
+		publication.mu.Lock()
+		children := huaweiStatusChildren(publication, publication.latest)
+		publication.mu.Unlock()
+		for _, child := range children {
+			if child.SourceDescriptors != n || child.BindingIncarnations != n || child.IdentityLinkState != mcp.HuaweiIdentityLinkQualified {
+				t.Fatalf("status after START %d: %+v", n, children)
+			}
+		}
 		return nil
 	}
 	if err := start(1); err != nil {
@@ -719,4 +737,108 @@ func TestHuaweiIdentityGrowthAutomaticRestartReach(t *testing.T) {
 		t.Fatal("a running managed generation can now report failure; measure automatic restarts after publication")
 	}
 	t.Logf("automatic restart after publication: not reachable offline")
+}
+
+// growthStatus reads one publication's status children by routed unit.
+func growthStatus(t *testing.T, p *huaweiPVPublication) map[byte]mcp.HuaweiInstanceChildStatus {
+	t.Helper()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := map[byte]mcp.HuaweiInstanceChildStatus{}
+	for _, child := range huaweiStatusChildren(p, p.latest) {
+		out[child.Unit] = child
+	}
+	return out
+}
+
+// The instance status reports, per child, the identity-link state of the
+// publishing generation and the binding and source-descriptor counts of the
+// child's own asset. The asset key is the configured label, the class and the
+// routed unit: the sibling (another unit) and a second instance (another label,
+// same unit) keep their own counts while the affected asset grows.
+func TestHuaweiIdentityGrowthStatusReportsHeadroom(t *testing.T) {
+	t.Parallel()
+	for _, bound := range []struct {
+		name            string
+		status, publish int
+	}{{"bindings", mcp.HuaweiAssetBindingBound, huaweiMaxAssetBindings}, {"identity links", mcp.HuaweiAssetBindingBound, huaweiMaxAssetIdentityLinks}, {"source descriptors", mcp.HuaweiAssetSourceDescriptorBound, huaweiMaxAssetSources}} {
+		if bound.status != bound.publish {
+			t.Fatalf("status bound of %s is %d, the publication refuses at %d", bound.name, bound.status, bound.publish)
+		}
+	}
+	cycle := growthFixtureCycle(t, "smartlogger")
+	r := growthSetup(t, cycle)
+	beta, err := newHuaweiPVPublication(r.hub, "growth-test-beta", "source:synthetic-beta", "beta", nil, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	betaCycle := cycle
+	betaCycle.Source = "beta"
+	r.must(beta.Publish(betaCycle))
+	type want struct {
+		asset, link   string
+		bindings, src int
+	}
+	check := func(step string, p *huaweiPVPublication, expected map[byte]want) {
+		t.Helper()
+		got := growthStatus(t, p)
+		for unit, w := range expected {
+			child, ok := got[unit]
+			if !ok || child.AssetID != w.asset || child.IdentityLinkState != w.link || child.BindingIncarnations != w.bindings || child.SourceDescriptors != w.src {
+				t.Fatalf("%s: unit %d status %+v, want %+v", step, unit, child, w)
+			}
+		}
+	}
+	victim, sibling := r.victim.UnitID, r.sibling.UnitID
+	alphaVictim, alphaSibling := string(r.assets[0]), string(r.assets[1])
+	betaVictim := string(huaweiAssetID("beta", "pv", victim))
+	qualified, withdrawn := mcp.HuaweiIdentityLinkQualified, mcp.HuaweiIdentityLinkWithdrawn
+	check("first admission", r.pub, map[byte]want{victim: {alphaVictim, qualified, 1, 1}, sibling: {alphaSibling, qualified, 1, 1}})
+	check("first admission of the second instance", beta, map[byte]want{victim: {betaVictim, qualified, 1, 1}})
+
+	r.must(r.publish(modbusreg.HuaweiProviderCycleIncomplete, growthAs(r.victim, modbusreg.HuaweiProviderEvidenceWithheld, modbusreg.HuaweiProviderReasonIdentityMismatch), r.sibling))
+	check("identity mismatch", r.pub, map[byte]want{victim: {"", withdrawn, 1, 1}, sibling: {alphaSibling, qualified, 1, 1}})
+
+	r.must(r.publish(modbusreg.HuaweiProviderCycleIncomplete, r.victim, r.sibling))
+	check("re-admission", r.pub, map[byte]want{victim: {alphaVictim, qualified, 2, 1}, sibling: {alphaSibling, qualified, 1, 1}})
+	check("second instance after the re-admission", beta, map[byte]want{victim: {betaVictim, qualified, 1, 1}})
+}
+
+// The reported link belongs to a binding the publishing source, epoch and
+// generation hold current. Each case adds a qualified link whose binding
+// differs from the publishing one in exactly one of those fields, so dropping
+// that field from the filter reports qualified instead of withdrawn.
+func TestHuaweiIdentityGrowthStatusLinkState(t *testing.T) {
+	const source, epoch, generation = semreg.SourceID("source:a"), semreg.SourceEpochID("epoch:a"), semreg.Uint64("2")
+	binding := func(id string, src semreg.SourceID, ep semreg.SourceEpochID, gen semreg.Uint64, state semreg.BindingState) semreg.NativeBinding {
+		return semreg.NativeBinding{BindingID: semreg.NativeBindingID(id), SourceID: src, SourceEpochID: ep, DriverGeneration: gen, State: state}
+	}
+	link := func(id string, state semreg.LinkState) semreg.IdentityLink {
+		return semreg.IdentityLink{BindingID: semreg.NativeBindingID(id), State: state}
+	}
+	own := binding("own", source, epoch, generation, semreg.BindingCurrent)
+	for _, test := range []struct {
+		name     string
+		bindings []semreg.NativeBinding
+		links    []semreg.IdentityLink
+		want     string
+	}{
+		{"no link", []semreg.NativeBinding{own}, nil, ""},
+		{"withdrawn", []semreg.NativeBinding{own}, []semreg.IdentityLink{link("own", semreg.LinkWithdrawn)}, mcp.HuaweiIdentityLinkWithdrawn},
+		{"candidate", []semreg.NativeBinding{own}, []semreg.IdentityLink{link("own", semreg.LinkCandidate)}, mcp.HuaweiIdentityLinkCandidate},
+		{"qualified", []semreg.NativeBinding{own}, []semreg.IdentityLink{link("own", semreg.LinkQualified)}, mcp.HuaweiIdentityLinkQualified},
+		{"state the publication never writes", []semreg.NativeBinding{own}, []semreg.IdentityLink{link("own", semreg.LinkConflict), link("own", semreg.LinkRejected)}, ""},
+		{"candidate outranks withdrawn", []semreg.NativeBinding{own, binding("next", source, epoch, generation, semreg.BindingCurrent)}, []semreg.IdentityLink{link("own", semreg.LinkWithdrawn), link("next", semreg.LinkCandidate)}, mcp.HuaweiIdentityLinkCandidate},
+		{"qualified outranks candidate", []semreg.NativeBinding{own, binding("next", source, epoch, generation, semreg.BindingCurrent)}, []semreg.IdentityLink{link("next", semreg.LinkQualified), link("own", semreg.LinkCandidate)}, mcp.HuaweiIdentityLinkQualified},
+		{"link of no binding", []semreg.NativeBinding{own}, []semreg.IdentityLink{link("own", semreg.LinkWithdrawn), link("orphan", semreg.LinkQualified)}, mcp.HuaweiIdentityLinkWithdrawn},
+		{"another source", []semreg.NativeBinding{own, binding("other", "source:b", epoch, generation, semreg.BindingCurrent)}, []semreg.IdentityLink{link("own", semreg.LinkWithdrawn), link("other", semreg.LinkQualified)}, mcp.HuaweiIdentityLinkWithdrawn},
+		{"another epoch", []semreg.NativeBinding{own, binding("other", source, "epoch:b", generation, semreg.BindingCurrent)}, []semreg.IdentityLink{link("own", semreg.LinkWithdrawn), link("other", semreg.LinkQualified)}, mcp.HuaweiIdentityLinkWithdrawn},
+		{"another generation", []semreg.NativeBinding{own, binding("other", source, epoch, "1", semreg.BindingCurrent)}, []semreg.IdentityLink{link("own", semreg.LinkWithdrawn), link("other", semreg.LinkQualified)}, mcp.HuaweiIdentityLinkWithdrawn},
+		{"retired binding", []semreg.NativeBinding{own, binding("other", source, epoch, generation, semreg.BindingRetired)}, []semreg.IdentityLink{link("own", semreg.LinkWithdrawn), link("other", semreg.LinkQualified)}, mcp.HuaweiIdentityLinkWithdrawn},
+		{"fenced binding", []semreg.NativeBinding{own, binding("other", source, epoch, generation, semreg.BindingFenced)}, []semreg.IdentityLink{link("own", semreg.LinkWithdrawn), link("other", semreg.LinkQualified)}, mcp.HuaweiIdentityLinkWithdrawn},
+	} {
+		if got := huaweiStatusLinkState(semreg.Snapshot{Bindings: test.bindings, IdentityLinks: test.links}, source, epoch, generation); got != test.want {
+			t.Errorf("%s: link state %q, want %q", test.name, got, test.want)
+		}
+	}
 }

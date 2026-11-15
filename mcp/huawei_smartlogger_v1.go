@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 )
 
@@ -81,7 +82,39 @@ type HuaweiInstanceChildStatus struct {
 	// admitted (for example binding_capacity). It is absent for published
 	// children and for children the provider withheld.
 	Refusal string `json:"refusal,omitempty"`
+	// IdentityLinkState is the state of the child's identity link in the
+	// publishing generation: qualified, candidate or withdrawn. It is absent
+	// while that generation holds no link for the child.
+	IdentityLinkState string `json:"identity_link_state,omitempty"`
+	// BindingIncarnations and SourceDescriptors count the native bindings and
+	// the source descriptors of the child's asset, every contributor's
+	// included, against HuaweiAssetBindingBound and
+	// HuaweiAssetSourceDescriptorBound. Both are absent while the asset does
+	// not exist.
+	BindingIncarnations int `json:"binding_incarnations,omitempty"`
+	SourceDescriptors   int `json:"source_descriptors,omitempty"`
 }
+
+// The per-asset bounds of the pinned semantic kernel the status counts are
+// measured against. A new binding incarnation beyond the binding bound is
+// refused with binding_capacity; a START whose source would exceed the
+// source-descriptor bound fails.
+const (
+	HuaweiAssetBindingBound          = 128
+	HuaweiAssetSourceDescriptorBound = 32
+)
+
+// Identity-link states the instance status reports for a child.
+const (
+	HuaweiIdentityLinkQualified = "qualified"
+	HuaweiIdentityLinkCandidate = "candidate"
+	HuaweiIdentityLinkWithdrawn = "withdrawn"
+)
+
+// huaweiInstanceStatusSchemaDescription states the per-child identity members
+// of the status and their bounds in the tool schema.
+var huaweiInstanceStatusSchemaDescription = fmt.Sprintf("Each child reports identity_link_state (%s, %s or %s) and, for its asset, binding_incarnations against the bound of %d and source_descriptors against the bound of %d.", HuaweiIdentityLinkQualified, HuaweiIdentityLinkCandidate, HuaweiIdentityLinkWithdrawn, HuaweiAssetBindingBound, HuaweiAssetSourceDescriptorBound)
+
 type HuaweiInstanceStatus struct {
 	Instance          string                      `json:"instance"`
 	Family            string                      `json:"family"`
@@ -124,7 +157,7 @@ func registerHuaweiInstanceTool(server *Server, provider ModbusV1Provider, name,
 	huaweiInstanceProviders.Lock()
 	huaweiInstanceProviders.byServer[server] = value
 	huaweiInstanceProviders.Unlock()
-	server.tools = append(server.tools, Tool{Name: name, Description: "Get the managed Huawei " + family + " instance status.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{"instance": map[string]any{"type": "string", "minLength": 1}}, "required": []string{"instance"}, "additionalProperties": false}})
+	server.tools = append(server.tools, Tool{Name: name, Description: "Get the managed Huawei " + family + " instance status.", InputSchema: map[string]any{"type": "object", "description": huaweiInstanceStatusSchemaDescription, "properties": map[string]any{"instance": map[string]any{"type": "string", "minLength": 1}}, "required": []string{"instance"}, "additionalProperties": false}})
 	return true
 }
 func (server *Server) handleHuaweiInstanceCall(ctx context.Context, name, family string, args map[string]any) (map[string]any, bool) {

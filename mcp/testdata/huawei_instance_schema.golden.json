@@ -1,1 +1,1 @@
-{"type":"object","properties":{"instance":{"type":"string","minLength":1}},"required":["instance"],"additionalProperties":false}
+{"type":"object","description":"Each child reports identity_link_state (qualified, candidate or withdrawn) and, for its asset, binding_incarnations against the bound of 128 and source_descriptors against the bound of 32.","properties":{"instance":{"type":"string","minLength":1}},"required":["instance"],"additionalProperties":false}

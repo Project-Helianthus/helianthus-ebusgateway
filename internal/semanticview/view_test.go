@@ -1108,3 +1108,28 @@ func TestM08TwoSourceConflictNeverExact(t *testing.T) {
 		})
 	}
 }
+
+// TestM08ConflictKeepsValueUnknownWithNativeReasons: native candidate reasons
+// must not replace the conflict-owned value_unknown reason.
+func TestM08ConflictKeepsValueUnknownWithNativeReasons(t *testing.T) {
+	in := m08Input(t)
+	envelope := &in.Snapshot.Facts[0]
+	first := envelope.Candidates[0]
+	first.Quality.Reasons = []semreg.DefinitionID{"a_native_reason"}
+	value := semreg.Value{Kind: semreg.ValueQuantity, Quantity: &semreg.Quantity{Number: semreg.Decimal{Coefficient: "1"}, Unit: first.Value.Quantity.Unit}}
+	second := m08WithSecondSource(t, in.Snapshot, *envelope, value)
+	second.Quality.Reasons = []semreg.DefinitionID{"a_native_reason"}
+	envelope.Candidates = []semreg.FactCandidate{first, second}
+	sort.Slice(envelope.Candidates, func(i, j int) bool { return envelope.Candidates[i].CandidateID < envelope.Candidates[j].CandidateID })
+	envelope.Conflicts = m08DeriveConflicts(t, *envelope)
+	if len(envelope.Conflicts) != 1 {
+		t.Fatalf("conflicts %d want 1", len(envelope.Conflicts))
+	}
+	m08Seal(t, in.Snapshot)
+	e := m08Evaluate(t, *in.Snapshot)
+	in.Evaluation = &e
+	d := m08FactDisposition(t, m08Build(t, in), envelope.Key.FactID)
+	if d.Outcome != projection.ProjectionUnknown || d.Reason == nil || string(*d.Reason) != reasonPrefix+"value_unknown" {
+		t.Fatalf("outcome %s reason %v", d.Outcome, d.Reason)
+	}
+}

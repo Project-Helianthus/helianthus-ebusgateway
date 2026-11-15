@@ -221,6 +221,7 @@ func project(metadata *semreg.PackMetadataRegistry, s semreg.Snapshot, e semreg.
 		reason := semreg.DefinitionID(reasonPrefix + "value_unknown")
 		reasons := []semreg.DefinitionID{}
 		candidates := []semreg.FactCandidate{}
+		conflictOwned := false
 		if item.Kind == projection.ItemFact {
 			// Availability and exactness are tracked per complete source key: one
 			// available sibling must not hide an unavailable or withdrawn one.
@@ -270,6 +271,7 @@ func project(metadata *semreg.PackMetadataRegistry, s semreg.Snapshot, e semreg.
 				// The sources disagree on the value: it is unknown, not withheld
 				// for a lack of qualification.
 				d.Outcome = projection.ProjectionUnknown
+				conflictOwned = true
 			case hasValue && allKeysExact:
 				d.Outcome = projection.ProjectionExact
 			case hasValue && anyUnknown:
@@ -338,7 +340,11 @@ func project(metadata *semreg.PackMetadataRegistry, s semreg.Snapshot, e semreg.
 				break
 			}
 		}
-		if d.Outcome != projection.ProjectionExact {
+		if conflictOwned && reason == reasonPrefix+"value_unknown" {
+			// The disagreement owns the reason; native reasons of the
+			// candidates must not replace it.
+			d.Reason = &reason
+		} else if d.Outcome != projection.ProjectionExact {
 			if reason != PendingNormativeSourceReason {
 				reasons = outcomeReasons(reason, item.Kind, causalOutcomeCandidates(reason, item.Kind, candidates, e), reasons)
 			}

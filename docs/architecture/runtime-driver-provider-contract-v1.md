@@ -2156,7 +2156,12 @@ unchanged.
    the asset. When another source committed a publication on the asset after
    the control event, an attempt delivers the asset's current snapshot, which
    already holds the control's effect, so a retry never replaces a newer view
-   with the older control snapshot.
+   with the older control snapshot. When another source commits while the
+   callbacks run, the attempt does not settle on the view it sampled: it
+   delivers the asset's new current snapshot to every callback again, and
+   settles only after a pass during which no commit landed. An attempt
+   outpaced by a bounded number of such commits stays unsettled until
+   `Resettle` retries it.
 6. Locks. A path that takes several locks takes a source control mutex, then
    an asset commit lock, then the hub mutex. Reprojection callbacks run
    outside all of them. No path holds the control mutexes of two sources, so

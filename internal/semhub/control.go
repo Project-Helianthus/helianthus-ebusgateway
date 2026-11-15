@@ -1101,6 +1101,63 @@ func (h *Hub) startAttemptLocked(ca *controlAsset) (chan struct{}, error) {
 			return nil, nil
 		}
 	}
+	callbacks, events, sampled := ca.reprojectionEventsLocked()
+	seq := ca.hubSeq
+	done := make(chan struct{})
+	ca.inFlight = done
+	go func() {
+		for round := 1; ; round++ {
+			// Every callback runs, in order, even after one fails; the attempt
+			// settles only when all of them succeeded.
+			var err error
+			for index, callback := range callbacks {
+				if failure := runCallback(callback, events[index]); failure != nil && err == nil {
+					err = failure
+				}
+			}
+			h.lock()
+			if ca.currentLocked() && ca.hubSeq == seq {
+				// A publication of another source may have committed on the asset
+				// while the callbacks ran; its onCommit installed the newer view
+				// that these callbacks then overwrote with the sampled one. The
+				// attempt redelivers the asset's current snapshot before it
+				// settles, so no receiver is left on the older view.
+				if err == nil && ca.asset.hubSeq != sampled {
+					if round < maxReprojectionRounds {
+						callbacks, events, sampled = ca.reprojectionEventsLocked()
+						h.unlock()
+						continue
+					}
+					err = errReprojectionOutpaced
+				}
+				if err != nil {
+					ca.reprojection, ca.reprojErr = ReprojectionUnsettled, err
+				} else {
+					ca.reprojection, ca.reprojErr = ReprojectionSettled, nil
+				}
+			}
+			ca.inFlight = nil
+			h.unlock()
+			close(done)
+			return
+		}
+	}()
+	return done, nil
+}
+
+// maxReprojectionRounds bounds how often one attempt redelivers the asset's
+// current snapshot because a publication of another source committed while
+// its callbacks ran. An attempt outpaced that often stays unsettled with
+// errReprojectionOutpaced, and Resettle retries it.
+const maxReprojectionRounds = 8
+
+var errReprojectionOutpaced = errors.New("semhub: publications of other sources outpaced the reprojection")
+
+// reprojectionEventsLocked samples the reprojection callbacks of ca's asset
+// and their control events, and returns the asset's HubSeq at sampling. h.mu
+// must be held.
+func (ca *controlAsset) reprojectionEventsLocked() ([]func(ControlEvent) error, []ControlEvent, uint64) {
+	target := ca.asset
 	// A publication of another source committed after this control event (it
 	// does not consult this gate) forked from a kernel that already holds the
 	// control's effect, and its onCommit may have installed that newer view.
@@ -1127,31 +1184,7 @@ func (h *Hub) startAttemptLocked(ca *controlAsset) (chan struct{}, error) {
 		}
 		events[index] = event
 	}
-	seq := ca.hubSeq
-	done := make(chan struct{})
-	ca.inFlight = done
-	go func() {
-		// Every callback runs, in order, even after one fails; the attempt
-		// settles only when all of them succeeded.
-		var err error
-		for index, callback := range callbacks {
-			if failure := runCallback(callback, events[index]); failure != nil && err == nil {
-				err = failure
-			}
-		}
-		h.lock()
-		if ca.currentLocked() && ca.hubSeq == seq {
-			if err != nil {
-				ca.reprojection, ca.reprojErr = ReprojectionUnsettled, err
-			} else {
-				ca.reprojection, ca.reprojErr = ReprojectionSettled, nil
-			}
-		}
-		ca.inFlight = nil
-		h.unlock()
-		close(done)
-	}()
-	return done, nil
+	return callbacks, events, target.hubSeq
 }
 
 func runCallback(callback func(ControlEvent) error, event ControlEvent) (err error) {

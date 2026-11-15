@@ -25,6 +25,9 @@ type multiSourceFixture struct {
 	fail     map[semreg.SourceID]error
 	entered  map[semreg.SourceID]chan struct{}
 	released map[semreg.SourceID]chan struct{}
+	// onOwner, when set, runs inside the owner's callback after the event is
+	// recorded and outside f.mu.
+	onOwner func(ControlEvent)
 }
 
 const (
@@ -60,7 +63,11 @@ func (f *multiSourceFixture) callback(recipient string) func(ControlEvent) error
 		} else {
 			entered, released = nil, nil
 		}
+		hook := f.onOwner
 		f.mu.Unlock()
+		if recipient == ownerRecipient && hook != nil {
+			hook(event)
+		}
 		if entered != nil {
 			close(entered)
 			<-released
@@ -781,4 +788,131 @@ func TestMultiSourceControlRetryCoalescesOntoPeerPublication(t *testing.T) {
 		}
 	}
 	waitFor(t, func() bool { return f.hub.Settled(sharedAsset) && f.hub.Admitted(sharedAsset) })
+}
+
+// A peer publication that commits while a contributor's reprojection
+// callbacks are running installs a newer view through its onCommit; the
+// running attempt then finishes delivering its older sampled view. The gate
+// settles only after every callback has received a view at least as new as
+// the asset's latest commit, so no receiver is left holding the older view.
+func TestMultiSourceControlPeerCommitDuringCallbackIsRedelivered(t *testing.T) {
+	f := newMultiSourceFixture(t)
+	f.publishBoth(t, 1)
+	entered, release := f.hold(t, sharedOwner)
+	type fenceOutcome struct {
+		result ControlResult
+		err    error
+	}
+	done := make(chan fenceOutcome, 1)
+	go func() {
+		result, err := f.hub.Fence(testFence(sharedOwner, "epoch:a", 1, 2))
+		done <- fenceOutcome{result, err}
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the owner's reprojection callback was not entered")
+	}
+	tx, err := f.hub.Begin(f.b, sharedAsset)
+	if err != nil {
+		t.Fatalf("peer publication during the owner's reprojection=%v", err)
+	}
+	defer tx.Abort()
+	if _, _, err := tx.Apply(testBatch(t, tx, "fam_b", 5, 3), testMono(3)); err != nil {
+		t.Fatal(err)
+	}
+	var committed Committed
+	if outcome, err := tx.Commit(func(c Committed) { committed = c }); err != nil || outcome != Accepted {
+		t.Fatalf("peer publication=%v/%v", outcome, err)
+	}
+	release()
+	outcome := <-done
+	fenced := outcome.result
+	if outcome.err != nil || len(fenced.Assets) != 1 || !semanticSuccess(fenced.Assets[0].Outcome) {
+		t.Fatalf("owner fence=%+v err=%v", fenced.Assets, outcome.err)
+	}
+	if committed.HubSeq <= fenced.Assets[0].HubSeq {
+		t.Fatalf("publication HubSeq %d is not after the control HubSeq %d", committed.HubSeq, fenced.Assets[0].HubSeq)
+	}
+	waitFor(t, func() bool { return f.hub.Settled(sharedAsset) && f.hub.Admitted(sharedAsset) })
+	for _, recipient := range []string{ownerRecipient, peerRecipient} {
+		events := f.events(recipient)
+		if len(events) == 0 {
+			t.Fatalf("%s received no control event", recipient)
+		}
+		last := events[len(events)-1]
+		if last.Control != fenced.ID {
+			t.Fatalf("%s last event names control %+v, want %+v", recipient, last.Control, fenced.ID)
+		}
+		if last.HubSeq < committed.HubSeq || last.View.HubSeq < committed.HubSeq || last.SnapshotID != committed.Snapshot.SnapshotID {
+			t.Fatalf("%s was left on an older view after settlement: event=%d/%s, peer publication=%d/%s", recipient, last.HubSeq, last.SnapshotID, committed.HubSeq, committed.Snapshot.SnapshotID)
+		}
+		if cursor, ok := cursorFor(last.View.Snapshot, sharedOwner, "epoch:a", "1"); !ok || !cursor.Fenced {
+			t.Fatalf("%s last view lacks the owner's fence", recipient)
+		}
+		for index := 1; index < len(events); index++ {
+			if events[index].HubSeq < events[index-1].HubSeq {
+				t.Fatalf("%s received an older snapshot after a newer one: %+v", recipient, events)
+			}
+		}
+	}
+}
+
+// A peer that publishes during every redelivery outpaces the attempt: after a
+// bounded number of rounds the gate stays unsettled and reads stay withheld,
+// and a Resettle once the peer is quiet delivers the latest view and settles.
+func TestMultiSourceControlPeerOutpacingReprojectionStaysUnsettled(t *testing.T) {
+	f := newMultiSourceFixture(t)
+	f.publishBoth(t, 1)
+	var published []uint64
+	var hookErr error
+	f.mu.Lock()
+	f.onOwner = func(ControlEvent) {
+		if len(published) >= maxReprojectionRounds || hookErr != nil {
+			return
+		}
+		at := int64(10 + len(published))
+		tx, err := f.hub.Begin(f.b, sharedAsset)
+		if err != nil {
+			hookErr = err
+			return
+		}
+		defer tx.Abort()
+		if _, _, err := tx.Apply(testBatch(t, tx, "fam_b", at, at), testMono(at)); err != nil {
+			hookErr = err
+			return
+		}
+		if _, err := tx.Commit(func(c Committed) { published = append(published, c.HubSeq) }); err != nil {
+			hookErr = err
+		}
+	}
+	f.mu.Unlock()
+	if result, err := f.hub.Fence(testFence(sharedOwner, "epoch:a", 1, 2)); err != nil || !semanticSuccess(result.Assets[0].Outcome) {
+		t.Fatalf("owner fence=%+v err=%v", result.Assets, err)
+	}
+	f.mu.Lock()
+	rounds, failure := len(published), hookErr
+	f.mu.Unlock()
+	if failure != nil {
+		t.Fatalf("peer publication inside the callback=%v", failure)
+	}
+	if rounds != maxReprojectionRounds {
+		t.Fatalf("peer published %d times, want %d", rounds, maxReprojectionRounds)
+	}
+	if f.hub.Settled(sharedAsset) || f.hub.Admitted(sharedAsset) {
+		t.Fatal("an outpaced reprojection settled")
+	}
+	if err := f.hub.Resettle(sharedAsset); err != nil {
+		t.Fatalf("resettle=%v", err)
+	}
+	if !f.hub.Settled(sharedAsset) || !f.hub.Admitted(sharedAsset) {
+		t.Fatal("not settled after a quiet resettle")
+	}
+	latest := published[len(published)-1]
+	for _, recipient := range []string{ownerRecipient, peerRecipient} {
+		events := f.events(recipient)
+		if last := events[len(events)-1]; last.HubSeq != latest {
+			t.Fatalf("%s last event HubSeq %d, want the latest commit %d", recipient, last.HubSeq, latest)
+		}
+	}
 }

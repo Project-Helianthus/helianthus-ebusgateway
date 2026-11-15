@@ -23,8 +23,13 @@
       "release": "in_0_7"
     },
     {
-      "id": "huawei_logger_dongle",
-      "title": "Huawei logger and dongle gateways over Modbus TCP",
+      "id": "huawei_smartlogger",
+      "title": "Huawei SmartLogger gateway over Modbus TCP",
+      "release": "in_0_7"
+    },
+    {
+      "id": "huawei_sdongle",
+      "title": "Huawei S-Dongle gateway over Modbus TCP",
       "release": "in_0_7"
     },
     {
@@ -385,7 +390,57 @@
           "issue": null
         }
       },
-      "huawei_logger_dongle": {
+      "huawei_smartlogger": {
+        "native_mcp": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "semantic_mcp": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "graphql": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "portal": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "home_assistant": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "prometheus_semantic": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "prometheus_native": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "eebus_output": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "huawei_sdongle": {
         "native_mcp": {
           "state": "not_run",
           "test": null,
@@ -915,7 +970,39 @@
           "issue": null
         }
       },
-      "huawei_logger_dongle": {
+      "huawei_smartlogger": {
+        "resources": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "relations": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "plane_membership": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "lens_parity": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "target_reports": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "huawei_sdongle": {
         "resources": {
           "state": "not_run",
           "test": null,
@@ -1373,7 +1460,57 @@
           "issue": null
         }
       },
-      "huawei_logger_dongle": {
+      "huawei_smartlogger": {
+        "normal": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "degraded": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "reset": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "partial_failure": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "stale_generation": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "identity_conflict": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "unknown_capability": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        },
+        "cleanup": {
+          "state": "not_run",
+          "test": null,
+          "reason": null,
+          "issue": null
+        }
+      },
+      "huawei_sdongle": {
         "normal": {
           "state": "not_run",
           "test": null,

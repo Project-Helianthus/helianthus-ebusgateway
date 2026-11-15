@@ -318,6 +318,16 @@ class CommittedMatrixTests(unittest.TestCase):
         document = MATRIX.load(COMMITTED_MATRIX)
         self.assertEqual(MATRIX.validate(document, REPO_ROOT), [])
 
+    def test_huawei_gateway_families_are_tracked_separately(self):
+        document = MATRIX.load(COMMITTED_MATRIX)
+        ids = [family["id"] for family in document["families"]]
+        self.assertIn("huawei_smartlogger", ids)
+        self.assertIn("huawei_sdongle", ids)
+        self.assertNotIn("huawei_logger_dongle", ids)
+        for table in ("family_surface", "family_graph", "family_condition"):
+            self.assertIn("huawei_smartlogger", document["cells"][table])
+            self.assertIn("huawei_sdongle", document["cells"][table])
+
     def test_rendered_tables_equal_the_committed_page(self):
         document = MATRIX.load(COMMITTED_MATRIX)
         section = MATRIX.generated_section(COMMITTED_PAGE.read_text(encoding="utf-8"))

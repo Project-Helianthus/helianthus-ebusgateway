@@ -355,6 +355,7 @@ func TestMultiSourceControlTransitionCoverFencesOnlyItsSource(t *testing.T) {
 func TestMultiSourceControlReadsWithheldWhileAnyGateOpen(t *testing.T) {
 	f := newMultiSourceFixture(t)
 	f.publishBoth(t, 1)
+	waitFor(t, func() bool { return f.hub.Admitted(sharedAsset) })
 	if !f.hub.Admitted(sharedAsset) {
 		t.Fatal("published shared asset not admitted")
 	}
@@ -455,6 +456,7 @@ func TestMultiSourceControlCaptureAdmitsThroughAnyContributor(t *testing.T) {
 	admitted := captureDecision{Source: true, Read: true, Public: true, Snapshot: true}
 	// Only the contributor has published: admitted through B.
 	mustPublish(t, f.hub, f.b, sharedAsset, "fam_b", 2, 1)
+	waitFor(t, func() bool { return f.hub.Settled(sharedAsset) })
 	if _, got := bothCaptures(t, f.hub, sharedAsset); got != admitted {
 		t.Fatalf("contributor only=%+v", got)
 	}
@@ -502,6 +504,7 @@ func TestMultiSourceControlCaptureAdmitsThroughAnyContributor(t *testing.T) {
 		t.Fatalf("owner successor unpublished=%+v", got)
 	}
 	mustPublish(t, f.hub, nextA, sharedAsset, "fam_a", 3, 5)
+	waitFor(t, func() bool { return f.hub.Settled(sharedAsset) })
 	if _, got := bothCaptures(t, f.hub, sharedAsset); got != admitted {
 		t.Fatalf("owner successor published=%+v", got)
 	}

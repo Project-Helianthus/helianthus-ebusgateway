@@ -1277,12 +1277,10 @@ func (tx *Tx) Apply(batch semreg.PublicationBatch, monotonic semreg.MonotonicPoi
 //
 // On an asset with contributors the commit also queues, in HubSeq order, a
 // peer reprojection of every other publishing source's bound callback, and
-// runs the scheduler after the asset commit lock is released, so those
-// callbacks run outside every lock. The scheduler runs on the caller's
-// goroutine, so the caller of Commit on such an asset must not hold a lock
-// that a reprojection callback takes. When another goroutine is already
-// running the scheduler, Commit returns at once and that goroutine runs the
-// entry; reads of the asset stay withheld until every receiver has settled.
+// hands the scheduler to its own goroutine after the asset commit lock is
+// released, so those callbacks run outside every lock and a receiver that
+// blocks never delays Commit. When a scheduler is already running it runs the
+// entry. Reads of the asset stay withheld until every receiver has settled.
 // A single-source asset queues nothing.
 //
 // When the commit installs a transition cover over the source's other assets
@@ -1305,7 +1303,8 @@ func (tx *Tx) Commit(onCommit func(Committed)) (outcome Outcome, err error) {
 	peers := false
 	defer func() {
 		if peers {
-			h.drain()
+			// Handed off so a slow receiver never delays this commit.
+			go h.drain()
 		}
 	}()
 	var recovery AcceptedBatch

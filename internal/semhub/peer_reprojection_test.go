@@ -153,6 +153,7 @@ func TestPeerReprojectionReachesEveryOtherContributorOnceInHubSeqOrder(t *testin
 		}
 		at := int64(index + 1)
 		committed := commitPeer(t, f.hub, s.handle, s.asset, s.family, at, at)
+		waitFor(t, func() bool { return f.hub.Admitted(s.asset) && f.hub.Settled(s.asset) })
 		var want []string
 		for _, id := range []semreg.AssetID{sharedAsset, sharedSecond} {
 			for _, recipient := range sources {
@@ -205,6 +206,7 @@ func TestPeerReprojectionGatesReadsUntilSettled(t *testing.T) {
 	f := newPeerFixture(t)
 	commitPeer(t, f.hub, f.a, sharedAsset, "fam_a", 1, 1)
 	commitPeer(t, f.hub, f.b, sharedAsset, "fam_b", 2, 2)
+	waitFor(t, func() bool { return f.hub.Admitted(sharedAsset) && f.hub.Settled(sharedAsset) })
 	if !f.hub.Admitted(sharedAsset) {
 		t.Fatal("published shared asset not admitted")
 	}
@@ -347,22 +349,56 @@ func TestPeerReprojectionNeverQueuedForASingleSourceAsset(t *testing.T) {
 		if len(events) != 1 || events[0].Kind != EventPublished || events[0].Asset != c.asset {
 			t.Fatalf("%s: commit emitted %+v, want one publication event", c.asset, events)
 		}
+		waitFor(t, func() bool {
+			hub.mu.RLock()
+			left := len(hub.queue)
+			hub.mu.RUnlock()
+			return left == 0 && hub.Admitted(c.asset) && hub.Settled(c.asset)
+		})
 		mu.Lock()
 		got := fmt.Sprint(calls)
 		mu.Unlock()
 		if got != fmt.Sprint(c.calls) {
 			t.Fatalf("%s: reprojection calls %s, want %s", c.asset, got, fmt.Sprint(c.calls))
 		}
-		hub.mu.RLock()
-		left := len(hub.queue)
-		hub.mu.RUnlock()
-		if left != 0 || !hub.Admitted(c.asset) {
-			t.Fatalf("%s: %d entries left after Commit returned, admitted=%v", c.asset, left, hub.Admitted(c.asset))
-		}
+		waitFor(t, func() bool {
+			hub.mu.RLock()
+			left := len(hub.queue)
+			hub.mu.RUnlock()
+			return left == 0 && hub.Admitted(c.asset)
+		})
 	}
 }
 
 // The pinned single-publisher event stream is byte-identical.
 func TestPeerReprojectionKeepsTheScriptedEventStreamGolden(t *testing.T) {
 	TestScriptedEventStreamGolden(t)
+}
+
+// A receiver whose reprojection callback blocks never delays the commit that
+// queued it: Commit returns while the callback is still running, and the
+// asset's reads settle once the callback is released.
+func TestPeerReprojectionCommitDoesNotWaitForAReceiver(t *testing.T) {
+	f := newPeerFixture(t)
+	entered, release := f.hold(t, sharedPeer)
+	returned := make(chan struct{})
+	go func() {
+		commitPeer(t, f.hub, f.a, sharedAsset, "fam_a", 1, 1)
+		close(returned)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Commit waited for a blocked peer reprojection callback")
+	}
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the peer reprojection callback was not entered")
+	}
+	if f.hub.Admitted(sharedAsset) {
+		t.Fatal("reads admitted while the receiver was still running")
+	}
+	release()
+	waitFor(t, func() bool { return f.hub.Admitted(sharedAsset) && f.hub.Settled(sharedAsset) })
 }

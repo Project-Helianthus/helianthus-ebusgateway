@@ -351,6 +351,7 @@ func TestStoreFailuresFailClosed(t *testing.T) {
 		t.Fatalf("Resolve: err=%v", err)
 	}
 	refusing := newTestAllocator(t, supersessionRefusingStore{MemoryStore: NewMemoryStore(), err: failure})
+	mustResolve(t, refusing, kindEquipment, operatorEquipment("unit-a", "x"))
 	if _, _, err := refusing.Supersede(Claim{kindEquipment, operatorEquipment("unit-a", "x")}, Claim{kindEquipment, tokenAnchor("token-a", "x")}, continuity(ContinuityBinding, "x")); !errors.Is(err, ErrStore) || !errors.Is(err, failure) {
 		t.Fatalf("Supersede: err=%v", err)
 	}
@@ -449,6 +450,38 @@ func TestSupersedeRefusesSubstitutedPreviousAnchor(t *testing.T) {
 	}
 	if _, _, err := allocator.Resolve(kindZone, zoneAnchor(semreg.AnchorOperatorSlot, "zone-a", "label")); err != nil {
 		t.Fatalf("the operator slot must stay current: %v", err)
+	}
+}
+
+// A previous anchor that no allocator over the store has resolved is not
+// current: superseding it would invent history, so it is refused and neither
+// key is recorded. A key resolved by another allocator over the same store is
+// current.
+func TestSupersedeRefusesPreviousAnchorNeverResolved(t *testing.T) {
+	store := NewMemoryStore()
+	allocator := newTestAllocator(t, store)
+	label, token := operatorEquipment("unit-a", "label"), tokenAnchor("token-a", "token")
+	if _, _, err := allocator.Supersede(Claim{kindEquipment, label}, Claim{kindEquipment, token}, continuity(ContinuityBinding, "both")); !errors.Is(err, ErrPreviousAnchor) {
+		t.Fatalf("unresolved previous anchor: err=%v, want ErrPreviousAnchor", err)
+	}
+	for _, anchor := range []Anchor{label, token} {
+		key, err := anchor.Key(kindEquipment)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if entry, ok, _ := store.Lookup(key); ok {
+			t.Fatalf("a refused supersession recorded %+v", entry)
+		}
+	}
+	if mustResolve(t, allocator, kindEquipment, token) == mustResolve(t, allocator, kindEquipment, label) {
+		t.Fatal("a refused supersession mapped the next key onto the previous identifier")
+	}
+
+	other := NewMemoryStore()
+	first, second := newTestAllocator(t, other), newTestAllocator(t, other)
+	id := mustResolve(t, first, kindEquipment, label)
+	if kept, _, err := second.Supersede(Claim{kindEquipment, label}, Claim{kindEquipment, token}, continuity(ContinuityBinding, "both")); err != nil || kept != id {
+		t.Fatalf("Supersede of a key resolved over the shared store = %q, %v; want %q", kept, err, id)
 	}
 }
 

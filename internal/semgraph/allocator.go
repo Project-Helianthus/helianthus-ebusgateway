@@ -257,21 +257,18 @@ func (a *Allocator) Supersede(previous, next Claim, continuity Continuity) (semr
 	if err != nil {
 		return "", semreg.AnchorSupersession{}, err
 	}
-	id := resourceID(previousKey)
-	if recorded {
-		if entry.Superseded {
-			return "", semreg.AnchorSupersession{}, ErrAnchorSuperseded
-		}
-		if entry.Basis != previous.Anchor.Basis {
-			return "", semreg.AnchorSupersession{}, fmt.Errorf("%w: key is held under %s", ErrPreviousAnchor, entry.Basis)
-		}
-		id = entry.Resource
-	} else if held, ok := a.held[previousKey]; ok {
-		if held.basis != previous.Anchor.Basis {
-			return "", semreg.AnchorSupersession{}, fmt.Errorf("%w: key is held under %s", ErrPreviousAnchor, held.basis)
-		}
-		id = held.resource
+	// Only a key the table records as current can be superseded: a key no
+	// allocator over the store has resolved has no history to continue.
+	if !recorded {
+		return "", semreg.AnchorSupersession{}, fmt.Errorf("%w: key is not resolved", ErrPreviousAnchor)
 	}
+	if entry.Superseded {
+		return "", semreg.AnchorSupersession{}, ErrAnchorSuperseded
+	}
+	if entry.Basis != previous.Anchor.Basis {
+		return "", semreg.AnchorSupersession{}, fmt.Errorf("%w: key is held under %s", ErrPreviousAnchor, entry.Basis)
+	}
+	id := entry.Resource
 	if nextKey != previousKey {
 		if _, held, err := a.lookup(nextKey); err != nil {
 			return "", semreg.AnchorSupersession{}, err

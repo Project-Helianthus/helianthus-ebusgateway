@@ -6,7 +6,9 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 )
@@ -416,5 +418,67 @@ func TestConcurrentResolveIsDeterministic(t *testing.T) {
 		if got != want {
 			t.Fatalf("goroutine %d = %q, want %q", i, got, want)
 		}
+	}
+}
+
+func TestSupersedeRefusesSubstitutedPreviousAnchor(t *testing.T) {
+	allocator := newTestAllocator(t, NewMemoryStore())
+	operator := zoneAnchor(semreg.AnchorOperatorSlot, "zone-a", "label")
+	mustResolve(t, allocator, kindZone, operator)
+	claimed := zoneAnchor(semreg.AnchorNativeSlot, "zone-a", "position")
+	next := Anchor{Class: claimed.Class, Basis: semreg.AnchorNativeIdentity, Source: SourceNativeToken, Scheme: testScheme, Token: "token-z", Slot: "zone-a", Evidence: []semreg.EvidenceRef{evidence("x")}}
+	if _, _, err := allocator.Supersede(Claim{kindZone, claimed}, Claim{kindZone, next}, continuity(ContinuityBinding, "both")); !errors.Is(err, ErrPreviousAnchor) {
+		t.Fatalf("substituted previous anchor: err=%v, want ErrPreviousAnchor", err)
+	}
+	if _, _, err := allocator.Resolve(kindZone, zoneAnchor(semreg.AnchorOperatorSlot, "zone-a", "label")); err != nil {
+		t.Fatalf("the operator slot must stay current: %v", err)
+	}
+}
+
+// gateStore blocks the first Lookup until released and reports whether the
+// first lookup's caller had returned when Commit ran.
+type gateStore struct {
+	*MemoryStore
+	looked    chan struct{}
+	gated     sync.Once
+	firstDone *int32
+	atCommit  int32
+}
+
+func (s *gateStore) Lookup(key AnchorKey) (Entry, bool, error) {
+	entry, ok, err := s.MemoryStore.Lookup(key)
+	s.gated.Do(func() {
+		close(s.looked)
+		time.Sleep(200 * time.Millisecond)
+	})
+	return entry, ok, err
+}
+
+func (s *gateStore) Commit(record Supersession) error {
+	atomic.StoreInt32(&s.atCommit, atomic.LoadInt32(s.firstDone))
+	return s.MemoryStore.Commit(record)
+}
+
+func TestResolveIsAtomicWithSupersessionOnASharedStore(t *testing.T) {
+	var firstDone int32
+	store := &gateStore{MemoryStore: NewMemoryStore(), looked: make(chan struct{}), firstDone: &firstDone}
+	label := zoneAnchor(semreg.AnchorOperatorSlot, "zone-a", "label")
+	position := zoneAnchor(semreg.AnchorNativeSlot, "zone-a", "position")
+	first, second := newTestAllocator(t, store), newTestAllocator(t, store)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, _, _ = first.Resolve(kindZone, label)
+		atomic.StoreInt32(&firstDone, 1)
+	}()
+	<-store.looked
+	go func() {
+		defer wg.Done()
+		_, _, _ = second.Supersede(Claim{kindZone, label}, Claim{kindZone, position}, continuity(ContinuityBinding, "both"))
+	}()
+	wg.Wait()
+	if atomic.LoadInt32(&store.atCommit) != 1 {
+		t.Fatal("a supersession committed while another allocator was resolving the same key")
 	}
 }

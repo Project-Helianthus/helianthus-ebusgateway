@@ -129,11 +129,21 @@ type Allocator struct {
 	store Store
 	// held maps each anchor key resolved or superseded to in this
 	// incarnation to its resource.
-	held map[AnchorKey]semreg.ResourceID
+	held map[AnchorKey]heldAnchor
 	// kinds holds every resource this allocator returned.
 	kinds map[semreg.ResourceID]semreg.DefinitionID
 	homes map[semreg.ResourceID]semreg.AssetID
 }
+
+// heldAnchor is the resource and basis an anchor key was resolved under.
+type heldAnchor struct {
+	resource semreg.ResourceID
+	basis    semreg.AnchorBasis
+}
+
+// storeMu serializes every allocator operation, so that resolving a key is
+// atomic relative to a supersession commit even when allocators share a store.
+var storeMu sync.Mutex
 
 // NewAllocator returns an allocator over a supersession table.
 func NewAllocator(store Store) (*Allocator, error) {
@@ -142,7 +152,7 @@ func NewAllocator(store Store) (*Allocator, error) {
 	}
 	return &Allocator{
 		store: store,
-		held:  make(map[AnchorKey]semreg.ResourceID),
+		held:  make(map[AnchorKey]heldAnchor),
 		kinds: make(map[semreg.ResourceID]semreg.DefinitionID),
 		homes: make(map[semreg.ResourceID]semreg.AssetID),
 	}, nil
@@ -163,6 +173,8 @@ func (a *Allocator) Resolve(kind semreg.DefinitionID, anchor Anchor) (semreg.Res
 	if err != nil {
 		return "", semreg.ResourceAnchor{}, err
 	}
+	storeMu.Lock()
+	defer storeMu.Unlock()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if err := a.parentKnown(anchor); err != nil {
@@ -181,8 +193,13 @@ func (a *Allocator) Resolve(kind semreg.DefinitionID, anchor Anchor) (semreg.Res
 			return "", semreg.ResourceAnchor{}, fmt.Errorf("%w: key is held under %s", ErrDowngrade, entry.Basis)
 		}
 		id = entry.Resource
+	} else if held, ok := a.held[key]; ok {
+		if basisRank(anchor.Basis) < basisRank(held.basis) {
+			return "", semreg.ResourceAnchor{}, fmt.Errorf("%w: key is held under %s", ErrDowngrade, held.basis)
+		}
+		id = held.resource
 	}
-	a.held[key] = id
+	a.held[key] = heldAnchor{resource: id, basis: anchor.Basis}
 	a.kinds[id] = kind
 	return id, record, nil
 }
@@ -222,6 +239,8 @@ func (a *Allocator) Supersede(previous, next Claim, continuity Continuity) (semr
 		return "", semreg.AnchorSupersession{}, err
 	}
 
+	storeMu.Lock()
+	defer storeMu.Unlock()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if err := a.parentKnown(next.Anchor); err != nil {
@@ -240,6 +259,11 @@ func (a *Allocator) Supersede(previous, next Claim, continuity Continuity) (semr
 			return "", semreg.AnchorSupersession{}, fmt.Errorf("%w: key is held under %s", ErrPreviousAnchor, entry.Basis)
 		}
 		id = entry.Resource
+	} else if held, ok := a.held[previousKey]; ok {
+		if held.basis != previous.Anchor.Basis {
+			return "", semreg.AnchorSupersession{}, fmt.Errorf("%w: key is held under %s", ErrPreviousAnchor, held.basis)
+		}
+		id = held.resource
 	}
 	if nextKey != previousKey {
 		if _, held, err := a.lookup(nextKey); err != nil {
@@ -247,7 +271,7 @@ func (a *Allocator) Supersede(previous, next Claim, continuity Continuity) (semr
 		} else if held {
 			return "", semreg.AnchorSupersession{}, ErrKeyHeld
 		}
-		if holder, held := a.held[nextKey]; held && holder != id {
+		if holder, held := a.held[nextKey]; held && holder.resource != id {
 			return "", semreg.AnchorSupersession{}, ErrKeyHeld
 		}
 	}
@@ -255,7 +279,7 @@ func (a *Allocator) Supersede(previous, next Claim, continuity Continuity) (semr
 		return "", semreg.AnchorSupersession{}, fmt.Errorf("%w: %w", ErrStore, err)
 	}
 	delete(a.held, previousKey)
-	a.held[nextKey] = id
+	a.held[nextKey] = heldAnchor{resource: id, basis: next.Anchor.Basis}
 	a.kinds[id] = next.Kind
 	return id, supersedes, nil
 }
@@ -270,6 +294,8 @@ func (a *Allocator) Home(resource semreg.ResourceID, asset semreg.AssetID) (semr
 	if err := asset.Validate(); err != nil {
 		return "", fmt.Errorf("semgraph: invalid asset id: %w", err)
 	}
+	storeMu.Lock()
+	defer storeMu.Unlock()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if _, known := a.kinds[resource]; !known {

@@ -58,7 +58,7 @@ jobs:
   test:
     # stays GitHub-hosted: race suite needs isolated CPU and the localhost-binding test is not runner-robust yet (CI migration val 3, see the follow-up issue linked in the PR body)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
         with:
@@ -77,10 +77,11 @@ jobs:
       - run: python3 -m pip install pytest
       - run: python3 -m pip install -r requirements-lint.txt
       - run: python3 -m pytest tests/test_metrics_inventory_docs.py tests/test_naming_contract.py tests/test_dispatch_documentation.py tests/test_rename_underscore_packages.py -q -p no:cacheprovider
-      # cmd/gateway runs at about 600 s under -race here, right at Go's 10-minute
-      # default; 20 minutes keeps a margin inside the 45-minute job limit.
-      - run: go test -race -count=1 -timeout 20m ./...
-      - run: go test -race -short -count=1 -timeout 20m -tags nomatter ./cmd/gateway
+      # cmd/gateway runs for fifteen to more than twenty minutes under -race on
+      # the hosted runner; 40 minutes matches scripts/ci_local.sh, and the
+      # 90-minute job limit leaves room for both commands.
+      - run: go test -race -count=1 -timeout 40m ./...
+      - run: go test -race -short -count=1 -timeout 40m -tags nomatter ./cmd/gateway
       - run: GOMODCACHE="$(go env GOMODCACHE)" python3 scripts/check_no_matter_profile.py
       - name: SemReg PV public integration
         run: GOWORK=off go test -race -count=1 ./internal/modbusadapter ./m2mgraphql ./mcp ./portal ./cmd/gateway -run 'TestPVPublication|TestAdapterPublishesOneSemRegPVProjection|TestSemanticPV|TestPortalPV|TestM2MGraphQLRuntime'

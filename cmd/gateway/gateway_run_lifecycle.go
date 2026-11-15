@@ -1047,9 +1047,18 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 				if err != nil {
 					return err
 				}
-				surfaceMu.Lock()
-				reconstructor, active = started, started
-				surfaceMu.Unlock()
+				// Only a generation that is still live publishes the
+				// handle; a stopped or replaced one closes it and ends.
+				if !scope.Commit(func() {
+					surfaceMu.Lock()
+					reconstructor, active = started, started
+					surfaceMu.Unlock()
+				}) {
+					if cerr := started.Close(); cerr != nil {
+						log.Printf("passive reconstructor close after withdrawn generation: %v", cerr)
+					}
+					return nil
+				}
 				log.Printf("passive reconstructor started")
 			}
 			// The inserter is not subscribed here: warmup runs before the
@@ -1295,9 +1304,18 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 				if err != nil {
 					return err
 				}
-				surfaceMu.Lock()
-				reconstructor = started
-				surfaceMu.Unlock()
+				// Only a generation that is still live publishes the
+				// handle; a stopped or replaced one closes it and ends.
+				if !scope.Commit(func() {
+					surfaceMu.Lock()
+					reconstructor = started
+					surfaceMu.Unlock()
+				}) {
+					if cerr := started.Close(); cerr != nil {
+						log.Printf("passive reconstructor close after withdrawn generation: %v", cerr)
+					}
+					return nil
+				}
 			}
 			if err := attachPassiveObserveFirst(); err != nil {
 				return err

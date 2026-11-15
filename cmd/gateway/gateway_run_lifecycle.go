@@ -617,8 +617,9 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 			return nil
 		}
 		// The install runs through the generation fence: a generation that
-		// was withdrawn before this point creates no process-scoped consumer.
-		return installProcessSurface(scope, func() error { return retained.ensureProcessSurface(genCfg) })
+		// was withdrawn before this point creates no process-scoped consumer,
+		// and only a live generation resumes the retained poller.
+		return installProcessSurface(scope, func() error { return retained.ensureProcessSurface(scope.Context(), genCfg) })
 	}
 
 	// runEBusStartupScan starts the startup discovery scan of the generation

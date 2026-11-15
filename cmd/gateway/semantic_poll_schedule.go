@@ -97,6 +97,11 @@ func (s *semanticPollSchedule) enqueueTask(key semanticTaskKey, priority semanti
 		return
 	}
 	if s.tasks == nil {
+		// The inline fallback has no worker to wait in; a suspended
+		// acquisition is skipped instead.
+		if _, suspended := s.suspension(); suspended {
+			return
+		}
 		fn(context.Background())
 		return
 	}
@@ -111,13 +116,93 @@ func (s *semanticPollSchedule) enqueueTask(key semanticTaskKey, priority semanti
 }
 
 // pollMu is shared with direct acquisition callers; the nil-queue fallback is inline.
+// A suspended acquisition waits here, at the task boundary, until it is
+// resumed; it is dropped when ctx ends first.
 func (s *semanticPollSchedule) withPollLock(ctx context.Context, fn func(context.Context)) {
 	if s == nil || fn == nil {
 		return
 	}
-	s.pollMu.Lock()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if !s.lockResumed(ctx) {
+		return
+	}
 	defer s.pollMu.Unlock()
 	fn(ctx)
+}
+
+// semanticPollSuspensions holds one entry per suspended poller, keyed by its
+// acquisition lock so that every schedule view of one poller shares it. The
+// entry exists only while acquisition is suspended; its channel closes on
+// resume.
+var semanticPollSuspensions sync.Map // *sync.Mutex -> chan struct{}
+
+// suspension returns the resume signal of a suspended acquisition.
+func (s *semanticPollSchedule) suspension() (<-chan struct{}, bool) {
+	if s == nil || s.pollMu == nil {
+		return nil, false
+	}
+	resumed, ok := semanticPollSuspensions.Load(s.pollMu)
+	if !ok {
+		return nil, false
+	}
+	return resumed.(chan struct{}), true
+}
+
+// suspendAcquisition stops acquisition at the next task boundary. An
+// acquisition that already holds the lock ends as before. Repeated calls keep
+// one suspension.
+func (s *semanticPollSchedule) suspendAcquisition() {
+	if s == nil || s.pollMu == nil {
+		return
+	}
+	semanticPollSuspensions.LoadOrStore(s.pollMu, make(chan struct{}))
+}
+
+// resumeAcquisition releases every acquisition waiting on the suspension.
+func (s *semanticPollSchedule) resumeAcquisition() {
+	if s == nil || s.pollMu == nil {
+		return
+	}
+	if resumed, ok := semanticPollSuspensions.LoadAndDelete(s.pollMu); ok {
+		close(resumed.(chan struct{}))
+	}
+}
+
+// lockResumed takes pollMu once acquisition is not suspended and reports
+// false when ctx ends first. The suspension is checked again under the lock,
+// so a suspension that precedes the lock is never overtaken.
+func (s *semanticPollSchedule) lockResumed(ctx context.Context) bool {
+	for {
+		if resumed, suspended := s.suspension(); suspended {
+			select {
+			case <-ctx.Done():
+				return false
+			case <-resumed:
+			}
+			continue
+		}
+		s.pollMu.Lock()
+		if _, suspended := s.suspension(); !suspended {
+			return true
+		}
+		s.pollMu.Unlock()
+	}
+}
+
+// suspendAcquisition and resumeAcquisition gate the poller's acquisition
+// between eBUS generations; see the schedule methods.
+func (p *vaillantSemanticPoller) suspendAcquisition() {
+	if p != nil {
+		(&semanticPollSchedule{pollMu: &p.pollMu}).suspendAcquisition()
+	}
+}
+
+func (p *vaillantSemanticPoller) resumeAcquisition() {
+	if p != nil {
+		(&semanticPollSchedule{pollMu: &p.pollMu}).resumeAcquisition()
+	}
 }
 
 func (p *vaillantSemanticPoller) pollSchedule() *semanticPollSchedule {

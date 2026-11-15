@@ -50,6 +50,17 @@ share the poller's `pollMu`; the owner holds that lock across the callback.
 With no queue, callbacks run synchronously with a background context, preserving
 the existing fallback that does not acquire `pollMu`.
 
+## Acquisition between eBUS generations
+
+When an eBUS generation is withdrawn (stop, restart or automatic replacement),
+the retained poller's acquisition is suspended at the next task boundary:
+queued and direct locked callbacks wait before taking `pollMu`, the inline
+fallback skips, and an acquisition already in flight ends on its own
+generation's transport as before. Only the successor generation resumes
+acquisition, after it has validated its source and rebound the poller to its
+initiator and companion, and only while it is still live and admitted. The
+first generation's startup barrier, the intervals and the queue are unchanged.
+
 ## Evidence boundary
 
 [The scheduling tests](../../cmd/gateway/semantic_poll_schedule_test.go) use

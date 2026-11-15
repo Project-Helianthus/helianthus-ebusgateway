@@ -1,0 +1,3 @@
+## Keep the retained poller off the bus until its successor generation has rebound it
+
+After a stop, restart or automatic replacement of the eBUS generation, the retained semantic poller sends nothing until the successor generation has validated its source and rebound the poller to its initiator and companion. Before, the poller could resume with its predecessor's source on the successor's transport before the successor had validated its own. An acquisition already in flight when the generation is withdrawn ends as before. Poll intervals, names and log lines are unchanged. The gateway binary changes.

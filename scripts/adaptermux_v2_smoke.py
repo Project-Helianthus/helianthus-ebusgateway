@@ -567,7 +567,11 @@ def mcp_semantic(urls, settings):
         raise SurfaceError("MCP read tool answered an error")
     envelope = read_json(content[0].get("text") or "", "MCP tool")
     data = envelope.get("data") or {}
-    return (data.get("state") or {}), ((envelope.get("meta") or {}).get("contract") or "")
+    # The contract is the lineage AD10 compares; a blank one proves nothing.
+    contract = (envelope.get("meta") or {}).get("contract")
+    if not isinstance(contract, str) or not contract.strip():
+        raise SurfaceError("MCP read tool answered without a meta.contract")
+    return (data.get("state") or {}), contract
 
 
 def json_type(value):

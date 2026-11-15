@@ -576,6 +576,24 @@ class MigrationEquivalenceTests(SmokeTestCase):
         self.assertEqual(status, SMOKE.EXIT_FAIL)
         self.assertEqual(evidence["semantic_record"]["parity_mismatches"], ["outdoor_temperature"])
 
+    def test_missing_mcp_contract_fails_the_semantic_record(self):
+        state = DATA["semantic"]["state"]
+        missing = json.loads(json.loads(mcp_body(state, "x"))["result"]["content"][0]["text"])
+        missing["meta"] = {}
+        absent = json.dumps({"jsonrpc": "2.0", "id": 1, "result": {
+            "content": [{"type": "text", "text": json.dumps(missing)}], "isError": False}})
+        for label, body in (("absent", absent), ("empty", mcp_body(state, "")), ("blank", mcp_body(state, "  "))):
+            for invariant, composition in (("DS01", "direct"), ("AD10", "mux")):
+                with self.subTest(contract=label, invariant=invariant):
+                    if invariant == "AD10":
+                        self.prepare_pairs("ens")
+                    self.stub.load(self.phases(composition, "ens"))
+                    self.stub.answers["/mcp"] = [body]
+                    status, evidence = self.run_smoke(self.environ(invariant, composition, "ens"))
+                    self.assertEqual(status, SMOKE.EXIT_FAIL)
+                    self.assertIn("MCP read tool answered without a meta.contract", self.reasons(evidence))
+                    self.assertNotIn("ad10", evidence)
+
 
 class ReadOnlyTests(SmokeTestCase):
     def test_every_request_is_a_read(self):

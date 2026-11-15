@@ -1,0 +1,109 @@
+{
+  "about": "Synthetic answers of the gateway read surfaces for the offline tests of scripts/adaptermux_v2_smoke.py. Every value is invented; none comes from a bus, a device or a run.",
+  "gateway_source": 113,
+  "status": {
+    "capability": {
+      "active_supported": true,
+      "passive_supported": true,
+      "broadcast_supported": true,
+      "passive_available": true,
+      "passive_state": "available",
+      "endpoint_state": "connected",
+      "tap_connected": true
+    },
+    "feature_flags": {
+      "observe_first_enabled": true,
+      "passive_state_direct_apply": false,
+      "passive_config_direct_apply": false,
+      "external_write_policy": "record_only"
+    },
+    "bus_admission": {
+      "state": "active",
+      "source": 113,
+      "companion_target": 118
+    }
+  },
+  "frames": {
+    "baseline": [
+      {"scope": "active", "source": "0x71", "target": "0x15", "family": "B524", "frame_type": "initiator_target", "count": 40},
+      {"scope": "active", "source": "0x71", "target": "0x08", "family": "B509", "frame_type": "initiator_target", "count": 12},
+      {"scope": "passive", "source": "0x71", "target": "0x15", "family": "B524", "frame_type": "initiator_target", "count": 38},
+      {"scope": "passive", "source": "0x10", "target": "0x08", "family": "B509", "frame_type": "initiator_target", "count": 200},
+      {"scope": "passive", "source": "0x10", "target": "0xfe", "family": "0700", "frame_type": "broadcast", "count": 50},
+      {"scope": "passive", "source": "0x10", "target": "0x08", "family": "B511", "frame_type": "abandoned_partial", "count": 3}
+    ],
+    "flow": [
+      {"scope": "active", "source": "0x71", "target": "0x15", "family": "B524", "frame_type": "initiator_target", "count": 46},
+      {"scope": "active", "source": "0x71", "target": "0x08", "family": "B509", "frame_type": "initiator_target", "count": 14},
+      {"scope": "passive", "source": "0x71", "target": "0x15", "family": "B524", "frame_type": "initiator_target", "count": 44},
+      {"scope": "passive", "source": "0x10", "target": "0x08", "family": "B509", "frame_type": "initiator_target", "count": 207},
+      {"scope": "passive", "source": "0x10", "target": "0xfe", "family": "0700", "frame_type": "broadcast", "count": 52},
+      {"scope": "passive", "source": "0x10", "target": "0x08", "family": "B511", "frame_type": "abandoned_partial", "count": 3},
+      {"scope": "passive", "source": "0xf7", "target": "0x15", "family": "0704", "frame_type": "initiator_target", "count": 3}
+    ]
+  },
+  "metrics": {
+    "baseline": {
+      "common": [
+        ["ebus_passive_completed_transactions_total", {}, 288],
+        ["external_write_policy_state", {"policy": "invalidate_only"}, 0],
+        ["external_write_policy_state", {"policy": "record_only"}, 1],
+        ["external_write_policy_state", {"policy": "record_and_invalidate"}, 0]
+      ],
+      "mux": [
+        ["ebus_adaptermux_transaction_endings_total", {"reason": "active_read_timeout"}, 1],
+        ["ebus_adaptermux_transaction_endings_total", {"reason": "max_ownership"}, 1],
+        ["ebus_adaptermux_transaction_endings_total", {"reason": "syn_timeout"}, 2],
+        ["ebus_adaptermux_transaction_endings_total", {"reason": "transaction_done"}, 52],
+        ["ebus_adaptermux_foreign_initiator_releases_total", {}, 4],
+        ["ebus_adaptermux_escape_pair_verify_failures_total", {"step": "lead"}, 0],
+        ["ebus_adaptermux_escape_pair_verify_failures_total", {"step": "suffix"}, 0]
+      ]
+    },
+    "flow": {
+      "common": [
+        ["ebus_passive_completed_transactions_total", {}, 300],
+        ["external_write_policy_state", {"policy": "invalidate_only"}, 0],
+        ["external_write_policy_state", {"policy": "record_only"}, 1],
+        ["external_write_policy_state", {"policy": "record_and_invalidate"}, 0]
+      ],
+      "mux": [
+        ["ebus_adaptermux_transaction_endings_total", {"reason": "active_read_timeout"}, 1],
+        ["ebus_adaptermux_transaction_endings_total", {"reason": "max_ownership"}, 1],
+        ["ebus_adaptermux_transaction_endings_total", {"reason": "syn_timeout"}, 2],
+        ["ebus_adaptermux_transaction_endings_total", {"reason": "transaction_done"}, 60],
+        ["ebus_adaptermux_foreign_initiator_releases_total", {}, 4],
+        ["ebus_adaptermux_escape_pair_verify_failures_total", {"step": "lead"}, 0],
+        ["ebus_adaptermux_escape_pair_verify_failures_total", {"step": "suffix"}, 0]
+      ]
+    }
+  },
+  "vars": {
+    "baseline": {
+      "observe_first_dedup_adjudications_total": {"matched_active_duplicate": 38, "unmatched_third_party": 250}
+    },
+    "flow": {
+      "observe_first_dedup_adjudications_total": {"matched_active_duplicate": 44, "unmatched_third_party": 259}
+    }
+  },
+  "semantic": {
+    "state": {
+      "system_off": false,
+      "maintenance_due": false,
+      "system_water_pressure": 1.6,
+      "system_flow_temperature": 34.5,
+      "outdoor_temperature": 7.5,
+      "outdoor_temperature_avg24h": 6.0
+    },
+    "drifted_state": {
+      "system_off": false,
+      "maintenance_due": false,
+      "system_water_pressure": 1.6,
+      "system_flow_temperature": 34.5,
+      "outdoor_temperature": 12.0,
+      "outdoor_temperature_avg24h": 6.0
+    },
+    "mcp_contract": "ebus.v1.semantic.system.get",
+    "other_mcp_contract": "ebus.v1.semantic.system.get.replay"
+  }
+}

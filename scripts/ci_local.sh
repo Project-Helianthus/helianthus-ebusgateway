@@ -80,6 +80,7 @@ python3 scripts/tesla_evse_semreg_boundary_test.py
 python3 scripts/semreg_mapping_gate_test.py
 python3 scripts/huawei_pv_semreg_gate_test.py
 python3 scripts/test_reset_runtime_control.py
+python3 scripts/adaptermux_v2_smoke_test.py
 
 if command -v golangci-lint >/dev/null 2>&1; then
   echo "==> golangci-lint"

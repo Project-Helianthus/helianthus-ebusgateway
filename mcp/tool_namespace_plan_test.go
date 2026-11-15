@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	mcpstandard "github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebusstandard"
 )
 
 // toolNamespacePlanPrefixes are the namespaces admitted by
@@ -88,6 +90,30 @@ func toolNamespacePlanDispatched() []string {
 		toolPlanesListV1Name,
 		toolMethodsListV1Name,
 		toolInvokeV1Name,
+		mcpstandard.ToolServicesList,
+		mcpstandard.ToolCommandsList,
+		mcpstandard.ToolCommandGet,
+		mcpstandard.ToolDecode,
+		toolVaillantB503ErrorsGetName,
+		toolVaillantB503ErrorsHistoryGetName,
+		toolVaillantB503ErrorsHistoryListName,
+		toolVaillantB503ServiceCurrentGetName,
+		toolVaillantB503ServiceHistoryGetName,
+		toolVaillantB503LiveMonitorName,
+		toolVaillantB503LiveSessionGetName,
+		ModbusV1RawReadTool,
+		ModbusV1ProfileObservationGetTool,
+		SemanticV1PVCurrentGetTool,
+		eebusV1RuntimeStatusTool,
+		eebusV1ServicesListTool,
+		eebusV1ServicesGetTool,
+		eebusV1SessionsListTool,
+		eebusV1SessionsGetTool,
+		eebusV1TopologyGetTool,
+		eebusV1PairingStatusTool,
+	}
+	for _, spec := range eebusV1CommandSpecs {
+		names = append(names, strings.ReplaceAll(string(spec.tool), ".", "_"))
 	}
 	return append(names, m8SourceToolNamesV1...)
 }
@@ -239,6 +265,11 @@ func TestToolNamespacePlanRejectsDeviations(t *testing.T) {
 		"dispatched_constant_unregistered": func() (map[string]bool, []string, []toolNamespacePlanRow) {
 			r := cloneRegistered()
 			delete(r, m8SourceStateToolName)
+			return r, dispatched, rows
+		},
+		"dispatched_helper_constant_unregistered": func() (map[string]bool, []string, []toolNamespacePlanRow) {
+			r := cloneRegistered()
+			delete(r, ModbusV1RawReadTool)
 			return r, dispatched, rows
 		},
 		"row_missing": func() (map[string]bool, []string, []toolNamespacePlanRow) {

@@ -240,6 +240,13 @@ func TestRestoreMultiSourceRestoreRefusesSecondSource(t *testing.T) {
 			id.Source = secondSource
 			entry.Control.Status.ID = &id
 		},
+		"control-attempt": func(record *RecoveryRecord) {
+			entry := entryOf(record)
+			if entry.Control == nil || len(entry.Accepted) == 0 {
+				t.Fatal("fixture lacks a retained control")
+			}
+			entry.Control.Attempts = append(entry.Control.Attempts, Attempt{Batch: resealedWithSource(t, entry.Accepted[0].Batch, secondSource)})
+		},
 		"epoch": func(record *RecoveryRecord) {
 			record.Epochs = append(record.Epochs, EpochRecord{Incarnation: "incarnation:fixed", Source: secondSource, Epoch: "epoch:second",
 				Generation: 1, Kind: EventGenerationFenced, Assets: []semreg.AssetID{target}})

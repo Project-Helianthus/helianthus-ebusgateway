@@ -284,6 +284,17 @@ func recoverySecondSource(record RecoveryRecord) semreg.AssetID {
 		if control := entry.Control; control != nil && control.Status.ID != nil && control.Status.ID.Source != "" && control.Status.ID.Source != entry.Source {
 			return entry.Asset
 		}
+		if control := entry.Control; control != nil {
+			for _, attempt := range control.Attempts {
+				var batch semreg.PublicationBatch
+				if json.Unmarshal(attempt.Batch, &batch) != nil || batch.SourceID == "" {
+					continue
+				}
+				if own, named := sources[batch.AssetID]; named && own != batch.SourceID {
+					return batch.AssetID
+				}
+			}
+		}
 	}
 	for _, epoch := range record.Epochs {
 		for _, id := range epoch.Assets {

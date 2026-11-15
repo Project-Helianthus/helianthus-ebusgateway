@@ -5,9 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"log"
 	"net/http"
 	"sort"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter"
@@ -128,6 +130,10 @@ type gatewayPortalCatalogSource struct {
 	// drivers resolves the driver of a binding's source. Without it a
 	// resource is kept only while its asset holds one current source.
 	drivers gatewayPortalSourceDrivers
+	// dropped is the last logged set of dropped-resource diagnostics, so an
+	// unchanged set is logged once and not on every capture.
+	droppedMu sync.Mutex
+	dropped   string
 }
 
 func newGatewayPortalCatalogSource(pv *modbusadapter.Adapter, storage *growattStoragePublication, evse *teslaHSCRetainedOwner, contributions *gatewayPortalCatalogContributions, managed ...*managedSidecarBindings) catalogv1.SourceCapture {
@@ -151,8 +157,31 @@ func gatewayPortalStoragePublication(provider *growattBMSRS485ProductionProvider
 	return provider.storage
 }
 func (s *gatewayPortalCatalogSource) Capture(at time.Time) ([]catalogv1.Resource, []catalogv1.Field, error) {
-	resources, fields, _, err := s.CaptureDiagnostics(at)
+	resources, fields, diagnostics, err := s.CaptureDiagnostics(at)
+	s.logDropped(diagnostics)
 	return resources, fields, err
+}
+
+// logDropped reports every dropped resource with its reason whenever the set
+// changes, so a dropped resource is visible outside the diagnostics method.
+func (s *gatewayPortalCatalogSource) logDropped(diagnostics []gatewayPortalCatalogDiagnostic) {
+	if s == nil {
+		return
+	}
+	encoded, err := json.Marshal(diagnostics)
+	if err != nil {
+		return
+	}
+	s.droppedMu.Lock()
+	changed := s.dropped != string(encoded)
+	s.dropped = string(encoded)
+	s.droppedMu.Unlock()
+	if !changed || len(diagnostics) == 0 {
+		return
+	}
+	for _, d := range diagnostics {
+		log.Printf("portal catalog: resource %q of asset %q not kept: %s (driver %q, manifest %q)", d.ResourceID, d.AssetID, d.Reason, d.DriverID, d.ManifestID)
+	}
 }
 
 // CaptureDiagnostics is Capture plus one diagnostic for every resource the

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -941,4 +942,23 @@ func TestPortalCatalogKeepsResourceWithSeveralContributors(t *testing.T) {
 	t.Run("one source keeps the manifest's driver without resolution", func(t *testing.T) {
 		kept(t, portalContributorSnapshot(service, capability, []string{"owner"}, "owner"), portalAttribution{}, "owner", "evse.primary", owner)
 	})
+}
+
+func TestPortalCatalogLogsDroppedResourceOnceWhileItsReasonIsUnchanged(t *testing.T) {
+	var buffer bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&buffer)
+	defer log.SetOutput(previous)
+	source := &gatewayPortalCatalogSource{}
+	diagnostics := []gatewayPortalCatalogDiagnostic{{AssetID: "asset:shared", ResourceID: "connector", DriverID: "evse.primary", ManifestID: "portal.evse.allocation", Reason: portalDropCapabilityAmbiguous}}
+	source.logDropped(diagnostics)
+	source.logDropped(diagnostics)
+	if got := buffer.String(); strings.Count(got, "not kept: "+portalDropCapabilityAmbiguous) != 1 || !strings.Contains(got, "asset:shared") {
+		t.Fatalf("log=%q; want the reason logged once", got)
+	}
+	source.logDropped(nil)
+	source.logDropped(diagnostics)
+	if got := buffer.String(); strings.Count(got, "not kept: "+portalDropCapabilityAmbiguous) != 2 {
+		t.Fatalf("log=%q; want the reason logged again after it cleared", got)
+	}
 }

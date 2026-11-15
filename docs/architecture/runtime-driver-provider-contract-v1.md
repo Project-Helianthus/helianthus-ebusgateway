@@ -2167,8 +2167,10 @@ unchanged.
    outside all of them. No path holds the control mutexes of two sources, so
    contributors of one asset never wait on each other's control operations.
 
-The other contributors' family caches are not yet reprojected when one
-contributor commits a publication, and the recovery record carries one control
+Every declared source's reprojection callback (`OnControl`) receives each
+control event of the asset, so a control operation reprojects the owner's and
+every contributor's family cache. The other contributors' family caches are
+not yet reprojected when one contributor commits a publication, and the recovery record carries one control
 per asset (the owner's), so a shared asset is not yet represented in a
 recovery checkpoint. Synthetic hub tests in
 [internal/semhub/multisource_control_test.go](../../internal/semhub/multisource_control_test.go)

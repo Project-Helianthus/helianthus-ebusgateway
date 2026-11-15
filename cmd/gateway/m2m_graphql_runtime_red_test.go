@@ -853,40 +853,30 @@ func TestCharacterizationM2MGraphQLOfAllThreeFamilies(t *testing.T) {
 	characterizationGolden(t, "m2m", "evse.json", body(client(families.tesla.cfg.AssetID).EVSECurrent(context.Background())))
 }
 
-func TestM2MGraphQLFlags_RetiredFlagsAreWarningOnlyNoOps(t *testing.T) {
-	for _, args := range [][]string{
-		{"-m2m-graphql-client-ca=missing-ca.pem"},
-		{"-m2m-graphql-denied-principals=invalid-fingerprint"},
-		{"-m2m-graphql-client-ca=", "-m2m-graphql-denied-principals=", "-m2m-graphql-client-ca=ignored.pem"},
-		{"-m2m-graphql-denied-principals=invalid", "-m2m-graphql-client-ca=missing.pem"},
-	} {
-		t.Run(strings.Join(args, ","), func(t *testing.T) {
+func TestM2MGraphQLFlags_ClientAuthFlagsAreNotDefined(t *testing.T) {
+	for _, name := range []string{"m2m-graphql-client-ca", "m2m-graphql-denied-principals"} {
+		t.Run(name, func(t *testing.T) {
 			cfg := ebusgateway.DefaultConfig()
 			want := ebusgateway.DefaultConfig()
-			fs := flag.NewFlagSet("retired-m2m", flag.ContinueOnError)
+			fs := flag.NewFlagSet("m2m-client-auth", flag.ContinueOnError)
+			fs.SetOutput(&bytes.Buffer{})
 			bindM2MGraphQLFlags(fs, &cfg)
+			if fs.Lookup(name) != nil {
+				t.Fatalf("flag %q is defined", name)
+			}
 			var output bytes.Buffer
 			previous := log.Writer()
 			log.SetOutput(&output)
 			defer log.SetOutput(previous)
-			if err := fs.Parse(args); err != nil {
-				t.Fatal(err)
+			err := fs.Parse([]string{"-" + name + "=x"})
+			if err == nil || !strings.Contains(err.Error(), "flag provided but not defined: -"+name) {
+				t.Fatalf("want undefined-flag error for %q, got %v", name, err)
+			}
+			if output.Len() != 0 {
+				t.Fatalf("want no log output, got %q", output.String())
 			}
 			if !reflect.DeepEqual(cfg, want) {
-				t.Fatal("retired flags changed configuration")
-			}
-			if strings.Count(output.String(), "M2M client-certificate flags are deprecated and ignored") != 1 || strings.Count(output.String(), "\n") != 1 {
-				t.Fatalf("want one warning, got %q", output.String())
-			}
-			for _, arg := range args {
-				value := strings.SplitN(arg, "=", 2)[1]
-				if value != "" && strings.Contains(output.String(), value) {
-					t.Fatal("warning reflected a retired flag value")
-				}
-			}
-			runtime, err := newM2MGraphQLRuntime(cfg, nil)
-			if err != nil || runtime != nil {
-				t.Fatalf("retired flags enabled listener: runtime=%v err=%v", runtime, err)
+				t.Fatal("rejected flag changed configuration")
 			}
 		})
 	}

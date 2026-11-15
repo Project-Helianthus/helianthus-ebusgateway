@@ -436,20 +436,20 @@
           "issue": null
         },
         "semantic_mcp": {
-          "state": "not_run",
-          "test": null,
+          "state": "pass",
+          "test": "cmd/gateway TestH11ComposedHuaweiPathOffline",
           "reason": null,
           "issue": null
         },
         "graphql": {
-          "state": "not_run",
-          "test": null,
+          "state": "pass",
+          "test": "cmd/gateway TestH11ComposedHuaweiPathOffline",
           "reason": null,
           "issue": null
         },
         "portal": {
-          "state": "not_run",
-          "test": null,
+          "state": "pass",
+          "test": "cmd/gateway TestH11ComposedHuaweiPathOffline",
           "reason": null,
           "issue": null
         },
@@ -492,20 +492,20 @@
           "issue": null
         },
         "semantic_mcp": {
-          "state": "not_run",
-          "test": null,
+          "state": "pass",
+          "test": "cmd/gateway TestH11ComposedHuaweiPathOffline",
           "reason": null,
           "issue": null
         },
         "graphql": {
-          "state": "not_run",
-          "test": null,
+          "state": "pass",
+          "test": "cmd/gateway TestH11ComposedHuaweiPathOffline",
           "reason": null,
           "issue": null
         },
         "portal": {
-          "state": "not_run",
-          "test": null,
+          "state": "pass",
+          "test": "cmd/gateway TestH11ComposedHuaweiPathOffline",
           "reason": null,
           "issue": null
         },
@@ -542,10 +542,10 @@
       },
       "huawei_energy_manager": {
         "native_mcp": {
-          "state": "not_run",
+          "state": "not_in_0_7",
           "test": null,
-          "reason": null,
-          "issue": null
+          "reason": "Acquisition of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits it; the composed instance is never dialled and publishes nothing, so the cell cannot be exercised in the release.",
+          "issue": "helianthus-modbusreg#199"
         },
         "semantic_mcp": {
           "state": "not_in_0_7",
@@ -554,22 +554,22 @@
           "issue": "helianthus-modbusreg#199"
         },
         "graphql": {
-          "state": "not_run",
+          "state": "not_in_0_7",
           "test": null,
-          "reason": null,
-          "issue": null
+          "reason": "Acquisition of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits it; the composed instance is never dialled and publishes nothing, so the cell cannot be exercised in the release.",
+          "issue": "helianthus-modbusreg#199"
         },
         "portal": {
-          "state": "not_run",
+          "state": "not_in_0_7",
           "test": null,
-          "reason": null,
-          "issue": null
+          "reason": "Acquisition of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits it; the composed instance is never dialled and publishes nothing, so the cell cannot be exercised in the release.",
+          "issue": "helianthus-modbusreg#199"
         },
         "home_assistant": {
-          "state": "not_run",
+          "state": "not_in_0_7",
           "test": null,
-          "reason": null,
-          "issue": null
+          "reason": "Acquisition of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits it; the composed instance is never dialled and publishes nothing, so the cell cannot be exercised in the release.",
+          "issue": "helianthus-modbusreg#199"
         },
         "prometheus_semantic": {
           "state": "not_in_0_7",
@@ -578,22 +578,22 @@
           "issue": "helianthus-modbusreg#199"
         },
         "prometheus_native": {
-          "state": "not_run",
+          "state": "not_in_0_7",
           "test": null,
-          "reason": null,
-          "issue": null
+          "reason": "Acquisition of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits it; the composed instance is never dialled and publishes nothing, so the cell cannot be exercised in the release.",
+          "issue": "helianthus-modbusreg#199"
         },
         "eebus_output": {
-          "state": "not_run",
+          "state": "not_in_0_7",
           "test": null,
-          "reason": null,
-          "issue": null
+          "reason": "Acquisition of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits it; the composed instance is never dialled and publishes nothing, so the cell cannot be exercised in the release.",
+          "issue": "helianthus-modbusreg#199"
         },
         "matter_output": {
-          "state": "not_run",
+          "state": "not_in_0_7",
           "test": null,
-          "reason": null,
-          "issue": null
+          "reason": "Acquisition of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits it; the composed instance is never dialled and publishes nothing, so the cell cannot be exercised in the release.",
+          "issue": "helianthus-modbusreg#199"
         }
       },
       "growatt_inverter_rtu": {
@@ -654,20 +654,20 @@
       },
       "growatt_bms_rs485": {
         "native_mcp": {
-          "state": "not_run",
-          "test": null,
+          "state": "pass",
+          "test": "cmd/gateway TestM57LifecycleToolsReplaceGenerationsAndRefuseLatePublication",
           "reason": null,
           "issue": null
         },
         "semantic_mcp": {
-          "state": "not_run",
-          "test": null,
+          "state": "pass",
+          "test": "cmd/gateway TestM57ComposedDriversShareOneNorthboundPath",
           "reason": null,
           "issue": null
         },
         "graphql": {
-          "state": "not_run",
-          "test": null,
+          "state": "pass",
+          "test": "cmd/gateway TestM57ComposedDriversShareOneNorthboundPath",
           "reason": null,
           "issue": null
         },
@@ -1698,8 +1698,8 @@
           "issue": null
         },
         "partial_failure": {
-          "state": "not_run",
-          "test": null,
+          "state": "pass",
+          "test": "cmd/gateway TestH08DialFailureOnOneInstanceLeavesTheOtherRunning",
           "reason": null,
           "issue": null
         },
@@ -1730,8 +1730,8 @@
       },
       "huawei_smartlogger": {
         "normal": {
-          "state": "not_run",
-          "test": null,
+          "state": "pass",
+          "test": "cmd/gateway TestH11ComposedHuaweiPathOffline",
           "reason": null,
           "issue": null
         },
@@ -1742,8 +1742,8 @@
           "issue": null
         },
         "reset": {
-          "state": "not_run",
-          "test": null,
+          "state": "pass",
+          "test": "cmd/gateway TestH11ComposedHuaweiPathOffline",
           "reason": null,
           "issue": null
         },
@@ -1760,28 +1760,28 @@
           "issue": null
         },
         "identity_conflict": {
-          "state": "not_run",
-          "test": null,
+          "state": "pass",
+          "test": "cmd/gateway TestH11ComposedHuaweiPathOffline",
           "reason": null,
           "issue": null
         },
         "unknown_capability": {
-          "state": "not_run",
-          "test": null,
+          "state": "pass",
+          "test": "cmd/gateway TestH11ComposedHuaweiPathOffline",
           "reason": null,
           "issue": null
         },
         "cleanup": {
-          "state": "not_run",
-          "test": null,
+          "state": "pass",
+          "test": "cmd/gateway TestH11ComposedHuaweiPathOffline",
           "reason": null,
           "issue": null
         }
       },
       "huawei_sdongle": {
         "normal": {
-          "state": "not_run",
-          "test": null,
+          "state": "pass",
+          "test": "cmd/gateway TestH11ComposedHuaweiPathOffline",
           "reason": null,
           "issue": null
         },
@@ -1792,8 +1792,8 @@
           "issue": null
         },
         "reset": {
-          "state": "not_run",
-          "test": null,
+          "state": "pass",
+          "test": "cmd/gateway TestH11ComposedHuaweiPathOffline",
           "reason": null,
           "issue": null
         },
@@ -1810,72 +1810,72 @@
           "issue": null
         },
         "identity_conflict": {
-          "state": "not_run",
-          "test": null,
+          "state": "pass",
+          "test": "cmd/gateway TestH11ComposedHuaweiPathOffline",
           "reason": null,
           "issue": null
         },
         "unknown_capability": {
-          "state": "not_run",
-          "test": null,
+          "state": "pass",
+          "test": "cmd/gateway TestH11ComposedHuaweiPathOffline",
           "reason": null,
           "issue": null
         },
         "cleanup": {
-          "state": "not_run",
-          "test": null,
+          "state": "pass",
+          "test": "cmd/gateway TestH11ComposedHuaweiPathOffline",
           "reason": null,
           "issue": null
         }
       },
       "huawei_energy_manager": {
         "normal": {
-          "state": "not_run",
+          "state": "not_in_0_7",
           "test": null,
-          "reason": null,
-          "issue": null
+          "reason": "Acquisition of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits it; the composed instance is never dialled and publishes nothing, so the cell cannot be exercised in the release.",
+          "issue": "helianthus-modbusreg#199"
         },
         "degraded": {
-          "state": "not_run",
+          "state": "not_in_0_7",
           "test": null,
-          "reason": null,
-          "issue": null
+          "reason": "Acquisition of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits it; the composed instance is never dialled and publishes nothing, so the cell cannot be exercised in the release.",
+          "issue": "helianthus-modbusreg#199"
         },
         "reset": {
-          "state": "not_run",
+          "state": "not_in_0_7",
           "test": null,
-          "reason": null,
-          "issue": null
+          "reason": "Acquisition of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits it; the composed instance is never dialled and publishes nothing, so the cell cannot be exercised in the release.",
+          "issue": "helianthus-modbusreg#199"
         },
         "partial_failure": {
-          "state": "not_run",
+          "state": "not_in_0_7",
           "test": null,
-          "reason": null,
-          "issue": null
+          "reason": "Acquisition of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits it; the composed instance is never dialled and publishes nothing, so the cell cannot be exercised in the release.",
+          "issue": "helianthus-modbusreg#199"
         },
         "stale_generation": {
-          "state": "not_run",
+          "state": "not_in_0_7",
           "test": null,
-          "reason": null,
-          "issue": null
+          "reason": "Acquisition of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits it; the composed instance is never dialled and publishes nothing, so the cell cannot be exercised in the release.",
+          "issue": "helianthus-modbusreg#199"
         },
         "identity_conflict": {
-          "state": "not_run",
+          "state": "not_in_0_7",
           "test": null,
-          "reason": null,
-          "issue": null
+          "reason": "Acquisition of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits it; the composed instance is never dialled and publishes nothing, so the cell cannot be exercised in the release.",
+          "issue": "helianthus-modbusreg#199"
         },
         "unknown_capability": {
-          "state": "not_run",
+          "state": "not_in_0_7",
           "test": null,
-          "reason": null,
-          "issue": null
+          "reason": "Acquisition of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits it; the composed instance is never dialled and publishes nothing, so the cell cannot be exercised in the release.",
+          "issue": "helianthus-modbusreg#199"
         },
         "cleanup": {
-          "state": "not_run",
+          "state": "not_in_0_7",
           "test": null,
-          "reason": null,
-          "issue": null
+          "reason": "Acquisition of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits it; the composed instance is never dialled and publishes nothing, so the cell cannot be exercised in the release.",
+          "issue": "helianthus-modbusreg#199"
         }
       },
       "growatt_inverter_rtu": {
@@ -1930,8 +1930,8 @@
       },
       "growatt_bms_rs485": {
         "normal": {
-          "state": "not_run",
-          "test": null,
+          "state": "pass",
+          "test": "cmd/gateway TestM57ComposedDriversShareOneNorthboundPath",
           "reason": null,
           "issue": null
         },
@@ -1972,22 +1972,22 @@
           "issue": null
         },
         "cleanup": {
-          "state": "not_run",
-          "test": null,
+          "state": "pass",
+          "test": "cmd/gateway TestM57ComposedDriversShareOneNorthboundPath",
           "reason": null,
           "issue": null
         }
       },
       "growatt_bms_can": {
         "normal": {
-          "state": "not_run",
-          "test": null,
+          "state": "pass",
+          "test": "cmd/gateway TestCX22ComposedThreeFamiliesAndTwoProviderIsolation",
           "reason": null,
           "issue": null
         },
         "degraded": {
-          "state": "not_run",
-          "test": null,
+          "state": "pass",
+          "test": "cmd/gateway TestCAN03ReceiveFailureReachesLifecycleAndRestart",
           "reason": null,
           "issue": null
         },
@@ -2004,8 +2004,8 @@
           "issue": null
         },
         "stale_generation": {
-          "state": "not_run",
-          "test": null,
+          "state": "pass",
+          "test": "cmd/gateway TestCAN03ReceiveFailureReachesLifecycleAndRestart",
           "reason": null,
           "issue": null
         },
@@ -2030,14 +2030,14 @@
       },
       "growatt_bms_pcs_can": {
         "normal": {
-          "state": "not_run",
-          "test": null,
+          "state": "pass",
+          "test": "cmd/gateway TestCX22ComposedThreeFamiliesAndTwoProviderIsolation",
           "reason": null,
           "issue": null
         },
         "degraded": {
-          "state": "not_run",
-          "test": null,
+          "state": "pass",
+          "test": "cmd/gateway TestCX22LossWithdrawsAndQuarantines",
           "reason": null,
           "issue": null
         },
@@ -2060,8 +2060,8 @@
           "issue": null
         },
         "identity_conflict": {
-          "state": "not_run",
-          "test": null,
+          "state": "pass",
+          "test": "cmd/gateway TestCX22NativeContextDoesNotInventTopology",
           "reason": null,
           "issue": null
         },
@@ -2072,22 +2072,22 @@
           "issue": null
         },
         "cleanup": {
-          "state": "not_run",
-          "test": null,
+          "state": "pass",
+          "test": "cmd/gateway TestCX22LossWithdrawsAndQuarantines",
           "reason": null,
           "issue": null
         }
       },
       "growatt_bms_link_can": {
         "normal": {
-          "state": "not_run",
-          "test": null,
+          "state": "pass",
+          "test": "cmd/gateway TestCX22ComposedThreeFamiliesAndTwoProviderIsolation",
           "reason": null,
           "issue": null
         },
         "degraded": {
-          "state": "not_run",
-          "test": null,
+          "state": "pass",
+          "test": "cmd/gateway TestCX22LossWithdrawsAndQuarantines",
           "reason": null,
           "issue": null
         },
@@ -2104,14 +2104,14 @@
           "issue": null
         },
         "stale_generation": {
-          "state": "not_run",
-          "test": null,
+          "state": "pass",
+          "test": "cmd/gateway TestCX22ComposedThreeFamiliesAndTwoProviderIsolation",
           "reason": null,
           "issue": null
         },
         "identity_conflict": {
-          "state": "not_run",
-          "test": null,
+          "state": "pass",
+          "test": "cmd/gateway TestCX22SourceReuseAndIncompleteIdentity",
           "reason": null,
           "issue": null
         },
@@ -2122,8 +2122,8 @@
           "issue": null
         },
         "cleanup": {
-          "state": "not_run",
-          "test": null,
+          "state": "pass",
+          "test": "cmd/gateway TestCX22ComposedThreeFamiliesAndTwoProviderIsolation",
           "reason": null,
           "issue": null
         }

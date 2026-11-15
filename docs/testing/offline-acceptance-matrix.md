@@ -41,10 +41,22 @@ Driver or module readiness alone never fills a cell. Missing real acquisition in
 
 A Go test is named as `<package directory> <TestName>` and exists when a `_test.go` file in that directory
 declares the `go test` entry point `func <TestName>(t *testing.T)`, where `TestName` is `Test` or `Test` followed
-by a character that is not a lower-case letter. A Python test is named as `<script path> <test_name>` and exists
-when `test_name` starts with `test` and that file declares `def <test_name>(`. A helper declared in a test file is
-never a test, and a declaration-like line inside a comment or a string literal is never a declaration. Test names describe behaviour; normative conformance identifiers stay in the tests as
-traceability only and claim no certification.
+by a character that is not a lower-case letter, and that file is part of the build of the release target: `linux`
+on every release architecture (`amd64`, `arm64`, `arm`, `386`), with and without the race detector. A file that a
+file-name suffix or a `//go:build` (or legacy `// +build`) constraint excludes from any of those builds, or whose
+name starts with `_` or `.`, is never evidence; a custom build tag is unset. A Python test is named as
+`<script path> <test_name>` and exists when `test_name` starts with `test` and the test runner collects it: a
+module-level `def <test_name>(`, or a method of a module-level class the runner collects (a subclass of
+`unittest.TestCase`, or a class named `Test...` without `__init__`). A `test_` function nested inside another
+function or inside an uncollected class is never a test. A helper declared in a test file is never a test, and a
+declaration-like line inside a comment or a string literal is never a declaration. Test names describe behaviour;
+normative conformance identifiers stay in the tests as traceability only and claim no certification.
+
+A `pass` cell in this matrix names a test that starts the gateway through its lifecycle entry point (`run`) or
+composes the managed drivers through the managed setup (`prepareManagedSidecars` with the driver manager), runs
+the family's own acquisition against a replayed or synthetic source, and asserts that cell's surface or condition
+itself. A test that composes the parts by hand, injects a factory that publishes facts, or reads a provider
+without its surface leaves the cell `not_run`.
 
 ## How a cell is filled
 
@@ -66,11 +78,11 @@ acceptance is closed; it is not part of the local gate.
 
 | Axis | Cells | `not_run` | `pass` | `not_applicable` | `not_in_0_7` |
 |---|---|---|---|---|---|
-| `family_surface` | 135 | 133 | 0 | 0 | 2 |
+| `family_surface` | 135 | 117 | 9 | 0 | 9 |
 | `family_graph` | 75 | 70 | 0 | 0 | 5 |
-| `family_condition` | 120 | 120 | 0 | 0 | 0 |
+| `family_condition` | 120 | 87 | 25 | 0 | 8 |
 | `graph_negative` | 7 | 7 | 0 | 0 | 0 |
-| total | 337 | 330 | 0 | 0 | 7 |
+| total | 337 | 281 | 34 | 0 | 22 |
 
 ### Families
 
@@ -137,11 +149,11 @@ acceptance is closed; it is not part of the local gate.
 | `ebus_heat_source_only` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
 | `eebus_energy_manager` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
 | `sunspec_inverter` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
-| `huawei_smartlogger` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
-| `huawei_sdongle` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
-| `huawei_energy_manager` | `not_run` | `not_in_0_7` | `not_run` | `not_run` | `not_run` | `not_in_0_7` | `not_run` | `not_run` | `not_run` |
+| `huawei_smartlogger` | `not_run` | `pass` | `pass` | `pass` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
+| `huawei_sdongle` | `not_run` | `pass` | `pass` | `pass` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
+| `huawei_energy_manager` | `not_in_0_7` | `not_in_0_7` | `not_in_0_7` | `not_in_0_7` | `not_in_0_7` | `not_in_0_7` | `not_in_0_7` | `not_in_0_7` | `not_in_0_7` |
 | `growatt_inverter_rtu` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
-| `growatt_bms_rs485` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
+| `growatt_bms_rs485` | `pass` | `pass` | `pass` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
 | `growatt_bms_can` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
 | `growatt_bms_pcs_can` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
 | `growatt_bms_link_can` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
@@ -176,15 +188,15 @@ acceptance is closed; it is not part of the local gate.
 | `ebus_vaillant` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
 | `ebus_heat_source_only` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
 | `eebus_energy_manager` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
-| `sunspec_inverter` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
-| `huawei_smartlogger` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
-| `huawei_sdongle` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
-| `huawei_energy_manager` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
+| `sunspec_inverter` | `not_run` | `not_run` | `not_run` | `pass` | `not_run` | `not_run` | `not_run` | `not_run` |
+| `huawei_smartlogger` | `pass` | `not_run` | `pass` | `not_run` | `not_run` | `pass` | `pass` | `pass` |
+| `huawei_sdongle` | `pass` | `not_run` | `pass` | `not_run` | `not_run` | `pass` | `pass` | `pass` |
+| `huawei_energy_manager` | `not_in_0_7` | `not_in_0_7` | `not_in_0_7` | `not_in_0_7` | `not_in_0_7` | `not_in_0_7` | `not_in_0_7` | `not_in_0_7` |
 | `growatt_inverter_rtu` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
-| `growatt_bms_rs485` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
-| `growatt_bms_can` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
-| `growatt_bms_pcs_can` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
-| `growatt_bms_link_can` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
+| `growatt_bms_rs485` | `pass` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `pass` |
+| `growatt_bms_can` | `pass` | `pass` | `not_run` | `not_run` | `pass` | `not_run` | `not_run` | `not_run` |
+| `growatt_bms_pcs_can` | `pass` | `pass` | `not_run` | `not_run` | `not_run` | `pass` | `not_run` | `pass` |
+| `growatt_bms_link_can` | `pass` | `pass` | `not_run` | `not_run` | `pass` | `pass` | `not_run` | `pass` |
 | `tesla_wall_connector` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
 | `outback_power` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
 | `gree_vrf_can` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
@@ -205,11 +217,60 @@ acceptance is closed; it is not part of the local gate.
 
 | Cell | State | Test | Reason | Owner issue |
 |---|---|---|---|---|
+| family_surface huawei_smartlogger x semantic_mcp | `pass` | cmd/gateway TestH11ComposedHuaweiPathOffline |  |  |
+| family_surface huawei_smartlogger x graphql | `pass` | cmd/gateway TestH11ComposedHuaweiPathOffline |  |  |
+| family_surface huawei_smartlogger x portal | `pass` | cmd/gateway TestH11ComposedHuaweiPathOffline |  |  |
+| family_surface huawei_sdongle x semantic_mcp | `pass` | cmd/gateway TestH11ComposedHuaweiPathOffline |  |  |
+| family_surface huawei_sdongle x graphql | `pass` | cmd/gateway TestH11ComposedHuaweiPathOffline |  |  |
+| family_surface huawei_sdongle x portal | `pass` | cmd/gateway TestH11ComposedHuaweiPathOffline |  |  |
+| family_surface huawei_energy_manager x native_mcp | `not_in_0_7` |  | Acquisition of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits it; the composed instance is never dialled and publishes nothing, so the cell cannot be exercised in the release. | helianthus-modbusreg#199 |
 | family_surface huawei_energy_manager x semantic_mcp | `not_in_0_7` |  | Semantic publication of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits acquisition; the composed instance publishes nothing. | helianthus-modbusreg#199 |
+| family_surface huawei_energy_manager x graphql | `not_in_0_7` |  | Acquisition of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits it; the composed instance is never dialled and publishes nothing, so the cell cannot be exercised in the release. | helianthus-modbusreg#199 |
+| family_surface huawei_energy_manager x portal | `not_in_0_7` |  | Acquisition of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits it; the composed instance is never dialled and publishes nothing, so the cell cannot be exercised in the release. | helianthus-modbusreg#199 |
+| family_surface huawei_energy_manager x home_assistant | `not_in_0_7` |  | Acquisition of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits it; the composed instance is never dialled and publishes nothing, so the cell cannot be exercised in the release. | helianthus-modbusreg#199 |
 | family_surface huawei_energy_manager x prometheus_semantic | `not_in_0_7` |  | Semantic publication of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits acquisition; the composed instance publishes nothing. | helianthus-modbusreg#199 |
+| family_surface huawei_energy_manager x prometheus_native | `not_in_0_7` |  | Acquisition of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits it; the composed instance is never dialled and publishes nothing, so the cell cannot be exercised in the release. | helianthus-modbusreg#199 |
+| family_surface huawei_energy_manager x eebus_output | `not_in_0_7` |  | Acquisition of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits it; the composed instance is never dialled and publishes nothing, so the cell cannot be exercised in the release. | helianthus-modbusreg#199 |
+| family_surface huawei_energy_manager x matter_output | `not_in_0_7` |  | Acquisition of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits it; the composed instance is never dialled and publishes nothing, so the cell cannot be exercised in the release. | helianthus-modbusreg#199 |
+| family_surface growatt_bms_rs485 x native_mcp | `pass` | cmd/gateway TestM57LifecycleToolsReplaceGenerationsAndRefuseLatePublication |  |  |
+| family_surface growatt_bms_rs485 x semantic_mcp | `pass` | cmd/gateway TestM57ComposedDriversShareOneNorthboundPath |  |  |
+| family_surface growatt_bms_rs485 x graphql | `pass` | cmd/gateway TestM57ComposedDriversShareOneNorthboundPath |  |  |
 | family_graph huawei_energy_manager x resources | `not_in_0_7` |  | Semantic publication of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits acquisition; the composed instance publishes nothing. | helianthus-modbusreg#199 |
 | family_graph huawei_energy_manager x relations | `not_in_0_7` |  | Semantic publication of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits acquisition; the composed instance publishes nothing. | helianthus-modbusreg#199 |
 | family_graph huawei_energy_manager x plane_membership | `not_in_0_7` |  | Semantic publication of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits acquisition; the composed instance publishes nothing. | helianthus-modbusreg#199 |
 | family_graph huawei_energy_manager x lens_parity | `not_in_0_7` |  | Semantic publication of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits acquisition; the composed instance publishes nothing. | helianthus-modbusreg#199 |
 | family_graph huawei_energy_manager x target_reports | `not_in_0_7` |  | Semantic publication of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits acquisition; the composed instance publishes nothing. | helianthus-modbusreg#199 |
+| family_condition sunspec_inverter x partial_failure | `pass` | cmd/gateway TestH08DialFailureOnOneInstanceLeavesTheOtherRunning |  |  |
+| family_condition huawei_smartlogger x normal | `pass` | cmd/gateway TestH11ComposedHuaweiPathOffline |  |  |
+| family_condition huawei_smartlogger x reset | `pass` | cmd/gateway TestH11ComposedHuaweiPathOffline |  |  |
+| family_condition huawei_smartlogger x identity_conflict | `pass` | cmd/gateway TestH11ComposedHuaweiPathOffline |  |  |
+| family_condition huawei_smartlogger x unknown_capability | `pass` | cmd/gateway TestH11ComposedHuaweiPathOffline |  |  |
+| family_condition huawei_smartlogger x cleanup | `pass` | cmd/gateway TestH11ComposedHuaweiPathOffline |  |  |
+| family_condition huawei_sdongle x normal | `pass` | cmd/gateway TestH11ComposedHuaweiPathOffline |  |  |
+| family_condition huawei_sdongle x reset | `pass` | cmd/gateway TestH11ComposedHuaweiPathOffline |  |  |
+| family_condition huawei_sdongle x identity_conflict | `pass` | cmd/gateway TestH11ComposedHuaweiPathOffline |  |  |
+| family_condition huawei_sdongle x unknown_capability | `pass` | cmd/gateway TestH11ComposedHuaweiPathOffline |  |  |
+| family_condition huawei_sdongle x cleanup | `pass` | cmd/gateway TestH11ComposedHuaweiPathOffline |  |  |
+| family_condition huawei_energy_manager x normal | `not_in_0_7` |  | Acquisition of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits it; the composed instance is never dialled and publishes nothing, so the cell cannot be exercised in the release. | helianthus-modbusreg#199 |
+| family_condition huawei_energy_manager x degraded | `not_in_0_7` |  | Acquisition of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits it; the composed instance is never dialled and publishes nothing, so the cell cannot be exercised in the release. | helianthus-modbusreg#199 |
+| family_condition huawei_energy_manager x reset | `not_in_0_7` |  | Acquisition of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits it; the composed instance is never dialled and publishes nothing, so the cell cannot be exercised in the release. | helianthus-modbusreg#199 |
+| family_condition huawei_energy_manager x partial_failure | `not_in_0_7` |  | Acquisition of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits it; the composed instance is never dialled and publishes nothing, so the cell cannot be exercised in the release. | helianthus-modbusreg#199 |
+| family_condition huawei_energy_manager x stale_generation | `not_in_0_7` |  | Acquisition of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits it; the composed instance is never dialled and publishes nothing, so the cell cannot be exercised in the release. | helianthus-modbusreg#199 |
+| family_condition huawei_energy_manager x identity_conflict | `not_in_0_7` |  | Acquisition of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits it; the composed instance is never dialled and publishes nothing, so the cell cannot be exercised in the release. | helianthus-modbusreg#199 |
+| family_condition huawei_energy_manager x unknown_capability | `not_in_0_7` |  | Acquisition of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits it; the composed instance is never dialled and publishes nothing, so the cell cannot be exercised in the release. | helianthus-modbusreg#199 |
+| family_condition huawei_energy_manager x cleanup | `not_in_0_7` |  | Acquisition of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits it; the composed instance is never dialled and publishes nothing, so the cell cannot be exercised in the release. | helianthus-modbusreg#199 |
+| family_condition growatt_bms_rs485 x normal | `pass` | cmd/gateway TestM57ComposedDriversShareOneNorthboundPath |  |  |
+| family_condition growatt_bms_rs485 x cleanup | `pass` | cmd/gateway TestM57ComposedDriversShareOneNorthboundPath |  |  |
+| family_condition growatt_bms_can x normal | `pass` | cmd/gateway TestCX22ComposedThreeFamiliesAndTwoProviderIsolation |  |  |
+| family_condition growatt_bms_can x degraded | `pass` | cmd/gateway TestCAN03ReceiveFailureReachesLifecycleAndRestart |  |  |
+| family_condition growatt_bms_can x stale_generation | `pass` | cmd/gateway TestCAN03ReceiveFailureReachesLifecycleAndRestart |  |  |
+| family_condition growatt_bms_pcs_can x normal | `pass` | cmd/gateway TestCX22ComposedThreeFamiliesAndTwoProviderIsolation |  |  |
+| family_condition growatt_bms_pcs_can x degraded | `pass` | cmd/gateway TestCX22LossWithdrawsAndQuarantines |  |  |
+| family_condition growatt_bms_pcs_can x identity_conflict | `pass` | cmd/gateway TestCX22NativeContextDoesNotInventTopology |  |  |
+| family_condition growatt_bms_pcs_can x cleanup | `pass` | cmd/gateway TestCX22LossWithdrawsAndQuarantines |  |  |
+| family_condition growatt_bms_link_can x normal | `pass` | cmd/gateway TestCX22ComposedThreeFamiliesAndTwoProviderIsolation |  |  |
+| family_condition growatt_bms_link_can x degraded | `pass` | cmd/gateway TestCX22LossWithdrawsAndQuarantines |  |  |
+| family_condition growatt_bms_link_can x stale_generation | `pass` | cmd/gateway TestCX22ComposedThreeFamiliesAndTwoProviderIsolation |  |  |
+| family_condition growatt_bms_link_can x identity_conflict | `pass` | cmd/gateway TestCX22SourceReuseAndIncompleteIdentity |  |  |
+| family_condition growatt_bms_link_can x cleanup | `pass` | cmd/gateway TestCX22ComposedThreeFamiliesAndTwoProviderIsolation |  |  |
 <!-- offline-acceptance-matrix:end -->

@@ -55,6 +55,52 @@ PY_SOURCE = (
     "    GHOST = \"\"\"\n    def test_ghost_in_a_string(self):\n    \"\"\"\n\n"
     "    # def test_ghost_in_a_comment(self):\n"
 )
+# Go test files whose build constraint or file name decides whether the linux release build has them.
+GO_CONSTRAINED_FILES = {
+    "constrained_linux_test.go":
+        "package sample\n\nimport \"testing\"\n\nfunc TestDeclaredInALinuxFile(t *testing.T) {}\n",
+    "constrained_tag_test.go":
+        "//go:build linux || darwin\n\npackage sample\n\nimport \"testing\"\n\n"
+        "func TestDeclaredUnderALinuxConstraint(t *testing.T) {}\n",
+    "constrained_darwin_test.go":
+        "package sample\n\nimport \"testing\"\n\nfunc TestDeclaredOnlyInADarwinFile(t *testing.T) {}\n",
+    "constrained_windows_amd64_test.go":
+        "package sample\n\nimport \"testing\"\n\nfunc TestDeclaredOnlyInAWindowsArchFile(t *testing.T) {}\n",
+    "constrained_arm64_test.go":
+        "package sample\n\nimport \"testing\"\n\nfunc TestDeclaredOnlyInOneArchitectureFile(t *testing.T) {}\n",
+    "constrained_not_linux_test.go":
+        "// Copyright notice.\n\n//go:build !linux\n\npackage sample\n\nimport \"testing\"\n\n"
+        "func TestDeclaredOnlyUnderANotLinuxConstraint(t *testing.T) {}\n",
+    "constrained_custom_test.go":
+        "//go:build linux && integration\n\npackage sample\n\nimport \"testing\"\n\n"
+        "func TestDeclaredOnlyUnderACustomTag(t *testing.T) {}\n",
+    "constrained_norace_test.go":
+        "//go:build !race\n\npackage sample\n\nimport \"testing\"\n\n"
+        "func TestDeclaredOnlyWithoutTheRaceDetector(t *testing.T) {}\n",
+    "constrained_legacy_test.go":
+        "// +build windows,amd64 plan9\n\npackage sample\n\nimport \"testing\"\n\n"
+        "func TestDeclaredOnlyUnderALegacyConstraint(t *testing.T) {}\n",
+    "constrained_broken_test.go":
+        "//go:build linux ||\n\npackage sample\n\nimport \"testing\"\n\n"
+        "func TestDeclaredOnlyUnderAnUnparsableConstraint(t *testing.T) {}\n",
+    "_ignored_test.go":
+        "package sample\n\nimport \"testing\"\n\nfunc TestDeclaredOnlyInAnIgnoredFile(t *testing.T) {}\n",
+}
+# Python test functions the runner does or does not collect.
+PY_COLLECTION_SOURCE = (
+    "import unittest\n\n\n"
+    "def test_module_level_function_is_collected():\n    pass\n\n\n"
+    "class TestPlainClass:\n    def test_method_of_a_test_named_class(self):\n        pass\n\n\n"
+    "class Base(unittest.TestCase):\n    pass\n\n\n"
+    "class Derived(Base):\n    def test_method_of_an_indirect_test_case(self):\n        pass\n\n\n"
+    "def helper():\n    def test_nested_in_a_function():\n        pass\n    return test_nested_in_a_function\n\n\n"
+    "class Helper:\n    def test_method_of_an_uncollected_class(self):\n        pass\n\n\n"
+    "class TestWithInit:\n    def __init__(self):\n        pass\n\n"
+    "    def test_method_of_a_class_with_init(self):\n        pass\n\n\n"
+    "class Outer(unittest.TestCase):\n    class Inner:\n        def test_method_of_a_nested_class(self):\n"
+    "            pass\n\n"
+    "    def test_outer(self):\n        def test_nested_in_a_method():\n            pass\n"
+)
 
 
 def cell(state="not_run", test=None, reason=None, issue=None):
@@ -127,8 +173,12 @@ class SyntheticRepository:
         package.mkdir(parents=True)
         (package / "sample_test.go").write_text(GO_SOURCE, encoding="utf-8")
         (package / "sample.go").write_text(GO_PRODUCTION, encoding="utf-8")
+        for name, source in GO_CONSTRAINED_FILES.items():
+            (package / name).write_text(source, encoding="utf-8")
+        (self.root / "go.mod").write_text("module example.com/sample\n\ngo 1.22.0\n", encoding="utf-8")
         (self.root / "scripts").mkdir()
         (self.root / "scripts" / "sample_test.py").write_text(PY_SOURCE, encoding="utf-8")
+        (self.root / "scripts" / "collection_test.py").write_text(PY_COLLECTION_SOURCE, encoding="utf-8")
         self.matrix = self.root / "matrix.json"
         self.page = self.root / "page.md"
 
@@ -271,6 +321,46 @@ class OfflineAcceptanceMatrixTests(unittest.TestCase):
     def test_declaration_after_literals_and_comments_is_found(self):
         self.assertIsNone(MATRIX.missing_test(self.repo.root, GO_TEST_AFTER_LITERALS))
         self.assertIsNone(MATRIX.missing_test(self.repo.root, PY_TEST))
+
+    def test_go_test_in_a_file_the_linux_release_build_includes_is_found(self):
+        for test in ("internal/sample TestDeclaredInALinuxFile",
+                     "internal/sample TestDeclaredUnderALinuxConstraint"):
+            with self.subTest(test=test):
+                self.assertIsNone(MATRIX.missing_test(self.repo.root, test))
+
+    def test_go_test_only_in_a_file_the_linux_release_build_excludes_is_refused(self):
+        for function in ("TestDeclaredOnlyInADarwinFile", "TestDeclaredOnlyInAWindowsArchFile",
+                         "TestDeclaredOnlyInOneArchitectureFile", "TestDeclaredOnlyUnderANotLinuxConstraint",
+                         "TestDeclaredOnlyUnderACustomTag", "TestDeclaredOnlyWithoutTheRaceDetector",
+                         "TestDeclaredOnlyUnderALegacyConstraint",
+                         "TestDeclaredOnlyUnderAnUnparsableConstraint", "TestDeclaredOnlyInAnIgnoredFile"):
+            with self.subTest(function=function):
+                problem = MATRIX.missing_test(self.repo.root, f"internal/sample {function}")
+                self.assertIsNotNone(problem)
+                self.assertIn("excluded from the linux release build", problem)
+                document = synthetic_matrix()
+                document["cells"]["family_surface"]["family_1"]["surface_0"] = cell(
+                    "pass", test=f"internal/sample {function}")
+                self.assert_refused(document, "family_surface family_1 x surface_0")
+
+    def test_python_test_the_runner_collects_is_found(self):
+        for function in ("test_module_level_function_is_collected", "test_method_of_a_test_named_class",
+                         "test_method_of_an_indirect_test_case", "test_outer"):
+            with self.subTest(function=function):
+                self.assertIsNone(MATRIX.missing_test(self.repo.root, f"scripts/collection_test.py {function}"))
+
+    def test_python_test_the_runner_does_not_collect_is_refused(self):
+        for function in ("test_nested_in_a_function", "test_method_of_an_uncollected_class",
+                         "test_method_of_a_class_with_init", "test_method_of_a_nested_class",
+                         "test_nested_in_a_method"):
+            with self.subTest(function=function):
+                problem = MATRIX.missing_test(self.repo.root, f"scripts/collection_test.py {function}")
+                self.assertIsNotNone(problem)
+                self.assertIn("that the test runner collects", problem)
+                document = synthetic_matrix()
+                document["cells"]["family_condition"]["family_0"]["condition_0"] = cell(
+                    "pass", test=f"scripts/collection_test.py {function}")
+                self.assert_refused(document, "family_condition family_0 x condition_0")
 
     def test_reasoned_state_without_one_line_reason_is_refused(self):
         for state in ("not_applicable", "not_in_0_7"):

@@ -14,8 +14,10 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/drivermanager"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimecontrol"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
+	eebusruntime "github.com/Project-Helianthus/helianthus-eebusreg"
 )
 
 const retainedTestSource = byte(0x31)
@@ -883,12 +885,16 @@ func TestRetainedPollerWaitsForSuccessorSourceCaptureWindowLock(t *testing.T) {
 	poller := &vaillantSemanticPoller{}
 	poller.suspendAcquisition()
 	t.Cleanup(poller.resumeAcquisition)
-	source := &leafPromotionLiveSource{windowLock: func() func() {
-		unlock, _ := poller.lockPollResumed(context.Background())
-		return unlock
-	}}
-	locked := make(chan func(), 1)
-	go func() { locked <- source.lockCaptureWindow() }()
+	source := newRetainedPollerGateCaptureSource(t, poller)
+	type lockResult struct {
+		unlock func()
+		err    error
+	}
+	locked := make(chan lockResult, 1)
+	go func() {
+		unlock, err := source.lockCaptureWindow(context.Background())
+		locked <- lockResult{unlock: unlock, err: err}
+	}()
 	select {
 	case <-locked:
 		t.Fatal("capture window locked the poller while it was suspended")
@@ -896,11 +902,75 @@ func TestRetainedPollerWaitsForSuccessorSourceCaptureWindowLock(t *testing.T) {
 	}
 	poller.resumeAcquisition()
 	select {
-	case unlock := <-locked:
-		unlock()
+	case result := <-locked:
+		if result.err != nil {
+			t.Fatalf("capture window lock after resume: %v", result.err)
+		}
+		if poller.pollMu.TryLock() {
+			poller.pollMu.Unlock()
+			t.Fatal("capture window returned without holding the poll lock")
+		}
+		result.unlock()
 	case <-time.After(5 * time.Second):
 		t.Fatal("capture window did not proceed after resume")
 	}
+}
+
+// A capture whose request ends while the poller stays suspended gives up
+// instead of waiting for a resume that may never come.
+func TestRetainedPollerWaitsForSuccessorSourceCaptureWindowGivesUpWithRequest(t *testing.T) {
+	poller := &vaillantSemanticPoller{}
+	poller.suspendAcquisition()
+	t.Cleanup(poller.resumeAcquisition)
+	source := newRetainedPollerGateCaptureSource(t, poller)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		unlock, err := source.lockCaptureWindow(ctx)
+		if err == nil {
+			unlock()
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("capture window returned while the poller was suspended: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("capture window error = %v; want %v", err, context.Canceled)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("capture window kept waiting after its request ended")
+	}
+	if !poller.pollMu.TryLock() {
+		t.Fatal("a capture that gave up left the poll lock held")
+	}
+	poller.pollMu.Unlock()
+}
+
+type retainedPollerGateSnapshotProvider struct{}
+
+func (retainedPollerGateSnapshotProvider) Snapshot() (eebusruntime.SnapshotV1, error) {
+	return eebusruntime.SnapshotV1{}, errors.New("snapshot unused by the capture window lock")
+}
+
+type retainedPollerGateCommandRouter struct{ mcp.EEBusV1CommandRouter }
+
+func newRetainedPollerGateCaptureSource(t *testing.T, poller *vaillantSemanticPoller) *leafPromotionLiveSource {
+	t.Helper()
+	source := newLeafPromotionLiveSource(
+		poller, retainedPollerGateSnapshotProvider{}, retainedPollerGateCommandRouter{},
+		func() (byte, bool) { return 0x31, true },
+	)
+	if source == nil {
+		t.Fatal("leaf promotion live source was not constructed")
+	}
+	return source
 }
 
 // Rebinding the poller's source waits for an acquisition already in flight.

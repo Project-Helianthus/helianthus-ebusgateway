@@ -54,8 +54,9 @@ the existing fallback that does not acquire `pollMu`.
 
 When an eBUS generation is withdrawn (stop, restart or automatic replacement),
 the retained poller's acquisition is suspended at the next task boundary:
-queued and direct locked callbacks wait before taking `pollMu`, the inline
-fallback skips, and an acquisition already in flight ends on its own
+queued and direct locked callbacks, including the leaf-promotion capture
+window, wait before taking `pollMu` and give up when their request context
+ends, the inline fallback skips, and an acquisition already in flight ends on its own
 generation's transport as before. Only the successor generation resumes
 acquisition, after it has validated its source and rebound the poller to its
 initiator and companion, and only while it is still live and admitted. The

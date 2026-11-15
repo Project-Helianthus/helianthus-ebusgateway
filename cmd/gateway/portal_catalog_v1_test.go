@@ -939,6 +939,48 @@ func TestPortalCatalogKeepsResourceWithSeveralContributors(t *testing.T) {
 		snapshot.Services = append(snapshot.Services, semreg.ServiceInstance{InstanceID: "service:orphan", AssetID: "asset:shared", Definition: service, BindingID: "binding:orphan", SourceEpochID: "epoch:orphan", DriverGeneration: "1"})
 		dropped(t, snapshot, attribution, portalDropBindingUnresolved)
 	})
+	t.Run("a contributor with two service instances does not suppress the owner", func(t *testing.T) {
+		snapshot := portalContributorSnapshot(service, capability, twoSources, "owner", "contributor")
+		snapshot.Services = append(snapshot.Services, semreg.ServiceInstance{InstanceID: "service:contributor-2", AssetID: "asset:shared", Definition: service, BindingID: "binding:contributor", SourceEpochID: "epoch:contributor", DriverGeneration: portalContributorGeneration["contributor"]})
+		kept(t, snapshot, attribution, "owner", "evse.primary", owner)
+	})
+	t.Run("a contributor with two capability instances does not suppress the owner", func(t *testing.T) {
+		snapshot := portalContributorSnapshot(service, capability, twoSources, "owner", "contributor")
+		snapshot.Capabilities = append(snapshot.Capabilities, semreg.CapabilityInstance{InstanceID: "capability:contributor-2", AssetID: "asset:shared", Definition: capability, ServiceInstance: "service:contributor", BindingID: "binding:contributor", SourceEpochID: "epoch:contributor", DriverGeneration: portalContributorGeneration["contributor"]})
+		kept(t, snapshot, attribution, "owner", "evse.primary", owner)
+	})
+	t.Run("an ambiguous owner leaves the contributor's path", func(t *testing.T) {
+		snapshot := portalContributorSnapshot(service, capability, twoSources, "owner", "contributor")
+		snapshot.Services = append(snapshot.Services, semreg.ServiceInstance{InstanceID: "service:owner-2", AssetID: "asset:shared", Definition: service, BindingID: "binding:owner", SourceEpochID: "epoch:owner", DriverGeneration: portalContributorGeneration["owner"]})
+		kept(t, snapshot, attribution, "contributor", "evse.contributor", contributor)
+	})
+	t.Run("only ambiguous sources drop the resource as ambiguous", func(t *testing.T) {
+		snapshot := portalContributorSnapshot(service, capability, twoSources, "contributor")
+		snapshot.Services = append(snapshot.Services, semreg.ServiceInstance{InstanceID: "service:contributor-2", AssetID: "asset:shared", Definition: service, BindingID: "binding:contributor", SourceEpochID: "epoch:contributor", DriverGeneration: portalContributorGeneration["contributor"]})
+		dropped(t, snapshot, attribution, portalDropCapabilityAmbiguous)
+	})
+	t.Run("the composition supplies the hub as the driver resolver", func(t *testing.T) {
+		hub, err := semhub.New(semhub.Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		fresh, err := newGatewayPortalCatalogContributions()
+		if err != nil {
+			t.Fatal(err)
+		}
+		source := newGatewayPortalCatalogSource(nil, nil, nil, fresh).(*gatewayPortalCatalogSource)
+		if source.attribution().drivers != nil {
+			t.Fatal("a source without a hub must not resolve drivers")
+		}
+		fresh.UseSourceDrivers(nil)
+		if source.attribution().drivers != nil {
+			t.Fatal("a nil hub must leave the resolver unset")
+		}
+		fresh.UseSourceDrivers(hub)
+		if source.attribution().drivers == nil {
+			t.Fatal("the source has no driver resolver after composition")
+		}
+	})
 	t.Run("one source keeps the manifest's driver without resolution", func(t *testing.T) {
 		kept(t, portalContributorSnapshot(service, capability, []string{"owner"}, "owner"), portalAttribution{}, "owner", "evse.primary", owner)
 	})

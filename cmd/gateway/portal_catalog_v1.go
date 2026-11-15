@@ -227,10 +227,17 @@ func (s *gatewayPortalCatalogSource) CaptureDiagnostics(at time.Time) ([]catalog
 // attribution captures what a capture needs to name a binding's driver: the
 // source-to-driver resolution and the admitted descriptors.
 func (s *gatewayPortalCatalogSource) attribution() portalAttribution {
-	if s == nil || s.drivers == nil {
+	if s == nil {
 		return portalAttribution{}
 	}
-	return portalAttribution{drivers: s.drivers, accepted: s.contributions.snapshot().Accepted}
+	drivers := s.drivers
+	if drivers == nil && s.contributions != nil {
+		drivers = s.contributions.sourceDrivers()
+	}
+	if drivers == nil {
+		return portalAttribution{}
+	}
+	return portalAttribution{drivers: drivers, accepted: s.contributions.snapshot().Accepted}
 }
 
 // gatewayPortalSourceDrivers resolves the driver that holds a source. The
@@ -413,19 +420,27 @@ func portalSnapshotPaths(snapshot semreg.Snapshot, serviceRef, capabilityRef con
 	}
 	sort.Slice(sources, func(i, j int) bool { return sources[i] < sources[j] })
 	paths := make([]portalPath, 0, len(sources))
+	// A source that publishes an ambiguous path is invalid on its own; the
+	// other sources still decide the resource.
+	ambiguous := false
 	for _, source := range sources {
 		if len(services[source]) != 1 {
-			return nil, portalDropCapabilityAmbiguous
+			ambiguous = true
+			continue
 		}
 		path, reason := portalSourcePath(snapshot, source, services[source][0], wantCapability)
 		if reason == portalDropCapabilityAmbiguous {
-			return nil, reason
+			ambiguous = true
+			continue
 		}
 		if reason == "" {
 			paths = append(paths, path)
 		}
 	}
 	if len(paths) == 0 {
+		if ambiguous {
+			return nil, portalDropCapabilityAmbiguous
+		}
 		return nil, portalDropCapabilityUnbound
 	}
 	return paths, ""

@@ -2,8 +2,10 @@ package main
 
 import (
 	"fmt"
+	"sync"
 	"time"
 
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal/catalogv1"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal/contributionv1"
 )
@@ -15,6 +17,31 @@ import (
 type gatewayPortalCatalogContributions struct {
 	index    *gatewayPortalSemanticIndex
 	registry *contributionv1.Registry
+	// drivers resolves the driver of a binding's source; the composition sets
+	// it to the publication hub before any capture runs.
+	driversMu sync.Mutex
+	drivers   gatewayPortalSourceDrivers
+}
+
+// UseSourceDrivers lets the composition supply the publication hub that
+// resolves the driver of each source. A nil hub leaves the single-source
+// behaviour.
+func (c *gatewayPortalCatalogContributions) UseSourceDrivers(hub *semhub.Hub) {
+	if c == nil || hub == nil {
+		return
+	}
+	c.driversMu.Lock()
+	c.drivers = hub
+	c.driversMu.Unlock()
+}
+
+func (c *gatewayPortalCatalogContributions) sourceDrivers() gatewayPortalSourceDrivers {
+	if c == nil {
+		return nil
+	}
+	c.driversMu.Lock()
+	defer c.driversMu.Unlock()
+	return c.drivers
 }
 
 func newGatewayPortalCatalogContributions() (*gatewayPortalCatalogContributions, error) {

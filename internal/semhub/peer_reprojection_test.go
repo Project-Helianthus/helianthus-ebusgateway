@@ -103,9 +103,18 @@ func (f *peerFixture) events(id semreg.AssetID, recipient semreg.SourceID) []Con
 
 // schedulerIdle reports whether no scheduler drain is running or queued.
 func (f *peerFixture) schedulerIdle() bool {
-	f.hub.mu.RLock()
-	defer f.hub.mu.RUnlock()
-	return !f.hub.draining && len(f.hub.queue) == 0
+	return hubSchedulerIdle(f.hub)
+}
+
+// hubSchedulerIdle reports whether no scheduler drain of hub is running or
+// queued. A test waits for it before Resettle after a publication on an
+// asset with contributors, since the peer reprojection that publication
+// queued runs on the scheduler after Commit returned and Resettle answers
+// ErrReprojectionQueued while it runs.
+func hubSchedulerIdle(hub *Hub) bool {
+	hub.mu.RLock()
+	defer hub.mu.RUnlock()
+	return !hub.draining && len(hub.queue) == 0
 }
 
 func (f *peerFixture) takeLog() []string {
@@ -273,6 +282,10 @@ func TestPeerReprojectionGatesReadsUntilSettled(t *testing.T) {
 	}
 	withheld("receiver still failing")
 	commitPeer(t, f.hub, f.b, sharedAsset, "fam_b", 6, 6)
+	// The receiver fails the peer reprojection of this commit too; only then
+	// does it recover, so the delivery below is the one of Resettle.
+	waitFor(t, f.schedulerIdle)
+	withheld("receiver failed again")
 	f.setFail(sharedOther, nil)
 	before := len(f.events(sharedAsset, sharedOther))
 	if err := f.hub.Resettle(sharedAsset); err != nil {

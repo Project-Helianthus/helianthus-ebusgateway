@@ -1276,12 +1276,12 @@ func (tx *Tx) Apply(batch semreg.PublicationBatch, monotonic semreg.MonotonicPoi
 // the kernel.
 //
 // On an asset with contributors the commit also queues, in HubSeq order, a
-// peer reprojection of every other publishing source's bound callback, and
-// hands the scheduler to its own goroutine after the asset commit lock is
-// released, so those callbacks run outside every lock and a receiver that
-// blocks never delays Commit. When a scheduler is already running it runs the
-// entry. Reads of the asset stay withheld until every receiver has settled.
-// A single-source asset queues nothing.
+// peer reprojection of every other publishing source's bound callback. After
+// the asset commit lock is released the scheduler runs those callbacks
+// outside every lock: an active scheduler picks the entry up, and an idle one
+// is started on a goroutine of its own, so a receiver that blocks never
+// delays Commit. Reads of the asset stay withheld until every receiver has
+// settled. A single-source asset queues nothing.
 //
 // When the commit installs a transition cover over the source's other assets
 // and the cover's initial submission fails (interrupted or rejected), Commit
@@ -1303,10 +1303,16 @@ func (tx *Tx) Commit(onCommit func(Committed)) (outcome Outcome, err error) {
 	var peers *peerAttempt
 	defer func() {
 		if peers != nil {
-			// Releases the held attempt and hands the scheduler off so a slow
-			// receiver never delays this commit.
+			// Releases the held attempt. An active scheduler runs it; only an
+			// idle one is started, off this goroutine, so a slow receiver never
+			// delays this commit.
 			close(peers.ready)
-			go h.drain()
+			h.lock()
+			idle := !h.draining
+			h.unlock()
+			if idle {
+				go h.drain()
+			}
 		}
 	}()
 	var recovery AcceptedBatch

@@ -255,6 +255,7 @@ func TestMultiSourceControlAbandonedControlDoesNotStarvePeer(t *testing.T) {
 		t.Fatal("reads admitted while the peer's gate is open")
 	}
 	f.setFail(sharedPeer, nil)
+	waitFor(t, func() bool { return hubSchedulerIdle(f.hub) })
 	if err := f.hub.Resettle(sharedAsset); err != nil {
 		t.Fatalf("resettle=%v", err)
 	}
@@ -792,6 +793,7 @@ func TestMultiSourceControlRetryCoalescesOntoPeerPublication(t *testing.T) {
 	if committed.HubSeq <= fenced.Assets[0].HubSeq {
 		t.Fatalf("publication HubSeq %d is not after the control HubSeq %d", committed.HubSeq, fenced.Assets[0].HubSeq)
 	}
+	waitFor(t, func() bool { return hubSchedulerIdle(f.hub) })
 	before := map[string]int{ownerRecipient: len(f.events(ownerRecipient)), peerRecipient: len(f.events(peerRecipient))}
 	if err := f.hub.Resettle(sharedAsset); err != nil {
 		t.Fatalf("resettle=%v", err)
@@ -928,6 +930,7 @@ func TestMultiSourceControlPeerOutpacingReprojectionStaysUnsettled(t *testing.T)
 	if f.hub.Settled(sharedAsset) || f.hub.Admitted(sharedAsset) {
 		t.Fatal("an outpaced reprojection settled")
 	}
+	waitFor(t, func() bool { return hubSchedulerIdle(f.hub) })
 	if err := f.hub.Resettle(sharedAsset); err != nil {
 		t.Fatalf("resettle=%v", err)
 	}

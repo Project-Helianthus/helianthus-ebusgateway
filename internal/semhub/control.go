@@ -294,10 +294,10 @@ type peerAttempt struct {
 // queuePeersLocked queues one peer reprojection after the publication of
 // publisher committed at seq: every other publishing source of the asset
 // whose callback is bound becomes owed seq. A single-source asset, or one
-// with no other bound callback, queues nothing. It returns the queued attempt, which stays held until its
-// ready channel closes. h.mu must be held, in the critical section that
-// emitted seq,
-// so the queue stays in HubSeq order.
+// with no other bound callback, queues nothing. It returns the queued
+// attempt, which stays held until its ready channel closes. h.mu must be
+// held, in the critical section that emitted seq, so the queue stays in
+// HubSeq order.
 func (h *Hub) queuePeersLocked(target *asset, publisher semreg.SourceID, seq uint64) *peerAttempt {
 	if target.peers == nil {
 		return nil
@@ -388,14 +388,14 @@ func (a *asset) peerEventsLocked(receivers []semreg.SourceID) ([]func(ControlEve
 	return callbacks, events, a.hubSeq
 }
 
-// startPeerAttemptLocked starts one peer reprojection attempt in its own
-// goroutine and returns its completion channel, or nil when every receiver
-// already acknowledged a view at least as new as the publication. Each
-// receiver gets the asset's current snapshot, so a receiver never moves back
-// to an older view; a publication that commits while the callbacks run makes
-// the attempt redeliver the newer view, as for a control attempt. h.mu must be
-// held.
-func (h *Hub) startPeerAttemptLocked(p *peerAttempt) chan struct{} {
+// runPeerAttemptLocked runs one peer reprojection attempt on the scheduler's
+// own goroutine; it does nothing when every receiver already acknowledged a
+// view at least as new as the publication. Each receiver gets the asset's
+// current snapshot, so a receiver never moves back to an older view; a
+// publication that commits while the callbacks run makes the attempt
+// redeliver the newer view, as for a control attempt. h.mu must be held; it
+// is released while the callbacks run and held again on return.
+func (h *Hub) runPeerAttemptLocked(p *peerAttempt) {
 	target := p.asset
 	var receivers []semreg.SourceID
 	for _, src := range p.receivers {
@@ -404,44 +404,38 @@ func (h *Hub) startPeerAttemptLocked(p *peerAttempt) chan struct{} {
 		}
 	}
 	if len(receivers) == 0 {
-		return nil
+		return
 	}
 	callbacks, events, sampled := target.peerEventsLocked(receivers)
-	done := make(chan struct{})
-	go func() {
-		for round := 1; ; round++ {
-			failures := make([]error, len(callbacks))
-			failed := false
-			for index, callback := range callbacks {
-				failures[index] = runCallback(callback, events[index])
-				failed = failed || failures[index] != nil
-			}
-			h.lock()
-			if !failed && target.hubSeq != sampled && round < maxReprojectionRounds {
-				callbacks, events, sampled = target.peerEventsLocked(receivers)
-				h.unlock()
-				continue
-			}
-			outpaced := target.hubSeq != sampled
-			for index, src := range receivers {
-				view := target.peers[src]
-				switch {
-				case failures[index] != nil:
-					view.err = failures[index]
-				case outpaced:
-					view.err = errReprojectionOutpaced
-				case view.delivered < sampled:
-					view.delivered, view.err = sampled, nil
-				default:
-					view.err = nil
-				}
-			}
-			h.unlock()
-			close(done)
-			return
+	for round := 1; ; round++ {
+		h.unlock()
+		failures := make([]error, len(callbacks))
+		failed := false
+		for index, callback := range callbacks {
+			failures[index] = runCallback(callback, events[index])
+			failed = failed || failures[index] != nil
 		}
-	}()
-	return done
+		h.lock()
+		if !failed && target.hubSeq != sampled && round < maxReprojectionRounds {
+			callbacks, events, sampled = target.peerEventsLocked(receivers)
+			continue
+		}
+		outpaced := target.hubSeq != sampled
+		for index, src := range receivers {
+			view := target.peers[src]
+			switch {
+			case failures[index] != nil:
+				view.err = failures[index]
+			case outpaced:
+				view.err = errReprojectionOutpaced
+			case view.delivered < sampled:
+				view.delivered, view.err = sampled, nil
+			default:
+				view.err = nil
+			}
+		}
+		return
+	}
 }
 
 // enqueueLocked schedules one attempt for ca, or returns the one already
@@ -1247,12 +1241,7 @@ func (h *Hub) drain() {
 				<-entry.peer.ready
 				h.lock()
 			}
-			done := h.startPeerAttemptLocked(entry.peer)
-			h.unlock()
-			if done != nil {
-				<-done
-			}
-			h.lock()
+			h.runPeerAttemptLocked(entry.peer)
 			close(entry.done)
 			continue
 		}

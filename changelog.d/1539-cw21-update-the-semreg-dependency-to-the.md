@@ -1,0 +1,3 @@
+## Update the SemReg dependency to the graph-enforcing kernel
+
+The gateway's SemReg module and the SemReg pin of the storage, PV and EVSE mapping gates move to the SemReg main revision that carries the element catalog and the graph-enforced publication kernel. Behaviour is unchanged: every semantic hub kernel is still built without the catalog, so a batch with a resource, a relation instance, an absence statement, or a resource or key on an identity link or service is still refused with `membership_missing`, and every publisher output, golden, MCP result and GraphQL result stays the same. A new hub test pins that refusal for each graph member. Graph enforcement is switched on per family by later changes (#1539).

@@ -15,8 +15,10 @@ import (
 // configuration published RR001D as the integer circuit_special_function_mode
 // in place of the removed float field (issue #1474), and the semantic snapshot
 // gained the additive optional resource and relation fields of the re-pinned
-// semreg snapshot records (issue #1554).
-var querySchemaShapeSHA256 = fmt.Sprintf("%x", [sha256.Size]byte{54, 214, 31, 12, 92, 209, 237, 224, 160, 69, 226, 65, 201, 163, 171, 12, 10, 96, 41, 124, 179, 50, 221, 238, 94, 154, 11, 44, 241, 45, 78, 148})
+// semreg snapshot records (issue #1554), and the semantic snapshot resource
+// anchor gained the additive nullable scheme field of the semreg revision that
+// carries the element catalog (issue #1539).
+var querySchemaShapeSHA256 = fmt.Sprintf("%x", [sha256.Size]byte{195, 231, 193, 180, 151, 83, 226, 188, 30, 240, 233, 29, 205, 111, 148, 71, 170, 132, 214, 142, 14, 212, 34, 27, 33, 160, 99, 107, 17, 61, 214, 160})
 
 func TestQuerySchemaKeepsIntrospectionShape(t *testing.T) {
 	t.Parallel()

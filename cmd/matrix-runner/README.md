@@ -137,6 +137,123 @@ smoke command uses them to run the check for that invariant.
 A client's result is written to `logs/client.json`. The cell passes only when
 the smoke command and the client workload both pass.
 
+### Smoke command
+
+`scripts/adaptermux_v2_smoke.py` is the smoke command of this suite. It uses
+the Python standard library only:
+
+```sh
+matrix-runner --suite adaptermux-v2 --execute ... \
+  --smoke-command 'python3 scripts/adaptermux_v2_smoke.py'
+```
+
+It reads the gateway, never writes: HTTP GET of the bus observability
+snapshot, the Prometheus text and the expvar counters, plus, for the
+semantic record, one GraphQL query and one MCP read tool. It refuses a
+GraphQL mutation or subscription and any MCP tool outside its read list, and
+it never invokes a bus method.
+
+The check reads every counter once when it starts, then again every poll
+interval until the invariant's flow requirements hold or the window ends; an
+invariant that forbids a counter moving observes the whole window.
+After the requirements hold it reads once more and judges that last reading.
+No poll sleeps past the end of the window, and a reading that completes after
+the window ends is discarded: the check judges the last reading completed
+inside the window, so traffic after the window never counts. A cell passes only when the gateway reports the transport class of the cell,
+the write guard is confirmed and eBUS frames moved on the selected southbound
+transport. A surface that answers without bus flow fails the cell.
+
+Environment:
+
+| Variable | Use |
+|---|---|
+| `MATRIX_CASE_ID`, `MATRIX_INVARIANT`, `MATRIX_SOUTHBOUND_TRANSPORT`, `MATRIX_COMPOSITION`, `MATRIX_CELL_CLASS` | the cell; set by the runner |
+| `MATRIX_CASE_DIR`, `MATRIX_CONFIG_DIR`, `MATRIX_OUTPUT_DIR` | where the evidence goes and where `configs/workload.json` and the paired cases are read; set by the runner |
+| `MATRIX_SESSION_ID`, `MATRIX_CANDIDATE`, `MATRIX_HARDWARE_SETUP`, `MATRIX_AD10_PAIRED_CASES` | the AD10 pairing; set by the runner |
+| `MATRIX_GATEWAY_BASE_URL` | gateway HTTP base; the surfaces default to `/portal/api/v1/bus/observability`, `/metrics`, `/debug/vars`, `/graphql` and `/mcp` under it |
+| `MATRIX_BUS_OBSERVABILITY_URL`, `MATRIX_METRICS_URL`, `MATRIX_DEBUG_VARS_URL`, `MATRIX_GRAPHQL_URL`, `MATRIX_MCP_URL` | override one surface |
+| `MATRIX_EXTERNAL_WRITE_POLICY` | the external write policy the gateway was started with; required |
+| `MATRIX_SMOKE_WINDOW_SEC`, `MATRIX_SMOKE_POLL_SEC`, `MATRIX_SMOKE_HTTP_TIMEOUT_SEC` | case window (default 60), poll interval (default 3) and per-request timeout (default 10), in seconds |
+
+The operator exports the URLs and the write policy before starting the
+runner, which passes its own environment on to the command. Keep the window
+plus the gateway start inside `--case-timeout`.
+
+Every cell checks:
+
+- **Transport.** The bus observability `transport_class` is the one of the
+  cell: `adapter-direct-ens` or `adapter-direct` for mux cells on ENS or ENH,
+  `ens`, `enh`, `udp-plain` or `tcp-plain` for `*-DS01`, and `ebusd-tcp` for
+  `EBUSD-ES01`. Mux cells also need the AdapterMux diagnostics in the
+  Prometheus text, and the compatibility cells need them to be absent.
+- **Write guard.** `MATRIX_EXTERNAL_WRITE_POLICY` is one of the gateway's
+  policies, the gateway reports the same policy, and `configs/workload.json`
+  carries exactly the read-only client allowlist.
+- **Counters.** No monotonic counter (the `_total` series and the frame counts) it reads moves backwards during the window; gauges may fall.
+
+Measures are differences between the first and the last reading. Frame counts
+come from the bus observability frame list. Partial frames are not counted.
+"Own" frames come from the gateway's source address, which the bus admission
+reports as `bus_admission.source_selection.selected_source`. "External identification" frames are passive `07 04` frames from
+another source.
+
+| Invariant | Requires |
+|---|---|
+| AD01 | active frames > 0 and mux `transaction_done` endings > 0 |
+| AD02 | active frames > 0, passive frames > 0, passive copies matched to the gateway's own transactions > 0, and self-echo frames (own passive frames not matched) = 0; passive tap connected |
+| AD03 | third-party passive frames > 0 and completed passive transactions > 0; passive tap connected |
+| AD06 | AD01, plus external identification frames > 0 |
+| AD10 | AD01, plus the semantic record and the comparison below |
+| PX01, PX02 | AD06, plus no `max_ownership` ending |
+| PX03 | AD06, plus no `syn_timeout` ending |
+| PX04 | AD06, plus no `active_read_timeout` ending |
+| PX12 | AD06, plus no foreign-initiator release of a gateway ownership |
+| CX01 | AD06, plus no escape-pair verification failure |
+| DS01, ES01 | active frames > 0, plus the semantic record |
+
+The semantic record covers the `system` plane's state fields. For each field
+it holds presence, JSON type, unit, value and lineage (plane, path and MCP
+contract). The contract is the `meta.contract` object of the MCP answer, with
+its name, major and minor version; an absent or malformed one fails the cell.
+It also lists the fields where the GraphQL value differs from the MCP value,
+and any such difference fails the cell.
+
+AD10 reads `verdict.json` and `smoke_evidence.json` of every case in
+`MATRIX_AD10_PAIRED_CASES` from the same output directory. A paired case
+must have passed in the same session, candidate and hardware setup, with a
+semantic record, or the AD10 cell fails and names it. Each pair is then
+judged as separate decisions: presence, types, units, values, lineage, and
+MCP/GraphQL parity. Equal values with another lineage are not equivalent.
+Values are equal when strings and booleans match exactly. Numbers may differ
+by the field's tolerance: 2.0 for the flow and outdoor temperatures, 1.0 for
+the 24-hour outdoor average, 0.2 for the water pressure. In inventory order
+AD10 runs before the compatibility cells of its setup, so run those first
+(for example `--cases ENH-DS01,EBUSD-ES01`), then the rest of the setup. If a
+paired case runs again later, run AD10 again too.
+
+Every run writes one JSON object, `smoke_evidence.json`, into the case
+directory. It holds the cell, the result, the reasons, the window (readings
+judged and readings discarded after the window), the
+measures with each requirement and whether it was met, the transport and
+write-guard evidence, and, where taken, the semantic record and the AD10
+decisions. It holds no URL and no time.
+
+Exit statuses:
+
+| Status | Meaning |
+|---|---|
+| 0 | pass |
+| 1 | fail: a requirement is not met, a surface did not answer, or an AD10 pair is missing or not equivalent |
+| 2 | usage error: the case context or a setting is missing or invalid |
+| 3 | refused: the invariant cannot be judged (a reserved or planned cell, a retired or unknown invariant, a row or composition that does not match the cell) |
+
+A refusal does not contact the gateway. The runner records every non-zero
+status as a failed smoke step, so a refused cell never passes.
+
+`scripts/adaptermux_v2_smoke_test.py` tests every check offline against the
+synthetic responses in `scripts/testdata/adaptermux_v2_smoke/`, served by a
+local stub. `./scripts/ci_local.sh` runs it.
+
 ### Write safety
 
 No cell writes to a field device. Every client the harness drives passes an

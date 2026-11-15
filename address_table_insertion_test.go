@@ -42,23 +42,450 @@ func TestFirstObservation_SelfSourceExcluded(t *testing.T) {
 	assertATRSlotAbsent(t, table, admittedSource)
 }
 
+// TestCompanionInsert_RequiresCorroboration asserts that a second positive
+// acknowledgement from the same source inside the corroboration interval
+// does not admit the canonical companion: two seconds apart, and one
+// nanosecond short of the default five seconds, both leave 0xF6 absent and
+// keep the first qualifying observation as the anchor.
 func TestCompanionInsert_RequiresCorroboration(t *testing.T) {
 	table, inserter := newATRInsertionHarness(t, DefaultConfig())
-	base := time.Now().UTC()
+	base := atrBaseTime()
 
-	first := atrPassiveTransactionEvent(base, 0xF1, 0x99, protocol.SymbolAck)
-	inserter.OnPassiveClassifiedEvent(first)
-	if got := inserter.observationsByAddr[0xF1].PositiveACKCount; got != 1 {
-		t.Fatalf("observationsByAddr[0xF1].PositiveACKCount after first observation = %d; want 1", got)
-	}
+	inserter.OnPassiveClassifiedEvent(atrPassiveTransactionEvent(base, 0xF1, 0x99, protocol.SymbolAck))
+	requireATRObservation(t, inserter, 0xF1, 1, base)
 	assertATRSlotAbsent(t, table, 0xF6)
 
-	second := atrPassiveTransactionEvent(base.Add(2*time.Second), 0xF1, 0x99, protocol.SymbolAck)
-	inserter.OnPassiveClassifiedEvent(second)
-	if got := inserter.observationsByAddr[0xF1].PositiveACKCount; got != 2 {
-		t.Fatalf("observationsByAddr[0xF1].PositiveACKCount after second observation = %d; want 2", got)
+	inserter.OnPassiveClassifiedEvent(atrPassiveTransactionEvent(base.Add(2*time.Second), 0xF1, 0x99, protocol.SymbolAck))
+	requireATRObservation(t, inserter, 0xF1, 1, base)
+	assertATRSlotAbsent(t, table, 0xF6)
+
+	inserter.OnPassiveClassifiedEvent(atrPassiveTransactionEvent(base.Add(5*time.Second-time.Nanosecond), 0xF1, 0x99, protocol.SymbolAck))
+	requireATRObservation(t, inserter, 0xF1, 1, base)
+	assertATRSlotAbsent(t, table, 0xF6)
+}
+
+// TestCompanionInsert_AdmitsAtOrAfterInterval asserts that a second positive
+// acknowledgement at, or after, the corroboration interval inserts the
+// companion exactly once and aliases the canonical pair.
+func TestCompanionInsert_AdmitsAtOrAfterInterval(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		offset time.Duration
+	}{
+		{name: "exactly_at_interval", offset: 5 * time.Second},
+		{name: "after_interval", offset: 9 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			table, inserter := newATRInsertionHarness(t, DefaultConfig())
+			var newInsertions int
+			inserter.SetEnrichmentRefreshFn(func() { newInsertions++ })
+			base := atrBaseTime()
+
+			inserter.OnPassiveClassifiedEvent(atrPassiveTransactionEvent(base, 0xF1, 0x99, protocol.SymbolAck))
+			if newInsertions != 2 {
+				t.Fatalf("new insertions after first observation = %d; want 2 (source and target)", newInsertions)
+			}
+			assertATRSlotAbsent(t, table, 0xF6)
+
+			inserter.OnPassiveClassifiedEvent(atrPassiveTransactionEvent(base.Add(tc.offset), 0xF1, 0x99, protocol.SymbolAck))
+			requireATRObservation(t, inserter, 0xF1, 2, base)
+			companion := requireATRSlot(t, table, 0xF6)
+			if companion.Role != "target" || companion.DiscoverySource != "passive_observed" || companion.VerificationState != "corroborated" {
+				t.Fatalf("slot[0xF6] = %+v; want passive_observed corroborated target", companion)
+			}
+			if newInsertions != 3 {
+				t.Fatalf("new insertions after corroboration = %d; want 3 (companion inserted once)", newInsertions)
+			}
+			requireATRAliased(t, table, 0xF1, 0xF6)
+
+			inserter.OnPassiveClassifiedEvent(atrPassiveTransactionEvent(base.Add(tc.offset+time.Second), 0xF1, 0x99, protocol.SymbolAck))
+			if newInsertions != 3 {
+				t.Fatalf("new insertions after a later observation = %d; want 3 (no second companion insertion)", newInsertions)
+			}
+			requireATRObservation(t, inserter, 0xF1, 2, base)
+			requireATRAliased(t, table, 0xF1, 0xF6)
+		})
 	}
-	requireATRSlot(t, table, 0xF6)
+}
+
+// TestCompanionInsert_UsesConfiguredInterval asserts that the inserter reads
+// PassiveCompanionCorroborationInterval and falls back to five seconds when
+// the configured value is zero or negative.
+func TestCompanionInsert_UsesConfiguredInterval(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		interval  time.Duration
+		tooEarly  time.Duration
+		qualifies time.Duration
+	}{
+		{name: "explicit_thirty_seconds", interval: 30 * time.Second, tooEarly: 29 * time.Second, qualifies: 30 * time.Second},
+		{name: "zero_falls_back_to_default", interval: 0, tooEarly: 5*time.Second - time.Millisecond, qualifies: 5 * time.Second},
+		{name: "negative_falls_back_to_default", interval: -time.Minute, tooEarly: 5*time.Second - time.Millisecond, qualifies: 5 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.PassiveCompanionCorroborationInterval = tc.interval
+			table, inserter := newATRInsertionHarness(t, cfg)
+			base := atrBaseTime()
+
+			inserter.OnPassiveClassifiedEvent(atrPassiveTransactionEvent(base, 0xF1, 0x99, protocol.SymbolAck))
+			inserter.OnPassiveClassifiedEvent(atrPassiveTransactionEvent(base.Add(tc.tooEarly), 0xF1, 0x99, protocol.SymbolAck))
+			assertATRSlotAbsent(t, table, 0xF6)
+
+			inserter.OnPassiveClassifiedEvent(atrPassiveTransactionEvent(base.Add(tc.qualifies), 0xF1, 0x99, protocol.SymbolAck))
+			requireATRSlot(t, table, 0xF6)
+		})
+	}
+
+	t.Run("empty_config_uses_default", func(t *testing.T) {
+		table, inserter := newATRInsertionHarness(t, Config{})
+		base := atrBaseTime()
+		inserter.OnPassiveClassifiedEvent(atrPassiveTransactionEvent(base, 0xF1, 0x99, protocol.SymbolAck))
+		inserter.OnPassiveClassifiedEvent(atrPassiveTransactionEvent(base.Add(4*time.Second), 0xF1, 0x99, protocol.SymbolAck))
+		assertATRSlotAbsent(t, table, 0xF6)
+		inserter.OnPassiveClassifiedEvent(atrPassiveTransactionEvent(base.Add(5*time.Second), 0xF1, 0x99, protocol.SymbolAck))
+		requireATRSlot(t, table, 0xF6)
+	})
+}
+
+// TestCompanionInsert_FailsClosed asserts that inputs which are not two
+// independently timed positive acknowledgements from a canonical source
+// never produce a companion.
+func TestCompanionInsert_FailsClosed(t *testing.T) {
+	base := atrBaseTime()
+	ack := func(at time.Time, source byte) PassiveClassifiedEvent {
+		return atrPassiveTransactionEvent(at, source, 0x99, protocol.SymbolAck)
+	}
+	burst := make([]PassiveClassifiedEvent, 0, 1000)
+	for k := 0; k < 1000; k++ {
+		burst = append(burst, ack(base.Add(time.Duration(k)*4*time.Millisecond), 0xF1))
+	}
+
+	for _, tc := range []struct {
+		name        string
+		admitted    byte
+		events      []PassiveClassifiedEvent
+		absent      []byte
+		wantNoState bool
+	}{
+		{
+			name:   "repeated_timestamp",
+			events: []PassiveClassifiedEvent{ack(base, 0xF1), ack(base, 0xF1), ack(base, 0xF1)},
+			absent: []byte{0xF6},
+		},
+		{
+			name:   "reordered_timestamps",
+			events: []PassiveClassifiedEvent{ack(base.Add(10*time.Second), 0xF1), ack(base, 0xF1), ack(base.Add(12*time.Second), 0xF1)},
+			absent: []byte{0xF6},
+		},
+		{
+			name:        "zero_timestamps",
+			events:      []PassiveClassifiedEvent{ack(time.Time{}, 0xF1), ack(time.Time{}, 0xF1)},
+			absent:      []byte{0xF6},
+			wantNoState: true,
+		},
+		{
+			name:   "zero_then_late_timestamp",
+			events: []PassiveClassifiedEvent{ack(time.Time{}, 0xF1), ack(base.Add(time.Hour), 0xF1)},
+			absent: []byte{0xF6},
+		},
+		{
+			name:   "burst_inside_interval",
+			events: burst,
+			absent: []byte{0xF6},
+		},
+		{
+			name: "negative_acknowledgements",
+			events: []PassiveClassifiedEvent{
+				atrPassiveTransactionEvent(base, 0xF1, 0x99, protocol.SymbolNack),
+				atrPassiveTransactionEvent(base.Add(10*time.Second), 0xF1, 0x99, protocol.SymbolNack),
+			},
+			absent:      []byte{0xF1, 0xF6},
+			wantNoState: true,
+		},
+		{
+			name: "positive_then_negative_acknowledgement",
+			events: []PassiveClassifiedEvent{
+				ack(base, 0xF1),
+				atrPassiveTransactionEvent(base.Add(10*time.Second), 0xF1, 0x99, protocol.SymbolNack),
+			},
+			absent: []byte{0xF6},
+		},
+		{
+			name: "acknowledgement_position_ff",
+			events: []PassiveClassifiedEvent{
+				atrPassiveTransactionEvent(base, 0xF1, 0x99, 0xFF),
+				atrPassiveTransactionEvent(base.Add(10*time.Second), 0xF1, 0x99, 0xFF),
+			},
+			absent:      []byte{0xF1, 0xF6},
+			wantNoState: true,
+		},
+		{
+			name:        "gateway_own_source",
+			admitted:    0x7F,
+			events:      []PassiveClassifiedEvent{ack(base, 0x7F), ack(base.Add(10*time.Second), 0x7F)},
+			absent:      []byte{0x7F, 0x84},
+			wantNoState: true,
+		},
+		{
+			name:        "source_ff_on_acknowledged_path",
+			events:      []PassiveClassifiedEvent{ack(base, 0xFF), ack(base.Add(10*time.Second), 0xFF)},
+			absent:      []byte{0x04},
+			wantNoState: true,
+		},
+		{
+			name:   "broadcast_inside_interval",
+			events: []PassiveClassifiedEvent{atrPassiveBroadcastEvent(base, 0xF1), atrPassiveBroadcastEvent(base.Add(2*time.Second), 0xF1)},
+			absent: []byte{0xF1, 0xF6},
+		},
+		{
+			name:   "broadcast_zero_then_late_timestamp",
+			events: []PassiveClassifiedEvent{atrPassiveBroadcastEvent(time.Time{}, 0xF1), atrPassiveBroadcastEvent(base.Add(time.Hour), 0xF1)},
+			absent: []byte{0xF1, 0xF6},
+		},
+		{
+			name:        "companion_address_as_source",
+			events:      []PassiveClassifiedEvent{ack(base, 0x15), ack(base.Add(10*time.Second), 0x15)},
+			absent:      []byte{0x10},
+			wantNoState: true,
+		},
+		{
+			name:        "source_without_companion",
+			events:      []PassiveClassifiedEvent{ack(base, 0x26), ack(base.Add(10*time.Second), 0x26)},
+			absent:      []byte{0x21, 0x2B},
+			wantNoState: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			if tc.admitted != 0 {
+				admitted := tc.admitted
+				cfg.AdmittedSource = func() byte { return admitted }
+			}
+			table, inserter := newATRInsertionHarness(t, cfg)
+			for _, event := range tc.events {
+				inserter.OnPassiveClassifiedEvent(event)
+			}
+			for _, address := range tc.absent {
+				assertATRSlotAbsent(t, table, address)
+			}
+			for source, observation := range inserter.observationsByAddr {
+				if observation.PositiveACKCount >= 2 {
+					t.Fatalf("observationsByAddr[0x%02X] = %+v; want fewer than two qualifying observations", source, observation)
+				}
+			}
+			if tc.wantNoState && len(inserter.observationsByAddr) != 0 {
+				t.Fatalf("observationsByAddr = %+v; want no corroboration state", inserter.observationsByAddr)
+			}
+		})
+	}
+}
+
+// TestCompanionInsert_ObservationStateIsPerSourceAndBounded asserts that
+// corroboration is keyed by the exact source address (an observation of one
+// source never corroborates another) and that the state holds at most one
+// entry per canonical source, however much traffic arrives.
+func TestCompanionInsert_ObservationStateIsPerSourceAndBounded(t *testing.T) {
+	t.Run("per_source", func(t *testing.T) {
+		table, inserter := newATRInsertionHarness(t, DefaultConfig())
+		base := atrBaseTime()
+		inserter.OnPassiveClassifiedEvent(atrPassiveTransactionEvent(base, 0xF1, 0x99, protocol.SymbolAck))
+		inserter.OnPassiveClassifiedEvent(atrPassiveTransactionEvent(base.Add(10*time.Second), 0x10, 0x99, protocol.SymbolAck))
+		assertATRSlotAbsent(t, table, 0xF6)
+		assertATRSlotAbsent(t, table, 0x15)
+		requireATRObservation(t, inserter, 0xF1, 1, base)
+		requireATRObservation(t, inserter, 0x10, 1, base.Add(10*time.Second))
+	})
+
+	t.Run("bounded", func(t *testing.T) {
+		_, inserter := newATRInsertionHarness(t, DefaultConfig())
+		admitted := inserter.admittedSource()
+		base := atrBaseTime()
+		for round := 0; round < 3; round++ {
+			for source := 0; source < 256; source++ {
+				at := base.Add(time.Duration(round) * time.Millisecond)
+				inserter.OnPassiveClassifiedEvent(atrPassiveTransactionEvent(at, byte(source), 0x99, protocol.SymbolAck))
+				inserter.OnPassiveClassifiedEvent(atrPassiveBroadcastEvent(at, byte(source)))
+			}
+		}
+		canonicalSources := 0
+		for source := 0; source < 256; source++ {
+			if protocol.IsCanonicalSource(byte(source)) {
+				canonicalSources++
+			}
+		}
+		if len(inserter.observationsByAddr) > canonicalSources {
+			t.Fatalf("len(observationsByAddr) = %d; want at most %d (one per canonical source)", len(inserter.observationsByAddr), canonicalSources)
+		}
+		for source := range inserter.observationsByAddr {
+			if _, ok := protocol.CompanionOfSource(source); !ok || source == admitted {
+				t.Fatalf("observationsByAddr holds state for 0x%02X; want only canonical sources other than the gateway's own", source)
+			}
+		}
+	})
+}
+
+// TestCompanionInsert_BroadcastPathUsesSameInterval asserts that the
+// broadcast path applies the same time-qualified corroboration to the
+// broadcaster and its canonical companion.
+func TestCompanionInsert_BroadcastPathUsesSameInterval(t *testing.T) {
+	table, inserter := newATRInsertionHarness(t, DefaultConfig())
+	base := atrBaseTime()
+
+	inserter.OnPassiveClassifiedEvent(atrPassiveBroadcastEvent(base, 0xFF))
+	inserter.OnPassiveClassifiedEvent(atrPassiveBroadcastEvent(base.Add(2*time.Second), 0xFF))
+	assertATRSlotAbsent(t, table, 0xFF)
+	assertATRSlotAbsent(t, table, 0x04)
+
+	inserter.OnPassiveClassifiedEvent(atrPassiveBroadcastEvent(base.Add(5*time.Second), 0xFF))
+	requireATRSlot(t, table, 0xFF)
+	requireATRSlot(t, table, 0x04)
+	requireATRAliased(t, table, 0xFF, 0x04)
+}
+
+// TestCompanionInsert_CurrentIdentityWitnessAdmitsOnFirstACK asserts that
+// one positive acknowledgement plus a current qualified identity witness for
+// the exact source admits the companion through the registry, with the
+// alias, runtime-state and identity-probe bookkeeping, while the
+// two-acknowledgement state still counts a single observation.
+func TestCompanionInsert_CurrentIdentityWitnessAdmitsOnFirstACK(t *testing.T) {
+	table, inserter := newATRInsertionHarness(t, DefaultConfig())
+	var observed, probed []byte
+	refreshes := 0
+	inserter.SetRuntimeStateObserver(func(addr byte, _ time.Time, _ string) { observed = append(observed, addr) })
+	inserter.SetEnrichmentIdentityProbeFn(func(addr byte) { probed = append(probed, addr) })
+	inserter.SetEnrichmentRefreshFn(func() { refreshes++ })
+	table.reg.Register(atrQualifiedIdentity(0x10, "SN-SYNTH-WITNESS"))
+	base := atrBaseTime()
+
+	inserter.OnPassiveClassifiedEvent(atrPassiveTransactionEvent(base, 0x10, 0x99, protocol.SymbolAck))
+
+	// Source 0x10 and target 0x99 are inserted by the first-observation path
+	// (or already present); the witness-admitted companion must add one more
+	// discovery refresh on top of those.
+	if refreshes < 2 {
+		t.Fatalf("discovery refresh count = %d; want a refresh for the witness-admitted companion as well", refreshes)
+	}
+	companion := requireATRSlot(t, table, 0x15)
+	if companion.Role != "target" || companion.DiscoverySource != "passive_observed" || companion.VerificationState != "corroborated" {
+		t.Fatalf("slot[0x15] = %+v; want passive_observed corroborated target", companion)
+	}
+	snapshot, ok := table.reg.LookupSlotSnapshot(0x15)
+	if !ok || !snapshot.LastObservedAt.Equal(base) || snapshot.Role != registry.SlotRoleSlave {
+		t.Fatalf("registry slot[0x15] = %+v, present=%v; want target observed at %v", snapshot, ok, base)
+	}
+	requireATRAliased(t, table, 0x10, 0x15)
+	requireATRObservation(t, inserter, 0x10, 1, base)
+	if !containsATRAddress(observed, 0x15) {
+		t.Fatalf("runtime-state observer addresses = % X; want 0x15", observed)
+	}
+	if !containsATRAddress(probed, 0x15) {
+		t.Fatalf("identity probe addresses = % X; want 0x15", probed)
+	}
+}
+
+// TestCompanionInsert_IdentityWitnessBecomesCurrentBeforeCorroboration
+// asserts that a witness recorded after the first acknowledgement is honoured
+// on a later positive acknowledgement inside the interval.
+func TestCompanionInsert_IdentityWitnessBecomesCurrentBeforeCorroboration(t *testing.T) {
+	table, inserter := newATRInsertionHarness(t, DefaultConfig())
+	base := atrBaseTime()
+
+	inserter.OnPassiveClassifiedEvent(atrPassiveTransactionEvent(base, 0x10, 0x99, protocol.SymbolAck))
+	assertATRSlotAbsent(t, table, 0x15)
+
+	table.reg.Register(atrQualifiedIdentity(0x10, "SN-SYNTH-LATE"))
+	inserter.OnPassiveClassifiedEvent(atrPassiveTransactionEvent(base.Add(time.Second), 0x10, 0x99, protocol.SymbolAck))
+	requireATRSlot(t, table, 0x15)
+	requireATRObservation(t, inserter, 0x10, 1, base)
+}
+
+// TestCompanionInsert_IdentityWitnessRejected asserts that witnesses which
+// are missing, partial, retired, replaced, asserted by passive or static
+// evidence, alias-only or held for another address do not admit the
+// companion on one acknowledgement, and leave the two-acknowledgement path
+// intact.
+func TestCompanionInsert_IdentityWitnessRejected(t *testing.T) {
+	base := atrBaseTime()
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T, reg *registry.DeviceRegistry)
+	}{
+		{name: "missing", setup: func(*testing.T, *registry.DeviceRegistry) {}},
+		{name: "partial_identity", setup: func(_ *testing.T, reg *registry.DeviceRegistry) {
+			reg.Register(registry.DeviceInfo{Address: 0x10, Manufacturer: "ACME", DeviceID: "REGULATOR"})
+		}},
+		{name: "retired_after_identity_change", setup: func(_ *testing.T, reg *registry.DeviceRegistry) {
+			reg.Register(atrQualifiedIdentity(0x10, "SN-SYNTH-RETIRED"))
+			reg.Register(registry.DeviceInfo{Address: 0x10, Manufacturer: "OTHER"})
+		}},
+		{name: "stale_after_replacement", setup: func(_ *testing.T, reg *registry.DeviceRegistry) {
+			reg.Register(atrQualifiedIdentity(0x10, "SN-SYNTH-OLD"))
+			reg.RegisterStaticSeed(atrQualifiedIdentity(0x10, "SN-SYNTH-NEW"), registry.SlotRoleMaster, base.Add(-time.Minute))
+		}},
+		{name: "passive_asserted_identity", setup: func(_ *testing.T, reg *registry.DeviceRegistry) {
+			reg.RegisterPassiveObserved(atrQualifiedIdentity(0x10, "SN-SYNTH-PASSIVE"), registry.SlotRoleMaster, base.Add(-time.Minute))
+		}},
+		{name: "static_identity", setup: func(_ *testing.T, reg *registry.DeviceRegistry) {
+			reg.RegisterStaticSeed(atrQualifiedIdentity(0x10, "SN-SYNTH-STATIC"), registry.SlotRoleMaster, base.Add(-time.Minute))
+		}},
+		{name: "alias_only", setup: func(t *testing.T, reg *registry.DeviceRegistry) {
+			reg.Register(atrQualifiedIdentity(0x00, "SN-SYNTH-ALIAS"))
+			if err := reg.AliasAddresses(0x00, 0x10); err != nil {
+				t.Fatalf("AliasAddresses: %v", err)
+			}
+		}},
+		{name: "wrong_address", setup: func(_ *testing.T, reg *registry.DeviceRegistry) {
+			reg.Register(atrQualifiedIdentity(0x30, "SN-SYNTH-OTHER"))
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			table, inserter := newATRInsertionHarness(t, DefaultConfig())
+			tc.setup(t, table.reg)
+
+			inserter.OnPassiveClassifiedEvent(atrPassiveTransactionEvent(base, 0x10, 0x99, protocol.SymbolAck))
+			assertATRSlotAbsent(t, table, 0x15)
+			assertATRSlotAbsent(t, table, 0x35)
+
+			inserter.OnPassiveClassifiedEvent(atrPassiveTransactionEvent(base.Add(2*time.Second), 0x10, 0x99, protocol.SymbolAck))
+			assertATRSlotAbsent(t, table, 0x15)
+
+			inserter.OnPassiveClassifiedEvent(atrPassiveTransactionEvent(base.Add(5*time.Second), 0x10, 0x99, protocol.SymbolAck))
+			requireATRSlot(t, table, 0x15)
+			requireATRAliased(t, table, 0x10, 0x15)
+			assertATRSlotAbsent(t, table, 0x35)
+		})
+	}
+}
+
+// TestCompanionInsert_IdentityWitnessHonoursFailClosedInputs asserts that a
+// current witness does not admit the companion from a negative
+// acknowledgement, a zero timestamp, the gateway's own source or a broadcast.
+func TestCompanionInsert_IdentityWitnessHonoursFailClosedInputs(t *testing.T) {
+	base := atrBaseTime()
+	for _, tc := range []struct {
+		name     string
+		admitted byte
+		event    PassiveClassifiedEvent
+	}{
+		{name: "negative_acknowledgement", event: atrPassiveTransactionEvent(base, 0x10, 0x99, protocol.SymbolNack)},
+		{name: "zero_timestamp", event: atrPassiveTransactionEvent(time.Time{}, 0x10, 0x99, protocol.SymbolAck)},
+		{name: "gateway_own_source", admitted: 0x10, event: atrPassiveTransactionEvent(base, 0x10, 0x99, protocol.SymbolAck)},
+		{name: "broadcast", event: atrPassiveBroadcastEvent(base, 0x10)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			if tc.admitted != 0 {
+				admitted := tc.admitted
+				cfg.AdmittedSource = func() byte { return admitted }
+			}
+			table, inserter := newATRInsertionHarness(t, cfg)
+			table.reg.Register(atrQualifiedIdentity(0x10, "SN-SYNTH-GUARD"))
+
+			inserter.OnPassiveClassifiedEvent(tc.event)
+			assertATRSlotAbsent(t, table, 0x15)
+		})
+	}
 }
 
 // TestFirstObservation_SourceInserted asserts that on a positive ACK the
@@ -410,6 +837,69 @@ func atrPassiveTransactionEvent(observedAt time.Time, source, target, ack byte) 
 		Correlator:      PassiveACKCorrelatorM2A,
 	}
 	return event
+}
+
+func atrBaseTime() time.Time {
+	return time.Date(2026, time.January, 5, 12, 0, 0, 0, time.UTC)
+}
+
+func atrPassiveBroadcastEvent(observedAt time.Time, source byte) PassiveClassifiedEvent {
+	return PassiveClassifiedEvent{
+		Kind:      PassiveClassifiedEventBroadcastFrame,
+		FrameType: protocol.FrameTypeBroadcast,
+		Request: protocol.Frame{
+			Source:    source,
+			Target:    protocol.AddressBroadcast,
+			Primary:   0xB5,
+			Secondary: 0x16,
+			Data:      []byte{0x01},
+		},
+		HasRequest: true,
+		ObservedAt: observedAt,
+	}
+}
+
+func atrQualifiedIdentity(address byte, serial string) registry.DeviceInfo {
+	return registry.DeviceInfo{
+		Address:      address,
+		Manufacturer: "ACME",
+		DeviceID:     "REGULATOR",
+		SerialNumber: serial,
+	}
+}
+
+func requireATRObservation(t *testing.T, inserter *AddressTableInserter, source byte, wantCount int, wantFirst time.Time) {
+	t.Helper()
+
+	observation, ok := inserter.observationsByAddr[source]
+	if !ok {
+		t.Fatalf("observationsByAddr[0x%02X] missing; want count=%d first=%v", source, wantCount, wantFirst)
+	}
+	if observation.PositiveACKCount != wantCount || !observation.FirstPositiveAt.Equal(wantFirst) {
+		t.Fatalf("observationsByAddr[0x%02X] = %+v; want count=%d first=%v", source, observation, wantCount, wantFirst)
+	}
+}
+
+func requireATRAliased(t *testing.T, table *AddressTable, a, b byte) {
+	t.Helper()
+
+	entryA, okA := table.reg.Lookup(a)
+	entryB, okB := table.reg.Lookup(b)
+	if !okA || !okB {
+		t.Fatalf("registry.Lookup ok: 0x%02X=%v 0x%02X=%v; want both true", a, okA, b, okB)
+	}
+	if entryA.PrimaryDisplayAddress() != entryB.PrimaryDisplayAddress() {
+		t.Fatalf("canonical pair 0x%02X / 0x%02X not aliased: primaries 0x%02X and 0x%02X", a, b, entryA.PrimaryDisplayAddress(), entryB.PrimaryDisplayAddress())
+	}
+}
+
+func containsATRAddress(addresses []byte, want byte) bool {
+	for _, address := range addresses {
+		if address == want {
+			return true
+		}
+	}
+	return false
 }
 
 func requireATRSlot(t *testing.T, table *AddressTable, address byte) *AddressSlot {

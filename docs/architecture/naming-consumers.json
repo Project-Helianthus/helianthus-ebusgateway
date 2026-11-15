@@ -678,7 +678,7 @@
     "adaptiveHeatingCurve": [
       "ha-integration/custom_components/helianthus/__init__.py"
     ],
-    "adaptive_heating_curve": [
+    "adaptive_heating_curve_enabled": [
       "ha-integration/custom_components/helianthus/__init__.py",
       "ha-integration/custom_components/helianthus/binary_sensor.py",
       "ha-integration/custom_components/helianthus/coordinator.py",
@@ -6205,6 +6205,15 @@
       "ha-integration/tests/test_circuit.py",
       "ha-integration/tests/test_entity_icon_gate.py"
     ],
+    "flow_temperature": [
+      "ha-integration/custom_components/helianthus/__init__.py",
+      "ha-integration/custom_components/helianthus/coordinator.py",
+      "ha-integration/custom_components/helianthus/sensor_descriptors.py",
+      "ha-integration/tests/test_system.py",
+      "vrc-explorer/fixtures/b524-basv0-register-observations-v1.json",
+      "vrc-explorer/fixtures/b524_shared/protocols/vaillant/fixtures/b524-basv0-register-observations-v1.json",
+      "vrc-explorer/src/helianthus_vrc_explorer/fixtures/b524-basv0-register-observations-v1.json"
+    ],
     "flow_temperature_c": [
       "ha-integration/custom_components/helianthus/__init__.py",
       "ha-integration/custom_components/helianthus/coordinator.py",
@@ -7013,6 +7022,17 @@
       "ha-integration/tests/test_entity_icon_gate.py",
       "ha-integration/tests/test_solar_cylinder.py"
     ],
+    "functional_module_configuration_code": [
+      "ha-integration/custom_components/helianthus/coordinator.py",
+      "ha-integration/tests/test_coordinator.py",
+      "ha-integration/tests/test_system.py",
+      "vrc-explorer/fixtures/b524-basv0-description-profile-v1.json",
+      "vrc-explorer/fixtures/b524-basv0-register-observations-v1.json",
+      "vrc-explorer/fixtures/b524_shared/protocols/vaillant/fixtures/b524-basv0-description-profile-v1.json",
+      "vrc-explorer/fixtures/b524_shared/protocols/vaillant/fixtures/b524-basv0-register-observations-v1.json",
+      "vrc-explorer/src/helianthus_vrc_explorer/fixtures/b524-basv0-description-profile-v1.json",
+      "vrc-explorer/src/helianthus_vrc_explorer/fixtures/b524-basv0-register-observations-v1.json"
+    ],
     "gas_valve_active": [
       "ha-integration/custom_components/helianthus/__init__.py",
       "ha-integration/custom_components/helianthus/binary_sensor.py",
@@ -7394,17 +7414,6 @@
     "heatingCurve": [
       "ha-integration/custom_components/helianthus/__init__.py"
     ],
-    "heating_circuit_bivalence_point": [
-      "ha-integration/custom_components/helianthus/coordinator.py",
-      "ha-integration/custom_components/helianthus/number.py",
-      "ha-integration/tests/test_system.py",
-      "vrc-explorer/fixtures/b524-basv0-description-profile-v1.json",
-      "vrc-explorer/fixtures/b524-basv0-register-observations-v1.json",
-      "vrc-explorer/fixtures/b524_shared/protocols/vaillant/fixtures/b524-basv0-description-profile-v1.json",
-      "vrc-explorer/fixtures/b524_shared/protocols/vaillant/fixtures/b524-basv0-register-observations-v1.json",
-      "vrc-explorer/src/helianthus_vrc_explorer/fixtures/b524-basv0-description-profile-v1.json",
-      "vrc-explorer/src/helianthus_vrc_explorer/fixtures/b524-basv0-register-observations-v1.json"
-    ],
     "heating_curve": [
       "ha-integration/custom_components/helianthus/__init__.py",
       "ha-integration/custom_components/helianthus/coordinator.py",
@@ -7425,6 +7434,17 @@
       "ha-integration/tests/test_dhw_status.py",
       "ha-integration/tests/test_sensor.py",
       "ha-integration/tests/test_subscription_sparse_zone_merge.py"
+    ],
+    "heating_outdoor_bivalence_temperature_limit": [
+      "ha-integration/custom_components/helianthus/coordinator.py",
+      "ha-integration/custom_components/helianthus/number.py",
+      "ha-integration/tests/test_system.py",
+      "vrc-explorer/fixtures/b524-basv0-description-profile-v1.json",
+      "vrc-explorer/fixtures/b524-basv0-register-observations-v1.json",
+      "vrc-explorer/fixtures/b524_shared/protocols/vaillant/fixtures/b524-basv0-description-profile-v1.json",
+      "vrc-explorer/fixtures/b524_shared/protocols/vaillant/fixtures/b524-basv0-register-observations-v1.json",
+      "vrc-explorer/src/helianthus_vrc_explorer/fixtures/b524-basv0-description-profile-v1.json",
+      "vrc-explorer/src/helianthus_vrc_explorer/fixtures/b524-basv0-register-observations-v1.json"
     ],
     "heating_status_raw": [
       "ha-integration/custom_components/helianthus/coordinator.py",
@@ -7504,6 +7524,20 @@
       "ha-integration/custom_components/helianthus/coordinator.py",
       "ha-integration/custom_components/helianthus/number.py",
       "ha-integration/tests/test_system.py"
+    ],
+    "hydraulic_scheme_code": [
+      "ha-integration/custom_components/helianthus/__init__.py",
+      "ha-integration/custom_components/helianthus/coordinator.py",
+      "ha-integration/custom_components/helianthus/sensor_descriptors.py",
+      "ha-integration/tests/test_coordinator.py",
+      "ha-integration/tests/test_entity_icon_gate.py",
+      "ha-integration/tests/test_number_dhw_bivalence.py",
+      "ha-integration/tests/test_optional_query_sequences.py",
+      "ha-integration/tests/test_system.py",
+      "ha-integration/tests/test_system_bound_reprobe.py",
+      "vrc-explorer/fixtures/b524-basv0-register-observations-v1.json",
+      "vrc-explorer/fixtures/b524_shared/protocols/vaillant/fixtures/b524-basv0-register-observations-v1.json",
+      "vrc-explorer/src/helianthus_vrc_explorer/fixtures/b524-basv0-register-observations-v1.json"
     ],
     "identifier": [
       "ha-integration/custom_components/helianthus/__init__.py",
@@ -7959,6 +7993,22 @@
     "input_id": [
       "ha-integration/custom_components/helianthus/pv_m2m.py",
       "ha-integration/tests/test_pv_m2m.py"
+    ],
+    "installer_access_code": [
+      "ha-integration/custom_components/helianthus/__init__.py",
+      "ha-integration/custom_components/helianthus/coordinator.py",
+      "ha-integration/custom_components/helianthus/text.py",
+      "ha-integration/tests/test_coordinator.py",
+      "ha-integration/tests/test_number_dhw_bivalence.py",
+      "ha-integration/tests/test_optional_query_sequences.py",
+      "ha-integration/tests/test_system.py",
+      "ha-integration/tests/test_system_bound_reprobe.py",
+      "vrc-explorer/fixtures/b524-basv0-description-profile-v1.json",
+      "vrc-explorer/fixtures/b524-basv0-register-observations-v1.json",
+      "vrc-explorer/fixtures/b524_shared/protocols/vaillant/fixtures/b524-basv0-description-profile-v1.json",
+      "vrc-explorer/fixtures/b524_shared/protocols/vaillant/fixtures/b524-basv0-register-observations-v1.json",
+      "vrc-explorer/src/helianthus_vrc_explorer/fixtures/b524-basv0-description-profile-v1.json",
+      "vrc-explorer/src/helianthus_vrc_explorer/fixtures/b524-basv0-register-observations-v1.json"
     ],
     "installer_menu_code": [
       "ha-integration/custom_components/helianthus/__init__.py",
@@ -9328,21 +9378,6 @@
       "ha-integration/tests/test_number_dhw_bivalence.py",
       "ha-integration/tests/test_system_bound_reprobe.py"
     ],
-    "max_room_humidity": [
-      "ha-integration/custom_components/helianthus/coordinator.py",
-      "ha-integration/custom_components/helianthus/number.py",
-      "ha-integration/tests/test_coordinator.py",
-      "ha-integration/tests/test_number_dhw_bivalence.py",
-      "ha-integration/tests/test_optional_query_sequences.py",
-      "ha-integration/tests/test_system.py",
-      "ha-integration/tests/test_system_bound_reprobe.py",
-      "vrc-explorer/fixtures/b524-basv0-description-profile-v1.json",
-      "vrc-explorer/fixtures/b524-basv0-register-observations-v1.json",
-      "vrc-explorer/fixtures/b524_shared/protocols/vaillant/fixtures/b524-basv0-description-profile-v1.json",
-      "vrc-explorer/fixtures/b524_shared/protocols/vaillant/fixtures/b524-basv0-register-observations-v1.json",
-      "vrc-explorer/src/helianthus_vrc_explorer/fixtures/b524-basv0-description-profile-v1.json",
-      "vrc-explorer/src/helianthus_vrc_explorer/fixtures/b524-basv0-register-observations-v1.json"
-    ],
     "max_setpoint_c": [
       "ha-integration/custom_components/helianthus/__init__.py",
       "ha-integration/custom_components/helianthus/coordinator.py",
@@ -10029,17 +10064,6 @@
       "ha-integration/custom_components/helianthus/sensor_descriptors.py",
       "ha-integration/tests/test_entity_icon_gate.py",
       "ha-integration/tests/test_fan.py"
-    ],
-    "module_configuration_vr71": [
-      "ha-integration/custom_components/helianthus/coordinator.py",
-      "ha-integration/tests/test_coordinator.py",
-      "ha-integration/tests/test_system.py",
-      "vrc-explorer/fixtures/b524-basv0-description-profile-v1.json",
-      "vrc-explorer/fixtures/b524-basv0-register-observations-v1.json",
-      "vrc-explorer/fixtures/b524_shared/protocols/vaillant/fixtures/b524-basv0-description-profile-v1.json",
-      "vrc-explorer/fixtures/b524_shared/protocols/vaillant/fixtures/b524-basv0-register-observations-v1.json",
-      "vrc-explorer/src/helianthus_vrc_explorer/fixtures/b524-basv0-description-profile-v1.json",
-      "vrc-explorer/src/helianthus_vrc_explorer/fixtures/b524-basv0-register-observations-v1.json"
     ],
     "monthly": [
       "ha-integration/custom_components/helianthus/coordinator.py",
@@ -14110,6 +14134,21 @@
     "roomTemperatureC": [
       "ha-integration/custom_components/helianthus/__init__.py"
     ],
+    "room_humidity_limit_maximum": [
+      "ha-integration/custom_components/helianthus/coordinator.py",
+      "ha-integration/custom_components/helianthus/number.py",
+      "ha-integration/tests/test_coordinator.py",
+      "ha-integration/tests/test_number_dhw_bivalence.py",
+      "ha-integration/tests/test_optional_query_sequences.py",
+      "ha-integration/tests/test_system.py",
+      "ha-integration/tests/test_system_bound_reprobe.py",
+      "vrc-explorer/fixtures/b524-basv0-description-profile-v1.json",
+      "vrc-explorer/fixtures/b524-basv0-register-observations-v1.json",
+      "vrc-explorer/fixtures/b524_shared/protocols/vaillant/fixtures/b524-basv0-description-profile-v1.json",
+      "vrc-explorer/fixtures/b524_shared/protocols/vaillant/fixtures/b524-basv0-register-observations-v1.json",
+      "vrc-explorer/src/helianthus_vrc_explorer/fixtures/b524-basv0-description-profile-v1.json",
+      "vrc-explorer/src/helianthus_vrc_explorer/fixtures/b524-basv0-register-observations-v1.json"
+    ],
     "room_humidity_pct": [
       "ha-integration/custom_components/helianthus/__init__.py",
       "ha-integration/custom_components/helianthus/coordinator.py",
@@ -16477,15 +16516,6 @@
     "systemWaterPressure": [
       "ha-integration/custom_components/helianthus/__init__.py"
     ],
-    "system_flow_temperature": [
-      "ha-integration/custom_components/helianthus/__init__.py",
-      "ha-integration/custom_components/helianthus/coordinator.py",
-      "ha-integration/custom_components/helianthus/sensor_descriptors.py",
-      "ha-integration/tests/test_system.py",
-      "vrc-explorer/fixtures/b524-basv0-register-observations-v1.json",
-      "vrc-explorer/fixtures/b524_shared/protocols/vaillant/fixtures/b524-basv0-register-observations-v1.json",
-      "vrc-explorer/src/helianthus_vrc_explorer/fixtures/b524-basv0-register-observations-v1.json"
-    ],
     "system_off": [
       "vrc-explorer/fixtures/b524-basv0-description-profile-v1.json",
       "vrc-explorer/fixtures/b524-basv0-register-observations-v1.json",
@@ -16496,30 +16526,6 @@
       "vrc-explorer/tests/test_browse_detail.py",
       "vrc-explorer/tests/test_html_report.py",
       "vrc-explorer/tests/test_issue_301_docs_names.py"
-    ],
-    "system_scheme": [
-      "ha-integration/custom_components/helianthus/__init__.py",
-      "ha-integration/custom_components/helianthus/coordinator.py",
-      "ha-integration/custom_components/helianthus/sensor_descriptors.py",
-      "ha-integration/tests/test_coordinator.py",
-      "ha-integration/tests/test_entity_icon_gate.py",
-      "ha-integration/tests/test_number_dhw_bivalence.py",
-      "ha-integration/tests/test_optional_query_sequences.py",
-      "ha-integration/tests/test_system.py",
-      "ha-integration/tests/test_system_bound_reprobe.py",
-      "vrc-explorer/fixtures/b524-basv0-register-observations-v1.json",
-      "vrc-explorer/fixtures/b524_shared/protocols/vaillant/fixtures/b524-basv0-register-observations-v1.json",
-      "vrc-explorer/src/helianthus_vrc_explorer/fixtures/b524-basv0-register-observations-v1.json"
-    ],
-    "system_water_pressure": [
-      "ha-integration/custom_components/helianthus/__init__.py",
-      "ha-integration/custom_components/helianthus/coordinator.py",
-      "ha-integration/custom_components/helianthus/sensor_descriptors.py",
-      "ha-integration/tests/test_coordinator.py",
-      "ha-integration/tests/test_system.py",
-      "vrc-explorer/fixtures/b524-basv0-register-observations-v1.json",
-      "vrc-explorer/fixtures/b524_shared/protocols/vaillant/fixtures/b524-basv0-register-observations-v1.json",
-      "vrc-explorer/src/helianthus_vrc_explorer/fixtures/b524-basv0-register-observations-v1.json"
     ],
     "target": [
       "ha-integration/custom_components/helianthus/climate.py",
@@ -18914,6 +18920,16 @@
       "ha-addon/scripts/check_source_addr_wrapper.py",
       "ha-addon/tests/test_runtime_state_wrapper_red.py"
     ],
+    "water_pressure": [
+      "ha-integration/custom_components/helianthus/__init__.py",
+      "ha-integration/custom_components/helianthus/coordinator.py",
+      "ha-integration/custom_components/helianthus/sensor_descriptors.py",
+      "ha-integration/tests/test_coordinator.py",
+      "ha-integration/tests/test_system.py",
+      "vrc-explorer/fixtures/b524-basv0-register-observations-v1.json",
+      "vrc-explorer/fixtures/b524_shared/protocols/vaillant/fixtures/b524-basv0-register-observations-v1.json",
+      "vrc-explorer/src/helianthus_vrc_explorer/fixtures/b524-basv0-register-observations-v1.json"
+    ],
     "weekday": [
       "ha-integration/custom_components/helianthus/calendar.py",
       "ha-integration/custom_components/helianthus/coordinator.py",
@@ -20416,15 +20432,15 @@
     "Verify indirect and negative results for ebusgo, modbus, tinyebus and addon packaging."
   ],
   "adoption": {
-    "status": "bounded",
     "evidence_class": "S",
     "qualification": "not established by synthetic checks",
-    "supported_changes": "Bounded naming maps, structural GraphQL syntax, registered MCP tokens, six circuit setters and explicit control withdrawals. Other vocabulary retains its recorded status.",
+    "release_requirement": "Renew affected security, hardware and candidate evidence; complete independent review, full repository gates and affected transport/conformance before release.",
     "remaining_questions": [
       "Selector-dependent target_temp_c retains its existing snake_case spelling.",
       "energy_accumulated retains its provisional spelling.",
       "Other unresolved native value and setter names remain provisional."
     ],
-    "release_requirement": "Renew affected security, hardware and candidate evidence; complete independent review, full repository gates and affected transport/conformance before release."
+    "status": "bounded",
+    "supported_changes": "Bounded naming maps, structural GraphQL syntax, registered MCP tokens, six circuit setters and explicit control withdrawals. Other vocabulary retains its recorded status."
   }
 }

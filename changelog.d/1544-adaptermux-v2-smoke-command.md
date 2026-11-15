@@ -1,0 +1,3 @@
+## Add the adaptermux-v2 smoke command with one offline-tested check per invariant and the AD10 comparison
+
+The repository carries the smoke command of the `adaptermux-v2` matrix suite, `scripts/adaptermux_v2_smoke.py`: one read-only check per executable invariant that proves eBUS data flow on the selected southbound transport during the case window, the AD10 equivalence comparison with the paired replaced compositions, and offline tests against recorded synthetic responses, which `./scripts/ci_local.sh` runs. Reserved, planned and unknown invariants are refused with their own exit status. Tooling only; the gateway binary is unchanged.

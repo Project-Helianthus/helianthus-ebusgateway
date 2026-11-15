@@ -1,0 +1,9 @@
+## Canonical register names for the system state, config and properties fields
+
+Eight B524 register-derived value fields of the system plane are published under their docs-ebus register names instead of their previous names, in the GraphQL types `system_state`, `system_config` and `system_properties`, in the MCP system snapshot and in the Portal system snapshot. The former names are no longer published; there is no alias and no duplicate field.
+
+- `system_state` (B524 OP02 GG00): `system_water_pressure` → `water_pressure` (RR0039) and `system_flow_temperature` → `flow_temperature` (RR004B).
+- `system_config` (B524 OP02 GG00): `adaptive_heating_curve` → `adaptive_heating_curve_enabled` (RR0014), `heating_circuit_bivalence_point` → `heating_outdoor_bivalence_temperature_limit` (RR0023), `max_room_humidity` → `room_humidity_limit_maximum` (RR000E) and `installer_menu_code` → `installer_access_code` (RR0076; GraphQL and MCP, the Portal does not publish it).
+- `system_properties` (B524 OP02 GG00): `system_scheme` → `hydraulic_scheme_code` (RR0036) and `module_configuration_vr71` → `functional_module_configuration_code` (RR002F).
+
+Values, value types, widths, scale, units and the register reads are unchanged. `system_off` (RR0007) keeps its name until docs-ebus settles the register's final name (helianthus-docs-ebus#1145), and the `boiler_config` field `installer_menu_code` (B509) is unchanged. The new record `graphql/testdata/register_derived_names.json` lists the renamed fields and the system fields that already carry their docs-ebus names, with each register's docs-ebus name and previous name; the GraphQL, MCP and Portal contract tests require every recorded field under its docs-ebus name and reject every recorded previous name. Home Assistant reads these fields and changes in the same wave. The published GraphQL, MCP and Portal names change, so the gateway binary changes and the release candidate needs renewed evidence.

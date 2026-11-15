@@ -1967,7 +1967,7 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"system_water_pressure": &graphqlgo.Field{
+			"water_pressure": &graphqlgo.Field{
 				Type: graphqlgo.Float,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					state, ok := params.Source.(SystemState)
@@ -1978,7 +1978,7 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"system_flow_temperature": &graphqlgo.Field{
+			"flow_temperature": &graphqlgo.Field{
 				Type: graphqlgo.Float,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					state, ok := params.Source.(SystemState)
@@ -2113,7 +2113,7 @@ func buildSchemaTypes() graphqlSchemaTypes {
 	systemConfigType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
 		Name: "system_config",
 		Fields: graphqlgo.Fields{
-			"adaptive_heating_curve": &graphqlgo.Field{
+			"adaptive_heating_curve_enabled": &graphqlgo.Field{
 				Type: graphqlgo.Boolean,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					config, ok := params.Source.(SystemConfig)
@@ -2135,7 +2135,7 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"heating_circuit_bivalence_point": &graphqlgo.Field{
+			"heating_outdoor_bivalence_temperature_limit": &graphqlgo.Field{
 				Type: graphqlgo.Float,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					config, ok := params.Source.(SystemConfig)
@@ -2189,7 +2189,7 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"max_room_humidity": &graphqlgo.Field{
+			"room_humidity_limit_maximum": &graphqlgo.Field{
 				Type: graphqlgo.Int,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					config, ok := params.Source.(SystemConfig)
@@ -2233,7 +2233,7 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"installer_menu_code": &graphqlgo.Field{
+			"installer_access_code": &graphqlgo.Field{
 				Type: graphqlgo.Int,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					config, ok := params.Source.(SystemConfig)
@@ -2249,7 +2249,7 @@ func buildSchemaTypes() graphqlSchemaTypes {
 	systemPropertiesType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
 		Name: "system_properties",
 		Fields: graphqlgo.Fields{
-			"system_scheme": &graphqlgo.Field{
+			"hydraulic_scheme_code": &graphqlgo.Field{
 				Type: graphqlgo.Int,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					props, ok := params.Source.(SystemProperties)
@@ -2260,7 +2260,7 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"module_configuration_vr71": &graphqlgo.Field{
+			"functional_module_configuration_code": &graphqlgo.Field{
 				Type: graphqlgo.Int,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					props, ok := params.Source.(SystemProperties)

@@ -67,6 +67,68 @@
 //     before processing the next stream item. A result from an older lifecycle
 //     cannot restore ownership, restore the fence, or synthesize a source.
 //
+// States and events (mux_state.go). The typed mux state is a view the
+// handlers derive from the mux fields under stateMu when they decide; it is
+// never stored. Its phase is the first that holds of: owned by the gateway
+// with an active transaction, owned by the gateway inside its idle release
+// grace, owned by an external session, a START in flight through the stream,
+// a START in flight through the blocking call, fenced until SYN, bids queued,
+// idle. Alongside the phase it carries the recovery kind, the number of stale
+// results to absorb, the blocking-call, out-of-step hold and
+// resynchronization-SYN barriers, the START in flight with its party and
+// source, the owning session, the queued bidders, the deferred gateway loser,
+// the retired selection and its source, the gateway's expected echo and
+// whether that echo is its structural terminator SYN, and whether an owner's
+// telegram is live on the wire. The events are a wire SYN, a received symbol,
+// a bid, STARTED, FAILED (with the initiator predicate's phantom verdict), the
+// applied STARTED or FAILED result, the START deadline, the absorb debounce,
+// the idle release grace, the ownership limit, the abandon watchdog, a session
+// closing, RESETTED, the blocking call returning or failing, and a read
+// failure. The read loop translates each stream item or read error into one
+// of these events and dispatches it to one method per kind (read_loop.go).
+//
+// The transition function decideMuxTransition decides, in prose:
+//
+//   - The START deadline occurs only while a START is in flight, the absorb
+//     debounce only while a stale result is to be absorbed, the idle grace and
+//     the ownership limit only while the bus is owned, the abandon watchdog
+//     only while an external session owns it, and the blocking call returns
+//     or fails only while it is outstanding. Every other event can occur in
+//     every state.
+//   - STARTED and FAILED are matched against the START in flight, unless a
+//     stale result is still to be absorbed. A phantom FAILED reports the
+//     bidder's own initiator to it.
+//   - Once the result is applied, the winner byte goes nowhere if a lifecycle
+//     boundary passed meanwhile. A matching STARTED of the gateway goes to
+//     every session but the local losers and not to the passive observers; a
+//     matching STARTED of a session goes to every other session but the local
+//     losers and to the passive observers. A mismatching STARTED resets the
+//     local losers' source and goes to every session when the gateway bid or
+//     its FAILED was suppressed, otherwise to every session but the bidder, and
+//     to the passive observers; with no bidder, only a STARTED naming another
+//     source than a retired selection's does the same towards every session.
+//     FAILED resets the local losers' source, goes to every session unless an
+//     external bidder was failed (then to every other session), to no session
+//     when it is a phantom, and always to the passive observers.
+//
+// The handlers apply the transitions, in prose: a bid queues; a SYN selects
+// the queued bid with the highest priority and writes one START unless
+// arbitration is held, fenced or a barrier blocks it; a matching STARTED or
+// a successful blocking call grants the bus to the selected party; a
+// mismatching STARTED, a FAILED, the START deadline, a cancel or a failed
+// blocking call ends the selection, fencing admission until SYN where the
+// lifecycle above says so and leaving a result to absorb when one is still
+// due; the idle grace and the ownership limit release the owner; an abandon
+// watchdog or the close of the owning session releases it and fences; a SYN
+// clears a fence (in enforce mode a fence over a live telegram or a real
+// foreign winner first waits for that telegram's SYN); the gateway's
+// structural terminator echo ends its transaction into the idle grace while a
+// SYN during a data echo is suppressed; the absorb debounce clears the absorb
+// barrier; RESETTED fails every bid and the selection and requests the reset
+// recovery. mux_state_model_test.go holds the complete table: every named
+// state and every event, with the next state and the ordered effect kinds,
+// or the reason the event cannot occur.
+//
 // Recovery resets are local state changes, never fabricated wire RESETTED
 // observations. Ordinary AA-injection filtering for unrelated passive traffic
 // is unchanged. Once the outstanding response is consumed, the recovery SYN

@@ -655,16 +655,16 @@ func TestSemanticSnapshotEndpoint(t *testing.T) {
 	}
 	system := payload["system"].(map[string]any)
 	systemState := system["state"].(map[string]any)
-	if systemState["system_flow_temperature"] != systemFlowTemperature {
-		t.Fatalf("system.state.system_flow_temperature=%v; want %v", systemState["system_flow_temperature"], systemFlowTemperature)
+	if systemState["flow_temperature"] != systemFlowTemperature {
+		t.Fatalf("system.state.flow_temperature=%v; want %v", systemState["flow_temperature"], systemFlowTemperature)
 	}
 	systemConfig := system["config"].(map[string]any)
-	if systemConfig["adaptive_heating_curve"] != adaptiveHeatingCurve {
-		t.Fatalf("system.config.adaptive_heating_curve=%v; want %v", systemConfig["adaptive_heating_curve"], adaptiveHeatingCurve)
+	if systemConfig["adaptive_heating_curve_enabled"] != adaptiveHeatingCurve {
+		t.Fatalf("system.config.adaptive_heating_curve_enabled=%v; want %v", systemConfig["adaptive_heating_curve_enabled"], adaptiveHeatingCurve)
 	}
 	systemProperties := system["properties"].(map[string]any)
-	if int(systemProperties["system_scheme"].(float64)) != systemScheme {
-		t.Fatalf("system.properties.system_scheme=%v; want %d", systemProperties["system_scheme"], systemScheme)
+	if int(systemProperties["hydraulic_scheme_code"].(float64)) != systemScheme {
+		t.Fatalf("system.properties.hydraulic_scheme_code=%v; want %d", systemProperties["hydraulic_scheme_code"], systemScheme)
 	}
 	circuits := payload["circuits"].([]any)
 	if len(circuits) != 1 {

@@ -17,6 +17,7 @@ import (
 var lifecycleCompositionFileNames = []string{
 	"gateway_run_lifecycle.go",
 	"gateway_lifecycle_observability.go",
+	"gateway_retained_consumers.go",
 }
 
 type lifecycleCompositionFile struct {
@@ -63,6 +64,52 @@ func lifecycleFunctionDecl(t *testing.T, files []lifecycleCompositionFile, name 
 		t.Fatalf("%s is not declared in the lifecycle composition files", name)
 	}
 	return found
+}
+
+// lifecycleMethodDecl returns the method name of the pointer receiver type
+// receiver declared in the lifecycle composition files.
+func lifecycleMethodDecl(t *testing.T, files []lifecycleCompositionFile, receiver, name string) *ast.FuncDecl {
+	t.Helper()
+	var found *ast.FuncDecl
+	for _, file := range files {
+		for _, declaration := range file.syntax.Decls {
+			function, ok := declaration.(*ast.FuncDecl)
+			if !ok || function.Recv == nil || len(function.Recv.List) != 1 || function.Name.Name != name {
+				continue
+			}
+			star, ok := function.Recv.List[0].Type.(*ast.StarExpr)
+			if !ok {
+				continue
+			}
+			if ident, ok := star.X.(*ast.Ident); ok && ident.Name == receiver {
+				if found != nil {
+					t.Fatalf("(*%s).%s is declared more than once in the lifecycle composition", receiver, name)
+				}
+				found = function
+			}
+		}
+	}
+	if found == nil {
+		t.Fatalf("(*%s).%s is not declared in the lifecycle composition files", receiver, name)
+	}
+	return found
+}
+
+// lifecycleSelectorCallPositions returns the positions of the calls to
+// methods or functions selected by name inside node.
+func lifecycleSelectorCallPositions(node ast.Node) map[string][]token.Pos {
+	positions := map[string][]token.Pos{}
+	ast.Inspect(node, func(child ast.Node) bool {
+		call, ok := child.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if selector, ok := call.Fun.(*ast.SelectorExpr); ok {
+			positions[selector.Sel.Name] = append(positions[selector.Sel.Name], call.Pos())
+		}
+		return true
+	})
+	return positions
 }
 
 // The lifecycle calls each extracted observability step exactly once, in the

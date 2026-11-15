@@ -15,7 +15,8 @@ tasks first. The shutdown delegate then performs these steps synchronously:
 2. Publish managed transport retirement.
 3. Stop HTTP admission and drain admitted requests using the existing HTTP
    shutdown helper and its unchanged timeout and close fallback.
-4. Snapshot the current listener and reconstructor under `surfaceMu`.
+4. Snapshot the current listener and reconstructor through the retained
+   owner's `surface` method, under its surface lock.
 5. Close the broadcast listener.
 6. Close the deduplicator.
 7. Close the passive reconstructor.
@@ -43,3 +44,44 @@ full repository CI, applicable transport/conformance gates and independent
 review remain shipping requirements. Protocol contracts, native evidence,
 last-known-good fields, fail-closed admission and MCP/GraphQL contracts are
 unchanged by this ownership extraction.
+
+## Retained eBUS consumers
+
+The consumers that live across eBUS generations have one owner, the private
+`retainedEBusConsumers` in
+[the retained-consumer owner](../../cmd/gateway/gateway_retained_consumers.go):
+the semantic poller and its late-bound writers and watch providers, the
+passive reconstructor, the broadcast listener, the passive discovery promoter,
+the semantic startup barrier, the address-table inserter subscription and the
+process-level admitted source.
+
+- Collaborators: the gateway, GraphQL builder, semantic runtime, semantic
+  publication hub, broadcast hub, runtime control, address-table inserter,
+  eeBUS runtime adapter, live admitted-source authority and the five
+  late-bound writers and watch providers are required. The constructor
+  rejects a missing one before the HTTP control plane starts. Bus
+  observability and the deduplicator are optional.
+- Context: every retained consumer runs on the process context, never on a
+  generation context, so a stopped interval does not tear it down.
+- Generation access: the generation tasks of the lifecycle shell reach the
+  consumers only through the owner's methods. A reconstructor created by a
+  generation and the admitted source are published through the generation
+  fence; a fenced generation publishes nothing and closes the reconstructor it
+  created. Every admitted generation rebinds the retained poller to its own
+  initiator and companion (`rebindPollerSource`).
+- Failure isolation: the process surface is created in ordered steps (rebind
+  the poller source, start the poller, bind the GraphQL writers, bind the watch
+  observer, install the capture, attach the passive shadow lane, create the
+  promoter, bind enrichment and the MCP writers, record readiness). Readiness
+  is recorded only after every fallible step succeeded; a failed step is
+  retried by the next admitted generation and completed steps are not
+  repeated.
+- The semantic barrier closes at most once: on the admission outcome that
+  opens it, or on process exit.
+- Teardown: the owner does not tear down a published consumer. This consumer
+  shutdown reads the listener and reconstructor through the owner after the
+  generation tasks joined, and closes them in the order above.
+
+[Unit tests](../../cmd/gateway/gateway_retained_consumers_test.go) cover the
+rejected wiring, the once-only inserter subscription after admission, the
+once-only barrier close and the order of the process-surface steps.

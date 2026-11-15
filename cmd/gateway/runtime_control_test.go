@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/parser"
+	"go/printer"
 	"go/token"
 	"io"
 	"net"
@@ -1239,15 +1240,35 @@ func TestRuntimeControlRetainedPollerRebindsSourcePerGeneration(t *testing.T) {
 // before the fallible capture step, so a retried generation cannot leave the
 // deduplicator as its own observer.
 func TestRuntimeControlWatchObserverBoundBeforeCaptureStep(t *testing.T) {
-	raw, err := os.ReadFile("gateway_run_lifecycle.go")
-	if err != nil {
-		t.Fatal(err)
+	fset := token.NewFileSet()
+	files, text := lifecycleCompositionSources(t, fset)
+	if strings.Count(text, "deduplicator.SetWatchObserver(poller.shadow)") != 1 || strings.Count(text, "newLeafPromotionCaptureRuntime(") != 1 {
+		t.Fatal("the watch observer binding and the capture construction must each occur once in the lifecycle composition")
 	}
-	text := string(raw)
-	observer := strings.Index(text, "deduplicator.SetWatchObserver(poller.shadow)")
-	capture := strings.Index(text, "newLeafPromotionCaptureRuntime(cfg.EEBusConfig.StateRoot")
-	if observer < 0 || capture < 0 || observer > capture {
-		t.Fatalf("watch observer binding at %d must precede capture construction at %d", observer, capture)
+	surface := lifecycleMethodDecl(t, files, "retainedEBusConsumers", "ensureProcessSurface")
+	calls := lifecycleSelectorCallPositions(surface.Body)
+	observer, capture, shadow := calls["bindWatchObserver"], calls["installCapture"], calls["attachShadowLane"]
+	if len(observer) != 1 || len(capture) != 1 || len(shadow) != 1 || observer[0] > capture[0] || capture[0] > shadow[0] {
+		t.Fatalf("watch observer binding %v must precede capture installation %v and the fallible shadow step %v", observer, capture, shadow)
+	}
+	for _, step := range []struct{ method, statement string }{
+		{"bindWatchObserver", "c.deduplicator.SetWatchObserver(poller.shadow)"},
+		{"installCapture", "newLeafPromotionCaptureRuntime(stateRoot, captureSource)"},
+	} {
+		declaration := lifecycleMethodDecl(t, files, "retainedEBusConsumers", step.method)
+		found := false
+		ast.Inspect(declaration.Body, func(node ast.Node) bool {
+			if call, ok := node.(*ast.CallExpr); ok {
+				var rendered strings.Builder
+				if err := printer.Fprint(&rendered, fset, call); err == nil && rendered.String() == step.statement {
+					found = true
+				}
+			}
+			return !found
+		})
+		if !found {
+			t.Fatalf("(*retainedEBusConsumers).%s does not hold %s", step.method, step.statement)
+		}
 	}
 }
 

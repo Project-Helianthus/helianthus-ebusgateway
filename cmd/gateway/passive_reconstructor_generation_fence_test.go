@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"go/token"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -240,4 +241,48 @@ func passiveObserveFirstOnlyConfig(cfg *ebusgateway.Config) {
 	cfg.BroadcastListen = true
 	cfg.StartupSource.Source = &source
 	cfg.StartupSource.Validate = false
+}
+
+// (d) The retained owner's publication method refuses a handle from a fenced
+// generation and closes it, and publishes a live generation's handle open.
+func TestPassiveReconstructorGenerationFencePublishMethod(t *testing.T) {
+	retained := newRetainedTestConsumers(t, context.Background(), retainedTestOptions(t))
+
+	fencedScope, fence := retainedTestScope(t)
+	fence()
+	refused := startRetainedTestReconstructor(t)
+	if retained.publishReconstructor(fencedScope, refused) {
+		t.Fatal("fenced generation published its reconstructor")
+	}
+	if retained.currentReconstructor() != nil {
+		t.Fatal("fenced generation's reconstructor became the retained handle")
+	}
+	if !reconstructorClosed(refused) {
+		t.Fatal("reconstructor refused for a fenced generation is still open")
+	}
+
+	liveScope, _ := retainedTestScope(t)
+	published := startRetainedTestReconstructor(t)
+	if !retained.publishReconstructor(liveScope, published) {
+		t.Fatal("live generation could not publish its reconstructor")
+	}
+	if retained.currentReconstructor() != published || reconstructorClosed(published) {
+		t.Fatal("live generation's reconstructor is not the open retained handle")
+	}
+}
+
+// Both generation tasks that create the reconstructor publish it only through
+// the retained owner's fenced publication method.
+func TestPassiveReconstructorGenerationFenceTasksPublishThroughOwner(t *testing.T) {
+	files, _ := lifecycleCompositionSources(t, token.NewFileSet())
+	lifecycle := lifecycleFunctionDecl(t, files, "runGatewayLifecycle")
+	calls := lifecycleSelectorCallPositions(lifecycle.Body)
+	if got := len(calls["publishReconstructor"]); got != 2 {
+		t.Fatalf("runGatewayLifecycle publishes the reconstructor through the owner %d times; want 2", got)
+	}
+	publish := lifecycleMethodDecl(t, files, "retainedEBusConsumers", "publishReconstructor")
+	inner := lifecycleSelectorCallPositions(publish.Body)
+	if len(inner["Commit"]) != 1 || len(inner["Close"]) != 1 {
+		t.Fatalf("(*retainedEBusConsumers).publishReconstructor must commit once and close the refused handle: %v", inner)
+	}
 }

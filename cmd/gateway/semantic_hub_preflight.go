@@ -22,7 +22,9 @@ import (
 // here. A disabled family declares nothing. An identity that
 // the family itself would refuse is not declared here, so that family keeps
 // its own existing failure path. Dynamically discovered PV assets are
-// declared later, per asset, through the PV class.
+// declared later, per asset, through the PV class. The pairings between
+// families and then the operator records are composed once each, after every
+// declaration; a refusal of either is fatal.
 func preflightSemanticHub(cfg ebusgateway.Config) (*semhub.Hub, error) {
 	hub, err := semhub.New(semhub.Options{})
 	if err != nil {
@@ -60,7 +62,13 @@ func preflightSemanticHub(cfg ebusgateway.Config) (*semhub.Hub, error) {
 			return nil, err
 		}
 	}
-	if _, err := modbusadapter.NewSemanticPVClass(hub); err != nil {
+	if _, err := modbusadapter.NewSemanticPVClass(hub, semanticFamilyGraph(semanticFamilyPV)); err != nil {
+		return nil, fmt.Errorf("semantic publication preflight: %w", err)
+	}
+	if err := composeSemanticPairings(hub, cfg); err != nil {
+		return nil, fmt.Errorf("semantic publication preflight: %w", err)
+	}
+	if err := composeOperatorRecords(hub, cfg); err != nil {
 		return nil, fmt.Errorf("semantic publication preflight: %w", err)
 	}
 	return hub, nil

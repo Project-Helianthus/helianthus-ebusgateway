@@ -63,7 +63,7 @@ func validGrowattSourceID(value string) bool {
 // growattStorageAssetSpec is the one declaration of the configured Storage
 // asset; the startup preflight and the runtime declare the same spec.
 func growattStorageAssetSpec(asset, source string) semhub.AssetSpec {
-	return semhub.AssetSpec{AssetID: semreg.AssetID(asset), SourceID: semreg.SourceID(source), Driver: growattStorageDriver, Validators: []semreg.PackValidator{storage.New()}}
+	return semhub.AssetSpec{AssetID: semreg.AssetID(asset), SourceID: semreg.SourceID(source), Driver: growattStorageDriver, Validators: []semreg.PackValidator{storage.New()}, Graph: semanticFamilyGraph(semanticFamilyStorage)}
 }
 
 // newGrowattStoragePublication binds one admitted Storage source generation

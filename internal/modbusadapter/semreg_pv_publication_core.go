@@ -451,12 +451,13 @@ func pvPublicationServices(draft pvPublicationDraft) ([]semreg.ServiceInstance, 
 const pvSemanticDriver = "pv_sunspec"
 
 // NewSemanticPVClass declares the lazily declared PV asset class on hub.
-// Every discovered SunSpec asset is declared through it, per asset.
-func NewSemanticPVClass(hub *semhub.Hub) (*semhub.Class, error) {
+// Every discovered SunSpec asset is declared through it, per asset. graph asks
+// for graph-enforced kernels; the gateway passes its family table value.
+func NewSemanticPVClass(hub *semhub.Hub, graph bool) (*semhub.Class, error) {
 	if hub == nil {
 		return nil, errors.New("SemReg PV publication hub is unavailable")
 	}
-	return hub.DeclareClass(semhub.ClassSpec{Name: pvSemanticDriver, Driver: pvSemanticDriver, Validators: func() []semreg.PackValidator { return []semreg.PackValidator{pvpack.New()} }})
+	return hub.DeclareClass(semhub.ClassSpec{Name: pvSemanticDriver, Driver: pvSemanticDriver, Validators: func() []semreg.PackValidator { return []semreg.PackValidator{pvpack.New()} }, Graph: graph})
 }
 
 type pvPublicationCore struct {

@@ -3311,6 +3311,52 @@ An identity alias may locate a public semantic asset, but it cannot populate
 `ebus.v1.*`, `eebus.v1.*`, and `modbus.v1.*` evidence contracts retain their
 protocol ownership; they are not compatibility semantic APIs.
 
+### Graph enforcement per family
+
+Graph enforcement is a property of one asset's kernel and is chosen at
+declaration. `semhub.AssetSpec.Graph`, and `semhub.ClassSpec.Graph` for every
+asset of a class, builds the asset's kernel through SemReg's `semreg/v1/graph`
+package with the element catalog compiled into that package, which loads only
+when its SHA-256 is SemReg's pinned digest. Every pack of the declaration must
+be covered by the catalog; otherwise the declaration fails with the kernel's
+own `membership_missing` error and claims no asset or source identifier. A
+declaration without the flag builds the kernel exactly as before: its
+canonical snapshots are the bytes of a kernel built without the catalog, and
+it refuses every graph member with `membership_missing`. The choice cannot
+change after declaration: a repeated declaration of the asset that asks for
+the other state is `ErrDeclarationConflict`, through the hub and through a
+class. A declared contributor publishes through the asset's kernel, so it
+publishes under the same rules as the owner.
+
+`Hub.GraphState()` lists every declared asset in bytewise asset order with its
+driver label and `enforced` or `not_enforced`, and reports the catalog digest
+once, for the release bill of materials. Until a family is switched on, cut
+assembly reports its assets `ungraphed`.
+
+[`cmd/gateway/semantic_family_graph.go`](../../cmd/gateway/semantic_family_graph.go)
+holds the one table that names, per composed device family (`evse`, `pv`,
+`storage`, `thermal`), whether its declarations ask for enforcement, and the
+accessor `semanticFamilyGraph` that a family's declarations read for their
+`Graph` value. Every family is off. Switching a family on changes what it may
+publish, so a family slice switches its own entry together with its
+publishers.
+[`cmd/gateway/semantic_family_graph_test.go`](../../cmd/gateway/semantic_family_graph_test.go)
+declares an asset through every composed declaration path (the preflight's
+storage and EVSE declarations, both PV classes and the thermal publisher) and
+requires the hub to report each one as the table names it.
+
+The startup preflight calls two composition seams once each, after every
+static declaration and before any runtime starts: `composeSemanticPairings`
+([`cmd/gateway/semantic_pairing_composition.go`](../../cmd/gateway/semantic_pairing_composition.go))
+and then `composeOperatorRecords`
+([`cmd/gateway/operator_record_composition.go`](../../cmd/gateway/operator_record_composition.go)).
+A refusal of either is fatal like a declaration collision. Both compose
+nothing yet, so the preflight declares the same assets as before and no asset
+is graph-enforced. Synthetic hub tests in
+[`internal/semhub/graph_test.go`](../../internal/semhub/graph_test.go) cover
+the enforced and non-enforced kernels, the refused declaration, the fixed
+choice, a contributor and the reported state under the race detector.
+
 ## 13. Acceptance scenarios for implementation
 
 Each scenario becomes an executable fixture or integration test in its later

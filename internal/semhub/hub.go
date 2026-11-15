@@ -131,12 +131,15 @@ type idOwner struct {
 }
 
 type asset struct {
-	commit        sync.Mutex
-	id            semreg.AssetID
-	source        semreg.SourceID
-	driver        string
-	packs         []semreg.PackRef
-	kernel        *semreg.PublicationKernel
+	commit sync.Mutex
+	id     semreg.AssetID
+	source semreg.SourceID
+	driver string
+	packs  []semreg.PackRef
+	kernel *semreg.PublicationKernel
+	// graph is set when the kernel was built with the element catalog. It is
+	// fixed at declaration.
+	graph         bool
 	onControl     func(ControlEvent) error
 	hubSeq        uint64
 	gates         map[semreg.SourceID]*controlAsset // one control gate per publishing source
@@ -329,6 +332,11 @@ type AssetSpec struct {
 	SourceID   semreg.SourceID
 	Driver     string
 	Validators []semreg.PackValidator
+	// Graph builds the kernel with the embedded element catalog, so the asset
+	// and its contributors publish graph records under the catalog's rules.
+	// Every pack must be covered by the catalog, otherwise the declaration
+	// fails with the kernel's error. It cannot change after declaration.
+	Graph bool
 	// OnControl reprojects the declaring family's cache after a control
 	// commit and, on an asset with contributors, after a publication of a
 	// contributor. It runs outside every hub lock, in HubSeq order.
@@ -364,8 +372,9 @@ func (d *Declaration) SetReprojection(onControl func(ControlEvent) error) {
 
 // Declare registers one asset with its owner source and the contributor
 // sources the owner names. A repeated identical declaration returns the
-// existing one; a repeated declaration with another source, other packs or
-// another contributor list is ErrDeclarationConflict.
+// existing one; a repeated declaration with another source, other packs,
+// another contributor list or another graph enforcement is
+// ErrDeclarationConflict.
 func (h *Hub) Declare(spec AssetSpec) (*Declaration, error) {
 	if spec.Driver == "" || len(spec.Validators) == 0 || ValidateOpaque(string(spec.AssetID)) != nil || ValidateOpaque(string(spec.SourceID)) != nil || string(spec.AssetID) == string(spec.SourceID) {
 		return nil, ErrInvalidIdentity
@@ -396,7 +405,7 @@ func (h *Hub) Declare(spec AssetSpec) (*Declaration, error) {
 		if existing.driver != spec.Driver {
 			return nil, &CollisionError{Drivers: [2]string{spec.Driver, existing.driver}}
 		}
-		if existing.source != spec.SourceID || !samePacks(existing.packs, packs) || !sameContributors(existing.contributors, contributors) {
+		if existing.source != spec.SourceID || !samePacks(existing.packs, packs) || !sameContributors(existing.contributors, contributors) || existing.graph != spec.Graph {
 			return nil, ErrDeclarationConflict
 		}
 		return &Declaration{hub: h, asset: existing}, nil
@@ -410,7 +419,7 @@ func (h *Hub) Declare(spec AssetSpec) (*Declaration, error) {
 	if err := h.contributorsAvailableLocked(contributors); err != nil {
 		return nil, err
 	}
-	kernel, err := semreg.NewPublicationKernel(spec.AssetID, spec.Validators...)
+	kernel, err := newAssetKernel(spec)
 	if err != nil {
 		return nil, err
 	}
@@ -421,7 +430,7 @@ func (h *Hub) Declare(spec AssetSpec) (*Declaration, error) {
 	if err := h.claimLocked(string(spec.AssetID), KindAsset, spec.Driver); err != nil {
 		return nil, err
 	}
-	declared := &asset{id: spec.AssetID, source: spec.SourceID, driver: spec.Driver, packs: packs, kernel: kernel, onControl: spec.OnControl}
+	declared := &asset{id: spec.AssetID, source: spec.SourceID, driver: spec.Driver, packs: packs, kernel: kernel, graph: spec.Graph, onControl: spec.OnControl}
 	if len(contributors) != 0 {
 		declared.contributors, declared.inferred, declared.peers = contributors, make(map[semreg.CandidateID]string), make(map[semreg.SourceID]*peerView, 1+len(contributors))
 	}
@@ -446,12 +455,14 @@ func samePacks(left, right []semreg.PackRef) bool {
 }
 
 // ClassSpec declares a family of lazily declared assets sharing one driver,
-// validator set and reprojection callback.
+// validator set, graph enforcement and reprojection callback.
 type ClassSpec struct {
 	Name       string
 	Driver     string
 	Validators func() []semreg.PackValidator
 	OnControl  func(ControlEvent) error
+	// Graph is AssetSpec.Graph for every asset of the class.
+	Graph bool
 }
 
 // Class lazily declares assets discovered at runtime.
@@ -474,7 +485,7 @@ func (h *Hub) DeclareClass(spec ClassSpec) (*Class, error) {
 // Declare declares one discovered asset. A refusal is per asset: it is
 // returned and emitted as DeclareRefused naming driver labels only.
 func (c *Class) Declare(id semreg.AssetID, src semreg.SourceID) (*Declaration, error) {
-	declaration, err := c.hub.Declare(AssetSpec{AssetID: id, SourceID: src, Driver: c.spec.Driver, Validators: c.spec.Validators(), OnControl: c.spec.OnControl})
+	declaration, err := c.hub.Declare(AssetSpec{AssetID: id, SourceID: src, Driver: c.spec.Driver, Validators: c.spec.Validators(), OnControl: c.spec.OnControl, Graph: c.spec.Graph})
 	if err != nil {
 		drivers := []string{c.spec.Driver}
 		var collision *CollisionError

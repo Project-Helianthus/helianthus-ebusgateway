@@ -198,7 +198,7 @@ func h10Native(t *testing.T, fixture h10Replay) (huaweiRegistryProvider, *modbus
 		t.Fatal(err)
 	}
 	config.Clock = clock.Now
-	config.SemanticPV, err = modbusadapter.NewSemanticPVClass(newTestSemanticHub(t))
+	config.SemanticPV, err = modbusadapter.NewSemanticPVClass(newTestSemanticHub(t), false)
 	if err != nil {
 		t.Fatal(err)
 	}

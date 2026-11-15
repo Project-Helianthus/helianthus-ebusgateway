@@ -740,7 +740,7 @@ func startCharacterizationFamiliesOn(t *testing.T, hub *semhub.Hub) characteriza
 	}
 	client, peer := net.Pipe()
 	t.Cleanup(func() { _ = peer.Close() })
-	pvClass, err := modbusadapter.NewSemanticPVClass(familyHub())
+	pvClass, err := modbusadapter.NewSemanticPVClass(familyHub(), false)
 	if err != nil {
 		t.Fatal(err)
 	}

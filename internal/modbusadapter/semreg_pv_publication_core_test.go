@@ -1290,7 +1290,7 @@ func newPVTestHub(t *testing.T) (*semhub.Hub, *semhub.Class) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	class, err := NewSemanticPVClass(hub)
+	class, err := NewSemanticPVClass(hub, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1399,7 +1399,7 @@ func newTestPVPublicationCore() (*pvPublicationCore, error) {
 	if err != nil {
 		return nil, err
 	}
-	class, err := NewSemanticPVClass(hub)
+	class, err := NewSemanticPVClass(hub, false)
 	if err != nil {
 		return nil, err
 	}
@@ -1412,7 +1412,7 @@ func testSemanticPVClass() *semhub.Class {
 	if err != nil {
 		panic(err)
 	}
-	class, err := NewSemanticPVClass(hub)
+	class, err := NewSemanticPVClass(hub, false)
 	if err != nil {
 		panic(err)
 	}
@@ -1534,7 +1534,7 @@ func TestPVPendingRetirementIsRetriedBeforeRequalification(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	class, err := NewSemanticPVClass(hub)
+	class, err := NewSemanticPVClass(hub, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1589,7 +1589,7 @@ func TestAdapterCloseRetriesAFailedProvisionalRetirement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	class, err := NewSemanticPVClass(hub)
+	class, err := NewSemanticPVClass(hub, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1683,7 +1683,7 @@ func TestPVCoverFailureAfterCommitRetainsTheStagedEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	class, err := NewSemanticPVClass(hub)
+	class, err := NewSemanticPVClass(hub, false)
 	if err != nil {
 		t.Fatal(err)
 	}

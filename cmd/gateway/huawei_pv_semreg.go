@@ -271,7 +271,7 @@ func newHuaweiPVPublication(hub *semhub.Hub, driver, source, label string, previ
 	if err := huaweiSourceCapacity(hub, semreg.SourceID(source)); err != nil {
 		return nil, err
 	}
-	class, err := hub.DeclareClass(semhub.ClassSpec{Name: "huawei_pv", Driver: driver, Validators: func() []semreg.PackValidator { return []semreg.PackValidator{pv.New()} }, OnControl: func(semhub.ControlEvent) error { return nil }})
+	class, err := hub.DeclareClass(semhub.ClassSpec{Name: "huawei_pv", Driver: driver, Validators: func() []semreg.PackValidator { return []semreg.PackValidator{pv.New()} }, OnControl: func(semhub.ControlEvent) error { return nil }, Graph: semanticFamilyGraph(semanticFamilyPV)})
 	if err != nil {
 		return nil, err
 	}

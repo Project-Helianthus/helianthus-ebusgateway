@@ -294,7 +294,7 @@ func (p *boilerThermalPublisher) candidateID() semreg.CandidateID {
 func (p *boilerThermalPublisher) publish(handle *semhub.Handle, wall semreg.TimePoint, mono semreg.MonotonicPoint, eligible bool) error {
 	b := p.binding
 	id := b.Identity
-	if _, err := p.hub.Declare(semhub.AssetSpec{AssetID: id.Asset, SourceID: id.Source, Driver: string(primaryEBusDriverID), Validators: []semreg.PackValidator{thermal.New()}, OnControl: p.onControl}); err != nil {
+	if _, err := p.hub.Declare(semhub.AssetSpec{AssetID: id.Asset, SourceID: id.Source, Driver: string(primaryEBusDriverID), Validators: []semreg.PackValidator{thermal.New()}, OnControl: p.onControl, Graph: semanticFamilyGraph(semanticFamilyThermal)}); err != nil {
 		return err
 	}
 	tx, err := p.hub.Begin(handle, id.Asset)

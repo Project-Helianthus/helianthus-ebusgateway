@@ -1,0 +1,3 @@
+## Published-output goldens for the Vaillant semantic poller
+
+An offline characterization test drives the production Vaillant semantic poller over a synthetic site with a regulator, a heat source, a functional module and radio devices, and pins what it publishes: the GraphQL semantic provider's views, the broadcast stream, the configuration and time-program writer results, the MCP semantic view and the semantic cache payload, in goldens under `cmd/gateway/testdata/vaillant_publication/`. The goldens are the baseline that the split of the poller into an acquisition owner and a publication adapter must reproduce unchanged. Only test files change; the gateway binary is unchanged.

@@ -1,0 +1,70 @@
+{
+  "schema_version": 3,
+  "metadata": {
+    "persisted_at": "2026-01-05T05:30:00Z"
+  },
+  "zones": [
+    {
+      "id": "zone-1",
+      "name": "Zone 1",
+      "state": {
+        "current_temp_c": 19.25,
+        "current_humidity_pct": 41,
+        "hvac_action": "idle",
+        "valve_position_pct": 10
+      },
+      "config": {
+        "operating_mode": "auto",
+        "preset": "none",
+        "target_temp_c": 20,
+        "allowed_modes": [
+          "auto",
+          "heat",
+          "off"
+        ],
+        "circuit_type": "heating",
+        "associated_circuit": 0,
+        "room_temperature_zone_mapping": 1
+      }
+    },
+    {
+      "id": "zone-2",
+      "name": "Zone 2",
+      "state": {
+        "current_temp_c": 18.5,
+        "current_humidity_pct": 43,
+        "hvac_action": "heating"
+      },
+      "config": {
+        "operating_mode": "heat",
+        "preset": "none",
+        "target_temp_c": 21.5,
+        "allowed_modes": [
+          "auto",
+          "heat",
+          "off"
+        ]
+      }
+    }
+  ],
+  "dhw": {
+    "state": {
+      "current_temp_c": 45.5
+    },
+    "config": {
+      "operating_mode": "auto",
+      "preset": "none",
+      "target_temp_c": 49
+    }
+  },
+  "boiler": {
+    "flow_temperature_c": 36,
+    "return_temperature_c": 31.5,
+    "central_heating_pump_active": true,
+    "dhw_temperature_c": 44,
+    "dhw_target_temperature_c": 49,
+    "dhw_operating_mode": "auto",
+    "heating_status_raw": 3,
+    "dhw_status_raw": 1
+  }
+}

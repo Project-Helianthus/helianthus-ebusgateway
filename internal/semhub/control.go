@@ -284,17 +284,23 @@ type peerAttempt struct {
 	asset     *asset
 	receivers []semreg.SourceID
 	hubSeq    uint64
+	// ready closes when the publishing commit has run its onCommit and
+	// released the asset commit lock; the scheduler does not start the
+	// attempt before, so no receiver observes the publisher's cache swap
+	// half done. Nil for a retry, which has no open commit.
+	ready chan struct{}
 }
 
 // queuePeersLocked queues one peer reprojection after the publication of
 // publisher committed at seq: every other publishing source of the asset
 // whose callback is bound becomes owed seq. A single-source asset, or one
-// with no other bound callback, queues nothing. It reports whether an entry
-// was queued. h.mu must be held, in the critical section that emitted seq,
+// with no other bound callback, queues nothing. It returns the queued attempt, which stays held until its
+// ready channel closes. h.mu must be held, in the critical section that
+// emitted seq,
 // so the queue stays in HubSeq order.
-func (h *Hub) queuePeersLocked(target *asset, publisher semreg.SourceID, seq uint64) bool {
+func (h *Hub) queuePeersLocked(target *asset, publisher semreg.SourceID, seq uint64) *peerAttempt {
 	if target.peers == nil {
-		return false
+		return nil
 	}
 	var receivers []semreg.SourceID
 	for _, src := range target.publishingSources() {
@@ -310,10 +316,11 @@ func (h *Hub) queuePeersLocked(target *asset, publisher semreg.SourceID, seq uin
 		receivers = append(receivers, src)
 	}
 	if len(receivers) == 0 {
-		return false
+		return nil
 	}
-	h.queue = append(h.queue, &reprojectionEntry{peer: &peerAttempt{asset: target, receivers: receivers, hubSeq: seq}, done: make(chan struct{})})
-	return true
+	attempt := &peerAttempt{asset: target, receivers: receivers, hubSeq: seq, ready: make(chan struct{})}
+	h.queue = append(h.queue, &reprojectionEntry{peer: attempt, done: make(chan struct{})})
+	return attempt
 }
 
 // reprojectionOfLocked returns the reprojection callback of one publishing
@@ -1233,6 +1240,13 @@ func (h *Hub) drain() {
 		entry := h.queue[0]
 		h.queue = h.queue[1:]
 		if entry.peer != nil {
+			// Held until the publisher released its asset commit lock. A
+			// retry entry (Resettle) has no open commit and is never held.
+			if entry.peer.ready != nil {
+				h.unlock()
+				<-entry.peer.ready
+				h.lock()
+			}
 			done := h.startPeerAttemptLocked(entry.peer)
 			h.unlock()
 			if done != nil {

@@ -3,6 +3,7 @@ package semhub
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -98,6 +99,13 @@ func (f *peerFixture) events(id semreg.AssetID, recipient semreg.SourceID) []Con
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]ControlEvent(nil), f.seen[peerKey(id, recipient)]...)
+}
+
+// schedulerIdle reports whether no scheduler drain is running or queued.
+func (f *peerFixture) schedulerIdle() bool {
+	f.hub.mu.RLock()
+	defer f.hub.mu.RUnlock()
+	return !f.hub.draining && len(f.hub.queue) == 0
 }
 
 func (f *peerFixture) takeLog() []string {
@@ -259,6 +267,7 @@ func TestPeerReprojectionGatesReadsUntilSettled(t *testing.T) {
 	f.setFail(sharedOther, refused)
 	failed := commitPeer(t, f.hub, f.a, sharedAsset, "fam_a", 5, 5)
 	withheld("receiver failed")
+	waitFor(t, f.schedulerIdle)
 	if err := f.hub.Resettle(sharedAsset); !errors.Is(err, refused) {
 		t.Fatalf("resettle while the receiver fails=%v", err)
 	}
@@ -401,4 +410,56 @@ func TestPeerReprojectionCommitDoesNotWaitForAReceiver(t *testing.T) {
 	}
 	release()
 	waitFor(t, func() bool { return f.hub.Admitted(sharedAsset) && f.hub.Settled(sharedAsset) })
+}
+
+// A peer reprojection queued by a commit never starts while that commit's
+// onCommit callback still runs under the asset commit lock, even when another
+// scheduler drain is already active and reaches the entry first.
+func TestPeerReprojectionHeldUntilTheCommitReleasedTheAssetLock(t *testing.T) {
+	f := newPeerFixture(t)
+	entered, release := f.hold(t, sharedPeer)
+	commitPeer(t, f.hub, f.a, sharedSecond, "fam_a", 1, 1)
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the first peer reprojection was not entered")
+	}
+	f.takeLog()
+	inCommit, leave := make(chan struct{}), make(chan struct{})
+	returned := make(chan struct{})
+	go func() {
+		defer close(returned)
+		tx, err := f.hub.Begin(f.a, sharedAsset)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer tx.Abort()
+		if _, _, err := tx.Apply(testBatch(t, tx, "fam_a", 2, 2), testMono(2)); err != nil {
+			t.Error(err)
+			return
+		}
+		if outcome, err := tx.Commit(func(Committed) { close(inCommit); <-leave }); err != nil || outcome != Accepted {
+			t.Errorf("commit=%v/%v", outcome, err)
+		}
+	}()
+	select {
+	case <-inCommit:
+	case <-time.After(5 * time.Second):
+		t.Fatal("onCommit was not entered")
+	}
+	// The active drainer is free to run the second entry now.
+	release()
+	time.Sleep(200 * time.Millisecond)
+	for _, line := range f.takeLog() {
+		if strings.HasPrefix(line, string(sharedAsset)+"/") {
+			t.Fatalf("a peer reprojection of the open commit ran under the asset lock: %s", line)
+		}
+	}
+	close(leave)
+	<-returned
+	waitFor(t, func() bool { return f.hub.Admitted(sharedAsset) && f.hub.Settled(sharedAsset) })
+	if got := len(f.events(sharedAsset, sharedPeer)); got < 1 {
+		t.Fatalf("receiver deliveries=%d after release", got)
+	}
 }

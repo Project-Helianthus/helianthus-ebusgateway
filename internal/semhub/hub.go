@@ -1300,10 +1300,12 @@ func (tx *Tx) Commit(onCommit func(Committed)) (outcome Outcome, err error) {
 	h := tx.hub
 	// Registered first so it runs last: after the asset commit lock is
 	// released, a cover is submitted and the acceptance is exported.
-	peers := false
+	var peers *peerAttempt
 	defer func() {
-		if peers {
-			// Handed off so a slow receiver never delays this commit.
+		if peers != nil {
+			// Releases the held attempt and hands the scheduler off so a slow
+			// receiver never delays this commit.
+			close(peers.ready)
 			go h.drain()
 		}
 	}()

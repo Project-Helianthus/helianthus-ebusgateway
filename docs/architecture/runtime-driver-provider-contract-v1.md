@@ -2167,10 +2167,16 @@ unchanged.
    outside all of them. No path holds the control mutexes of two sources, so
    contributors of one asset never wait on each other's control operations.
 
-The other contributors' family caches are not yet reprojected when one
-contributor commits a publication, and the recovery record carries one control
-per asset (the owner's), so a shared asset is not yet represented in a
-recovery checkpoint. Synthetic hub tests in
+When one source of a shared asset commits a publication, every other
+publishing source with a bound reprojection callback receives the asset's
+current snapshot once, as a control event of kind `published` with a zero
+control, through the same scheduler and in `HubSeq` order. The attempt starts
+only after the publisher's cache swap has finished and the asset commit lock
+is released. Reads of the asset stay withheld until every receiver has
+acknowledged the latest publication it is owed; publications never wait for a
+peer reprojection. A single-source asset queues nothing. The recovery record
+carries one control per asset (the owner's), so a shared asset is not yet
+represented in a recovery checkpoint. Synthetic hub tests in
 [internal/semhub/multisource_control_test.go](../../internal/semhub/multisource_control_test.go)
 cover items 1 to 6 under the race detector, and
 [internal/semanticoperations/router_multisource_test.go](../../internal/semanticoperations/router_multisource_test.go)

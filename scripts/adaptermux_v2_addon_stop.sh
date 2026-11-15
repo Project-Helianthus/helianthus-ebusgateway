@@ -84,8 +84,15 @@ def timeout_setting():
 
 
 def checked_url(name, raw):
-    parts = urllib.parse.urlsplit(raw)
-    if parts.scheme not in ("http", "https") or not parts.hostname:
+    # A malformed authority (an unclosed IPv6 bracket, a port that is not a
+    # number) makes the parser raise ValueError: that is a usage error.
+    try:
+        parts = urllib.parse.urlsplit(raw)
+        hostname = parts.hostname
+        parts.port
+    except ValueError as error:
+        raise UsageError(name + " is not a valid URL") from error
+    if parts.scheme not in ("http", "https") or not hostname:
         raise UsageError(name + " must be an http or https URL")
     if "@" in parts.netloc:
         raise UsageError(name + " must not carry credentials")

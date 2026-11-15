@@ -306,6 +306,8 @@ class GatewayStartedTest(CommandTestCase):
             "no gateway": {"MATRIX_GATEWAY_BASE_URL": ""},
             "credentials in the URL": {"MATRIX_GATEWAY_BASE_URL": "http://user:pw@127.0.0.1:1"},
             "not http": {"MATRIX_GATEWAY_BASE_URL": "file:///tmp"},
+            "unclosed IPv6 bracket": {"MATRIX_GATEWAY_BASE_URL": "http://[::1"},
+            "port not a number": {"MATRIX_GATEWAY_BASE_URL": "http://127.0.0.1:port"},
             "no executable cell": {"MATRIX_COMPOSITION": "mux", "MATRIX_SOUTHBOUND_TRANSPORT": "udp"},
             "no composition": {"MATRIX_COMPOSITION": ""},
             "bad wait": {"MATRIX_ADDON_WAIT_SEC": "soon"},
@@ -403,6 +405,8 @@ class ClientStartedTest(CommandTestCase):
             "ebusd port without port": {"MATRIX_EBUSD_COMMAND_ADDR": "localhost"},
             "single reading": {"MATRIX_ADDON_WAIT_SEC": "0"},
             "credentials in the URL": {"MATRIX_GATEWAY_BASE_URL": "http://user:pw@127.0.0.1:1"},
+            "unclosed IPv6 bracket": {"MATRIX_GATEWAY_BASE_URL": "http://[::1"},
+            "port not a number": {"MATRIX_GATEWAY_BASE_URL": "http://127.0.0.1:port"},
         }
         for setting_name in NON_FINITE_SETTINGS:
             for value in NON_FINITE_VALUES:
@@ -506,6 +510,20 @@ class StopTest(CommandTestCase):
                 for surface in surfaces.values():
                     self.assertEqual(surface, {"read": False, "reason":
                                                "usage: MATRIX_ADDON_HTTP_TIMEOUT_SEC must be a finite number"})
+
+    def test_malformed_url_is_recorded_as_usage(self):
+        for value in ("http://[::1", "http://127.0.0.1:port"):
+            with self.subTest(value=value):
+                self.gateway.load({})
+                result = self.run_command(STOP, self.matrix("mux", "enh", MATRIX_GATEWAY_BASE_URL=value))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+                self.assertEqual(self.gateway.requests, [])
+                surfaces = self.record()["surfaces"]
+                self.assertEqual(sorted(surfaces), ["metrics", "observability", "vars"])
+                for surface in surfaces.values():
+                    self.assertEqual(surface, {"read": False, "reason":
+                                               "usage: MATRIX_GATEWAY_BASE_URL is not a valid URL"})
 
     def test_missing_case_directory_is_a_usage_error(self):
         missing = str(self.root / "absent")

@@ -647,13 +647,14 @@ its re-admission; counts are members of one PV asset snapshot, sampled after
 every event on the affected asset and on a sibling asset of the same instance.
 The S-Dongle fixture admits one child, so its sibling is decoded from the same
 answered groups under the next routed unit. Both fixtures measured the same
-growth. The time columns assume one event per two 60 s cycles and one event
+growth. The time columns price each event at the cycles it publishes (two, three for the two-cycle reconnect) at 60 s per cycle, and one event
 per hour.
 
-| Cause of one event | Affected asset per event | Sibling per event | Events to the first bound | One event per two cycles | One event per hour |
+| Cause of one event | Affected asset per event | Sibling per event | Events to the first bound | One event at 60 s cycles | One event per hour |
 |---|---|---|---|---|---|
 | Genuine identity change: withheld with `identity_mismatch` for one cycle | +1 binding, +1 identity link | none | 127 (bindings and identity links) | 4 h 14 min | 127 h |
-| Reconnect: new transport generation, child stale with its previous identified generation for one or for two cycles, then identified | +1 binding, +1 identity link | none | 127 | 4 h 14 min | 127 h |
+| Reconnect: new transport generation, child stale with its previous identified generation for one cycle, then identified | +1 binding, +1 identity link | none | 127 | 4 h 14 min | 127 h |
+| Reconnect: the same, stale for two cycles (three cycles per event) | +1 binding, +1 identity link | none | 127 | 6 h 21 min | 127 h |
 | Child timeout, read failure, backoff or unconfirmed listing in the same transport generation, reported stale as the native provider reports an identified child | none | none | never | never | never |
 | The same four reasons reported withheld | +1 binding, +1 identity link | none | 127 | 4 h 14 min | 127 h |
 | Absent from one complete listing | +1 binding, +1 identity link | none | 127 | 4 h 14 min | 127 h |

@@ -212,6 +212,8 @@ func growthRebase(child modbusreg.HuaweiProviderChildObservation, generation uin
 type growthMeasure struct {
 	victim, sibling []growthCounts
 	refused         int
+	// cycles is the number of cycles one event publishes, at least two.
+	cycles int
 }
 
 func (r *growthRig) sample() (growthCounts, growthCounts) {
@@ -226,12 +228,16 @@ func (r *growthRig) measure(events int, event func(*growthRig) error) growthMeas
 	v, s := r.sample()
 	m := growthMeasure{victim: []growthCounts{v}, sibling: []growthCounts{s}}
 	for i := 1; i <= events; i++ {
+		before := r.cycle.Cycle
 		if err := event(r); errors.Is(err, errHuaweiBindingCapacityExhausted) {
 			if m.refused == 0 {
 				m.refused = i
 			}
 		} else if err != nil {
 			r.t.Fatalf("event %d: %v", i, err)
+		}
+		if i == 1 {
+			m.cycles = int(r.cycle.Cycle - before)
 		}
 		v, s = r.sample()
 		m.victim, m.sibling = append(m.victim, v), append(m.sibling, s)
@@ -295,12 +301,13 @@ type growthRow struct {
 	class             growthClass
 	victim, sibling   growthCounts
 	events            int
+	cycles            int
 	member            string
 	ruleEvents        int
 }
 
 func growthRowOf(scenario, fixture string, class growthClass, m growthMeasure) growthRow {
-	row := growthRow{scenario: scenario, fixture: fixture, class: class, victim: m.victim[1].minus(m.victim[0]), sibling: m.sibling[1].minus(m.sibling[0])}
+	row := growthRow{scenario: scenario, fixture: fixture, class: class, victim: m.victim[1].minus(m.victim[0]), sibling: m.sibling[1].minus(m.sibling[0]), cycles: max(m.cycles, 2)}
 	row.events, row.member = growthFirstBound(m.victim[0], row.victim, true)
 	row.ruleEvents, _ = growthFirstBound(m.victim[0], row.victim, false)
 	return row
@@ -310,7 +317,7 @@ func (row growthRow) String() string {
 	bound, paced, hourly := "none", "never", "never"
 	if row.events > 0 {
 		bound = fmt.Sprintf("%d (%s)", row.events, row.member)
-		paced = (time.Duration(row.events) * 2 * growthCycle).String()
+		paced = (time.Duration(row.events*row.cycles) * growthCycle).String()
 		hourly = (time.Duration(row.events) * time.Hour).String()
 	}
 	return fmt.Sprintf("| %s | %s | %s | %s | %s | %s | %s |", row.scenario, row.fixture, row.victim, row.sibling, bound, paced, hourly)
@@ -638,7 +645,7 @@ func TestHuaweiIdentityGrowthMeasurement(t *testing.T) {
 		t.Logf("partial run: table and remedy not evaluated")
 		return
 	}
-	t.Logf("| scenario | fixture | affected asset per event | sibling per event | events to first bound | one event per two %s cycles | one event per hour |", growthCycle)
+	t.Logf("| scenario | fixture | affected asset per event | sibling per event | events to first bound | one event per two %s cycles, three where the event publishes three | one event per hour |", growthCycle)
 	for _, row := range table {
 		t.Logf("%s", row)
 	}

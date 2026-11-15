@@ -64,7 +64,6 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 	if err != nil {
 		return fmt.Errorf("create portal contribution registry: %w", err)
 	}
-	portalContributions.UseSourceDrivers(semanticHub)
 	// Initialize the runtime-state Manager early so the cached
 	// ebus.self.last_admitted_source can be passed as a hint to the
 	// SourceAddressSelector below, and the Manager is available for

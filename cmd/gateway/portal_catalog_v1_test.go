@@ -134,7 +134,7 @@ func TestPortalCatalogAttributesProductionRuntimeDriversToTheirDescriptors(t *te
 	for _, family := range []struct {
 		descriptor contributionv1.Manifest
 		runtime    string
-	}{{gatewayPortalPVDescriptor(), gatewayPortalPVPublisherDriver}, {gatewayPortalStorageDescriptor(), growattStorageDriver}, {gatewayPortalEVSEDescriptor(), teslaEVSEDriver}} {
+	}{{gatewayPortalPVDescriptor(), "pv_sunspec"}, {gatewayPortalStorageDescriptor(), growattStorageDriver}, {gatewayPortalEVSEDescriptor(), teslaEVSEDriver}} {
 		t.Run(family.descriptor.ManifestID, func(t *testing.T) {
 			if family.runtime == family.descriptor.Contributor.DriverID {
 				t.Fatalf("runtime driver %q equals the contribution driver", family.runtime)
@@ -142,7 +142,7 @@ func TestPortalCatalogAttributesProductionRuntimeDriversToTheirDescriptors(t *te
 			service := semanticRef(family.descriptor.Fields[0].ServiceRef)
 			capability := semanticRef(family.descriptor.Fields[0].CapabilityRef)
 			snapshot := portalContributorSnapshot(service, capability, []string{"owner"}, "owner")
-			attribution := portalAttribution{drivers: portalTestDrivers{"source:owner": family.runtime}, accepted: contributions.snapshot().Accepted}.publishedBy(family.runtime)
+			attribution := portalAttribution{drivers: portalTestDrivers{"source:owner": family.runtime}, accepted: contributions.snapshot().Accepted}.ownedBy("source:owner")
 			resources, _, diagnostics := portalSnapshotCapture(attribution, family.descriptor, snapshot, semreg.EvaluationView{}, []semreg.Selection{}, map[string]any{})
 			if len(diagnostics) != 0 || len(resources) != 1 {
 				t.Fatalf("resources=%d diagnostics=%+v", len(resources), diagnostics)
@@ -911,8 +911,9 @@ func TestPortalCatalogKeepsResourceWithSeveralContributors(t *testing.T) {
 		defer lease.Stop()
 	}
 	// The hub names the owner's source by the runtime driver of the EVSE
-	// publication, not by the descriptor's contribution driver.
-	attribution := portalAttribution{drivers: portalTestDrivers{"source:owner": teslaEVSEDriver, "source:contributor": "evse.contributor", "source:contributor-b": "evse.contributor-b"}, accepted: contributions.snapshot().Accepted}.publishedBy(teslaEVSEDriver)
+	// publication, not by the descriptor's contribution driver; the owner is
+	// the publication's declared source.
+	attribution := portalAttribution{drivers: portalTestDrivers{"source:owner": teslaEVSEDriver, "source:contributor": "evse.contributor", "source:contributor-b": "evse.contributor-b"}, accepted: contributions.snapshot().Accepted}.ownedBy("source:owner")
 	service := semanticRef(owner.Fields[0].ServiceRef)
 	capability := semanticRef(owner.Fields[0].CapabilityRef)
 	twoSources := []string{"owner", "contributor"}
@@ -1021,7 +1022,7 @@ func TestPortalCatalogKeepsResourceWithSeveralContributors(t *testing.T) {
 		snapshot.Services = append(snapshot.Services, semreg.ServiceInstance{InstanceID: "service:contributor-2", AssetID: "asset:shared", Definition: service, BindingID: "binding:contributor", SourceEpochID: "epoch:contributor", DriverGeneration: portalContributorGeneration["contributor"]})
 		dropped(t, snapshot, attribution, portalDropCapabilityAmbiguous)
 	})
-	t.Run("the composition supplies the hub as the driver resolver", func(t *testing.T) {
+	t.Run("the composed catalog source has no driver resolver", func(t *testing.T) {
 		hub, err := semhub.New(semhub.Options{})
 		if err != nil {
 			t.Fatal(err)
@@ -1032,16 +1033,26 @@ func TestPortalCatalogKeepsResourceWithSeveralContributors(t *testing.T) {
 		}
 		source := newGatewayPortalCatalogSource(nil, nil, nil, fresh).(*gatewayPortalCatalogSource)
 		if source.attribution().drivers != nil {
-			t.Fatal("a source without a hub must not resolve drivers")
+			t.Fatal("a composed source must keep the single-source rule")
 		}
-		fresh.UseSourceDrivers(nil)
-		if source.attribution().drivers != nil {
-			t.Fatal("a nil hub must leave the resolver unset")
-		}
-		fresh.UseSourceDrivers(hub)
+		source.drivers = hub
 		if source.attribution().drivers == nil {
-			t.Fatal("the source has no driver resolver after composition")
+			t.Fatal("the source does not use its driver resolver")
 		}
+	})
+	// A contributor may be admitted under the owner's own runtime driver; the
+	// owner is still only the publication's declared source.
+	sameDriver := attribution
+	sameDriver.drivers = portalTestDrivers{"source:owner": "evse.contributor", "source:contributor": "evse.contributor"}
+	t.Run("a contributor under the owner's driver does not take the owner's attribution", func(t *testing.T) {
+		kept(t, portalContributorSnapshot(service, capability, twoSources, "contributor"), sameDriver, "contributor", "evse.contributor", contributor)
+	})
+	t.Run("a contributor under the owner's driver does not make the owner ambiguous", func(t *testing.T) {
+		kept(t, portalContributorSnapshot(service, capability, twoSources, "owner", "contributor"), sameDriver, "owner", "evse.primary", owner)
+	})
+	t.Run("several sources and no owner's source", func(t *testing.T) {
+		withoutOwner := attribution.ownedBy("")
+		dropped(t, portalContributorSnapshot(service, capability, twoSources, "owner", "contributor"), withoutOwner, portalDropDriverUnresolved)
 	})
 	t.Run("one source keeps the manifest's driver without resolution", func(t *testing.T) {
 		kept(t, portalContributorSnapshot(service, capability, []string{"owner"}, "owner"), portalAttribution{}, "owner", "evse.primary", owner)
@@ -1087,7 +1098,7 @@ func TestPortalCatalogKeepsSingleSourceFamiliesWithTheHubResolver(t *testing.T) 
 	if err != nil || len(before) != 2 {
 		t.Fatalf("without the resolver resources=%d diagnostics=%+v err=%v", len(before), beforeDiagnostics, err)
 	}
-	source.contributions.UseSourceDrivers(hub)
+	source.drivers = hub
 	if source.attribution().drivers == nil {
 		t.Fatal("the hub is not installed as the driver resolver")
 	}
@@ -1098,7 +1109,7 @@ func TestPortalCatalogKeepsSingleSourceFamiliesWithTheHubResolver(t *testing.T) 
 	if got, want := characterizationJSON(t, map[string]any{"resources": after, "fields": afterFields, "diagnostics": afterDiagnostics}), characterizationJSON(t, map[string]any{"resources": before, "fields": beforeFields, "diagnostics": beforeDiagnostics}); !bytes.Equal(got, want) {
 		t.Fatalf("the hub resolver changed single-source output:\n%s\nwant\n%s", got, want)
 	}
-	runtime := map[string]string{"pv.primary": gatewayPortalPVPublisherDriver, "evse.primary": teslaEVSEDriver}
+	runtime := map[string]string{"pv.primary": "pv_sunspec", "evse.primary": teslaEVSEDriver}
 	for _, resource := range after {
 		var snapshot semreg.Snapshot
 		if err := json.Unmarshal(resource.Source.Snapshot, &snapshot); err != nil {

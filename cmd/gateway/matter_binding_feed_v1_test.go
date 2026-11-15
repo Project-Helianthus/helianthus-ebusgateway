@@ -440,7 +440,7 @@ func TestMatterBindingFeedKeepsSingleSourceFamiliesWithTheHubResolver(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	source.contributions.UseSourceDrivers(hub)
+	source.drivers = hub
 	after, err := feed.Capture(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -652,7 +652,7 @@ func TestMatterBindingFeedKeepsSharedAssetResource(t *testing.T) {
 	if len(snapshot.Services) != 2 || stale != 1 {
 		t.Fatalf("fixture services=%d stale=%d; want two carriers and one stale unmapped fact", len(snapshot.Services), stale)
 	}
-	source := &matterSharedAssetSource{contributions: contributions, snapshot: snapshot, evaluation: evaluation, attribution: portalAttribution{drivers: portalTestDrivers{"source:owner": teslaEVSEDriver, "source:contributor": "evse.contributor"}, accepted: contributions.snapshot().Accepted}.publishedBy(teslaEVSEDriver)}
+	source := &matterSharedAssetSource{contributions: contributions, snapshot: snapshot, evaluation: evaluation, attribution: portalAttribution{drivers: portalTestDrivers{"source:owner": teslaEVSEDriver, "source:contributor": "evse.contributor"}, accepted: contributions.snapshot().Accepted}.ownedBy("source:owner")}
 	provider, err := newGatewayMatterBindingFeedProvider(source, []string{"asset:shared"})
 	if err != nil {
 		t.Fatal(err)

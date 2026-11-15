@@ -208,36 +208,33 @@ func (s *gatewayPortalCatalogSource) CaptureDiagnostics(at time.Time) ([]catalog
 	attribution := s.attribution()
 	if s.pv != nil && s.contributions != nil && s.contributions.accepts("pv.primary", "portal.pv") {
 		if v, ok := s.pv.SemanticPVCurrentSingleAt(at); ok {
-			out.add(attribution.publishedBy(gatewayPortalPVPublisherDriver), gatewayPortalPVDescriptor(), v.Snapshot, v.Evaluation, v.Selections, v.Projection)
+			// The PV publication does not name its owner's source, so its
+			// assets keep the single-source rule.
+			out.add(attribution, gatewayPortalPVDescriptor(), v.Snapshot, v.Evaluation, v.Selections, v.Projection)
 		}
 	}
 	if s.storage != nil && s.contributions != nil && s.contributions.accepts("storage.primary", "portal.storage") {
 		if v, ok := s.storage.CurrentAt(string(s.storage.assetID), at); ok {
-			out.add(attribution.publishedBy(growattStorageDriver), gatewayPortalStorageDescriptor(), v.Snapshot, v.Evaluation, []semreg.Selection{}, v.Projection)
+			out.add(attribution.ownedBy(s.storage.sourceID), gatewayPortalStorageDescriptor(), v.Snapshot, v.Evaluation, []semreg.Selection{}, v.Projection)
 		}
 	}
 	if s.evse != nil && s.contributions != nil && s.contributions.accepts("evse.primary", "portal.evse") {
 		if v, ok := s.evse.SemanticEVSECurrentAt(at); ok {
-			out.add(attribution.publishedBy(teslaEVSEDriver), gatewayPortalEVSEDescriptor(), v.Snapshot, v.Evaluation, v.Selections, v.Projection)
+			out.add(attribution.ownedBy(semreg.SourceID(s.evse.cfg.SourceID)), gatewayPortalEVSEDescriptor(), v.Snapshot, v.Evaluation, v.Selections, v.Projection)
 		}
 	}
 	return out.resources, out.fields, out.diagnostics, nil
 }
 
 // attribution captures what a capture needs to name a binding's driver: the
-// source-to-driver resolution and the admitted descriptors.
+// source-to-driver resolution and the admitted descriptors. The composition
+// does not supply a resolver yet, so a production capture keeps the
+// single-source rule.
 func (s *gatewayPortalCatalogSource) attribution() portalAttribution {
-	if s == nil {
+	if s == nil || s.drivers == nil || s.contributions == nil {
 		return portalAttribution{}
 	}
-	drivers := s.drivers
-	if drivers == nil && s.contributions != nil {
-		drivers = s.contributions.sourceDrivers()
-	}
-	if drivers == nil {
-		return portalAttribution{}
-	}
-	return portalAttribution{drivers: drivers, accepted: s.contributions.snapshot().Accepted}
+	return portalAttribution{drivers: s.drivers, accepted: s.contributions.snapshot().Accepted}
 }
 
 // gatewayPortalSourceDrivers resolves the driver that holds a source. The
@@ -270,8 +267,8 @@ const (
 	// One source holds several instances, or several owner or contributor
 	// paths qualify and none is the owner's.
 	portalDropCapabilityAmbiguous = "capability_ambiguous"
-	// The asset holds several sources and the driver of a path's source is
-	// not known.
+	// The asset holds several sources and the owner's source or the driver of
+	// a path's source is not known.
 	portalDropDriverUnresolved = "contributor_driver_unresolved"
 	// The contributor that carries the capability has no admitted descriptor
 	// for the resource.
@@ -280,22 +277,20 @@ const (
 	portalDropSourceIncomplete = "source_record_incomplete"
 )
 
-// gatewayPortalPVPublisherDriver is the driver under which the Modbus
-// adapter's PV class admits its sources on the publication hub.
-const gatewayPortalPVPublisherDriver = "pv_sunspec"
-
 type portalAttribution struct {
 	drivers  gatewayPortalSourceDrivers
 	accepted []contributionv1.AcceptedDescriptor
-	// publisher is the hub driver of the publication the capture read the
-	// snapshot from. Its source is the owner's, and the owner's path is
-	// attributed to the descriptor that publication contributes.
-	publisher string
+	// owner is the source the asset is declared with by the publication the
+	// capture read the snapshot from. Only that source's path is the owner's
+	// and is attributed to the descriptor the publication contributes; a
+	// contributor admitted under the same driver is still a contributor.
+	owner semreg.SourceID
 }
 
-// publishedBy names the hub driver of the publication a snapshot was read from.
-func (a portalAttribution) publishedBy(driver string) portalAttribution {
-	a.publisher = driver
+// ownedBy names the owner's source of the publication a snapshot was read
+// from.
+func (a portalAttribution) ownedBy(source semreg.SourceID) portalAttribution {
+	a.owner = source
 	return a
 }
 
@@ -504,14 +499,16 @@ func portalSourcePath(snapshot semreg.Snapshot, source semreg.SourceID, service 
 
 // choose keeps the owner's path, or the path of the one contributor whose
 // binding carries the capability, and names the driver of that binding. The
-// owner is the source held by the publication the snapshot was read from; its
-// path is attributed to the descriptor that publication contributes, while a
-// contributor's path is attributed to its own driver's admitted descriptor.
+// owner is the source the publication the snapshot was read from declares the
+// asset with, compared by source and never by driver; its path is attributed
+// to the descriptor that publication contributes, while a contributor's path
+// is attributed to its own driver's admitted descriptor.
 func (a portalAttribution) choose(descriptor contributionv1.Manifest, resourceID string, snapshot semreg.Snapshot, paths []portalPath) (portalPath, portalContributor, string) {
 	owner := portalContributor{driver: descriptor.Contributor.DriverID, manifest: descriptor.ManifestID, version: descriptor.ManifestVersion}
-	if a.drivers == nil {
-		// Without driver resolution only a single-source asset can be
-		// attributed: its one source is the descriptor's driver.
+	if a.drivers == nil || a.owner == "" {
+		// Without driver resolution or the owner's source only a
+		// single-source asset can be attributed: its one source is the
+		// descriptor's driver.
 		if portalCurrentSources(snapshot) > 1 {
 			return portalPath{}, portalContributor{}, portalDropDriverUnresolved
 		}
@@ -521,21 +518,21 @@ func (a portalAttribution) choose(descriptor contributionv1.Manifest, resourceID
 		return paths[0], owner, ""
 	}
 	drivers := make([]string, len(paths))
-	owners := make([]int, 0, 1)
+	ownerPath := -1
 	for index, path := range paths {
 		info, ok := a.drivers.Source(path.source)
 		if !ok || info.Driver == "" {
 			return portalPath{}, portalContributor{}, portalDropDriverUnresolved
 		}
 		drivers[index] = info.Driver
-		if a.publisher != "" && info.Driver == a.publisher {
-			owners = append(owners, index)
+		if path.source == a.owner {
+			ownerPath = index
 		}
 	}
-	if len(owners) == 1 {
-		return paths[owners[0]], owner, ""
+	if ownerPath >= 0 {
+		return paths[ownerPath], owner, ""
 	}
-	if len(owners) > 1 || len(paths) != 1 {
+	if len(paths) != 1 {
 		return portalPath{}, portalContributor{}, portalDropCapabilityAmbiguous
 	}
 	contributor, ok := a.descriptorOf(drivers[0], descriptor, resourceID)

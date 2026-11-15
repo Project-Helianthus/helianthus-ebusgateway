@@ -3898,24 +3898,41 @@
       "ha-integration/tests/test_number_dhw_bivalence.py",
       "ha-integration/tests/test_system_bound_reprobe.py"
     ],
-    "dhw_bivalence_point": [
+    "dhw_cylinder_bottom_temperature": [
+      "ha-integration/custom_components/helianthus/__init__.py",
       "ha-integration/custom_components/helianthus/coordinator.py",
-      "ha-integration/custom_components/helianthus/number.py",
-      "ha-integration/tests/test_number_dhw_bivalence.py",
-      "ha-integration/tests/test_system.py",
-      "ha-integration/tests/test_system_bound_reprobe.py"
+      "ha-integration/custom_components/helianthus/sensor_descriptors.py",
+      "ha-integration/tests/test_system.py"
     ],
-    "dhw_bivalence_point_bound": [
+    "dhw_cylinder_top_temperature": [
+      "ha-integration/custom_components/helianthus/__init__.py",
+      "ha-integration/custom_components/helianthus/coordinator.py",
+      "ha-integration/custom_components/helianthus/sensor_descriptors.py",
+      "ha-integration/tests/test_system.py"
+    ],
+    "dhw_flow_temperature_setpoint_maximum": [
       "ha-integration/custom_components/helianthus/coordinator.py",
       "ha-integration/custom_components/helianthus/number.py",
-      "ha-integration/tests/test_number_dhw_bivalence.py",
-      "ha-integration/tests/test_system_bound_reprobe.py"
+      "ha-integration/tests/test_system.py"
     ],
     "dhw_hours": [
       "ha-integration/custom_components/helianthus/__init__.py",
       "ha-integration/custom_components/helianthus/coordinator.py",
       "ha-integration/custom_components/helianthus/sensor_descriptors.py",
       "ha-integration/tests/test_sensor.py"
+    ],
+    "dhw_outdoor_bivalence_temperature_limit": [
+      "ha-integration/custom_components/helianthus/coordinator.py",
+      "ha-integration/custom_components/helianthus/number.py",
+      "ha-integration/tests/test_number_dhw_bivalence.py",
+      "ha-integration/tests/test_system.py",
+      "ha-integration/tests/test_system_bound_reprobe.py"
+    ],
+    "dhw_outdoor_bivalence_temperature_limit_bound": [
+      "ha-integration/custom_components/helianthus/coordinator.py",
+      "ha-integration/custom_components/helianthus/number.py",
+      "ha-integration/tests/test_number_dhw_bivalence.py",
+      "ha-integration/tests/test_system_bound_reprobe.py"
     ],
     "dhw_starts": [
       "ha-integration/custom_components/helianthus/__init__.py",
@@ -7365,11 +7382,6 @@
       "vrc-explorer/src/helianthus_vrc_explorer/protocol/b555.py",
       "vrc-explorer/src/helianthus_vrc_explorer/scanner/b555.py"
     ],
-    "hc_emergency_temperature": [
-      "ha-integration/custom_components/helianthus/coordinator.py",
-      "ha-integration/custom_components/helianthus/number.py",
-      "ha-integration/tests/test_system.py"
-    ],
     "heating": [
       "ha-integration/custom_components/helianthus/binary_sensor.py",
       "ha-integration/custom_components/helianthus/calendar.py",
@@ -7431,6 +7443,11 @@
       "ha-integration/tests/test_dhw_status.py",
       "ha-integration/tests/test_sensor.py",
       "ha-integration/tests/test_subscription_sparse_zone_merge.py"
+    ],
+    "heating_flow_temperature_setpoint_maximum_at_heat_pump_fault": [
+      "ha-integration/custom_components/helianthus/coordinator.py",
+      "ha-integration/custom_components/helianthus/number.py",
+      "ha-integration/tests/test_system.py"
     ],
     "heating_outdoor_bivalence_temperature_limit": [
       "ha-integration/custom_components/helianthus/coordinator.py",
@@ -7504,23 +7521,6 @@
     ],
     "hwcCylinderTemperatureTop": [
       "ha-integration/custom_components/helianthus/__init__.py"
-    ],
-    "hwc_cylinder_temperature_bottom": [
-      "ha-integration/custom_components/helianthus/__init__.py",
-      "ha-integration/custom_components/helianthus/coordinator.py",
-      "ha-integration/custom_components/helianthus/sensor_descriptors.py",
-      "ha-integration/tests/test_system.py"
-    ],
-    "hwc_cylinder_temperature_top": [
-      "ha-integration/custom_components/helianthus/__init__.py",
-      "ha-integration/custom_components/helianthus/coordinator.py",
-      "ha-integration/custom_components/helianthus/sensor_descriptors.py",
-      "ha-integration/tests/test_system.py"
-    ],
-    "hwc_max_flow_temp_desired": [
-      "ha-integration/custom_components/helianthus/coordinator.py",
-      "ha-integration/custom_components/helianthus/number.py",
-      "ha-integration/tests/test_system.py"
     ],
     "hydraulic_scheme_code": [
       "ha-integration/custom_components/helianthus/__init__.py",
@@ -8031,7 +8031,7 @@
       "ha-integration/tests/test_coordinator.py",
       "ha-integration/tests/test_system.py"
     ],
-    "installer_phone": [
+    "installer_phone_number": [
       "ha-integration/custom_components/helianthus/__init__.py",
       "ha-integration/custom_components/helianthus/coordinator.py",
       "ha-integration/custom_components/helianthus/entry_setup.py",
@@ -9109,6 +9109,14 @@
     "maintenanceDue": [
       "ha-integration/custom_components/helianthus/__init__.py"
     ],
+    "maintenance_active": [
+      "ha-integration/custom_components/helianthus/__init__.py",
+      "ha-integration/custom_components/helianthus/binary_sensor.py",
+      "ha-integration/custom_components/helianthus/coordinator.py",
+      "ha-integration/tests/test_coordinator.py",
+      "ha-integration/tests/test_entity_icon_gate.py",
+      "ha-integration/tests/test_system.py"
+    ],
     "maintenance_date": [
       "ha-integration/custom_components/helianthus/__init__.py",
       "ha-integration/custom_components/helianthus/coordinator.py",
@@ -9123,14 +9131,6 @@
       "vrc-explorer/fixtures/b524_shared/protocols/vaillant/fixtures/b524-basv0-register-observations-v1.json",
       "vrc-explorer/src/helianthus_vrc_explorer/fixtures/b524-basv0-description-profile-v1.json",
       "vrc-explorer/src/helianthus_vrc_explorer/fixtures/b524-basv0-register-observations-v1.json"
-    ],
-    "maintenance_due": [
-      "ha-integration/custom_components/helianthus/__init__.py",
-      "ha-integration/custom_components/helianthus/binary_sensor.py",
-      "ha-integration/custom_components/helianthus/coordinator.py",
-      "ha-integration/tests/test_coordinator.py",
-      "ha-integration/tests/test_entity_icon_gate.py",
-      "ha-integration/tests/test_system.py"
     ],
     "major": [
       "ha-integration/custom_components/helianthus/entry_setup.py",
@@ -11166,7 +11166,7 @@
       "ha-integration/tests/test_system.py",
       "ha-integration/tests/test_system_bound_reprobe.py"
     ],
-    "outdoor_temperature_avg24h": [
+    "outdoor_temperature_daily_average": [
       "ha-integration/custom_components/helianthus/__init__.py",
       "ha-integration/custom_components/helianthus/coordinator.py",
       "ha-integration/custom_components/helianthus/sensor_descriptors.py",

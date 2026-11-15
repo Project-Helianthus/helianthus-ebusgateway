@@ -95,19 +95,19 @@
   "semantic": {
     "state": {
       "system_off": false,
-      "maintenance_due": false,
+      "maintenance_active": false,
       "system_water_pressure": 1.6,
       "system_flow_temperature": 34.5,
       "outdoor_temperature": 7.5,
-      "outdoor_temperature_avg24h": 6.0
+      "outdoor_temperature_daily_average": 6.0
     },
     "drifted_state": {
       "system_off": false,
-      "maintenance_due": false,
+      "maintenance_active": false,
       "system_water_pressure": 1.6,
       "system_flow_temperature": 34.5,
       "outdoor_temperature": 12.0,
-      "outdoor_temperature_avg24h": 6.0
+      "outdoor_temperature_daily_average": 6.0
     },
     "mcp_contract": {"name": "helianthus-ebus-mcp", "major": 1, "minor": 0},
     "other_mcp_contract": {"name": "helianthus-ebus-mcp", "major": 1, "minor": 1}

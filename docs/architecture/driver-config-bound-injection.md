@@ -151,12 +151,12 @@ Preserve the G03 projection aliases and their null behavior:
 
 | Public fields | Shared supplied value |
 | --- | --- |
-| `dhwBivalencePointBound`, `dhw_bivalence_point_bound` | `DhwBivalenceBound` |
+| `dhwBivalencePointBound`, `dhw_outdoor_bivalence_temperature_limit_bound` | `DhwBivalenceBound` |
 | `minC`, `min_c` | `MinC` |
 | `maxC`, `max_c` | `MaxC` |
 | `narrowedOnly`, `narrowed_only` | `NarrowedOnly` |
 | `source`, `reason`, `profile` | corresponding bound metadata |
-| `dhwBivalencePoint`, `dhw_bivalence_point` | existing measured/configured value |
+| `dhwBivalencePoint`, `dhw_outdoor_bivalence_temperature_limit` | existing measured/configured value |
 
 Empty reason/profile strings project as null in GraphQL and are omitted in MCP.
 The whole bound is likewise null in GraphQL and omitted in MCP when absent,

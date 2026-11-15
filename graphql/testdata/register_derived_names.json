@@ -1,6 +1,6 @@
 {
   "format": "helianthus-register-derived-names/v1",
-  "description": "B524 register-derived value fields published by the gateway system and circuit planes, each with the published name, the native identity (opcode, group, register) and the docs-ebus name and previous_name of that register. The docs-ebus columns are copied from the docs-ebus fixture protocols/vaillant/fixtures/b524-op02-register-names.csv (B524 opcode 0x02 register name catalog). previous_name is a documentary column only: no surface publishes it. surfaces names the object that publishes the field on each surface (GraphQL type, MCP Go struct, Portal Go struct); an empty value means the surface does not publish the field. exemption marks the single row whose published name is not yet the docs-ebus name, with the docs-ebus issue that settles it.",
+  "description": "B524 register-derived value fields published by the gateway system and circuit planes, each with the published name, the native identity (opcode, group, register) and the docs-ebus name and previous_name of that register. The docs-ebus columns are copied from the docs-ebus fixture protocols/vaillant/fixtures/b524-op02-register-names.csv (B524 opcode 0x02 register name catalog). previous_name is a documentary column only: no surface publishes it. surfaces names the object that publishes the field on each surface (GraphQL type, MCP Go struct, Portal Go struct); an empty value means the surface does not publish the field. previous_published_name, where present, is the spelling the gateway published for the register before it adopted the docs-ebus name; no surface publishes it either. join, where present, records the second register of a field the gateway publishes as the join of two registers: the docs-ebus names of the two registers are the published name with the suffixes _prefix and _suffix. bound, where present, records the field that publishes the active write bound of the value: its published name is the value name with the suffix _bound, with its own previous published name and surfaces. exemption marks the single row whose published name is not yet the docs-ebus name, with the docs-ebus issue that settles it.",
   "source": "helianthus-docs-ebus protocols/vaillant/fixtures/b524-op02-register-names.csv",
   "rows": [
     {
@@ -39,6 +39,46 @@
       "previous_name": "system_off",
       "surfaces": {"graphql": "system_state", "mcp": "SystemState", "portal": "SemanticSystemState"},
       "exemption": "Project-Helianthus/helianthus-docs-ebus#1145: the catalog carries a provisional placeholder until the final name is settled; the published name changes once, to that final name."
+    },
+    {
+      "published_name": "outdoor_temperature_daily_average",
+      "opcode": "0x02",
+      "group": "0x00",
+      "register": "0x0095",
+      "docs_ebus_name": "outdoor_temperature_daily_average",
+      "previous_name": "outside_temperature_average_24h",
+      "previous_published_name": "outdoor_temperature_avg24h",
+      "surfaces": {"graphql": "system_state", "mcp": "SystemState", "portal": "SemanticSystemState"}
+    },
+    {
+      "published_name": "maintenance_active",
+      "opcode": "0x02",
+      "group": "0x00",
+      "register": "0x0096",
+      "docs_ebus_name": "maintenance_active",
+      "previous_name": "maintenance_mode",
+      "previous_published_name": "maintenance_due",
+      "surfaces": {"graphql": "system_state", "mcp": "SystemState", "portal": "SemanticSystemState"}
+    },
+    {
+      "published_name": "dhw_cylinder_top_temperature",
+      "opcode": "0x02",
+      "group": "0x00",
+      "register": "0x009D",
+      "docs_ebus_name": "dhw_cylinder_top_temperature",
+      "previous_name": "system_cylinder_mss_dhw_top_temperature",
+      "previous_published_name": "hwc_cylinder_temperature_top",
+      "surfaces": {"graphql": "system_state", "mcp": "SystemState", "portal": "SemanticSystemState"}
+    },
+    {
+      "published_name": "dhw_cylinder_bottom_temperature",
+      "opcode": "0x02",
+      "group": "0x00",
+      "register": "0x009E",
+      "docs_ebus_name": "dhw_cylinder_bottom_temperature",
+      "previous_name": "system_cylinder_mss_dhw_bottom_temperature",
+      "previous_published_name": "hwc_cylinder_temperature_bottom",
+      "surfaces": {"graphql": "system_state", "mcp": "SystemState", "portal": "SemanticSystemState"}
     },
     {
       "published_name": "adaptive_heating_curve_enabled",
@@ -84,6 +124,58 @@
       "docs_ebus_name": "installer_access_code",
       "previous_name": "installer_menu_code",
       "surfaces": {"graphql": "system_config", "mcp": "SystemConfig", "portal": ""}
+    },
+    {
+      "published_name": "heating_outdoor_alternative_temperature_limit",
+      "opcode": "0x02",
+      "group": "0x00",
+      "register": "0x0022",
+      "docs_ebus_name": "heating_outdoor_alternative_temperature_limit",
+      "previous_name": "alternative_point_for_central_heating",
+      "previous_published_name": "alternative_point",
+      "surfaces": {"graphql": "system_config", "mcp": "SystemConfig", "portal": "SemanticSystemConfig"}
+    },
+    {
+      "published_name": "dhw_outdoor_bivalence_temperature_limit",
+      "opcode": "0x02",
+      "group": "0x00",
+      "register": "0x0001",
+      "docs_ebus_name": "dhw_outdoor_bivalence_temperature_limit",
+      "previous_name": "system_dhw_bivalence_point",
+      "previous_published_name": "dhw_bivalence_point",
+      "surfaces": {"graphql": "system_config", "mcp": "SystemConfig", "portal": "SemanticSystemConfig"},
+      "bound": {"published_name": "dhw_outdoor_bivalence_temperature_limit_bound", "previous_published_name": "dhw_bivalence_point_bound", "surfaces": {"graphql": "system_config", "mcp": "SystemConfig", "portal": ""}}
+    },
+    {
+      "published_name": "heating_flow_temperature_setpoint_maximum_at_heat_pump_fault",
+      "opcode": "0x02",
+      "group": "0x00",
+      "register": "0x0026",
+      "docs_ebus_name": "heating_flow_temperature_setpoint_maximum_at_heat_pump_fault",
+      "previous_name": "heating_circuit_emergency_temperature",
+      "previous_published_name": "hc_emergency_temperature",
+      "surfaces": {"graphql": "system_config", "mcp": "SystemConfig", "portal": "SemanticSystemConfig"}
+    },
+    {
+      "published_name": "dhw_flow_temperature_setpoint_maximum",
+      "opcode": "0x02",
+      "group": "0x00",
+      "register": "0x0046",
+      "docs_ebus_name": "dhw_flow_temperature_setpoint_maximum",
+      "previous_name": "system_cylinder_mss_dhw_max_flow_setpoint",
+      "previous_published_name": "hwc_max_flow_temp_desired",
+      "surfaces": {"graphql": "system_config", "mcp": "SystemConfig", "portal": "SemanticSystemConfig"}
+    },
+    {
+      "published_name": "installer_phone_number",
+      "opcode": "0x02",
+      "group": "0x00",
+      "register": "0x006F",
+      "docs_ebus_name": "installer_phone_number_prefix",
+      "previous_name": "installer_phone_1",
+      "previous_published_name": "installer_phone",
+      "surfaces": {"graphql": "system_config", "mcp": "SystemConfig", "portal": ""},
+      "join": {"register": "0x0070", "docs_ebus_name": "installer_phone_number_suffix", "previous_name": "installer_phone_2"}
     },
     {
       "published_name": "hydraulic_scheme_code",

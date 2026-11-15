@@ -16,18 +16,20 @@ const resourceDomain = "helianthus.semgraph.resource/v1"
 
 // Errors of allocation, supersession and home recording.
 var (
-	ErrNilStore         = errors.New("semgraph: nil supersession store")
-	ErrStore            = errors.New("semgraph: supersession store")
-	ErrStoreConflict    = errors.New("semgraph: supersession store conflict")
-	ErrAnchorSuperseded = errors.New("semgraph: anchor superseded")
-	ErrDowngrade        = errors.New("semgraph: anchor downgrade")
-	ErrNotUpgrade       = errors.New("semgraph: anchor change is not an allowed upgrade")
-	ErrKindChange       = errors.New("semgraph: resource kind change")
-	ErrKeyHeld          = errors.New("semgraph: anchor key already held")
-	ErrPreviousAnchor   = errors.New("semgraph: previous anchor is not the current anchor")
-	ErrContinuity       = errors.New("semgraph: continuity evidence")
-	ErrUnknownResource  = errors.New("semgraph: resource not allocated by this allocator")
-	ErrSecondHome       = errors.New("semgraph: resource already has a home asset")
+	ErrNilStore             = errors.New("semgraph: nil supersession store")
+	ErrStore                = errors.New("semgraph: supersession store")
+	ErrStoreConflict        = errors.New("semgraph: supersession store conflict")
+	ErrAnchorSuperseded     = errors.New("semgraph: anchor superseded")
+	ErrDowngrade            = errors.New("semgraph: anchor downgrade")
+	ErrNotUpgrade           = errors.New("semgraph: anchor change is not an allowed upgrade")
+	ErrKindChange           = errors.New("semgraph: resource kind change")
+	ErrKeyHeld              = errors.New("semgraph: anchor key already held")
+	ErrPreviousAnchor       = errors.New("semgraph: previous anchor is not the current anchor")
+	ErrContinuity           = errors.New("semgraph: continuity evidence")
+	ErrUnknownResource      = errors.New("semgraph: resource not allocated by this allocator")
+	ErrSecondHome           = errors.New("semgraph: resource already has a home asset")
+	ErrSupersessionRequired = errors.New("semgraph: anchor basis rises only by supersession")
+	ErrClassConflict        = errors.New("semgraph: anchor key is held under another class")
 )
 
 // ContinuityBasis names the kind of continuity evidence of a supersession.
@@ -60,19 +62,21 @@ type Claim struct {
 }
 
 // Entry is the recorded state of one anchor key. A superseded key is never
-// resolved again; a current key resolves to Resource and refuses an anchor of
-// a lower basis.
+// resolved again; a current key resolves to Resource for an anchor of its
+// class and basis, and refuses an anchor of another class or basis.
 type Entry struct {
 	Resource   semreg.ResourceID
+	Class      semreg.AnchorClass
 	Basis      semreg.AnchorBasis
 	Superseded bool
 }
 
-// Supersession is one recorded anchor change of Resource. Previous and Next
-// are equal when only the basis rises (an operator slot to a native slot at
-// the same parent and slot).
+// Supersession is one recorded anchor change of Resource, whose anchor class
+// is Class. Previous and Next are equal when only the basis rises (an operator
+// slot to a native slot at the same parent and slot).
 type Supersession struct {
 	Resource      semreg.ResourceID
+	Class         semreg.AnchorClass
 	Previous      AnchorKey
 	PreviousBasis semreg.AnchorBasis
 	Next          AnchorKey
@@ -81,7 +85,8 @@ type Supersession struct {
 
 // Store is the supersession table. Commit is atomic: it records the previous
 // key as superseded (unless it equals the next) and the next key as current,
-// and refuses a record that contradicts what it holds.
+// and refuses a record that contradicts what it holds, including a class
+// other than the previous key's recorded one.
 type Store interface {
 	Lookup(key AnchorKey) (Entry, bool, error)
 	Commit(record Supersession) error
@@ -110,16 +115,16 @@ func (s *MemoryStore) Lookup(key AnchorKey) (Entry, bool, error) {
 func (s *MemoryStore) Commit(record Supersession) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if previous, ok := s.entries[record.Previous]; ok && (previous.Superseded || previous.Resource != record.Resource) {
+	if previous, ok := s.entries[record.Previous]; ok && (previous.Superseded || previous.Resource != record.Resource || previous.Class != record.Class) {
 		return ErrStoreConflict
 	}
 	if record.Next != record.Previous {
 		if _, ok := s.entries[record.Next]; ok {
 			return ErrStoreConflict
 		}
-		s.entries[record.Previous] = Entry{Resource: record.Resource, Basis: record.PreviousBasis, Superseded: true}
+		s.entries[record.Previous] = Entry{Resource: record.Resource, Class: record.Class, Basis: record.PreviousBasis, Superseded: true}
 	}
-	s.entries[record.Next] = Entry{Resource: record.Resource, Basis: record.NextBasis}
+	s.entries[record.Next] = Entry{Resource: record.Resource, Class: record.Class, Basis: record.NextBasis}
 	return nil
 }
 
@@ -135,9 +140,11 @@ type Allocator struct {
 	homes map[semreg.ResourceID]semreg.AssetID
 }
 
-// heldAnchor is the resource and basis an anchor key was resolved under.
+// heldAnchor is the resource, class and basis an anchor key was resolved
+// under.
 type heldAnchor struct {
 	resource semreg.ResourceID
+	class    semreg.AnchorClass
 	basis    semreg.AnchorBasis
 }
 
@@ -162,8 +169,9 @@ func NewAllocator(store Store) (*Allocator, error) {
 // of kind with anchor. Without a recorded supersession the identifier is a
 // domain-separated hash over the kind and the anchor key, so the same anchor
 // yields the same identifier in every incarnation. A superseded anchor key,
-// an anchor of a lower basis than the key's recorded one and a parent this
-// allocator did not return are refused.
+// an anchor of another class than the key's recorded one, an anchor of a lower
+// basis (a downgrade) or a higher basis (which rises only by Supersede) and a
+// parent this allocator did not return are refused.
 func (a *Allocator) Resolve(kind semreg.DefinitionID, anchor Anchor) (semreg.ResourceID, semreg.ResourceAnchor, error) {
 	key, err := anchor.Key(kind)
 	if err != nil {
@@ -189,24 +197,24 @@ func (a *Allocator) Resolve(kind semreg.DefinitionID, anchor Anchor) (semreg.Res
 		if entry.Superseded {
 			return "", semreg.ResourceAnchor{}, ErrAnchorSuperseded
 		}
-		if basisRank(anchor.Basis) < basisRank(entry.Basis) {
-			return "", semreg.ResourceAnchor{}, fmt.Errorf("%w: key is held under %s", ErrDowngrade, entry.Basis)
+		if err := currentError(anchor, entry.Class, entry.Basis); err != nil {
+			return "", semreg.ResourceAnchor{}, err
 		}
 		id = entry.Resource
-	} else if held, ok := a.held[key]; ok {
-		if basisRank(anchor.Basis) < basisRank(held.basis) {
-			return "", semreg.ResourceAnchor{}, fmt.Errorf("%w: key is held under %s", ErrDowngrade, held.basis)
+	} else {
+		if held, ok := a.held[key]; ok {
+			if err := currentError(anchor, held.class, held.basis); err != nil {
+				return "", semreg.ResourceAnchor{}, err
+			}
+			id = held.resource
 		}
-		id = held.resource
-	}
-	if !recorded || entry.Basis != anchor.Basis {
 		// Record the resolved key in the store, so that every allocator over
 		// the store sees it as held.
-		if err := a.store.Commit(Supersession{Resource: id, Previous: key, PreviousBasis: anchor.Basis, Next: key, NextBasis: anchor.Basis}); err != nil {
+		if err := a.store.Commit(Supersession{Resource: id, Class: anchor.Class, Previous: key, PreviousBasis: anchor.Basis, Next: key, NextBasis: anchor.Basis}); err != nil {
 			return "", semreg.ResourceAnchor{}, fmt.Errorf("%w: %w", ErrStore, err)
 		}
 	}
-	a.held[key] = heldAnchor{resource: id, basis: anchor.Basis}
+	a.held[key] = heldAnchor{resource: id, class: anchor.Class, basis: anchor.Basis}
 	a.kinds[id] = kind
 	return id, record, nil
 }
@@ -265,8 +273,8 @@ func (a *Allocator) Supersede(previous, next Claim, continuity Continuity) (semr
 	if entry.Superseded {
 		return "", semreg.AnchorSupersession{}, ErrAnchorSuperseded
 	}
-	if entry.Basis != previous.Anchor.Basis {
-		return "", semreg.AnchorSupersession{}, fmt.Errorf("%w: key is held under %s", ErrPreviousAnchor, entry.Basis)
+	if entry.Class != previous.Anchor.Class || entry.Basis != previous.Anchor.Basis {
+		return "", semreg.AnchorSupersession{}, fmt.Errorf("%w: key is held as %s under %s", ErrPreviousAnchor, entry.Class, entry.Basis)
 	}
 	id := entry.Resource
 	if nextKey != previousKey {
@@ -279,11 +287,11 @@ func (a *Allocator) Supersede(previous, next Claim, continuity Continuity) (semr
 			return "", semreg.AnchorSupersession{}, ErrKeyHeld
 		}
 	}
-	if err := a.store.Commit(Supersession{Resource: id, Previous: previousKey, PreviousBasis: previous.Anchor.Basis, Next: nextKey, NextBasis: next.Anchor.Basis}); err != nil {
+	if err := a.store.Commit(Supersession{Resource: id, Class: next.Anchor.Class, Previous: previousKey, PreviousBasis: previous.Anchor.Basis, Next: nextKey, NextBasis: next.Anchor.Basis}); err != nil {
 		return "", semreg.AnchorSupersession{}, fmt.Errorf("%w: %w", ErrStore, err)
 	}
 	delete(a.held, previousKey)
-	a.held[nextKey] = heldAnchor{resource: id, basis: next.Anchor.Basis}
+	a.held[nextKey] = heldAnchor{resource: id, class: next.Anchor.Class, basis: next.Anchor.Basis}
 	a.kinds[id] = next.Kind
 	return id, supersedes, nil
 }
@@ -331,6 +339,22 @@ func (a *Allocator) lookup(key AnchorKey) (Entry, bool, error) {
 		return Entry{}, false, fmt.Errorf("%w: %w", ErrStore, err)
 	}
 	return entry, ok, nil
+}
+
+// currentError compares an anchor with the class and basis its key is current
+// under: another class is refused, a lower basis is a downgrade and a higher
+// basis rises only through Supersede.
+func currentError(anchor Anchor, class semreg.AnchorClass, basis semreg.AnchorBasis) error {
+	if anchor.Class != class {
+		return fmt.Errorf("%w: key is held as %s", ErrClassConflict, class)
+	}
+	switch rank, held := basisRank(anchor.Basis), basisRank(basis); {
+	case rank < held:
+		return fmt.Errorf("%w: key is held under %s", ErrDowngrade, basis)
+	case rank > held:
+		return fmt.Errorf("%w: key is held under %s", ErrSupersessionRequired, basis)
+	}
+	return nil
 }
 
 // upgradeError checks the anchor change of a supersession.

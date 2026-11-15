@@ -117,13 +117,20 @@ func TestResourceIDVariesWithEveryAnchorKeyMember(t *testing.T) {
 	assertDistinct(t, slotID, slot)
 
 	// Evidence, the source and the basis are not key members: an operator
-	// slot and a native slot at the same parent and slot share the key.
+	// slot and a native slot at the same parent and slot share the key. Each
+	// is resolved by a fresh allocator, because over one table the basis of a
+	// current key rises only through Supersede.
 	if got := resolve(kindEquipment, tokenAnchor("token-a", "other-evidence")); got != baseID {
 		t.Fatalf("evidence changed the identifier: %q", got)
 	}
 	label := zoneAnchor(semreg.AnchorOperatorSlot, "zone-a", "label")
 	position := zoneAnchor(semreg.AnchorNativeSlot, "zone-a", "position")
-	if a, b := resolve(kindZone, label), resolve(kindZone, position); a != b {
+	labelKey, _ := label.Key(kindZone)
+	positionKey, _ := position.Key(kindZone)
+	if labelKey != positionKey {
+		t.Fatalf("operator and native slot of one parent and slot have different keys: %+v, %+v", labelKey, positionKey)
+	}
+	if a, b := mustResolve(t, newTestAllocator(t, NewMemoryStore()), kindZone, label), mustResolve(t, newTestAllocator(t, NewMemoryStore()), kindZone, position); a != b {
 		t.Fatalf("operator and native slot of one key differ: %q, %q", a, b)
 	}
 }
@@ -546,5 +553,72 @@ func TestResolvedKeyIsHeldAcrossAllocatorsOnASharedStore(t *testing.T) {
 	}
 	if got := mustResolve(t, b, kindEquipment, tokenB); got != idB {
 		t.Fatalf("second resolution = %q, want %q", got, idB)
+	}
+}
+
+// A higher basis at a key that is already current rises only through
+// Supersede, which validates continuity evidence and returns the supersedes
+// record: Resolve refuses it, for this allocator and for another over the
+// same store, and the recorded basis stays.
+func TestResolveRefusesHigherBasisWithoutSupersession(t *testing.T) {
+	store := NewMemoryStore()
+	first, second := newTestAllocator(t, store), newTestAllocator(t, store)
+	label := zoneAnchor(semreg.AnchorOperatorSlot, "zone-a", "label")
+	position := zoneAnchor(semreg.AnchorNativeSlot, "zone-a", "position")
+	id := mustResolve(t, first, kindZone, label)
+	for _, a := range []*Allocator{first, second} {
+		if _, _, err := a.Resolve(kindZone, position); !errors.Is(err, ErrSupersessionRequired) {
+			t.Fatalf("native slot over a current operator slot: err=%v, want ErrSupersessionRequired", err)
+		}
+	}
+	key, err := label.Key(kindZone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry, ok, _ := store.Lookup(key); !ok || entry.Superseded || entry.Basis != semreg.AnchorOperatorSlot {
+		t.Fatalf("recorded entry after a refused resolution = %+v, %v", entry, ok)
+	}
+	if got := mustResolve(t, first, kindZone, label); got != id {
+		t.Fatalf("operator slot after a refused resolution = %q, want %q", got, id)
+	}
+	kept, record, err := first.Supersede(Claim{kindZone, label}, Claim{kindZone, position}, continuity(ContinuityBinding, "both"))
+	if err != nil || kept != id || record.Previous.Basis != semreg.AnchorOperatorSlot {
+		t.Fatalf("Supersede = %q, %+v, %v; want %q from an operator slot", kept, record, err, id)
+	}
+	if got := mustResolve(t, second, kindZone, position); got != id {
+		t.Fatalf("native slot after the supersession = %q, want %q", got, id)
+	}
+}
+
+// The recorded class of a key is part of its current state: an anchor of
+// another class at the same kind, parent and slot is neither resolved onto it
+// nor accepted as the previous anchor of a supersession.
+func TestClassIsComparedWithTheRecordedState(t *testing.T) {
+	store := NewMemoryStore()
+	allocator := newTestAllocator(t, store)
+	function := zoneAnchor(semreg.AnchorOperatorSlot, "zone-a", "function")
+	equipment := operatorEquipment("zone-a", "equipment")
+	id := mustResolve(t, allocator, kindZone, function)
+	for _, a := range []*Allocator{allocator, newTestAllocator(t, store)} {
+		if _, _, err := a.Resolve(kindZone, equipment); !errors.Is(err, ErrClassConflict) {
+			t.Fatalf("equipment anchor over a current function anchor: err=%v, want ErrClassConflict", err)
+		}
+		if _, _, err := a.Supersede(Claim{kindZone, equipment}, Claim{kindZone, tokenAnchor("token-z", "native")}, continuity(ContinuityBinding, "both")); !errors.Is(err, ErrPreviousAnchor) {
+			t.Fatalf("previous anchor of a substituted class: err=%v, want ErrPreviousAnchor", err)
+		}
+	}
+	key, err := function.Key(kindZone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry, ok, _ := store.Lookup(key); !ok || entry.Superseded || entry.Class != semreg.AnchorFunction {
+		t.Fatalf("recorded entry = %+v, %v; want the current function anchor", entry, ok)
+	}
+	if got := mustResolve(t, allocator, kindZone, function); got != id {
+		t.Fatalf("function anchor = %q, want %q", got, id)
+	}
+	// The table refuses a record whose class contradicts the current entry.
+	if err := store.Commit(Supersession{Resource: id, Class: semreg.AnchorEquipment, Previous: key, PreviousBasis: semreg.AnchorOperatorSlot, Next: key, NextBasis: semreg.AnchorNativeSlot}); !errors.Is(err, ErrStoreConflict) {
+		t.Fatalf("class-contradicting commit: err=%v, want ErrStoreConflict", err)
 	}
 }

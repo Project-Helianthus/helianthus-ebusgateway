@@ -70,8 +70,12 @@ Continuity evidence is a binding that observes both anchors, the native
 owner's documented mapping, or, after an operator slot only, an operator
 declaration. The allocator refuses a kind change, a class change, a downgrade,
 any other change, a previous anchor that was never resolved, is superseded or
-is held under another basis, and a next key that is already held. A superseded key is never resolved
-again, and after a basis-only upgrade the lower basis is refused for that key.
+is held under another class or basis, and a next key that is already held. A
+superseded key is never resolved again. The table records the class and basis
+of each current key: `Resolve` refuses an anchor of another class for that key,
+refuses a lower basis as a downgrade, and refuses a higher basis, which rises
+only through `Supersede`, so every basis change carries continuity evidence and
+a `supersedes` record.
 
 The supersession table sits behind the `Store` interface. `MemoryStore` is the
 in-memory implementation; the durable store is a later change. Keys held by a

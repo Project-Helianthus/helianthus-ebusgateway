@@ -144,26 +144,11 @@ func (p *gatewayMatterBindingFeedProvider) Capture(ctx context.Context) (feedv1.
 		if digest == "" {
 			return feedv1.Snapshot{}, errors.New("matter binding feed action has no contribution digest")
 		}
-		out.Operations = append(out.Operations, feedv1.AdmittedOperation{
-			AssetID: resource.AssetID,
-			Action:  action,
-			Claim: feedv1.OperationClaim{
-				CatalogRevision:  catalog.CatalogRevision,
-				Digest:           digest,
-				DriverID:         action.ContributionDriverID,
-				ManifestID:       action.ContributionManifestID,
-				ManifestVersion:  action.ContributionManifestVersion,
-				ActionID:         action.ID,
-				ResourceID:       action.ResourceID,
-				CapabilityID:     action.CapabilityID,
-				OperationID:      action.OperationID,
-				SnapshotID:       resource.SnapshotID,
-				Revision:         action.Source.Revision,
-				BindingID:        resource.BindingID,
-				SourceEpoch:      resource.SourceEpoch,
-				DriverGeneration: resource.DriverGeneration,
-			},
-		})
+		operation, err := matterBindingFeedOperation(catalog.CatalogRevision, digest, action, resource)
+		if err != nil {
+			return feedv1.Snapshot{}, err
+		}
+		out.Operations = append(out.Operations, operation)
 	}
 	if err := ctx.Err(); err != nil {
 		return feedv1.Snapshot{}, err
@@ -172,6 +157,37 @@ func (p *gatewayMatterBindingFeedProvider) Capture(ctx context.Context) (feedv1.
 		return feedv1.Snapshot{}, fmt.Errorf("matter binding feed capture: %w", err)
 	}
 	return out, nil
+}
+
+// matterBindingFeedOperation names the driver, binding, source epoch and
+// generation of the action itself: on an asset with several sources the
+// Portal attributes an action to the driver of the binding that carries its
+// capability. The feed resource must name the same path; a resource of another
+// binding never stands in for the action's.
+func matterBindingFeedOperation(catalogRevision, digest string, action catalogv1.Action, resource feedv1.Resource) (feedv1.AdmittedOperation, error) {
+	if action.ResourceID != resource.ResourceID || action.Source.AssetID != resource.AssetID || action.Source.SnapshotID != resource.SnapshotID || action.Source.BindingID != resource.BindingID || action.Source.SourceEpoch != resource.SourceEpoch || action.Source.DriverGeneration != resource.DriverGeneration {
+		return feedv1.AdmittedOperation{}, errors.New("matter binding feed action names another binding than its resource")
+	}
+	return feedv1.AdmittedOperation{
+		AssetID: resource.AssetID,
+		Action:  action,
+		Claim: feedv1.OperationClaim{
+			CatalogRevision:  catalogRevision,
+			Digest:           digest,
+			DriverID:         action.ContributionDriverID,
+			ManifestID:       action.ContributionManifestID,
+			ManifestVersion:  action.ContributionManifestVersion,
+			ActionID:         action.ID,
+			ResourceID:       action.ResourceID,
+			CapabilityID:     action.CapabilityID,
+			OperationID:      action.OperationID,
+			SnapshotID:       action.Source.SnapshotID,
+			Revision:         action.Source.Revision,
+			BindingID:        action.Source.BindingID,
+			SourceEpoch:      action.Source.SourceEpoch,
+			DriverGeneration: action.Source.DriverGeneration,
+		},
+	}, nil
 }
 
 func matterBindingResourceKey(resource catalogv1.Resource) string {

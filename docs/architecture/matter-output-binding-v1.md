@@ -27,6 +27,19 @@ closed. All other fields, capabilities, and operations appear exactly once in
 the SemReg report with explicit `unknown` disposition. SemReg services have no
 projection-item kind, so the adapter does not invent service rows.
 
+Eligibility is decided on the keys the mapping reads, not on the whole
+snapshot. A conflict, or a candidate that is not fresh and available, on an
+`evse.ac.current` key of EVSE 1.0.0 refuses the projection; a conflict or a
+stale or unavailable candidate on any other key does not, so a second source of
+the same asset cannot withhold the mapped current through a fact the mapping
+never reads. Evaluation correspondence still covers every candidate of the
+snapshot. The binding feed projects the resource the Portal catalog keeps for an
+asset with several sources, with that resource's binding, source epoch and
+generation. An admitted operation's claim names the driver, binding, source
+epoch and generation of the action itself, and the feed refuses it when its
+resource names another path. The contract hash constants and the feed wire
+contract are unchanged.
+
 The adapter has no Matter SDK dependency and creates no Matter node, endpoint
 allocation, commissioning, fabric, transport, subscription, I/O, native read,
 access control, route, retained state, authority, intent, command dispatch, or

@@ -19,8 +19,9 @@ type ContributorSpec struct {
 	// asset is declared.
 	Validators []semreg.PackValidator
 	// OnControl reprojects the contributor family's cache after a control
-	// commit on the asset and after a publication of another source of the
-	// asset (a ControlEvent of kind published with a zero Control).
+	// event of the asset, whichever source of the asset the event belongs to,
+	// and after a publication of another source of the asset (a ControlEvent
+	// of kind published with a zero Control).
 	OnControl func(ControlEvent) error
 }
 

@@ -2167,7 +2167,10 @@ unchanged.
    outside all of them. No path holds the control mutexes of two sources, so
    contributors of one asset never wait on each other's control operations.
 
-When one source of a shared asset commits a publication, every other
+Every declared source's reprojection callback (`OnControl`) receives each
+control event of the asset, so a control operation reprojects the owner's and
+every contributor's family cache. When one source of a shared asset commits a
+publication, every other
 publishing source with a bound reprojection callback receives the asset's
 current snapshot once, as a control event of kind `published` with a zero
 control, through the same scheduler and in `HubSeq` order. The attempt starts

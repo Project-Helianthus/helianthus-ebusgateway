@@ -85,12 +85,21 @@ func TestEVSECurrentFailsClosedOnWrongUnitOrPrecision(t *testing.T) {
 }
 
 func TestEvaluationEligibilityFailsClosedForStaleAndUnavailable(t *testing.T) {
+	mapped := matterCandidate("candidate:matter:mapped", "l1", "32", -1)
+	unmapped := matterCandidate("candidate:matter:unmapped", "l1", "32", -1)
+	unmapped.Key.FactID = "evse.ac.voltage"
+	snapshot := semreg.Snapshot{Facts: []semreg.FactEnvelope{{Key: mapped.Key, Candidates: []semreg.FactCandidate{mapped}}, {Key: unmapped.Key, Candidates: []semreg.FactCandidate{unmapped}}}}
 	for _, item := range []semreg.EvaluatedFact{
 		{Freshness: semreg.FreshnessStale, EffectiveAvailability: semreg.AvailabilityAvailable},
 		{Freshness: semreg.FreshnessFresh, EffectiveAvailability: semreg.AvailabilityUnavailable},
 	} {
-		if err := eligibleEvaluation(semreg.EvaluationView{Facts: []semreg.EvaluatedFact{item}}); err == nil {
-			t.Fatalf("accepted ineligible evaluation: %#v", item)
+		item.CandidateID = mapped.CandidateID
+		if err := eligibleMappedEvaluation(snapshot, semreg.EvaluationView{Facts: []semreg.EvaluatedFact{item}}); err == nil {
+			t.Fatalf("accepted ineligible evaluation of a mapped key: %#v", item)
+		}
+		item.CandidateID = unmapped.CandidateID
+		if err := eligibleMappedEvaluation(snapshot, semreg.EvaluationView{Facts: []semreg.EvaluatedFact{item}}); err != nil {
+			t.Fatalf("an unmapped key decided eligibility: %#v: %v", item, err)
 		}
 	}
 }
@@ -400,5 +409,164 @@ func sealEvaluation(t *testing.T, evaluation *semreg.EvaluationView) {
 	evaluation.EvaluationDigest = digest
 	if err := evaluation.Validate(); err != nil {
 		t.Fatalf("invalid resealed evaluation: %v", err)
+	}
+}
+
+// matterContributorFixture holds an asset with two sources: the owner
+// publishes the mapped current, and a contributor publishes on the same asset
+// under its own source, epoch and binding.
+func matterContributorFixture(t *testing.T, owner, contributor []semreg.FactCandidate) matterFixture {
+	t.Helper()
+	kernel, err := semreg.NewPublicationKernel("asset:matter:1", evse.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence := matterEvidence()
+	expected := semreg.Uint64("0")
+	var snapshot semreg.Snapshot
+	for index, item := range []struct {
+		tag        string
+		candidates []semreg.FactCandidate
+	}{{"1", owner}, {"2", contributor}} {
+		source := semreg.SourceID("source:matter:" + item.tag)
+		epoch := semreg.SourceEpochID("epoch:matter:" + item.tag)
+		binding := semreg.NativeBindingID("binding:matter:" + item.tag)
+		batch := semreg.PublicationBatch{
+			Contract: semreg.ContractKernelV1, BatchID: semreg.BatchID("batch:matter:" + item.tag), AssetID: "asset:matter:1",
+			SourceID: source, SourceEpochID: epoch, DriverGeneration: "1", Sequence: "1", ExpectedSemanticRevision: expected, ObservedAt: matterTime("100"),
+			SourceUpserts:         []semreg.SourceDescriptor{{SourceID: source, SourceEpochID: epoch, ProtocolID: "protocol.test", ProfileID: "profile.test", ProfileVersion: "1", RegistryEvidence: evidence, StartedAt: matterTime("90"), State: semreg.SourceCurrent, Revision: "1"}},
+			SourceRetirements:     []semreg.SourceEpochID{},
+			BindingUpserts:        []semreg.NativeBinding{{BindingID: binding, AssetID: "asset:matter:1", SourceID: source, SourceEpochID: epoch, DriverGeneration: "1", NativeResource: evidence, State: semreg.BindingCurrent, Revision: "1"}},
+			IdentityLinkUpserts:   []semreg.IdentityLink{{AssetID: "asset:matter:1", BindingID: binding, State: semreg.LinkQualified, Basis: []semreg.EvidenceRef{evidence}, Revision: "1"}},
+			FactUpserts:           item.candidates,
+			FactWithdrawals:       []semreg.CandidateID{},
+			ServiceUpserts:        []semreg.ServiceInstance{},
+			ServiceWithdrawals:    []semreg.ServiceInstanceID{},
+			CapabilityUpserts:     []semreg.CapabilityInstance{},
+			CapabilityWithdrawals: []semreg.CapabilityInstanceID{},
+			GenerationFences:      []semreg.GenerationFence{},
+		}
+		batch.BatchDigest, err = batch.ComputedDigest()
+		if err != nil {
+			t.Fatal(err)
+		}
+		snapshot, _, err = kernel.Apply(batch, semreg.MonotonicPoint{ClockEpochID: "clock-epoch:matter", Nanoseconds: semreg.Uint64(fmt.Sprint(100 + index))})
+		if err != nil {
+			t.Fatalf("batch %s: %v", item.tag, err)
+		}
+		expected = snapshot.Revisions.Semantic
+	}
+	return matterFixture{snapshot: snapshot, evaluation: evaluateMatterSnapshot(t, snapshot)}
+}
+
+// matterFactOf returns a candidate of another EVSE fact, published through
+// source tag, with its dimension value.
+func matterFactOf(id semreg.CandidateID, tag string, fact semreg.DefinitionID, dimension semreg.DefinitionID, dimensionValue, coefficient, unit string) semreg.FactCandidate {
+	candidate := matterCandidate(id, "l1", coefficient, -1)
+	candidate.Key.FactID = fact
+	candidate.Key.Dimensions = []semreg.Dimension{{ID: dimension, Value: semreg.Value{Kind: semreg.ValueText, Text: &dimensionValue}}}
+	candidate.Value.Quantity.Unit = semreg.DefinitionID(unit)
+	return matterOnSource(candidate, tag)
+}
+
+// matterOnSource moves a candidate onto the binding, epoch and source of tag.
+func matterOnSource(candidate semreg.FactCandidate, tag string) semreg.FactCandidate {
+	binding := semreg.NativeBindingID("binding:matter:" + tag)
+	epoch := semreg.SourceEpochID("epoch:matter:" + tag)
+	source := semreg.SourceID("source:matter:" + tag)
+	candidate.BindingID, candidate.SourceEpochID = &binding, &epoch
+	candidate.Origin.OriginID = semreg.OriginID("origin:matter:" + tag)
+	candidate.Origin.SourceID, candidate.Origin.SourceEpochID, candidate.Origin.BindingID = &source, &epoch, &binding
+	return candidate
+}
+
+func TestProjectEligibilityReadsOnlyMappedKeysWithSeveralContributors(t *testing.T) {
+	owner := []semreg.FactCandidate{
+		matterCandidate("candidate:matter:current", "l1", "32", -1),
+		matterFactOf("candidate:matter:limit:owner", "1", "evse.limit.configured_current", "evse.dimension.evse", "evse-1", "165", "unit.ampere"),
+	}
+	staleVoltage := matterFactOf("candidate:matter:voltage", "2", "evse.ac.voltage", "evse.dimension.phase", "l1", "2301", "unit.volt")
+	staleVoltage.FreshnessPolicy.FreshForNS = "10"
+	contributor := []semreg.FactCandidate{
+		// A differing qualified value of an unmapped key gives a kernel conflict.
+		matterFactOf("candidate:matter:limit:contributor", "2", "evse.limit.configured_current", "evse.dimension.evse", "evse-1", "175", "unit.ampere"),
+		// An unmapped key that is stale at the evaluation instant.
+		staleVoltage,
+	}
+	fixture := matterContributorFixture(t, owner, contributor)
+	conflicts, stale := 0, 0
+	for _, fact := range fixture.snapshot.Facts {
+		if fact.Key.FactID == "evse.limit.configured_current" {
+			conflicts += len(fact.Conflicts)
+		}
+	}
+	for _, item := range fixture.evaluation.Facts {
+		if item.CandidateID == "candidate:matter:voltage" && item.Freshness != semreg.FreshnessFresh {
+			stale++
+		}
+	}
+	if conflicts == 0 || stale != 1 {
+		t.Fatalf("fixture does not hold an unmapped conflict and an unmapped stale fact: conflicts=%d stale=%d", conflicts, stale)
+	}
+	got, err := Project(fixture.snapshot, fixture.evaluation)
+	if err != nil {
+		t.Fatalf("an unmapped key refused the projection: %v", err)
+	}
+	if len(got.Document.Attributes) != 1 || got.Document.Attributes[0].Element != evseActiveCurrent || got.Document.Attributes[0].Value.Milliampere != "3200" {
+		t.Fatalf("attributes=%#v", got.Document.Attributes)
+	}
+
+	t.Run("conflict on the mapped key", func(t *testing.T) {
+		fixture := matterContributorFixture(t, owner, []semreg.FactCandidate{matterOnSource(matterCandidate("candidate:matter:current:contributor", "l1", "33", -1), "2")})
+		mapped := 0
+		for _, fact := range fixture.snapshot.Facts {
+			if fact.Key.FactID == "evse.ac.current" {
+				mapped += len(fact.Conflicts)
+			}
+		}
+		if mapped == 0 {
+			t.Fatal("fixture did not produce a conflict on the mapped key")
+		}
+		assertProjectRejected(t, fixture)
+	})
+	t.Run("stale mapped key", func(t *testing.T) {
+		current := matterCandidate("candidate:matter:current", "l1", "32", -1)
+		current.FreshnessPolicy.FreshForNS = "10"
+		fixture := matterContributorFixture(t, []semreg.FactCandidate{current}, contributor)
+		assertProjectRejected(t, fixture)
+	})
+	t.Run("unavailable mapped key", func(t *testing.T) {
+		fixture := matterContributorFixture(t, owner, contributor)
+		for i := range fixture.evaluation.Facts {
+			if fixture.evaluation.Facts[i].CandidateID == "candidate:matter:current" {
+				fixture.evaluation.Facts[i].EffectiveAvailability = semreg.AvailabilityUnavailable
+			}
+		}
+		sealEvaluation(t, &fixture.evaluation)
+		assertProjectRejected(t, fixture)
+	})
+}
+
+func TestMappedKeyNamesPackVersionAndFact(t *testing.T) {
+	key := matterCandidate("candidate:matter:key", "l1", "32", -1).Key
+	if !mappedKey(key) {
+		t.Fatalf("the mapped current is not a mapped key: %#v", key)
+	}
+	for name, mutate := range map[string]func(*semreg.FactKey){
+		"pack":    func(k *semreg.FactKey) { k.PackID = "helianthus.pack.pv" },
+		"version": func(k *semreg.FactKey) { k.PackVersion = "1.1.0" },
+		"fact":    func(k *semreg.FactKey) { k.FactID = "evse.ac.voltage" },
+	} {
+		other := key
+		mutate(&other)
+		if mappedKey(other) {
+			t.Fatalf("%s change still reads as a mapped key: %#v", name, other)
+		}
+	}
+	phase := "l2"
+	other := key
+	other.Dimensions = []semreg.Dimension{{ID: "evse.dimension.phase", Value: semreg.Value{Kind: semreg.ValueText, Text: &phase}}}
+	if !mappedKey(other) {
+		t.Fatal("another phase of the mapped current is not read by the mapping")
 	}
 }

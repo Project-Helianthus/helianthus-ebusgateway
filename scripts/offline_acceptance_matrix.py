@@ -9,11 +9,20 @@ render                    prints the page's generated tables
 
 A Go test is named as '<package directory> <TestName>' and exists when a _test.go
 file in that directory declares the go test entry point 'func <TestName>(t *testing.T)',
-where TestName is Test or Test followed by a non-lower-case character. A Python test
-is named as '<script path> <test_name>' and exists when test_name starts with 'test'
-and that file declares 'def <test_name>('. A helper function is never a test, and a
-declaration-like line inside a comment or a string literal is never a declaration.
-Standard library only.
+where TestName is Test or Test followed by a non-lower-case character, and that file is
+part of the build of the release target: GOOS linux on every release architecture, with
+and without the race detector. A file that a file-name suffix or a //go:build (or legacy
+// +build) constraint excludes from any of those builds, whose // +build lines differ
+from its //go:build line, whose // +build line has no blank line after it before the package
+clause, or whose name starts with '_' or '.', is never evidence. A Python test is named as '<script path> <test_name>' and
+exists when test_name starts with 'test' and the test runner collects it: a module-level
+'def <test_name>(', or a method of a module-level class the runner collects (a subclass
+of unittest.TestCase, or a class named Test... that neither defines nor inherits from a
+class of the same module __init__ or __new__), never of a class whose own or inherited
+__test__ is False. A test function nested
+inside another function or inside an uncollected class is never a test. A helper
+function is never a test, and a declaration-like line inside a comment or a string
+literal is never a declaration. Standard library only.
 """
 
 from __future__ import annotations
@@ -65,8 +74,36 @@ GO_COMMENT_OR_LITERAL = re.compile(
     r"|'(?:\\[^\n]|[^'\\\n])*(?:'|$)",
     re.DOTALL | re.MULTILINE,
 )
+# The release target: the gateway is built for linux on these architectures (the local gate
+# cross-builds 386 and arm; amd64 and arm64 are the native targets). A named test counts only
+# when its file is in the build of every one of them, with and without the race detector.
+RELEASE_GOOS = "linux"
+RELEASE_GOARCHES = ("amd64", "arm64", "arm", "386")
+# The architecture feature tags each release build satisfies, as go/build sets them: the
+# default feature level of each architecture (GOAMD64=v1, GOARM64=v8.0, GO386=sse2, GOARM=7)
+# plus GOARM=6, which the local gate also cross-builds. A level of amd64, arm and arm64 also
+# sets every lower level of its architecture; GO386 sets only its own tag.
+RELEASE_FEATURE_LEVELS = {
+    "amd64": (("amd64.v1",),),
+    "arm64": (("arm64.v8.0",),),
+    "arm": (("arm.5", "arm.6", "arm.7"), ("arm.5", "arm.6")),
+    "386": (("386.sse2",),),
+}
+# Operating systems and architectures that go/build recognises as a file-name suffix.
+KNOWN_GOOS = frozenset(
+    "aix android darwin dragonfly freebsd hurd illumos ios js linux nacl netbsd openbsd plan9 "
+    "solaris wasip1 windows zos".split())
+KNOWN_GOARCH = frozenset(
+    "386 amd64 amd64p32 arm armbe arm64 arm64be loong64 mips mipsle mips64 mips64le mips64p32 "
+    "mips64p32le ppc ppc64 ppc64le riscv riscv64 s390 s390x sparc sparc64 wasm".split())
+GO_BUILD_TOKEN = re.compile(r"\s*(\|\||&&|!|\(|\)|[A-Za-z0-9_.]+)")
+GO_DIRECTIVE = re.compile(r"^go[ \t]+1\.([0-9]+)", re.MULTILINE)
 # unittest and pytest collect only functions whose name starts with test.
 PYTHON_TEST_NAME = re.compile(r"test[A-Za-z0-9_]*")
+# Base classes that make unittest (and pytest) collect a class's test methods.
+PYTHON_TEST_CASE_BASES = frozenset(
+    ("TestCase", "unittest.TestCase", "IsolatedAsyncioTestCase", "unittest.IsolatedAsyncioTestCase",
+     "unittest.case.TestCase", "unittest.async_case.IsolatedAsyncioTestCase"))
 OWNER_ISSUE = re.compile(r"[a-z0-9][a-z0-9._-]*#[1-9][0-9]*")
 
 
@@ -182,8 +219,359 @@ def _go_declares(path, function):
     return text is not None and re.search(pattern, go_code(text), flags=re.MULTILINE) is not None
 
 
-def _python_declares(path, function):
-    """True when the parsed file defines a function of that name; comments and strings never count."""
+def _file_name_matches(name, goarch):
+    """Apply go/build's file-name rule: a _GOOS, _GOARCH or _GOOS_GOARCH suffix restricts the file."""
+    if name.startswith(("_", ".")):
+        return False
+    stem = name.split(".", 1)[0]
+    if "_" not in stem:
+        return True
+    parts = stem[stem.index("_"):].split("_")
+    if parts[-1] == "test":
+        parts = parts[:-1]
+    if len(parts) >= 2 and parts[-2] in KNOWN_GOOS and parts[-1] in KNOWN_GOARCH:
+        return parts[-2] == RELEASE_GOOS and parts[-1] == goarch
+    if parts and parts[-1] in KNOWN_GOOS:
+        return parts[-1] == RELEASE_GOOS
+    if parts and parts[-1] in KNOWN_GOARCH:
+        return parts[-1] == goarch
+    return True
+
+
+def _header_constraints(text):
+    """Return the //go:build expressions and the // +build lines before the package clause.
+
+    A // +build line counts only when a blank line follows it before the package clause; go
+    vet (run by go test) refuses a file whose // +build line runs straight into the package
+    clause ('misplaced +build comment'), so such a line raises ValueError.
+    """
+    expressions, legacy = [], []
+    in_block = False
+    plus_build_awaits_blank_line = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if in_block:
+            in_block = "*/" not in stripped
+            continue
+        if not stripped:
+            plus_build_awaits_blank_line = False
+            continue
+        if stripped.startswith("/*"):
+            in_block = "*/" not in stripped[2:]
+            continue
+        if not stripped.startswith("//"):
+            break
+        body = stripped[2:]
+        if body.startswith("go:build") and (len(body) == 8 or body[8] in " \t"):
+            expressions.append(body[8:].strip())
+        elif body.strip().startswith("+build"):
+            legacy.append(body.strip()[6:].strip())
+            plus_build_awaits_blank_line = True
+    if plus_build_awaits_blank_line:
+        raise ValueError("misplaced +build comment: no blank line before the package clause")
+    return expressions, legacy
+
+
+class _BuildExpression:
+    """Parse one //go:build expression into a tree; any syntax error raises ValueError.
+
+    A node is ("tag", name), ("not", x), ("and", x, y) or ("or", x, y), built left-associative
+    as go/build/constraint builds it.
+    """
+
+    def __init__(self, text):
+        self.tokens = []
+        position = 0
+        while position < len(text):
+            match = GO_BUILD_TOKEN.match(text, position)
+            if match is None:
+                if text[position:].strip():
+                    raise ValueError(text)
+                break
+            self.tokens.append(match.group(1))
+            position = match.end()
+        self.index = 0
+
+    def tree(self):
+        result = self._or()
+        if self.index != len(self.tokens):
+            raise ValueError("trailing tokens")
+        return result
+
+    def _next(self):
+        if self.index >= len(self.tokens):
+            raise ValueError("unexpected end")
+        token = self.tokens[self.index]
+        self.index += 1
+        return token
+
+    def _peek(self):
+        return self.tokens[self.index] if self.index < len(self.tokens) else None
+
+    def _or(self):
+        result = self._and()
+        while self._peek() == "||":
+            self._next()
+            result = ("or", result, self._and())
+        return result
+
+    def _and(self):
+        result = self._not()
+        while self._peek() == "&&":
+            self._next()
+            result = ("and", result, self._not())
+        return result
+
+    def _not(self):
+        token = self._next()
+        if token == "!":
+            if self._peek() == "!":
+                raise ValueError("double negation not allowed")
+            return ("not", self._not())
+        if token == "(":
+            result = self._or()
+            if self._next() != ")":
+                raise ValueError("unbalanced parenthesis")
+            return result
+        if token in ("||", "&&", ")"):
+            raise ValueError("operator without operand")
+        return ("tag", token)
+
+
+def _evaluate(node, tags):
+    kind = node[0]
+    if kind == "tag":
+        return node[1] in tags
+    if kind == "not":
+        return not _evaluate(node[1], tags)
+    if kind == "and":
+        return _evaluate(node[1], tags) and _evaluate(node[2], tags)
+    return _evaluate(node[1], tags) or _evaluate(node[2], tags)
+
+
+def _render(node):
+    """The constraint's String form: ! binds a tag or a parenthesised group, && parenthesises ||."""
+    kind = node[0]
+    if kind == "tag":
+        return node[1]
+    if kind == "not":
+        inner = _render(node[1])
+        return "!" + (f"({inner})" if node[1][0] in ("and", "or") else inner)
+    other = "or" if kind == "and" else "and"
+    operator = " && " if kind == "and" else " || "
+    return operator.join(f"({_render(arg)})" if arg[0] == other else _render(arg) for arg in node[1:])
+
+
+def _join(kind, nodes):
+    result = None
+    for node in nodes:
+        result = node if result is None else (kind, result, node)
+    return result
+
+
+def _legacy_line_tree(line):
+    """A // +build line: space-separated options are ORed, comma-separated terms are ANDed."""
+    def term(word):
+        negated = word.startswith("!")
+        name = word[1:] if negated else word
+        if not name or not re.fullmatch(r"[A-Za-z0-9_.]+", name):
+            raise ValueError(word)
+        return ("not", ("tag", name)) if negated else ("tag", name)
+    options = [_join("and", [term(word) for word in option.split(",")]) for option in line.split()]
+    if not options:
+        raise ValueError("empty +build line")
+    return _join("or", options)
+
+
+def _push_not(node, negate):
+    kind = node[0]
+    if kind == "tag":
+        return ("not", node) if negate else node
+    if kind == "not":
+        if node[1][0] == "tag" and not negate:
+            return node
+        return _push_not(node[1], not negate)
+    left, right = _push_not(node[1], negate), _push_not(node[2], negate)
+    if negate:
+        kind = "or" if kind == "and" else "and"
+    return (kind, left, right)
+
+
+def _split(kind, node):
+    if node[0] == kind:
+        return _split(kind, node[1]) + _split(kind, node[2])
+    return [node]
+
+
+def _plus_build_trees(expression):
+    """The // +build lines that go/build/constraint derives from a //go:build tree, parsed back.
+
+    ValueError when the expression is too complex for // +build lines.
+    """
+    split = []
+    for disjunction in _split("and", _push_not(expression, False)):
+        clauses = []
+        for conjunction in _split("or", disjunction):
+            literals = _split("and", conjunction)
+            if any(literal[0] not in ("tag", "not") for literal in literals):
+                raise ValueError("expression too complex for // +build lines")
+            clauses.append(literals)
+        split.append(clauses)
+    if max(len(clauses) for clauses in split) == 1:
+        split = [[[literal for clauses in split for literal in clauses[0]]]]
+    return [_join("or", [_join("and", literals) for literals in clauses]) for clauses in split]
+
+
+def _constraint_tree(expressions, legacy):
+    """The file's build constraint, or ValueError when go test would refuse its header.
+
+    With both forms present, go vet (run by go test) requires the // +build lines to equal the
+    lines derived from the //go:build expression; this compares them as vet does.
+    """
+    if expressions:
+        tree = _BuildExpression(expressions[0]).tree()
+        if legacy:
+            plus_build = _join("and", [_legacy_line_tree(line) for line in legacy])
+            if _render(_join("and", _plus_build_trees(tree))) != _render(plus_build):
+                raise ValueError("+build lines do not match //go:build condition")
+        return tree
+    if legacy:
+        return _join("and", [_legacy_line_tree(line) for line in legacy])
+    return None
+
+
+def _release_go_minor(root):
+    text = _read(pathlib.Path(root, "go.mod"))
+    match = GO_DIRECTIVE.search(text or "")
+    return int(match.group(1)) if match else 0
+
+
+def _release_tags(goarch, race, go_minor, features=()):
+    tags = {RELEASE_GOOS, "unix", "gc", goarch}
+    tags.update(features)
+    tags.update(f"go1.{minor}" for minor in range(1, go_minor + 1))
+    if race:
+        tags.add("race")
+    return tags
+
+
+def in_release_build(root, path):
+    """True when the Go file is in the linux build of every release architecture, with and without -race.
+
+    Each architecture's build sets its release feature tags (RELEASE_FEATURE_LEVELS). Release tags go1.N are set only up to the go directive of the root go.mod, the minimum any
+    building toolchain provides; cgo and every custom tag are unset. An unreadable file or an
+    unparsable constraint is never in the build.
+    """
+    text = _read(path)
+    if text is None:
+        return False
+    try:
+        expressions, legacy = _header_constraints(text)
+        if len(expressions) > 1:
+            return False
+        constraint = _constraint_tree(expressions, legacy)
+    except ValueError:
+        return False
+    go_minor = _release_go_minor(root)
+    for goarch in RELEASE_GOARCHES:
+        if not _file_name_matches(path.name, goarch):
+            return False
+        for features in RELEASE_FEATURE_LEVELS[goarch]:
+            for race in (False, True):
+                tags = _release_tags(goarch, race, go_minor, features)
+                if constraint is not None and not _evaluate(constraint, tags):
+                    return False
+    return True
+
+
+def _import_bindings(node):
+    """Yield (bound name, dotted target) for one import; a relative import's target is None."""
+    for alias in node.names:
+        if isinstance(node, ast.Import):
+            head = alias.name.split(".")[0]
+            yield (alias.asname, alias.name) if alias.asname else (head, head)
+        elif node.level or node.module is None:
+            yield alias.asname or alias.name, None
+        else:
+            yield alias.asname or alias.name, f"{node.module}.{alias.name}"
+
+
+def _module_imports(statements, bound):
+    """Map each module-level name an import binds to the dotted name it refers to."""
+    for node in statements:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            bound.update(_import_bindings(node))
+        elif isinstance(node, (ast.If, ast.Try, ast.With)):
+            for block in ("body", "orelse", "finalbody"):
+                _module_imports(getattr(node, block, []), bound)
+            for handler in getattr(node, "handlers", []):
+                _module_imports(handler.body, bound)
+    return bound
+
+
+def _resolved_base(base, imports):
+    """Return the dotted name a class base refers to, following the module's import aliases."""
+    text = ast.unparse(base)
+    head, _, rest = text.partition(".")
+    if head not in imports:
+        return text
+    target = imports[head]
+    if target is None:
+        return None
+    return f"{target}.{rest}" if rest else target
+
+
+def _class_body_names(node):
+    """Map each name the class body binds (def or plain assignment) to its value node, or None for a def."""
+    bound = {}
+    for item in node.body:
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            bound[item.name] = None
+        elif isinstance(item, ast.Assign):
+            for target in item.targets:
+                if isinstance(target, ast.Name):
+                    bound[target.id] = item.value
+        elif isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name) and item.value is not None:
+            bound[item.target.id] = item.value
+    return bound
+
+
+def _collected_classes(tree):
+    """Return the names of the module-level classes the test runner collects.
+
+    A class whose __test__ attribute, set in its body or inherited from a base class of the same
+    module, is not a true constant is never collected. A class that unittest.TestCase does not
+    underlie is collected only when it is named Test... and neither it nor a base class of the
+    same module defines __init__ or __new__ (pytest refuses a class with a constructor).
+    """
+    collected = set()
+    # Module-level class name -> (derives from unittest.TestCase, __test__ value or None, has a constructor).
+    defined = {}
+    imports = _module_imports(tree.body, {})
+    for node in tree.body:
+        if not isinstance(node, ast.ClassDef):
+            continue
+        bases = {_resolved_base(base, imports) for base in node.bases}
+        local_bases = [defined[base.id] for base in node.bases
+                       if isinstance(base, ast.Name) and base.id not in imports and base.id in defined]
+        bound = _class_body_names(node)
+        test_case = bool(bases & PYTHON_TEST_CASE_BASES) or any(base[0] for base in local_bases)
+        if "__test__" in bound:
+            value = bound["__test__"]
+            opted_in = isinstance(value, ast.Constant) and bool(value.value)
+        else:
+            opted_in = next((base[1] for base in local_bases if base[1] is not None), None)
+        constructor = "__init__" in bound or "__new__" in bound or any(base[2] for base in local_bases)
+        defined[node.name] = (test_case, opted_in, constructor)
+        if opted_in is False:
+            continue
+        if test_case or (node.name.startswith("Test") and not constructor):
+            collected.add(node.name)
+    return collected
+
+
+def _python_collects(path, function):
+    """True when the runner collects a test of that name: module level, or a method of a collected class."""
     text = _read(path)
     if text is None:
         return False
@@ -191,10 +579,15 @@ def _python_declares(path, function):
         tree = ast.parse(text, filename=str(path))
     except (SyntaxError, ValueError):
         return False
-    return any(
-        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == function
-        for node in ast.walk(tree)
-    )
+    functions = (ast.FunctionDef, ast.AsyncFunctionDef)
+    collected = _collected_classes(tree)
+    for node in tree.body:
+        if isinstance(node, functions) and node.name == function:
+            return True
+        if isinstance(node, ast.ClassDef) and node.name in collected:
+            if any(isinstance(item, functions) and item.name == function for item in node.body):
+                return True
+    return False
 
 
 def missing_test(root, name):
@@ -210,14 +603,19 @@ def missing_test(root, name):
     if location.endswith(".py"):
         if not PYTHON_TEST_NAME.fullmatch(function):
             return f"names {function}, which the test runner does not collect: a Python test name starts with test"
-        if target.is_file() and _python_declares(target, function):
+        if target.is_file() and _python_collects(target, function):
             return None
-        return f"names {function} but {location} declares no def {function}("
+        return (f"names {function} but {location} declares no def {function}( that the test runner collects "
+                "(module level, or a method of a collected test class)")
     if not GO_TEST_NAME.fullmatch(function):
         return f"names {function}, which go test does not run: a Go test name is Test or Test followed by a non-lower-case character"
     tests = sorted(target.glob("*_test.go")) if target.is_dir() else []
-    if any(_go_declares(path, function) for path in tests):
+    declaring = [path for path in tests if _go_declares(path, function)]
+    if any(in_release_build(root, path) for path in declaring):
         return None
+    if declaring:
+        return (f"names {function} but every _test.go file in {location} that declares it is excluded from the "
+                f"{RELEASE_GOOS} release build by a build constraint or its file name")
     return f"names {function} but no _test.go file in {location} declares func {function}(t *testing.T)"
 
 

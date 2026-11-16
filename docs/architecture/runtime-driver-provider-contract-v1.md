@@ -3386,7 +3386,11 @@ links without a resource (128) of one asset, whatever source holds them. The
 budgets of one pairing must each be at least one in every dimension and must
 sum to at most each bound; identity links are counted against the lower of the
 kernel's two link bounds. The budgets are checked for every pairing before any
-pairing is declared. A refusal names no asset, source or driver.
+pairing is declared. A refusal names no asset, source or driver. The budgets
+are a declaration-time check of the shares the composition intends: the hub
+does not enforce a share per source at publication, and the kernel bound
+applies to the asset as a whole, so a source that publishes beyond its share
+is limited only by what the other sources have left.
 
 The hub keeps its own refusals, and each is fatal at startup:
 

@@ -16,7 +16,9 @@ var errSemanticPairing = errors.New("semantic pairing refused")
 // semanticCapacityBudget is one publishing source's share of the kernel's
 // per-asset bounds on a paired asset. Every publishing source of an asset
 // shares those bounds, so the owner and its contributors each declare the
-// share they may hold.
+// share they may hold. The shares are checked once at declaration; the hub
+// does not enforce a share per source at publication, only the bound of the
+// asset as a whole.
 type semanticCapacityBudget struct {
 	// SourceDescriptors is the number of source descriptors (one per source
 	// epoch that published on the asset; a retired epoch keeps its own).

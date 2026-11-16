@@ -4,8 +4,12 @@ import (
 	"context"
 	"errors"
 	"expvar"
+	"go/parser"
+	"go/token"
+	"strconv"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
@@ -104,7 +108,7 @@ func TestVaillantAdapterInfoStateRefreshCycleRetriesPartialIdentity(t *testing.T
 	bus.Run(ctx)
 
 	provider := graphql.NewLiveSemanticProvider()
-	state := newVaillantAdapterInfoState(bus, raw, provider)
+	state := newVaillantAdapterInfoState(bus, raw, newVaillantSemanticPublication(provider, nil, nil))
 	if state == nil {
 		t.Fatal("newVaillantAdapterInfoState() returned nil")
 	}
@@ -191,7 +195,7 @@ func TestVaillantAdapterInfoStateRefreshCycleRebootstrapsAfterTransportClose(t *
 	bus.Run(ctx)
 
 	provider := graphql.NewLiveSemanticProvider()
-	state := newVaillantAdapterInfoState(bus, raw, provider)
+	state := newVaillantAdapterInfoState(bus, raw, newVaillantSemanticPublication(provider, nil, nil))
 	if state == nil {
 		t.Fatal("newVaillantAdapterInfoState() returned nil")
 	}
@@ -254,7 +258,7 @@ func TestVaillantAdapterInfoStateUnsupportedTransportPublishesContract(t *testin
 	bus.Run(ctx)
 
 	provider := graphql.NewLiveSemanticProvider()
-	state := newVaillantAdapterInfoState(bus, raw, provider)
+	state := newVaillantAdapterInfoState(bus, raw, newVaillantSemanticPublication(provider, nil, nil))
 	if state == nil {
 		t.Fatal("newVaillantAdapterInfoState() returned nil")
 	}
@@ -302,7 +306,7 @@ func TestVaillantAdapterInfoStateSupportedTransportSeedsEmptyContractBeforeRefre
 	bus.Run(ctx)
 
 	provider := graphql.NewLiveSemanticProvider()
-	state := newVaillantAdapterInfoState(bus, raw, provider)
+	state := newVaillantAdapterInfoState(bus, raw, newVaillantSemanticPublication(provider, nil, nil))
 	if state == nil {
 		t.Fatal("newVaillantAdapterInfoState() returned nil")
 	}
@@ -349,7 +353,7 @@ func TestVaillantAdapterInfoStateUsesBusRawTransportRequesterWhenConstructorTran
 	bus.Run(ctx)
 
 	provider := graphql.NewLiveSemanticProvider()
-	state := newVaillantAdapterInfoState(bus, stubRawTransport{}, provider)
+	state := newVaillantAdapterInfoState(bus, stubRawTransport{}, newVaillantSemanticPublication(provider, nil, nil))
 	if state == nil {
 		t.Fatal("newVaillantAdapterInfoState() returned nil")
 	}
@@ -414,7 +418,7 @@ func TestVaillantAdapterInfoStateUnsupportedTransitionClearsTelemetry(t *testing
 	bus.Run(ctx)
 
 	provider := graphql.NewLiveSemanticProvider()
-	state := newVaillantAdapterInfoState(bus, raw, provider)
+	state := newVaillantAdapterInfoState(bus, raw, newVaillantSemanticPublication(provider, nil, nil))
 	if state == nil {
 		t.Fatal("newVaillantAdapterInfoState() returned nil")
 	}
@@ -574,7 +578,7 @@ func TestVaillantAdapterInfoStateResetInfoFailureClearsPreviousState(t *testing.
 	bus.Run(ctx)
 
 	provider := graphql.NewLiveSemanticProvider()
-	state := newVaillantAdapterInfoState(bus, raw, provider)
+	state := newVaillantAdapterInfoState(bus, raw, newVaillantSemanticPublication(provider, nil, nil))
 	if state == nil {
 		t.Fatal("newVaillantAdapterInfoState() returned nil")
 	}
@@ -655,7 +659,7 @@ func TestVaillantAdapterInfoStateRetriesResetInfoAfterTransientFailure(t *testin
 	bus.Run(ctx)
 
 	provider := graphql.NewLiveSemanticProvider()
-	state := newVaillantAdapterInfoState(bus, raw, provider)
+	state := newVaillantAdapterInfoState(bus, raw, newVaillantSemanticPublication(provider, nil, nil))
 	if state == nil {
 		t.Fatal("newVaillantAdapterInfoState() returned nil")
 	}
@@ -725,7 +729,7 @@ func TestVaillantAdapterInfoStateExpvarTelemetryResetsOnUnsupportedAndInvalidati
 	busUnsupported.Run(ctxUnsupported)
 
 	providerUnsupported := graphql.NewLiveSemanticProvider()
-	stateUnsupported := newVaillantAdapterInfoState(busUnsupported, rawUnsupported, providerUnsupported)
+	stateUnsupported := newVaillantAdapterInfoState(busUnsupported, rawUnsupported, newVaillantSemanticPublication(providerUnsupported, nil, nil))
 	if stateUnsupported == nil {
 		t.Fatal("newVaillantAdapterInfoState() returned nil")
 	}
@@ -812,7 +816,7 @@ func TestVaillantAdapterInfoStateExpvarTelemetryResetsOnUnsupportedAndInvalidati
 	busInvalidated.Run(ctxInvalidated)
 
 	providerInvalidated := graphql.NewLiveSemanticProvider()
-	stateInvalidated := newVaillantAdapterInfoState(busInvalidated, rawInvalidated, providerInvalidated)
+	stateInvalidated := newVaillantAdapterInfoState(busInvalidated, rawInvalidated, newVaillantSemanticPublication(providerInvalidated, nil, nil))
 	if stateInvalidated == nil {
 		t.Fatal("newVaillantAdapterInfoState() returned nil")
 	}
@@ -882,4 +886,69 @@ func expvarFloatValue(t *testing.T, name string) float64 {
 		t.Fatalf("expvar %q type = %T; want *expvar.Float", name, variable)
 	}
 	return counter.Value()
+}
+
+// TestAdapterInfoAndDHWBoundFilesImportNoPublicationPackage pins that the
+// adapter info state and the hot water bound resolution hand native values
+// to the publication owner: neither file imports the GraphQL or MCP package.
+func TestAdapterInfoAndDHWBoundFilesImportNoPublicationPackage(t *testing.T) {
+	forbidden := map[string]bool{
+		"github.com/Project-Helianthus/helianthus-ebusgateway/graphql": true,
+		"github.com/Project-Helianthus/helianthus-ebusgateway/mcp":     true,
+	}
+	for _, file := range []string{"semantic_vaillant_adapter_info.go", "semantic_vaillant_dhw_bound.go"} {
+		parsed, err := parser.ParseFile(token.NewFileSet(), file, nil, parser.ImportsOnly)
+		if err != nil {
+			t.Fatalf("parse %s: %v", file, err)
+		}
+		for _, spec := range parsed.Imports {
+			path, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				t.Fatalf("%s import %s: %v", file, spec.Path.Value, err)
+			}
+			if forbidden[path] {
+				t.Errorf("%s imports %s", file, path)
+			}
+		}
+	}
+}
+
+// TestAdapterInfoSinkReceivesDetachedNativeValue pins the hand-over to the
+// sink: construction publishes the zero value, which maps to an empty
+// GraphQL info, and a published identity is a copy that a later state change
+// does not reach.
+func TestAdapterInfoSinkReceivesDetachedNativeValue(t *testing.T) {
+	provider := graphql.NewLiveSemanticProvider()
+	state := newVaillantAdapterInfoState(nil, stubRawTransport{}, newVaillantSemanticPublication(provider, nil, nil))
+	info := provider.AdapterHardwareInfo()
+	if info == nil || info.FirmwareVersion != "" || info.JumperFlags != nil || info.LastIdentityQuery != nil || info.InfoSupported {
+		t.Fatalf("initial adapter info = %+v; want the empty value", info)
+	}
+
+	sink := &adapterInfoSinkSpy{}
+	state.sink = sink
+	state.identity = &transport.AdapterVersion{Version: 0x31, Features: 0x01, SupportsInfo: true}
+	state.lastIdentity = time.Date(2026, time.April, 2, 3, 4, 5, 0, time.UTC)
+	state.publish()
+	state.identity.Version = 0x32
+	if len(sink.got) != 1 || sink.got[0].identity == nil || sink.got[0].identity.Version != 0x31 {
+		t.Fatalf("sink received %+v; want one detached identity with version 0x31", sink.got)
+	}
+	mapped := adapterHardwareInfoFromNative(sink.got[0])
+	if mapped.FirmwareVersion != "0x31" || !mapped.InfoSupported || mapped.LastIdentityQuery == nil || !mapped.LastIdentityQuery.Equal(state.lastIdentity) {
+		t.Fatalf("mapped adapter info = %+v", mapped)
+	}
+
+	// An owner without a provider ignores the value.
+	(&vaillantSemanticPublication{}).publishAdapterInfo(sink.got[0])
+	var nilOwner *vaillantSemanticPublication
+	nilOwner.publishAdapterInfo(sink.got[0])
+}
+
+type adapterInfoSinkSpy struct {
+	got []vaillantAdapterInfo
+}
+
+func (spy *adapterInfoSinkSpy) publishAdapterInfo(info vaillantAdapterInfo) {
+	spy.got = append(spy.got, info)
 }

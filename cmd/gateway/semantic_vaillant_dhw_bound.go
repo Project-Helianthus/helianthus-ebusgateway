@@ -1,9 +1,7 @@
 package main
 
 import (
-	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/vaillant/systemconfig"
-	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	vaillantsystem "github.com/Project-Helianthus/helianthus-ebusreg/vaillant/system"
 )
 
@@ -28,7 +26,10 @@ func (p *vaillantSemanticPoller) controllerB524IdentityAndAddress() (vaillantsys
 	return storedB524InterfaceIdentity(p.reg, controller, source, identity, revision), controller
 }
 
-func (p *vaillantSemanticPoller) controllerConfigBound() graphql.ConfigBound {
+// controllerConfigBound resolves the native hot water bivalence bound for the
+// discovered controller; the publication owner maps it to its GraphQL and MCP
+// forms.
+func (p *vaillantSemanticPoller) controllerConfigBound() systemconfig.ConfigBound {
 	// Fence the complete resolution, including retained interface qualifiers.
 	var before systemconfig.BoundRegistryIdentity
 	if p != nil {
@@ -44,25 +45,4 @@ func (p *vaillantSemanticPoller) controllerConfigBound() graphql.ConfigBound {
 		bound.ControllerRegistryIdentity = before
 	}
 	return bound
-}
-
-func configBoundEquals(a, b *graphql.ConfigBound) bool {
-	if a == nil || b == nil {
-		return a == b
-	}
-	return *a == *b
-}
-
-func mcpConfigBound(bound *graphql.ConfigBound) *mcp.ConfigBound {
-	if bound == nil {
-		return nil
-	}
-	return &mcp.ConfigBound{
-		NarrowedOnly: bound.NarrowedOnly,
-		MinC:         bound.MinC,
-		MaxC:         bound.MaxC,
-		Source:       bound.Source,
-		Reason:       bound.Reason,
-		Profile:      bound.Profile,
-	}
 }

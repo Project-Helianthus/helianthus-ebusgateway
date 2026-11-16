@@ -201,7 +201,7 @@ func TestM15RestartWithholdsCachedFlowKeepsLegacyReturnUntilFirstMerge(t *testin
 	}
 	provider := graphql.NewLiveSemanticProvider()
 	snapshot, ok := preloadSemanticCache(provider, store)
-	if !ok || snapshot.Boiler == nil {
+	if !ok || snapshot.boiler == nil {
 		t.Fatal("populated boiler cache was discarded wholesale")
 	}
 	// Check the public provider before attaching a publisher or polling: no

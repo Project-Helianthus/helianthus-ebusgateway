@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"maps"
-	"strconv"
 	"strings"
 	"time"
 
@@ -419,7 +418,7 @@ func newVaillantSemanticPoller(cfg ebusgateway.Config, gateway *ebusgateway.Gate
 		OnTransition:       poller.onSemanticReadBreakerTransition,
 		OnSuppressed:       poller.onSemanticReadBreakerSuppressed,
 	})
-	poller.adapterInfo = newVaillantAdapterInfoState(gateway.Bus, gateway.Transport, provider)
+	poller.adapterInfo = newVaillantAdapterInfoState(gateway.Bus, gateway.Transport, poller.publication)
 	poller.routerPlanesRefreshFn = func() { _ = gateway.RefreshRouterPlanes() }
 	return poller
 }
@@ -467,27 +466,9 @@ func (p *vaillantSemanticPoller) onSemanticReadBreakerSuppressed(event ebusgatew
 	)
 }
 
-func preloadSemanticCache(provider *graphql.LiveSemanticProvider, cacheStore *semanticCacheStore) (semanticCacheSnapshot, bool) {
-	if provider == nil || cacheStore == nil {
-		return semanticCacheSnapshot{}, false
-	}
-	snapshot, ok := cacheStore.Load()
-	if !ok {
-		return semanticCacheSnapshot{}, false
-	}
-	if len(snapshot.Zones) > 0 {
-		provider.SetZonesFromCache(snapshot.Zones)
-	}
-	if snapshot.DHW != nil {
-		provider.SetDHWFromCache(snapshot.DHW)
-	}
-	if snapshot.Boiler != nil {
-		provider.SetBoilerStatusFromCache(snapshot.Boiler)
-	}
-	return snapshot, true
-}
-
-func (p *vaillantSemanticPoller) hydrateFromCache(snapshot semanticCacheSnapshot) {
+// hydrateFromCache seeds the retained zones, hot water and boiler from the
+// native cache hydration value and takes ownership of its snapshots.
+func (p *vaillantSemanticPoller) hydrateFromCache(hydration vaillantCacheHydration) {
 	if p == nil {
 		return
 	}
@@ -501,120 +482,25 @@ func (p *vaillantSemanticPoller) hydrateFromCache(snapshot semanticCacheSnapshot
 	if p.presence == nil {
 		p.presence = make(map[byte]*zonePresenceRecord)
 	}
-	for idx, zone := range snapshot.Zones {
-		instance := zoneInstanceFromSemanticID(zone.ID, idx)
-		p.zones[instance] = zoneSnapshotFromSemanticZone(instance, zone)
-		p.presence[instance] = &zonePresenceRecord{
+	for _, zone := range hydration.zones {
+		p.zones[zone.Instance] = zone
+		p.presence[zone.Instance] = &zonePresenceRecord{
 			State:     zonePresencePresent,
 			HitStreak: p.zoneHitThresholdValue(),
 		}
 	}
-	if snapshot.DHW != nil {
-		p.dhw = dhwSnapshotFromSemanticStatus(snapshot.DHW)
-		if !snapshot.PersistedAt.IsZero() {
-			p.dhwLastUpdateAt = snapshot.PersistedAt.UTC()
+	if hydration.dhw != nil {
+		p.dhw = hydration.dhw
+		if !hydration.persistedAt.IsZero() {
+			p.dhwLastUpdateAt = hydration.persistedAt.UTC()
 		} else {
 			p.markDHWUpdatedNowLocked()
 		}
 	}
-	if snapshot.Boiler != nil {
-		p.boiler = boilerSnapshotFromGraphQL(snapshot.Boiler)
-		// Cache hydration preserves legacy return independently of B524 decoding.
-		p.boiler.ReturnTemperatureC = cloneFloat64Ptr(snapshot.Boiler.State.ReturnTemperatureC)
+	if hydration.boiler != nil {
+		p.boiler = hydration.boiler
 	}
 	semanticZoneCount.Set(int64(len(p.zones)))
-}
-
-func zoneInstanceFromSemanticID(id string, fallbackIndex int) byte {
-	trimmed := strings.TrimSpace(strings.ToLower(id))
-	if strings.HasPrefix(trimmed, "zone-") {
-		ordinalRaw := strings.TrimPrefix(trimmed, "zone-")
-		if ordinal, err := strconv.Atoi(ordinalRaw); err == nil && ordinal > 0 && ordinal <= 256 {
-			return byte(ordinal - 1)
-		}
-	}
-	if fallbackIndex < 0 {
-		return 0
-	}
-	if fallbackIndex > 255 {
-		return 255
-	}
-	return byte(fallbackIndex)
-}
-
-func zoneSnapshotFromSemanticZone(instance byte, zone graphql.Zone) *vaillantZoneSnapshot {
-	snapshot := &vaillantZoneSnapshot{
-		Instance:             instance,
-		Present:              true,
-		Name:                 zone.Name,
-		OperatingMode:        zone.Config.OperatingMode,
-		Preset:               zone.Config.Preset,
-		HvacAction:           zone.State.HvacAction,
-		AllowedModes:         append([]string(nil), zone.Config.AllowedModes...),
-		CurrentTempC:         cloneFloat64Ptr(zone.State.CurrentTempC),
-		TargetTempC:          cloneFloat64Ptr(zone.Config.TargetTempC),
-		HumidityPct:          cloneFloat64Ptr(zone.State.CurrentHumidityPct),
-		StateSpecialFunction: zone.State.SpecialFunction,
-	}
-	if zone.Config.AssociatedCircuit != nil {
-		v := uint16(*zone.Config.AssociatedCircuit)
-		snapshot.ConfigurationAssociatedCircuitRaw = &v
-	}
-	if zone.Config.RoomTemperatureZoneMapping != nil {
-		v := uint16(*zone.Config.RoomTemperatureZoneMapping)
-		snapshot.ConfigurationRoomTemperatureZoneMappingRaw = &v
-	}
-	if zone.Config.CircuitType != "" {
-		v := encodeCircuitTypeRaw(zone.Config.CircuitType)
-		snapshot.ConfigurationCircuitTypeRaw = &v
-	}
-	if zone.State.ValvePositionPct != nil {
-		v := uint16(*zone.State.ValvePositionPct * 655.35)
-		snapshot.StateValveStatusRaw = &v
-	}
-	snapshot.QuickVetoTempC = cloneFloat64Ptr(zone.Config.QuickVetoSetpointC)
-	snapshot.QuickVetoDurationH = cloneFloat64Ptr(zone.Config.QuickVetoDurationH)
-	snapshot.HolidayStartDate = zone.Config.HolidayStartDate
-	snapshot.HolidayEndDate = zone.Config.HolidayEndDate
-	snapshot.HolidaySetpointC = cloneFloat64Ptr(zone.Config.HolidaySetpointC)
-	snapshot.HolidayStartTime = zone.Config.HolidayStartTime
-	snapshot.HolidayEndTime = zone.Config.HolidayEndTime
-	seedZoneFreshness(snapshot, semanticSnapshotSourceCache, true)
-	return snapshot
-}
-
-func encodeCircuitTypeRaw(circuitType string) uint16 {
-	switch circuitType {
-	case "radiator":
-		return 0
-	case "underfloor":
-		return 1
-	case "mixed":
-		return 2
-	default:
-		var n uint16
-		if _, err := fmt.Sscanf(circuitType, "unknown_%d", &n); err == nil {
-			return n
-		}
-		return 0
-	}
-}
-
-func dhwSnapshotFromSemanticStatus(status *graphql.DhwStatus) *vaillantDhwSnapshot {
-	if status == nil {
-		return nil
-	}
-	snapshot := &vaillantDhwSnapshot{
-		OperatingMode:        status.Config.OperatingMode,
-		Preset:               status.Config.Preset,
-		CurrentTempC:         cloneFloat64Ptr(status.State.CurrentTempC),
-		TargetTempC:          cloneFloat64Ptr(status.Config.TargetTempC),
-		StateSpecialFunction: status.State.SpecialFunction,
-		HolidayStartDate:     status.Config.HolidayStartDate,
-		HolidayEndDate:       status.Config.HolidayEndDate,
-	}
-	seedDhwFreshness(snapshot, semanticSnapshotSourceCache, true)
-	return snapshot
 }
 
 func cloneZoneSnapshot(snapshot *vaillantZoneSnapshot) *vaillantZoneSnapshot {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -19,6 +20,11 @@ import (
 // in vaillant_semantic_publication_fm5.go, and it publishes the startup plane
 // defaults and the startup schedule placeholder. It is also the energy ledger of a register acquisition: it derives the
 // provider's energy keys from native channel, usage and window values.
+// Adapter hardware info reaches it as a native value that it maps to the
+// GraphQL form, and the hot water bivalence bound as the native
+// configuration bound that it maps to the GraphQL and MCP forms. Cache
+// persistence and the conversion of a loaded cache into the native
+// hydration value live in vaillant_semantic_publication_cache.go.
 //
 // boilerPublishMu orders GraphQL boiler-status publication against the
 // thermal withdrawal: publishBoilerStatus and the thermal publisher's
@@ -263,86 +269,102 @@ func (o *vaillantSemanticPublication) publishStartupSchedulePlaceholder() {
 	o.provider.SetSchedules(&graphql.ScheduleStatus{Programs: []graphql.ScheduleProgram{}})
 }
 
-func boilerSnapshotFromGraphQL(status *graphql.BoilerStatus) *vaillantBoilerSnapshot {
-	if status == nil {
+// publishAdapterInfo maps the native adapter hardware info to its GraphQL
+// form and hands it to the provider.
+func (o *vaillantSemanticPublication) publishAdapterInfo(info vaillantAdapterInfo) {
+	if o == nil || o.provider == nil {
+		return
+	}
+	o.provider.SetAdapterHardwareInfo(adapterHardwareInfoFromNative(info))
+}
+
+func adapterHardwareInfoFromNative(native vaillantAdapterInfo) *graphql.AdapterHardwareInfo {
+	info := &graphql.AdapterHardwareInfo{}
+
+	if native.identity != nil {
+		v := native.identity
+		info.FirmwareVersion = fmt.Sprintf("0x%02x", v.Version)
+		info.Features = v.Features
+		info.Jumpers = v.Jumpers
+		info.IsWiFi = v.IsWiFi
+		info.IsEthernet = v.IsEthernet
+		info.VersionResponseLen = v.VersionResponseLen()
+		info.InfoSupported = v.SupportsInfo
+
+		if v.HasChecksum {
+			info.FirmwareChecksum = fmt.Sprintf("0x%04x", v.Checksum)
+		}
+		if v.HasBootloader {
+			info.BootloaderVersion = fmt.Sprintf("0x%02x", v.BootloaderVersion)
+			info.BootloaderChecksum = fmt.Sprintf("0x%04x", v.BootloaderChecksum)
+		}
+
+		var flags []string
+		if v.Jumpers&0x01 != 0 {
+			flags = append(flags, "enhanced")
+		}
+		if v.IsHighSpeed {
+			flags = append(flags, "high_speed")
+		}
+		if v.IsEthernet {
+			flags = append(flags, "ethernet")
+		}
+		if v.IsWiFi {
+			flags = append(flags, "wifi")
+		}
+		if v.IsV31 {
+			flags = append(flags, "v3.1")
+		}
+		if v.Jumpers&0x20 != 0 {
+			flags = append(flags, "soft_config")
+		}
+		info.JumperFlags = flags
+	}
+
+	info.HardwareID = native.hardwareID
+	info.HardwareConfig = native.hardwareConfig
+	info.TemperatureC = native.temperatureC
+	info.SupplyVoltageMV = native.supplyMV
+	info.BusVoltageMaxDV = native.busMaxDV
+	info.BusVoltageMinDV = native.busMinDV
+	info.ResetCause = native.resetCause
+	info.ResetCauseCode = native.resetCode
+	info.RestartCount = native.restartCount
+	info.WiFiRSSIDBm = native.wifiRSSI
+
+	if !native.lastIdentity.IsZero() {
+		t := native.lastIdentity
+		info.LastIdentityQuery = &t
+	}
+	if !native.lastTelemetry.IsZero() {
+		t := native.lastTelemetry
+		info.LastTelemetryQuery = &t
+	}
+	return info
+}
+
+// configBoundEquals compares two published GraphQL configuration bounds.
+func configBoundEquals(a, b *graphql.ConfigBound) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+// mcpConfigBound maps a published GraphQL configuration bound to its MCP
+// form.
+func mcpConfigBound(bound *graphql.ConfigBound) *mcp.ConfigBound {
+	if bound == nil {
 		return nil
 	}
-	return mergeBoilerSnapshotNonDestructive(nil, &vaillantBoilerSnapshot{
-		FlowTemperatureC:         cloneFloat64Ptr(status.State.FlowTemperatureC),
-		ReturnTemperatureC:       cloneFloat64Ptr(status.State.ReturnTemperatureC),
-		CentralHeatingPumpActive: cloneBoilerBoolPtr(status.State.CentralHeatingPumpActive),
-		WaterPressureBar:         cloneFloat64Ptr(status.State.WaterPressureBar),
-		ExternalPumpActive:       cloneBoilerBoolPtr(status.State.ExternalPumpActive),
-		CirculationPumpActive:    cloneBoilerBoolPtr(status.State.CirculationPumpActive),
-		GasValveActive:           cloneBoilerBoolPtr(status.State.GasValveActive),
-		FlameActive:              cloneBoilerBoolPtr(status.State.FlameActive),
-		DiverterValvePositionPct: cloneFloat64Ptr(status.State.DiverterValvePositionPct),
-		FanSpeedRpm:              cloneBoilerIntPtr(status.State.FanSpeedRpm),
-		TargetFanSpeedRpm:        cloneBoilerIntPtr(status.State.TargetFanSpeedRpm),
-		IonisationVoltageUa:      cloneFloat64Ptr(status.State.IonisationVoltageUa),
-		DhwWaterFlowLpm:          cloneFloat64Ptr(status.State.DhwWaterFlowLpm),
-		DhwDemandActive:          cloneBoilerBoolPtr(status.State.DhwDemandActive),
-		HeatingSwitchActive:      cloneBoilerBoolPtr(status.State.HeatingSwitchActive),
-		StorageLoadPumpPct:       cloneFloat64Ptr(status.State.StorageLoadPumpPct),
-		ModulationPct:            cloneFloat64Ptr(status.State.ModulationPct),
-		PrimaryCircuitFlowLpm:    cloneFloat64Ptr(status.State.PrimaryCircuitFlowLpm),
-		FlowTempDesiredC:         cloneFloat64Ptr(status.State.FlowTempDesiredC),
-		DhwTempDesiredC:          cloneFloat64Ptr(status.State.DhwTempDesiredC),
-		StateNumber:              cloneBoilerIntPtr(status.State.StateNumber),
-		DhwTemperatureC:          cloneFloat64Ptr(status.State.DhwTemperatureC),
-		DhwTargetTemperatureC:    cloneFloat64Ptr(status.State.DhwTargetTemperatureC),
-		DhwOperatingMode:         cloneBoilerModeIntPtr(status.Config.DhwOperatingMode),
-		FlowsetHcMaxC:            cloneFloat64Ptr(status.Config.FlowsetHcMaxC),
-		FlowsetHwcMaxC:           cloneFloat64Ptr(status.Config.FlowsetHwcMaxC),
-		PartloadHcKW:             cloneFloat64Ptr(status.Config.PartloadHcKW),
-		PartloadHwcKW:            cloneFloat64Ptr(status.Config.PartloadHwcKW),
-		HeatingStatusRaw:         cloneBoilerIntPtr(status.Diagnostics.HeatingStatusRaw),
-		DhwStatusRaw:             cloneBoilerIntPtr(status.Diagnostics.DhwStatusRaw),
-		CentralHeatingHours:      cloneFloat64Ptr(status.Diagnostics.CentralHeatingHours),
-		DhwHours:                 cloneFloat64Ptr(status.Diagnostics.DhwHours),
-		CentralHeatingStarts:     cloneBoilerIntPtr(status.Diagnostics.CentralHeatingStarts),
-		DhwStarts:                cloneBoilerIntPtr(status.Diagnostics.DhwStarts),
-		PumpHours:                cloneFloat64Ptr(status.Diagnostics.PumpHours),
-		FanHours:                 cloneFloat64Ptr(status.Diagnostics.FanHours),
-		DeactivationsIFC:         cloneBoilerIntPtr(status.Diagnostics.DeactivationsIFC),
-		DeactivationsTemplimiter: cloneBoilerIntPtr(status.Diagnostics.DeactivationsTemplimiter),
-	})
-}
-
-func (p *vaillantSemanticPoller) persistSemanticCache(source semanticSnapshotSource) {
-	if p == nil || source != semanticSnapshotSourceLive {
-		return
+	return &mcp.ConfigBound{
+		NarrowedOnly: bound.NarrowedOnly,
+		MinC:         bound.MinC,
+		MaxC:         bound.MaxC,
+		Source:       bound.Source,
+		Reason:       bound.Reason,
+		Profile:      bound.Profile,
 	}
-	p.persistSemanticSnapshot()
-}
-
-func (p *vaillantSemanticPoller) persistSemanticSnapshot() {
-	if p == nil || p.cachePersister() == nil || p.liveProvider() == nil {
-		return
-	}
-	p.mu.Lock()
-	zones := p.cacheZonesLocked(p.liveProvider().Zones())
-	p.mu.Unlock()
-	_ = p.cachePersister().Save(semanticCacheSnapshot{
-		Zones:  zones,
-		DHW:    p.liveProvider().DHW(),
-		Boiler: p.liveProvider().BoilerStatus(),
-	})
-}
-
-func (p *vaillantSemanticPoller) cacheZonesLocked(published []graphql.Zone) []graphql.Zone {
-	out := make([]graphql.Zone, 0, len(published))
-	for idx, zone := range published {
-		instance := zoneInstanceFromSemanticID(zone.ID, idx)
-		if entry := p.zones[instance]; entry != nil {
-			zone.State.CurrentTempC = cloneFloat64Ptr(entry.CurrentTempC)
-			zone.State.CurrentHumidityPct = cloneFloat64Ptr(entry.HumidityPct)
-			zone.Config.RoomTemperatureZoneMapping = decodeRoomTemperatureZoneMapping(entry.ConfigurationRoomTemperatureZoneMappingRaw)
-			zone.Config.AssociatedCircuit = decodeAssociatedCircuit(entry.ConfigurationAssociatedCircuitRaw)
-		}
-		out = append(out, zone)
-	}
-	return out
 }
 
 func (adapter mcpSemanticProviderAdapter) System() *mcp.SystemStatus {

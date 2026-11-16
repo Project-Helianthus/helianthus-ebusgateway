@@ -1,0 +1,3 @@
+## Keep adapter hardware info, cache hydration and the configuration bound native
+
+Adapter hardware info, cache hydration and the hot-water configuration bound cross the acquisition boundary as native values: the adapter info state hands a native adapter-info value to the `vaillantSemanticPublication` owner, which maps it to the published GraphQL form; a loaded semantic cache is converted into a native hydration value that the Vaillant poller hydrates from, and cache persistence and the conversions live with the publication owner; the hot-water bivalence bound is resolved as the native configuration bound and the owner maps it to its GraphQL and MCP forms. The expvar names are unchanged. Published output is unchanged; the gateway binary changes.

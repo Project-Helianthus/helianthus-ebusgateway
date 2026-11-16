@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 )
@@ -372,7 +373,7 @@ func TestVaillantSemanticPoller_HydrateFromCache_SeedsInternalState(t *testing.T
 	poller := &vaillantSemanticPoller{
 		zones: make(map[byte]*vaillantZoneSnapshot),
 	}
-	poller.hydrateFromCache(snapshot)
+	poller.hydrateFromCache(cacheHydrationFromSnapshot(snapshot))
 
 	zone := poller.zones[0x01]
 	if zone == nil {
@@ -421,4 +422,124 @@ func (logs *semanticCacheTestLogs) requireContains(t *testing.T, fragment string
 		}
 	}
 	t.Fatalf("logs do not contain %q; logs=%v", fragment, logs.entries)
+}
+
+// TestPersistSemanticSnapshotLaysRetainedZoneValuesOverPublishedZones pins
+// the cache persistence path: the poller hands the retained zone values to
+// the publication owner, which saves the published zones with them. Each
+// overlay field differs between the published and the retained zone, so a
+// swapped, dropped or published-sourced field fails: current temperature,
+// humidity, room temperature mapping and associated circuit. The overlay is
+// keyed by the instance the zone identifier names: the retained zone at
+// instance 1 overlays "zone-2" only, and "zone-1" is saved as published.
+func TestPersistSemanticSnapshotLaysRetainedZoneValuesOverPublishedZones(t *testing.T) {
+	publishedTemp, publishedHumidity := 18.0, 35.0
+	publishedMapping, publishedCircuit := 7, 6
+	published := func(id string) graphql.Zone {
+		temp, humidity := publishedTemp, publishedHumidity
+		mapping, circuit := publishedMapping, publishedCircuit
+		return graphql.Zone{
+			ID:     id,
+			Name:   id,
+			State:  graphql.ZoneState{CurrentTempC: &temp, CurrentHumidityPct: &humidity},
+			Config: graphql.ZoneConfig{OperatingMode: "auto", RoomTemperatureZoneMapping: &mapping, AssociatedCircuit: &circuit},
+		}
+	}
+	provider := graphql.NewLiveSemanticProvider()
+	provider.SetZonesFromCache([]graphql.Zone{published("zone-1"), published("zone-2")})
+
+	retainedTemp, retainedHumidity := 21.5, 48.0
+	retainedMapping, retainedCircuit := uint16(2), uint16(1)
+	cache := &semanticSnapshotCaptureSpy{}
+	poller := &vaillantSemanticPoller{
+		publication: newVaillantSemanticPublication(provider, nil, cache),
+		zones: map[byte]*vaillantZoneSnapshot{
+			0x01: {
+				Instance:     0x01,
+				CurrentTempC: &retainedTemp,
+				HumidityPct:  &retainedHumidity,
+				ConfigurationRoomTemperatureZoneMappingRaw: &retainedMapping,
+				ConfigurationAssociatedCircuitRaw:          &retainedCircuit,
+			},
+		},
+	}
+	poller.persistSemanticSnapshot()
+
+	if cache.calls != 1 || len(cache.last.Zones) != 2 {
+		t.Fatalf("saves=%d zones=%d; want one save with two zones", cache.calls, len(cache.last.Zones))
+	}
+	untouched, overlaid := cache.last.Zones[0], cache.last.Zones[1]
+	if untouched.ID != "zone-1" || overlaid.ID != "zone-2" {
+		t.Fatalf("saved zone order = %q, %q; want published order", untouched.ID, overlaid.ID)
+	}
+	if *untouched.State.CurrentTempC != publishedTemp || *untouched.State.CurrentHumidityPct != publishedHumidity ||
+		*untouched.Config.RoomTemperatureZoneMapping != publishedMapping || *untouched.Config.AssociatedCircuit != publishedCircuit {
+		t.Fatalf("zone without a retained entry changed: %+v", untouched)
+	}
+	if got := overlaid.State.CurrentTempC; got == nil || *got != retainedTemp {
+		t.Fatalf("saved current temperature = %v; want retained %.1f", got, retainedTemp)
+	}
+	if got := overlaid.State.CurrentHumidityPct; got == nil || *got != retainedHumidity {
+		t.Fatalf("saved humidity = %v; want retained %.1f", got, retainedHumidity)
+	}
+	if got := overlaid.Config.RoomTemperatureZoneMapping; got == nil || *got != int(retainedMapping) {
+		t.Fatalf("saved room temperature mapping = %v; want retained %d", got, retainedMapping)
+	}
+	if got := overlaid.Config.AssociatedCircuit; got == nil || *got != int(retainedCircuit) {
+		t.Fatalf("saved associated circuit = %v; want retained %d", got, retainedCircuit)
+	}
+	if overlaid.State.CurrentTempC == &retainedTemp || overlaid.State.CurrentHumidityPct == &retainedHumidity {
+		t.Fatal("saved zone shares a retained value")
+	}
+	if overlaid.Config.OperatingMode != "auto" || overlaid.Name != "zone-2" {
+		t.Fatalf("saved zone lost a published field: %+v", overlaid)
+	}
+}
+
+// TestCacheHydrationFromSnapshotKeysZonesAndKeepsLegacyReturn pins the
+// conversion of a loaded cache into the native hydration value: zones keep
+// cache order and take the instance their identifier names, falling back to
+// the cache index; hot water carries the persisted time; the boiler keeps
+// the cached legacy return.
+func TestCacheHydrationFromSnapshotKeysZonesAndKeepsLegacyReturn(t *testing.T) {
+	ret, current := 33.0, 44.0
+	persisted := time.Date(2026, time.March, 1, 6, 0, 0, 0, time.FixedZone("east", 2*3600))
+	hydration := cacheHydrationFromSnapshot(semanticCacheSnapshot{
+		Zones: []graphql.Zone{
+			{ID: "zone-3", Name: "upstairs"},
+			{ID: "custom", Name: "fallback"},
+		},
+		DHW:         &graphql.DhwStatus{State: graphql.DhwState{CurrentTempC: &current}},
+		Boiler:      &graphql.BoilerStatus{State: graphql.BoilerState{ReturnTemperatureC: &ret}},
+		PersistedAt: persisted,
+	})
+	if len(hydration.zones) != 2 || hydration.zones[0].Instance != 0x02 || hydration.zones[1].Instance != 0x01 {
+		t.Fatalf("hydrated zones = %+v; want instances 2 then fallback 1", hydration.zones)
+	}
+	if hydration.zones[0].Name != "upstairs" || hydration.zones[1].Name != "fallback" {
+		t.Fatal("hydrated zones lost cache order")
+	}
+	if hydration.dhw == nil || hydration.dhw.CurrentTempC == nil || *hydration.dhw.CurrentTempC != current {
+		t.Fatalf("hydrated hot water = %+v; want cached current temperature", hydration.dhw)
+	}
+	if !hydration.persistedAt.Equal(persisted) {
+		t.Fatalf("persisted time = %v; want %v", hydration.persistedAt, persisted)
+	}
+	if hydration.boiler == nil || hydration.boiler.ReturnTemperatureC == nil || *hydration.boiler.ReturnTemperatureC != ret {
+		t.Fatalf("hydrated boiler = %+v; want cached legacy return", hydration.boiler)
+	}
+
+	poller := &vaillantSemanticPoller{}
+	poller.hydrateFromCache(hydration)
+	if poller.zones[0x02] == nil || poller.zones[0x01] == nil || poller.presence[0x02] == nil {
+		t.Fatal("hydration did not key zones by instance")
+	}
+	if !poller.dhwLastUpdateAt.Equal(persisted) || poller.dhwLastUpdateAt.Location() != time.UTC {
+		t.Fatalf("hot water update time = %v; want the persisted time in UTC", poller.dhwLastUpdateAt)
+	}
+
+	empty := cacheHydrationFromSnapshot(semanticCacheSnapshot{})
+	if empty.zones != nil || empty.dhw != nil || empty.boiler != nil || !empty.persistedAt.IsZero() {
+		t.Fatalf("empty cache hydration = %+v; want the zero value", empty)
+	}
 }

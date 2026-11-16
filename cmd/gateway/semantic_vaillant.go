@@ -54,11 +54,11 @@ func startVaillantSemanticPolling(ctx context.Context, cfg ebusgateway.Config, g
 	}
 
 	cacheStore := newSemanticCacheStore(cfg.SemanticCachePath, log.Printf)
-	cacheSnapshot, cacheLoaded := preloadSemanticCache(provider, cacheStore)
+	cacheHydration, cacheLoaded := preloadSemanticCache(provider, cacheStore)
 	poller := newVaillantSemanticPoller(cfg, gateway, provider, hub, cacheStore)
 	poller.startupBarrier = startupBarrier
 	if cacheLoaded {
-		poller.hydrateFromCache(cacheSnapshot)
+		poller.hydrateFromCache(cacheHydration)
 	}
 	poller.Start(ctx)
 	return poller

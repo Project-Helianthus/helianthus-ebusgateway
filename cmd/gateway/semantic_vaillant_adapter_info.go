@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
@@ -33,11 +32,42 @@ var (
 
 var errAdapterInfoUnsupported = errors.New("adapter info unsupported")
 
+// vaillantAdapterInfo is the native adapter hardware info that the adapter
+// info state hands to its sink after each refresh cycle. identity is a
+// detached copy of the parsed version, nil while no version is known; the
+// zero value carries no identity and no telemetry.
+type vaillantAdapterInfo struct {
+	identity       *transport.AdapterVersion
+	hardwareID     string
+	hardwareConfig string
+
+	temperatureC *float64
+	supplyMV     *int
+	busMaxDV     *int
+	busMinDV     *int
+	resetCause   *string
+	resetCode    *byte
+	restartCount *byte
+	wifiRSSI     *int
+
+	lastIdentity  time.Time
+	lastTelemetry time.Time
+}
+
+// vaillantAdapterInfoSink receives the native adapter hardware info; the
+// publication owner maps it to its published form.
+type vaillantAdapterInfoSink interface {
+	publishAdapterInfo(info vaillantAdapterInfo)
+}
+
+// vaillantAdapterInfoState queries the adapter's hardware identity and
+// telemetry and keeps the adapter expvars current. mu guards every field
+// below it and serializes the hand-over to the sink.
 type vaillantAdapterInfoState struct {
 	mu sync.Mutex
 
-	bus      *protocol.Bus
-	provider *graphql.LiveSemanticProvider
+	bus  *protocol.Bus
+	sink vaillantAdapterInfoSink
 
 	identity *transport.AdapterVersion
 	hwID     string
@@ -56,13 +86,13 @@ type vaillantAdapterInfoState struct {
 	lastTelemetry time.Time
 }
 
-func newVaillantAdapterInfoState(bus *protocol.Bus, rawTransport transport.RawTransport, provider *graphql.LiveSemanticProvider) *vaillantAdapterInfoState {
+func newVaillantAdapterInfoState(bus *protocol.Bus, rawTransport transport.RawTransport, sink vaillantAdapterInfoSink) *vaillantAdapterInfoState {
 	state := &vaillantAdapterInfoState{
-		bus:      bus,
-		provider: provider,
+		bus:  bus,
+		sink: sink,
 	}
-	if provider != nil {
-		provider.SetAdapterHardwareInfo(&graphql.AdapterHardwareInfo{})
+	if sink != nil {
+		sink.publishAdapterInfo(vaillantAdapterInfo{})
 	}
 	if _, ok := rawTransport.(transport.InfoRequester); !ok {
 		adapterInfoSupported.Set(0)
@@ -313,73 +343,32 @@ func (s *vaillantAdapterInfoState) queryInfo(ctx context.Context, id transport.A
 	return result, nil
 }
 
+// publish hands the native adapter info to the sink under the state lock.
 func (s *vaillantAdapterInfoState) publish() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	info := &graphql.AdapterHardwareInfo{}
-
+	info := vaillantAdapterInfo{
+		hardwareID:     s.hwID,
+		hardwareConfig: s.hwConfig,
+		temperatureC:   s.tempC,
+		supplyMV:       s.supplyMV,
+		busMaxDV:       s.busMaxDV,
+		busMinDV:       s.busMinDV,
+		resetCause:     s.resetCause,
+		resetCode:      s.resetCode,
+		restartCount:   s.restartCount,
+		wifiRSSI:       s.wifiRSSI,
+		lastIdentity:   s.lastIdentity,
+		lastTelemetry:  s.lastTelemetry,
+	}
 	if s.identity != nil {
-		v := s.identity
-		info.FirmwareVersion = fmt.Sprintf("0x%02x", v.Version)
-		info.Features = v.Features
-		info.Jumpers = v.Jumpers
-		info.IsWiFi = v.IsWiFi
-		info.IsEthernet = v.IsEthernet
-		info.VersionResponseLen = v.VersionResponseLen()
-		info.InfoSupported = v.SupportsInfo
-
-		if v.HasChecksum {
-			info.FirmwareChecksum = fmt.Sprintf("0x%04x", v.Checksum)
-		}
-		if v.HasBootloader {
-			info.BootloaderVersion = fmt.Sprintf("0x%02x", v.BootloaderVersion)
-			info.BootloaderChecksum = fmt.Sprintf("0x%04x", v.BootloaderChecksum)
-		}
-
-		var flags []string
-		if v.Jumpers&0x01 != 0 {
-			flags = append(flags, "enhanced")
-		}
-		if v.IsHighSpeed {
-			flags = append(flags, "high_speed")
-		}
-		if v.IsEthernet {
-			flags = append(flags, "ethernet")
-		}
-		if v.IsWiFi {
-			flags = append(flags, "wifi")
-		}
-		if v.IsV31 {
-			flags = append(flags, "v3.1")
-		}
-		if v.Jumpers&0x20 != 0 {
-			flags = append(flags, "soft_config")
-		}
-		info.JumperFlags = flags
+		identity := *s.identity
+		info.identity = &identity
 	}
-
-	info.HardwareID = s.hwID
-	info.HardwareConfig = s.hwConfig
-	info.TemperatureC = s.tempC
-	info.SupplyVoltageMV = s.supplyMV
-	info.BusVoltageMaxDV = s.busMaxDV
-	info.BusVoltageMinDV = s.busMinDV
-	info.ResetCause = s.resetCause
-	info.ResetCauseCode = s.resetCode
-	info.RestartCount = s.restartCount
-	info.WiFiRSSIDBm = s.wifiRSSI
-
-	if !s.lastIdentity.IsZero() {
-		t := s.lastIdentity
-		info.LastIdentityQuery = &t
+	if s.sink != nil {
+		s.sink.publishAdapterInfo(info)
 	}
-	if !s.lastTelemetry.IsZero() {
-		t := s.lastTelemetry
-		info.LastTelemetryQuery = &t
-	}
-
-	s.provider.SetAdapterHardwareInfo(info)
 }
 
 func (s *vaillantAdapterInfoState) shouldRebootstrap(err error) bool {

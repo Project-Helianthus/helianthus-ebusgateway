@@ -3956,7 +3956,7 @@ func TestVaillantSemanticPoller_HydrateFromCacheSeedsDHWStalenessFromPersistedAt
 	poller.nowFn = func() time.Time { return now }
 
 	// Hydrate from a cache that was persisted 20 minutes ago — already past the 15m TTL.
-	poller.hydrateFromCache(semanticCacheSnapshot{
+	poller.hydrateFromCache(cacheHydrationFromSnapshot(semanticCacheSnapshot{
 		DHW: &graphql.DhwStatus{
 			Config: graphql.DhwConfig{
 				OperatingMode: "auto",
@@ -3967,7 +3967,7 @@ func TestVaillantSemanticPoller_HydrateFromCacheSeedsDHWStalenessFromPersistedAt
 			},
 		},
 		PersistedAt: now.Add(-20 * time.Minute),
-	})
+	}))
 
 	// The poller should have seeded dhwLastUpdateAt from PersistedAt, not now().
 	if poller.dhwLastUpdateAt.Equal(now) {
@@ -3998,7 +3998,7 @@ func TestVaillantSemanticPoller_HydrateFromCacheFallsBackToNowWhenPersistedAtZer
 	poller.nowFn = func() time.Time { return now }
 
 	// Hydrate with zero PersistedAt — should fall back to now().
-	poller.hydrateFromCache(semanticCacheSnapshot{
+	poller.hydrateFromCache(cacheHydrationFromSnapshot(semanticCacheSnapshot{
 		DHW: &graphql.DhwStatus{
 			Config: graphql.DhwConfig{
 				OperatingMode: "auto",
@@ -4007,7 +4007,7 @@ func TestVaillantSemanticPoller_HydrateFromCacheFallsBackToNowWhenPersistedAtZer
 				CurrentTempC: &current,
 			},
 		},
-	})
+	}))
 
 	if !poller.dhwLastUpdateAt.Equal(now) {
 		t.Fatalf("dhwLastUpdateAt = %v; want %v (fallback to now when PersistedAt is zero)", poller.dhwLastUpdateAt, now)
@@ -4128,10 +4128,10 @@ func TestVaillantSemanticPoller_DiscoveryFlapDuringStartup(t *testing.T) {
 		dhwStaleTTL: 30 * time.Minute,
 	}
 	poller.nowFn = func() time.Time { return now }
-	poller.hydrateFromCache(semanticCacheSnapshot{
+	poller.hydrateFromCache(cacheHydrationFromSnapshot(semanticCacheSnapshot{
 		DHW:         cached,
 		PersistedAt: now.Add(-5 * time.Minute),
-	})
+	}))
 
 	poller.refreshDiscovery(context.Background())
 	if got := provider.StartupPhase(); got != graphql.SemanticStartupPhaseCacheLoadedStale {

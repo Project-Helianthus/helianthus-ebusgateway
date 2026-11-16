@@ -561,6 +561,33 @@ func (p *vaillantSemanticPoller) snapshotZones() (byte, []byte) {
 	return controller, instances
 }
 
+// zoneViewsLocked builds the native views of the retained zones in instance
+// order, with the radio room state and the inferred room mapping derived from
+// the retained radio devices. The caller holds p.mu.
+func (p *vaillantSemanticPoller) zoneViewsLocked() []vaillantZoneView {
+	instances := make([]byte, 0, len(p.zones))
+	for instance := range p.zones {
+		instances = append(instances, instance)
+	}
+	slices.Sort(instances)
+	views := make([]vaillantZoneView, 0, len(instances))
+	for _, instance := range instances {
+		entry := p.zones[instance]
+		if entry == nil {
+			continue
+		}
+		view := vaillantZoneView{instance: instance, snapshot: cloneZoneSnapshot(entry)}
+		if entry.CurrentTempC == nil || entry.HumidityPct == nil {
+			view.radioRoomTempC, view.radioRoomHumidityPct = p.mappedRadioRoomStateForZoneLocked(entry)
+		}
+		if entry.ConfigurationRoomTemperatureZoneMappingRaw == nil {
+			view.inferredRoomMappingRaw = p.inferRadioRoomMappingForZoneLocked(entry.Instance)
+		}
+		views = append(views, view)
+	}
+	return views
+}
+
 func (p *vaillantSemanticPoller) mappedRadioRoomStateForZoneLocked(entry *vaillantZoneSnapshot) (*float64, *float64) {
 	if p == nil || entry == nil {
 		return nil, nil

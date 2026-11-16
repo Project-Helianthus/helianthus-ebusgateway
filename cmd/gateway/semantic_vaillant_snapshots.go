@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"maps"
 	"strconv"
 	"strings"
 	"time"
@@ -127,6 +128,35 @@ type vaillantRadioDeviceSnapshot struct {
 	ZoneAssignment       *uint8
 	RoomTemperatureC     *float64
 	RoomHumidityPct      *float64
+}
+
+// vaillantZoneView is the native view of one zone that the acquisition side
+// hands to the publication owner. snapshot is a detached copy of the retained
+// zone. The radio room values are taken from the mapped radio device only when
+// the zone lacks its own temperature or humidity, and inferredRoomMappingRaw
+// only when the zone carries no room temperature mapping.
+type vaillantZoneView struct {
+	instance               byte
+	snapshot               *vaillantZoneSnapshot
+	radioRoomTempC         *float64
+	radioRoomHumidityPct   *float64
+	inferredRoomMappingRaw *uint16
+}
+
+// vaillantDhwView is the native view of hot water handed to the publication
+// owner: a detached copy of the retained snapshot, nil when none is retained,
+// and whether this publication expired a stale snapshot.
+type vaillantDhwView struct {
+	snapshot *vaillantDhwSnapshot
+	expired  bool
+}
+
+// vaillantCircuitsView is the native view of the active circuits handed to
+// the publication owner, in instance order, with whether the function module
+// manages them.
+type vaillantCircuitsView struct {
+	circuits                []*vaillantCircuitSnapshot
+	managedByFunctionModule bool
 }
 
 type vaillantSolarSnapshot struct {
@@ -575,6 +605,37 @@ func dhwSnapshotFromSemanticStatus(status *graphql.DhwStatus) *vaillantDhwSnapsh
 	}
 	seedDhwFreshness(snapshot, semanticSnapshotSourceCache, true)
 	return snapshot
+}
+
+func cloneZoneSnapshot(snapshot *vaillantZoneSnapshot) *vaillantZoneSnapshot {
+	if snapshot == nil {
+		return nil
+	}
+	cloned := *snapshot
+	cloned.AllowedModes = append([]string(nil), snapshot.AllowedModes...)
+	cloned.CurrentTempC = cloneFloat64Ptr(snapshot.CurrentTempC)
+	cloned.TargetTempC = cloneFloat64Ptr(snapshot.TargetTempC)
+	cloned.HumidityPct = cloneFloat64Ptr(snapshot.HumidityPct)
+	cloned.ConfigurationRoomTemperatureZoneMappingRaw = cloneUint16Ptr(snapshot.ConfigurationRoomTemperatureZoneMappingRaw)
+	cloned.ConfigurationAssociatedCircuitRaw = cloneUint16Ptr(snapshot.ConfigurationAssociatedCircuitRaw)
+	cloned.ConfigurationCircuitTypeRaw = cloneUint16Ptr(snapshot.ConfigurationCircuitTypeRaw)
+	cloned.StateValveStatusRaw = cloneUint16Ptr(snapshot.StateValveStatusRaw)
+	cloned.QuickVetoTempC = cloneFloat64Ptr(snapshot.QuickVetoTempC)
+	cloned.QuickVetoDurationH = cloneFloat64Ptr(snapshot.QuickVetoDurationH)
+	cloned.HolidaySetpointC = cloneFloat64Ptr(snapshot.HolidaySetpointC)
+	cloned.FieldFreshness = maps.Clone(snapshot.FieldFreshness)
+	return &cloned
+}
+
+func cloneDhwSnapshot(snapshot *vaillantDhwSnapshot) *vaillantDhwSnapshot {
+	if snapshot == nil {
+		return nil
+	}
+	cloned := *snapshot
+	cloned.CurrentTempC = cloneFloat64Ptr(snapshot.CurrentTempC)
+	cloned.TargetTempC = cloneFloat64Ptr(snapshot.TargetTempC)
+	cloned.FieldFreshness = maps.Clone(snapshot.FieldFreshness)
+	return &cloned
 }
 
 func cloneFloat64Ptr(value *float64) *float64 {

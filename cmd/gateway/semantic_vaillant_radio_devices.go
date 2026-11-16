@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
@@ -64,6 +65,25 @@ func (p *vaillantSemanticPoller) discoverDeviceSlotsWithFM5Completeness(ctx cont
 	return active, observedAny, fm5NamespaceComplete, fm5Snapshots
 }
 
+// radioSlotDiscovery is the outcome of the device slot discovery phase of
+// one radio device refresh.
+type radioSlotDiscovery struct {
+	needed       bool
+	observed     bool
+	fm5Complete  bool
+	activeSlots  map[deviceSlotKey]bool
+	fm5Snapshots map[radioDeviceKey]*vaillantRadioDeviceSnapshot
+}
+
+// radioSlotDetailScan is the outcome of the detail read phase of one radio
+// device refresh over the cached active slots.
+type radioSlotDetailScan struct {
+	discovered           map[radioDeviceKey]*vaillantRadioDeviceSnapshot
+	readAny              bool
+	fm5SlotReadAttempted bool
+	fm5DetailIncomplete  bool
+}
+
 func (p *vaillantSemanticPoller) refreshRadioDevices(ctx context.Context) {
 	if p == nil {
 		return
@@ -80,50 +100,15 @@ func (p *vaillantSemanticPoller) refreshRadioDevices(ctx context.Context) {
 
 	// Phase 1: Device slot discovery — full scan of all OP=0x06 groups.
 	// Runs at startup and every deviceSlotRediscoveryTTL (30min default).
-	discoveryObserved := false
-	fm5NamespaceComplete := false
-	phaseOneActiveSlots := make(map[deviceSlotKey]bool)
-	phaseOneFM5Snapshots := make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot)
-	if needsDiscovery {
-		activeSlots, observedAny, complete, snapshots := p.discoverDeviceSlotsWithFM5Completeness(ctx)
-		discoveryObserved = observedAny
-		fm5NamespaceComplete = complete
-		phaseOneActiveSlots = activeSlots
-		phaseOneFM5Snapshots = snapshots
-		if observedAny {
-			p.mu.Lock()
-			p.deviceSlotCache = activeSlots
-			p.deviceSlotDiscoveryDone = true
-			p.deviceSlotDiscoveryAt = p.now()
-			p.mu.Unlock()
-		}
-	}
+	discovery := p.discoverRadioSlots(ctx, needsDiscovery)
 
 	p.mu.Lock()
 	slots := p.deviceSlotCache
 	p.mu.Unlock()
 
 	if len(slots) == 0 {
-		if discoveryObserved {
-			fm5ScanComplete := fm5NamespaceComplete
-			p.mu.Lock()
-			retained := make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot)
-			if !fm5ScanComplete {
-				for key, snapshot := range p.radioDevices {
-					if key.Group == remoteFunctionalModules.group {
-						retained[key] = snapshot
-					}
-				}
-			}
-			p.radioDevices = retained
-			p.fm5EvidenceGeneration++
-			p.fm5IdentityScanComplete = fm5ScanComplete
-			p.fm5IdentityIncoherent = !fm5ScanComplete
-			if fm5ScanComplete {
-				p.fm5RegistryEvidenceIgnored = true
-				p.fm5IdentityObservedAt = p.now()
-			}
-			p.mu.Unlock()
+		if discovery.observed {
+			p.clearRadioDevicesWithoutSlots(discovery.fm5Complete)
 			p.publishRadioDevices(semanticSnapshotSourceLive)
 			p.refreshFM5Semantic(ctx)
 		}
@@ -131,110 +116,21 @@ func (p *vaillantSemanticPoller) refreshRadioDevices(ctx context.Context) {
 	}
 
 	// Phase 2: Read detail registers for cached active slots only.
-	discovered := make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot)
-	readAny := false
-	fm5SlotReadAttempted := false
-	fm5DetailIncomplete := false
+	scan := radioSlotDetailScan{discovered: make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot)}
 	for key := range slots {
-		group := key.Group
-		instance := key.Instance
-		opcode := vaillantB524OpcodeRead
-		if group == remoteFunctionalModules.group {
-			fm5SlotReadAttempted = true
-			device, observed, complete := p.readFunctionalModuleIdentitySnapshot(ctx, instance)
-			if !observed {
-				fm5DetailIncomplete = true
-				continue
-			}
-			readAny = true
-			radioKey := radioDeviceKey{Group: group, Instance: instance}
-			if !complete {
-				fm5DetailIncomplete = true
-				if phaseOne := phaseOneFM5Snapshots[radioKey]; phaseOne != nil {
-					discovered[radioKey] = phaseOne
-				} else if device != nil {
-					discovered[radioKey] = device
-				}
-				continue
-			}
-			if phaseOne := phaseOneFM5Snapshots[radioKey]; phaseOne != nil && device == nil {
-				fm5DetailIncomplete = true
-				discovered[radioKey] = phaseOne
-				continue
-			}
-			if device == nil {
-				continue
-			}
-			if device.DeviceConnected != nil && *device.DeviceConnected {
-				device.RemoteControlAddress = p.readB524U8(ctx, opcode, group, instance, device_slot_remote_control_address)
-				device.DevicePaired = p.readB524Bool(ctx, opcode, group, instance, device_slot_paired)
-				device.ReceptionStrength = p.readB524U8(ctx, opcode, group, instance, device_slot_reception_strength)
-				device.ZoneAssignment = p.readB524U8(ctx, opcode, group, instance, device_slot_zone_assignment)
-				device.RoomTemperatureC = p.readB524F32(ctx, opcode, group, instance, device_slot_room_temperature)
-				device.RoomHumidityPct = p.readB524F32(ctx, opcode, group, instance, device_slot_room_humidity)
-			}
-			discovered[radioKey] = device
+		if key.Group == remoteFunctionalModules.group {
+			p.readFunctionalModuleSlotDetails(ctx, key, discovery, &scan)
 			continue
 		}
-
-		connectedRaw := p.readB524U8(ctx, opcode, group, instance, device_slot_connected)
-		if connectedRaw == nil {
-			if phaseOneActiveSlots[key] {
-				p.mu.Lock()
-				previous := cloneRadioSnapshot(p.radioDevices[radioDeviceKey{Group: group, Instance: instance}])
-				p.mu.Unlock()
-				if previous != nil {
-					discovered[radioDeviceKey{Group: group, Instance: instance}] = previous
-				}
-			}
-			continue
-		}
-		readAny = true
-
-		connected := *connectedRaw == 1
-		classAddress := p.readB524U8(ctx, opcode, group, instance, device_slot_class_address)
-		firmware := p.readB524Firmware(ctx, opcode, group, instance, device_slot_firmware)
-		hardware := p.readB524U16(ctx, opcode, group, instance, device_slot_hardware_identifier)
-
-		slotMode := "active"
-		include := false
-		switch group {
-		case remoteRegulators.group, remoteThermostats.group:
-			include = connected
-		default:
-			include = connected
-		}
-		if !include {
-			continue
-		}
-
-		device := &vaillantRadioDeviceSnapshot{
-			Group:              group,
-			Instance:           instance,
-			SlotMode:           slotMode,
-			DeviceConnected:    cloneBoilerBoolPtr(&connected),
-			DeviceClassAddress: cloneUint8Ptr(classAddress),
-			DeviceModel:        decodeRadioDeviceModel(classAddress),
-			FirmwareVersion:    cloneStringPtr(firmware),
-			HardwareIdentifier: cloneUint16Ptr(hardware),
-		}
-		if connected {
-			device.RemoteControlAddress = p.readB524U8(ctx, opcode, group, instance, device_slot_remote_control_address)
-			device.DevicePaired = p.readB524Bool(ctx, opcode, group, instance, device_slot_paired)
-			device.ReceptionStrength = p.readB524U8(ctx, opcode, group, instance, device_slot_reception_strength)
-			device.ZoneAssignment = p.readB524U8(ctx, opcode, group, instance, device_slot_zone_assignment)
-			device.RoomTemperatureC = p.readB524F32(ctx, opcode, group, instance, device_slot_room_temperature)
-			device.RoomHumidityPct = p.readB524F32(ctx, opcode, group, instance, device_slot_room_humidity)
-		}
-		discovered[radioDeviceKey{Group: group, Instance: instance}] = device
+		p.readRadioSlotDetails(ctx, key, discovery, &scan)
 	}
 
-	completePhaseOneFM5Negative := needsDiscovery && discoveryObserved && fm5NamespaceComplete && len(phaseOneFM5Snapshots) == 0
-	if !readAny && len(phaseOneFM5Snapshots) == 0 && !fm5SlotReadAttempted && !completePhaseOneFM5Negative {
+	completePhaseOneFM5Negative := discovery.needed && discovery.observed && discovery.fm5Complete && len(discovery.fm5Snapshots) == 0
+	if !scan.readAny && len(discovery.fm5Snapshots) == 0 && !scan.fm5SlotReadAttempted && !completePhaseOneFM5Negative {
 		return
 	}
 
-	for _, snapshot := range discovered {
+	for _, snapshot := range scan.discovered {
 		info, ok := radioInventoryRegistryInfo(snapshot)
 		if !ok {
 			continue
@@ -242,12 +138,176 @@ func (p *vaillantSemanticPoller) refreshRadioDevices(ctx context.Context) {
 		p.reg.Register(preserveExistingRegistryMetadata(p.reg, info))
 	}
 
+	p.commitRadioDeviceScan(discovery, scan)
+	p.publishRadioDevices(semanticSnapshotSourceLive)
+	p.refreshFM5Semantic(ctx)
+}
+
+// discoverRadioSlots runs the device slot discovery phase when it is due and
+// caches the active slots when any slot was observed.
+func (p *vaillantSemanticPoller) discoverRadioSlots(ctx context.Context, needsDiscovery bool) radioSlotDiscovery {
+	discovery := radioSlotDiscovery{
+		needed:       needsDiscovery,
+		activeSlots:  make(map[deviceSlotKey]bool),
+		fm5Snapshots: make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot),
+	}
+	if !needsDiscovery {
+		return discovery
+	}
+	activeSlots, observedAny, complete, snapshots := p.discoverDeviceSlotsWithFM5Completeness(ctx)
+	discovery.observed = observedAny
+	discovery.fm5Complete = complete
+	discovery.activeSlots = activeSlots
+	discovery.fm5Snapshots = snapshots
+	if observedAny {
+		p.mu.Lock()
+		p.deviceSlotCache = activeSlots
+		p.deviceSlotDiscoveryDone = true
+		p.deviceSlotDiscoveryAt = p.now()
+		p.mu.Unlock()
+	}
+	return discovery
+}
+
+// clearRadioDevicesWithoutSlots drops the radio devices after an observed
+// discovery found no active slot. Functional module devices are retained
+// unless their namespace scan was complete.
+func (p *vaillantSemanticPoller) clearRadioDevicesWithoutSlots(fm5ScanComplete bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	retained := make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot)
+	if !fm5ScanComplete {
+		for key, snapshot := range p.radioDevices {
+			if key.Group == remoteFunctionalModules.group {
+				retained[key] = snapshot
+			}
+		}
+	}
+	p.radioDevices = retained
+	p.fm5EvidenceGeneration++
+	p.fm5IdentityScanComplete = fm5ScanComplete
+	p.fm5IdentityIncoherent = !fm5ScanComplete
+	if fm5ScanComplete {
+		p.fm5RegistryEvidenceIgnored = true
+		p.fm5IdentityObservedAt = p.now()
+	}
+}
+
+// readFunctionalModuleSlotDetails reads the identity and, for a connected
+// module, the detail registers of one functional module slot.
+func (p *vaillantSemanticPoller) readFunctionalModuleSlotDetails(ctx context.Context, key deviceSlotKey, discovery radioSlotDiscovery, scan *radioSlotDetailScan) {
+	group := key.Group
+	instance := key.Instance
+	scan.fm5SlotReadAttempted = true
+	device, observed, complete := p.readFunctionalModuleIdentitySnapshot(ctx, instance)
+	if !observed {
+		scan.fm5DetailIncomplete = true
+		return
+	}
+	scan.readAny = true
+	radioKey := radioDeviceKey{Group: group, Instance: instance}
+	if !complete {
+		scan.fm5DetailIncomplete = true
+		if phaseOne := discovery.fm5Snapshots[radioKey]; phaseOne != nil {
+			scan.discovered[radioKey] = phaseOne
+		} else if device != nil {
+			scan.discovered[radioKey] = device
+		}
+		return
+	}
+	if phaseOne := discovery.fm5Snapshots[radioKey]; phaseOne != nil && device == nil {
+		scan.fm5DetailIncomplete = true
+		scan.discovered[radioKey] = phaseOne
+		return
+	}
+	if device == nil {
+		return
+	}
+	if device.DeviceConnected != nil && *device.DeviceConnected {
+		p.readConnectedRadioSlotDetails(ctx, device, group, instance)
+	}
+	scan.discovered[radioKey] = device
+}
+
+// readRadioSlotDetails reads one regulator or thermostat slot. A slot whose
+// connection read fails keeps its previous snapshot when discovery has just
+// reported it active.
+func (p *vaillantSemanticPoller) readRadioSlotDetails(ctx context.Context, key deviceSlotKey, discovery radioSlotDiscovery, scan *radioSlotDetailScan) {
+	group := key.Group
+	instance := key.Instance
+	opcode := vaillantB524OpcodeRead
+	connectedRaw := p.readB524U8(ctx, opcode, group, instance, device_slot_connected)
+	if connectedRaw == nil {
+		if discovery.activeSlots[key] {
+			p.mu.Lock()
+			previous := cloneRadioSnapshot(p.radioDevices[radioDeviceKey{Group: group, Instance: instance}])
+			p.mu.Unlock()
+			if previous != nil {
+				scan.discovered[radioDeviceKey{Group: group, Instance: instance}] = previous
+			}
+		}
+		return
+	}
+	scan.readAny = true
+
+	connected := *connectedRaw == 1
+	classAddress := p.readB524U8(ctx, opcode, group, instance, device_slot_class_address)
+	firmware := p.readB524Firmware(ctx, opcode, group, instance, device_slot_firmware)
+	hardware := p.readB524U16(ctx, opcode, group, instance, device_slot_hardware_identifier)
+
+	slotMode := "active"
+	include := false
+	switch group {
+	case remoteRegulators.group, remoteThermostats.group:
+		include = connected
+	default:
+		include = connected
+	}
+	if !include {
+		return
+	}
+
+	device := &vaillantRadioDeviceSnapshot{
+		Group:              group,
+		Instance:           instance,
+		SlotMode:           slotMode,
+		DeviceConnected:    cloneBoilerBoolPtr(&connected),
+		DeviceClassAddress: cloneUint8Ptr(classAddress),
+		DeviceModel:        decodeRadioDeviceModel(classAddress),
+		FirmwareVersion:    cloneStringPtr(firmware),
+		HardwareIdentifier: cloneUint16Ptr(hardware),
+	}
+	if connected {
+		p.readConnectedRadioSlotDetails(ctx, device, group, instance)
+	}
+	scan.discovered[radioDeviceKey{Group: group, Instance: instance}] = device
+}
+
+// readConnectedRadioSlotDetails reads the pairing, reception, zone and room
+// registers of a connected device slot in a fixed order.
+func (p *vaillantSemanticPoller) readConnectedRadioSlotDetails(ctx context.Context, device *vaillantRadioDeviceSnapshot, group, instance byte) {
+	opcode := vaillantB524OpcodeRead
+	device.RemoteControlAddress = p.readB524U8(ctx, opcode, group, instance, device_slot_remote_control_address)
+	device.DevicePaired = p.readB524Bool(ctx, opcode, group, instance, device_slot_paired)
+	device.ReceptionStrength = p.readB524U8(ctx, opcode, group, instance, device_slot_reception_strength)
+	device.ZoneAssignment = p.readB524U8(ctx, opcode, group, instance, device_slot_zone_assignment)
+	device.RoomTemperatureC = p.readB524F32(ctx, opcode, group, instance, device_slot_room_temperature)
+	device.RoomHumidityPct = p.readB524F32(ctx, opcode, group, instance, device_slot_room_humidity)
+}
+
+// commitRadioDeviceScan replaces the retained radio devices with the scan
+// result and records the functional module identity evidence it carries.
+func (p *vaillantSemanticPoller) commitRadioDeviceScan(discovery radioSlotDiscovery, scan radioSlotDetailScan) {
+	discovered := scan.discovered
+	needsDiscovery := discovery.needed
+	fm5SlotReadAttempted := scan.fm5SlotReadAttempted
 	currentFM5Evidence := hasFM5EvidenceFromRadioMap(discovered)
-	authoritativeFM5Snapshot := needsDiscovery && discoveryObserved && fm5NamespaceComplete && !fm5DetailIncomplete
-	fm5IdentityIncoherent := fm5DetailIncomplete ||
+	authoritativeFM5Snapshot := needsDiscovery && discovery.observed && discovery.fm5Complete && !scan.fm5DetailIncomplete
+	fm5IdentityIncoherent := scan.fm5DetailIncomplete ||
 		(needsDiscovery && !authoritativeFM5Snapshot && !currentFM5Evidence) ||
 		(!needsDiscovery && fm5SlotReadAttempted && !currentFM5Evidence)
 	p.mu.Lock()
+	defer p.mu.Unlock()
 	if !authoritativeFM5Snapshot {
 		for key, snapshot := range p.radioDevices {
 			if key.Group == remoteFunctionalModules.group && discovered[key] == nil {
@@ -270,10 +330,39 @@ func (p *vaillantSemanticPoller) refreshRadioDevices(ctx context.Context) {
 			}
 		}
 	}
-	p.mu.Unlock()
+}
 
-	p.publishRadioDevices(semanticSnapshotSourceLive)
-	p.refreshFM5Semantic(ctx)
+// radioDeviceViewsLocked returns detached copies of the retained radio
+// devices ordered by group and instance. The caller holds p.mu.
+func (p *vaillantSemanticPoller) radioDeviceViewsLocked() []*vaillantRadioDeviceSnapshot {
+	keys := make([]radioDeviceKey, 0, len(p.radioDevices))
+	for key := range p.radioDevices {
+		keys = append(keys, key)
+	}
+	slices.SortFunc(keys, func(a, b radioDeviceKey) int {
+		if a.Group != b.Group {
+			if a.Group < b.Group {
+				return -1
+			}
+			return 1
+		}
+		if a.Instance < b.Instance {
+			return -1
+		}
+		if a.Instance > b.Instance {
+			return 1
+		}
+		return 0
+	})
+	snapshots := make([]*vaillantRadioDeviceSnapshot, 0, len(keys))
+	for _, key := range keys {
+		snapshot := p.radioDevices[key]
+		if snapshot == nil {
+			continue
+		}
+		snapshots = append(snapshots, cloneRadioSnapshot(snapshot))
+	}
+	return snapshots
 }
 
 func cloneRadioSnapshot(snapshot *vaillantRadioDeviceSnapshot) *vaillantRadioDeviceSnapshot {

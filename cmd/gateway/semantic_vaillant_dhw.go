@@ -206,6 +206,12 @@ func (p *vaillantSemanticPoller) expireDHWIfStaleLocked(source semanticSnapshotS
 	return true
 }
 
+// dhwViewLocked builds the native hot water view from the retained snapshot.
+// The caller holds p.mu and has already applied stale expiry.
+func (p *vaillantSemanticPoller) dhwViewLocked(expired bool) vaillantDhwView {
+	return vaillantDhwView{snapshot: cloneDhwSnapshot(p.dhw), expired: expired}
+}
+
 func hasLiveCylinderEvidence(snapshot *vaillantCylinderSnapshot) bool {
 	return snapshot != nil && snapshot.TemperatureC != nil
 }

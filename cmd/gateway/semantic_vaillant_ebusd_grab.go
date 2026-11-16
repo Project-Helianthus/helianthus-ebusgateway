@@ -174,24 +174,29 @@ func ebusdCommandLines(ctx context.Context, cfg ebusgateway.TransportConfig, com
 	return lines, nil
 }
 
-func parseB524ZonesFromGrab(lines []string, controller byte) map[byte]*vaillantZoneSnapshot {
-	type zoneNameParts struct {
-		primary string
-		prefix  string
-		suffix  string
-	}
-	type zoneState struct {
-		snapshot                      *vaillantZoneSnapshot
-		nameParts                     zoneNameParts
-		hasIndex                      bool
-		indexPresent                  bool
-		configurationOperationMode    *uint16
-		stateSpecialFunction          *uint16
-		stateValveStatus              *uint16
-		roomTemperatureZoneMappingRaw *uint16
-	}
+// b524GrabZoneNameParts holds the three name registers of one zone seen in a
+// grab dump; they are composed after every line has been applied.
+type b524GrabZoneNameParts struct {
+	primary string
+	prefix  string
+	suffix  string
+}
 
-	states := make(map[byte]*zoneState)
+// b524GrabZoneState accumulates the registers of one zone instance from a
+// grab dump before the zone is derived and admitted.
+type b524GrabZoneState struct {
+	snapshot                      *vaillantZoneSnapshot
+	nameParts                     b524GrabZoneNameParts
+	hasIndex                      bool
+	indexPresent                  bool
+	configurationOperationMode    *uint16
+	stateSpecialFunction          *uint16
+	stateValveStatus              *uint16
+	roomTemperatureZoneMappingRaw *uint16
+}
+
+func parseB524ZonesFromGrab(lines []string, controller byte) map[byte]*vaillantZoneSnapshot {
+	states := make(map[byte]*b524GrabZoneState)
 	zones := make(map[byte]*vaillantZoneSnapshot)
 	circuitTypeByInstance := make(map[byte]*uint16)
 
@@ -212,133 +217,155 @@ func parseB524ZonesFromGrab(lines []string, controller byte) map[byte]*vaillantZ
 		}
 		state := states[instance]
 		if state == nil {
-			state = &zoneState{
+			state = &b524GrabZoneState{
 				snapshot: &vaillantZoneSnapshot{
 					Instance: instance,
 				},
 			}
 			states[instance] = state
 		}
-		snapshot := state.snapshot
+		applyB524GrabZoneRegister(state, addr, payload)
+	}
 
-		switch addr {
-		case zone_index:
-			state.hasIndex = true
-			if len(payload) > 0 && payload[0] != 0xFF {
-				state.indexPresent = true
-			}
-		case zone_name:
-			parts := state.nameParts
-			parts.primary = decodeCString(payload)
-			state.nameParts = parts
-		case zone_name_prefix:
-			parts := state.nameParts
-			parts.prefix = decodeCString(payload)
-			state.nameParts = parts
-		case zone_name_suffix:
-			parts := state.nameParts
-			parts.suffix = decodeCString(payload)
-			state.nameParts = parts
-		case zone_heating_op_mode:
-			if value, ok := decodeB524Uint16(payload); ok {
-				typed := value
-				state.configurationOperationMode = &typed
-				snapshot.ConfigurationHeatingOperationMode = formatUintToken(value)
-			}
-		case zone_special_function:
-			if value, ok := decodeB524Uint16(payload); ok {
-				typed := value
-				state.stateSpecialFunction = &typed
-				snapshot.StateSpecialFunction = formatUintToken(value)
-			}
-		case zone_valve_status:
-			if value, ok := decodeB524Uint16(payload); ok {
-				typed := value
-				state.stateValveStatus = &typed
-				snapshot.StateValveStatusRaw = &typed
-			}
-		case zone_room_temperature_zone_mapping_raw:
-			if value, ok := decodeB524Uint16(payload); ok {
-				typed := value
-				state.roomTemperatureZoneMappingRaw = &typed
-				snapshot.ConfigurationRoomTemperatureZoneMappingRaw = &typed
-			}
-		case zone_current_temp:
-			if value, ok := decodeFloat32LE(payload); ok {
-				v := value
-				snapshot.CurrentTempC = &v
-			}
-		case zone_target_temp:
+	for instance, state := range states {
+		if snapshot, ok := finishB524GrabZone(instance, state, circuitTypeByInstance); ok {
+			zones[instance] = snapshot
+		}
+	}
+
+	return zones
+}
+
+// applyB524GrabZoneRegister applies one zone register payload of a grab dump
+// to the accumulated zone state.
+func applyB524GrabZoneRegister(state *b524GrabZoneState, addr uint16, payload []byte) {
+	snapshot := state.snapshot
+	switch addr {
+	case zone_index:
+		state.hasIndex = true
+		if len(payload) > 0 && payload[0] != 0xFF {
+			state.indexPresent = true
+		}
+	case zone_name:
+		parts := state.nameParts
+		parts.primary = decodeCString(payload)
+		state.nameParts = parts
+	case zone_name_prefix:
+		parts := state.nameParts
+		parts.prefix = decodeCString(payload)
+		state.nameParts = parts
+	case zone_name_suffix:
+		parts := state.nameParts
+		parts.suffix = decodeCString(payload)
+		state.nameParts = parts
+	case zone_heating_op_mode:
+		if value, ok := decodeB524Uint16(payload); ok {
+			typed := value
+			state.configurationOperationMode = &typed
+			snapshot.ConfigurationHeatingOperationMode = formatUintToken(value)
+		}
+	case zone_special_function:
+		if value, ok := decodeB524Uint16(payload); ok {
+			typed := value
+			state.stateSpecialFunction = &typed
+			snapshot.StateSpecialFunction = formatUintToken(value)
+		}
+	case zone_valve_status:
+		if value, ok := decodeB524Uint16(payload); ok {
+			typed := value
+			state.stateValveStatus = &typed
+			snapshot.StateValveStatusRaw = &typed
+		}
+	case zone_room_temperature_zone_mapping_raw:
+		if value, ok := decodeB524Uint16(payload); ok {
+			typed := value
+			state.roomTemperatureZoneMappingRaw = &typed
+			snapshot.ConfigurationRoomTemperatureZoneMappingRaw = &typed
+		}
+	default:
+		applyB524GrabZoneTemperatureRegister(snapshot, addr, payload)
+	}
+}
+
+// applyB524GrabZoneTemperatureRegister applies the temperature and humidity
+// registers of one zone from a grab dump.
+func applyB524GrabZoneTemperatureRegister(snapshot *vaillantZoneSnapshot, addr uint16, payload []byte) {
+	switch addr {
+	case zone_current_temp:
+		if value, ok := decodeFloat32LE(payload); ok {
+			v := value
+			snapshot.CurrentTempC = &v
+		}
+	case zone_target_temp:
+		if value, ok := decodeFloat32LE(payload); ok {
+			v := value
+			snapshot.TargetTempC = &v
+		}
+	case zone_fallback_manual_temp:
+		if snapshot.TargetTempC == nil {
 			if value, ok := decodeFloat32LE(payload); ok {
 				v := value
 				snapshot.TargetTempC = &v
 			}
-		case zone_fallback_manual_temp:
-			if snapshot.TargetTempC == nil {
-				if value, ok := decodeFloat32LE(payload); ok {
-					v := value
-					snapshot.TargetTempC = &v
-				}
-			}
-		case zone_current_humidity:
-			if value, ok := decodeFloat32LE(payload); ok {
-				v := value
-				snapshot.HumidityPct = &v
-			}
+		}
+	case zone_current_humidity:
+		if value, ok := decodeFloat32LE(payload); ok {
+			v := value
+			snapshot.HumidityPct = &v
 		}
 	}
+}
 
-	for instance, state := range states {
-		if state == nil || state.snapshot == nil {
-			continue
-		}
-		circuitInstance := resolveAssociatedCircuitInstance(state.roomTemperatureZoneMappingRaw, instance)
-		if state.roomTemperatureZoneMappingRaw != nil {
-			typed := uint16(circuitInstance)
-			state.snapshot.ConfigurationAssociatedCircuitRaw = &typed
-		}
-		circuitType, hasCircuitType := circuitTypeByInstance[circuitInstance]
-		if hasCircuitType && circuitType != nil {
-			state.snapshot.ConfigurationCircuitTypeRaw = circuitType
-		}
-
-		mode, preset, allowedModes := deriveZoneModeAndPreset(state.configurationOperationMode, state.stateSpecialFunction, circuitType, hasCircuitType)
-		hvacAction := deriveZoneHvacAction(state.stateValveStatus, circuitType, hasCircuitType)
-		if mode != "" {
-			state.snapshot.OperatingMode = mode
-		}
-		if preset != "" {
-			state.snapshot.Preset = preset
-		}
-		if hvacAction != "" {
-			state.snapshot.HvacAction = hvacAction
-		}
-		if len(allowedModes) > 0 {
-			state.snapshot.AllowedModes = allowedModes
-		}
-
-		name := composeZoneName(state.nameParts.primary, state.nameParts.prefix, state.nameParts.suffix)
-		if strings.TrimSpace(name) != "" {
-			state.snapshot.Name = name
-		}
-		meaningful := strings.TrimSpace(state.snapshot.Name) != "" ||
-			state.snapshot.OperatingMode != "" ||
-			state.snapshot.Preset != "" ||
-			state.snapshot.CurrentTempC != nil ||
-			state.snapshot.TargetTempC != nil ||
-			state.snapshot.HumidityPct != nil
-		if state.hasIndex {
-			if !state.indexPresent {
-				continue
-			}
-		} else if !meaningful {
-			continue
-		}
-		state.snapshot.Present = true
-		zones[instance] = state.snapshot
+// finishB524GrabZone derives the circuit, mode, preset, action and name of
+// one accumulated zone and reports whether the zone is present.
+func finishB524GrabZone(instance byte, state *b524GrabZoneState, circuitTypeByInstance map[byte]*uint16) (*vaillantZoneSnapshot, bool) {
+	if state == nil || state.snapshot == nil {
+		return nil, false
+	}
+	circuitInstance := resolveAssociatedCircuitInstance(state.roomTemperatureZoneMappingRaw, instance)
+	if state.roomTemperatureZoneMappingRaw != nil {
+		typed := uint16(circuitInstance)
+		state.snapshot.ConfigurationAssociatedCircuitRaw = &typed
+	}
+	circuitType, hasCircuitType := circuitTypeByInstance[circuitInstance]
+	if hasCircuitType && circuitType != nil {
+		state.snapshot.ConfigurationCircuitTypeRaw = circuitType
 	}
 
-	return zones
+	mode, preset, allowedModes := deriveZoneModeAndPreset(state.configurationOperationMode, state.stateSpecialFunction, circuitType, hasCircuitType)
+	hvacAction := deriveZoneHvacAction(state.stateValveStatus, circuitType, hasCircuitType)
+	if mode != "" {
+		state.snapshot.OperatingMode = mode
+	}
+	if preset != "" {
+		state.snapshot.Preset = preset
+	}
+	if hvacAction != "" {
+		state.snapshot.HvacAction = hvacAction
+	}
+	if len(allowedModes) > 0 {
+		state.snapshot.AllowedModes = allowedModes
+	}
+
+	name := composeZoneName(state.nameParts.primary, state.nameParts.prefix, state.nameParts.suffix)
+	if strings.TrimSpace(name) != "" {
+		state.snapshot.Name = name
+	}
+	meaningful := strings.TrimSpace(state.snapshot.Name) != "" ||
+		state.snapshot.OperatingMode != "" ||
+		state.snapshot.Preset != "" ||
+		state.snapshot.CurrentTempC != nil ||
+		state.snapshot.TargetTempC != nil ||
+		state.snapshot.HumidityPct != nil
+	if state.hasIndex {
+		if !state.indexPresent {
+			return nil, false
+		}
+	} else if !meaningful {
+		return nil, false
+	}
+	state.snapshot.Present = true
+	return state.snapshot, true
 }
 
 func parseB524DhwFromGrab(lines []string, controller byte) (*vaillantDhwSnapshot, bool) {

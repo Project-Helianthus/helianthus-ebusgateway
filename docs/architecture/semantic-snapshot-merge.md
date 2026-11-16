@@ -32,9 +32,20 @@ owner in
 which the poller reaches through nil-safe accessors. A poller without that owner,
 such as the registry-only classifier of the startup scan, sees nil collaborators
 and a no-op publish lock. The lock orders GraphQL boiler-status publication
-against the thermal withdrawal of the boiler flow temperature. The poller
-publication methods in the same file compose the retained snapshots into the
-provider and hub through the owner; the committed
+against the thermal withdrawal of the boiler flow temperature. For zones, hot
+water, circuits and radio devices, the poller's `publishZones`, `publishDHW`,
+`publishCircuits` and `publishRadioDevices` triggers build native views under
+the snapshot lock: detached copies of the retained snapshots in publication
+order, together with the radio room state, inferred room mapping, hot water
+expiry and circuit managing-device decision that the poller derives. They hand
+these views to owner methods in
+[`vaillant_semantic_publication_views.go`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/vaillant_semantic_publication_views.go),
+which map them to GraphQL values and push them to the provider and hub without
+reading poller state. Each trigger persists the semantic cache after a
+publication. The remaining poller publication methods in
+[`vaillant_semantic_publication.go`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/vaillant_semantic_publication.go)
+still compose the retained snapshots into the provider and hub through the
+owner; the committed
 [`relocate_poller_publication_state.py`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/scripts/relocate_poller_publication_state.py)
 rewrote the direct field uses, and its `--check` mode lists any that remain. This extraction is one part of the acquisition and
 publication separation; the complete separation remains open in

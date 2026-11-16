@@ -81,9 +81,9 @@ acceptance is closed; it is not part of the local gate.
 |---|---|---|---|---|---|
 | `family_surface` | 135 | 124 | 2 | 0 | 9 |
 | `family_graph` | 75 | 70 | 0 | 0 | 5 |
-| `family_condition` | 120 | 98 | 14 | 0 | 8 |
+| `family_condition` | 120 | 99 | 13 | 0 | 8 |
 | `graph_negative` | 7 | 7 | 0 | 0 | 0 |
-| total | 337 | 299 | 16 | 0 | 22 |
+| total | 337 | 300 | 15 | 0 | 22 |
 
 ### Families
 
@@ -195,7 +195,7 @@ acceptance is closed; it is not part of the local gate.
 | `huawei_energy_manager` | `not_in_0_7` | `not_in_0_7` | `not_in_0_7` | `not_in_0_7` | `not_in_0_7` | `not_in_0_7` | `not_in_0_7` | `not_in_0_7` |
 | `growatt_inverter_rtu` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
 | `growatt_bms_rs485` | `pass` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `pass` |
-| `growatt_bms_can` | `pass` | `pass` | `not_run` | `not_run` | `pass` | `not_run` | `not_run` | `not_run` |
+| `growatt_bms_can` | `pass` | `not_run` | `not_run` | `not_run` | `pass` | `not_run` | `not_run` | `not_run` |
 | `growatt_bms_pcs_can` | `pass` | `pass` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `pass` |
 | `growatt_bms_link_can` | `pass` | `pass` | `not_run` | `not_run` | `pass` | `pass` | `not_run` | `pass` |
 | `tesla_wall_connector` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
@@ -246,7 +246,6 @@ acceptance is closed; it is not part of the local gate.
 | family_condition growatt_bms_rs485 x normal | `pass` | cmd/gateway TestM57ComposedDriversShareOneNorthboundPath |  |  |
 | family_condition growatt_bms_rs485 x cleanup | `pass` | cmd/gateway TestM57ComposedDriversShareOneNorthboundPath |  |  |
 | family_condition growatt_bms_can x normal | `pass` | cmd/gateway TestCX22ComposedThreeFamiliesAndTwoProviderIsolation |  |  |
-| family_condition growatt_bms_can x degraded | `pass` | cmd/gateway TestCAN03ReceiveFailureReachesLifecycleAndRestart |  |  |
 | family_condition growatt_bms_can x stale_generation | `pass` | cmd/gateway TestCAN03ReceiveFailureReachesLifecycleAndRestart |  |  |
 | family_condition growatt_bms_pcs_can x normal | `pass` | cmd/gateway TestCX22ComposedThreeFamiliesAndTwoProviderIsolation |  |  |
 | family_condition growatt_bms_pcs_can x degraded | `pass` | cmd/gateway TestCX22LossWithdrawsAndQuarantines |  |  |

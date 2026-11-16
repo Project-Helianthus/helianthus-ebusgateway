@@ -76,6 +76,16 @@ GO_COMMENT_OR_LITERAL = re.compile(
 # when its file is in the build of every one of them, with and without the race detector.
 RELEASE_GOOS = "linux"
 RELEASE_GOARCHES = ("amd64", "arm64", "arm", "386")
+# The architecture feature tags each release build satisfies, as go/build sets them: the
+# default feature level of each architecture (GOAMD64=v1, GOARM64=v8.0, GO386=sse2, GOARM=7)
+# plus GOARM=6, which the local gate also cross-builds. A level of amd64, arm and arm64 also
+# sets every lower level of its architecture; GO386 sets only its own tag.
+RELEASE_FEATURE_LEVELS = {
+    "amd64": (("amd64.v1",),),
+    "arm64": (("arm64.v8.0",),),
+    "arm": (("arm.5", "arm.6", "arm.7"), ("arm.5", "arm.6")),
+    "386": (("386.sse2",),),
+}
 # Operating systems and architectures that go/build recognises as a file-name suffix.
 KNOWN_GOOS = frozenset(
     "aix android darwin dragonfly freebsd hurd illumos ios js linux nacl netbsd openbsd plan9 "
@@ -422,8 +432,9 @@ def _release_go_minor(root):
     return int(match.group(1)) if match else 0
 
 
-def _release_tags(goarch, race, go_minor):
+def _release_tags(goarch, race, go_minor, features=()):
     tags = {RELEASE_GOOS, "unix", "gc", goarch}
+    tags.update(features)
     tags.update(f"go1.{minor}" for minor in range(1, go_minor + 1))
     if race:
         tags.add("race")
@@ -433,7 +444,7 @@ def _release_tags(goarch, race, go_minor):
 def in_release_build(root, path):
     """True when the Go file is in the linux build of every release architecture, with and without -race.
 
-    Release tags go1.N are set only up to the go directive of the root go.mod, the minimum any
+    Each architecture's build sets its release feature tags (RELEASE_FEATURE_LEVELS). Release tags go1.N are set only up to the go directive of the root go.mod, the minimum any
     building toolchain provides; cgo and every custom tag are unset. An unreadable file or an
     unparsable constraint is never in the build.
     """
@@ -451,9 +462,11 @@ def in_release_build(root, path):
     for goarch in RELEASE_GOARCHES:
         if not _file_name_matches(path.name, goarch):
             return False
-        for race in (False, True):
-            if constraint is not None and not _evaluate(constraint, _release_tags(goarch, race, go_minor)):
-                return False
+        for features in RELEASE_FEATURE_LEVELS[goarch]:
+            for race in (False, True):
+                tags = _release_tags(goarch, race, go_minor, features)
+                if constraint is not None and not _evaluate(constraint, tags):
+                    return False
     return True
 
 

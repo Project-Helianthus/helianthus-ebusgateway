@@ -92,6 +92,21 @@ GO_CONSTRAINED_FILES = {
     "matching_legacy_test.go":
         "//go:build linux && (amd64 || arm64 || arm || 386)\n// +build linux\n// +build amd64 arm64 arm 386\n\n"
         "package sample\n\nimport \"testing\"\n\nfunc TestDeclaredUnderAMatchingLegacyLine(t *testing.T) {}\n",
+    "feature_default_test.go":
+        "//go:build !amd64 || amd64.v1\n\npackage sample\n\nimport \"testing\"\n\n"
+        "func TestDeclaredUnderTheDefaultAmd64FeatureLevel(t *testing.T) {}\n",
+    "feature_levels_test.go":
+        "//go:build (amd64 && amd64.v1) || (arm64 && arm64.v8.0) || (arm && arm.5 && arm.6) || (386 && 386.sse2)"
+        "\n\npackage sample\n\nimport \"testing\"\n\nfunc TestDeclaredUnderEachReleaseFeatureLevel(t *testing.T) {}\n",
+    "feature_amd64_v2_test.go":
+        "//go:build !amd64 || amd64.v2\n\npackage sample\n\nimport \"testing\"\n\n"
+        "func TestDeclaredOnlyAboveTheDefaultAmd64FeatureLevel(t *testing.T) {}\n",
+    "feature_arm_7_test.go":
+        "//go:build !arm || arm.7\n\npackage sample\n\nimport \"testing\"\n\n"
+        "func TestDeclaredOnlyForTheArmV7FeatureLevel(t *testing.T) {}\n",
+    "feature_386_387_test.go":
+        "//go:build !386 || 386.387\n\npackage sample\n\nimport \"testing\"\n\n"
+        "func TestDeclaredOnlyForThe386X87FeatureLevel(t *testing.T) {}\n",
     "_ignored_test.go":
         "package sample\n\nimport \"testing\"\n\nfunc TestDeclaredOnlyInAnIgnoredFile(t *testing.T) {}\n",
 }
@@ -336,7 +351,9 @@ class OfflineAcceptanceMatrixTests(unittest.TestCase):
     def test_go_test_in_a_file_the_linux_release_build_includes_is_found(self):
         for test in ("internal/sample TestDeclaredInALinuxFile",
                      "internal/sample TestDeclaredUnderALinuxConstraint",
-                     "internal/sample TestDeclaredUnderAMatchingLegacyLine"):
+                     "internal/sample TestDeclaredUnderAMatchingLegacyLine",
+                     "internal/sample TestDeclaredUnderTheDefaultAmd64FeatureLevel",
+                     "internal/sample TestDeclaredUnderEachReleaseFeatureLevel"):
             with self.subTest(test=test):
                 self.assertIsNone(MATRIX.missing_test(self.repo.root, test))
 
@@ -346,7 +363,9 @@ class OfflineAcceptanceMatrixTests(unittest.TestCase):
                          "TestDeclaredOnlyUnderACustomTag", "TestDeclaredOnlyWithoutTheRaceDetector",
                          "TestDeclaredOnlyUnderALegacyConstraint",
                          "TestDeclaredOnlyUnderAnUnparsableConstraint", "TestDeclaredOnlyInAnIgnoredFile",
-                         "TestDeclaredOnlyUnderTwoBuildLines", "TestDeclaredOnlyUnderAMismatchedLegacyLine"):
+                         "TestDeclaredOnlyUnderTwoBuildLines", "TestDeclaredOnlyUnderAMismatchedLegacyLine",
+                         "TestDeclaredOnlyAboveTheDefaultAmd64FeatureLevel",
+                         "TestDeclaredOnlyForTheArmV7FeatureLevel", "TestDeclaredOnlyForThe386X87FeatureLevel"):
             with self.subTest(function=function):
                 problem = MATRIX.missing_test(self.repo.root, f"internal/sample {function}")
                 self.assertIsNotNone(problem)

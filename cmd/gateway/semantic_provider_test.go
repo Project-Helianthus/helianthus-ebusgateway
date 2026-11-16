@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
@@ -226,14 +228,14 @@ func (writer *recordingSemanticWriter) SetSystemConfig(context.Context, string, 
 	return graphql.ConfigMutationResult{Success: true}
 }
 
-func (writer *recordingSemanticWriter) SetZoneTimeProgram(context.Context, int, int, []mcp.TimeProgramSlot) (*mcp.TimeProgramWriteResult, error) {
+func (writer *recordingSemanticWriter) SetZoneTimeProgram(context.Context, int, int, []vaillantTimeProgramSlot) (*vaillantTimeProgramWriteResult, error) {
 	writer.calls++
-	return &mcp.TimeProgramWriteResult{Success: true}, nil
+	return &vaillantTimeProgramWriteResult{Success: true}, nil
 }
 
-func (writer *recordingSemanticWriter) SetDhwTimeProgram(context.Context, int, []mcp.TimeProgramSlot) (*mcp.TimeProgramWriteResult, error) {
+func (writer *recordingSemanticWriter) SetDhwTimeProgram(context.Context, int, []vaillantTimeProgramSlot) (*vaillantTimeProgramWriteResult, error) {
 	writer.calls++
-	return &mcp.TimeProgramWriteResult{Success: true}, nil
+	return &vaillantTimeProgramWriteResult{Success: true}, nil
 }
 
 func TestAdmittedSemanticWritersBlockUntilSourceAdmitted(t *testing.T) {
@@ -342,4 +344,103 @@ func (adapter admittedMCPConfigAdapter) SetSystemConfig(ctx context.Context, fie
 func (adapter admittedMCPConfigAdapter) SetBoilerConfig(ctx context.Context, field string, value string) mcp.ConfigSetResult {
 	result := adapter.writer.SetBoilerConfig(ctx, field, value)
 	return mcp.ConfigSetResult{Success: result.Success, Error: result.Error}
+}
+
+type capturingNativeScheduleWriter struct {
+	zone    int
+	weekday int
+	slots   []vaillantTimeProgramSlot
+	result  *vaillantTimeProgramWriteResult
+	err     error
+}
+
+func (writer *capturingNativeScheduleWriter) SetZoneTimeProgram(_ context.Context, zone int, weekday int, slots []vaillantTimeProgramSlot) (*vaillantTimeProgramWriteResult, error) {
+	writer.zone, writer.weekday, writer.slots = zone, weekday, slots
+	return writer.result, writer.err
+}
+
+func (writer *capturingNativeScheduleWriter) SetDhwTimeProgram(_ context.Context, weekday int, slots []vaillantTimeProgramSlot) (*vaillantTimeProgramWriteResult, error) {
+	writer.zone, writer.weekday, writer.slots = -1, weekday, slots
+	return writer.result, writer.err
+}
+
+// Every slot and result field carries a distinct value, so an adapter that
+// drops or swaps a field fails; zone and weekday differ so a swapped
+// argument fails too.
+func TestAdmittedScheduleWritersMapSlotsAndResults(t *testing.T) {
+	admitted := func() (byte, bool) { return 0x7F, true }
+	tempC := 21.5
+	request := []mcp.TimeProgramSlot{
+		{StartHour: 5, StartMinute: 30, EndHour: 21, EndMinute: 45, TemperatureC: &tempC},
+		{StartHour: 22, StartMinute: 10, EndHour: 23, EndMinute: 55},
+	}
+	wantSlots := []vaillantTimeProgramSlot{
+		{StartHour: 5, StartMinute: 30, EndHour: 21, EndMinute: 45, TemperatureC: &tempC},
+		{StartHour: 22, StartMinute: 10, EndHour: 23, EndMinute: 55},
+	}
+	native := &vaillantTimeProgramWriteResult{
+		Success: false,
+		Error:   "partial",
+		SlotResults: []vaillantTimeProgramSlotResult{
+			{SlotIndex: 0, Accepted: true, ErrorCode: 0, ErrorDesc: "accepted"},
+			{SlotIndex: 1, Accepted: false, ErrorCode: 3, ErrorDesc: "timer unavailable"},
+		},
+	}
+	wantResult := &mcp.TimeProgramWriteResult{
+		Success: false,
+		Error:   "partial",
+		SlotResults: []mcp.TimeProgramSlotResult{
+			{SlotIndex: 0, Accepted: true, ErrorCode: 0, ErrorDesc: "accepted"},
+			{SlotIndex: 1, Accepted: false, ErrorCode: 3, ErrorDesc: "timer unavailable"},
+		},
+	}
+
+	underlying := &capturingNativeScheduleWriter{result: native}
+	graphWriter := admittedGraphQLSemanticWriter{schedule: underlying, admitted: admitted}
+	mcpWriter := admittedMCPScheduleWriter{writer: underlying, admitted: admitted}
+	calls := []struct {
+		name        string
+		call        func() (*mcp.TimeProgramWriteResult, error)
+		wantZone    int
+		wantWeekday int
+	}{
+		{"graphql zone", func() (*mcp.TimeProgramWriteResult, error) {
+			return graphWriter.SetZoneTimeProgram(context.Background(), 2, 4, request)
+		}, 2, 4},
+		{"graphql dhw", func() (*mcp.TimeProgramWriteResult, error) {
+			return graphWriter.SetDhwTimeProgram(context.Background(), 5, request)
+		}, -1, 5},
+		{"mcp zone", func() (*mcp.TimeProgramWriteResult, error) {
+			return mcpWriter.SetZoneTimeProgram(context.Background(), 1, 6, request)
+		}, 1, 6},
+		{"mcp dhw", func() (*mcp.TimeProgramWriteResult, error) {
+			return mcpWriter.SetDhwTimeProgram(context.Background(), 3, request)
+		}, -1, 3},
+	}
+	for _, tc := range calls {
+		underlying.slots = nil
+		got, err := tc.call()
+		if err != nil {
+			t.Fatalf("%s error = %v", tc.name, err)
+		}
+		if !reflect.DeepEqual(got, wantResult) {
+			t.Fatalf("%s result = %#v; want %#v", tc.name, got, wantResult)
+		}
+		if !reflect.DeepEqual(underlying.slots, wantSlots) {
+			t.Fatalf("%s native slots = %#v; want %#v", tc.name, underlying.slots, wantSlots)
+		}
+		if underlying.zone != tc.wantZone || underlying.weekday != tc.wantWeekday {
+			t.Fatalf("%s zone/weekday = %d/%d; want %d/%d", tc.name, underlying.zone, underlying.weekday, tc.wantZone, tc.wantWeekday)
+		}
+	}
+
+	failure := errors.New("schedule writer unavailable")
+	underlying.result, underlying.err = nil, failure
+	if got, err := mcpWriter.SetZoneTimeProgram(context.Background(), 0, 0, request); got != nil || !errors.Is(err, failure) {
+		t.Fatalf("nil native result = %#v/%v; want nil and the native error", got, err)
+	}
+	underlying.result, underlying.err = &vaillantTimeProgramWriteResult{Error: "weekday must be 0-6"}, nil
+	if got, err := graphWriter.SetDhwTimeProgram(context.Background(), 9, nil); err != nil || got.SlotResults != nil || got.Error != "weekday must be 0-6" || underlying.slots != nil {
+		t.Fatalf("rejected write = %#v/%v slots %#v; want nil slot results and nil native slots", got, err, underlying.slots)
+	}
 }

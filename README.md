@@ -30,6 +30,18 @@ companions group the existing command declarations by responsibility:
 - `gateway_admission.go` -- startup admission and observe-first helpers.
 - `gateway_adapter_direct.go` -- adapter-direct wiring and proxy callbacks.
 - `gateway_v8_admin_http.go` -- V8 diagnostic event surface.
+- `gateway_run_lifecycle.go` -- `runGatewayLifecycle`, the process entry over
+  the four composition owners below.
+- `gateway_process_shell.go` -- process shell: resources and the named shutdown
+  sequence.
+- `gateway_api_composition.go` -- API composition: gateway, GraphQL builder,
+  semantic runtime, late-bound writers, HTTP control plane and the consumer
+  shutdown registration.
+- `gateway_retained_consumers.go` -- retained eBUS consumers that live across
+  eBUS generations.
+- `gateway_ebus_generation_owners.go` -- eBUS generation owners: per-generation
+  tasks, fencing and teardown.
+- `gateway_consumer_shutdown.go` -- HTTP drain and retained-consumer teardown.
 - `gateway_http_server.go` -- HTTP server lifecycle: validation, provider
   composition, core routes, Portal mount, listener, and mDNS.
 - `gateway_http_mcp_surface.go` -- MCP surface: Vaillant B503 tools, responder
@@ -39,6 +51,9 @@ companions group the existing command declarations by responsibility:
 - `gateway_responder_capability.go` -- responder capability projection.
 - `gateway_static_seed.go` -- static registry seed bootstrap.
 - `gateway_runtime_state.go` -- runtime-state bootstrap and readiness projection.
+
+Each composition owner's contract and the complete shutdown sequence are stated
+in [`docs/architecture/gateway-composition-owners.md`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/docs/architecture/gateway-composition-owners.md).
 
 The defensive non-send Tesla Gen3 HSC completed-outcome owner is documented in
 [`docs/tesla-gen3-hsc-retained-owner.md`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/docs/tesla-gen3-hsc-retained-owner.md).

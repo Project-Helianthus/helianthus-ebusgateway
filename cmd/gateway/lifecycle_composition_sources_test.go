@@ -17,6 +17,7 @@ import (
 var lifecycleCompositionFileNames = []string{
 	"gateway_run_lifecycle.go",
 	"gateway_process_shell.go",
+	"gateway_api_composition.go",
 	"gateway_lifecycle_observability.go",
 	"gateway_retained_consumers.go",
 	"gateway_ebus_generation_owners.go",
@@ -114,14 +115,77 @@ func lifecycleSelectorCallPositions(node ast.Node) map[string][]token.Pos {
 	return positions
 }
 
-// The lifecycle calls each extracted observability step exactly once, in the
-// order in which the statements ran before they were extracted, and registers
-// the final artifact emission as a release of the process-shell shutdown
-// sequence instead of calling it during setup.
+// lifecycleExecutionCall is one call reached from runGatewayLifecycle. A
+// method value handed to onShutdownFunc is recorded as a registration of that
+// release.
+type lifecycleExecutionCall struct {
+	name         string
+	registration bool
+}
+
+// lifecycleExecutionCalls returns the calls of runGatewayLifecycle in source
+// order, with every call of a gatewayAPIComposition method through its "api"
+// receiver replaced in place by the calls of that method. For the straight-line
+// composition this is the order in which the calls run.
+func lifecycleExecutionCalls(t *testing.T, files []lifecycleCompositionFile) []lifecycleExecutionCall {
+	t.Helper()
+	methods := map[string]*ast.FuncDecl{}
+	for _, file := range files {
+		for _, declaration := range file.syntax.Decls {
+			function, ok := declaration.(*ast.FuncDecl)
+			if !ok || function.Recv == nil || len(function.Recv.List) != 1 {
+				continue
+			}
+			if star, ok := function.Recv.List[0].Type.(*ast.StarExpr); ok {
+				if ident, ok := star.X.(*ast.Ident); ok && ident.Name == "gatewayAPIComposition" {
+					methods[function.Name.Name] = function
+				}
+			}
+		}
+	}
+	var calls []lifecycleExecutionCall
+	var walk func(body *ast.BlockStmt, depth int)
+	walk = func(body *ast.BlockStmt, depth int) {
+		if depth > len(methods) {
+			t.Fatal("the API composition methods call each other recursively")
+		}
+		ast.Inspect(body, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			if registration, ok := call.Fun.(*ast.SelectorExpr); ok && registration.Sel.Name == "onShutdownFunc" && len(call.Args) == 2 {
+				if selector, ok := call.Args[1].(*ast.SelectorExpr); ok {
+					calls = append(calls, lifecycleExecutionCall{name: selector.Sel.Name, registration: true})
+				}
+			}
+			switch function := call.Fun.(type) {
+			case *ast.Ident:
+				calls = append(calls, lifecycleExecutionCall{name: function.Name})
+			case *ast.SelectorExpr:
+				calls = append(calls, lifecycleExecutionCall{name: function.Sel.Name})
+				if receiver, ok := function.X.(*ast.Ident); ok && receiver.Name == "api" {
+					if method, ok := methods[function.Sel.Name]; ok {
+						walk(method.Body, depth+1)
+					}
+				}
+			}
+			return true
+		})
+	}
+	walk(lifecycleFunctionDecl(t, files, "runGatewayLifecycle").Body, 0)
+	return calls
+}
+
+// The lifecycle, through the API composition it calls, calls each extracted
+// observability step exactly once, in the order in which the statements ran
+// before they were extracted, and registers the final artifact emission as a
+// release of the process-shell shutdown sequence instead of calling it during
+// setup. TestGatewayProcessShellShutdownSequenceThroughLifecycle asserts the
+// order of the composition steps that hold these calls at run time.
 func TestRunLifecycleCallsObservabilityStepsOnceInOrder(t *testing.T) {
 	fset := token.NewFileSet()
 	files, _ := lifecycleCompositionSources(t, fset)
-	lifecycle := lifecycleFunctionDecl(t, files, "runGatewayLifecycle")
 
 	steps := []string{
 		"newStartupSourceSelection",
@@ -134,30 +198,15 @@ func TestRunLifecycleCallsObservabilityStepsOnceInOrder(t *testing.T) {
 		"wireSourceSelectionBaselineEvidence",
 		"wireSemanticStartupObservability",
 	}
-	positions := make(map[string][]token.Pos, len(steps))
+	positions := make(map[string][]int, len(steps))
 	released := map[string]bool{}
-	ast.Inspect(lifecycle.Body, func(node ast.Node) bool {
-		call, ok := node.(*ast.CallExpr)
-		if !ok {
-			return true
+	for index, call := range lifecycleExecutionCalls(t, files) {
+		if call.registration {
+			released[call.name] = true
 		}
-		// A method value handed to the shutdown sequence is the registration
-		// of that release; its position stands for the step.
-		if registration, ok := call.Fun.(*ast.SelectorExpr); ok && registration.Sel.Name == "onShutdownFunc" && len(call.Args) == 2 {
-			if selector, ok := call.Args[1].(*ast.SelectorExpr); ok {
-				released[selector.Sel.Name] = true
-				positions[selector.Sel.Name] = append(positions[selector.Sel.Name], selector.Pos())
-			}
-		}
-		switch function := call.Fun.(type) {
-		case *ast.Ident:
-			positions[function.Name] = append(positions[function.Name], call.Pos())
-		case *ast.SelectorExpr:
-			positions[function.Sel.Name] = append(positions[function.Sel.Name], call.Pos())
-		}
-		return true
-	})
-	last := token.NoPos
+		positions[call.name] = append(positions[call.name], index)
+	}
+	last := -1
 	for _, step := range steps {
 		if len(positions[step]) != 1 {
 			t.Fatalf("runGatewayLifecycle calls %s %d times; want 1", step, len(positions[step]))

@@ -372,7 +372,7 @@ func TestMSP06ProviderRegistrationDoesNotEscapeMCPBootstrap(t *testing.T) {
 		}
 		clean := filepath.Clean(relative)
 		allowedMCP := strings.HasPrefix(clean, filepath.Clean("../../mcp")+string(filepath.Separator))
-		allowedGateway := clean == filepath.Clean("../../cmd/gateway/main.go") || clean == filepath.Clean("../../cmd/gateway/gateway_run_lifecycle.go") || clean == filepath.Clean("../../cmd/gateway/gateway_http_server.go") || clean == filepath.Clean("../../cmd/gateway/gateway_http_portal_surface.go") || clean == filepath.Clean("../../cmd/gateway/gateway_http_mcp_surface.go") || clean == filepath.Clean("../../cmd/gateway/gateway_http_providers.go") || clean == filepath.Clean("../../cmd/gateway/gateway_http_control_plane.go") || clean == filepath.Clean("../../cmd/gateway/eebus_runtime_adapter.go")
+		allowedGateway := clean == filepath.Clean("../../cmd/gateway/main.go") || clean == filepath.Clean("../../cmd/gateway/gateway_api_composition.go") || clean == filepath.Clean("../../cmd/gateway/gateway_http_server.go") || clean == filepath.Clean("../../cmd/gateway/gateway_http_portal_surface.go") || clean == filepath.Clean("../../cmd/gateway/gateway_http_mcp_surface.go") || clean == filepath.Clean("../../cmd/gateway/gateway_http_providers.go") || clean == filepath.Clean("../../cmd/gateway/gateway_http_control_plane.go") || clean == filepath.Clean("../../cmd/gateway/eebus_runtime_adapter.go")
 		if !allowedMCP && !allowedGateway {
 			t.Errorf("MSP-06 provider registration escaped MCP/bootstrap boundary into %s", relative)
 		}

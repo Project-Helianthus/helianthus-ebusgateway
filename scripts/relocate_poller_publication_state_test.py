@@ -106,5 +106,60 @@ class AssignmentTest(unittest.TestCase):
         )
 
 
+GROUPED = """package main
+
+func use(first, second *vaillantSemanticPoller) {
+	_ = first.provider
+	_ = second.hub
+}
+
+func block() {
+	var (
+		head, tail *vaillantSemanticPoller
+	)
+	var left,
+		right *vaillantSemanticPoller
+	_ = head.cache
+	_ = tail.cache
+	_ = left.provider
+	_ = right.provider
+}
+
+func mixed(n int, poller *vaillantSemanticPoller) {
+	_ = poller.hub
+}
+"""
+
+
+class GroupedDeclarationTest(unittest.TestCase):
+    def test_every_name_of_a_grouped_declaration_is_rewritten(self) -> None:
+        rewritten, findings = RELOCATE.rewrite(GROUPED, RELOCATE.mask(GROUPED), set())
+        self.assertEqual(
+            sorted(what for _, what in findings),
+            sorted(
+                [
+                    "first.provider",
+                    "second.hub",
+                    "head.cache",
+                    "tail.cache",
+                    "left.provider",
+                    "right.provider",
+                    "poller.hub",
+                ]
+            ),
+        )
+        self.assertIn("_ = first.liveProvider()", rewritten)
+        self.assertIn("_ = second.broadcastHub()", rewritten)
+        self.assertIn("_ = head.cachePersister()", rewritten)
+        self.assertIn("_ = left.liveProvider()", rewritten)
+        self.assertNotIn("first.provider", rewritten)
+
+    def test_a_preceding_parameter_type_is_not_a_poller(self) -> None:
+        names = RELOCATE.poller_names(RELOCATE.mask(GROUPED), set())
+        self.assertNotIn("int", names)
+        self.assertNotIn("n", names)
+        self.assertEqual(names, {"first", "second", "head", "tail", "left", "right", "poller"})
+
+
 if __name__ == "__main__":
     unittest.main()

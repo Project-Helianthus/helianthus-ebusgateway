@@ -19,7 +19,7 @@ remaining direct uses in Go sources of package ``main`` under ``cmd/gateway``:
 
 A poller ``X`` is a name the same top-level declaration binds to a poller: a
 receiver or parameter of type ``*vaillantSemanticPoller``, a ``var`` of that
-type, or a variable assigned from a poller literal, from
+type (every name of a grouped declaration such as ``first, second`` counts), or a variable assigned from a poller literal, from
 ``newVaillantSemanticPoller``, from ``startVaillantSemanticPolling`` or from a
 package function whose first result is a poller, with or without explicit type
 arguments at the call. Comments and string literals
@@ -114,10 +114,41 @@ def declarations(masked: str) -> list[tuple[int, int]]:
     return [(starts[k], starts[k + 1]) for k in range(len(starts) - 1)]
 
 
+def bare_item_start(text: str) -> bool:
+    """Whether a name ending text's prefix starts a bare list item.
+
+    In a grouped declaration such as ``first, second *T`` or ``var a, b *T``
+    every name before the typed one stands alone between separators; a name
+    that follows another word (``n int, p *T``) is a type, not a variable.
+    """
+    stripped = text.rstrip()
+    gap = text[len(stripped):]
+    return (
+        not stripped
+        or "\n" in gap
+        or stripped.endswith(("(", ","))
+        or re.search(r"(?<![A-Za-z0-9_])var$", stripped) is not None
+    )
+
+
+def grouped_names(decl: str, start: int) -> list[str]:
+    """Names that share the type of the typed name at start, nearest first."""
+    names: list[str] = []
+    before = re.compile(r"(?<![A-Za-z0-9_.])(" + IDENT + r")\s*,\s*$")
+    while True:
+        m = before.search(decl, max(0, start - 512), start)
+        if m is None or not bare_item_start(decl[: m.start(1)]):
+            return names
+        names.append(m.group(1))
+        start = m.start(1)
+
+
 def poller_names(decl: str, functions: set[str]) -> set[str]:
     names: set[str] = set()
     typed = re.compile(r"(?:^|[(,\s])(" + IDENT + r")\s+\*" + POLLER + r"\b")
-    names.update(m.group(1) for m in typed.finditer(decl))
+    for m in typed.finditer(decl):
+        names.add(m.group(1))
+        names.update(grouped_names(decl, m.start(1)))
     literal = re.compile(r"\b(" + IDENT + r")\s*:?=\s*&" + POLLER + r"\s*\{")
     names.update(m.group(1) for m in literal.finditer(decl))
     call = re.compile(

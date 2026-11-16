@@ -112,8 +112,13 @@ GO_CONSTRAINED_FILES = {
 }
 # Python test functions the runner does or does not collect.
 PY_COLLECTION_SOURCE = (
-    "import unittest\n\n\n"
+    "import unittest\nimport unittest as ut\nfrom unittest import TestCase as Case\n"
+    "from collections import OrderedDict as TestCase\n\n\n"
     "def test_module_level_function_is_collected():\n    pass\n\n\n"
+    "class ModuleAlias(ut.TestCase):\n    def test_method_of_a_module_alias_test_case(self):\n        pass\n\n\n"
+    "class NameAlias(Case):\n    def test_method_of_a_name_alias_test_case(self):\n        pass\n\n\n"
+    "class Shadowed(TestCase):\n    def test_method_of_a_class_whose_base_only_shares_the_name(self):\n"
+    "        pass\n\n\n"
     "class TestPlainClass:\n    def test_method_of_a_test_named_class(self):\n        pass\n\n\n"
     "class Base(unittest.TestCase):\n    pass\n\n\n"
     "class Derived(Base):\n    def test_method_of_an_indirect_test_case(self):\n        pass\n\n\n"
@@ -377,7 +382,8 @@ class OfflineAcceptanceMatrixTests(unittest.TestCase):
 
     def test_python_test_the_runner_collects_is_found(self):
         for function in ("test_module_level_function_is_collected", "test_method_of_a_test_named_class",
-                         "test_method_of_an_indirect_test_case", "test_outer"):
+                         "test_method_of_an_indirect_test_case", "test_outer",
+                         "test_method_of_a_module_alias_test_case", "test_method_of_a_name_alias_test_case"):
             with self.subTest(function=function):
                 self.assertIsNone(MATRIX.missing_test(self.repo.root, f"scripts/collection_test.py {function}"))
 
@@ -385,6 +391,7 @@ class OfflineAcceptanceMatrixTests(unittest.TestCase):
         for function in ("test_nested_in_a_function", "test_method_of_an_uncollected_class",
                          "test_method_of_a_class_with_init", "test_method_of_a_class_with_new",
                          "test_method_of_a_nested_class",
+                         "test_method_of_a_class_whose_base_only_shares_the_name",
                          "test_nested_in_a_method"):
             with self.subTest(function=function):
                 problem = MATRIX.missing_test(self.repo.root, f"scripts/collection_test.py {function}")

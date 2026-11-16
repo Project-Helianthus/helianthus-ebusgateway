@@ -99,7 +99,8 @@ GO_DIRECTIVE = re.compile(r"^go[ \t]+1\.([0-9]+)", re.MULTILINE)
 PYTHON_TEST_NAME = re.compile(r"test[A-Za-z0-9_]*")
 # Base classes that make unittest (and pytest) collect a class's test methods.
 PYTHON_TEST_CASE_BASES = frozenset(
-    ("TestCase", "unittest.TestCase", "IsolatedAsyncioTestCase", "unittest.IsolatedAsyncioTestCase"))
+    ("TestCase", "unittest.TestCase", "IsolatedAsyncioTestCase", "unittest.IsolatedAsyncioTestCase",
+     "unittest.case.TestCase", "unittest.async_case.IsolatedAsyncioTestCase"))
 OWNER_ISSUE = re.compile(r"[a-z0-9][a-z0-9._-]*#[1-9][0-9]*")
 
 
@@ -470,13 +471,51 @@ def in_release_build(root, path):
     return True
 
 
+def _import_bindings(node):
+    """Yield (bound name, dotted target) for one import; a relative import's target is None."""
+    for alias in node.names:
+        if isinstance(node, ast.Import):
+            head = alias.name.split(".")[0]
+            yield (alias.asname, alias.name) if alias.asname else (head, head)
+        elif node.level or node.module is None:
+            yield alias.asname or alias.name, None
+        else:
+            yield alias.asname or alias.name, f"{node.module}.{alias.name}"
+
+
+def _module_imports(statements, bound):
+    """Map each module-level name an import binds to the dotted name it refers to."""
+    for node in statements:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            bound.update(_import_bindings(node))
+        elif isinstance(node, (ast.If, ast.Try, ast.With)):
+            for block in ("body", "orelse", "finalbody"):
+                _module_imports(getattr(node, block, []), bound)
+            for handler in getattr(node, "handlers", []):
+                _module_imports(handler.body, bound)
+    return bound
+
+
+def _resolved_base(base, imports):
+    """Return the dotted name a class base refers to, following the module's import aliases."""
+    text = ast.unparse(base)
+    head, _, rest = text.partition(".")
+    if head not in imports:
+        return text
+    target = imports[head]
+    if target is None:
+        return None
+    return f"{target}.{rest}" if rest else target
+
+
 def _collected_classes(tree):
     """Return the names of the module-level classes the test runner collects."""
     collected = set()
+    imports = _module_imports(tree.body, {})
     for node in tree.body:
         if not isinstance(node, ast.ClassDef):
             continue
-        bases = {ast.unparse(base) for base in node.bases}
+        bases = {_resolved_base(base, imports) for base in node.bases}
         defines_constructor = any(isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
                                   and item.name in ("__init__", "__new__") for item in node.body)
         if bases & PYTHON_TEST_CASE_BASES or bases & collected:

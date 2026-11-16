@@ -8,11 +8,15 @@ evidence of the declaration that created it. It never counts as native
 qualification.
 
 The gateway's configuration provider publishes every operator record. The
-code is in `cmd/gateway/operator_record_publisher.go`. The preflight wires it
-through `composeOperatorRecords` in `cmd/gateway/operator_record_composition.go`.
-The configuration declares no operator record yet. With nothing configured,
-the provider admits no source, declares no asset and publishes nothing, so the
-published output of every installation is unchanged.
+code is in `cmd/gateway/operator_record_publisher.go`. The records come from
+the operator-record section of the Portal configuration (see
+[Portal configuration](portal-config-sharing.md), section "Operator-record
+section"), which the Portal configuration runtime feeds to the provider. The
+preflight also wires the provider through `composeOperatorRecords` in
+`cmd/gateway/operator_record_composition.go`, but the host configuration
+declares no operator record. With nothing configured, the provider admits no
+source, declares no asset and publishes nothing, so the published output of
+an installation without an accepted section is unchanged.
 
 ## Who publishes it
 
@@ -93,6 +97,68 @@ one publication resolves several sets.
 - **Resources do not change on fences.** The driver's native resource stays
   `current` as an identity record after the fence. The relation instance that
   names it keeps resolving.
+
+## Scenarios
+
+`cmd/gateway/operator_record_acceptance_test.go` follows one declaration from
+the configuration document to the snapshot and to a graph cut. Its fixtures
+are synthetic families and use the catalog's packs. Each scenario below is one
+test.
+
+- **From the document to the cut.** The operator-record section declares a
+  meter seen through two configuration-only homes (a pairing) and a `measures`
+  relation from a driver's grid connection to the first view. After the
+  replacement both records show `published`. The relation is on the driver's
+  asset with basis class `configuration`, an operator origin and the digest of
+  its declaration as audit evidence. Each home holds one current
+  `operator_slot` view of the meter, and the provider is its only source. In a
+  complete graph cut the relation is a qualified, `coherent` edge, and the
+  only finding is `same_unit` for the two views.
+- **Published while the driver is fenced.** After the driver's generation is
+  fenced, the configured relation is still there. A second meter and its
+  relation added to the section are published. The driver's resource stays
+  `current`, and both relations are coherent in the cut.
+- **Withdrawn while the driver is stopped.** The driver's source epoch is
+  retired, as when a driver stops. The configured relations survive. Removing
+  the second meter and its relation from the section withdraws the relation
+  and marks the meter `withdrawn`. The driver stays stopped, and the relation
+  that stays configured stays coherent.
+- **A configured relation grants no control.** A meter declared to measure a
+  driver's EVSE is a coherent edge. An intent on that EVSE is still refused
+  without a send (`ambiguous_route`: no eligible route) while the driver
+  publishes no qualified control capability of its own. Once the driver
+  publishes one, the same intent is admitted and routed to the driver's own
+  binding. The relation is the same in both publications. The catalog has no
+  `controls`-type definition yet; a `measures` instance never routes an
+  operation.
+- **A join of different native anchors is refused.** A pairing that names two
+  natively observed meters with different native slots would replace both
+  native anchors with one operator slot. The kernel refuses that change in
+  each home with `identity_drift`. Both records show `refused`, both snapshots
+  stay byte-identical, and the cut reports no `same_unit` finding.
+
+## The remaining limit
+
+An operator identity declaration in the form of an identity link names the
+driver's binding, and only the binding's source may publish it. The provider
+therefore never publishes it. `Hub.SetOperatorLinks` keeps it pending for the
+driver's source, and `Tx.OperatorLinks` hands it to the driver's next
+transaction. Declaring it publishes nothing. A driver batch that does not
+carry the pending links leaves them pending. The declaration appears only
+after the driver's next batch that carries them, so it waits while the driver
+is fenced or stopped. The acceptance test covers this limit too.
+
+No family publisher carries the pending links yet, and the operator-record
+section has no identity-link form. Until a family adopts `Tx.OperatorLinks`,
+an operator identity declaration is never published.
+
+The same holds for the declarations the records need on the owner's side. No
+family composition names the provider as a contributor or declares a
+configuration-only home yet, and the startup composition has no configured
+record set. The acceptance test makes those declarations itself, as an owner
+would, so it proves the path from the document to the cut once the owner has
+declared them. A Portal replacement publishes nothing for an asset whose
+owner has not.
 
 ## Ownership
 

@@ -118,7 +118,7 @@ func TestIssue817GatewayMountsOneCredentialFreeTypedOperatorBoundary(t *testing.
 	source := string(compositionContent) + "\n" + lifecycleText + "\n" + string(httpContent) + surfaceContent + "\n" + string(controlPlaneContent) + "\n" + string(configContent)
 	for _, required := range []string{
 		`mux.Handle("/admin/eebus/v1/", eebusAdminHandler)`,
-		`eebusAdminHandler := http.HandlerFunc(bindings.serveEEBusAdmin)`,
+		`shell.eebusAdminHandler = http.HandlerFunc(shell.bindings.serveEEBusAdmin)`,
 		`unavailableEEBusAdminHandler(eebusReadinessForLifecycle(b.eebusLifecycleSnapshot())).ServeHTTP(w, r)`,
 		`lease.adminHandler.ServeHTTP(w, r)`,
 		`Admin: eebusAdmin`,

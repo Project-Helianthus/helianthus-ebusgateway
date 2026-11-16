@@ -16,6 +16,7 @@ import (
 // file in this list.
 var lifecycleCompositionFileNames = []string{
 	"gateway_run_lifecycle.go",
+	"gateway_process_shell.go",
 	"gateway_lifecycle_observability.go",
 	"gateway_retained_consumers.go",
 	"gateway_ebus_generation_owners.go",
@@ -115,7 +116,8 @@ func lifecycleSelectorCallPositions(node ast.Node) map[string][]token.Pos {
 
 // The lifecycle calls each extracted observability step exactly once, in the
 // order in which the statements ran before they were extracted, and registers
-// the final artifact emission as a deferred call.
+// the final artifact emission as a release of the process-shell shutdown
+// sequence instead of calling it during setup.
 func TestRunLifecycleCallsObservabilityStepsOnceInOrder(t *testing.T) {
 	fset := token.NewFileSet()
 	files, _ := lifecycleCompositionSources(t, fset)
@@ -133,16 +135,19 @@ func TestRunLifecycleCallsObservabilityStepsOnceInOrder(t *testing.T) {
 		"wireSemanticStartupObservability",
 	}
 	positions := make(map[string][]token.Pos, len(steps))
-	deferred := map[string]bool{}
+	released := map[string]bool{}
 	ast.Inspect(lifecycle.Body, func(node ast.Node) bool {
-		if statement, ok := node.(*ast.DeferStmt); ok {
-			if selector, ok := statement.Call.Fun.(*ast.SelectorExpr); ok {
-				deferred[selector.Sel.Name] = true
-			}
-		}
 		call, ok := node.(*ast.CallExpr)
 		if !ok {
 			return true
+		}
+		// A method value handed to the shutdown sequence is the registration
+		// of that release; its position stands for the step.
+		if registration, ok := call.Fun.(*ast.SelectorExpr); ok && registration.Sel.Name == "onShutdownFunc" && len(call.Args) == 2 {
+			if selector, ok := call.Args[1].(*ast.SelectorExpr); ok {
+				released[selector.Sel.Name] = true
+				positions[selector.Sel.Name] = append(positions[selector.Sel.Name], selector.Pos())
+			}
 		}
 		switch function := call.Fun.(type) {
 		case *ast.Ident:
@@ -162,10 +167,10 @@ func TestRunLifecycleCallsObservabilityStepsOnceInOrder(t *testing.T) {
 		}
 		last = positions[step][0]
 	}
-	if !deferred["emitFinalArtifact"] {
-		t.Fatal("the final source-selection artifact emission is not deferred")
+	if !released["emitFinalArtifact"] {
+		t.Fatal("the final source-selection artifact emission is not a release of the shutdown sequence")
 	}
-	if deferred["startArtifactEmission"] {
+	if released["startArtifactEmission"] {
 		t.Fatal("the delayed source-selection artifact emission must start during setup")
 	}
 }

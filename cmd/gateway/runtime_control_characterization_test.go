@@ -164,6 +164,11 @@ type rccLifecycleOptions struct {
 	scanOnStart       bool
 	cancelAt          string // "http" or "background"
 	releaseDialAtHTTP bool
+	// observability makes the observe-first wiring return a bus
+	// observability store instead of none.
+	observability bool
+	// configure, when set, adjusts the gateway configuration before run.
+	configure func(*ebusgateway.Config)
 }
 
 type rccLifecycleResult struct {
@@ -208,6 +213,9 @@ func runRCCLifecycle(t *testing.T, options rccLifecycleOptions) rccLifecycleResu
 	}
 	wireObserveFirstObserversFn = func(cfg *ebusgateway.Config) (*ebusgateway.BusObservabilityStore, *ebusgateway.ActivePassiveDeduplicator, error) {
 		recorder.add("observe_first_wiring(runtime_state=%s ebus_transport_prepared=%v)", rccFileState(statePath), cfg.Transport != nil)
+		if options.observability {
+			return ebusgateway.NewBusObservabilityStore(*cfg), nil, nil
+		}
 		return nil, nil, nil
 	}
 	startHTTPServerFn = func(_ context.Context, _ ebusgateway.Config, gateway *ebusgateway.Gateway, builder *graphql.Builder, _ *graphql.BroadcastHub, _ graphql.SemanticProvider, schedule mcp.ScheduleWriter, _ mcp.ConfigWriter, _ *ebusgateway.BusObservabilityStore, _ *ebusgateway.ShadowCache) (*http.Server, mdns.Advertiser, error) {
@@ -283,6 +291,9 @@ func runRCCLifecycle(t *testing.T, options rccLifecycleOptions) rccLifecycleResu
 	cfg.RuntimeStatePath = statePath
 	cfg.InstanceGUID = rccGUID
 	cfg.InstanceGUIDSource = "runtime_state"
+	if options.configure != nil {
+		options.configure(&cfg)
+	}
 
 	done := make(chan error, 1)
 	go func() { done <- run(ctx, cfg) }()

@@ -2004,8 +2004,8 @@
           "issue": null
         },
         "stale_generation": {
-          "state": "pass",
-          "test": "cmd/gateway TestCAN03ReceiveFailureReachesLifecycleAndRestart",
+          "state": "not_run",
+          "test": null,
           "reason": null,
           "issue": null
         },

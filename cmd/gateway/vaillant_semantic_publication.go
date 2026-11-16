@@ -1,28 +1,31 @@
 package main
 
 import (
-	"reflect"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
-	"github.com/Project-Helianthus/helianthus-ebusreg/vaillant/productids"
 )
 
 // vaillantSemanticPublication owns the collaborators through which the
 // Vaillant poller publishes its snapshots: the GraphQL provider, the
 // broadcast hub and the semantic cache persister. It holds no bus access.
-// Zones, hot water, circuits and radio devices reach it as native views that
-// the poller builds under its snapshot lock; the owner maps them to GraphQL
-// values in vaillant_semantic_publication_views.go.
+// Zones, hot water, circuits, radio devices, the boiler status and the system
+// reach it as native views that the poller builds under its snapshot lock,
+// and the regulator capability as the native controller capability; the
+// owner maps them to GraphQL values in vaillant_semantic_publication_views.go.
+// It is also the energy ledger of a register acquisition: it derives the
+// provider's energy keys from native channel, usage and window values.
 //
 // boilerPublishMu orders GraphQL boiler-status publication against the
 // thermal withdrawal: publishBoilerStatus and the thermal publisher's
-// control callback each hold it across their read, change and publish of
-// the provider's boiler status, so a withdrawn flow temperature is never
-// overwritten by an interleaved publication and neither path publishes a
-// status the other is still changing. The lock guards no other state.
+// control callback each hold it across their change of the native boiler
+// snapshot and the owner's publication or withdrawal of the provider's
+// boiler status, so a withdrawn flow temperature is never overwritten by an
+// interleaved publication and neither path publishes a status the other is
+// still changing. The lock guards no other state.
 type vaillantSemanticPublication struct {
 	provider *graphql.LiveSemanticProvider
 	hub      *graphql.BroadcastHub
@@ -79,18 +82,43 @@ func (p *vaillantSemanticPoller) boilerPublishLock() sync.Locker {
 	return &p.publication.boilerPublishMu
 }
 
-func (p *vaillantSemanticPoller) publishRegulatorCapability(capability productids.ControllerCapability) {
-	if p == nil || p.liveProvider() == nil {
+// energyLedger returns the publication owner as the energy ledger of a
+// register acquisition, or nil when the poller has no provider to hold the
+// ledger.
+func (p *vaillantSemanticPoller) energyLedger() vaillantEnergyLedger {
+	if p == nil || p.publication == nil || p.publication.provider == nil {
+		return nil
+	}
+	return p.publication
+}
+
+// energyReferenceTime returns the provider's energy reference instant.
+func (o *vaillantSemanticPublication) energyReferenceTime() time.Time {
+	return o.provider.EnergyReferenceTime()
+}
+
+// applyLifetimeEnergy applies an undated lifetime register total under the
+// provider's lifetime key.
+func (o *vaillantSemanticPublication) applyLifetimeEnergy(channel, usage string, kwh float64) bool {
+	return o.provider.ApplyEnergyFromRegister(o.provider.EnergyLifetimeKey(channel, usage), kwh)
+}
+
+// applyWindowEnergy applies a relative window register value under the
+// provider's key dated against ref.
+func (o *vaillantSemanticPublication) applyWindowEnergy(channel, usage, period, label string, ref time.Time, kwh float64) bool {
+	return o.provider.ApplyEnergyFromRegister(o.provider.EnergyWindowKeyAt(channel, usage, period, label, ref), kwh)
+}
+
+// publishEnergyTotals pushes the provider's energy totals to the hub.
+func (o *vaillantSemanticPublication) publishEnergyTotals() {
+	if o == nil || o.provider == nil || o.hub == nil {
 		return
 	}
-	switch capability {
-	case productids.ControllerPresent:
-		p.liveProvider().SetVaillantRegulatorCapability(graphql.VaillantRegulatorCapabilityPresent)
-	case productids.ControllerNone:
-		p.liveProvider().SetVaillantRegulatorCapability(graphql.VaillantRegulatorCapabilityNone)
-	default:
-		p.liveProvider().SetVaillantRegulatorCapability(graphql.VaillantRegulatorCapabilityUnknown)
+	totals := o.provider.EnergyTotals()
+	if totals == nil {
+		return
 	}
+	o.hub.PublishEnergyUpdate(totals)
 }
 
 // publishZones hands the native zone views to the publication owner and
@@ -107,17 +135,6 @@ func (p *vaillantSemanticPoller) publishZones(source semanticSnapshotSource) {
 	if p.publication.publishZoneViews(views, source) {
 		p.persistSemanticCache(source)
 	}
-}
-
-func (p *vaillantSemanticPoller) publishEnergyTotals() {
-	if p == nil || p.liveProvider() == nil || p.broadcastHub() == nil {
-		return
-	}
-	totals := p.liveProvider().EnergyTotals()
-	if totals == nil {
-		return
-	}
-	p.broadcastHub().PublishEnergyUpdate(totals)
 }
 
 // publishDHW applies stale expiry, hands the native hot water view to the
@@ -159,6 +176,10 @@ func (p *vaillantSemanticPoller) publishCircuits(source semanticSnapshotSource) 
 	}
 }
 
+// publishBoilerStatus merges the published thermal flow into the retained
+// boiler snapshot, hands a detached copy to the publication owner and
+// persists the semantic cache after a publication. It holds the owner's
+// boiler publication lock across the merge, the copy and the publication.
 func (p *vaillantSemanticPoller) publishBoilerStatus(source semanticSnapshotSource) {
 	if p == nil || p.liveProvider() == nil {
 		return
@@ -173,83 +194,9 @@ func (p *vaillantSemanticPoller) publishBoilerStatus(source semanticSnapshotSour
 	snapshot := cloneBoilerSnapshot(p.boiler)
 	p.mu.Unlock()
 
-	previous := p.liveProvider().BoilerStatus()
-
-	if snapshot == nil {
-		if previous != nil {
-			switch source {
-			case semanticSnapshotSourceCache:
-				p.liveProvider().SetBoilerStatusFromCache(nil)
-			default:
-				p.liveProvider().SetBoilerStatus(nil)
-			}
-		}
-		return
+	if p.publication.publishBoilerStatusView(snapshot, source) {
+		p.persistSemanticCache(source)
 	}
-
-	current := &graphql.BoilerStatus{
-		State: graphql.BoilerState{
-			FlowTemperatureC:         snapshot.FlowTemperatureC,
-			ReturnTemperatureC:       snapshot.ReturnTemperatureC,
-			CentralHeatingPumpActive: snapshot.CentralHeatingPumpActive,
-			WaterPressureBar:         snapshot.WaterPressureBar,
-			ExternalPumpActive:       snapshot.ExternalPumpActive,
-			CirculationPumpActive:    snapshot.CirculationPumpActive,
-			GasValveActive:           snapshot.GasValveActive,
-			FlameActive:              snapshot.FlameActive,
-			DiverterValvePositionPct: snapshot.DiverterValvePositionPct,
-			FanSpeedRpm:              snapshot.FanSpeedRpm,
-			TargetFanSpeedRpm:        snapshot.TargetFanSpeedRpm,
-			IonisationVoltageUa:      snapshot.IonisationVoltageUa,
-			DhwWaterFlowLpm:          snapshot.DhwWaterFlowLpm,
-			DhwDemandActive:          snapshot.DhwDemandActive,
-			HeatingSwitchActive:      snapshot.HeatingSwitchActive,
-			StorageLoadPumpPct:       snapshot.StorageLoadPumpPct,
-			ModulationPct:            snapshot.ModulationPct,
-			PrimaryCircuitFlowLpm:    snapshot.PrimaryCircuitFlowLpm,
-			FlowTempDesiredC:         snapshot.FlowTempDesiredC,
-			DhwTempDesiredC:          snapshot.DhwTempDesiredC,
-			StateNumber:              snapshot.StateNumber,
-			DhwTemperatureC:          snapshot.DhwTemperatureC,
-			DhwTargetTemperatureC:    snapshot.DhwTargetTemperatureC,
-		},
-		Config: graphql.BoilerConfig{
-			FlowsetHcMaxC:     snapshot.FlowsetHcMaxC,
-			FlowsetHwcMaxC:    snapshot.FlowsetHwcMaxC,
-			PartloadHcKW:      snapshot.PartloadHcKW,
-			PartloadHwcKW:     snapshot.PartloadHwcKW,
-			InstallerMenuCode: snapshot.InstallerMenuCode,
-			PhoneNumber:       cloneStringPtr(snapshot.PhoneNumber),
-			HoursTillService:  snapshot.HoursTillService,
-		},
-		Diagnostics: graphql.BoilerDiagnostics{
-			HeatingStatusRaw:         snapshot.HeatingStatusRaw,
-			DhwStatusRaw:             snapshot.DhwStatusRaw,
-			CentralHeatingHours:      snapshot.CentralHeatingHours,
-			DhwHours:                 snapshot.DhwHours,
-			CentralHeatingStarts:     snapshot.CentralHeatingStarts,
-			DhwStarts:                snapshot.DhwStarts,
-			PumpHours:                snapshot.PumpHours,
-			FanHours:                 snapshot.FanHours,
-			DeactivationsIFC:         snapshot.DeactivationsIFC,
-			DeactivationsTemplimiter: snapshot.DeactivationsTemplimiter,
-		},
-	}
-	if snapshot.DhwOperatingMode != nil {
-		mode := decodeDhwMode(*snapshot.DhwOperatingMode)
-		current.Config.DhwOperatingMode = &mode
-	}
-
-	switch source {
-	case semanticSnapshotSourceCache:
-		p.liveProvider().SetBoilerStatusFromCache(current)
-	default:
-		p.liveProvider().SetBoilerStatus(current)
-	}
-	if p.broadcastHub() != nil && !boilerStatusEquals(previous, current) {
-		p.broadcastHub().PublishBoilerStatusUpdate(current)
-	}
-	p.persistSemanticCache(source)
 }
 
 // publishRadioDevices hands the native radio device views to the publication
@@ -268,79 +215,25 @@ func (p *vaillantSemanticPoller) publishRadioDevices(source semanticSnapshotSour
 	}
 }
 
+// publishSystem hands the native system view, with the hot water bivalence
+// bound resolved for the discovered controller, to the publication owner;
+// after a publication it persists the semantic cache and republishes the
+// circuits.
 func (p *vaillantSemanticPoller) publishSystem(source semanticSnapshotSource) {
 	if p == nil || p.liveProvider() == nil {
 		return
 	}
 
 	p.mu.Lock()
-	snapshot := cloneSystemSnapshot(p.system)
+	view := vaillantSystemView{snapshot: cloneSystemSnapshot(p.system)}
 	p.mu.Unlock()
+	if view.snapshot != nil {
+		view.dhwBivalenceBound = p.controllerConfigBound()
+	}
 
-	previous := p.liveProvider().System()
-	if snapshot == nil {
-		switch source {
-		case semanticSnapshotSourceCache:
-			p.liveProvider().SetSystemFromCache(nil)
-		default:
-			p.liveProvider().SetSystem(nil)
-		}
+	if !p.publication.publishSystemView(view, source) {
 		return
 	}
-
-	current := &graphql.SystemStatus{
-		State: graphql.SystemState{
-			SystemOff:                    cloneBoilerBoolPtr(snapshot.SystemOff),
-			SystemWaterPressure:          cloneFloat64Ptr(snapshot.SystemWaterPressure),
-			SystemFlowTemperature:        cloneFloat64Ptr(snapshot.SystemFlowTemperature),
-			OutdoorTemperature:           cloneFloat64Ptr(snapshot.OutdoorTemperature),
-			OutdoorTemperatureAvg24h:     cloneFloat64Ptr(snapshot.OutdoorTemperatureAvg24h),
-			MaintenanceDue:               cloneBoilerBoolPtr(snapshot.MaintenanceDue),
-			HwcCylinderTemperatureTop:    cloneFloat64Ptr(snapshot.HwcCylinderTemperatureTop),
-			HwcCylinderTemperatureBottom: cloneFloat64Ptr(snapshot.HwcCylinderTemperatureBottom),
-		},
-		Config: graphql.SystemConfig{
-			AdaptiveHeatingCurve:         cloneBoilerBoolPtr(snapshot.AdaptiveHeatingCurve),
-			AlternativePoint:             cloneFloat64Ptr(snapshot.AlternativePoint),
-			HeatingCircuitBivalencePoint: cloneFloat64Ptr(snapshot.HeatingCircuitBivalencePoint),
-			DhwBivalencePoint:            cloneFloat64Ptr(snapshot.DhwBivalencePoint),
-			HcEmergencyTemperature:       cloneFloat64Ptr(snapshot.HcEmergencyTemperature),
-			HwcMaxFlowTempDesired:        cloneFloat64Ptr(snapshot.HwcMaxFlowTempDesired),
-			MaxRoomHumidity:              uint16ToIntPtr(snapshot.MaxRoomHumidity),
-			MaintenanceDate:              cloneStringPtr(snapshot.MaintenanceDate),
-			InstallerName:                cloneStringPtr(snapshot.InstallerName),
-			InstallerPhone:               cloneStringPtr(snapshot.InstallerPhone),
-			InstallerMenuCode:            uint16ToIntPtr(snapshot.InstallerMenuCode),
-		},
-		Properties: graphql.SystemProperties{
-			SystemScheme:            uint16ToIntPtr(snapshot.SystemScheme),
-			ModuleConfigurationVR71: uint16ToIntPtr(snapshot.ModuleConfigurationVR71),
-		},
-	}
-	dhwBound := p.controllerConfigBound()
-	current.Config.DhwBivalenceBound = &dhwBound
-
-	switch source {
-	case semanticSnapshotSourceCache:
-		p.liveProvider().SetSystemFromCache(current)
-	default:
-		p.liveProvider().SetSystem(current)
-	}
-
-	if p.broadcastHub() != nil && !systemStatusEquals(previous, current) {
-		publisher := reflect.ValueOf(p.broadcastHub()).MethodByName("PublishSystemUpdate")
-		if publisher.IsValid() && publisher.Type().NumIn() == 1 {
-			arg := reflect.ValueOf(current)
-			paramType := publisher.Type().In(0)
-			switch {
-			case arg.Type().AssignableTo(paramType):
-				publisher.Call([]reflect.Value{arg})
-			case arg.Type().ConvertibleTo(paramType):
-				publisher.Call([]reflect.Value{arg.Convert(paramType)})
-			}
-		}
-	}
-
 	p.persistSemanticCache(source)
 	p.publishCircuits(source)
 }

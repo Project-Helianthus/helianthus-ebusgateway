@@ -38,7 +38,9 @@ The application composition passes the driver's resolved `ConfigBound` in
 `SystemStatus.Config.DhwBivalenceBound` through the semantic provider:
 
 1. `vaillantSemanticPoller.publishSystem` resolves from
-   `controllerB524Identity()` and assembles the system snapshot. This driver
+   `controllerB524Identity()` into the native system view, and
+   `vaillantSemanticPublication.publishSystemView` assembles the system
+   snapshot from that view. This driver
    path retains the discovered controller address `p.controller` and selects
    its registry snapshot through `SnapshotContainsAddress`; it must not switch
    to regulator-priority selection.

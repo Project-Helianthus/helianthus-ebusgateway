@@ -79,16 +79,7 @@ func (p *vaillantSemanticPoller) attachBoilerThermal(hub *semhub.Hub, handle fun
 			p.boiler.FlowTemperatureC = nil
 		}
 		p.mu.Unlock()
-		if p.liveProvider() != nil {
-			status := p.liveProvider().BoilerStatus()
-			if status != nil && status.State.FlowTemperatureC != nil {
-				status.State.FlowTemperatureC = nil
-				p.liveProvider().SetBoilerStatus(status)
-				if p.broadcastHub() != nil {
-					p.broadcastHub().PublishBoilerStatusUpdate(status)
-				}
-			}
-		}
+		p.publication.withdrawBoilerFlowTemperature()
 		return nil
 	}
 	pub.now = func() (semreg.TimePoint, semreg.MonotonicPoint) {

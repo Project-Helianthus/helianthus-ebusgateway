@@ -44,7 +44,7 @@ func TestEnergyAcquisitionCalendar(t *testing.T) {
 			clock := tc.start.Add(-time.Minute)
 			provider := graphql.NewLiveSemanticProvider()
 			provider.SetEnergyClock(func() time.Time { return clock })
-			poller := &vaillantSemanticPoller{publication: newVaillantSemanticPublication(provider, nil, nil)}
+			ledger := newVaillantSemanticPublication(provider, nil, nil)
 
 			selectors := []struct{ channel, usage string }{
 				{"gas", "climate"}, {"gas", "hot_water"},
@@ -86,7 +86,7 @@ func TestEnergyAcquisitionCalendar(t *testing.T) {
 			// current-month, then four previous-month readings.
 			replies := []uint32{101, 102, 103, 104, 11, 12, 13, 14, 21, 22, 23, 24}
 			calls := 0
-			poller.acquireEnergy(func(q b524EnergyQuery, ref time.Time) (uint32, bool) {
+			acquireEnergy(ledger, func(q b524EnergyQuery, ref time.Time) (uint32, bool) {
 				calls++
 				if calls > tc.wantReads {
 					t.Fatalf("unexpected read %d after expected stop at %d", calls, tc.wantReads)

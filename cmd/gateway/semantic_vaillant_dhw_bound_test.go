@@ -292,7 +292,7 @@ func TestSystemConfigNonFiniteRejectedBeforeBusIO(t *testing.T) {
 					var message string
 					if path == "GraphQL" {
 						builder := graphql.NewBuilder(poller.reg, nil)
-						builder.SetSystemConfigWriter(poller)
+						builder.SetSystemConfigWriter(admittedGraphQLSemanticWriter{system: poller, admitted: admittedTestSource(0x71)})
 						builder.SetAdmittedMutationSource(0x71)
 						handler, err := graphql.NewInvokeHandler(builder, poller.reg, invoker)
 						if err != nil {

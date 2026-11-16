@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway"
-	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 )
 
 func (p *vaillantSemanticPoller) refreshZoneDiscovery(ctx context.Context, startup bool) {
@@ -66,10 +65,10 @@ func (p *vaillantSemanticPoller) reconcileDiscoveryPresence(ctx context.Context,
 }
 
 func (p *vaillantSemanticPoller) startupZonesNeedImmediatePresence() bool {
-	if p == nil || p.liveProvider() == nil {
+	if !p.publishing() {
 		return false
 	}
-	if len(p.liveProvider().Zones()) > 0 {
+	if p.publication.publishedZoneCount() > 0 {
 		return false
 	}
 	p.mu.Lock()
@@ -665,66 +664,6 @@ func (p *vaillantSemanticPoller) firstConnectedRadioDeviceLocked(group byte) *va
 
 func radioDeviceConnected(snapshot *vaillantRadioDeviceSnapshot) bool {
 	return snapshot != nil && snapshot.DeviceConnected != nil && *snapshot.DeviceConnected
-}
-
-func zoneEquals(a, b graphql.Zone) bool {
-	if a.ID != b.ID || a.Name != b.Name {
-		return false
-	}
-	// State comparison
-	if a.State.HvacAction != b.State.HvacAction || a.State.SpecialFunction != b.State.SpecialFunction {
-		return false
-	}
-	if !floatPtrEquals(a.State.CurrentTempC, b.State.CurrentTempC) {
-		return false
-	}
-	if !floatPtrEquals(a.State.CurrentHumidityPct, b.State.CurrentHumidityPct) {
-		return false
-	}
-	if !floatPtrEquals(a.State.HeatingDemandPct, b.State.HeatingDemandPct) {
-		return false
-	}
-	if !floatPtrEquals(a.State.ValvePositionPct, b.State.ValvePositionPct) {
-		return false
-	}
-	// Config comparison
-	if a.Config.OperatingMode != b.Config.OperatingMode || a.Config.Preset != b.Config.Preset {
-		return false
-	}
-	if !floatPtrEquals(a.Config.TargetTempC, b.Config.TargetTempC) {
-		return false
-	}
-	if !slices.Equal(a.Config.AllowedModes, b.Config.AllowedModes) {
-		return false
-	}
-	if a.Config.CircuitType != b.Config.CircuitType {
-		return false
-	}
-	if !intPtrEquals(a.Config.AssociatedCircuit, b.Config.AssociatedCircuit) {
-		return false
-	}
-	if !intPtrEquals(a.Config.RoomTemperatureZoneMapping, b.Config.RoomTemperatureZoneMapping) {
-		return false
-	}
-	if a.Config.QuickVeto != b.Config.QuickVeto || a.Config.QuickVetoExpiry != b.Config.QuickVetoExpiry {
-		return false
-	}
-	if !floatPtrEquals(a.Config.QuickVetoSetpointC, b.Config.QuickVetoSetpointC) {
-		return false
-	}
-	if !floatPtrEquals(a.Config.QuickVetoDurationH, b.Config.QuickVetoDurationH) {
-		return false
-	}
-	if a.Config.HolidayStartDate != b.Config.HolidayStartDate || a.Config.HolidayEndDate != b.Config.HolidayEndDate {
-		return false
-	}
-	if !floatPtrEquals(a.Config.HolidaySetpointC, b.Config.HolidaySetpointC) {
-		return false
-	}
-	if a.Config.HolidayStartTime != b.Config.HolidayStartTime || a.Config.HolidayEndTime != b.Config.HolidayEndTime {
-		return false
-	}
-	return true
 }
 
 func (p *vaillantSemanticPoller) recordZonePresenceTransitionLocked(instance byte, previous, next zonePresenceState, hitStreak, missStreak int) {

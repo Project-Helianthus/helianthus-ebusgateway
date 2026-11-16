@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/vaillant/systemconfig"
 )
 
@@ -354,9 +353,9 @@ var systemCStringPairSpecs = map[string]cstringPairSpec{
 	"installer_phone_number": {addr1: system_installer_phone_1, addr2: system_installer_phone_2},
 }
 
-func (p *vaillantSemanticPoller) SetSystemConfig(ctx context.Context, fieldName string, rawValue string) graphql.ConfigMutationResult {
+func (p *vaillantSemanticPoller) SetSystemConfig(ctx context.Context, fieldName string, rawValue string) vaillantConfigWriteResult {
 	if p == nil {
-		return graphql.ConfigMutationResult{Success: false, Error: "system config writer unavailable"}
+		return vaillantConfigWriteResult{Success: false, Error: "system config writer unavailable"}
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -371,31 +370,31 @@ func (p *vaillantSemanticPoller) SetSystemConfig(ctx context.Context, fieldName 
 	// completes before any bus I/O. Missing API qualifiers stay unmatched.
 	payload, spec, _, err := systemconfig.EncodeSystemConfigValueForController(fieldName, rawValue, p.controllerB524Identity())
 	if err != nil {
-		return graphql.ConfigMutationResult{Success: false, Error: err.Error()}
+		return vaillantConfigWriteResult{Success: false, Error: err.Error()}
 	}
 
 	return p.writeSystemSingleRegister(ctx, fieldName, rawValue, spec, payload)
 }
 
-func (p *vaillantSemanticPoller) writeSystemSingleRegister(ctx context.Context, fieldName, rawValue string, spec systemconfig.ConfigFieldSpec, payload []byte) graphql.ConfigMutationResult {
+func (p *vaillantSemanticPoller) writeSystemSingleRegister(ctx context.Context, fieldName, rawValue string, spec systemconfig.ConfigFieldSpec, payload []byte) vaillantConfigWriteResult {
 	opcode := systemconfig.OpcodeLocal
 	group := spec.Group()
 	instance := systemconfig.Instance
 	addr := spec.Addr()
 
 	if err := p.writeB524Value(ctx, opcode, group, instance, addr, payload); err != nil {
-		return graphql.ConfigMutationResult{Success: false, Error: fmt.Sprintf("b524 write failed: %v", err)}
+		return vaillantConfigWriteResult{Success: false, Error: fmt.Sprintf("b524 write failed: %v", err)}
 	}
 
 	readback, ok := p.readB524ValueLive(ctx, opcode, group, instance, addr)
 	if !ok {
-		return graphql.ConfigMutationResult{Success: false, Error: "b524 write confirm failed: read-back unavailable"}
+		return vaillantConfigWriteResult{Success: false, Error: "b524 write confirm failed: read-back unavailable"}
 	}
 	if err := systemconfig.ConfirmDecodableReadback(spec, readback); err != nil {
-		return graphql.ConfigMutationResult{Success: false, Error: fmt.Sprintf("b524 write confirm failed: %v", err)}
+		return vaillantConfigWriteResult{Success: false, Error: fmt.Sprintf("b524 write confirm failed: %v", err)}
 	}
 	if !systemconfig.ConfigReadbackMatchesWrite(spec, payload, readback) {
-		return graphql.ConfigMutationResult{Success: false, Error: "b524 write confirm failed: read-back mismatch"}
+		return vaillantConfigWriteResult{Success: false, Error: "b524 write confirm failed: read-back mismatch"}
 	}
 
 	normalizedValue := strings.TrimSpace(rawValue)
@@ -404,10 +403,10 @@ func (p *vaillantSemanticPoller) writeSystemSingleRegister(ctx context.Context, 
 	p.mu.Unlock()
 
 	p.publishSystem(semanticSnapshotSourceLive)
-	return graphql.ConfigMutationResult{Success: true}
+	return vaillantConfigWriteResult{Success: true}
 }
 
-func (p *vaillantSemanticPoller) writeSystemCStringPair(ctx context.Context, fieldName, rawValue string, pair cstringPairSpec) graphql.ConfigMutationResult {
+func (p *vaillantSemanticPoller) writeSystemCStringPair(ctx context.Context, fieldName, rawValue string, pair cstringPairSpec) vaillantConfigWriteResult {
 	trimmed := strings.TrimSpace(rawValue)
 
 	// Validate characters.
@@ -415,16 +414,16 @@ func (p *vaillantSemanticPoller) writeSystemCStringPair(ctx context.Context, fie
 		b := trimmed[i]
 		if fieldName == "installer_phone_number" {
 			if (b < '0' || b > '9') && b != '+' && b != '(' && b != ')' && b != ' ' {
-				return graphql.ConfigMutationResult{Success: false, Error: fmt.Sprintf("invalid character '%c' at position %d (allowed: digits, +, (, ), space)", b, i)}
+				return vaillantConfigWriteResult{Success: false, Error: fmt.Sprintf("invalid character '%c' at position %d (allowed: digits, +, (, ), space)", b, i)}
 			}
 		} else {
 			if b < 0x20 || b > 0x7E {
-				return graphql.ConfigMutationResult{Success: false, Error: fmt.Sprintf("invalid byte 0x%02X at position %d", b, i)}
+				return vaillantConfigWriteResult{Success: false, Error: fmt.Sprintf("invalid byte 0x%02X at position %d", b, i)}
 			}
 		}
 	}
 	if len(trimmed) > 12 {
-		return graphql.ConfigMutationResult{Success: false, Error: fmt.Sprintf("string length %d exceeds max 12", len(trimmed))}
+		return vaillantConfigWriteResult{Success: false, Error: fmt.Sprintf("string length %d exceeds max 12", len(trimmed))}
 	}
 
 	// Split into 2 parts of max 6 chars each.
@@ -448,11 +447,11 @@ func (p *vaillantSemanticPoller) writeSystemCStringPair(ctx context.Context, fie
 
 	// Write part 1.
 	if err := p.writeB524Value(ctx, opcode, group, instance, pair.addr1, encode(part1)); err != nil {
-		return graphql.ConfigMutationResult{Success: false, Error: fmt.Sprintf("b524 write part1 failed: %v", err)}
+		return vaillantConfigWriteResult{Success: false, Error: fmt.Sprintf("b524 write part1 failed: %v", err)}
 	}
 	// Write part 2.
 	if err := p.writeB524Value(ctx, opcode, group, instance, pair.addr2, encode(part2)); err != nil {
-		return graphql.ConfigMutationResult{Success: false, Error: fmt.Sprintf("b524 write part2 failed: %v", err)}
+		return vaillantConfigWriteResult{Success: false, Error: fmt.Sprintf("b524 write part2 failed: %v", err)}
 	}
 
 	p.mu.Lock()
@@ -460,7 +459,7 @@ func (p *vaillantSemanticPoller) writeSystemCStringPair(ctx context.Context, fie
 	p.mu.Unlock()
 
 	p.publishSystem(semanticSnapshotSourceLive)
-	return graphql.ConfigMutationResult{Success: true}
+	return vaillantConfigWriteResult{Success: true}
 }
 
 func systemSnapshotWithConfigValue(existing *vaillantSystemSnapshot, fieldName, rawValue string) *vaillantSystemSnapshot {

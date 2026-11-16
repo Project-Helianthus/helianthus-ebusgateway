@@ -42,14 +42,14 @@ these views to owner methods in
 [`vaillant_semantic_publication_views.go`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/vaillant_semantic_publication_views.go),
 which map them to GraphQL values and push them to the provider and hub without
 reading poller state. Each trigger persists the semantic cache after a
-publication. The remaining poller publication methods in
-[`vaillant_semantic_publication.go`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/vaillant_semantic_publication.go)
-still compose the retained snapshots into the provider and hub through the
-owner; the committed
+publication. The triggers live in
+[`semantic_vaillant_publisher.go`](../../cmd/gateway/semantic_vaillant_publisher.go)
+and reach the owner only through the native `vaillantSemanticPublisher`
+interface; the committed
 [`relocate_poller_publication_state.py`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/scripts/relocate_poller_publication_state.py)
-rewrote the direct field uses, and its `--check` mode lists any that remain. This extraction is one part of the acquisition and
-publication separation; the complete separation remains open in
-[the parent issue](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1480).
+rewrote the direct field uses, and its `--check` mode lists any that remain.
+[The acquisition and publication owners](vaillant-acquisition-publication.md)
+page describes both owners, their locks and the test that pins the boundary.
 
 ## Retention and provenance
 

@@ -66,7 +66,7 @@ func TestK01PartialUpdatesPreserveIndependentBoilerPump(t *testing.T) {
 				pub.attempt = &observation
 				poller.refreshBoilerStatusTier(context.Background(), boilerStatusTierFast)
 				k01AssertPublishedPump(t, poller, &initial)
-				if got := poller.liveProvider().BoilerStatus().State.FlowTemperatureC; got == nil || *got != flow {
+				if got := publishedProvider(poller).BoilerStatus().State.FlowTemperatureC; got == nil || *got != flow {
 					t.Errorf("qualified partial flow update = %v; want %v", got, flow)
 				}
 			}
@@ -111,7 +111,7 @@ func TestK01CachedBoilerPumpWithoutProvenanceIsDiscarded(t *testing.T) {
 			}
 
 			poller := k01PumpPoller(1, nil)
-			snapshot, ok := preloadSemanticCache(poller.liveProvider(), store)
+			snapshot, ok := preloadSemanticCache(publishedProvider(poller), store)
 			if !ok {
 				t.Fatal("legacy cache was discarded wholesale")
 			}
@@ -133,7 +133,7 @@ func TestK01CachedBoilerPumpWithoutProvenanceIsDiscarded(t *testing.T) {
 			poller.publishBoilerStatus(semanticSnapshotSourceLive)
 			poller.refreshBoilerStatusTier(context.Background(), boilerStatusTierFast)
 			k01AssertPublishedPump(t, poller, &cachedActive)
-			if err := store.Save(semanticCacheSnapshot{Boiler: poller.liveProvider().BoilerStatus()}); err != nil {
+			if err := store.Save(semanticCacheSnapshot{Boiler: publishedProvider(poller).BoilerStatus()}); err != nil {
 				t.Fatal(err)
 			}
 			cached, ok := store.Load()
@@ -176,7 +176,7 @@ func k01PumpPoller(circuitRaw uint16, boilerActive *bool) *vaillantSemanticPolle
 
 func k01AssertPublishedPump(t *testing.T, poller *vaillantSemanticPoller, want *bool) {
 	t.Helper()
-	status := poller.liveProvider().BoilerStatus()
+	status := publishedProvider(poller).BoilerStatus()
 	if status == nil {
 		t.Fatal("boiler status missing after assembly")
 	}

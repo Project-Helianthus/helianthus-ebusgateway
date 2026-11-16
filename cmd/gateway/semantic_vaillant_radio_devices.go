@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 )
 
@@ -436,53 +435,6 @@ func preserveExistingRegistryMetadata(reg *registry.DeviceRegistry, info registr
 		return false
 	})
 	return info
-}
-
-func radioDevicesEqual(a, b []graphql.RadioDevice) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		left := a[i]
-		right := b[i]
-		if left.Group != right.Group || left.Instance != right.Instance || left.SlotMode != right.SlotMode {
-			return false
-		}
-		if !boolPtrEquals(left.DeviceConnected, right.DeviceConnected) {
-			return false
-		}
-		if !intPtrEquals(left.DeviceClassAddress, right.DeviceClassAddress) {
-			return false
-		}
-		if left.DeviceModel != right.DeviceModel {
-			return false
-		}
-		if !stringPtrEquals(left.FirmwareVersion, right.FirmwareVersion) {
-			return false
-		}
-		if !intPtrEquals(left.HardwareIdentifier, right.HardwareIdentifier) {
-			return false
-		}
-		if !intPtrEquals(left.RemoteControlAddress, right.RemoteControlAddress) {
-			return false
-		}
-		if !boolPtrEquals(left.DevicePaired, right.DevicePaired) {
-			return false
-		}
-		if !intPtrEquals(left.ReceptionStrength, right.ReceptionStrength) {
-			return false
-		}
-		if !intPtrEquals(left.ZoneAssignment, right.ZoneAssignment) {
-			return false
-		}
-		if !floatPtrEquals(left.RoomTemperatureC, right.RoomTemperatureC) {
-			return false
-		}
-		if !floatPtrEquals(left.RoomHumidityPct, right.RoomHumidityPct) {
-			return false
-		}
-	}
-	return true
 }
 
 func decodeRadioDeviceModel(classAddress *uint8) string {

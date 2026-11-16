@@ -4,33 +4,9 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 )
-
-// vaillantCacheHydration is the native value that a loaded semantic cache
-// hydrates the poller with. zones holds one snapshot per cached zone in cache
-// order, each keyed by its Instance; a later zone with the same instance
-// replaces an earlier one. dhw and boiler are nil when the cache holds none.
-// persistedAt is when the cache was written, zero when unknown. The poller
-// takes ownership of the snapshots when it hydrates.
-type vaillantCacheHydration struct {
-	zones       []*vaillantZoneSnapshot
-	dhw         *vaillantDhwSnapshot
-	persistedAt time.Time
-	boiler      *vaillantBoilerSnapshot
-}
-
-// vaillantZoneCacheOverlay holds the retained native zone values that the
-// persisted cache takes over the published zone: the current temperature and
-// humidity, and the raw room temperature mapping and associated circuit.
-type vaillantZoneCacheOverlay struct {
-	currentTempC         *float64
-	humidityPct          *float64
-	roomMappingRaw       *uint16
-	associatedCircuitRaw *uint16
-}
 
 // preloadSemanticCache loads the semantic cache into the provider and
 // converts it into the native hydration value for the poller.
@@ -214,42 +190,9 @@ func boilerSnapshotFromGraphQL(status *graphql.BoilerStatus) *vaillantBoilerSnap
 	})
 }
 
-func (p *vaillantSemanticPoller) persistSemanticCache(source semanticSnapshotSource) {
-	if p == nil || source != semanticSnapshotSourceLive {
-		return
-	}
-	p.persistSemanticSnapshot()
-}
-
-// persistSemanticSnapshot hands the retained native zone values to the
-// publication owner, which saves the published planes with them.
-func (p *vaillantSemanticPoller) persistSemanticSnapshot() {
-	if p == nil || p.cachePersister() == nil || p.liveProvider() == nil {
-		return
-	}
-	p.mu.Lock()
-	overlays := p.zoneCacheOverlaysLocked()
-	p.mu.Unlock()
-	p.publication.persistCache(overlays)
-}
-
-// zoneCacheOverlaysLocked returns a detached copy of the retained zone values
-// that the persisted cache takes over the published zones, keyed by instance.
-// The caller holds p.mu.
-func (p *vaillantSemanticPoller) zoneCacheOverlaysLocked() map[byte]vaillantZoneCacheOverlay {
-	overlays := make(map[byte]vaillantZoneCacheOverlay, len(p.zones))
-	for instance, entry := range p.zones {
-		if entry == nil {
-			continue
-		}
-		overlays[instance] = vaillantZoneCacheOverlay{
-			currentTempC:         cloneFloat64Ptr(entry.CurrentTempC),
-			humidityPct:          cloneFloat64Ptr(entry.HumidityPct),
-			roomMappingRaw:       cloneUint16Ptr(entry.ConfigurationRoomTemperatureZoneMappingRaw),
-			associatedCircuitRaw: cloneUint16Ptr(entry.ConfigurationAssociatedCircuitRaw),
-		}
-	}
-	return overlays
+// persistsCache reports whether the owner holds a cache persister.
+func (o *vaillantSemanticPublication) persistsCache() bool {
+	return o.cache != nil
 }
 
 // persistCache saves the published zones, with the retained native zone

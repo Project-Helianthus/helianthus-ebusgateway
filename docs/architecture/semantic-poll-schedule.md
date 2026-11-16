@@ -11,8 +11,9 @@ protocol, GraphQL or MCP dependency.
 methods to descriptors. Its existing entry points delegate directly to the
 schedule owner. Acquisition, native evidence, qualification, partial
 last-known-good state and publication remain in the existing refresh paths.
-This boundary does not complete the acquisition/publication separation tracked
-by [the parent issue](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1480).
+The refresh paths reach the publication owner only through native values, as
+described in
+[the acquisition and publication owners](vaillant-acquisition-publication.md).
 
 ## Submission contract
 

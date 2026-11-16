@@ -6,34 +6,6 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 )
 
-// vaillantFM5View is the native FM5 state that the poller hands to the
-// publication owner: the acquisition verdict and detached copies of the
-// retained solar and cylinder snapshots.
-type vaillantFM5View struct {
-	verdict   vaillantFM5Interpretation
-	solar     *vaillantSolarSnapshot
-	cylinders map[byte]*vaillantCylinderSnapshot
-}
-
-// publishFM5Semantic hands the native FM5 view to the publication owner and
-// then republishes the circuits, whose managing device follows the FM5 mode.
-func (p *vaillantSemanticPoller) publishFM5Semantic(source semanticSnapshotSource) {
-	if p == nil || p.liveProvider() == nil {
-		return
-	}
-
-	p.mu.Lock()
-	view := vaillantFM5View{
-		verdict:   p.fm5Interpretation,
-		solar:     cloneSolarSnapshot(p.solar),
-		cylinders: cloneCylinderSnapshotsMap(p.solarCylinders),
-	}
-	p.mu.Unlock()
-
-	p.publication.publishFM5View(view, source)
-	p.publishCircuits(source)
-}
-
 // publishFM5View publishes the FM5 interpretation, solar and cylinders from
 // their native view. A structural withdrawal, or a view without solar and
 // cylinders, publishes empty solar and cylinder planes. The provider keeps

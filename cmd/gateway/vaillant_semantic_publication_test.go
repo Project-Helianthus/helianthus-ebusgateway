@@ -12,9 +12,9 @@ import (
 // collaborator of the publication owner on its own, so an accessor that
 // returns another collaborator, or a constructor that swaps or drops an
 // argument, leaves one case with a wrong identity:
-//   - provider: liveProvider must return exactly the provider given;
-//   - hub: broadcastHub must return exactly the hub given;
-//   - cache: cachePersister must return exactly the persister given;
+//   - provider: the owner must hold exactly the provider given;
+//   - hub: the owner must hold exactly the hub given;
+//   - cache: the owner must hold exactly the persister given;
 //   - boilerPublishMu: boilerPublishLock must return the owner's own lock,
 //     the same one on every call and a different one for another owner.
 func TestVaillantSemanticPublicationAccessorsReturnEachCollaborator(t *testing.T) {
@@ -36,17 +36,17 @@ func TestVaillantSemanticPublicationAccessorsReturnEachCollaborator(t *testing.T
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			poller := &vaillantSemanticPoller{publication: newVaillantSemanticPublication(tc.provider, tc.hub, tc.cache)}
-			if got := poller.liveProvider(); got != tc.provider {
-				t.Fatalf("liveProvider = %p; want %p", got, tc.provider)
+			if got := publishedProvider(poller); got != tc.provider {
+				t.Fatalf("provider = %p; want %p", got, tc.provider)
 			}
-			if got := poller.broadcastHub(); got != tc.hub {
-				t.Fatalf("broadcastHub = %p; want %p", got, tc.hub)
+			if got := publishedHub(poller); got != tc.hub {
+				t.Fatalf("hub = %p; want %p", got, tc.hub)
 			}
-			if got := poller.cachePersister(); got != tc.cache {
-				t.Fatalf("cachePersister = %v; want %v", got, tc.cache)
+			if got := publishedCache(poller); got != tc.cache {
+				t.Fatalf("cache persister = %v; want %v", got, tc.cache)
 			}
 			lock := poller.boilerPublishLock()
-			if lock != &poller.publication.boilerPublishMu {
+			if lock != &publicationOwner(poller).boilerPublishMu {
 				t.Fatal("boilerPublishLock does not return the owner's lock")
 			}
 			if poller.boilerPublishLock() != lock {
@@ -66,7 +66,7 @@ func TestVaillantSemanticPublicationAccessorsReturnEachCollaborator(t *testing.T
 // returns without effect.
 func TestVaillantSemanticPollerWithoutPublicationOwnerIsInert(t *testing.T) {
 	for _, poller := range []*vaillantSemanticPoller{nil, {}} {
-		if poller.liveProvider() != nil || poller.broadcastHub() != nil || poller.cachePersister() != nil {
+		if publishedProvider(poller) != nil || publishedHub(poller) != nil || publishedCache(poller) != nil {
 			t.Fatalf("poller %v without an owner returns a collaborator", poller)
 		}
 		lock := poller.boilerPublishLock()
@@ -107,7 +107,7 @@ func TestNewVaillantSemanticPollerBuildsPublicationOwner(t *testing.T) {
 	if poller.publication == nil {
 		t.Fatal("newVaillantSemanticPoller built no publication owner")
 	}
-	if poller.liveProvider() != provider || poller.broadcastHub() != hub || poller.cachePersister() != cache {
+	if publishedProvider(poller) != provider || publishedHub(poller) != hub || publishedCache(poller) != cache {
 		t.Fatal("newVaillantSemanticPoller placed a collaborator in the wrong position")
 	}
 }
@@ -150,4 +150,31 @@ func TestVaillantBoilerStatusPublicationWaitsForBoilerPublishLock(t *testing.T) 
 	if status == nil || status.State.DhwTemperatureC == nil || *status.State.DhwTemperatureC != dhw {
 		t.Fatalf("published boiler status = %+v; want DHW temperature %.1f", status, dhw)
 	}
+}
+
+// publishedProvider returns the GraphQL provider of the poller's publication
+// owner, or nil when the poller has none.
+func publishedProvider(p *vaillantSemanticPoller) *graphql.LiveSemanticProvider {
+	if owner := publicationOwner(p); owner != nil {
+		return owner.provider
+	}
+	return nil
+}
+
+// publishedHub returns the broadcast hub of the poller's publication owner,
+// or nil when the poller has none.
+func publishedHub(p *vaillantSemanticPoller) *graphql.BroadcastHub {
+	if owner := publicationOwner(p); owner != nil {
+		return owner.hub
+	}
+	return nil
+}
+
+// publishedCache returns the cache persister of the poller's publication
+// owner, or nil when the poller has none.
+func publishedCache(p *vaillantSemanticPoller) semanticCachePersister {
+	if owner := publicationOwner(p); owner != nil {
+		return owner.cache
+	}
+	return nil
 }

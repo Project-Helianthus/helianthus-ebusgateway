@@ -1045,7 +1045,7 @@ func TestRefreshDiscoveryPrimesDHWBeforeStartupZoneScan(t *testing.T) {
 	if first[2] != localDHW.group || first[3] != dhwInstance {
 		t.Fatalf("first startup selector = % x; want DHW before zone scan", first)
 	}
-	if dhw := poller.liveProvider().DHW(); dhw == nil {
+	if dhw := publishedProvider(poller).DHW(); dhw == nil {
 		t.Fatal("provider.DHW() = nil; want critical DHW singleton primed during discovery")
 	}
 }
@@ -1116,7 +1116,7 @@ func TestRefreshDiscoveryRetriesDHWBeforeStartupZoneScan(t *testing.T) {
 	if zoneRequestsBeforeDHWSuccess != 0 {
 		t.Fatalf("zone requests before DHW live response = %d; want 0", zoneRequestsBeforeDHWSuccess)
 	}
-	if dhw := poller.liveProvider().DHW(); dhw == nil {
+	if dhw := publishedProvider(poller).DHW(); dhw == nil {
 		t.Fatal("provider.DHW() = nil; want retry to prime DHW before startup zone scan")
 	}
 }
@@ -7180,7 +7180,7 @@ func TestVaillantSemanticPollerFallbackSuspensionLogsOnTransition(t *testing.T) 
 	// provider, so the successful pass runs no startup priming in this test;
 	// a task queue, as in production, so the controller priming is queued and
 	// no other refresh re-evaluates the gate before the check.
-	poller.publication = newVaillantSemanticPublication(nil, poller.broadcastHub(), poller.cachePersister())
+	poller.publication = newVaillantSemanticPublication(nil, publishedHub(poller), publishedCache(poller))
 	poller.tasks = newSemanticTaskScheduler()
 	poller.b524ProbeFn = func(_ context.Context, target, _, _, _ byte, _ uint16) bool {
 		probes++

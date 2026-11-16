@@ -15,7 +15,7 @@ func TestVaillantSemanticSplitKeepsThematicContractsDiscoverable(t *testing.T) {
 			file: "semantic_vaillant.go",
 			required: []string{
 				"type vaillantSemanticPoller struct",
-				"func startVaillantSemanticPolling(",
+				"func (p *vaillantSemanticPoller) setSourceAndCompanion(",
 			},
 		},
 		{
@@ -36,7 +36,7 @@ func TestVaillantSemanticSplitKeepsThematicContractsDiscoverable(t *testing.T) {
 			file: "semantic_vaillant_zones.go",
 			required: []string{
 				"func (p *vaillantSemanticPoller) refreshZoneSlowConfigFields(",
-				"func zoneEquals(",
+				"func (p *vaillantSemanticPoller) startupZonesNeedImmediatePresence(",
 			},
 		},
 		{
@@ -126,7 +126,7 @@ func TestVaillantSemanticSplitKeepsThematicContractsDiscoverable(t *testing.T) {
 		{
 			file: "vaillant_semantic_publication.go",
 			required: []string{
-				"func (p *vaillantSemanticPoller) publishZones(",
+				"func startVaillantSemanticPolling(",
 				"func (adapter mcpSemanticProviderAdapter) System(",
 			},
 		},

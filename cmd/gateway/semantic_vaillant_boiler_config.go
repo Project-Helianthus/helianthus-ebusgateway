@@ -9,8 +9,28 @@ import (
 	"strings"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway"
-	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 )
+
+// vaillantConfigWriteResult is the native outcome of a boiler or system
+// configuration write: Success reports a confirmed write and Error carries
+// the reason of a refused or failed one. The writer adapters map it to the
+// GraphQL and MCP results with the same field names.
+type vaillantConfigWriteResult struct {
+	Success bool
+	Error   string
+}
+
+// vaillantBoilerConfigWriter writes one boiler configuration field and
+// returns the native result.
+type vaillantBoilerConfigWriter interface {
+	SetBoilerConfig(ctx context.Context, fieldName string, rawValue string) vaillantConfigWriteResult
+}
+
+// vaillantSystemConfigWriter writes one system configuration field and
+// returns the native result.
+type vaillantSystemConfigWriter interface {
+	SetSystemConfig(ctx context.Context, fieldName string, rawValue string) vaillantConfigWriteResult
+}
 
 type boilerConfigFieldSpec struct {
 	addrs []uint16
@@ -41,9 +61,9 @@ const (
 	boilerConfigKeyCentralHeatingPumpMode = "central_heating_pump_mode"
 )
 
-func (p *vaillantSemanticPoller) SetBoilerConfig(ctx context.Context, fieldName string, rawValue string) graphql.BoilerConfigMutationResult {
+func (p *vaillantSemanticPoller) SetBoilerConfig(ctx context.Context, fieldName string, rawValue string) vaillantConfigWriteResult {
 	if p == nil {
-		return graphql.BoilerConfigMutationResult{Success: false, Error: "boiler config writer unavailable"}
+		return vaillantConfigWriteResult{Success: false, Error: "boiler config writer unavailable"}
 	}
 
 	// Handle BCD phone number specially (not float64-based).
@@ -63,7 +83,7 @@ func (p *vaillantSemanticPoller) SetBoilerConfig(ctx context.Context, fieldName 
 		}
 		allKeys = append(allKeys, boilerConfigKeyInstallerPhoneNumber, boilerConfigKeyCentralHeatingPumpMode)
 		slices.Sort(allKeys)
-		return graphql.BoilerConfigMutationResult{
+		return vaillantConfigWriteResult{
 			Success: false,
 			Error:   fmt.Sprintf("unknown boiler field %q (allowed: %s)", fieldName, strings.Join(allKeys, ", ")),
 		}
@@ -71,14 +91,14 @@ func (p *vaillantSemanticPoller) SetBoilerConfig(ctx context.Context, fieldName 
 
 	value, err := parseBoilerConfigValue(rawValue, spec)
 	if err != nil {
-		return graphql.BoilerConfigMutationResult{Success: false, Error: err.Error()}
+		return vaillantConfigWriteResult{Success: false, Error: err.Error()}
 	}
 
 	p.mu.Lock()
 	boilerAddress := p.boilerAddress
 	p.mu.Unlock()
 	if boilerAddress == 0 {
-		return graphql.BoilerConfigMutationResult{Success: false, Error: "unsupported source: boiler B509 address unavailable"}
+		return vaillantConfigWriteResult{Success: false, Error: "unsupported source: boiler B509 address unavailable"}
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -86,19 +106,19 @@ func (p *vaillantSemanticPoller) SetBoilerConfig(ctx context.Context, fieldName 
 
 	payload, normalizedValue, err := encodeBoilerConfigPayload(fieldName, spec, value)
 	if err != nil {
-		return graphql.BoilerConfigMutationResult{Success: false, Error: err.Error()}
+		return vaillantConfigWriteResult{Success: false, Error: err.Error()}
 	}
 	addr := p.resolveB509BoilerConfigAddr(ctx, boilerAddress, spec)
 	if err := p.writeB509Value(ctx, boilerAddress, addr, payload); err != nil {
-		return graphql.BoilerConfigMutationResult{Success: false, Error: fmt.Sprintf("b509 write failed: %v", err)}
+		return vaillantConfigWriteResult{Success: false, Error: fmt.Sprintf("b509 write failed: %v", err)}
 	}
 	p.fenceB509WriteConfirmShadow(boilerAddress, addr)
 	readback, ok := p.readB509ValueLive(ctx, boilerAddress, addr)
 	if !ok || len(readback) < len(payload) {
-		return graphql.BoilerConfigMutationResult{Success: false, Error: "b509 write confirm failed: read-back unavailable"}
+		return vaillantConfigWriteResult{Success: false, Error: "b509 write confirm failed: read-back unavailable"}
 	}
 	if !slices.Equal(readback[:len(payload)], payload) {
-		return graphql.BoilerConfigMutationResult{Success: false, Error: "b509 write confirm failed: read-back mismatch"}
+		return vaillantConfigWriteResult{Success: false, Error: "b509 write confirm failed: read-back mismatch"}
 	}
 
 	p.mu.Lock()
@@ -106,7 +126,7 @@ func (p *vaillantSemanticPoller) SetBoilerConfig(ctx context.Context, fieldName 
 	p.mu.Unlock()
 
 	p.publishBoilerStatus(semanticSnapshotSourceLive)
-	return graphql.BoilerConfigMutationResult{Success: true}
+	return vaillantConfigWriteResult{Success: true}
 }
 
 func (p *vaillantSemanticPoller) fenceB509WriteConfirmShadow(target byte, addr uint16) {
@@ -123,7 +143,7 @@ func (p *vaillantSemanticPoller) fenceB509WriteConfirmShadow(target byte, addr u
 	})
 }
 
-func (p *vaillantSemanticPoller) writeBoilerPhoneBCD(ctx context.Context, rawValue string) graphql.BoilerConfigMutationResult {
+func (p *vaillantSemanticPoller) writeBoilerPhoneBCD(ctx context.Context, rawValue string) vaillantConfigWriteResult {
 	// Strip formatting characters, keep only digits.
 	trimmed := strings.TrimSpace(rawValue)
 	var digits []byte
@@ -133,7 +153,7 @@ func (p *vaillantSemanticPoller) writeBoilerPhoneBCD(ctx context.Context, rawVal
 		}
 	}
 	if len(digits) > 16 {
-		return graphql.BoilerConfigMutationResult{Success: false, Error: fmt.Sprintf("phone number has %d digits (max 16)", len(digits))}
+		return vaillantConfigWriteResult{Success: false, Error: fmt.Sprintf("phone number has %d digits (max 16)", len(digits))}
 	}
 
 	// Encode digits to BCD (2 digits per byte, pad with 0xF).
@@ -154,14 +174,14 @@ func (p *vaillantSemanticPoller) writeBoilerPhoneBCD(ctx context.Context, rawVal
 	boilerAddress := p.boilerAddress
 	p.mu.Unlock()
 	if boilerAddress == 0 {
-		return graphql.BoilerConfigMutationResult{Success: false, Error: "boiler B509 address unavailable"}
+		return vaillantConfigWriteResult{Success: false, Error: "boiler B509 address unavailable"}
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 
 	if err := p.writeB509Value(ctx, boilerAddress, boiler_b509_phone_number, payload); err != nil {
-		return graphql.BoilerConfigMutationResult{Success: false, Error: fmt.Sprintf("b509 write failed: %v", err)}
+		return vaillantConfigWriteResult{Success: false, Error: fmt.Sprintf("b509 write failed: %v", err)}
 	}
 
 	decoded := string(digits)
@@ -170,24 +190,24 @@ func (p *vaillantSemanticPoller) writeBoilerPhoneBCD(ctx context.Context, rawVal
 	p.mu.Unlock()
 
 	p.publishBoilerStatus(semanticSnapshotSourceLive)
-	return graphql.BoilerConfigMutationResult{Success: true}
+	return vaillantConfigWriteResult{Success: true}
 }
 
-func (p *vaillantSemanticPoller) writeBoilerInstallerMenuCode(ctx context.Context, rawValue string) graphql.BoilerConfigMutationResult {
+func (p *vaillantSemanticPoller) writeBoilerInstallerMenuCode(ctx context.Context, rawValue string) vaillantConfigWriteResult {
 	trimmed := strings.TrimSpace(rawValue)
 	value, err := strconv.Atoi(trimmed)
 	if err != nil {
-		return graphql.BoilerConfigMutationResult{Success: false, Error: fmt.Sprintf("invalid integer %q: %v", rawValue, err)}
+		return vaillantConfigWriteResult{Success: false, Error: fmt.Sprintf("invalid integer %q: %v", rawValue, err)}
 	}
 	if value < 0 || value > 255 {
-		return graphql.BoilerConfigMutationResult{Success: false, Error: fmt.Sprintf("value %d out of range [0, 255]", value)}
+		return vaillantConfigWriteResult{Success: false, Error: fmt.Sprintf("value %d out of range [0, 255]", value)}
 	}
 
 	p.mu.Lock()
 	boilerAddress := p.boilerAddress
 	p.mu.Unlock()
 	if boilerAddress == 0 {
-		return graphql.BoilerConfigMutationResult{Success: false, Error: "boiler B509 address unavailable"}
+		return vaillantConfigWriteResult{Success: false, Error: "boiler B509 address unavailable"}
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -195,7 +215,7 @@ func (p *vaillantSemanticPoller) writeBoilerInstallerMenuCode(ctx context.Contex
 
 	payload := []byte{byte(value)}
 	if err := p.writeB509Value(ctx, boilerAddress, boiler_b509_installer_menu_code, payload); err != nil {
-		return graphql.BoilerConfigMutationResult{Success: false, Error: fmt.Sprintf("b509 write failed: %v", err)}
+		return vaillantConfigWriteResult{Success: false, Error: fmt.Sprintf("b509 write failed: %v", err)}
 	}
 
 	p.mu.Lock()
@@ -203,7 +223,7 @@ func (p *vaillantSemanticPoller) writeBoilerInstallerMenuCode(ctx context.Contex
 	p.mu.Unlock()
 
 	p.publishBoilerStatus(semanticSnapshotSourceLive)
-	return graphql.BoilerConfigMutationResult{Success: true}
+	return vaillantConfigWriteResult{Success: true}
 }
 
 func boilerSnapshotWithStringConfigValue(existing *vaillantBoilerSnapshot, fieldName, value string) *vaillantBoilerSnapshot {

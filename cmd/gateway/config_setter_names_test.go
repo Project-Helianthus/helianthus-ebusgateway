@@ -146,8 +146,9 @@ func cfgKeysSet(t *testing.T, path, mutation string, poller *vaillantSemanticPol
 		return result.Success, result.Error
 	}
 	builder := graphql.NewBuilder(poller.reg, nil)
-	builder.SetSystemConfigWriter(poller)
-	builder.SetBoilerConfigWriter(poller)
+	writer := admittedGraphQLSemanticWriter{boiler: poller, system: poller, admitted: admittedTestSource(0x71)}
+	builder.SetSystemConfigWriter(writer)
+	builder.SetBoilerConfigWriter(writer)
 	builder.SetAdmittedMutationSource(0x71)
 	handler, err := graphql.NewInvokeHandler(builder, poller.reg, &dhwBoundInvoker{})
 	if err != nil {

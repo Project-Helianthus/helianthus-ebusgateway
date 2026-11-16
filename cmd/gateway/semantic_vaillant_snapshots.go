@@ -8,7 +8,6 @@ import (
 	"time"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
-	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/vaillant/systemconfig"
 	"github.com/Project-Helianthus/helianthus-ebusreg/vaillant/productids"
 )
@@ -340,7 +339,10 @@ var (
 	)
 )
 
-func newVaillantSemanticPoller(cfg ebusgateway.Config, gateway *ebusgateway.Gateway, provider *graphql.LiveSemanticProvider, hub *graphql.BroadcastHub, cache semanticCachePersister) *vaillantSemanticPoller {
+// newVaillantSemanticAcquisition builds the acquisition owner over the
+// gateway's bus and registry; it reaches its publication owner only through
+// publication.
+func newVaillantSemanticAcquisition(cfg ebusgateway.Config, gateway *ebusgateway.Gateway, publication vaillantSemanticPublisher) *vaillantSemanticPoller {
 	catalog, catalogErr := productids.LoadCatalog()
 	observeFirstFlags := normalizeObserveFirstFeatureFlagsForPoller(cfg)
 	shadow := ebusgateway.NewShadowCache(ebusgateway.ShadowCacheOptions{
@@ -351,7 +353,7 @@ func newVaillantSemanticPoller(cfg ebusgateway.Config, gateway *ebusgateway.Gate
 		tasks:           newSemanticTaskScheduler(),
 		reg:             gateway.Registry,
 		bus:             gateway.Bus,
-		publication:     newVaillantSemanticPublication(provider, hub, cache),
+		publication:     publication,
 		shadow:          shadow,
 		transportConfig: cfg.TransportConfig,
 		watchObserver:   cfg.WatchObserver,
@@ -716,4 +718,36 @@ func (p *vaillantSemanticPoller) mergePublishedBoilerFlow() bool {
 	}
 	p.mu.Unlock()
 	return changed
+}
+
+// vaillantCacheHydration is the native value that a loaded semantic cache
+// hydrates the poller with. zones holds one snapshot per cached zone in cache
+// order, each keyed by its Instance; a later zone with the same instance
+// replaces an earlier one. dhw and boiler are nil when the cache holds none.
+// persistedAt is when the cache was written, zero when unknown. The poller
+// takes ownership of the snapshots when it hydrates.
+type vaillantCacheHydration struct {
+	zones       []*vaillantZoneSnapshot
+	dhw         *vaillantDhwSnapshot
+	persistedAt time.Time
+	boiler      *vaillantBoilerSnapshot
+}
+
+// vaillantZoneCacheOverlay holds the retained native zone values that the
+// persisted cache takes over the published zone: the current temperature and
+// humidity, and the raw room temperature mapping and associated circuit.
+type vaillantZoneCacheOverlay struct {
+	currentTempC         *float64
+	humidityPct          *float64
+	roomMappingRaw       *uint16
+	associatedCircuitRaw *uint16
+}
+
+// vaillantFM5View is the native FM5 state that the poller hands to the
+// publication owner: the acquisition verdict and detached copies of the
+// retained solar and cylinder snapshots.
+type vaillantFM5View struct {
+	verdict   vaillantFM5Interpretation
+	solar     *vaillantSolarSnapshot
+	cylinders map[byte]*vaillantCylinderSnapshot
 }

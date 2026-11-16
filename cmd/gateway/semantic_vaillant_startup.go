@@ -105,7 +105,7 @@ func (p *vaillantSemanticPoller) refreshStartupSemanticPlanes(ctx context.Contex
 	if controller == 0 {
 		return
 	}
-	if p.liveProvider() == nil {
+	if !p.publishing() {
 		return
 	}
 
@@ -187,14 +187,14 @@ func (p *vaillantSemanticPoller) refreshStartupSemanticPlanes(ctx context.Contex
 // publishStartupPlaneDefaults has the publication owner publish the empty
 // circuits, solar and cylinders planes that are not published yet.
 func (p *vaillantSemanticPoller) publishStartupPlaneDefaults() {
-	if p == nil || p.liveProvider() == nil {
+	if !p.publishing() {
 		return
 	}
 	p.publication.publishStartupPlaneDefaults()
 }
 
 func (p *vaillantSemanticPoller) refreshStartupCriticalSemanticPlanes(ctx context.Context) {
-	if p == nil || p.liveProvider() == nil {
+	if !p.publishing() {
 		return
 	}
 
@@ -298,7 +298,7 @@ func (status startupL1PrimingStatus) String() string {
 }
 
 func (p *vaillantSemanticPoller) startupL1PrimingStatus() startupL1PrimingStatus {
-	if p == nil || p.liveProvider() == nil {
+	if !p.publishing() {
 		return startupL1PrimingStatus{}
 	}
 	p.mu.Lock()
@@ -319,11 +319,11 @@ func (p *vaillantSemanticPoller) startupL1PrimingStatus() startupL1PrimingStatus
 	liveFM5Evidence := hasFM5EvidenceFromRadioSnapshots(radioSnapshots)
 	fm5Evidence := liveFM5Evidence || (!fm5RegistryEvidenceIgnored && p.hasFM5RegistryEvidence())
 	fm5Required := fm5Evidence && moduleConfig != nil && *moduleConfig <= 2
-	zonesReady := p.liveProvider().Zones() != nil
-	solarReady := p.liveProvider().Solar() != nil
-	cylinders := p.liveProvider().Cylinders()
-	cylindersPublished := cylinders != nil
-	interpretedCylindersReady := len(cylinders) > 0
+	planes := p.publication.publishedPlanes()
+	zonesReady := planes.zones
+	solarReady := planes.solar
+	cylindersPublished := planes.cylinders
+	interpretedCylindersReady := planes.cylinderCount > 0
 	fm5NonInterpretedPublished := fm5Evidence &&
 		p.publication.fm5PublishedAsGPIOOnly() &&
 		solarReady &&
@@ -334,17 +334,17 @@ func (p *vaillantSemanticPoller) startupL1PrimingStatus() startupL1PrimingStatus
 		(fm5Required && solarReady && interpretedCylindersReady)
 	return startupL1PrimingStatus{
 		zones:        zonesReady,
-		dhw:          p.liveProvider().DHW() != nil,
-		circuits:     p.liveProvider().Circuits() != nil,
-		system:       p.liveProvider().System() != nil,
-		radioDevices: radioProbed || len(p.liveProvider().RadioDevices()) > 0,
+		dhw:          planes.dhw,
+		circuits:     planes.circuits,
+		system:       planes.system,
+		radioDevices: radioProbed || planes.radioDeviceCount > 0,
 		fm5GateKnown: fm5GateKnown,
 		fm5Evidence:  fm5Evidence,
 		fm5Required:  fm5Required,
 		fm5Satisfied: fm5Satisfied,
 		solar:        solarReady,
 		cylinders:    cylindersPublished,
-		boilerStatus: p.liveProvider().BoilerStatus() != nil,
+		boilerStatus: planes.boilerStatus,
 	}
 }
 
@@ -376,7 +376,7 @@ func (p *vaillantSemanticPoller) readB524Uint16Startup(ctx context.Context, opco
 // publishStartupSchedules has the publication owner publish the empty
 // schedule placeholder when no schedules are published yet.
 func (p *vaillantSemanticPoller) publishStartupSchedules() {
-	if p == nil || p.liveProvider() == nil {
+	if !p.publishing() {
 		return
 	}
 	p.publication.publishStartupSchedulePlaceholder()
@@ -800,7 +800,7 @@ func (p *vaillantSemanticPoller) readB524U8Startup(ctx context.Context, opcode, 
 }
 
 func (p *vaillantSemanticPoller) refreshFM5SemanticStartup(ctx context.Context) {
-	if p == nil || p.liveProvider() == nil {
+	if !p.publishing() {
 		return
 	}
 

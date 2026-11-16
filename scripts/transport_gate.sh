@@ -137,6 +137,7 @@ requires_modbus_rtu_transport_gate() {
     cmd/gateway/gateway_run_lifecycle.go|\
     cmd/gateway/gateway_lifecycle_observability.go|\
     cmd/gateway/gateway_retained_consumers.go|\
+    cmd/gateway/gateway_ebus_generation_owners.go|\
     cmd/gateway/modbus_endpoint_file.go|\
     cmd/gateway/modbus_mcp_provider.go|\
     mcp/growatt_bms_rs485_v202.go|\

@@ -1,0 +1,3 @@
+## Give the eBUS generation tasks one owner
+
+The four eBUS generation tasks (source admission, semantic surface, startup scan and passive observe-first) and their per-generation startup state now have one owner, `ebusGenerationOwners`, with a documented contract: its required collaborators are checked at construction, every effect goes through the generation scope, every goroutine is joined with the generation, and a withdrawn generation installs nothing. Source admission is split into bounded steps: the default-policy candidate, the configured candidate, the advisory warmup selection and the installation of the admitted source. Task names, dependencies, the order of effects and log lines are unchanged. The gateway binary changes.

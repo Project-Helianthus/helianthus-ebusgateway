@@ -83,6 +83,7 @@ python3 scripts/test_reset_runtime_control.py
 python3 scripts/adaptermux_v2_smoke_test.py
 python3 scripts/adaptermux_v2_addon_commands_test.py
 python3 scripts/offline_acceptance_matrix_test.py
+python3 scripts/move_go_declarations_test.py
 python3 scripts/offline_acceptance_matrix.py check
 
 if command -v golangci-lint >/dev/null 2>&1; then

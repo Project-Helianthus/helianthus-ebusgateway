@@ -23,156 +23,42 @@ var startGatewayReleaseChecker = func(checker *releasecheck.Checker, ctx context
 }
 
 func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result error) {
-	// Registered first, so it runs last: no error leaving the process carries
-	// an endpoint of the configuration v2 document.
-	defer func() {
-		result = redactFileSourcedModbusEndpoints(result, modbusTCPDocumentEndpoints(cfg.ModbusTCPConfig)...)
-	}()
-	resolvedBuildInfo, err := prepareGatewayRunConfig(&cfg)
+	shell, err := newGatewayProcessShell(ctx, &cfg)
 	if err != nil {
 		return err
 	}
-	// Every static semantic identity is declared before any runtime starts; a
-	// cross-family collision stops the process here, before any side effect.
-	semanticHub, err := preflightSemanticHub(cfg)
-	if err != nil {
+	// Every release of this function joins the shell's shutdown sequence in
+	// acquisition order; the sequence runs them last in, first out and applies
+	// the endpoint redaction last.
+	defer func() {
+		result = shell.runShutdown(result)
+	}()
+	if err := shell.acquireResources(); err != nil {
 		return err
 	}
-	// Release discovery is a public, read-only background task. Both status
-	// APIs receive the same cache-only reader below; their request handlers do
-	// not trigger or wait for this network operation.
-	daemonReleaseChecker := releasecheck.New(releasecheck.Options{CurrentVersion: resolvedBuildInfo.ReleaseVersion})
-	if cfg.HTTPAddr != "" {
-		startGatewayReleaseChecker(daemonReleaseChecker, ctx)
-	}
-
-	evidenceRuntime, err := openSynchronizedEvidenceRuntime(cfg.EvidenceRecorderConfig)
-	if err != nil {
-		return fmt.Errorf("synchronized evidence sidecar: %w", err)
-	}
-	if evidenceRuntime != nil {
-		defer func() {
-			if err := evidenceRuntime.Close(); err != nil {
-				result = errors.Join(result, fmt.Errorf("shutdown synchronized evidence sidecar: %w", err))
-			}
-		}()
-	}
-	portalContributions, err := newGatewayPortalCatalogContributions()
-	if err != nil {
-		return fmt.Errorf("create portal contribution registry: %w", err)
-	}
-	// Initialize the runtime-state Manager early so the cached
-	// ebus.self.last_admitted_source can be passed as a hint to the
-	// SourceAddressSelector below, and the Manager is available for
-	// post-admission UpdateSelf and address-table-revalidate write-back.
-	// Errors during Load are tolerated — Manager.Load returns an empty
-	// state on missing/corrupt and the gateway continues without a hint.
-	// (runtime-state-w19-26.locked M2_GATEWAY_LOADER + M4_SOURCE_SELECTION_HINT)
-	runtimeStateMgr, runtimeState := initRuntimeStateManager(ctx, cfg, resolvedBuildInfo)
-	defer func() {
-		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := runtimeStateMgr.Stop(stopCtx); err != nil {
-			log.Printf("runtime_state stop: %v", err)
-		}
-	}()
-
-	// Load the Portal desired record before any driver is registered, so its
-	// accepted driver selections become configured eligibility. A record that
-	// does not load keeps the shell up and withholds record-controlled drivers.
-	portalConfig := openGatewayPortalConfigRuntime(cfg)
-	defer func() {
-		if err := portalConfig.Close(); err != nil {
-			log.Printf("portal configuration close: %v", err)
-		}
-	}()
-	// Earlier builds created the eeBUS operator MCP socket inside the eeBUS
-	// state root, whose store rejects any entry it does not own. Clear that
-	// one stale socket before any eeBUS resource opens.
-	clearLegacyEEBusOperatorSocket(eebusEnabledStateRoot(cfg))
-	// Construct the protocol-neutral manager and stable eBUS provider before
-	// opening any eBUS resource. Driver-local construction failure is retained
-	// as categorical state and never promoted to process failure.
-	sidecars := prepareManagedSidecars(ctx, cfg, semanticHub, runtimeStateMgr.State().Meta.InstanceGUID, portalContributions, portalConfig)
-	bindings := &managedSidecarBindings{sidecars: sidecars}
-	ebusDriver, err := prepareGatewayEBusDriver(&cfg, sidecars.driverConfigs()...)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		stopCtx, cancel := context.WithTimeout(context.Background(), 2*defaultEBusDriverDrainTimeout+time.Second)
-		defer cancel()
-		if err := errors.Join(ebusDriver.Shutdown(stopCtx), sidecars.shutdownError()); err != nil {
-			result = errors.Join(result, fmt.Errorf("shutdown eBUS driver: %w", err))
-		}
-	}()
-	adapterClassifier := ebusDriver.classifier
-	// Compose the frozen registration and the durable control service
-	// before eBUS reconciliation. The service is the single owner of eBUS
-	// startup: it restores D5 material, prepares the inert source and then
-	// reconciles durable desired state through the manager-to-hub bridge.
-	// Nothing else starts the DriverManager, and no failure here is a
-	// process error.
-	control := startGatewayRuntimeControl(ctx, gatewayRuntimeControlOptionsFor(gatewayRuntimeControlOptions{
-		Sidecars:     sidecars,
-		Driver:       ebusDriver,
-		Hub:          semanticHub,
-		Store:        runtimeStateMgr,
-		InstanceGUID: runtimeStateMgr.State().Meta.InstanceGUID,
-		PortalConfig: portalConfig,
-	}))
-	gatewayRuntimeControlStarted(control)
-	defer func() {
-		closeCtx, cancel := context.WithTimeout(context.Background(), defaultEBusGenerationJoinTimeout+defaultEBusControlCleanupTimeout)
-		defer cancel()
-		if err := control.CloseAdmission(closeCtx); err != nil {
-			log.Printf("runtime control close: %v", err)
-		}
-		if err := control.CloseNative(closeCtx); err != nil {
-			log.Printf("runtime control native close: %v", err)
-		}
-	}()
-	if service := control.Service(); service == nil {
-		log.Printf("eBUS control service unavailable; continuing without eBUS")
-	} else if view, err := service.Get(primaryEBusDriverID); err == nil && view.ObservedState != "RUNNING" {
-		log.Printf("eBUS driver not running at startup; continuing desired=%s state=%s reason=%s", view.DesiredState, view.ObservedState, view.Reason)
-	}
-
-	teslaHSCRetained, err := startTeslaHSCRetainedOwner(cfg.ModbusTCPConfig.TeslaGen3HSC, semanticHub)
-	if err != nil {
-		return fmt.Errorf("tesla HSC retained owner: %w", err)
-	}
-	if teslaHSCRetained != nil {
-		if err := attachGatewayPortalEVSEContribution(teslaHSCRetained, portalContributions); err != nil {
-			_ = teslaHSCRetained.Close()
-			return fmt.Errorf("publish EVSE portal contribution: %w", err)
-		}
-		defer func() {
-			if err := teslaHSCRetained.Close(); err != nil {
-				result = errors.Join(result, fmt.Errorf("shutdown Tesla HSC retained owner: %w", err))
-			}
-		}()
-	}
+	resolvedBuildInfo, semanticHub, daemonReleaseChecker := shell.buildInfo, shell.semanticHub, shell.releaseChecker
+	runtimeStateMgr, runtimeState := shell.runtimeStateMgr, shell.runtimeState
+	portalContributions, bindings := shell.portalContributions, shell.bindings
+	ebusDriver, adapterClassifier, control := shell.ebusDriver, shell.adapterClassifier, shell.control
+	teslaHSCRetained := shell.teslaHSCRetained
 	portalCatalogSource := newGatewayPortalCatalogSource(nil, nil, teslaHSCRetained, portalContributions, bindings)
 	m2mRuntime, err := newProfileM2MRuntime(cfg, teslaHSCRetained, portalCatalogSource, bindings)
 	if err != nil {
 		return fmt.Errorf("M2M GraphQL sidecar: %w", err)
 	}
 	if m2mRuntime != nil {
-		defer func() {
+		shell.onShutdown("M2M sidecar", func(result error) error {
 			if err := m2mRuntime.Close(); err != nil {
 				result = errors.Join(result, fmt.Errorf("shutdown M2M GraphQL sidecar: %w", err))
 			}
-		}()
+			return result
+		})
 	}
 
-	eebusAdapter := &eebusRuntimeAdapter{managed: bindings}
-	eebusAdminHandler := http.HandlerFunc(bindings.serveEEBusAdmin)
-	if evidenceRuntime != nil {
-		if err := evidenceRuntime.Configure(bindings.eebusEvidenceCapture(), resolvedBuildInfo.EvidenceVersion(), newSynchronizedEvidenceClock(), synchronizedEvidenceEntropy); err != nil {
-			return fmt.Errorf("configure synchronized evidence sidecar: %w", err)
-		}
+	if err := shell.acquireEEBusSurfaces(); err != nil {
+		return err
 	}
+	eebusAdapter, eebusAdminHandler := shell.eebusAdapter, shell.eebusAdminHandler
 
 	// Warn if --proxy-listen is set but adapter-direct transport was not
 	// activated (the proxy endpoint requires the adapter multiplexer).
@@ -188,7 +74,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 	admissionPath, artifactBuilder := startupSelection.admissionPath, startupSelection.artifactBuilder
 	overrideSet := startupSelection.overrideSet
 	startupSelection.startArtifactEmission(ctx)
-	defer startupSelection.emitFinalArtifact()
+	shell.onShutdownFunc("final source-selection artifact", startupSelection.emitFinalArtifact)
 
 	busObservability, deduplicator, err := wireObserveFirstObserversFn(&cfg)
 	if err != nil {
@@ -197,7 +83,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 	stopTransportWatch := func() {}
 	if busObservability != nil {
 		stopTransportWatch = bindings.observeTransports(ctx, cfg, busObservability)
-		defer stopTransportWatch()
+		shell.onShutdownFunc("transport watch", stopTransportWatch)
 	}
 	wireSemanticMetricsProvider(busObservability, cfg, bindings, teslaHSCRetained)
 
@@ -208,11 +94,12 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 		return err
 	}
 
-	defer func() {
+	shell.onShutdown("gateway", func(result error) error {
 		if err := gateway.Close(); err != nil {
 			log.Printf("gateway close: %v", err)
 		}
-	}()
+		return result
+	})
 
 	gateway.Start(ctx)
 
@@ -366,7 +253,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 	// context still cancels work immediately; this lifecycle-owned context is
 	// canceled by teardown after retirement and the explicit close sequence.
 	controlPlaneCtx, controlPlaneCancel := newGatewayControlPlaneContext(ctx)
-	defer controlPlaneCancel()
+	shell.onShutdownFunc("control-plane context", controlPlaneCancel)
 	server, advertiser, err := startHTTPServerFn(
 		controlPlaneCtx,
 		cfg,
@@ -408,7 +295,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 	if advertiser != nil {
 		consumerShutdown.advertiser = advertiser
 	}
-	defer consumerShutdown.shutdown()
+	shell.onShutdownFunc("consumers", consumerShutdown.shutdown)
 
 	// The control plane is already serving through stable fail-closed
 	// bindings. Every post-start eBUS step (current-session source
@@ -451,14 +338,15 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 		return fmt.Errorf("ebus generation tasks: %w", err)
 	}
 	// The generation tasks are fenced and joined before the shell and the
-	// process consumers are torn down (this defer runs first).
-	defer func() {
+	// process consumers are torn down (this release runs first).
+	shell.onShutdown("generation tasks", func(result error) error {
 		closeCtx, cancel := context.WithTimeout(context.Background(), defaultEBusGenerationJoinTimeout+time.Second)
 		defer cancel()
 		if err := control.CloseAdmission(closeCtx); err != nil {
 			log.Printf("runtime control close: %v", err)
 		}
-	}()
+		return result
+	})
 	control.BindTasks(ctx, generationTasks, retained.withdrawAdmittedSource)
 	<-ctx.Done()
 	return nil

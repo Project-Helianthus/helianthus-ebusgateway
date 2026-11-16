@@ -105,7 +105,7 @@ func TestGatewayConsumerShutdownLifecycleWiring(t *testing.T) {
 	fset := token.NewFileSet()
 	files, compositionText := lifecycleCompositionSources(t, fset)
 	last := -1
-	for _, step := range []string{"defer controlPlaneCancel()", "server, advertiser, err := startHTTPServerFn(", "consumerShutdown := gatewayConsumerShutdown{", "defer consumerShutdown.shutdown()", "control.CloseAdmission(closeCtx)", "control.BindTasks(ctx, generationTasks"} {
+	for _, step := range []string{`shell.onShutdownFunc("control-plane context", controlPlaneCancel)`, "server, advertiser, err := startHTTPServerFn(", "consumerShutdown := gatewayConsumerShutdown{", `shell.onShutdownFunc("consumers", consumerShutdown.shutdown)`, "control.CloseAdmission(closeCtx)", "control.BindTasks(ctx, generationTasks"} {
 		position := strings.Index(text, step)
 		if step == "control.CloseAdmission(closeCtx)" {
 			position = strings.LastIndex(text, step)

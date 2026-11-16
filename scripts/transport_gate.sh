@@ -137,6 +137,7 @@ requires_modbus_rtu_transport_gate() {
 	portal/handler.go|\
 	mcp/growatt_storage_semantic.go|\
     cmd/gateway/gateway_run_lifecycle.go|\
+    cmd/gateway/gateway_process_shell.go|\
     cmd/gateway/gateway_lifecycle_observability.go|\
     cmd/gateway/gateway_retained_consumers.go|\
     cmd/gateway/gateway_ebus_generation_owners.go|\

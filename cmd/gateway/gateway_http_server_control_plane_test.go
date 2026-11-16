@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"go/token"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -120,11 +121,14 @@ func TestMainStartsControlPlaneBeforeWarmupAndRetiresItInLIFOOrder(t *testing.T)
 
 	start := strings.Index(text, "server, advertiser, err := startHTTPServerFn(")
 	warmup := strings.Index(text, "control.BindTasks(ctx, generationTasks")
-	if start < 0 || warmup < 0 || start > warmup || strings.Contains(text, "WaitRunning(") {
+	_, compositionText := lifecycleCompositionSources(t, token.NewFileSet())
+	if start < 0 || warmup < 0 || start > warmup || strings.Contains(compositionText, "WaitRunning(") {
 		t.Fatalf("control-plane start must precede the generation-owned post-start tasks, with no WaitRunning gate: start=%d tasks=%d", start, warmup)
 	}
 
-	delegate := strings.Index(text, "defer consumerShutdown.shutdown()")
+	// TestGatewayProcessShellShutdownSequenceThroughLifecycle asserts the
+	// resulting release order: generation tasks, then consumers.
+	delegate := strings.Index(text, `shell.onShutdownFunc("consumers", consumerShutdown.shutdown)`)
 	join := strings.LastIndex(text, "control.CloseAdmission(closeCtx)")
 	if delegate < start || join < delegate {
 		t.Fatal("consumer shutdown must be registered after HTTP acquisition and before generation join")
@@ -151,18 +155,12 @@ func TestMainStartsControlPlaneBeforeWarmupAndRetiresItInLIFOOrder(t *testing.T)
 	}
 }
 
-func TestRunOrchestrationKeepsConfigurationAndStartupSignalsDistinct(t *testing.T) {
-	mainSource, err := os.ReadFile("gateway_run_lifecycle.go")
-	if err != nil {
-		t.Fatalf("read gateway_run_lifecycle.go: %v", err)
-	}
-	mainText := string(mainSource)
-	config := strings.Index(mainText, "prepareGatewayRunConfig(&cfg)")
-	firstSidecar := strings.Index(mainText, "openSynchronizedEvidenceRuntime")
-	if config < 0 || firstSidecar < 0 || config > firstSidecar {
-		t.Fatalf("configuration phase must remain before resource startup: config=%d sidecar=%d", config, firstSidecar)
-	}
-
+// The configuration phase before resource startup is asserted by
+// TestGatewayProcessShellShutdownSequenceThroughLifecycle (run configuration
+// is the first acquisition) and by
+// TestGatewayProcessShellReleasesOnlyAcquiredResourcesOnFailure (a run
+// configuration failure acquires nothing else).
+func TestRunOrchestrationKeepsStartupSignalsDistinct(t *testing.T) {
 	signalSource, err := os.ReadFile("startup_scan.go")
 	if err != nil {
 		t.Fatalf("read startup_scan.go: %v", err)
@@ -176,44 +174,44 @@ func TestRunOrchestrationKeepsConfigurationAndStartupSignalsDistinct(t *testing.
 	}
 }
 
-func TestRunOrchestrationKeepsDriverPreparationBeforeShutdownAndStart(t *testing.T) {
-	source, err := os.ReadFile("gateway_run_lifecycle.go")
-	if err != nil {
-		t.Fatalf("read gateway_run_lifecycle.go: %v", err)
+// The order of driver preparation, its shutdown registration and the
+// single-owner control start is asserted by
+// TestGatewayProcessShellShutdownSequenceThroughLifecycle
+// (acquire:eBUS driver -> register:eBUS driver -> acquire:runtime control).
+// The absence of a direct driver start stays a source pin over every
+// lifecycle composition file.
+func TestRunOrchestrationNeverStartsTheEBusDriverDirectly(t *testing.T) {
+	_, text := lifecycleCompositionSources(t, token.NewFileSet())
+	if !strings.Contains(text, "prepareGatewayEBusDriver(shell.cfg, sidecars.driverConfigs()...)") || !strings.Contains(text, "startGatewayRuntimeControl(shell.ctx") {
+		t.Fatal("the process shell no longer prepares the eBUS driver and starts the runtime control")
 	}
-	text := string(source)
-
-	prepare := strings.Index(text, "prepareGatewayEBusDriver(&cfg, sidecars.driverConfigs()...)")
-	shutdown := strings.Index(text, "ebusDriver.Shutdown(stopCtx)")
-	start := strings.Index(text, "startGatewayRuntimeControl(ctx")
-	if prepare < 0 || shutdown < 0 || start < 0 || prepare > shutdown || shutdown > start || strings.Contains(text, "ebusDriver.Start(") {
-		t.Fatalf("driver preparation, LIFO shutdown defer, and single-owner control start order changed: prepare=%d shutdown=%d start=%d", prepare, shutdown, start)
+	if strings.Contains(text, "ebusDriver.Start(") {
+		t.Fatal("the lifecycle starts the eBUS driver directly; the runtime control is its single owner")
 	}
 }
 
-func TestRunOrchestrationKeepsDeferredShutdownStackInAcquisitionOrder(t *testing.T) {
+// The deferred shutdown stack is the process-shell shutdown sequence;
+// TestGatewayProcessShellShutdownSequenceThroughLifecycle asserts its complete
+// release order. The M2M release is registered by the lifecycle itself between
+// the retained EVSE owner and the final source-selection artifact.
+func TestRunOrchestrationRegistersTheM2MReleaseInAcquisitionOrder(t *testing.T) {
 	source, err := os.ReadFile("gateway_run_lifecycle.go")
 	if err != nil {
 		t.Fatalf("read gateway_run_lifecycle.go: %v", err)
 	}
 	text := string(source)
-
 	last := -1
-	for _, closeCall := range []string{
-		"evidenceRuntime.Close()",
-		"runtimeStateMgr.Stop(stopCtx)",
-		"ebusDriver.Shutdown(stopCtx)",
-		"control.CloseAdmission(closeCtx)",
-		"control.CloseNative(closeCtx)",
-		"teslaHSCRetained.Close()",
+	for _, step := range []string{
+		"shell.acquireResources()",
+		"m2mRuntime, err := newProfileM2MRuntime(",
+		`shell.onShutdown("M2M sidecar"`,
 		"m2mRuntime.Close()",
-		"defer startupSelection.emitFinalArtifact()",
-		"gateway.Close()",
-		"defer consumerShutdown.shutdown()",
+		"shell.acquireEEBusSurfaces()",
+		`shell.onShutdownFunc("final source-selection artifact", startupSelection.emitFinalArtifact)`,
 	} {
-		next := strings.Index(text, closeCall)
-		if next < 0 || next < last {
-			t.Fatalf("defer acquisition order changed at %q: previous=%d current=%d", closeCall, last, next)
+		next := strings.Index(text, step)
+		if next < 0 || next < last || strings.Count(text, step) != 1 {
+			t.Fatalf("M2M release registration order changed at %q: previous=%d current=%d", step, last, next)
 		}
 		last = next
 	}
@@ -244,11 +242,16 @@ func TestRunOrchestrationKeepsFlagsConfigurationAdmissionAndStartupBarriersOrder
 	}
 
 	assertOrder(mainText, "flag.Parse()", "applyTransportSourcePolicy(&cfg)", "run(ctx, cfg)")
+	// The run configuration, the driver preparation and the runtime control
+	// start are process-shell acquisitions;
+	// TestGatewayProcessShellShutdownSequenceThroughLifecycle asserts their
+	// order and that every shell acquisition precedes the registration of the
+	// final source-selection artifact, which follows the startup source
+	// selection.
 	assertOrder(lifecycleText,
-		"prepareGatewayRunConfig(&cfg)",
-		"prepareGatewayEBusDriver(&cfg, sidecars.driverConfigs()...)",
-		"startGatewayRuntimeControl(ctx",
+		"shell.acquireResources()",
 		"newStartupSourceSelection(cfg)",
+		`shell.onShutdownFunc("final source-selection artifact", startupSelection.emitFinalArtifact)`,
 	)
 	// The semantic barrier and the once-only inserter subscription are owned
 	// by retainedEBusConsumers; TestRetainedEBusConsumersClosesSemanticBarrierOnce,

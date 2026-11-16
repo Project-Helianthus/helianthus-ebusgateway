@@ -75,6 +75,7 @@ requires_b503_native_transport_gate() {
     cmd/gateway/vaillant_b503_dispatcher.go|\
     cmd/gateway/vaillant_b503_graphql_provider.go|\
     cmd/gateway/vaillant_b503_wiring.go|\
+    cmd/gateway/gateway_http_mcp_surface.go|\
     mcp/vaillant_b503.go|\
     internal/vaillant/b503session/*.go)
       return 0
@@ -423,7 +424,6 @@ while IFS= read -r file; do
 	fi
   if requires_b503_native_transport_gate "${file}"; then
     requires_ebus_gate=1
-    continue
   fi
   if requires_ebus_transport_gate "${file}"; then
     requires_ebus_gate=1

@@ -618,7 +618,6 @@ type Config struct {
             ("cmd/gateway/gateway_cli.go", "// base\n", "// modified\n"),
             ("cmd/gateway/gateway_http_server.go", "// base\n", "// modified\n"),
             ("cmd/gateway/gateway_http_portal_surface.go", "// base\n", "// modified\n"),
-            ("cmd/gateway/gateway_http_mcp_surface.go", "// base\n", "// modified\n"),
 			("cmd/gateway/gateway_run_setup.go", "// base\n", "// modified\n"),
             ("cmd/gateway/growatt_bms_rs485_runtime.go", "// base\n", "// modified\n"),
             ("cmd/gateway/growatt_managed_driver.go", "// base\n", "// modified\n"),
@@ -671,7 +670,6 @@ type Config struct {
             ("cmd/gateway/gateway_cli.go", "// base\n", "// modified\n"),
             ("cmd/gateway/gateway_http_server.go", "// base\n", "// modified\n"),
             ("cmd/gateway/gateway_http_portal_surface.go", "// base\n", "// modified\n"),
-            ("cmd/gateway/gateway_http_mcp_surface.go", "// base\n", "// modified\n"),
 			("cmd/gateway/gateway_run_setup.go", "// base\n", "// modified\n"),
             ("cmd/gateway/growatt_bms_rs485_runtime.go", "// base\n", "// modified\n"),
             ("cmd/gateway/growatt_managed_driver.go", "// base\n", "// modified\n"),
@@ -849,6 +847,7 @@ type Config struct {
             "cmd/gateway/vaillant_b503_dispatcher.go",
             "cmd/gateway/vaillant_b503_graphql_provider.go",
             "cmd/gateway/vaillant_b503_wiring.go",
+            "cmd/gateway/gateway_http_mcp_surface.go",
             "internal/vaillant/b503session/session.go",
             "mcp/vaillant_b503.go",
         ):
@@ -864,6 +863,29 @@ type Config struct {
                 )
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("TRANSPORT_MATRIX_REPORT is required", result.stdout)
+
+    def test_http_mcp_surface_triggers_both_ebus_and_modbus_rtu_gates(self) -> None:
+        changed_file = "cmd/gateway/gateway_http_mcp_surface.go"
+        repo_path, _ = self._create_temp_repo(changed_file, "// base\n", "// modified\n")
+        result = subprocess.run(
+            ["bash", "scripts/transport_gate.sh"], cwd=repo_path,
+            env=self._fake_go_env(repo_path, 0),
+            text=True, capture_output=True, check=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("TRANSPORT_MATRIX_REPORT is required", result.stdout)
+        # With the physical eBUS evidence waived by the owner override, the
+        # offline Modbus RTU gate must still run for the same file.
+        repo_path, _ = self._create_temp_repo(changed_file, "// base\n", "// modified\n")
+        env = self._fake_go_env(repo_path, 1)
+        env["TRANSPORT_GATE_OWNER_OVERRIDE"] = "OVERRIDE_TRANSPORT_GATE_BY_OWNER"
+        env["TRANSPORT_GATE_OWNER_REASON"] = "test"
+        result = subprocess.run(
+            ["bash", "scripts/transport_gate.sh"], cwd=repo_path, env=env,
+            text=True, capture_output=True, check=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Modbus RTU gateway composition evidence failed", result.stdout)
 
     def test_generation_owners_trigger_modbus_rtu_gate_only(self) -> None:
         for rtu_status in (0, 1):

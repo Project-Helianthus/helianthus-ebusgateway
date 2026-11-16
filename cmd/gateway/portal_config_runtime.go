@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -342,6 +343,7 @@ type portalOperatorRecords struct {
 	mu       sync.Mutex
 	desired  map[semreg.AssetID]operatorAssetRecords
 	outcomes map[semreg.AssetID]portalOperatorOutcome
+	applied  uint64
 }
 
 // operatorRecordCallbacks serves the section from the store; a replacement
@@ -443,8 +445,15 @@ func (o *portalOperatorRecords) watch(ctx context.Context, subscription *semhub.
 // withdraws what it published there.
 func (o *portalOperatorRecords) apply(set portalconfig.OperatorRecordSet) {
 	sets := portalOperatorAssetRecords(set)
+	revision, _ := strconv.ParseUint(set.Revision, 10, 64)
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	// Overlapping replacements may reach here out of order; an older
+	// revision never replaces a newer one that was applied.
+	if revision < o.applied {
+		return
+	}
+	o.applied = revision
 	next := make(map[semreg.AssetID]operatorAssetRecords, len(sets))
 	for _, assetSet := range sets {
 		next[assetSet.Asset] = assetSet

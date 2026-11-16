@@ -199,6 +199,17 @@ class ParserTests(MoveTestCase):
         errors = MOVE.check_manifest(manifest, self.root)
         self.assertIn("var:state must stay in shadow.go (init or call initializer)", errors)
 
+    def test_check_sees_a_predeclared_name_shadowed_in_an_unlisted_package_file(self):
+        self.package({"state.go": "package sample\n\nvar state = int()\n",
+                      "shadow.go": "package sample\n\nfunc int() int64 { return 1 }\n",
+                      "shadow_test.go": "package sample\n\nfunc uint() int { return 0 }\n"})
+        manifest = write_manifest(self.root, {"state.go": [], "moved.go": ["var:state"]},
+                                  source="state.go")
+        plan = MOVE.load_plan(manifest, self.root)
+        self.assertEqual(MOVE.package_shadows(plan), frozenset({"int"}))
+        errors = MOVE.check_manifest(manifest, self.root)
+        self.assertIn("var:state must stay in state.go (init or call initializer)", errors)
+
     def test_grouped_spec_names_skip_continued_and_nested_lines(self):
         self.package({"group.go": (
             "package sample\n\nvar (\n\ttotal = 1 +\n\t\tint64(2)\n\tpair = struct {\n"
@@ -298,6 +309,34 @@ class CheckTests(MoveTestCase):
         errors = self.check({"big.go": keep + ["func:render"], "table.go": ["var:table"]})
         self.assertEqual(errors, ["var:table is not in table.go"])
 
+    def test_check_rejects_moves_across_different_build_constraints(self):
+        self.package({"big_linux.go": "package sample\n\nfunc helper() {}\n",
+                      "tagged.go": "//go:build windows\n\npackage sample\n\nfunc other() {}\n",
+                      "plain.go": "package sample\n\nfunc plain() {}\n"})
+        errors = MOVE.check_manifest(write_manifest(self.root, {
+            "big_linux.go": [], "tagged.go": ["func:other", "func:helper"],
+            "plain.go": ["func:plain"]}, source="big_linux.go"), self.root)
+        self.assertIn("func:helper cannot move from big_linux.go to tagged.go "
+                      "(different build constraints)", errors)
+        errors = MOVE.check_manifest(write_manifest(self.root, {
+            "big_linux.go": [], "tagged.go": ["func:other"],
+            "plain.go": ["func:plain", "func:helper"]}, source="big_linux.go"), self.root)
+        self.assertIn("func:helper cannot move from big_linux.go to plain.go "
+                      "(different build constraints)", errors)
+        errors = MOVE.check_manifest(write_manifest(self.root, {
+            "big_linux.go": [], "tagged.go": ["func:other"], "plain.go": ["func:plain"],
+            "new_linux.go": ["func:helper"]}, source="big_linux.go"), self.root)
+        self.assertEqual(errors, ["func:helper is not in new_linux.go"])
+
+    def test_build_constraint_reads_header_lines_and_file_name_suffixes(self):
+        self.assertEqual(MOVE.build_constraint("a.go", ["package x"]), ())
+        self.assertEqual(MOVE.build_constraint("linux.go", ["package x"]), ())
+        self.assertEqual(MOVE.build_constraint("a_linux.go", []), ("file:linux",))
+        self.assertEqual(MOVE.build_constraint("a_linux_arm64.go", []),
+                         ("file:linux", "file:arm64"))
+        self.assertEqual(MOVE.build_constraint("a.go", ["//go:build  !nomatter", "", "package x"]),
+                         ("//go:build !nomatter",))
+
     def test_main_check_exit_status(self):
         self.package()
         manifest = write_manifest(self.root, {"big.go": BIG_KEEP + ["func:render"]})
@@ -326,6 +365,23 @@ class CompareTests(MoveTestCase):
         self.assertEqual(len(problems), 2)
         self.assertTrue(problems[0].startswith("missing after (1): // Add increments"))
         self.assertTrue(problems[1].startswith("added after (1): // Add increments"))
+
+    def test_compare_detects_a_declaration_moved_across_build_constraints(self):
+        before = self.root / "before"
+        package = self.package({"big.go": BIG, "tagged.go": (
+            "//go:build windows\n\npackage sample\n\nfunc other() {}\n")})
+        shutil.copytree(package, before)
+        text = (package / "big.go").read_text(encoding="utf-8")
+        start = text.index("func exitCode()")
+        (package / "big.go").write_text(text[:start], encoding="utf-8")
+        (package / "tagged.go").write_text(
+            (package / "tagged.go").read_text(encoding="utf-8") + "\n" + text[start:],
+            encoding="utf-8")
+        problems = MOVE.compare_dirs(before, package)
+        self.assertEqual(len(problems), 2)
+        self.assertTrue(problems[0].startswith("missing after (1): func exitCode()"))
+        self.assertTrue(problems[1].startswith(
+            "added after (1): [//go:build windows] func exitCode()"))
 
     def test_compare_detects_a_changed_comment(self):
         before = self.root / "before"

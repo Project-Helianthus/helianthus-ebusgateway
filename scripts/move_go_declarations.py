@@ -17,11 +17,14 @@ Modes:
     resolves to exactly one top-level declaration, located in the file that
     lists it; no declaration of the listed files is unlisted; no ``init``
     function and no ``var`` with a call initializer is listed outside the
-    manifest's source file.
+    manifest's source file (predeclared names that any non-test file of the
+    package redeclares count as calls); no declaration moves between files
+    with different build constraints.
 
 ``--compare BEFORE_DIR AFTER_DIR``
     Compare the normalized multiset of top-level declarations (imports
-    excluded) of the non-test Go files of two directories.
+    excluded), each keyed with its file's build constraint, of the non-test
+    Go files of two directories.
 
 ``--report FILE...``
     Print lines and function count per file and every function longer than
@@ -69,6 +72,16 @@ IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 CALL = re.compile(r"(?:([A-Za-z_][A-Za-z0-9_]*)|[\])}])\s*\(")
 SELECTOR = re.compile(r"(?<![A-Za-z0-9_.])([A-Za-z_][A-Za-z0-9_]*)\s*\.")
 IMPORT_SPEC = re.compile(r'^\s*(?:([A-Za-z_][A-Za-z0-9_]*|\.)\s+)?"([^"]+)"')
+# File-name build constraints, as go/build recognizes them.
+KNOWN_OS = {
+    "aix", "android", "darwin", "dragonfly", "freebsd", "hurd", "illumos", "ios", "js",
+    "linux", "nacl", "netbsd", "openbsd", "plan9", "solaris", "wasip1", "windows", "zos",
+}
+KNOWN_ARCH = {
+    "386", "amd64", "amd64p32", "arm", "armbe", "arm64", "arm64be", "loong64", "mips",
+    "mipsle", "mips64", "mips64le", "mips64p32", "mips64p32le", "ppc", "ppc64", "ppc64le",
+    "riscv", "riscv64", "s390", "s390x", "sparc", "sparc64", "wasm",
+}
 
 
 class MoveError(Exception):
@@ -473,6 +486,24 @@ def load_plan(manifest_path: pathlib.Path, root: pathlib.Path) -> Plan:
     return Plan(package_dir, data["source"], targets, data.get("import_names", {}), parsed)
 
 
+def build_constraint(name: str, header: list[str]) -> tuple:
+    """Return the build constraint of a file: its header lines and name suffix.
+
+    Two files with the same constraint are part of exactly the same builds.
+    """
+    lines = tuple(" ".join(line.split()) for line in header
+                  if line.startswith("//go:build") or line.startswith("// +build"))
+    parts = name[:-len(".go")].split("_") if name.endswith(".go") else [name]
+    if parts and parts[-1] == "test":
+        parts = parts[:-1]
+    suffix = ()
+    if len(parts) >= 3 and parts[-2] in KNOWN_OS and parts[-1] in KNOWN_ARCH:
+        suffix = tuple(parts[-2:])
+    elif len(parts) >= 2 and (parts[-1] in KNOWN_OS or parts[-1] in KNOWN_ARCH):
+        suffix = (parts[-1],)
+    return lines + tuple("file:" + part for part in suffix)
+
+
 def _locate(plan: Plan) -> dict:
     located = collections.defaultdict(list)
     for name, go_file in plan.parsed.items():
@@ -492,12 +523,26 @@ def _listing_errors(plan: Plan, located: dict) -> list[str]:
     return errors
 
 
-def _pinned_errors(plan: Plan, located: dict) -> list[str]:
-    errors = []
-    shadowed = frozenset(
-        name for entries in located.values() for _, unit in entries
+def package_shadows(plan: Plan) -> frozenset:
+    """Return the predeclared conversion names the package redeclares.
+
+    Every non-test Go file of the package directory is scanned, not only the
+    files the manifest lists, and whatever its build constraint: a shadow in
+    any of them can turn a conversion into a call.
+    """
+    files = list(plan.parsed.values())
+    for path in sorted(plan.package_dir.glob("*.go")):
+        if path.name not in plan.parsed and not path.name.endswith("_test.go"):
+            files.append(parse_file(path))
+    return frozenset(
+        name for go_file in files for unit in go_file.units
         if unit.kind in ("func", "var", "const")
         for name in declared_names(unit) if name in CONVERSIONS)
+
+
+def _pinned_errors(plan: Plan, located: dict) -> list[str]:
+    errors = []
+    shadowed = package_shadows(plan)
     for name, keys in plan.targets.items():
         for key in keys:
             units = [u for _, u in located.get(key, [])]
@@ -507,9 +552,30 @@ def _pinned_errors(plan: Plan, located: dict) -> list[str]:
     return errors
 
 
+def target_constraint(plan: Plan, name: str) -> tuple:
+    existing = plan.parsed.get(name)
+    return build_constraint(name, existing.header if existing else _new_header(plan))
+
+
+def _constraint_errors(plan: Plan, located: dict) -> list[str]:
+    errors = []
+    for name, keys in plan.targets.items():
+        wanted = target_constraint(plan, name)
+        for key in keys:
+            entries = located.get(key, [])
+            if len(entries) != 1 or entries[0][0] == name:
+                continue
+            origin = entries[0][0]
+            if build_constraint(origin, plan.parsed[origin].header) != wanted:
+                errors.append("%s cannot move from %s to %s (different build constraints)"
+                              % (key, origin, name))
+    return errors
+
+
 def validate(plan: Plan, require_placed: bool) -> list[str]:
     located = _locate(plan)
-    errors = _listing_errors(plan, located) + _pinned_errors(plan, located)
+    errors = (_listing_errors(plan, located) + _pinned_errors(plan, located)
+              + _constraint_errors(plan, located))
     if require_placed:
         for name, keys in plan.targets.items():
             errors.extend("%s is not in %s" % (key, name) for key in keys
@@ -673,23 +739,36 @@ def normalize(text: str) -> str:
 
 
 def declaration_multiset(directory: pathlib.Path) -> collections.Counter:
+    """Count (build constraint, normalized text) pairs of non-test declarations.
+
+    The constraint is part of the key, so a declaration that moves into a
+    file built under different conditions does not compare equal.
+    """
     counter = collections.Counter()
     for path in sorted(directory.glob("*.go")):
         if path.name.endswith("_test.go"):
             continue
-        for unit in parse_file(path).units:
-            counter[normalize(unit.text())] += 1
+        go_file = parse_file(path)
+        constraint = build_constraint(path.name, go_file.header)
+        for unit in go_file.units:
+            counter[(constraint, normalize(unit.text()))] += 1
     return counter
+
+
+def _describe(key: tuple) -> str:
+    constraint, text = key
+    prefix = "[%s] " % " ".join(constraint) if constraint else ""
+    return (prefix + text)[:160]
 
 
 def compare_dirs(before: pathlib.Path, after: pathlib.Path) -> list[str]:
     left = declaration_multiset(before)
     right = declaration_multiset(after)
     problems = []
-    for text, count in sorted((left - right).items()):
-        problems.append("missing after (%d): %s" % (count, text[:160]))
-    for text, count in sorted((right - left).items()):
-        problems.append("added after (%d): %s" % (count, text[:160]))
+    for key, count in sorted((left - right).items()):
+        problems.append("missing after (%d): %s" % (count, _describe(key)))
+    for key, count in sorted((right - left).items()):
+        problems.append("added after (%d): %s" % (count, _describe(key)))
     return problems
 
 

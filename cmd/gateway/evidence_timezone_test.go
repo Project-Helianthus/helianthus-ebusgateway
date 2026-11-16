@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	"github.com/Project-Helianthus/helianthus-modbusreg/growatt"
 )
 
 func TestGrowattEvidenceTimezoneDigests(t *testing.T) {
@@ -148,7 +148,7 @@ func TestGrowattEvidenceTimezoneZeroAndMonotonic(t *testing.T) {
 	}
 	for _, at := range []time.Time{zero, zero.In(time.FixedZone("positive", 3600)), zero.In(time.FixedZone("negative", -3600))} {
 		evidence := GrowattBMSRS485ObservationEvidence{ReceiptWall: at}
-		if err := validateGrowattStorageInput(modbusreg.GrowattBMSTypedReadOnlyStatus{}, evidence, "asset:fixture", "source:fixture"); err == nil || err.Error() != "native_evidence_missing" {
+		if err := validateGrowattStorageInput(growatt.BMSTypedReadOnlyStatus{}, evidence, "asset:fixture", "source:fixture"); err == nil || err.Error() != "native_evidence_missing" {
 			t.Fatalf("zero receipt must fail closed: %v", err)
 		}
 	}

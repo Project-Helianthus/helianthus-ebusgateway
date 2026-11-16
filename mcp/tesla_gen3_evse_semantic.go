@@ -18,7 +18,7 @@ import (
 	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
-	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	"github.com/Project-Helianthus/helianthus-modbusreg/tesla"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/projection"
 )
@@ -509,7 +509,7 @@ func (p *TeslaGen3EVSESemanticPublication) validate(s TeslaGen3EVSECurrentLimitV
 	if s.Provisional == nil && !e.ProvisionalObservedAt.IsZero() {
 		return errors.New("tesla Gen3 EVSE provisional receipt exists without a record")
 	}
-	if s.Persistent == nil || s.Persistent.OperationVersion() != modbusreg.TeslaGen3CurrentLimitOperationVersion24443 || len(s.Persistent.RequestPayload()) == 0 || len(s.Persistent.TerminalPayload()) == 0 {
+	if s.Persistent == nil || s.Persistent.OperationVersion() != tesla.Gen3CurrentLimitOperationVersion24443 || len(s.Persistent.RequestPayload()) == 0 || len(s.Persistent.TerminalPayload()) == 0 {
 		return errors.New("tesla Gen3 EVSE persistent evidence is invalid")
 	}
 	return nil
@@ -567,7 +567,7 @@ func (p *TeslaGen3EVSESemanticPublication) batch(s TeslaGen3EVSECurrentLimitV1So
 	provisionalRecord := teslaGen3EVSEProvisionalRecord(s.Provisional, provisionalLifecycle)
 	evidence := evseEvidence("native.tesla.wc3.current_limit", teslaGen3EVSEPublicationEvidence{Persistent: persistentRecord, Provisional: provisionalRecord})
 	activationEvidence := []semreg.EvidenceRef{evseEvidence("native.tesla.wc3.current_limit.persistent", persistentRecord)}
-	registry := evseDigestEvidence("registry.tesla.wc3_24_44_3", modbusreg.TeslaGen3CurrentLimitOperationVersion24443)
+	registry := evseDigestEvidence("registry.tesla.wc3_24_44_3", tesla.Gen3CurrentLimitOperationVersion24443)
 	// MappingRevision is the kernel's monotonic label; the immutable accepted
 	// docs commit is retained in the registry evidence digest below.
 	manifest := projection.ProjectionManifest{TargetID: "target:gateway-semantic-evse", TargetVersion: "1.0.0", KernelVersion: semreg.ContractKernelV1, PackVersions: []semreg.PackRef{{ID: "helianthus.pack.evse", Version: "1.0.0"}}, MappingRevision: "1"}
@@ -635,11 +635,11 @@ func teslaGen3EVSEMonotonic(clockEpoch string, nanoseconds int64) semreg.Monoton
 	return semreg.MonotonicPoint{ClockEpochID: semreg.ClockEpochID(clockEpoch), Nanoseconds: semreg.Uint64(strconv.FormatInt(nanoseconds, 10))}
 }
 
-func (p *TeslaGen3EVSESemanticPublication) provisional(v *modbusreg.TeslaGen3ProvisionalCurrentLimit, e TeslaGen3EVSESemanticEvidence) (*uint32, string) {
+func (p *TeslaGen3EVSESemanticPublication) provisional(v *tesla.Gen3ProvisionalCurrentLimit, e TeslaGen3EVSESemanticEvidence) (*uint32, string) {
 	if v == nil {
 		return nil, "missing"
 	}
-	if v.OperationVersion() != modbusreg.TeslaGen3CurrentLimitOperationVersion24443 || len(v.SetRequestPayload()) == 0 || len(v.AckPayload()) == 0 || len(v.ReadbackRequestPayload()) == 0 || len(v.ReadbackTerminalPayload()) == 0 {
+	if v.OperationVersion() != tesla.Gen3CurrentLimitOperationVersion24443 || len(v.SetRequestPayload()) == 0 || len(v.AckPayload()) == 0 || len(v.ReadbackRequestPayload()) == 0 || len(v.ReadbackTerminalPayload()) == 0 {
 		return nil, "malformed_or_correlation_mismatched"
 	}
 	if v.InhibitCharging() {
@@ -672,7 +672,7 @@ func teslaGen3EVSEDigestLifecycle(lifecycle TeslaGen3EVSESemanticEvidence) Tesla
 	return lifecycle
 }
 
-func teslaGen3EVSEPersistentRecord(value *modbusreg.TeslaGen3PersistentCurrentLimit, lifecycle TeslaGen3EVSESemanticEvidence) teslaGen3EVSEPersistentEvidence {
+func teslaGen3EVSEPersistentRecord(value *tesla.Gen3PersistentCurrentLimit, lifecycle TeslaGen3EVSESemanticEvidence) teslaGen3EVSEPersistentEvidence {
 	return teslaGen3EVSEPersistentEvidence{
 		OperationVersion:     value.OperationVersion(),
 		MaxOutputCurrentAmps: value.MaxOutputCurrentAmps(),
@@ -682,7 +682,7 @@ func teslaGen3EVSEPersistentRecord(value *modbusreg.TeslaGen3PersistentCurrentLi
 	}
 }
 
-func teslaGen3EVSEProvisionalRecord(value *modbusreg.TeslaGen3ProvisionalCurrentLimit, lifecycle TeslaGen3EVSESemanticEvidence) *teslaGen3EVSEProvisionalEvidence {
+func teslaGen3EVSEProvisionalRecord(value *tesla.Gen3ProvisionalCurrentLimit, lifecycle TeslaGen3EVSESemanticEvidence) *teslaGen3EVSEProvisionalEvidence {
 	if value == nil {
 		return nil
 	}
@@ -884,8 +884,8 @@ func teslaGen3EVSESnapshotHasCandidate(snapshot semreg.Snapshot, id semreg.Candi
 	return false
 }
 
-func teslaGen3EVSEAllocatedExpiry(v *modbusreg.TeslaGen3ProvisionalCurrentLimit, evidence TeslaGen3EVSESemanticEvidence, receipt semreg.MonotonicPoint) *semreg.MonotonicPoint {
-	if v == nil || v.OperationVersion() != modbusreg.TeslaGen3CurrentLimitOperationVersion24443 || len(v.SetRequestPayload()) == 0 || len(v.AckPayload()) == 0 || len(v.ReadbackRequestPayload()) == 0 || len(v.ReadbackTerminalPayload()) == 0 || v.InhibitCharging() || v.LimitTimeoutSeconds() == 0 || v.LimitTimeoutSeconds() > 86399 {
+func teslaGen3EVSEAllocatedExpiry(v *tesla.Gen3ProvisionalCurrentLimit, evidence TeslaGen3EVSESemanticEvidence, receipt semreg.MonotonicPoint) *semreg.MonotonicPoint {
+	if v == nil || v.OperationVersion() != tesla.Gen3CurrentLimitOperationVersion24443 || len(v.SetRequestPayload()) == 0 || len(v.AckPayload()) == 0 || len(v.ReadbackRequestPayload()) == 0 || len(v.ReadbackTerminalPayload()) == 0 || v.InhibitCharging() || v.LimitTimeoutSeconds() == 0 || v.LimitTimeoutSeconds() > 86399 {
 		return nil
 	}
 	evaluated := evidence.EvaluatedMonotonicNS

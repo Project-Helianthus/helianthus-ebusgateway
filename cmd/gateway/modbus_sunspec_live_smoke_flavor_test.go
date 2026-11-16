@@ -13,7 +13,8 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter"
 	sunspectest "github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter/testfixture"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
-	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	"github.com/Project-Helianthus/helianthus-modbusreg/fronius"
+	"github.com/Project-Helianthus/helianthus-modbusreg/sunspec"
 )
 
 // Decision lines are pinned whole: the leading fields keep their order and the
@@ -73,21 +74,21 @@ func TestSunSpecLiveSmokeDecisionThroughRealQualificationPath(t *testing.T) {
 			name:         "GO at the current firmware tuple selects flavor 1.2.0",
 			words:        sunspectest.ObservedFroniusFloatControlsWordsForFirmware(sunspectest.FroniusFirmwareCurrent),
 			wantDecision: sunSpecLiveSmokeDecisionGO, wantOutcome: "qualified", wantCategory: "registry_match",
-			wantFlavor:  modbusreg.SunSpecFroniusObservedFlavorV12ID,
+			wantFlavor:  fronius.SunSpecFroniusObservedFlavorV12ID,
 			wantReasons: "capability=ADMITTED flavors=1.0.0:FIRMWARE_MISMATCH,1.1.0:FIRMWARE_MISMATCH,1.2.0:MATCHED",
 		},
 		{
 			name:         "GO at the earlier firmware controls chain still selects flavor 1.1.0",
 			words:        sunspectest.ObservedFroniusFloatControlsWords(),
 			wantDecision: sunSpecLiveSmokeDecisionGO, wantOutcome: "qualified", wantCategory: "registry_match",
-			wantFlavor:  modbusreg.SunSpecFroniusObservedFlavorV11ID,
+			wantFlavor:  fronius.SunSpecFroniusObservedFlavorV11ID,
 			wantReasons: "capability=ADMITTED flavors=1.0.0:CHAIN_MISMATCH,1.1.0:MATCHED,1.2.0:FIRMWARE_MISMATCH",
 		},
 		{
 			name:         "GO at the earlier firmware base chain still selects flavor 1.0.0",
 			words:        sunspectest.ObservedFroniusFloatWords(),
 			wantDecision: sunSpecLiveSmokeDecisionGO, wantOutcome: "qualified", wantCategory: "registry_match",
-			wantFlavor:  modbusreg.SunSpecFroniusObservedFlavorID,
+			wantFlavor:  fronius.SunSpecFroniusObservedFlavorID,
 			wantReasons: "capability=ADMITTED flavors=1.0.0:MATCHED,1.1.0:CHAIN_MISMATCH,1.2.0:FIRMWARE_MISMATCH",
 		},
 		{
@@ -139,7 +140,7 @@ func TestSunSpecLiveSmokeDecisionThroughRealQualificationPath(t *testing.T) {
 					result, test.wantDecision, test.wantOutcome, test.wantCategory, test.wantFlavor)
 			}
 			if test.wantDecision == sunSpecLiveSmokeDecisionGO {
-				if result.Sample == "" || result.Capability != modbusreg.SunSpecThreePhaseMonitoringCapabilityID {
+				if result.Sample == "" || result.Capability != sunspec.ThreePhaseMonitoringCapabilityID {
 					t.Fatalf("GO result = %#v; want sample and capability", result)
 				}
 			} else if result.Sample != "" || result.Capability != "" || result.Flavor != "" {
@@ -165,8 +166,8 @@ func TestSunSpecLiveSmokeDecisionThroughRealQualificationPath(t *testing.T) {
 
 func TestSunSpecLiveSmokeDecisionLineCarriesReasonsForEveryQualificationOutcome(t *testing.T) {
 	adaptedReasons := []modbusadapter.SunSpecFlavorEvaluation{
-		{FlavorID: modbusreg.SunSpecFroniusObservedFlavorID, Reason: modbusreg.SunSpecFroniusFlavorReasonFirmwareMismatch},
-		{FlavorID: modbusreg.SunSpecFroniusObservedFlavorV11ID, Reason: modbusreg.SunSpecFroniusFlavorReasonFirmwareMismatch},
+		{FlavorID: fronius.SunSpecFroniusObservedFlavorID, Reason: fronius.SunSpecFroniusFlavorReasonFirmwareMismatch},
+		{FlavorID: fronius.SunSpecFroniusObservedFlavorV11ID, Reason: fronius.SunSpecFroniusFlavorReasonFirmwareMismatch},
 	}
 	for _, test := range []struct {
 		name          string
@@ -176,14 +177,14 @@ func TestSunSpecLiveSmokeDecisionLineCarriesReasonsForEveryQualificationOutcome(
 		{
 			name: "NO_GO with a capability refusal and no flavor evaluation",
 			qualification: sunSpecLiveSmokeQualification{
-				Outcome: modbusadapter.SunSpecQualificationNoGo, CapabilityReason: modbusreg.SunSpecCapabilityReasonSourceAbsent,
+				Outcome: modbusadapter.SunSpecQualificationNoGo, CapabilityReason: sunspec.CapabilityReasonSourceAbsent,
 			},
 			wantTail: "decision=NO_GO outcome=not_qualified category=registry_no_match attempts=1 recovered=false capability=SOURCE_ABSENT flavors=-",
 		},
 		{
 			name: "NO_GO with the reasons of an older registry",
 			qualification: sunSpecLiveSmokeQualification{
-				Outcome: modbusadapter.SunSpecQualificationNoGo, CapabilityReason: modbusreg.SunSpecCapabilityReasonAdmitted,
+				Outcome: modbusadapter.SunSpecQualificationNoGo, CapabilityReason: sunspec.CapabilityReasonAdmitted,
 				FlavorEvaluations: adaptedReasons,
 			},
 			wantTail: "decision=NO_GO outcome=not_qualified category=registry_no_match attempts=1 recovered=false capability=ADMITTED flavors=1.0.0:FIRMWARE_MISMATCH,1.1.0:FIRMWARE_MISMATCH",
@@ -191,7 +192,7 @@ func TestSunSpecLiveSmokeDecisionLineCarriesReasonsForEveryQualificationOutcome(
 		{
 			name: "STOP from the registry keeps its reasons",
 			qualification: sunSpecLiveSmokeQualification{
-				Outcome: modbusadapter.SunSpecQualificationStop, CapabilityReason: modbusreg.SunSpecCapabilityReasonInvalidChain,
+				Outcome: modbusadapter.SunSpecQualificationStop, CapabilityReason: sunspec.CapabilityReasonInvalidChain,
 			},
 			wantTail: "decision=STOP outcome=incoherent category=registry_stop attempts=1 recovered=false capability=INVALID_CHAIN flavors=-",
 		},
@@ -199,11 +200,11 @@ func TestSunSpecLiveSmokeDecisionLineCarriesReasonsForEveryQualificationOutcome(
 			name: "STOP for an unsupported matched flavor keeps its reasons",
 			qualification: sunSpecLiveSmokeQualification{
 				Outcome: modbusadapter.SunSpecQualificationGO, Sample: "sample-1",
-				Capability:       modbusreg.SunSpecThreePhaseMonitoringCapabilityID,
+				Capability:       sunspec.ThreePhaseMonitoringCapabilityID,
 				Flavor:           "sunspec.flavor.fronius.unselected@1.0.0",
-				CapabilityReason: modbusreg.SunSpecCapabilityReasonAdmitted, FlavorReason: modbusreg.SunSpecFroniusFlavorReasonMatched,
+				CapabilityReason: sunspec.CapabilityReasonAdmitted, FlavorReason: fronius.SunSpecFroniusFlavorReasonMatched,
 				FlavorEvaluations: []modbusadapter.SunSpecFlavorEvaluation{
-					{FlavorID: "sunspec.flavor.fronius.unselected@1.0.0", Reason: modbusreg.SunSpecFroniusFlavorReasonMatched},
+					{FlavorID: "sunspec.flavor.fronius.unselected@1.0.0", Reason: fronius.SunSpecFroniusFlavorReasonMatched},
 				},
 			},
 			wantTail: "decision=STOP outcome=incoherent category=invalid_qualification attempts=1 recovered=false capability=ADMITTED flavors=1.0.0:MATCHED",

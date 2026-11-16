@@ -12,7 +12,8 @@ import (
 
 	sunspectest "github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter/testfixture"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
-	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	"github.com/Project-Helianthus/helianthus-modbusreg/fronius"
+	"github.com/Project-Helianthus/helianthus-modbusreg/sunspec"
 )
 
 func TestSunSpecProducerQualifiesExactObservedFroniusChainThroughRegistry(t *testing.T) {
@@ -39,13 +40,13 @@ func TestSunSpecProducerQualifiesExactObservedFroniusChainThroughRegistry(t *tes
 	if result.Outcome != SunSpecQualificationGO || result.ObservationCount != 1 || result.SampleID == "" {
 		t.Fatalf("qualification result = %#v; want one GO observation", result)
 	}
-	if result.CapabilityID != modbusreg.SunSpecThreePhaseMonitoringCapabilityID ||
-		result.CapabilityReason != modbusreg.SunSpecCapabilityReasonAdmitted ||
-		result.FlavorID != modbusreg.SunSpecFroniusObservedFlavorID ||
-		result.FlavorReason != modbusreg.SunSpecFroniusFlavorReasonMatched {
+	if result.CapabilityID != sunspec.ThreePhaseMonitoringCapabilityID ||
+		result.CapabilityReason != sunspec.CapabilityReasonAdmitted ||
+		result.FlavorID != fronius.SunSpecFroniusObservedFlavorID ||
+		result.FlavorReason != fronius.SunSpecFroniusFlavorReasonMatched {
 		t.Fatalf("registry decisions = %#v; want exact capability and flavor match", result)
 	}
-	if got := sunSpecWireKeys(result.Chain.Occurrences()); !reflect.DeepEqual(got, []modbusreg.SunSpecWireKey{
+	if got := sunSpecWireKeys(result.Chain.Occurrences()); !reflect.DeepEqual(got, []sunspec.WireKey{
 		{ModelID: 1, ModelLength: 65}, {ModelID: 113, ModelLength: 60},
 		{ModelID: 120, ModelLength: 26}, {ModelID: 121, ModelLength: 30},
 		{ModelID: 122, ModelLength: 44}, {ModelID: 160, ModelLength: 88},
@@ -97,13 +98,13 @@ func TestSunSpecProducerQualifiesExactObservedFroniusControlsChainThroughRegistr
 	if result.Outcome != SunSpecQualificationGO || result.ObservationCount != 1 || result.SampleID == "" {
 		t.Fatalf("qualification result = %#v; want one GO observation", result)
 	}
-	if result.CapabilityID != modbusreg.SunSpecThreePhaseMonitoringCapabilityID ||
-		result.CapabilityReason != modbusreg.SunSpecCapabilityReasonAdmitted ||
-		result.FlavorID != modbusreg.SunSpecFroniusObservedFlavorV11ID ||
-		result.FlavorReason != modbusreg.SunSpecFroniusFlavorReasonMatched {
+	if result.CapabilityID != sunspec.ThreePhaseMonitoringCapabilityID ||
+		result.CapabilityReason != sunspec.CapabilityReasonAdmitted ||
+		result.FlavorID != fronius.SunSpecFroniusObservedFlavorV11ID ||
+		result.FlavorReason != fronius.SunSpecFroniusFlavorReasonMatched {
 		t.Fatalf("registry decisions = %#v; want exact capability and V1.1 flavor match", result)
 	}
-	if got := sunSpecWireKeys(result.Chain.Occurrences()); !reflect.DeepEqual(got, []modbusreg.SunSpecWireKey{
+	if got := sunSpecWireKeys(result.Chain.Occurrences()); !reflect.DeepEqual(got, []sunspec.WireKey{
 		{ModelID: 1, ModelLength: 65}, {ModelID: 113, ModelLength: 60},
 		{ModelID: 120, ModelLength: 26}, {ModelID: 121, ModelLength: 30},
 		{ModelID: 122, ModelLength: 44}, {ModelID: 123, ModelLength: 24},
@@ -112,12 +113,12 @@ func TestSunSpecProducerQualifiesExactObservedFroniusControlsChainThroughRegistr
 		t.Fatalf("published SunSpec chain = %v; want exact observed Fronius controls chain", got)
 	}
 	controls := result.Chain.ByModelID(123)
-	if len(controls) != 1 || controls[0].Disposition != modbusreg.SunSpecChainDispositionAdmitted {
+	if len(controls) != 1 || controls[0].Disposition != sunspec.ChainDispositionAdmitted {
 		t.Fatalf("Model 123 occurrences = %#v; want one admitted standard model", controls)
 	}
 	decoderKey, ok := controls[0].DecoderKey()
-	if !ok || decoderKey != (modbusreg.SunSpecDecoderKey{
-		ModelID: 123, ModelLength: 24, SchemaRevision: modbusreg.SunSpecModelsRevisionV1,
+	if !ok || decoderKey != (sunspec.DecoderKey{
+		ModelID: 123, ModelLength: 24, SchemaRevision: sunspec.ModelsRevisionV1,
 	}) {
 		t.Fatalf("Model 123 decoder key = %#v, %v; want exact standard registry key", decoderKey, ok)
 	}
@@ -140,7 +141,7 @@ func TestSunSpecProducerQualifiesExactObservedFroniusControlsChainThroughRegistr
 		t.Fatalf("retained replay lost exact ordered poll identity: %#v", views)
 	}
 	occurrences := replay.Occurrences()
-	if len(occurrences) != 8 || occurrences[5].WireKey != (modbusreg.SunSpecWireKey{ModelID: 123, ModelLength: 24}) {
+	if len(occurrences) != 8 || occurrences[5].WireKey != (sunspec.WireKey{ModelID: 123, ModelLength: 24}) {
 		t.Fatalf("retained replay lost Model 123 chain evidence: %#v", occurrences)
 	}
 }
@@ -432,7 +433,7 @@ func TestSunSpecQualificationRetentionRejectsUnserializableObservationWithoutSto
 	}
 	t.Cleanup(func() { _ = adapter.Close() })
 
-	if err := adapter.RecordSunSpecQualificationObservation(modbusreg.SunSpecQualificationObservation{}); err == nil {
+	if err := adapter.RecordSunSpecQualificationObservation(fronius.SunSpecQualificationObservation{}); err == nil {
 		t.Fatal("unserializable qualification observation was retained")
 	}
 	if _, _, ok := adapter.SunSpecQualificationObservation("sunspec.inverter.three_phase.monitoring@1.0.0", "sunspec-45-95"); ok {
@@ -463,12 +464,12 @@ func TestSunSpecProducerReturnsNoGoForAdmittedCapabilityWithFlavorMismatch(t *te
 	// reject for different reasons and the shared FlavorReason stays empty; the
 	// per-flavor evaluations carry the detail.
 	if result.Outcome != SunSpecQualificationNoGo ||
-		result.CapabilityReason != modbusreg.SunSpecCapabilityReasonAdmitted ||
+		result.CapabilityReason != sunspec.CapabilityReasonAdmitted ||
 		result.FlavorReason != "" ||
 		!reflect.DeepEqual(result.FlavorEvaluations, []SunSpecFlavorEvaluation{
-			{FlavorID: modbusreg.SunSpecFroniusObservedFlavorID, Reason: modbusreg.SunSpecFroniusFlavorReasonChainMismatch},
-			{FlavorID: modbusreg.SunSpecFroniusObservedFlavorV11ID, Reason: modbusreg.SunSpecFroniusFlavorReasonChainMismatch},
-			{FlavorID: modbusreg.SunSpecFroniusObservedFlavorV12ID, Reason: modbusreg.SunSpecFroniusFlavorReasonFirmwareMismatch},
+			{FlavorID: fronius.SunSpecFroniusObservedFlavorID, Reason: fronius.SunSpecFroniusFlavorReasonChainMismatch},
+			{FlavorID: fronius.SunSpecFroniusObservedFlavorV11ID, Reason: fronius.SunSpecFroniusFlavorReasonChainMismatch},
+			{FlavorID: fronius.SunSpecFroniusObservedFlavorV12ID, Reason: fronius.SunSpecFroniusFlavorReasonFirmwareMismatch},
 		}) ||
 		result.ObservationCount != 0 || result.SampleID != "" {
 		t.Fatalf("flavor-mismatch result = %#v; want closed NO_GO without observation", result)
@@ -518,7 +519,7 @@ func TestSunSpecProducerSourceDelegatesSemanticSelectionToModbusreg(t *testing.T
 	for _, required := range []string{
 		"NewStandardSunSpecDecoderRegistry",
 		"EvaluateThreePhaseMonitoring",
-		"SelectFroniusObservedFlavor",
+		"fronius.SelectObservedFlavor",
 	} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("producer does not delegate through %s", required)
@@ -594,8 +595,8 @@ func putSunSpecString(words []uint16, value string) {
 	sunspectest.PutString(words, value)
 }
 
-func sunSpecWireKeys(occurrences []modbusreg.SunSpecOccurrence) []modbusreg.SunSpecWireKey {
-	keys := make([]modbusreg.SunSpecWireKey, len(occurrences))
+func sunSpecWireKeys(occurrences []sunspec.Occurrence) []sunspec.WireKey {
+	keys := make([]sunspec.WireKey, len(occurrences))
 	for index, occurrence := range occurrences {
 		keys[index] = occurrence.WireKey
 	}

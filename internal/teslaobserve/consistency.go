@@ -6,7 +6,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	"github.com/Project-Helianthus/helianthus-modbusreg/tesla"
 )
 
 // An appended run copies the prior attempts into the rebuilt worksheet rows,
@@ -33,13 +33,13 @@ var priorTerminations = map[Termination]bool{
 const lifecycleNotConstructed = "not_constructed"
 
 var lifecycleStates = map[string]bool{
-	lifecycleNotConstructed:                             true,
-	string(modbusreg.TeslaGen3ReadLifecycleStopped):     true,
-	string(modbusreg.TeslaGen3ReadLifecycleActivating):  true,
-	string(modbusreg.TeslaGen3ReadLifecycleReady):       true,
-	string(modbusreg.TeslaGen3ReadLifecycleRecovering):  true,
-	string(modbusreg.TeslaGen3ReadLifecycleUnavailable): true,
-	string(modbusreg.TeslaGen3ReadLifecycleClosed):      true,
+	lifecycleNotConstructed:                    true,
+	string(tesla.Gen3ReadLifecycleStopped):     true,
+	string(tesla.Gen3ReadLifecycleActivating):  true,
+	string(tesla.Gen3ReadLifecycleReady):       true,
+	string(tesla.Gen3ReadLifecycleRecovering):  true,
+	string(tesla.Gen3ReadLifecycleUnavailable): true,
+	string(tesla.Gen3ReadLifecycleClosed):      true,
 }
 
 // metadataFault names why the attempt's derived metadata cannot have been
@@ -219,7 +219,7 @@ func (replay LifecycleReplay) metadataFault(termination Termination) string {
 		return "lifecycle replay disposition is not the offline comparison wording"
 	case !lifecycleStates[replay.State]:
 		return "lifecycle state is not a pinned lifecycle state"
-	case replay.Ready != (replay.State == string(modbusreg.TeslaGen3ReadLifecycleReady)):
+	case replay.Ready != (replay.State == string(tesla.Gen3ReadLifecycleReady)):
 		return "lifecycle readiness disagrees with the lifecycle state"
 	case replay.Ready && replay.AcquireRefused:
 		return "lifecycle replay is ready yet records a refused acquisition"

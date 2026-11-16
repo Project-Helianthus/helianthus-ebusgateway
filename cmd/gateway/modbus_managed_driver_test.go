@@ -20,6 +20,8 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	"github.com/Project-Helianthus/helianthus-modbusreg/fronius"
+	"github.com/Project-Helianthus/helianthus-modbusreg/sunspec"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 )
 
@@ -325,26 +327,26 @@ func TestM03PublicationScopeFencesOldEpoch(t *testing.T) {
 	}
 }
 
-func m03Observation(t *testing.T) modbusreg.SunSpecQualificationObservation {
+func m03Observation(t *testing.T) fronius.SunSpecQualificationObservation {
 	return m03ObservationSample(t, 1)
 }
 
-func m03ObservationSample(t *testing.T, pollGeneration uint64) modbusreg.SunSpecQualificationObservation {
+func m03ObservationSample(t *testing.T, pollGeneration uint64) fronius.SunSpecQualificationObservation {
 	t.Helper()
 	return m03ScopedObservation(t, pollGeneration, sunspectest.ObservedFroniusFloatWords(), "fixture:managed")
 }
 
-func m03ScopedObservation(t *testing.T, pollGeneration uint64, words []uint16, scope string) modbusreg.SunSpecQualificationObservation {
+func m03ScopedObservation(t *testing.T, pollGeneration uint64, words []uint16, scope string) fronius.SunSpecQualificationObservation {
 	t.Helper()
-	registry, err := modbusreg.NewStandardSunSpecDecoderRegistry(modbusreg.SunSpecModelsRevisionV1)
+	registry, err := sunspec.NewStandardSunSpecDecoderRegistry(sunspec.ModelsRevisionV1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan, err := modbusreg.NewSunSpecChainPlan(modbusreg.SunSpecChainPlanSpec{SchemaRevision: modbusreg.SunSpecModelsRevisionV1, BaseCandidates: []uint16{40000}, Limits: modbusreg.SunSpecChainLimits{MaxTotalWords: 4096, MaxOccurrences: 32}, DecoderKeys: registry.DecoderKeys()})
+	plan, err := sunspec.NewChainPlan(sunspec.ChainPlanSpec{SchemaRevision: sunspec.ModelsRevisionV1, BaseCandidates: []uint16{40000}, Limits: sunspec.ChainLimits{MaxTotalWords: 4096, MaxOccurrences: 32}, DecoderKeys: registry.DecoderKeys()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	chain := modbusreg.NewSunSpecChain(plan)
+	chain := sunspec.NewChain(plan)
 	offset := 0
 	for id := uint64(1); ; id++ {
 		requests := chain.NextRequests()
@@ -366,7 +368,7 @@ func m03ScopedObservation(t *testing.T, pollGeneration uint64, words []uint16, s
 			t.Fatal(err)
 		}
 		if len(snapshot.RawWords()) != 0 {
-			observation, err := modbusreg.NewSunSpecQualificationObservation(registry, snapshot)
+			observation, err := fronius.NewSunSpecQualificationObservation(registry, snapshot)
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -16,6 +16,8 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	"github.com/Project-Helianthus/helianthus-modbusreg/fronius"
+	"github.com/Project-Helianthus/helianthus-modbusreg/sunspec"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/projection"
 )
@@ -263,7 +265,7 @@ type ProfileObservationRecord struct {
 }
 
 type sunSpecQualificationRecord struct {
-	observation modbusreg.SunSpecQualificationObservation
+	observation fronius.SunSpecQualificationObservation
 	encoded     []byte
 }
 
@@ -721,7 +723,7 @@ func (adapter *Adapter) RecordProfileObservation(record ProfileObservationRecord
 // serialization, then stages one immutable terminal registry observation before
 // publishing the snapshot that cites it. The shared bound covers legacy profile
 // observations as well.
-func (adapter *Adapter) RecordSunSpecQualificationObservation(observation modbusreg.SunSpecQualificationObservation) error {
+func (adapter *Adapter) RecordSunSpecQualificationObservation(observation fronius.SunSpecQualificationObservation) error {
 	if adapter == nil {
 		return errors.New("modbus TCP adapter unavailable")
 	}
@@ -775,7 +777,7 @@ func (adapter *Adapter) RecordSunSpecQualificationObservation(observation modbus
 
 // PublishSunSpecCurrent replaces only the semantic current slot for an asset.
 // It neither retains nor mutates terminal qualification evidence.
-func (adapter *Adapter) PublishSunSpecCurrent(observation modbusreg.SunSpecQualificationObservation) error {
+func (adapter *Adapter) PublishSunSpecCurrent(observation fronius.SunSpecQualificationObservation) error {
 	if adapter == nil {
 		return errors.New("modbus TCP adapter unavailable")
 	}
@@ -793,7 +795,7 @@ func (adapter *Adapter) PublishSunSpecCurrent(observation modbusreg.SunSpecQuali
 // publishable refresh. It commits the evidence only with a successful SemReg
 // publication. Capacity is validated against the prospective global SemReg
 // state, so a replacement may release its superseded evidence atomically.
-func (adapter *Adapter) RecordSunSpecCurrentObservation(observation modbusreg.SunSpecQualificationObservation) error {
+func (adapter *Adapter) RecordSunSpecCurrentObservation(observation fronius.SunSpecQualificationObservation) error {
 	if adapter == nil {
 		return errors.New("modbus TCP adapter unavailable")
 	}
@@ -888,18 +890,18 @@ func (adapter *Adapter) validateSunSpecRefreshEvidenceLocked(referenced map[stri
 	return nil
 }
 
-func (adapter *Adapter) publishSemanticPV(observation modbusreg.SunSpecQualificationObservation) error {
+func (adapter *Adapter) publishSemanticPV(observation fronius.SunSpecQualificationObservation) error {
 	return adapter.publishSemanticPVWithValidation(observation, nil)
 }
 
-func (adapter *Adapter) publishSemanticPVWithEvidenceValidation(observation modbusreg.SunSpecQualificationObservation) error {
+func (adapter *Adapter) publishSemanticPVWithEvidenceValidation(observation fronius.SunSpecQualificationObservation) error {
 	return adapter.publishSemanticPVWithValidation(observation, func(assetID semreg.AssetID, snapshot semreg.Snapshot) error {
 		referenced := adapter.semanticPV.currentSunSpecObservationDigestsLocked(assetID, &snapshot)
 		return adapter.validateSunSpecRefreshEvidenceLocked(referenced)
 	})
 }
 
-func (adapter *Adapter) publishSemanticPVWithValidation(observation modbusreg.SunSpecQualificationObservation, validate pvPublicationValidator) error {
+func (adapter *Adapter) publishSemanticPVWithValidation(observation fronius.SunSpecQualificationObservation, validate pvPublicationValidator) error {
 	if adapter.semanticPV == nil {
 		return errors.New("SemReg PV publication unavailable")
 	}
@@ -1069,7 +1071,7 @@ func (adapter *Adapter) semanticPVReadContextAt(at time.Time) (semreg.Evaluation
 }
 
 func (adapter *Adapter) SemanticPVCurrent(profileID, sampleID string) (SemanticPVCurrent, bool) {
-	if adapter == nil || profileID != modbusreg.SunSpecThreePhaseMonitoringCapabilityID {
+	if adapter == nil || profileID != sunspec.ThreePhaseMonitoringCapabilityID {
 		return SemanticPVCurrent{}, false
 	}
 	observation, _, ok := adapter.SunSpecQualificationObservation(profileID, sampleID)
@@ -1101,9 +1103,9 @@ func (adapter *Adapter) ProfileObservation(profileID, sampleID string) (ProfileO
 
 // SunSpecQualificationObservation returns a detached immutable terminal
 // qualification and the serialization proven before it was retained.
-func (adapter *Adapter) SunSpecQualificationObservation(profileID, sampleID string) (modbusreg.SunSpecQualificationObservation, []byte, bool) {
+func (adapter *Adapter) SunSpecQualificationObservation(profileID, sampleID string) (fronius.SunSpecQualificationObservation, []byte, bool) {
 	if adapter == nil {
-		return modbusreg.SunSpecQualificationObservation{}, nil, false
+		return fronius.SunSpecQualificationObservation{}, nil, false
 	}
 	adapter.profileMu.RLock()
 	defer adapter.profileMu.RUnlock()
@@ -1112,7 +1114,7 @@ func (adapter *Adapter) SunSpecQualificationObservation(profileID, sampleID stri
 		record, ok = adapter.refreshEvidence[profileID+"\x00"+sampleID]
 	}
 	if !ok {
-		return modbusreg.SunSpecQualificationObservation{}, nil, false
+		return fronius.SunSpecQualificationObservation{}, nil, false
 	}
 	return record.observation, append([]byte(nil), record.encoded...), true
 }

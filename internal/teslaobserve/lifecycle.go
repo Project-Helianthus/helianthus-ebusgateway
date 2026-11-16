@@ -7,18 +7,18 @@ import (
 	"time"
 
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
-	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	"github.com/Project-Helianthus/helianthus-modbusreg/tesla"
 )
 
 // ObservationOperations are the five retained observation operations of the
 // pinned read acquisition. The run names them as the allowlist a later,
 // separately admitted acquisition would use; it sends none of them.
-var ObservationOperations = []modbusreg.TeslaFC100Operation{
-	modbusreg.TeslaFC100OperationCommonSystemInfo,
-	modbusreg.TeslaFC100OperationWCGetVitals,
-	modbusreg.TeslaFC100OperationWCGetLifetimeStats,
-	modbusreg.TeslaFC100OperationWCGetSystemInfo,
-	modbusreg.TeslaFC100OperationWCGetLoadSharingState,
+var ObservationOperations = []tesla.FC100Operation{
+	tesla.FC100OperationCommonSystemInfo,
+	tesla.FC100OperationWCGetVitals,
+	tesla.FC100OperationWCGetLifetimeStats,
+	tesla.FC100OperationWCGetSystemInfo,
+	tesla.FC100OperationWCGetLoadSharingState,
 }
 
 // LifecycleReplayDisposition states what a lifecycle replay result means.
@@ -59,7 +59,7 @@ type observationReport struct {
 	before func()
 }
 
-func (report observationReport) ObserveTeslaGen3HSCActivation(ctx context.Context, request modbusreg.TeslaGen3HSCActivationRequest) ([]byte, error) {
+func (report observationReport) ObserveTeslaGen3HSCActivation(ctx context.Context, request tesla.Gen3HSCActivationRequest) ([]byte, error) {
 	if request.Endpoint != report.observation.Endpoint || request.Epoch == 0 {
 		return nil, ErrNotCurrent
 	}
@@ -88,20 +88,20 @@ func ReplayLifecycle(ctx context.Context, endpoint *Endpoint, observation Observ
 	return replayLifecycle(ctx, observationReport{endpoint: endpoint, observation: observation}, observation.Endpoint, now)
 }
 
-func replayLifecycle(ctx context.Context, report modbusreg.TeslaGen3HSCActivationWitness, label string, now func() time.Time) LifecycleReplay {
+func replayLifecycle(ctx context.Context, report tesla.Gen3HSCActivationWitness, label string, now func() time.Time) LifecycleReplay {
 	result := LifecycleReplay{Disposition: LifecycleReplayDisposition}
 	var exchanges atomic.Int64
 	config, err := controlAcquisitionConfig(label, report, now, &exchanges)
 	if err == nil {
-		var acquisition *modbusreg.TeslaGen3ReadAcquisition
-		acquisition, err = modbusreg.NewTeslaGen3ReadAcquisition(config)
+		var acquisition *tesla.Gen3ReadAcquisition
+		acquisition, err = tesla.NewGen3ReadAcquisition(config)
 		if err == nil {
 			defer func() { _ = acquisition.Close() }()
 			if startErr := acquisition.Start(ctx); startErr != nil {
 				result.Error = boundedCause(startErr)
 			}
 			result.State = string(acquisition.State())
-			result.Ready = acquisition.State() == modbusreg.TeslaGen3ReadLifecycleReady
+			result.Ready = acquisition.State() == tesla.Gen3ReadLifecycleReady
 			if !result.Ready {
 				_, acquireErr := acquisition.Acquire(ctx, ObservationOperations[0])
 				result.AcquireRefused = acquireErr != nil
@@ -118,46 +118,46 @@ func replayLifecycle(ctx context.Context, report modbusreg.TeslaGen3HSCActivatio
 // controlAcquisitionConfig declares the offline control configuration that
 // the lifecycle requires before it will observe activation. It is not a
 // qualification decision about any device.
-func controlAcquisitionConfig(label string, report modbusreg.TeslaGen3HSCActivationWitness, now func() time.Time, exchanges *atomic.Int64) (modbusreg.TeslaGen3ReadAcquisitionConfig, error) {
+func controlAcquisitionConfig(label string, report tesla.Gen3HSCActivationWitness, now func() time.Time, exchanges *atomic.Int64) (tesla.Gen3ReadAcquisitionConfig, error) {
 	timing, err := modbus.NewRTUTiming(modbus.RTUTimingConfig{
 		Baud: 115200, DataBits: 8, Parity: modbus.RTUParityNone, StopBits: 1,
 		MaxResponseLatency: 500 * time.Millisecond, MaxQuiescence: 900 * time.Millisecond,
 	})
 	if err != nil {
-		return modbusreg.TeslaGen3ReadAcquisitionConfig{}, err
+		return tesla.Gen3ReadAcquisitionConfig{}, err
 	}
-	profile, err := modbusreg.NewTeslaHSCProfile(modbusreg.TeslaHSCProfileConfig{
-		Enabled: true, Node: 1, PassiveCompatible: true, CompatibilityVersion: modbusreg.TeslaHSCCompatibilityV1,
-		WCVitalsOperationVersion:           modbusreg.TeslaHSCWCVitalsCompatibilityV1,
-		SystemInfoOperationVersion:         modbusreg.TeslaHSCSystemInfoCompatibilityV1,
-		WCLifetimeOperationVersion:         modbusreg.TeslaHSCWCLifetimeCompatibilityV1,
-		WCSystemInfoOperationVersion:       modbusreg.TeslaHSCWCSystemInfoCompatibilityV1,
-		WCLoadSharingStateOperationVersion: modbusreg.TeslaHSCWCLoadSharingStateCompatibilityV1,
+	profile, err := tesla.NewHSCProfile(tesla.HSCProfileConfig{
+		Enabled: true, Node: 1, PassiveCompatible: true, CompatibilityVersion: tesla.HSCCompatibilityV1,
+		WCVitalsOperationVersion:           tesla.HSCWCVitalsCompatibilityV1,
+		SystemInfoOperationVersion:         tesla.HSCSystemInfoCompatibilityV1,
+		WCLifetimeOperationVersion:         tesla.HSCWCLifetimeCompatibilityV1,
+		WCSystemInfoOperationVersion:       tesla.HSCWCSystemInfoCompatibilityV1,
+		WCLoadSharingStateOperationVersion: tesla.HSCWCLoadSharingStateCompatibilityV1,
 	})
 	if err != nil {
-		return modbusreg.TeslaGen3ReadAcquisitionConfig{}, err
+		return tesla.Gen3ReadAcquisitionConfig{}, err
 	}
-	gen3, err := modbusreg.NewTeslaGen3HSCProfile(modbusreg.TeslaGen3HSCProfileConfig{
-		Enabled: true, Version: modbusreg.TeslaHSCFC100OperationCompatibilityV1,
+	gen3, err := tesla.NewGen3HSCProfile(tesla.Gen3HSCProfileConfig{
+		Enabled: true, Version: tesla.HSCFC100OperationCompatibilityV1,
 		ActivationCapable: true, PrivateFunctionCapable: true, OperationCapable: true,
 	})
 	if err != nil {
-		return modbusreg.TeslaGen3ReadAcquisitionConfig{}, err
+		return tesla.Gen3ReadAcquisitionConfig{}, err
 	}
-	windows := make(map[modbusreg.TeslaFC100Operation]modbusreg.TeslaGen3ReadWindow, len(ObservationOperations))
+	windows := make(map[tesla.FC100Operation]tesla.Gen3ReadWindow, len(ObservationOperations))
 	for _, operation := range ObservationOperations {
-		windows[operation] = modbusreg.TeslaGen3ReadWindow{Freshness: time.Minute, Retention: time.Hour}
+		windows[operation] = tesla.Gen3ReadWindow{Freshness: time.Minute, Retention: time.Hour}
 	}
 	if now == nil {
 		now = time.Now
 	}
-	return modbusreg.TeslaGen3ReadAcquisitionConfig{
+	return tesla.Gen3ReadAcquisitionConfig{
 		Endpoint: label, LocalPath: "offline-control", Timing: timing, ResponseTimeout: time.Second,
 		Profile: profile, Gen3: gen3,
-		Operations: append([]modbusreg.TeslaFC100Operation(nil), ObservationOperations...), Windows: windows,
+		Operations: append([]tesla.FC100Operation(nil), ObservationOperations...), Windows: windows,
 		MaxAttempts: 1, AcquisitionDeadline: 10 * time.Second, ActivationTimeout: MaxObservationWindow,
 		PollInterval: time.Minute, Activation: report, Now: now,
-		Open: func(modbus.RTUProductionConfig) (modbusreg.TeslaGen3ReadEndpoint, error) {
+		Open: func(modbus.RTUProductionConfig) (tesla.Gen3ReadEndpoint, error) {
 			return controlEndpoint{exchanges: exchanges}, nil
 		},
 	}, nil

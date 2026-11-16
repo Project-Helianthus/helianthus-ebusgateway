@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
-	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	"github.com/Project-Helianthus/helianthus-modbusreg/tesla"
 )
 
 type teslaGen3EVSECurrentLimitV1Fixture struct {
@@ -33,7 +33,7 @@ func TestTeslaGen3EVSECurrentLimitV1ProjectsInjectedRecordsReadOnly(t *testing.T
 		t.Fatalf("result = %#v", result)
 	}
 	data := msp06Map(t, result.envelope["data"], "data")
-	if data["operation_version"] != modbusreg.TeslaGen3CurrentLimitOperationVersion24443 || data["outbound_allowed"] != false {
+	if data["operation_version"] != tesla.Gen3CurrentLimitOperationVersion24443 || data["outbound_allowed"] != false {
 		t.Fatalf("data = %#v", data)
 	}
 	persistent := msp06Map(t, data["persistent"], "persistent")
@@ -69,7 +69,7 @@ func TestTeslaGen3EVSECurrentLimitV1FailsClosedForAnInvalidRecord(t *testing.T) 
 	RegisterModbusV1Tools(server, teslaGen3EVSECurrentLimitV1Fixture{
 		modbusV1FixtureProvider: &modbusV1FixtureProvider{},
 		source: TeslaGen3EVSECurrentLimitV1Source{
-			Persistent: &modbusreg.TeslaGen3PersistentCurrentLimit{},
+			Persistent: &tesla.Gen3PersistentCurrentLimit{},
 		},
 	})
 	result := msp06Call(t, server.Handler(), TeslaGen3EVSECurrentLimitV1GetTool, map[string]any{})
@@ -109,7 +109,7 @@ func TestTeslaGen3EVSECurrentLimitV1RetainsIndependentlyOptionalRecords(t *testi
 				t.Fatalf("isError = %t, want %t: %#v", result.isError, test.wantError, result)
 			}
 			data := msp06Map(t, result.envelope["data"], "data")
-			if data["operation_version"] != modbusreg.TeslaGen3CurrentLimitOperationVersion24443 || data["outbound_allowed"] != false || (data["persistent"] != nil) != test.wantPersistent || (data["provisional"] != nil) != test.wantProvisional {
+			if data["operation_version"] != tesla.Gen3CurrentLimitOperationVersion24443 || data["outbound_allowed"] != false || (data["persistent"] != nil) != test.wantPersistent || (data["provisional"] != nil) != test.wantProvisional {
 				t.Fatalf("retained data = %#v", data)
 			}
 		})
@@ -126,13 +126,13 @@ func TestTeslaGen3EVSECurrentLimitV1RetainsValidSiblingOnInvalidRecord(t *testin
 	}{
 		{
 			name:            "persistent survives invalid provisional",
-			source:          TeslaGen3EVSECurrentLimitV1Source{Persistent: fullSource.Persistent, Provisional: &modbusreg.TeslaGen3ProvisionalCurrentLimit{}},
+			source:          TeslaGen3EVSECurrentLimitV1Source{Persistent: fullSource.Persistent, Provisional: &tesla.Gen3ProvisionalCurrentLimit{}},
 			wantPersistent:  true,
 			wantProvisional: false,
 		},
 		{
 			name:            "provisional survives invalid persistent",
-			source:          TeslaGen3EVSECurrentLimitV1Source{Persistent: &modbusreg.TeslaGen3PersistentCurrentLimit{}, Provisional: fullSource.Provisional},
+			source:          TeslaGen3EVSECurrentLimitV1Source{Persistent: &tesla.Gen3PersistentCurrentLimit{}, Provisional: fullSource.Provisional},
 			wantPersistent:  false,
 			wantProvisional: true,
 		},
@@ -151,7 +151,7 @@ func TestTeslaGen3EVSECurrentLimitV1RetainsValidSiblingOnInvalidRecord(t *testin
 				t.Fatalf("invalid sibling was not reported: %#v", result)
 			}
 			data := msp06Map(t, result.envelope["data"], "data")
-			if data["operation_version"] != modbusreg.TeslaGen3CurrentLimitOperationVersion24443 || data["outbound_allowed"] != false || (data["persistent"] != nil) != test.wantPersistent || (data["provisional"] != nil) != test.wantProvisional {
+			if data["operation_version"] != tesla.Gen3CurrentLimitOperationVersion24443 || data["outbound_allowed"] != false || (data["persistent"] != nil) != test.wantPersistent || (data["provisional"] != nil) != test.wantProvisional {
 				t.Fatalf("retained data = %#v", data)
 			}
 		})
@@ -192,9 +192,9 @@ func TestTeslaGen3EVSECurrentLimitV1ToolListSchemaAndOrder(t *testing.T) {
 func teslaGen3EVSECurrentLimitV1FixtureSource(t *testing.T) TeslaGen3EVSECurrentLimitV1Source {
 	t.Helper()
 	persistentBody := []byte{0x0a, 0x02, 0x08, 0x10}
-	persistentRequest := teslaGen3EVSECurrentLimitV1Request(t, modbusreg.TeslaFC100OperationWCConfigureSettings, persistentBody)
-	persistent, err := modbusreg.NewTeslaGen3PersistentCurrentLimit(modbusreg.TeslaGen3PersistentCurrentLimitSpec{
-		OperationVersion:     modbusreg.TeslaGen3CurrentLimitOperationVersion24443,
+	persistentRequest := teslaGen3EVSECurrentLimitV1Request(t, tesla.FC100OperationWCConfigureSettings, persistentBody)
+	persistent, err := tesla.NewGen3PersistentCurrentLimit(tesla.Gen3PersistentCurrentLimitSpec{
+		OperationVersion:     tesla.Gen3CurrentLimitOperationVersion24443,
 		MaxOutputCurrentAmps: 16,
 		RequestPayload:       persistentRequest,
 		TerminalPayload:      teslaGen3EVSECurrentLimitV1Terminal(8, persistentBody),
@@ -203,10 +203,10 @@ func teslaGen3EVSECurrentLimitV1FixtureSource(t *testing.T) TeslaGen3EVSECurrent
 		t.Fatal(err)
 	}
 	provisionalBody := []byte{0x0a, 0x07, 0x08, 0x10, 0x10, 0xd8, 0x04, 0x18, 0x00}
-	setRequest := teslaGen3EVSECurrentLimitV1Request(t, modbusreg.TeslaFC100OperationWCSetProvisional, provisionalBody)
-	readbackRequest := teslaGen3EVSECurrentLimitV1Request(t, modbusreg.TeslaFC100OperationWCGetProvisional, nil)
-	provisional, err := modbusreg.NewTeslaGen3ProvisionalCurrentLimit(modbusreg.TeslaGen3ProvisionalCurrentLimitSpec{
-		OperationVersion:        modbusreg.TeslaGen3CurrentLimitOperationVersion24443,
+	setRequest := teslaGen3EVSECurrentLimitV1Request(t, tesla.FC100OperationWCSetProvisional, provisionalBody)
+	readbackRequest := teslaGen3EVSECurrentLimitV1Request(t, tesla.FC100OperationWCGetProvisional, nil)
+	provisional, err := tesla.NewGen3ProvisionalCurrentLimit(tesla.Gen3ProvisionalCurrentLimitSpec{
+		OperationVersion:        tesla.Gen3CurrentLimitOperationVersion24443,
 		LimitCurrentMaxAmps:     16,
 		LimitTimeoutSeconds:     600,
 		SetRequestPayload:       setRequest,
@@ -220,9 +220,9 @@ func teslaGen3EVSECurrentLimitV1FixtureSource(t *testing.T) TeslaGen3EVSECurrent
 	return TeslaGen3EVSECurrentLimitV1Source{Persistent: &persistent, Provisional: &provisional}
 }
 
-func teslaGen3EVSECurrentLimitV1Request(t *testing.T, operation modbusreg.TeslaFC100Operation, body []byte) []byte {
+func teslaGen3EVSECurrentLimitV1Request(t *testing.T, operation tesla.FC100Operation, body []byte) []byte {
 	t.Helper()
-	request, err := modbusreg.BuildTeslaFC100OperationRequest(modbusreg.TeslaGen3CurrentLimitOperationVersion24443, operation, body)
+	request, err := tesla.BuildTeslaFC100OperationRequest(tesla.Gen3CurrentLimitOperationVersion24443, operation, body)
 	if err != nil {
 		t.Fatal(err)
 	}

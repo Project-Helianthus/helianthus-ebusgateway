@@ -27,6 +27,8 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal/contributionv1"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	"github.com/Project-Helianthus/helianthus-modbusreg/fronius"
+	"github.com/Project-Helianthus/helianthus-modbusreg/sunspec"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 )
 
@@ -637,21 +639,21 @@ func (characterizationPVEndpoint) Close() error { return nil }
 
 // characterizationSunSpecObservation replays the accepted SunSpec chain words
 // into one immutable qualification observation.
-func characterizationSunSpecObservation(t *testing.T, words []uint16, pollGeneration, deadlineIdentity uint64) modbusreg.SunSpecQualificationObservation {
+func characterizationSunSpecObservation(t *testing.T, words []uint16, pollGeneration, deadlineIdentity uint64) fronius.SunSpecQualificationObservation {
 	t.Helper()
-	registry, err := modbusreg.NewStandardSunSpecDecoderRegistry(modbusreg.SunSpecModelsRevisionV1)
+	registry, err := sunspec.NewStandardSunSpecDecoderRegistry(sunspec.ModelsRevisionV1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan, err := modbusreg.NewSunSpecChainPlan(modbusreg.SunSpecChainPlanSpec{
-		SchemaRevision: modbusreg.SunSpecModelsRevisionV1, BaseCandidates: []uint16{40000},
-		Limits: modbusreg.SunSpecChainLimits{MaxTotalWords: 1024, MaxOccurrences: 32}, DecoderKeys: registry.DecoderKeys(),
+	plan, err := sunspec.NewChainPlan(sunspec.ChainPlanSpec{
+		SchemaRevision: sunspec.ModelsRevisionV1, BaseCandidates: []uint16{40000},
+		Limits: sunspec.ChainLimits{MaxTotalWords: 1024, MaxOccurrences: 32}, DecoderKeys: registry.DecoderKeys(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	chain, offset := modbusreg.NewSunSpecChain(plan), 0
-	var completed modbusreg.SunSpecChainSnapshot
+	chain, offset := sunspec.NewChain(plan), 0
+	var completed sunspec.ChainSnapshot
 	for id := uint64(1); ; id++ {
 		requests := chain.NextRequests()
 		if len(requests) != 1 {
@@ -683,7 +685,7 @@ func characterizationSunSpecObservation(t *testing.T, words []uint16, pollGenera
 			break
 		}
 	}
-	observation, err := modbusreg.NewSunSpecQualificationObservation(registry, completed)
+	observation, err := fronius.NewSunSpecQualificationObservation(registry, completed)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	"github.com/Project-Helianthus/helianthus-modbusreg/growatt"
 )
 
 const (
@@ -93,17 +94,17 @@ func validateGrowattProtocolIIV1Result(result GrowattProtocolIIV1Result) (Growat
 		return GrowattProtocolIIV1Result{}, ErrGrowattProtocolIIV1NotAdmitted
 	}
 
-	slices := make([]modbusreg.GrowattProtocolIIIdentitySlice, len(native.Slices))
+	slices := make([]growatt.ProtocolIIIdentitySlice, len(native.Slices))
 	for index, slice := range native.Slices {
-		slices[index] = modbusreg.GrowattProtocolIIIdentitySlice{
+		slices[index] = growatt.ProtocolIIIdentitySlice{
 			Offset: slice.Offset,
 			Words:  append([]uint16(nil), slice.Words...),
 		}
 	}
-	observation, err := modbusreg.DecodeGrowattProtocolIIIdentity(modbusreg.GrowattProtocolIIIdentityInput{
+	observation, err := growatt.DecodeGrowattProtocolIIIdentity(growatt.ProtocolIIIdentityInput{
 		UnitID:   native.UnitID,
 		Function: modbusreg.FunctionReadHoldingRegisters,
-		Profile: modbusreg.GrowattProtocolIIIdentityProfile{
+		Profile: growatt.ProtocolIIIdentityProfile{
 			Schema:          "Protocol II v1.24 TL3-X",
 			Family:          native.Family,
 			DeviceType:      native.DeviceType,
@@ -118,7 +119,7 @@ func validateGrowattProtocolIIV1Result(result GrowattProtocolIIV1Result) (Growat
 	return growattProtocolIIV1ResultFromObservation(observation), nil
 }
 
-func growattProtocolIIV1ResultFromObservation(observation modbusreg.GrowattProtocolIIIdentityObservation) GrowattProtocolIIV1Result {
+func growattProtocolIIV1ResultFromObservation(observation growatt.ProtocolIIIdentityObservation) GrowattProtocolIIV1Result {
 	profile := observation.Profile()
 	slices := observation.Slices()
 	nativeSlices := make([]GrowattProtocolIIV1NativeIdentitySlice, len(slices))

@@ -9,7 +9,8 @@ import (
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
-	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	"github.com/Project-Helianthus/helianthus-modbusreg/fronius"
+	"github.com/Project-Helianthus/helianthus-modbusreg/sunspec"
 )
 
 const (
@@ -47,8 +48,8 @@ type sunSpecLiveSmokeQualification struct {
 	Sample           string
 	Capability       string
 	Flavor           string
-	CapabilityReason modbusreg.SunSpecCapabilityReason
-	FlavorReason     modbusreg.SunSpecFroniusFlavorReason
+	CapabilityReason sunspec.CapabilityReason
+	FlavorReason     fronius.SunSpecFroniusFlavorReason
 	// FlavorEvaluations carries the registry's per-flavor reasons so a refusal
 	// is diagnosable from the decision line.
 	FlavorEvaluations []modbusadapter.SunSpecFlavorEvaluation
@@ -273,10 +274,10 @@ func mapSunSpecLiveSmokeQualification(qualification sunSpecLiveSmokeQualificatio
 	switch qualification.Outcome {
 	case modbusadapter.SunSpecQualificationGO:
 		if qualification.Sample == "" ||
-			qualification.Capability != modbusreg.SunSpecThreePhaseMonitoringCapabilityID ||
+			qualification.Capability != sunspec.ThreePhaseMonitoringCapabilityID ||
 			!isSupportedSunSpecLiveSmokeFlavor(qualification.Flavor) ||
-			qualification.CapabilityReason != modbusreg.SunSpecCapabilityReasonAdmitted ||
-			qualification.FlavorReason != modbusreg.SunSpecFroniusFlavorReasonMatched {
+			qualification.CapabilityReason != sunspec.CapabilityReasonAdmitted ||
+			qualification.FlavorReason != fronius.SunSpecFroniusFlavorReasonMatched {
 			base.Decision, base.Outcome, base.Category = sunSpecLiveSmokeDecisionStop, "incoherent", "invalid_qualification"
 			return base
 		}
@@ -299,9 +300,9 @@ func mapSunSpecLiveSmokeQualification(qualification sunSpecLiveSmokeQualificatio
 // the registry may select. A registry match on any other ID is incoherent.
 func isSupportedSunSpecLiveSmokeFlavor(flavor string) bool {
 	switch flavor {
-	case modbusreg.SunSpecFroniusObservedFlavorID,
-		modbusreg.SunSpecFroniusObservedFlavorV11ID,
-		modbusreg.SunSpecFroniusObservedFlavorV12ID:
+	case fronius.SunSpecFroniusObservedFlavorID,
+		fronius.SunSpecFroniusObservedFlavorV11ID,
+		fronius.SunSpecFroniusObservedFlavorV12ID:
 		return true
 	default:
 		return false

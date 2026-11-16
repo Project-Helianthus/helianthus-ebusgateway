@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
-	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	"github.com/Project-Helianthus/helianthus-modbusreg/tesla"
 )
 
 func TestTeslaObserveOfflineControlsPassAndSendNothing(t *testing.T) {
@@ -42,7 +42,7 @@ func TestTeslaObserveOfflineControlsPassAndSendNothing(t *testing.T) {
 			result.Ready != expected.ready || result.FramesSent != 0 {
 			t.Fatalf("control %+v", result)
 		}
-		if !result.Ready && (!result.AcquireRefused || result.LifecycleState == string(modbusreg.TeslaGen3ReadLifecycleReady)) {
+		if !result.Ready && (!result.AcquireRefused || result.LifecycleState == string(tesla.Gen3ReadLifecycleReady)) {
 			t.Fatalf("negative control reached readiness or acquisition: %+v", result)
 		}
 	}
@@ -81,7 +81,7 @@ func TestTeslaObserveLifecycleReplayOfNonMatchingWindowRefusesAcquisition(t *tes
 	}
 	replay := ReplayLifecycle(context.Background(), harness.endpoint, observation, nil)
 	if replay.Ready || !replay.AcquireRefused || replay.FramesSent != 0 || replay.Disposition != LifecycleReplayDisposition ||
-		replay.State != string(modbusreg.TeslaGen3ReadLifecycleUnavailable) {
+		replay.State != string(tesla.Gen3ReadLifecycleUnavailable) {
 		t.Fatalf("replay = %+v", replay)
 	}
 }

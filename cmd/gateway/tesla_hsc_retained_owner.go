@@ -16,7 +16,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal/contributionv1"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
-	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	"github.com/Project-Helianthus/helianthus-modbusreg/tesla"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/packs/evse"
 )
@@ -51,7 +51,7 @@ type TeslaGen3CompletedExchange struct {
 	DriverGeneration uint64
 	Node             byte
 	OperationVersion string
-	Operation        modbusreg.TeslaFC100Operation
+	Operation        tesla.FC100Operation
 	CorrelationID    uint64
 	RequestPayload   []byte
 	RequestADU       []byte
@@ -80,7 +80,7 @@ type TeslaGen3RetainedExchangeEvidence struct {
 	DriverGeneration, CorrelationID   uint64
 	Node                              byte
 	OperationVersion                  string
-	Operation                         modbusreg.TeslaFC100Operation
+	Operation                         tesla.FC100Operation
 	RequestPayload, RequestADU        []byte
 	ResponsePayloads, ResponseADUs    [][]byte
 	ReceiptWall                       time.Time
@@ -107,8 +107,8 @@ type teslaHSCRetainedOwner struct {
 	// pendingSuccessor is a successor whose epoch is already admitted on the
 	// hub but whose Portal attachment failed; a retry completes it.
 	pendingSuccessor *teslaHSCRetainedOwner
-	persistent       *modbusreg.TeslaGen3PersistentCurrentLimit
-	provisional      *modbusreg.TeslaGen3ProvisionalCurrentLimit
+	persistent       *tesla.Gen3PersistentCurrentLimit
+	provisional      *tesla.Gen3ProvisionalCurrentLimit
 	persistentInput  TeslaGen3RetainedExchangeEvidence
 	provisionalIn    [2]TeslaGen3RetainedExchangeEvidence
 	havePersistent   bool
@@ -165,7 +165,7 @@ func validTeslaRetainedConfig(config ebusgateway.TeslaGen3HSCRetainedConfig) boo
 	return validTeslaPublicLabel(config.EndpointID) && validGrowattAssetID(config.AssetID) && validGrowattSourceID(config.SourceID) &&
 		config.AssetID != config.SourceID && semreg.SourceEpochID(config.SourceEpoch).Validate() == nil &&
 		semreg.ClockEpochID(config.ClockEpoch).Validate() == nil && validTeslaPublicLabel(config.EVSEID) &&
-		validTeslaPublicLabel(config.ConnectorID) && config.Profile == modbusreg.TeslaGen3CurrentLimitOperationVersion24443 &&
+		validTeslaPublicLabel(config.ConnectorID) && config.Profile == tesla.Gen3CurrentLimitOperationVersion24443 &&
 		config.DriverGeneration != 0 && config.Node != 0 && config.Node <= 247
 }
 
@@ -193,14 +193,14 @@ func (owner *teslaHSCRetainedOwner) IngestPersistent(ctx context.Context, outcom
 	if !owner.active {
 		return errTeslaHSCRetainedUnavailable
 	}
-	evidence, terminal, err := owner.validateExchange(outcome.Exchange, modbusreg.TeslaFC100OperationWCConfigureSettings)
+	evidence, terminal, err := owner.validateExchange(outcome.Exchange, tesla.FC100OperationWCConfigureSettings)
 	if err != nil {
 		return err
 	}
 	if err := owner.admitAfterRetained(evidence); err != nil {
 		return err
 	}
-	record, err := modbusreg.NewTeslaGen3PersistentCurrentLimit(modbusreg.TeslaGen3PersistentCurrentLimitSpec{
+	record, err := tesla.NewGen3PersistentCurrentLimit(tesla.Gen3PersistentCurrentLimitSpec{
 		OperationVersion: outcome.Exchange.OperationVersion, MaxOutputCurrentAmps: outcome.MaxOutputCurrentAmps,
 		RequestPayload: outcome.Exchange.RequestPayload, TerminalPayload: terminal,
 	})
@@ -225,11 +225,11 @@ func (owner *teslaHSCRetainedOwner) IngestProvisional(ctx context.Context, outco
 	if outcome.Set.CorrelationID == 0 || outcome.Set.CorrelationID >= outcome.Readback.CorrelationID {
 		return errors.New("tesla HSC provisional correlation is invalid")
 	}
-	setEvidence, ack, err := owner.validateExchange(outcome.Set, modbusreg.TeslaFC100OperationWCSetProvisional)
+	setEvidence, ack, err := owner.validateExchange(outcome.Set, tesla.FC100OperationWCSetProvisional)
 	if err != nil {
 		return err
 	}
-	readEvidence, terminal, err := owner.validateExchange(outcome.Readback, modbusreg.TeslaFC100OperationWCGetProvisional)
+	readEvidence, terminal, err := owner.validateExchange(outcome.Readback, tesla.FC100OperationWCGetProvisional)
 	if err != nil {
 		return err
 	}
@@ -239,7 +239,7 @@ func (owner *teslaHSCRetainedOwner) IngestProvisional(ctx context.Context, outco
 	if err := owner.admitAfterRetained(setEvidence); err != nil {
 		return err
 	}
-	record, err := modbusreg.NewTeslaGen3ProvisionalCurrentLimit(modbusreg.TeslaGen3ProvisionalCurrentLimitSpec{
+	record, err := tesla.NewGen3ProvisionalCurrentLimit(tesla.Gen3ProvisionalCurrentLimitSpec{
 		OperationVersion: outcome.Set.OperationVersion, LimitCurrentMaxAmps: outcome.LimitCurrentMaxAmps,
 		LimitTimeoutSeconds: outcome.LimitTimeoutSeconds, InhibitCharging: outcome.InhibitCharging,
 		SetRequestPayload: outcome.Set.RequestPayload, AckPayload: ack,
@@ -259,7 +259,7 @@ func (owner *teslaHSCRetainedOwner) admitAfterRetained(evidence TeslaGen3Retaine
 	return nil
 }
 
-func (owner *teslaHSCRetainedOwner) validateExchange(exchange TeslaGen3CompletedExchange, operation modbusreg.TeslaFC100Operation) (TeslaGen3RetainedExchangeEvidence, []byte, error) {
+func (owner *teslaHSCRetainedOwner) validateExchange(exchange TeslaGen3CompletedExchange, operation tesla.FC100Operation) (TeslaGen3RetainedExchangeEvidence, []byte, error) {
 	if exchange.EndpointID != owner.cfg.EndpointID || exchange.SourceID != owner.cfg.SourceID || exchange.SourceEpoch != owner.cfg.SourceEpoch ||
 		exchange.DriverGeneration != owner.cfg.DriverGeneration || exchange.Node != owner.cfg.Node ||
 		exchange.OperationVersion != owner.cfg.Profile || exchange.Operation != operation || exchange.CorrelationID == 0 ||
@@ -289,8 +289,8 @@ func (owner *teslaHSCRetainedOwner) validateExchange(exchange TeslaGen3Completed
 		payloads = append(payloads, append([]byte(nil), frame.Payload...))
 		adus = append(adus, append([]byte(nil), frame.ADU...))
 	}
-	results, err := modbusreg.DecodeTeslaFC100OperationSequence(exchange.OperationVersion, operation, exchange.RequestPayload, payloads)
-	if err != nil || len(results) == 0 || results[len(results)-1].Kind != modbusreg.TeslaFC100OperationTerminal {
+	results, err := tesla.DecodeTeslaFC100OperationSequence(exchange.OperationVersion, operation, exchange.RequestPayload, payloads)
+	if err != nil || len(results) == 0 || results[len(results)-1].Kind != tesla.FC100OperationTerminal {
 		return TeslaGen3RetainedExchangeEvidence{}, nil, errors.New("tesla HSC operation outcome correlation is invalid")
 	}
 	evidence := TeslaGen3RetainedExchangeEvidence{
@@ -304,7 +304,7 @@ func (owner *teslaHSCRetainedOwner) validateExchange(exchange TeslaGen3Completed
 	return evidence, append([]byte(nil), payloads[len(payloads)-1]...), nil
 }
 
-func (owner *teslaHSCRetainedOwner) publishAndCommit(persistent *modbusreg.TeslaGen3PersistentCurrentLimit, provisional *modbusreg.TeslaGen3ProvisionalCurrentLimit, persistentInput TeslaGen3RetainedExchangeEvidence, provisionalInput [2]TeslaGen3RetainedExchangeEvidence, setPersistent, setProvisional bool) error {
+func (owner *teslaHSCRetainedOwner) publishAndCommit(persistent *tesla.Gen3PersistentCurrentLimit, provisional *tesla.Gen3ProvisionalCurrentLimit, persistentInput TeslaGen3RetainedExchangeEvidence, provisionalInput [2]TeslaGen3RetainedExchangeEvidence, setPersistent, setProvisional bool) error {
 	nextPersistent, nextProvisional := owner.persistent, owner.provisional
 	nextPersistentEvidence, nextProvisionalEvidence := owner.persistentInput, owner.provisionalIn
 	havePersistent, haveProvisional := owner.havePersistent, owner.haveProvisional

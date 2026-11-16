@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	"github.com/Project-Helianthus/helianthus-modbusreg/growatt"
 )
 
 var (
@@ -17,7 +17,7 @@ var (
 type GrowattProtocolIIV1ProviderSnapshot struct {
 	Profile                 string
 	OfflineIdentityAdmitted bool
-	Identity                modbusreg.GrowattProtocolIIIdentityInput
+	Identity                growatt.ProtocolIIIdentityInput
 }
 
 type GrowattProtocolIIV1SnapshotProvider interface {
@@ -46,7 +46,7 @@ func (runtime *GrowattProtocolIIV1Runtime) GrowattProtocolIIV1(ctx context.Conte
 	if snapshot.Profile != GrowattProtocolIIV1Profile || !snapshot.OfflineIdentityAdmitted {
 		return GrowattProtocolIIV1Result{}, ErrGrowattProtocolIIV1NotAdmitted
 	}
-	observation, err := modbusreg.DecodeGrowattProtocolIIIdentity(snapshot.Identity)
+	observation, err := growatt.DecodeGrowattProtocolIIIdentity(snapshot.Identity)
 	if err != nil {
 		return GrowattProtocolIIV1Result{}, ErrGrowattProtocolIIV1NotAdmitted
 	}

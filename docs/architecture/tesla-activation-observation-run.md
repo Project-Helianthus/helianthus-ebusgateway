@@ -61,7 +61,7 @@ instance and follows the hook contract:
 ## Offline lifecycle replay and controls
 
 Each attempt's observation is passed once through the pinned registry
-`TeslaGen3ReadAcquisition` lifecycle. That lifecycle is configured with the
+`tesla.Gen3ReadAcquisition` lifecycle. That lifecycle is configured with the
 five observation operations (`common.system_info`, `wc.get_vitals`,
 `wc.get_lifetime_stats`, `wc.get_system_info`, `wc.get_load_sharing_state`)
 and with a control endpoint that has no transport. The replay records the

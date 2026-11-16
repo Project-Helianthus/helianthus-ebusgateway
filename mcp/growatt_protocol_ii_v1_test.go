@@ -11,6 +11,7 @@ import (
 
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	"github.com/Project-Helianthus/helianthus-modbusreg/growatt"
 )
 
 type growattProtocolIIV1FixtureProvider struct {
@@ -142,18 +143,18 @@ func compareGrowattProtocolIIV1Golden(t *testing.T, name, got string) {
 	}
 }
 
-func tinyGrowattIdentityInput() modbusreg.GrowattProtocolIIIdentityInput {
-	return modbusreg.GrowattProtocolIIIdentityInput{
+func tinyGrowattIdentityInput() growatt.ProtocolIIIdentityInput {
+	return growatt.ProtocolIIIdentityInput{
 		UnitID:   1,
 		Function: modbusreg.FunctionReadHoldingRegisters,
-		Profile: modbusreg.GrowattProtocolIIIdentityProfile{
+		Profile: growatt.ProtocolIIIdentityProfile{
 			Schema:          "Protocol II v1.24 TL3-X",
 			Family:          "MAX",
 			DeviceType:      0x1234,
 			ModelBuild:      [2]uint16{0x4d41, 0x5831},
 			ProtocolVersion: 0x0124,
 		},
-		Slices: []modbusreg.GrowattProtocolIIIdentitySlice{
+		Slices: []growatt.ProtocolIIIdentitySlice{
 			{Offset: 9, Words: []uint16{0x4657, 0x2d31, 0, 0, 0, 0}},
 			{Offset: 23, Words: []uint16{0x534e, 0x2d30, 0x3030, 0x3100, 0}},
 			{Offset: 43, Words: []uint16{0x1234}},
@@ -163,16 +164,16 @@ func tinyGrowattIdentityInput() modbusreg.GrowattProtocolIIIdentityInput {
 	}
 }
 
-func fixtureInput(input modbusreg.GrowattProtocolIIIdentityInput) modbusreg.GrowattProtocolIIIdentityInput {
-	input.Slices = append([]modbusreg.GrowattProtocolIIIdentitySlice(nil), input.Slices...)
+func fixtureInput(input growatt.ProtocolIIIdentityInput) growatt.ProtocolIIIdentityInput {
+	input.Slices = append([]growatt.ProtocolIIIdentitySlice(nil), input.Slices...)
 	for index := range input.Slices {
 		input.Slices[index].Words = append([]uint16(nil), input.Slices[index].Words...)
 	}
 	return input
 }
 
-func growattProtocolIIV1ResultFromInput(input modbusreg.GrowattProtocolIIIdentityInput) GrowattProtocolIIV1Result {
-	observation, err := modbusreg.DecodeGrowattProtocolIIIdentity(input)
+func growattProtocolIIV1ResultFromInput(input growatt.ProtocolIIIdentityInput) GrowattProtocolIIV1Result {
+	observation, err := growatt.DecodeGrowattProtocolIIIdentity(input)
 	if err != nil {
 		panic(err)
 	}

@@ -8,7 +8,7 @@ import (
 	"time"
 
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
-	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	"github.com/Project-Helianthus/helianthus-modbusreg/huawei"
 )
 
 // ReadOnlySession binds the registry's two read operations to one connected
@@ -128,30 +128,30 @@ func (s *ReadOnlySession) ReadHolding(ctx context.Context, unit byte, request mo
 	}
 }
 
-func (s *ReadOnlySession) ReadDeviceIdentification(ctx context.Context, unit byte, input modbusreg.HuaweiIdentificationRequest) (modbusreg.HuaweiIdentificationPage, error) {
+func (s *ReadOnlySession) ReadDeviceIdentification(ctx context.Context, unit byte, input huawei.IdentificationRequest) (huawei.IdentificationPage, error) {
 	if input.ReadDeviceIDCode != 1 && input.ReadDeviceIDCode != 3 {
-		return modbusreg.HuaweiIdentificationPage{}, errors.New("read-only identification code refused")
+		return huawei.IdentificationPage{}, errors.New("read-only identification code refused")
 	}
 	if err := s.check(); err != nil {
-		return modbusreg.HuaweiIdentificationPage{}, err
+		return huawei.IdentificationPage{}, err
 	}
 	a := s.adapter
 	if err := a.executeMu.Lock(ctx); err != nil {
-		return modbusreg.HuaweiIdentificationPage{}, err
+		return huawei.IdentificationPage{}, err
 	}
 	defer a.executeMu.Unlock()
 	if err := s.check(); err != nil {
-		return modbusreg.HuaweiIdentificationPage{}, err
+		return huawei.IdentificationPage{}, err
 	}
 	endpoint, ok := a.endpoint.(interface {
 		EnqueueDeviceID(modbus.TCPDeviceIDPlan) (modbus.TCPRequestHandle, error)
 	})
 	if !ok {
-		return modbusreg.HuaweiIdentificationPage{}, errors.New("endpoint identification unavailable")
+		return huawei.IdentificationPage{}, errors.New("endpoint identification unavailable")
 	}
 	if pacing := a.config.Pacing; pacing != nil {
 		if err := a.awaitPacingLocked(ctx, *pacing); err != nil {
-			return modbusreg.HuaweiIdentificationPage{}, err
+			return huawei.IdentificationPage{}, err
 		}
 		defer func() { a.completedAt = time.Now() }()
 	}
@@ -160,7 +160,7 @@ func (s *ReadOnlySession) ReadDeviceIdentification(ctx context.Context, unit byt
 		request, err = modbus.NewExtendedDeviceIDStreamRequest(input.ObjectID)
 	}
 	if err != nil {
-		return modbusreg.HuaweiIdentificationPage{}, err
+		return huawei.IdentificationPage{}, err
 	}
 	// Exactly one page per provider call: continuation is owned by the native
 	// provider, including its inter-request gap and anomaly admission rules.
@@ -169,7 +169,7 @@ func (s *ReadOnlySession) ReadDeviceIdentification(ctx context.Context, unit byt
 	n := s.sequence.Add(1)
 	handle, err := endpoint.EnqueueDeviceID(modbus.TCPDeviceIDPlan{Connection: a.connection, UnitID: unit, AuthorizationScope: "huawei.readonly", PollGeneration: s.generation, DeadlineIdentity: n, Timeout: sessionTimeout(ctx), Request: request, Limits: limits, Decoding: modbus.DeviceIDDecodingTolerant})
 	if err != nil {
-		return modbusreg.HuaweiIdentificationPage{}, err
+		return huawei.IdentificationPage{}, err
 	}
 	a.connectionMu.Lock()
 	a.lastRequest = handle
@@ -177,27 +177,27 @@ func (s *ReadOnlySession) ReadDeviceIdentification(ctx context.Context, unit byt
 	dispatch, ok := a.Dispatch()
 	if !ok || dispatch.RequestID() != handle.RequestID() {
 		_ = a.Cancel(handle)
-		return modbusreg.HuaweiIdentificationPage{}, errors.New("identification dispatch refused")
+		return huawei.IdentificationPage{}, errors.New("identification dispatch refused")
 	}
 	if _, err = a.Write(ctx, dispatch); err != nil {
-		return modbusreg.HuaweiIdentificationPage{}, err
+		return huawei.IdentificationPage{}, err
 	}
 	batch, err := a.Read(ctx)
 	if err != nil {
-		return modbusreg.HuaweiIdentificationPage{}, sessionReadError(err)
+		return huawei.IdentificationPage{}, sessionReadError(err)
 	}
 	for {
 		if err := ctx.Err(); err != nil {
-			return modbusreg.HuaweiIdentificationPage{}, err
+			return huawei.IdentificationPage{}, err
 		}
 		for _, response := range batch.Responses {
 			if response.Provenance().UnitID != unit || !response.Deliverable() {
 				continue
 			}
 			if page, ok := response.DeviceIDPage(); ok {
-				out := modbusreg.HuaweiIdentificationPage{ReadDeviceIDCode: uint8(page.AccessCode), Conformity: uint8(page.Conformity), ResponseBytes: len(page.PDU), DeclaredObjects: page.DeclaredObjects, More: page.MoreFollows(), NextObjectID: page.NextObjectID}
+				out := huawei.IdentificationPage{ReadDeviceIDCode: uint8(page.AccessCode), Conformity: uint8(page.Conformity), ResponseBytes: len(page.PDU), DeclaredObjects: page.DeclaredObjects, More: page.MoreFollows(), NextObjectID: page.NextObjectID}
 				for _, object := range page.Objects {
-					out.Objects = append(out.Objects, modbusreg.HuaweiGatewayInventoryObject{ObjectID: object.ID, Value: append([]byte(nil), object.Value...)})
+					out.Objects = append(out.Objects, huawei.GatewayInventoryObject{ObjectID: object.ID, Value: append([]byte(nil), object.Value...)})
 				}
 				return out, nil
 			}
@@ -205,18 +205,18 @@ func (s *ReadOnlySession) ReadDeviceIdentification(ctx context.Context, unit byt
 			if len(raw) >= 7 {
 				_, decodeErr := modbus.DecodeDeviceIDPage(request, raw[7:])
 				if decodeErr != nil {
-					return modbusreg.HuaweiIdentificationPage{}, decodeErr
+					return huawei.IdentificationPage{}, decodeErr
 				}
 			}
 		}
 		batch, err = a.Read(ctx)
 		if err != nil {
-			return modbusreg.HuaweiIdentificationPage{}, sessionReadError(err)
+			return huawei.IdentificationPage{}, sessionReadError(err)
 		}
 	}
 }
 
-var _ modbusreg.HuaweiProviderSession = (*ReadOnlySession)(nil)
+var _ huawei.ProviderSession = (*ReadOnlySession)(nil)
 
 func sessionReadError(err error) error {
 	var timeout net.Error

@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
-	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	"github.com/Project-Helianthus/helianthus-modbusreg/huawei"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 	pv "github.com/Project-Helianthus/helianthus-semreg/semreg/v1/packs/pv"
 )
@@ -57,10 +57,10 @@ type huaweiPVPublication struct {
 	retireMu sync.Mutex
 	retired  bool
 	origin   time.Time
-	native   modbusreg.HuaweiProviderCycle
+	native   huawei.ProviderCycle
 	// latest is the most recent cycle offered to Publish. It is stored under
 	// mu with the published assets so status reads one coherent pair.
-	latest       modbusreg.HuaweiProviderCycle
+	latest       huawei.ProviderCycle
 	published    map[byte]semreg.AssetID
 	incarnations map[byte]uint64
 	// refused names, per routed unit, why the publication refused a child the
@@ -323,7 +323,7 @@ func (p *huaweiPVPublication) Fence() error {
 	}
 	return err
 }
-func (p *huaweiPVPublication) Publish(cycle modbusreg.HuaweiProviderCycle) error {
+func (p *huaweiPVPublication) Publish(cycle huawei.ProviderCycle) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.latest = cycle
@@ -336,7 +336,7 @@ func (p *huaweiPVPublication) Publish(cycle modbusreg.HuaweiProviderCycle) error
 	if cycle.Cycle == 0 || cycle.Generation == 0 || cycle.CompletedAt.IsZero() || cycle.StartedAt.After(cycle.CompletedAt) {
 		return errors.New("huawei cycle lifecycle incomplete")
 	}
-	if cycle.Path != modbusreg.HuaweiProviderPathSmartLogger && cycle.Path != modbusreg.HuaweiProviderPathSDongle {
+	if cycle.Path != huawei.ProviderPathSmartLogger && cycle.Path != huawei.ProviderPathSDongle {
 		return errors.New("huawei provider path not admitted")
 	}
 	if p.native.Generation != 0 && (cycle.Generation < p.native.Generation || cycle.Generation == p.native.Generation && cycle.Cycle <= p.native.Cycle) {
@@ -353,8 +353,8 @@ func (p *huaweiPVPublication) Publish(cycle modbusreg.HuaweiProviderCycle) error
 	// Retain the exact typed native cycle even when a semantic field is withheld.
 	p.native = cycle
 	for _, child := range cycle.Children {
-		admitted := child.Evidence != modbusreg.HuaweiProviderEvidenceWithheld && child.Reading.ProfileID() == child.ProfileID && child.Reading.UnitID() == child.UnitID && child.IdentifiedGeneration == cycle.Generation && child.Catalog != nil && child.Catalog.Outcome() == modbusreg.HuaweiSUN2000CatalogSelected
-		admitted = admitted && (cycle.Path == modbusreg.HuaweiProviderPathSmartLogger && child.ProfileID == modbusreg.HuaweiSUN2000M3MonitoringProfileID || cycle.Path == modbusreg.HuaweiProviderPathSDongle && child.ProfileID == modbusreg.HuaweiSUN2000M1MonitoringProfileID)
+		admitted := child.Evidence != huawei.ProviderEvidenceWithheld && child.Reading.ProfileID() == child.ProfileID && child.Reading.UnitID() == child.UnitID && child.IdentifiedGeneration == cycle.Generation && child.Catalog != nil && child.Catalog.Outcome() == huawei.SUN2000CatalogSelected
+		admitted = admitted && (cycle.Path == huawei.ProviderPathSmartLogger && child.ProfileID == huawei.SUN2000M3MonitoringProfileID || cycle.Path == huawei.ProviderPathSDongle && child.ProfileID == huawei.SUN2000M1MonitoringProfileID)
 		if !admitted {
 			if id, ok := p.published[child.UnitID]; ok {
 				if err := p.publishChild(id, child, cycle, true); err != nil {
@@ -378,7 +378,7 @@ func (p *huaweiPVPublication) Publish(cycle modbusreg.HuaweiProviderCycle) error
 	}
 	// Only a completed enumeration can establish absence. Incomplete cycles
 	// preserve last-known state and never convert an unanswered listing to empty.
-	if cycle.Outcome == modbusreg.HuaweiProviderCycleComplete {
+	if cycle.Outcome == huawei.ProviderCycleComplete {
 		var units []int
 		for unit := range p.published {
 			if !seen[unit] {
@@ -388,7 +388,7 @@ func (p *huaweiPVPublication) Publish(cycle modbusreg.HuaweiProviderCycle) error
 		sort.Ints(units)
 		for _, unit := range units {
 			u := byte(unit)
-			if err := p.publishChild(p.published[u], modbusreg.HuaweiProviderChildObservation{UnitID: u}, cycle, true); err != nil {
+			if err := p.publishChild(p.published[u], huawei.ProviderChildObservation{UnitID: u}, cycle, true); err != nil {
 				failures = append(failures, err)
 			} else {
 				delete(p.published, u)
@@ -415,7 +415,7 @@ func (p *huaweiPVPublication) admitRetained(unit byte, asset semreg.AssetID, cur
 	return ids, records, nil
 }
 
-func (p *huaweiPVPublication) publishChild(asset semreg.AssetID, child modbusreg.HuaweiProviderChildObservation, cycle modbusreg.HuaweiProviderCycle, withdraw bool) error {
+func (p *huaweiPVPublication) publishChild(asset semreg.AssetID, child huawei.ProviderChildObservation, cycle huawei.ProviderCycle, withdraw bool) error {
 	if !p.active() {
 		return errors.New("huawei publication generation withdrawn")
 	}
@@ -434,9 +434,9 @@ func (p *huaweiPVPublication) publishChild(asset semreg.AssetID, child modbusreg
 	evidence := huaweiEvidence("native.huawei.provider.observation", struct {
 		Cycle      uint64
 		Generation uint64
-		Child      modbusreg.HuaweiProviderChildObservation
-		Facts      []modbusreg.HuaweiSUN2000Fact
-		Groups     []modbusreg.HuaweiSUN2000GroupReading
+		Child      huawei.ProviderChildObservation
+		Facts      []huawei.SUN2000Fact
+		Groups     []huawei.SUN2000GroupReading
 	}{cycle.Cycle, cycle.Generation, child, child.Reading.Facts(), child.Reading.Groups()})
 	source, epoch, generation := p.handle.Source(), p.handle.Epoch(), p.handle.GenerationID()
 	incarnation := p.incarnations[child.UnitID]
@@ -544,20 +544,20 @@ func (p *huaweiPVPublication) publishChild(asset semreg.AssetID, child modbusreg
 	return err
 }
 
-func (p *huaweiPVPublication) facts(asset semreg.AssetID, binding semreg.NativeBindingID, child modbusreg.HuaweiProviderChildObservation, cycle modbusreg.HuaweiProviderCycle, evidence semreg.EvidenceRef, current semreg.Snapshot) ([]semreg.FactCandidate, error) {
+func (p *huaweiPVPublication) facts(asset semreg.AssetID, binding semreg.NativeBindingID, child huawei.ProviderChildObservation, cycle huawei.ProviderCycle, evidence semreg.EvidenceRef, current semreg.Snapshot) ([]semreg.FactCandidate, error) {
 	out := []semreg.FactCandidate{}
 	registry, err := semreg.NewRegistry(pv.New())
 	if err != nil {
 		return nil, err
 	}
 	for _, native := range child.Reading.Facts() {
-		if native.Availability != modbusreg.HuaweiFactValue {
+		if native.Availability != huawei.FactValue {
 			continue
 		}
 		id, dimension, unit, group := semreg.DefinitionID(""), "", "", uint16(0)
 		number := semreg.Decimal{Coefficient: strconv.FormatInt(native.Value.Coefficient, 10), Exponent10: int32(native.Value.Exponent)}
 		keyPrefix := "huawei.sun2000.m3."
-		if child.ProfileID == modbusreg.HuaweiSUN2000M1MonitoringProfileID {
+		if child.ProfileID == huawei.SUN2000M1MonitoringProfileID {
 			keyPrefix = "huawei.sun2000.m1."
 		}
 		switch strings.TrimPrefix(native.Key, keyPrefix) {

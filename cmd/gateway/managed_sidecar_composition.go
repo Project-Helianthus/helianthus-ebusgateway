@@ -20,7 +20,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
-	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	"github.com/Project-Helianthus/helianthus-modbusreg/fronius"
 )
 
 const (
@@ -830,7 +830,7 @@ func (p managedModbusAdapter) ProfileObservation(profile, asset string) (out mod
 	_ = p.bindings.modbus(context.Background(), func(a *modbusadapter.Adapter) error { out, ok = a.ProfileObservation(profile, asset); return nil })
 	return
 }
-func (p managedModbusAdapter) SunSpecQualificationObservation(profile, asset string) (out modbusreg.SunSpecQualificationObservation, data []byte, ok bool) {
+func (p managedModbusAdapter) SunSpecQualificationObservation(profile, asset string) (out fronius.SunSpecQualificationObservation, data []byte, ok bool) {
 	_ = p.bindings.modbus(context.Background(), func(a *modbusadapter.Adapter) error {
 		out, data, ok = a.SunSpecQualificationObservation(profile, asset)
 		return nil

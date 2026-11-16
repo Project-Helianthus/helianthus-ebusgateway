@@ -15,7 +15,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/drivermanager"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
-	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	"github.com/Project-Helianthus/helianthus-modbusreg/fronius"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 )
 
@@ -146,7 +146,7 @@ func TestManagedReplacementRetainsRefreshEvidenceAcrossIdentities(t *testing.T) 
 	scope := &PublicationScope{Epoch: "source-epoch:pv:retained-identities", Generation: 1}
 	adapter := startManagedPublicationTestAdapter(t, class, scope)
 	words := observedFroniusFloatWords()
-	observations := make([]modbusreg.SunSpecQualificationObservation, 0, 2)
+	observations := make([]fronius.SunSpecQualificationObservation, 0, 2)
 	assets := make([]semreg.AssetID, 0, 2)
 	for i := 0; i < 2; i++ {
 		if i != 0 {

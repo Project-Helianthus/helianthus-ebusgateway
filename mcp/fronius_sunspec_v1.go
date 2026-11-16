@@ -6,7 +6,7 @@ import (
 	"math"
 	"sync"
 
-	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	"github.com/Project-Helianthus/helianthus-modbusreg/sunspec"
 )
 
 const (
@@ -72,7 +72,7 @@ func (server *Server) handleFroniusSunSpecV1Call(ctx context.Context, name strin
 
 func normalizeFroniusSunSpecV1Result(result FroniusSunSpecV1Result, err error) FroniusSunSpecV1Result {
 	result.Profile = FroniusSunSpecV1Profile
-	result.Capability = modbusreg.SunSpecThreePhaseMonitoringCapabilityID
+	result.Capability = sunspec.ThreePhaseMonitoringCapabilityID
 	if err != nil || !result.Qualified || !validFroniusSunSpecV1Telemetry(result.Telemetry) {
 		result.Qualified = false
 		result.Qualification = "NOT_QUALIFIED"

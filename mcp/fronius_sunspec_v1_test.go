@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
-	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	"github.com/Project-Helianthus/helianthus-modbusreg/sunspec"
 )
 
 type froniusSunSpecFixture struct{ *modbusV1FixtureProvider }
@@ -37,7 +37,7 @@ func TestFroniusSunSpecV1ToolProjectsOnlyQualifiedStandardTelemetry(t *testing.T
 		t.Fatal(r)
 	}
 	d := msp06Map(t, r.envelope["data"], "data")
-	if d["profile"] != FroniusSunSpecV1Profile || d["capability"] != modbusreg.SunSpecThreePhaseMonitoringCapabilityID || d["qualification"] != "QUALIFIED" || d["qualified"] != true || d["raw_redacted"] != false || d["outbound_allowed"] != true {
+	if d["profile"] != FroniusSunSpecV1Profile || d["capability"] != sunspec.ThreePhaseMonitoringCapabilityID || d["qualification"] != "QUALIFIED" || d["qualified"] != true || d["raw_redacted"] != false || d["outbound_allowed"] != true {
 		t.Fatalf("%#v", d)
 	}
 	telemetry := msp06Map(t, d["telemetry"], "telemetry")

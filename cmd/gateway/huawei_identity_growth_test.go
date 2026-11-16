@@ -16,7 +16,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
-	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	"github.com/Project-Helianthus/helianthus-modbusreg/huawei"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 )
 
@@ -102,16 +102,16 @@ func growthFirstBound(base, delta growthCounts, links bool) (int, string) {
 // growthFixtureCycle replays the fixture's first cycle and keeps two admitted
 // children. A fixture with one admitted child gets a synthetic sibling decoded
 // from the same answered groups under the next routed unit.
-func growthFixtureCycle(t *testing.T, name string) modbusreg.HuaweiProviderCycle {
+func growthFixtureCycle(t *testing.T, name string) huawei.ProviderCycle {
 	t.Helper()
 	provider, _, _, clock := h10Native(t, h10Load(t, name))
 	cycle := h10Refresh(t, provider, clock)
-	if cycle.Outcome != modbusreg.HuaweiProviderCycleComplete {
+	if cycle.Outcome != huawei.ProviderCycleComplete {
 		t.Fatalf("fixture cycle outcome %s", cycle.Outcome)
 	}
-	var admitted []modbusreg.HuaweiProviderChildObservation
+	var admitted []huawei.ProviderChildObservation
 	for _, child := range cycle.Children {
-		if child.Evidence != modbusreg.HuaweiProviderEvidenceWithheld {
+		if child.Evidence != huawei.ProviderEvidenceWithheld {
 			admitted = append(admitted, child)
 		}
 	}
@@ -125,17 +125,17 @@ func growthFixtureCycle(t *testing.T, name string) modbusreg.HuaweiProviderCycle
 	return cycle
 }
 
-func growthSyntheticSibling(t *testing.T, child modbusreg.HuaweiProviderChildObservation) modbusreg.HuaweiProviderChildObservation {
+func growthSyntheticSibling(t *testing.T, child huawei.ProviderChildObservation) huawei.ProviderChildObservation {
 	t.Helper()
-	var profile modbusreg.HuaweiSUN2000MonitoringProfile
-	for _, candidate := range modbusreg.HuaweiSUN2000MonitoringProfiles() {
+	var profile huawei.SUN2000MonitoringProfile
+	for _, candidate := range huawei.SUN2000MonitoringProfiles() {
 		if candidate.ID() == child.ProfileID {
 			profile = candidate
 		}
 	}
-	var answered []modbusreg.HuaweiSUN2000GroupReading
+	var answered []huawei.SUN2000GroupReading
 	for _, group := range child.Reading.Groups() {
-		if group.Outcome == modbusreg.HuaweiSUN2000GroupAnswered {
+		if group.Outcome == huawei.SUN2000GroupAnswered {
 			answered = append(answered, group)
 		}
 	}
@@ -146,7 +146,7 @@ func growthSyntheticSibling(t *testing.T, child modbusreg.HuaweiProviderChildObs
 		t.Fatal(err)
 	}
 	sibling.Reading = reading
-	sibling.Groups = append([]modbusreg.HuaweiProviderGroupEvidence(nil), child.Groups...)
+	sibling.Groups = append([]huawei.ProviderGroupEvidence(nil), child.Groups...)
 	return sibling
 }
 
@@ -156,12 +156,12 @@ type growthRig struct {
 	t               *testing.T
 	hub             *semhub.Hub
 	pub             *huaweiPVPublication
-	cycle           modbusreg.HuaweiProviderCycle
-	victim, sibling modbusreg.HuaweiProviderChildObservation
+	cycle           huawei.ProviderCycle
+	victim, sibling huawei.ProviderChildObservation
 	assets          [2]semreg.AssetID
 }
 
-func growthSetup(t *testing.T, cycle modbusreg.HuaweiProviderCycle) *growthRig {
+func growthSetup(t *testing.T, cycle huawei.ProviderCycle) *growthRig {
 	t.Helper()
 	hub := newTestSemanticHub(t)
 	pub, err := newHuaweiPVPublication(hub, "growth-test", "source:synthetic", "alpha", nil, func() bool { return true })
@@ -185,7 +185,7 @@ func (r *growthRig) must(err error) {
 }
 
 // publish offers the next cycle, one second after the last, with children.
-func (r *growthRig) publish(outcome modbusreg.HuaweiProviderCycleOutcome, children ...modbusreg.HuaweiProviderChildObservation) error {
+func (r *growthRig) publish(outcome huawei.ProviderCycleOutcome, children ...huawei.ProviderChildObservation) error {
 	r.cycle.Cycle++
 	r.cycle.StartedAt = r.cycle.StartedAt.Add(time.Second)
 	r.cycle.CompletedAt = r.cycle.CompletedAt.Add(time.Second)
@@ -194,16 +194,16 @@ func (r *growthRig) publish(outcome modbusreg.HuaweiProviderCycleOutcome, childr
 	return r.pub.Publish(r.cycle)
 }
 
-func growthAs(child modbusreg.HuaweiProviderChildObservation, evidence modbusreg.HuaweiProviderEvidenceState, reason modbusreg.HuaweiProviderReason) modbusreg.HuaweiProviderChildObservation {
+func growthAs(child huawei.ProviderChildObservation, evidence huawei.ProviderEvidenceState, reason huawei.ProviderReason) huawei.ProviderChildObservation {
 	child.Evidence, child.Reason = evidence, reason
 	return child
 }
 
 // growthRebase identifies a child in a new transport generation: its groups
 // are read again in that generation.
-func growthRebase(child modbusreg.HuaweiProviderChildObservation, generation uint64) modbusreg.HuaweiProviderChildObservation {
+func growthRebase(child huawei.ProviderChildObservation, generation uint64) huawei.ProviderChildObservation {
 	child.IdentifiedGeneration = generation
-	child.Groups = append([]modbusreg.HuaweiProviderGroupEvidence(nil), child.Groups...)
+	child.Groups = append([]huawei.ProviderGroupEvidence(nil), child.Groups...)
 	for i := range child.Groups {
 		child.Groups[i].Generation = generation
 	}
@@ -344,13 +344,13 @@ var growthIncarnation = growthCounts{Bindings: 1, Links: 1}
 // sibling, it carries the victim alone in an incomplete listing: the sibling
 // stays published and is sampled without a batch every cycle.
 func (r *growthRig) readmit() error {
-	return r.publish(modbusreg.HuaweiProviderCycleIncomplete, r.victim)
+	return r.publish(huawei.ProviderCycleIncomplete, r.victim)
 }
 
 func growthScenarios() []growthScenario {
-	complete, incomplete := modbusreg.HuaweiProviderCycleComplete, modbusreg.HuaweiProviderCycleIncomplete
+	complete, incomplete := huawei.ProviderCycleComplete, huawei.ProviderCycleIncomplete
 	out := []growthScenario{{"identity change", growthGenuine, 140, func(r *growthRig) error {
-		r.must(r.publish(incomplete, growthAs(r.victim, modbusreg.HuaweiProviderEvidenceWithheld, modbusreg.HuaweiProviderReasonIdentityMismatch)))
+		r.must(r.publish(incomplete, growthAs(r.victim, huawei.ProviderEvidenceWithheld, huawei.ProviderReasonIdentityMismatch)))
 		return r.readmit()
 	}, growthIncarnation}}
 	for lag, cycles := range []string{1: "one stale cycle", 2: "two stale cycles"} {
@@ -358,17 +358,17 @@ func growthScenarios() []growthScenario {
 			out = append(out, growthScenario{"reconnect, identified after " + cycles, growthTransientLoss, 20, growthReconnect(lag), growthIncarnation})
 		}
 	}
-	reasons := []modbusreg.HuaweiProviderReason{modbusreg.HuaweiProviderReasonChildTimeout, modbusreg.HuaweiProviderReasonChildReadFailed, modbusreg.HuaweiProviderReasonChildBackoff, modbusreg.HuaweiProviderReasonListingUnconfirmed}
-	for _, evidence := range []modbusreg.HuaweiProviderEvidenceState{modbusreg.HuaweiProviderEvidenceStale, modbusreg.HuaweiProviderEvidenceWithheld} {
+	reasons := []huawei.ProviderReason{huawei.ProviderReasonChildTimeout, huawei.ProviderReasonChildReadFailed, huawei.ProviderReasonChildBackoff, huawei.ProviderReasonListingUnconfirmed}
+	for _, evidence := range []huawei.ProviderEvidenceState{huawei.ProviderEvidenceStale, huawei.ProviderEvidenceWithheld} {
 		grows := growthCounts{}
-		if evidence == modbusreg.HuaweiProviderEvidenceWithheld {
+		if evidence == huawei.ProviderEvidenceWithheld {
 			grows = growthIncarnation
 		}
 		for _, reason := range reasons {
 			out = append(out, growthScenario{fmt.Sprintf("%s reported %s", reason, strings.ToLower(string(evidence))), growthTransientLoss, 20, growthTransient(reason, evidence), grows})
 		}
 	}
-	for _, outcome := range []modbusreg.HuaweiProviderCycleOutcome{complete, incomplete} {
+	for _, outcome := range []huawei.ProviderCycleOutcome{complete, incomplete} {
 		name, class, grows := "absent from an incomplete listing", growthNoAbsence, growthCounts{}
 		if outcome == complete {
 			name, class, grows = "absent from a complete listing", growthAbsence, growthIncarnation
@@ -388,9 +388,9 @@ func growthReconnect(lag int) func(*growthRig) error {
 	return func(r *growthRig) error {
 		r.cycle.Generation++
 		r.sibling = growthRebase(r.sibling, r.cycle.Generation)
-		stale := growthAs(r.victim, modbusreg.HuaweiProviderEvidenceStale, modbusreg.HuaweiProviderReasonChildBackoff)
+		stale := growthAs(r.victim, huawei.ProviderEvidenceStale, huawei.ProviderReasonChildBackoff)
 		for i := 0; i < lag; i++ {
-			r.must(r.publish(modbusreg.HuaweiProviderCycleComplete, stale, r.sibling))
+			r.must(r.publish(huawei.ProviderCycleComplete, stale, r.sibling))
 		}
 		r.victim = growthRebase(r.victim, r.cycle.Generation)
 		return r.readmit()
@@ -401,13 +401,13 @@ func growthReconnect(lag int) func(*growthRig) error {
 // the same transport generation. The native provider reports an identified
 // child stale; the withheld form is measured too. An unconfirmed listing
 // reports every known child unread, the sibling included.
-func growthTransient(reason modbusreg.HuaweiProviderReason, evidence modbusreg.HuaweiProviderEvidenceState) func(*growthRig) error {
+func growthTransient(reason huawei.ProviderReason, evidence huawei.ProviderEvidenceState) func(*growthRig) error {
 	return func(r *growthRig) error {
-		children := []modbusreg.HuaweiProviderChildObservation{growthAs(r.victim, evidence, reason)}
-		if reason == modbusreg.HuaweiProviderReasonListingUnconfirmed {
-			children = append(children, growthAs(r.sibling, modbusreg.HuaweiProviderEvidenceStale, reason))
+		children := []huawei.ProviderChildObservation{growthAs(r.victim, evidence, reason)}
+		if reason == huawei.ProviderReasonListingUnconfirmed {
+			children = append(children, growthAs(r.sibling, huawei.ProviderEvidenceStale, reason))
 		}
-		r.must(r.publish(modbusreg.HuaweiProviderCycleIncomplete, children...))
+		r.must(r.publish(huawei.ProviderCycleIncomplete, children...))
 		return r.readmit()
 	}
 }
@@ -415,7 +415,7 @@ func growthTransient(reason modbusreg.HuaweiProviderReason, evidence modbusreg.H
 // growthRestarts restarts a managed instance through the driver lifecycle and
 // samples both assets after each successor epoch published, until the source
 // bound refuses a START.
-func growthRestarts(t *testing.T, cycle modbusreg.HuaweiProviderCycle, restarts int) growthMeasure {
+func growthRestarts(t *testing.T, cycle huawei.ProviderCycle, restarts int) growthMeasure {
 	hub := newTestSemanticHub(t)
 	var mu sync.Mutex
 	var previous *semhub.Handle
@@ -796,10 +796,10 @@ func TestHuaweiIdentityGrowthStatusReportsHeadroom(t *testing.T) {
 	check("first admission", r.pub, map[byte]want{victim: {alphaVictim, qualified, 1, 1}, sibling: {alphaSibling, qualified, 1, 1}})
 	check("first admission of the second instance", beta, map[byte]want{victim: {betaVictim, qualified, 1, 1}})
 
-	r.must(r.publish(modbusreg.HuaweiProviderCycleIncomplete, growthAs(r.victim, modbusreg.HuaweiProviderEvidenceWithheld, modbusreg.HuaweiProviderReasonIdentityMismatch), r.sibling))
+	r.must(r.publish(huawei.ProviderCycleIncomplete, growthAs(r.victim, huawei.ProviderEvidenceWithheld, huawei.ProviderReasonIdentityMismatch), r.sibling))
 	check("identity mismatch", r.pub, map[byte]want{victim: {"", withdrawn, 1, 1}, sibling: {alphaSibling, qualified, 1, 1}})
 
-	r.must(r.publish(modbusreg.HuaweiProviderCycleIncomplete, r.victim, r.sibling))
+	r.must(r.publish(huawei.ProviderCycleIncomplete, r.victim, r.sibling))
 	check("re-admission", r.pub, map[byte]want{victim: {alphaVictim, qualified, 2, 1}, sibling: {alphaSibling, qualified, 1, 1}})
 	check("second instance after the re-admission", beta, map[byte]want{victim: {betaVictim, qualified, 1, 1}})
 }

@@ -16,6 +16,8 @@ import (
 
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	modbusledger "github.com/Project-Helianthus/helianthus-modbusreg/ledger"
+	"github.com/Project-Helianthus/helianthus-modbusreg/sunspec"
 )
 
 type integrationJitter struct{}
@@ -404,16 +406,16 @@ func TestAdapterExecuteReadUsesOwnedEndpoint(t *testing.T) {
 
 type observationCommitter struct {
 	mu      sync.Mutex
-	state   modbusreg.SampleLedgerState
-	restart modbusreg.LedgerRestartState
+	state   modbusledger.SampleLedgerState
+	restart modbusledger.RestartState
 }
 
 func (committer *observationCommitter) CommitPublication(
 	ctx context.Context,
-	request modbusreg.PublicationCommitRequest,
-) (modbusreg.PublicationCommitDecision, error) {
+	request modbusledger.PublicationCommitRequest,
+) (modbusledger.PublicationCommitDecision, error) {
 	if err := ctx.Err(); err != nil {
-		return modbusreg.PublicationCommitCancelled, nil
+		return modbusledger.PublicationCommitCancelled, nil
 	}
 	committer.mu.Lock()
 	defer committer.mu.Unlock()
@@ -422,12 +424,12 @@ func (committer *observationCommitter) CommitPublication(
 	}
 	committer.state = request.PublishedState
 	committer.restart = request.PublishedRestartState
-	return modbusreg.PublicationCommitCommitted, nil
+	return modbusledger.PublicationCommitCommitted, nil
 }
 
 func (committer *observationCommitter) CommitTerminalState(
 	ctx context.Context,
-	request modbusreg.TerminalStateCommitRequest,
+	request modbusledger.TerminalStateCommitRequest,
 ) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -484,33 +486,33 @@ func TestAdapterViewsPublishWithoutChangingSampleFacts(t *testing.T) {
 		t.Fatalf("views = %d; want 1", len(batch.Views))
 	}
 
-	profile, err := modbusreg.NewSunSpecPhaseOneProfile(modbusreg.SunSpecPhaseOneVersions{
+	profile, err := sunspec.NewSunSpecPhaseOneProfile(sunspec.PhaseOneVersions{
 		Profile: modbusreg.CurrentSchemaVersion(),
 		Codec:   modbusreg.CurrentCodecContractVersion(),
 	})
 	if err != nil {
 		t.Fatalf("NewSunSpecPhaseOneProfile: %v", err)
 	}
-	initial, err := modbusreg.EmptySampleLedgerState("gateway-modbus", profile)
+	initial, err := modbusledger.EmptySampleLedgerState("gateway-modbus", profile)
 	if err != nil {
 		t.Fatalf("EmptySampleLedgerState: %v", err)
 	}
-	ledger, err := modbusreg.NewSampleLedger(initial, 0)
+	ledger, err := modbusledger.NewSampleLedger(initial, 0)
 	if err != nil {
 		t.Fatalf("NewSampleLedger: %v", err)
 	}
 	committer := &observationCommitter{state: initial}
-	factory, err := modbusreg.NewObservationFactory(profile, ledger, committer)
+	factory, err := modbusledger.NewObservationFactory(profile, ledger, committer)
 	if err != nil {
 		t.Fatalf("NewObservationFactory: %v", err)
 	}
 	sourceTime := time.Unix(1_800_000_000, 123).UTC()
 	receiptTime := sourceTime.Add(250 * time.Millisecond)
-	attempt, err := factory.BeginRuntimeAttempt(modbusreg.RuntimeAttemptRequest{
+	attempt, err := factory.BeginRuntimeAttempt(modbusledger.RuntimeAttemptRequest{
 		Source:     adapter.RuntimeAcquisitionSource(),
 		AttemptKey: "fronius-poll-91",
 		Identity:   modbusreg.AttemptIdentity{PollGenerationID: 91},
-		Observation: modbusreg.RuntimeObservationFacts{
+		Observation: modbusledger.RuntimeObservationFacts{
 			SourceValidity:          modbusreg.SourceValid,
 			SourceTime:              modbusreg.SourceTimeObserved(sourceTime),
 			LocalReceiptTime:        receiptTime,
@@ -535,7 +537,7 @@ func TestAdapterViewsPublishWithoutChangingSampleFacts(t *testing.T) {
 	if err := attempt.Admit(); err != nil {
 		t.Fatalf("Admit: %v", err)
 	}
-	if outcome, err := attempt.Claim(0); err != nil || outcome != modbusreg.ClaimSucceeded {
+	if outcome, err := attempt.Claim(0); err != nil || outcome != modbusledger.ClaimSucceeded {
 		t.Fatalf("Claim = %q, %v", outcome, err)
 	}
 	if err := attempt.Seal(); err != nil {

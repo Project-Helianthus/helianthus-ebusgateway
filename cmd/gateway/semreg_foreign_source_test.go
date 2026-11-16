@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
-	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	"github.com/Project-Helianthus/helianthus-modbusreg/growatt"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 )
 
@@ -268,7 +268,7 @@ func TestForeignSourceHuaweiCapacityWithdrawsOnlyOwnGenerations(t *testing.T) {
 // growattStorageBatch.
 type foreignSourceGrowattInput struct {
 	inc         semhub.Incarnation
-	status      modbusreg.GrowattBMSTypedReadOnlyStatus
+	status      growatt.BMSTypedReadOnlyStatus
 	evidence    GrowattBMSRS485ObservationEvidence
 	sequence    semreg.Uint64
 	current     semreg.Snapshot
@@ -291,7 +291,7 @@ func foreignSourceGrowattSoftStart(t *testing.T) foreignSourceGrowattInput {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if native.Status.OperatingState != modbusreg.GrowattBMSStateSoftStarting {
+	if native.Status.OperatingState != growatt.BMSStateSoftStarting {
 		t.Fatalf("fixture operating state=%v, want soft starting", native.Status.OperatingState)
 	}
 	evidence, ok := runtime.LastObservationEvidence()

@@ -17,7 +17,9 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
-	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	"github.com/Project-Helianthus/helianthus-modbusreg/fronius"
+	"github.com/Project-Helianthus/helianthus-modbusreg/sunspec"
+	"github.com/Project-Helianthus/helianthus-modbusreg/tesla"
 )
 
 type gatewayModbusMCPProvider struct {
@@ -33,7 +35,7 @@ type gatewayModbusMCPProvider struct {
 type modbusMCPAdapter interface {
 	ExecuteReadWithReconnect(context.Context, modbusadapter.ReadPlan) (modbus.TCPReadBatch, error)
 	ProfileObservation(string, string) (modbusadapter.ProfileObservationRecord, bool)
-	SunSpecQualificationObservation(string, string) (modbusreg.SunSpecQualificationObservation, []byte, bool)
+	SunSpecQualificationObservation(string, string) (fronius.SunSpecQualificationObservation, []byte, bool)
 }
 
 type semanticPVAdapter interface {
@@ -226,7 +228,7 @@ func (provider *gatewayModbusMCPProvider) ProfileObservation(_ context.Context, 
 }
 
 func (provider *gatewayModbusMCPProvider) SemanticPVCurrent(_ context.Context, profileID, sampleID string) (mcp.SemanticPVCurrentResult, error) {
-	if provider == nil || provider.adapter == nil || profileID != modbusreg.SunSpecThreePhaseMonitoringCapabilityID {
+	if provider == nil || provider.adapter == nil || profileID != sunspec.ThreePhaseMonitoringCapabilityID {
 		return mcp.SemanticPVCurrentResult{}, errors.New("semantic PV observation unavailable")
 	}
 	adapter, supported := provider.adapter.(semanticPVAdapter)
@@ -255,7 +257,7 @@ func semanticPVDataTimestamp(nanoseconds string) (string, error) {
 // TeslaHSCV1 exposes only the disabled-by-default profile state. It does not
 // open a serial endpoint, schedule acquisition, or transmit vendor frames.
 func (provider *gatewayModbusMCPProvider) TeslaHSCV1(_ context.Context) (mcp.TeslaHSCV1Result, error) {
-	profile, err := modbusreg.NewTeslaHSCProfile(modbusreg.TeslaHSCProfileConfig{
+	profile, err := tesla.NewHSCProfile(tesla.HSCProfileConfig{
 		Node:                 0x10,
 		CompatibilityVersion: "unknown",
 	})
@@ -314,7 +316,7 @@ func profileObservationResult(record modbusadapter.ProfileObservationRecord) (mc
 	}, nil
 }
 
-func sunSpecQualificationObservationResult(observation modbusreg.SunSpecQualificationObservation, encoded []byte) (mcp.ModbusProfileObservationResult, error) {
+func sunSpecQualificationObservationResult(observation fronius.SunSpecQualificationObservation, encoded []byte) (mcp.ModbusProfileObservationResult, error) {
 	if len(encoded) == 0 {
 		return mcp.ModbusProfileObservationResult{}, errors.New("SunSpec qualification observation is not serializable")
 	}

@@ -9,6 +9,8 @@ import (
 
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	"github.com/Project-Helianthus/helianthus-modbusreg/fronius"
+	"github.com/Project-Helianthus/helianthus-modbusreg/sunspec"
 )
 
 const (
@@ -40,15 +42,15 @@ type SunSpecPollIdentity struct {
 // why that flavor matched or was rejected. It carries no device evidence.
 type SunSpecFlavorEvaluation struct {
 	FlavorID string
-	Reason   modbusreg.SunSpecFroniusFlavorReason
+	Reason   fronius.SunSpecFroniusFlavorReason
 }
 
 type SunSpecQualificationResult struct {
 	Outcome          SunSpecQualificationOutcome
 	CapabilityID     string
-	CapabilityReason modbusreg.SunSpecCapabilityReason
+	CapabilityReason sunspec.CapabilityReason
 	FlavorID         string
-	FlavorReason     modbusreg.SunSpecFroniusFlavorReason
+	FlavorReason     fronius.SunSpecFroniusFlavorReason
 	// FlavorEvaluations lists every registry flavor decision in registry order
 	// once the capability is admitted, so a refusal stays diagnosable when the
 	// flavors reject for different reasons. FlavorReason stays the single
@@ -56,7 +58,7 @@ type SunSpecQualificationResult struct {
 	FlavorEvaluations []SunSpecFlavorEvaluation
 	ObservationCount  int
 	SampleID          string
-	Chain             modbusreg.SunSpecChainSnapshot
+	Chain             sunspec.ChainSnapshot
 }
 
 // SunSpecProducer owns bounded acquisition and delegates all model, capability,
@@ -64,8 +66,8 @@ type SunSpecQualificationResult struct {
 type SunSpecProducer struct {
 	adapter  *Adapter
 	config   SunSpecProducerConfig
-	registry modbusreg.SunSpecDecoderRegistry
-	plan     modbusreg.SunSpecChainPlan
+	registry sunspec.DecoderRegistry
+	plan     sunspec.ChainPlan
 	mu       sync.Mutex
 }
 
@@ -79,14 +81,14 @@ func NewSunSpecProducer(adapter *Adapter, config SunSpecProducerConfig) (*SunSpe
 		config.AuthorizationScope == "" || config.ReadTimeout <= 0 {
 		return nil, errors.New("SunSpec producer configuration is incomplete")
 	}
-	registry, err := modbusreg.NewStandardSunSpecDecoderRegistry(modbusreg.SunSpecModelsRevisionV1)
+	registry, err := sunspec.NewStandardSunSpecDecoderRegistry(sunspec.ModelsRevisionV1)
 	if err != nil {
 		return nil, fmt.Errorf("create SunSpec decoder registry: %w", err)
 	}
-	plan, err := modbusreg.NewSunSpecChainPlan(modbusreg.SunSpecChainPlanSpec{
-		SchemaRevision: modbusreg.SunSpecModelsRevisionV1,
+	plan, err := sunspec.NewChainPlan(sunspec.ChainPlanSpec{
+		SchemaRevision: sunspec.ModelsRevisionV1,
 		BaseCandidates: []uint16{sunSpecBaseAddress},
-		Limits: modbusreg.SunSpecChainLimits{
+		Limits: sunspec.ChainLimits{
 			MaxTotalWords:  sunSpecMaxTotalWords,
 			MaxOccurrences: sunSpecMaxOccurrences,
 		},
@@ -126,44 +128,44 @@ func (producer *SunSpecProducer) qualify(ctx context.Context, identity SunSpecPo
 	if invalid {
 		return SunSpecQualificationResult{
 			Outcome:          SunSpecQualificationStop,
-			CapabilityID:     modbusreg.SunSpecThreePhaseMonitoringCapabilityID,
-			CapabilityReason: modbusreg.SunSpecCapabilityReasonInvalidChain,
+			CapabilityID:     sunspec.ThreePhaseMonitoringCapabilityID,
+			CapabilityReason: sunspec.CapabilityReasonInvalidChain,
 		}, nil
 	}
 	return producer.classify(identity, snapshot, retainEvidence), nil
 }
 
-func (producer *SunSpecProducer) acquire(ctx context.Context, identity SunSpecPollIdentity, mixGeneration bool) (modbusreg.SunSpecChainSnapshot, bool, error) {
-	chain := modbusreg.NewSunSpecChain(producer.plan)
+func (producer *SunSpecProducer) acquire(ctx context.Context, identity SunSpecPollIdentity, mixGeneration bool) (sunspec.ChainSnapshot, bool, error) {
+	chain := sunspec.NewChain(producer.plan)
 	logicalID := uint64(0)
 	readIndex := 0
 	for {
 		requests := chain.NextRequests()
 		if len(requests) == 0 {
-			return modbusreg.SunSpecChainSnapshot{}, true, nil
+			return sunspec.ChainSnapshot{}, true, nil
 		}
 		for _, request := range requests {
 			logicalID++
 			source, err := producer.read(ctx, identity, request, logicalID)
 			if err != nil {
-				return modbusreg.SunSpecChainSnapshot{}, false, err
+				return sunspec.ChainSnapshot{}, false, err
 			}
 			snapshot, err := source.snapshot()
 			if err != nil {
-				return modbusreg.SunSpecChainSnapshot{}, true, nil
+				return sunspec.ChainSnapshot{}, true, nil
 			}
 			if mixGeneration && readIndex == 1 {
 				record := snapshot.Record()
 				record.TransportGeneration++
 				snapshot, err = modbusreg.NewLogicalViewSnapshot(record)
 				if err != nil {
-					return modbusreg.SunSpecChainSnapshot{}, true, nil
+					return sunspec.ChainSnapshot{}, true, nil
 				}
 			}
 			readIndex++
 			completed, err := chain.AdmitReplay(request, snapshot)
 			if err != nil {
-				return modbusreg.SunSpecChainSnapshot{}, true, nil
+				return sunspec.ChainSnapshot{}, true, nil
 			}
 			if len(completed.RawWords()) != 0 {
 				return completed, false, nil
@@ -172,7 +174,7 @@ func (producer *SunSpecProducer) acquire(ctx context.Context, identity SunSpecPo
 	}
 }
 
-func (producer *SunSpecProducer) read(ctx context.Context, identity SunSpecPollIdentity, request modbusreg.SunSpecReadRequest, logicalID uint64) (sunSpecSourceView, error) {
+func (producer *SunSpecProducer) read(ctx context.Context, identity SunSpecPollIdentity, request sunspec.ReadRequest, logicalID uint64) (sunSpecSourceView, error) {
 	modbusRequest, err := modbus.NewReadRegistersRequest(modbus.FunctionReadHoldingRegisters, request.Address(), request.WordCount())
 	if err != nil {
 		return sunSpecSourceView{}, err
@@ -216,13 +218,13 @@ func (source sunSpecSourceView) snapshot() (modbusreg.LogicalViewSnapshot, error
 	})
 }
 
-func (producer *SunSpecProducer) classify(identity SunSpecPollIdentity, snapshot modbusreg.SunSpecChainSnapshot, retainEvidence bool) SunSpecQualificationResult {
+func (producer *SunSpecProducer) classify(identity SunSpecPollIdentity, snapshot sunspec.ChainSnapshot, retainEvidence bool) SunSpecQualificationResult {
 	capability := producer.registry.EvaluateThreePhaseMonitoring(snapshot)
 	result := SunSpecQualificationResult{
 		CapabilityID: capability.ProfileID(), CapabilityReason: capability.Reason(),
 	}
 	if !capability.Admitted() {
-		if capability.Reason() == modbusreg.SunSpecCapabilityReasonInvalidChain {
+		if capability.Reason() == sunspec.CapabilityReasonInvalidChain {
 			result.Outcome = SunSpecQualificationStop
 		} else {
 			result.Outcome = SunSpecQualificationNoGo
@@ -230,16 +232,16 @@ func (producer *SunSpecProducer) classify(identity SunSpecPollIdentity, snapshot
 		return result
 	}
 
-	selection := producer.registry.SelectFroniusObservedFlavor(snapshot)
+	selection := fronius.SelectObservedFlavor(producer.registry, snapshot)
 	result.FlavorEvaluations = sunSpecFlavorEvaluations(selection.Evaluations())
 	if selection.Matched() {
 		flavor, ok := selection.Decision()
-		if !ok || selection.Reason() != modbusreg.SunSpecFroniusFlavorSelectionReasonMatched ||
-			!flavor.Matched() || flavor.Reason() != modbusreg.SunSpecFroniusFlavorReasonMatched {
+		if !ok || selection.Reason() != fronius.SunSpecFroniusFlavorSelectionReasonMatched ||
+			!flavor.Matched() || flavor.Reason() != fronius.SunSpecFroniusFlavorReasonMatched {
 			result.Outcome = SunSpecQualificationStop
 			return result
 		}
-		observation, err := modbusreg.NewSunSpecQualificationObservation(producer.registry, snapshot)
+		observation, err := fronius.NewSunSpecQualificationObservation(producer.registry, snapshot)
 		if err != nil {
 			result.Outcome = SunSpecQualificationStop
 			return result
@@ -263,7 +265,7 @@ func (producer *SunSpecProducer) classify(identity SunSpecPollIdentity, snapshot
 		return result
 	}
 	switch selection.Reason() {
-	case modbusreg.SunSpecFroniusFlavorSelectionReasonNoMatch:
+	case fronius.SunSpecFroniusFlavorSelectionReasonNoMatch:
 		result.Outcome = SunSpecQualificationNoGo
 		result.FlavorReason = commonRejectedFroniusFlavorReason(selection.Evaluations())
 	default:
@@ -272,7 +274,7 @@ func (producer *SunSpecProducer) classify(identity SunSpecPollIdentity, snapshot
 	return result
 }
 
-func sunSpecFlavorEvaluations(evaluations []modbusreg.SunSpecFroniusFlavorDecision) []SunSpecFlavorEvaluation {
+func sunSpecFlavorEvaluations(evaluations []fronius.SunSpecFroniusFlavorDecision) []SunSpecFlavorEvaluation {
 	if len(evaluations) == 0 {
 		return nil
 	}
@@ -283,7 +285,7 @@ func sunSpecFlavorEvaluations(evaluations []modbusreg.SunSpecFroniusFlavorDecisi
 	return out
 }
 
-func commonRejectedFroniusFlavorReason(evaluations []modbusreg.SunSpecFroniusFlavorDecision) modbusreg.SunSpecFroniusFlavorReason {
+func commonRejectedFroniusFlavorReason(evaluations []fronius.SunSpecFroniusFlavorDecision) fronius.SunSpecFroniusFlavorReason {
 	if len(evaluations) == 0 || evaluations[0].Matched() {
 		return ""
 	}

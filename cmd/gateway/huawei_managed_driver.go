@@ -14,30 +14,30 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal/contributionv1"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
-	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	"github.com/Project-Helianthus/helianthus-modbusreg/huawei"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 )
 
 type huaweiRegistryProvider interface {
-	Start(modbusreg.HuaweiProviderSession) error
-	Refresh(context.Context) (modbusreg.HuaweiProviderCycle, error)
+	Start(huawei.ProviderSession) error
+	Refresh(context.Context) (huawei.ProviderCycle, error)
 	NextRefreshAt() time.Time
 	Close() error
-	Reconnect(modbusreg.HuaweiProviderSession) error
+	Reconnect(huawei.ProviderSession) error
 }
 
 // newHuaweiRegistryProviderFn constructs the native provider of a managed
 // instance. Offline acceptance replaces it with fixture-backed providers.
 var newHuaweiRegistryProviderFn = newHuaweiRegistryProvider
 
-func newHuaweiRegistryProvider(family modbusTCPFamily, config modbusreg.HuaweiProviderConfig) (huaweiRegistryProvider, error) {
+func newHuaweiRegistryProvider(family modbusTCPFamily, config huawei.ProviderConfig) (huaweiRegistryProvider, error) {
 	switch family {
 	case modbusTCPFamilyHuaweiSmartLogger:
-		return modbusreg.NewHuaweiSmartLoggerReadOnlyProvider(config)
+		return huawei.NewSmartLoggerReadOnlyProvider(config)
 	case modbusTCPFamilyHuaweiSDongle:
-		return modbusreg.NewHuaweiSDongleReadOnlyProvider(config)
+		return huawei.NewSDongleReadOnlyProvider(config)
 	default:
-		return nil, modbusreg.ErrHuaweiProviderNotAdmitted
+		return nil, huawei.ErrHuaweiProviderNotAdmitted
 	}
 }
 
@@ -74,18 +74,18 @@ func newHuaweiInstanceDriverAdapter(instance modbusTCPInstance, hub *semhub.Hub,
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		var path modbusreg.HuaweiProviderPath
+		var path huawei.ProviderPath
 		switch instance.family {
 		case modbusTCPFamilyHuaweiSmartLogger:
-			path = modbusreg.HuaweiProviderPathSmartLogger
+			path = huawei.ProviderPathSmartLogger
 		case modbusTCPFamilyHuaweiSDongle:
-			path = modbusreg.HuaweiProviderPathSDongle
+			path = huawei.ProviderPathSDongle
 		default:
-			return nil, modbusreg.ErrHuaweiProviderNotAdmitted
+			return nil, huawei.ErrHuaweiProviderNotAdmitted
 		}
-		disposition, ok := modbusreg.HuaweiRecordedProviderDisposition(path)
-		if !ok || !modbusreg.EvaluateHuaweiProviderEnablement(disposition).Admitted {
-			return nil, modbusreg.ErrHuaweiProviderNotAdmitted
+		disposition, ok := huawei.RecordedProviderDisposition(path)
+		if !ok || !huawei.EvaluateHuaweiProviderEnablement(disposition).Admitted {
+			return nil, huawei.ErrHuaweiProviderNotAdmitted
 		}
 		if c.DriverID != instance.driverID || len(c.Sources) != 1 || c.Sources[0] == "" {
 			return nil, errors.New("huawei managed identity incomplete")
@@ -104,7 +104,7 @@ func newHuaweiInstanceDriverAdapter(instance modbusTCPInstance, hub *semhub.Hub,
 				previous = work.publication.handle
 			}
 			if work.err == nil {
-				work.provider, work.err = newHuaweiRegistryProviderFn(instance.family, modbusreg.HuaweiProviderConfig{Source: instance.label, AllowedUnits: append([]byte(nil), instance.units...), Wait: huaweiWait})
+				work.provider, work.err = newHuaweiRegistryProviderFn(instance.family, huawei.ProviderConfig{Source: instance.label, AllowedUnits: append([]byte(nil), instance.units...), Wait: huaweiWait})
 			}
 			if work.err == nil {
 				var session *modbusadapter.ReadOnlySession
@@ -253,9 +253,9 @@ func (p *managedModbusMCPProvider) HuaweiInstanceStatus(ctx context.Context, fam
 		}
 		out.Disposition = string(cycle.Outcome)
 		if cycle.Cycle == 0 {
-			out.Disposition = string(modbusreg.HuaweiProviderCycleIncomplete)
+			out.Disposition = string(huawei.ProviderCycleIncomplete)
 		}
-		out.Qualified = cycle.Gateway.State == modbusreg.HuaweiProviderGatewayIdentified
+		out.Qualified = cycle.Gateway.State == huawei.ProviderGatewayIdentified
 		out.Children = huaweiStatusChildren(publication, cycle)
 		// Published assets are enumerated from the publication itself so an
 		// incomplete cycle still reports the retained last-known assets.
@@ -279,7 +279,7 @@ func (p *managedModbusMCPProvider) HuaweiInstanceStatus(ctx context.Context, fam
 // a child the provider admitted. Each child also reports its identity-link
 // state and the binding and source-descriptor counts of its asset, read from
 // the in-memory snapshot. The caller holds the publication lock.
-func huaweiStatusChildren(p *huaweiPVPublication, cycle modbusreg.HuaweiProviderCycle) []mcp.HuaweiInstanceChildStatus {
+func huaweiStatusChildren(p *huaweiPVPublication, cycle huawei.ProviderCycle) []mcp.HuaweiInstanceChildStatus {
 	var out []mcp.HuaweiInstanceChildStatus
 	for _, child := range cycle.Children {
 		status := mcp.HuaweiInstanceChildStatus{Unit: child.UnitID, Family: child.Family, Profile: child.ProfileID, Evidence: string(child.Evidence), Reason: string(child.Reason)}

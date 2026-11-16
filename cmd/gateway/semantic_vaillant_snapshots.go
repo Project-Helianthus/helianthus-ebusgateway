@@ -10,6 +10,7 @@ import (
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/vaillant/systemconfig"
 	"github.com/Project-Helianthus/helianthus-ebusreg/vaillant/productids"
 )
 
@@ -157,6 +158,15 @@ type vaillantDhwView struct {
 type vaillantCircuitsView struct {
 	circuits                []*vaillantCircuitSnapshot
 	managedByFunctionModule bool
+}
+
+// vaillantSystemView is the native view of the system handed to the
+// publication owner: a detached copy of the retained snapshot, nil when none
+// is retained, and the hot water bivalence bound resolved for the discovered
+// controller, set only with a snapshot.
+type vaillantSystemView struct {
+	snapshot          *vaillantSystemSnapshot
+	dhwBivalenceBound systemconfig.ConfigBound
 }
 
 type vaillantSolarSnapshot struct {

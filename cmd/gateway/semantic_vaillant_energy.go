@@ -30,7 +30,7 @@ type b524EnergyQuery struct {
 	channel  string // EnergyMergeKey.Channel
 	usage    string // EnergyMergeKey.Usage
 	period   string // EnergyMergeKey.Period ("year", "month")
-	yearKind string // relative window label ("current", "previous"), resolved to a dated EnergyMergeKey via provider.EnergyWindowKey at read time
+	yearKind string // relative window label ("current", "previous"), resolved to a dated key by the energy ledger at read time
 }
 
 var b524EnergyQueries = []b524EnergyQuery{
@@ -52,8 +52,28 @@ var b524EnergyQueries = []b524EnergyQuery{
 	{energy_electricity_sum_hwc_last_month, "electricity", "hot_water", "month", "previous"},
 }
 
+// vaillantEnergyLedger is the energy ledger that a register acquisition
+// writes to. It speaks only native values: the ledger's reference instant,
+// the channel, usage, period and relative window label of a register, and
+// the register value in kWh. The ledger derives the dated or undated key
+// itself, so the acquisition never holds a published key.
+type vaillantEnergyLedger interface {
+	// energyReferenceTime returns the ledger's current reference instant.
+	energyReferenceTime() time.Time
+	// applyLifetimeEnergy applies an undated lifetime total and reports
+	// whether the ledger accepted it.
+	applyLifetimeEnergy(channel, usage string, kwh float64) bool
+	// applyWindowEnergy applies the value of a relative window dated against
+	// ref and reports whether the ledger accepted it.
+	applyWindowEnergy(channel, usage, period, label string, ref time.Time, kwh float64) bool
+	// publishEnergyTotals publishes the ledger's totals after an accepted
+	// acquisition.
+	publishEnergyTotals()
+}
+
 func (p *vaillantSemanticPoller) refreshEnergy(ctx context.Context) {
-	if p == nil || p.liveProvider() == nil {
+	ledger := p.energyLedger()
+	if ledger == nil {
 		return
 	}
 
@@ -65,18 +85,19 @@ func (p *vaillantSemanticPoller) refreshEnergy(ctx context.Context) {
 		return
 	}
 
-	p.acquireEnergy(func(q b524EnergyQuery, _ time.Time) (uint32, bool) {
+	acquireEnergy(ledger, func(q b524EnergyQuery, _ time.Time) (uint32, bool) {
 		return p.readEnergyRegister(ctx, q)
 	})
 }
 
-// acquireEnergy performs one register acquisition. The reference time is
-// captured once and every dated key of the acquisition derives from it. If the
-// provider clock crosses a month or year boundary during the acquisition, the
-// reply read after the crossing is discarded (its relative window would be
-// mislabelled) and the acquisition stops; the next poll re-acquires.
-func (p *vaillantSemanticPoller) acquireEnergy(read func(b524EnergyQuery, time.Time) (uint32, bool)) {
-	ref := p.liveProvider().EnergyReferenceTime()
+// acquireEnergy performs one register acquisition into the ledger. The
+// reference time is captured once and every dated key of the acquisition
+// derives from it. If the ledger clock crosses a month or year boundary during
+// the acquisition, the reply read after the crossing is discarded (its
+// relative window would be mislabelled) and the acquisition stops; the next
+// poll re-acquires.
+func acquireEnergy(ledger vaillantEnergyLedger, read func(b524EnergyQuery, time.Time) (uint32, bool)) {
+	ref := ledger.energyReferenceTime()
 	accepted, failed := 0, 0
 	for _, q := range b524EnergyQueries {
 		val, ok := read(q, ref)
@@ -84,18 +105,20 @@ func (p *vaillantSemanticPoller) acquireEnergy(read func(b524EnergyQuery, time.T
 			failed++
 			continue
 		}
-		if now := p.liveProvider().EnergyReferenceTime(); now.Year() != ref.Year() || now.Month() != ref.Month() {
+		if now := ledger.energyReferenceTime(); now.Year() != ref.Year() || now.Month() != ref.Month() {
 			log.Printf("semantic energy b524: window boundary crossed during acquisition (ref=%s now=%s); discarding remaining replies", ref.Format("2006-01"), now.Format("2006-01"))
 			failed++
 			break
 		}
 		kwh := float64(val)
 
-		key := p.liveProvider().EnergyLifetimeKey(q.channel, q.usage)
-		if q.period != "all" {
-			key = p.liveProvider().EnergyWindowKeyAt(q.channel, q.usage, q.period, q.yearKind, ref)
+		var applied bool
+		if q.period == "all" {
+			applied = ledger.applyLifetimeEnergy(q.channel, q.usage, kwh)
+		} else {
+			applied = ledger.applyWindowEnergy(q.channel, q.usage, q.period, q.yearKind, ref, kwh)
 		}
-		if p.liveProvider().ApplyEnergyFromRegister(key, kwh) {
+		if applied {
 			accepted++
 		}
 	}
@@ -103,7 +126,7 @@ func (p *vaillantSemanticPoller) acquireEnergy(read func(b524EnergyQuery, time.T
 		log.Printf("semantic energy b524: accepted=%d failed=%d", accepted, failed)
 	}
 	if accepted > 0 {
-		p.publishEnergyTotals()
+		ledger.publishEnergyTotals()
 	}
 }
 

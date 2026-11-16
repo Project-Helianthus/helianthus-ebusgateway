@@ -80,7 +80,7 @@ func (p *vaillantSemanticPoller) refreshRegulatorCapability(_ context.Context) {
 	}
 	newAbsence := p.regAbsenceState
 	p.mu.Unlock()
-	p.publishRegulatorCapability(regCap)
+	p.publication.publishRegulatorCapability(regCap)
 	semanticRegulatorState.Set(string(newAbsence))
 
 	// Log capability changes.
@@ -155,7 +155,7 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 		p.startupSemanticPrimed = false
 		semanticZoneCount.Set(0)
 		p.mu.Unlock()
-		p.publishRegulatorCapability(regCap)
+		p.publication.publishRegulatorCapability(regCap)
 		p.refreshHeatSourcePathReason()
 		if regCap != prev {
 			log.Printf("semantic_regulator_capability capability=%s", regCap.String())
@@ -222,7 +222,7 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 		p.startupSemanticPrimed = true
 	}
 	p.mu.Unlock()
-	p.publishRegulatorCapability(regCap)
+	p.publication.publishRegulatorCapability(regCap)
 	p.refreshHeatSourcePathReason()
 
 	if primeStartup {

@@ -343,37 +343,6 @@ func uint8ToIntPtr(value *uint8) *int {
 	return &v
 }
 
-func systemStatusEquals(a, b *graphql.SystemStatus) bool {
-	if a == nil && b == nil {
-		return true
-	}
-	if a == nil || b == nil {
-		return false
-	}
-	return boolPtrEquals(a.State.SystemOff, b.State.SystemOff) &&
-		floatPtrEquals(a.State.SystemWaterPressure, b.State.SystemWaterPressure) &&
-		floatPtrEquals(a.State.SystemFlowTemperature, b.State.SystemFlowTemperature) &&
-		floatPtrEquals(a.State.OutdoorTemperature, b.State.OutdoorTemperature) &&
-		floatPtrEquals(a.State.OutdoorTemperatureAvg24h, b.State.OutdoorTemperatureAvg24h) &&
-		boolPtrEquals(a.State.MaintenanceDue, b.State.MaintenanceDue) &&
-		floatPtrEquals(a.State.HwcCylinderTemperatureTop, b.State.HwcCylinderTemperatureTop) &&
-		floatPtrEquals(a.State.HwcCylinderTemperatureBottom, b.State.HwcCylinderTemperatureBottom) &&
-		boolPtrEquals(a.Config.AdaptiveHeatingCurve, b.Config.AdaptiveHeatingCurve) &&
-		floatPtrEquals(a.Config.AlternativePoint, b.Config.AlternativePoint) &&
-		floatPtrEquals(a.Config.HeatingCircuitBivalencePoint, b.Config.HeatingCircuitBivalencePoint) &&
-		floatPtrEquals(a.Config.DhwBivalencePoint, b.Config.DhwBivalencePoint) &&
-		configBoundEquals(a.Config.DhwBivalenceBound, b.Config.DhwBivalenceBound) &&
-		floatPtrEquals(a.Config.HcEmergencyTemperature, b.Config.HcEmergencyTemperature) &&
-		floatPtrEquals(a.Config.HwcMaxFlowTempDesired, b.Config.HwcMaxFlowTempDesired) &&
-		intPtrEquals(a.Config.MaxRoomHumidity, b.Config.MaxRoomHumidity) &&
-		stringPtrEquals(a.Config.MaintenanceDate, b.Config.MaintenanceDate) &&
-		stringPtrEquals(a.Config.InstallerName, b.Config.InstallerName) &&
-		stringPtrEquals(a.Config.InstallerPhone, b.Config.InstallerPhone) &&
-		intPtrEquals(a.Config.InstallerMenuCode, b.Config.InstallerMenuCode) &&
-		intPtrEquals(a.Properties.SystemScheme, b.Properties.SystemScheme) &&
-		intPtrEquals(a.Properties.ModuleConfigurationVR71, b.Properties.ModuleConfigurationVR71)
-}
-
 // cstringPairSpec defines a paired CString field that spans 2 registers.
 type cstringPairSpec struct {
 	addr1 uint16 // first register (first 6 chars)

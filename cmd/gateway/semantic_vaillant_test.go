@@ -3725,10 +3725,7 @@ func TestPublishEnergyTotals_PublishesProviderSnapshot(t *testing.T) {
 		t.Fatalf("SubscribeEnergy() error = %v", err)
 	}
 
-	poller := &vaillantSemanticPoller{
-		publication: newVaillantSemanticPublication(provider, hub, nil),
-	}
-	poller.publishEnergyTotals()
+	newVaillantSemanticPublication(provider, hub, nil).publishEnergyTotals()
 
 	select {
 	case raw := <-subscription:
@@ -6978,10 +6975,10 @@ func TestAcquireEnergy_BoundaryCrossingDiscardsLaterReplies(t *testing.T) {
 	clock := time.Date(2026, time.December, 31, 23, 59, 59, 0, time.UTC)
 	provider := graphql.NewLiveSemanticProvider()
 	provider.SetEnergyClock(func() time.Time { return clock })
-	poller := &vaillantSemanticPoller{publication: newVaillantSemanticPublication(provider, nil, nil)}
+	ledger := newVaillantSemanticPublication(provider, nil, nil)
 
 	calls := 0
-	poller.acquireEnergy(func(q b524EnergyQuery, _ time.Time) (uint32, bool) {
+	acquireEnergy(ledger, func(q b524EnergyQuery, _ time.Time) (uint32, bool) {
 		calls++
 		if calls == 6 { // second monthly reply arrives after midnight
 			clock = time.Date(2027, time.January, 1, 0, 0, 1, 0, time.UTC)

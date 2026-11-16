@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
+	"github.com/Project-Helianthus/helianthus-ebusreg/vaillant/productids"
 )
 
 // The publication owner maps the native views that the acquisition side
@@ -278,5 +279,236 @@ func radioDeviceFromSnapshot(snapshot *vaillantRadioDeviceSnapshot) graphql.Radi
 		ZoneAssignment:       uint8ToIntPtr(snapshot.ZoneAssignment),
 		RoomTemperatureC:     cloneFloat64Ptr(snapshot.RoomTemperatureC),
 		RoomHumidityPct:      cloneFloat64Ptr(snapshot.RoomHumidityPct),
+	}
+}
+
+// publishRegulatorCapability publishes the native controller capability as
+// the GraphQL regulator capability; an unrecognised capability publishes as
+// unknown.
+func (o *vaillantSemanticPublication) publishRegulatorCapability(capability productids.ControllerCapability) {
+	if o == nil || o.provider == nil {
+		return
+	}
+	switch capability {
+	case productids.ControllerPresent:
+		o.provider.SetVaillantRegulatorCapability(graphql.VaillantRegulatorCapabilityPresent)
+	case productids.ControllerNone:
+		o.provider.SetVaillantRegulatorCapability(graphql.VaillantRegulatorCapabilityNone)
+	default:
+		o.provider.SetVaillantRegulatorCapability(graphql.VaillantRegulatorCapabilityUnknown)
+	}
+}
+
+// publishBoilerStatusView publishes the boiler status from a detached native
+// boiler snapshot. Without a snapshot it withdraws a published status and
+// reports no publication. The caller holds boilerPublishMu.
+func (o *vaillantSemanticPublication) publishBoilerStatusView(snapshot *vaillantBoilerSnapshot, source semanticSnapshotSource) bool {
+	previous := o.provider.BoilerStatus()
+	if snapshot == nil {
+		if previous != nil {
+			switch source {
+			case semanticSnapshotSourceCache:
+				o.provider.SetBoilerStatusFromCache(nil)
+			default:
+				o.provider.SetBoilerStatus(nil)
+			}
+		}
+		return false
+	}
+
+	current := boilerStatusFromSnapshot(snapshot)
+	switch source {
+	case semanticSnapshotSourceCache:
+		o.provider.SetBoilerStatusFromCache(current)
+	default:
+		o.provider.SetBoilerStatus(current)
+	}
+	if o.hub != nil && !boilerStatusEquals(previous, current) {
+		o.hub.PublishBoilerStatusUpdate(current)
+	}
+	return true
+}
+
+// withdrawBoilerFlowTemperature withdraws the flow temperature of the
+// published boiler status and pushes the changed status to the hub; it
+// changes nothing while no flow temperature is published. The caller holds
+// boilerPublishMu and has cleared the native flow temperature.
+func (o *vaillantSemanticPublication) withdrawBoilerFlowTemperature() {
+	if o == nil || o.provider == nil {
+		return
+	}
+	status := o.provider.BoilerStatus()
+	if status == nil || status.State.FlowTemperatureC == nil {
+		return
+	}
+	status.State.FlowTemperatureC = nil
+	o.provider.SetBoilerStatus(status)
+	if o.hub != nil {
+		o.hub.PublishBoilerStatusUpdate(status)
+	}
+}
+
+func boilerStatusFromSnapshot(snapshot *vaillantBoilerSnapshot) *graphql.BoilerStatus {
+	current := &graphql.BoilerStatus{
+		State: graphql.BoilerState{
+			FlowTemperatureC:         snapshot.FlowTemperatureC,
+			ReturnTemperatureC:       snapshot.ReturnTemperatureC,
+			CentralHeatingPumpActive: snapshot.CentralHeatingPumpActive,
+			WaterPressureBar:         snapshot.WaterPressureBar,
+			ExternalPumpActive:       snapshot.ExternalPumpActive,
+			CirculationPumpActive:    snapshot.CirculationPumpActive,
+			GasValveActive:           snapshot.GasValveActive,
+			FlameActive:              snapshot.FlameActive,
+			DiverterValvePositionPct: snapshot.DiverterValvePositionPct,
+			FanSpeedRpm:              snapshot.FanSpeedRpm,
+			TargetFanSpeedRpm:        snapshot.TargetFanSpeedRpm,
+			IonisationVoltageUa:      snapshot.IonisationVoltageUa,
+			DhwWaterFlowLpm:          snapshot.DhwWaterFlowLpm,
+			DhwDemandActive:          snapshot.DhwDemandActive,
+			HeatingSwitchActive:      snapshot.HeatingSwitchActive,
+			StorageLoadPumpPct:       snapshot.StorageLoadPumpPct,
+			ModulationPct:            snapshot.ModulationPct,
+			PrimaryCircuitFlowLpm:    snapshot.PrimaryCircuitFlowLpm,
+			FlowTempDesiredC:         snapshot.FlowTempDesiredC,
+			DhwTempDesiredC:          snapshot.DhwTempDesiredC,
+			StateNumber:              snapshot.StateNumber,
+			DhwTemperatureC:          snapshot.DhwTemperatureC,
+			DhwTargetTemperatureC:    snapshot.DhwTargetTemperatureC,
+		},
+		Config: graphql.BoilerConfig{
+			FlowsetHcMaxC:     snapshot.FlowsetHcMaxC,
+			FlowsetHwcMaxC:    snapshot.FlowsetHwcMaxC,
+			PartloadHcKW:      snapshot.PartloadHcKW,
+			PartloadHwcKW:     snapshot.PartloadHwcKW,
+			InstallerMenuCode: snapshot.InstallerMenuCode,
+			PhoneNumber:       cloneStringPtr(snapshot.PhoneNumber),
+			HoursTillService:  snapshot.HoursTillService,
+		},
+		Diagnostics: graphql.BoilerDiagnostics{
+			HeatingStatusRaw:         snapshot.HeatingStatusRaw,
+			DhwStatusRaw:             snapshot.DhwStatusRaw,
+			CentralHeatingHours:      snapshot.CentralHeatingHours,
+			DhwHours:                 snapshot.DhwHours,
+			CentralHeatingStarts:     snapshot.CentralHeatingStarts,
+			DhwStarts:                snapshot.DhwStarts,
+			PumpHours:                snapshot.PumpHours,
+			FanHours:                 snapshot.FanHours,
+			DeactivationsIFC:         snapshot.DeactivationsIFC,
+			DeactivationsTemplimiter: snapshot.DeactivationsTemplimiter,
+		},
+	}
+	if snapshot.DhwOperatingMode != nil {
+		mode := decodeDhwMode(*snapshot.DhwOperatingMode)
+		current.Config.DhwOperatingMode = &mode
+	}
+	return current
+}
+
+func boilerStatusEquals(a, b *graphql.BoilerStatus) bool {
+	return reflect.DeepEqual(a, b)
+}
+
+// publishSystemView publishes the system status from its native view.
+// Without a snapshot it withdraws the published status and reports no
+// publication.
+func (o *vaillantSemanticPublication) publishSystemView(view vaillantSystemView, source semanticSnapshotSource) bool {
+	previous := o.provider.System()
+	if view.snapshot == nil {
+		switch source {
+		case semanticSnapshotSourceCache:
+			o.provider.SetSystemFromCache(nil)
+		default:
+			o.provider.SetSystem(nil)
+		}
+		return false
+	}
+
+	current := systemStatusFromView(view)
+	switch source {
+	case semanticSnapshotSourceCache:
+		o.provider.SetSystemFromCache(current)
+	default:
+		o.provider.SetSystem(current)
+	}
+
+	if o.hub != nil && !systemStatusEquals(previous, current) {
+		publisher := reflect.ValueOf(o.hub).MethodByName("PublishSystemUpdate")
+		if publisher.IsValid() && publisher.Type().NumIn() == 1 {
+			arg := reflect.ValueOf(current)
+			paramType := publisher.Type().In(0)
+			switch {
+			case arg.Type().AssignableTo(paramType):
+				publisher.Call([]reflect.Value{arg})
+			case arg.Type().ConvertibleTo(paramType):
+				publisher.Call([]reflect.Value{arg.Convert(paramType)})
+			}
+		}
+	}
+	return true
+}
+
+func systemStatusEquals(a, b *graphql.SystemStatus) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return boolPtrEquals(a.State.SystemOff, b.State.SystemOff) &&
+		floatPtrEquals(a.State.SystemWaterPressure, b.State.SystemWaterPressure) &&
+		floatPtrEquals(a.State.SystemFlowTemperature, b.State.SystemFlowTemperature) &&
+		floatPtrEquals(a.State.OutdoorTemperature, b.State.OutdoorTemperature) &&
+		floatPtrEquals(a.State.OutdoorTemperatureAvg24h, b.State.OutdoorTemperatureAvg24h) &&
+		boolPtrEquals(a.State.MaintenanceDue, b.State.MaintenanceDue) &&
+		floatPtrEquals(a.State.HwcCylinderTemperatureTop, b.State.HwcCylinderTemperatureTop) &&
+		floatPtrEquals(a.State.HwcCylinderTemperatureBottom, b.State.HwcCylinderTemperatureBottom) &&
+		boolPtrEquals(a.Config.AdaptiveHeatingCurve, b.Config.AdaptiveHeatingCurve) &&
+		floatPtrEquals(a.Config.AlternativePoint, b.Config.AlternativePoint) &&
+		floatPtrEquals(a.Config.HeatingCircuitBivalencePoint, b.Config.HeatingCircuitBivalencePoint) &&
+		floatPtrEquals(a.Config.DhwBivalencePoint, b.Config.DhwBivalencePoint) &&
+		configBoundEquals(a.Config.DhwBivalenceBound, b.Config.DhwBivalenceBound) &&
+		floatPtrEquals(a.Config.HcEmergencyTemperature, b.Config.HcEmergencyTemperature) &&
+		floatPtrEquals(a.Config.HwcMaxFlowTempDesired, b.Config.HwcMaxFlowTempDesired) &&
+		intPtrEquals(a.Config.MaxRoomHumidity, b.Config.MaxRoomHumidity) &&
+		stringPtrEquals(a.Config.MaintenanceDate, b.Config.MaintenanceDate) &&
+		stringPtrEquals(a.Config.InstallerName, b.Config.InstallerName) &&
+		stringPtrEquals(a.Config.InstallerPhone, b.Config.InstallerPhone) &&
+		intPtrEquals(a.Config.InstallerMenuCode, b.Config.InstallerMenuCode) &&
+		intPtrEquals(a.Properties.SystemScheme, b.Properties.SystemScheme) &&
+		intPtrEquals(a.Properties.ModuleConfigurationVR71, b.Properties.ModuleConfigurationVR71)
+}
+
+func systemStatusFromView(view vaillantSystemView) *graphql.SystemStatus {
+	snapshot := view.snapshot
+	dhwBound := view.dhwBivalenceBound
+	return &graphql.SystemStatus{
+		State: graphql.SystemState{
+			SystemOff:                    cloneBoilerBoolPtr(snapshot.SystemOff),
+			SystemWaterPressure:          cloneFloat64Ptr(snapshot.SystemWaterPressure),
+			SystemFlowTemperature:        cloneFloat64Ptr(snapshot.SystemFlowTemperature),
+			OutdoorTemperature:           cloneFloat64Ptr(snapshot.OutdoorTemperature),
+			OutdoorTemperatureAvg24h:     cloneFloat64Ptr(snapshot.OutdoorTemperatureAvg24h),
+			MaintenanceDue:               cloneBoilerBoolPtr(snapshot.MaintenanceDue),
+			HwcCylinderTemperatureTop:    cloneFloat64Ptr(snapshot.HwcCylinderTemperatureTop),
+			HwcCylinderTemperatureBottom: cloneFloat64Ptr(snapshot.HwcCylinderTemperatureBottom),
+		},
+		Config: graphql.SystemConfig{
+			AdaptiveHeatingCurve:         cloneBoilerBoolPtr(snapshot.AdaptiveHeatingCurve),
+			AlternativePoint:             cloneFloat64Ptr(snapshot.AlternativePoint),
+			HeatingCircuitBivalencePoint: cloneFloat64Ptr(snapshot.HeatingCircuitBivalencePoint),
+			DhwBivalencePoint:            cloneFloat64Ptr(snapshot.DhwBivalencePoint),
+			DhwBivalenceBound:            &dhwBound,
+			HcEmergencyTemperature:       cloneFloat64Ptr(snapshot.HcEmergencyTemperature),
+			HwcMaxFlowTempDesired:        cloneFloat64Ptr(snapshot.HwcMaxFlowTempDesired),
+			MaxRoomHumidity:              uint16ToIntPtr(snapshot.MaxRoomHumidity),
+			MaintenanceDate:              cloneStringPtr(snapshot.MaintenanceDate),
+			InstallerName:                cloneStringPtr(snapshot.InstallerName),
+			InstallerPhone:               cloneStringPtr(snapshot.InstallerPhone),
+			InstallerMenuCode:            uint16ToIntPtr(snapshot.InstallerMenuCode),
+		},
+		Properties: graphql.SystemProperties{
+			SystemScheme:            uint16ToIntPtr(snapshot.SystemScheme),
+			ModuleConfigurationVR71: uint16ToIntPtr(snapshot.ModuleConfigurationVR71),
+		},
 	}
 }

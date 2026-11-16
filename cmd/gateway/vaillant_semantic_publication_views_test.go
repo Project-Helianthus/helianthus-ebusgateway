@@ -1,9 +1,13 @@
 package main
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/vaillant/systemconfig"
+	"github.com/Project-Helianthus/helianthus-ebusreg/vaillant/productids"
 )
 
 // TestVaillantZoneViewsDeriveRadioStateOnlyForMissingZoneValues pins the
@@ -154,5 +158,275 @@ func TestVaillantPublicationOwnerPublishesCircuitAndDhwViews(t *testing.T) {
 	}
 	if dhw := provider.DHW(); dhw != nil {
 		t.Fatalf("hot water after expiry = %#v; want withdrawn", dhw)
+	}
+}
+
+// energyLedgerCall is one value applied to recordingEnergyLedger.
+type energyLedgerCall struct {
+	lifetime                      bool
+	channel, usage, period, label string
+	ref                           time.Time
+	kwh                           float64
+}
+
+// recordingEnergyLedger is a native energy ledger whose reference instant
+// advances by one hour on every read inside one month, so an acquisition
+// that dates a window by the current instant instead of the captured one
+// records a different ref.
+type recordingEnergyLedger struct {
+	now       time.Time
+	calls     []energyLedgerCall
+	reject    map[int]bool
+	published int
+}
+
+func (l *recordingEnergyLedger) energyReferenceTime() time.Time {
+	current := l.now
+	l.now = l.now.Add(time.Hour)
+	return current
+}
+
+func (l *recordingEnergyLedger) applyLifetimeEnergy(channel, usage string, kwh float64) bool {
+	l.calls = append(l.calls, energyLedgerCall{lifetime: true, channel: channel, usage: usage, kwh: kwh})
+	return !l.reject[len(l.calls)-1]
+}
+
+func (l *recordingEnergyLedger) applyWindowEnergy(channel, usage, period, label string, ref time.Time, kwh float64) bool {
+	l.calls = append(l.calls, energyLedgerCall{channel: channel, usage: usage, period: period, label: label, ref: ref, kwh: kwh})
+	return !l.reject[len(l.calls)-1]
+}
+
+func (l *recordingEnergyLedger) publishEnergyTotals() { l.published++ }
+
+// TestAcquireEnergyAppliesNativeValuesToTheLedger drives one acquisition
+// through a recording ledger and checks every native field of each applied
+// value. Each field varies across the queries, and each check catches one
+// production mutation:
+//   - lifetime: a lifetime total applied as a window, or the reverse;
+//   - channel and usage: the two arguments swapped or taken from another
+//     query (every query pairs distinct channel and usage strings);
+//   - period and label: the period passed as the label or the reverse, or
+//     the current and previous windows exchanged;
+//   - ref: a window dated by the current ledger instant instead of the
+//     instant captured once at the start (the ledger clock moves per read);
+//   - kwh: a reply applied to another query (every reply is distinct).
+//
+// A failed read applies nothing, a rejected value is not counted, and the
+// totals are published once only when the ledger accepted a value.
+func TestAcquireEnergyAppliesNativeValuesToTheLedger(t *testing.T) {
+	start := time.Date(2030, time.April, 10, 8, 0, 0, 0, time.UTC)
+	const failedQuery = 6
+
+	ledger := &recordingEnergyLedger{now: start, reject: map[int]bool{2: true}}
+	reads := 0
+	acquireEnergy(ledger, func(q b524EnergyQuery, ref time.Time) (uint32, bool) {
+		if ref != start {
+			t.Fatalf("read %d reference = %v; want captured %v", reads, ref, start)
+		}
+		reads++
+		return uint32(1000 + reads), reads-1 != failedQuery
+	})
+	if reads != len(b524EnergyQueries) {
+		t.Fatalf("reads = %d; want %d", reads, len(b524EnergyQueries))
+	}
+
+	want := make([]energyLedgerCall, 0, len(b524EnergyQueries))
+	for i, q := range b524EnergyQueries {
+		if i == failedQuery {
+			continue
+		}
+		call := energyLedgerCall{channel: q.channel, usage: q.usage, kwh: float64(1001 + i)}
+		if q.period == "all" {
+			call.lifetime = true
+		} else {
+			call.period, call.label, call.ref = q.period, q.yearKind, start
+		}
+		want = append(want, call)
+	}
+	if len(ledger.calls) != len(want) {
+		t.Fatalf("ledger calls = %d; want %d", len(ledger.calls), len(want))
+	}
+	for i, got := range ledger.calls {
+		if got != want[i] {
+			t.Errorf("ledger call %d = %+v; want %+v", i, got, want[i])
+		}
+	}
+	if ledger.published != 1 {
+		t.Fatalf("totals published %d times; want once", ledger.published)
+	}
+
+	rejecting := &recordingEnergyLedger{now: start, reject: map[int]bool{}}
+	for i := range b524EnergyQueries {
+		rejecting.reject[i] = true
+	}
+	acquireEnergy(rejecting, func(b524EnergyQuery, time.Time) (uint32, bool) { return 1, true })
+	if rejecting.published != 0 {
+		t.Fatalf("totals published %d times without an accepted value", rejecting.published)
+	}
+}
+
+// TestVaillantPublicationEnergyLedgerKeysProviderValues checks that the
+// owner applies a lifetime total under the undated key and a window value
+// under the key dated against the given instant, not the provider clock.
+func TestVaillantPublicationEnergyLedgerKeysProviderValues(t *testing.T) {
+	clock := time.Date(2030, time.June, 15, 12, 0, 0, 0, time.UTC)
+	provider := graphql.NewLiveSemanticProvider()
+	provider.SetEnergyClock(func() time.Time { return clock })
+	poller := &vaillantSemanticPoller{publication: newVaillantSemanticPublication(provider, nil, nil)}
+	ledger := poller.energyLedger()
+	if ledger == nil {
+		t.Fatal("energy ledger = nil with a provider")
+	}
+	if got := ledger.energyReferenceTime(); got != clock {
+		t.Fatalf("reference time = %v; want provider clock %v", got, clock)
+	}
+	if !ledger.applyLifetimeEnergy("gas", "hot_water", 321) {
+		t.Fatal("lifetime value rejected")
+	}
+	ref := time.Date(2030, time.May, 20, 9, 0, 0, 0, time.UTC)
+	if !ledger.applyWindowEnergy("electricity", "climate", "month", "current", ref, 45) {
+		t.Fatal("window value rejected")
+	}
+	totals := provider.EnergyTotals()
+	if totals == nil {
+		t.Fatal("missing totals")
+	}
+	if got := totals.Gas.DHW.Yearly; len(got) != 2 || got[1] != 321 {
+		t.Fatalf("gas hot water yearly = %v; want lifetime 321 in the current slot", got)
+	}
+	// The current month of ref is May, the previous month of the June
+	// provider clock; dated by the provider clock it would be June.
+	if got := totals.Electric.Climate.Monthly; len(got) != 2 || got[0] != 45 || got[1] != 0 {
+		t.Fatalf("electricity climate monthly = %v; want [45 0]", got)
+	}
+
+	for _, empty := range []*vaillantSemanticPoller{nil, {}, {publication: newVaillantSemanticPublication(nil, nil, nil)}} {
+		if empty.energyLedger() != nil {
+			t.Fatalf("energy ledger of %+v is not nil", empty)
+		}
+	}
+}
+
+func receivedBoilerUpdate(t *testing.T, ch chan interface{}) *graphql.BoilerStatus {
+	t.Helper()
+	select {
+	case raw := <-ch:
+		status, ok := raw.(*graphql.BoilerStatus)
+		if !ok {
+			t.Fatalf("boiler payload type = %T", raw)
+		}
+		return status
+	default:
+		return nil
+	}
+}
+
+// TestVaillantPublicationOwnerPublishesAndWithdrawsBoilerStatus drives the
+// boiler owner methods without a poller: a snapshot publishes a detached
+// status once per change, the thermal withdrawal clears only the flow
+// temperature, and a missing snapshot withdraws a published status without
+// reporting a publication.
+func TestVaillantPublicationOwnerPublishesAndWithdrawsBoilerStatus(t *testing.T) {
+	provider := graphql.NewLiveSemanticProvider()
+	hub := graphql.NewBroadcastHub(nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	updates, err := hub.SubscribeBoiler(ctx)
+	if err != nil {
+		t.Fatalf("SubscribeBoiler: %v", err)
+	}
+	owner := newVaillantSemanticPublication(provider, hub, nil)
+
+	if owner.publishBoilerStatusView(nil, semanticSnapshotSourceLive) {
+		t.Fatal("missing boiler snapshot reported a publication")
+	}
+	if provider.BoilerStatus() != nil || receivedBoilerUpdate(t, updates) != nil {
+		t.Fatal("missing boiler snapshot published a status")
+	}
+
+	flow, pressure := 54.5, 1.6
+	phone := "0123"
+	mode := 2
+	snapshot := &vaillantBoilerSnapshot{FlowTemperatureC: &flow, WaterPressureBar: &pressure, PhoneNumber: &phone, DhwOperatingMode: &mode}
+	if !owner.publishBoilerStatusView(snapshot, semanticSnapshotSourceLive) {
+		t.Fatal("boiler snapshot not published")
+	}
+	phone = "9999"
+	status := provider.BoilerStatus()
+	if status == nil || status.State.FlowTemperatureC == nil || *status.State.FlowTemperatureC != flow || status.State.WaterPressureBar == nil || *status.State.WaterPressureBar != pressure {
+		t.Fatalf("boiler state = %#v", status)
+	}
+	if status.Config.PhoneNumber == nil || *status.Config.PhoneNumber != "0123" {
+		t.Fatalf("phone number = %v; want detached 0123", status.Config.PhoneNumber)
+	}
+	if status.Config.DhwOperatingMode == nil || *status.Config.DhwOperatingMode != decodeDhwMode(mode) {
+		t.Fatalf("hot water mode = %v; want %q", status.Config.DhwOperatingMode, decodeDhwMode(mode))
+	}
+	if receivedBoilerUpdate(t, updates) == nil {
+		t.Fatal("first boiler publication pushed no update")
+	}
+	phone = "0123"
+	if !owner.publishBoilerStatusView(snapshot, semanticSnapshotSourceLive) || receivedBoilerUpdate(t, updates) != nil {
+		t.Fatal("unchanged boiler status pushed an update")
+	}
+
+	owner.withdrawBoilerFlowTemperature()
+	status = provider.BoilerStatus()
+	if status == nil || status.State.FlowTemperatureC != nil || status.State.WaterPressureBar == nil || *status.State.WaterPressureBar != pressure {
+		t.Fatalf("boiler state after withdrawal = %#v; want only flow cleared", status)
+	}
+	if pushed := receivedBoilerUpdate(t, updates); pushed == nil || pushed.State.FlowTemperatureC != nil {
+		t.Fatalf("withdrawal update = %#v; want a status without flow", pushed)
+	}
+	owner.withdrawBoilerFlowTemperature()
+	if receivedBoilerUpdate(t, updates) != nil {
+		t.Fatal("withdrawal without a published flow pushed an update")
+	}
+
+	if owner.publishBoilerStatusView(nil, semanticSnapshotSourceCache) {
+		t.Fatal("missing cache snapshot reported a publication")
+	}
+	if provider.BoilerStatus() != nil {
+		t.Fatal("missing snapshot left the published boiler status")
+	}
+
+	var absent *vaillantSemanticPublication
+	absent.withdrawBoilerFlowTemperature()
+	absent.publishRegulatorCapability(productids.ControllerPresent)
+	newVaillantSemanticPublication(nil, nil, nil).withdrawBoilerFlowTemperature()
+}
+
+// TestVaillantPublicationOwnerPublishesSystemView checks that the system view
+// publishes its detached snapshot with the bound it carries, and that a view
+// without a snapshot withdraws the status without reporting a publication.
+func TestVaillantPublicationOwnerPublishesSystemView(t *testing.T) {
+	provider := graphql.NewLiveSemanticProvider()
+	owner := newVaillantSemanticPublication(provider, nil, nil)
+
+	outdoor := 7.5
+	scheme := uint16(3)
+	bound := systemconfig.ConfigBound{MinC: -10, MaxC: 20, Source: "profile", Profile: "synthetic", ControllerAddress: 0x15}
+	view := vaillantSystemView{snapshot: &vaillantSystemSnapshot{OutdoorTemperature: &outdoor, SystemScheme: &scheme}, dhwBivalenceBound: bound}
+	if !owner.publishSystemView(view, semanticSnapshotSourceLive) {
+		t.Fatal("system view not published")
+	}
+	outdoor = 1
+	view.dhwBivalenceBound.MaxC = 30
+	status := provider.System()
+	if status == nil || status.State.OutdoorTemperature == nil || *status.State.OutdoorTemperature != 7.5 {
+		t.Fatalf("system state = %#v; want detached outdoor 7.5", status)
+	}
+	if status.Properties.SystemScheme == nil || *status.Properties.SystemScheme != 3 {
+		t.Fatalf("system scheme = %v; want 3", status.Properties.SystemScheme)
+	}
+	if status.Config.DhwBivalenceBound == nil || *status.Config.DhwBivalenceBound != bound {
+		t.Fatalf("bound = %#v; want %#v", status.Config.DhwBivalenceBound, bound)
+	}
+
+	if owner.publishSystemView(vaillantSystemView{}, semanticSnapshotSourceCache) {
+		t.Fatal("system view without a snapshot reported a publication")
+	}
+	if provider.System() != nil {
+		t.Fatal("system view without a snapshot left the published status")
 	}
 }

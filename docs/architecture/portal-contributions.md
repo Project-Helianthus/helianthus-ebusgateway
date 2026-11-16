@@ -25,6 +25,7 @@ The implementation comparison is:
 | --- | --- | --- |
 | `portal/handler.go`, `Options` | Validated endpoint paths, trusted external prefix, host catalog availability and Portal base path; optional detached shared-view callback and legacy semantic callbacks; per-request Ingress prefix (`X-Ingress-Path`) used only for URL construction | Keep existing options compatible; production sets the shared-view callback and advertises the mounted snapshot operation together. |
 | `cmd/gateway/gateway_http_server.go` | Mounts the Portal with `StripPrefix`; routes the bare mount to the same handler, whose redirect carries the served prefix and query; mounts catalog separately at `/graphql/portal/v1` | Preserve route ownership; external prefix rewriting must cover both mounts. |
+| `cmd/gateway/gateway_http_portal_surface.go` | Builds the Portal `Options` (paths, readiness, registry, semantic, projection and bus reads, raw Modbus audit) through named functions before the server binds the shared view and mounts the Portal | Keep option values equal to the mounted composition; the mount stays in the server. |
 | `portal/static/index.html` | Relative `assets/app.css` and `assets/app.js` under a served `<base href>` | Resolve from the canonical Portal directory. |
 | `portal/handler.go`, bootstrap | Host-composed endpoints using the served prefix and Portal base path | Preserve handler composition; every advertised endpoint carries the served prefix. |
 | `portal/web/src/app.js` | Relative `api/v1/` fetches and SSE URL resolved against the served base; bootstrap GraphQL, catalog and eeBUS admin endpoints used verbatim after same-origin path validation, with no root-path fallback; capability-based legacy sections | Contribution cards use one generic renderer; advertised endpoints stay authoritative. |
@@ -262,8 +263,9 @@ and carries one of these reasons:
   the publication does not belong to the current source epoch and generation,
   or its evidence is neither public nor metadata-only.
 
-**Proven** from `cmd/gateway/semantic_snapshot_provider.go` and
-`cmd/gateway/gateway_http_server.go`: HTTP composition injects the same
+**Proven** from `cmd/gateway/semantic_snapshot_provider.go`,
+`cmd/gateway/gateway_http_server.go` and
+`cmd/gateway/gateway_http_portal_surface.go`: HTTP composition injects the same
 `hubSemanticSnapshotProvider` instance into GraphQL `semantic_snapshot`, MCP
 `semantic_v1_snapshot_get` and the Portal shared-view callback. The scrape
 route's Thermal and Infrastructure families read the same instance

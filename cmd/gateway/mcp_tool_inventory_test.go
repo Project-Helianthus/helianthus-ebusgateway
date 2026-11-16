@@ -238,9 +238,10 @@ func inventoryRegistrationCallCoverage(t *testing.T) {
 	httpProviderCompositionOwner(t)
 	matrix := map[string]map[string][]string{
 		"gateway_http_server.go": {
-			"startHTTPServer":                {"newHTTPControlPlaneProviders", "installVaillantB503"},
+			"startHTTPServer":                {"newHTTPControlPlaneProviders", "installGatewayHTTPMCPSurface"},
 			"registerRuntimeControlMCPTools": {"RegisterRuntimeControlTools"},
 		},
+		"gateway_http_mcp_surface.go":      {"installGatewayHTTPMCPSurface": {"installVaillantB503"}},
 		"gateway_http_providers.go":        {"newHTTPControlPlaneProviders": {"newHTTPControlPlaneSemanticHandlers", "registerRuntimeControlMCPTools", "RegisterEEBusV1Provider", "RegisterEEBusV1CommandRouter", "RegisterModbusV1Tools", "RegisterLeafPromotionCapture", "RegisterSynchronizedEvidenceCapture", "SetBusObservabilityProvider", "SetWatchSummaryProvider"}},
 		"vaillant_b503_wiring.go":          {"installVaillantB503": {"RegisterVaillantB503Tools"}},
 		"semantic_snapshot_provider.go":    {"newHTTPControlPlaneSemanticHandlers": {"NewServer", "RegisterSemanticSnapshotTool"}},
@@ -276,7 +277,7 @@ func inventoryRegistrationCallCoverage(t *testing.T) {
 				case *ast.SelectorExpr:
 					name = fun.Sel.Name
 				}
-				selected := strings.HasPrefix(name, "Register") || strings.HasPrefix(name, "register") && strings.HasSuffix(name, "Tool") || strings.HasSuffix(name, "Tools") || name == "NewServer" || name == "newHTTPControlPlaneProviders" || name == "newHTTPControlPlaneSemanticHandlers" || name == "installVaillantB503" || name == "SetBusObservabilityProvider" || name == "SetWatchSummaryProvider"
+				selected := strings.HasPrefix(name, "Register") || strings.HasPrefix(name, "register") && strings.HasSuffix(name, "Tool") || strings.HasSuffix(name, "Tools") || name == "NewServer" || name == "newHTTPControlPlaneProviders" || name == "newHTTPControlPlaneSemanticHandlers" || name == "installVaillantB503" || name == "installGatewayHTTPMCPSurface" || name == "SetBusObservabilityProvider" || name == "SetWatchSummaryProvider"
 				if selected {
 					got = append(got, name)
 				}

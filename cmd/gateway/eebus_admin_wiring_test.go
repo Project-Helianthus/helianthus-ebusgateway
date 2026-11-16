@@ -99,6 +99,14 @@ func TestIssue817GatewayMountsOneCredentialFreeTypedOperatorBoundary(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
+	surfaceContent := ""
+	for _, surface := range []string{"gateway_http_portal_surface.go", "gateway_http_mcp_surface.go"} {
+		content, err := os.ReadFile(surface)
+		if err != nil {
+			t.Fatal(err)
+		}
+		surfaceContent += "\n" + string(content)
+	}
 	configContent, err := os.ReadFile("eebus_admin_config.go")
 	if err != nil {
 		t.Fatal(err)
@@ -107,7 +115,7 @@ func TestIssue817GatewayMountsOneCredentialFreeTypedOperatorBoundary(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	source := string(compositionContent) + "\n" + lifecycleText + "\n" + string(httpContent) + "\n" + string(controlPlaneContent) + "\n" + string(configContent)
+	source := string(compositionContent) + "\n" + lifecycleText + "\n" + string(httpContent) + surfaceContent + "\n" + string(controlPlaneContent) + "\n" + string(configContent)
 	for _, required := range []string{
 		`mux.Handle("/admin/eebus/v1/", eebusAdminHandler)`,
 		`eebusAdminHandler := http.HandlerFunc(bindings.serveEEBusAdmin)`,

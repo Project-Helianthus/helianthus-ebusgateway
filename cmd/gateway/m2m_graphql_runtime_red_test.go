@@ -59,15 +59,18 @@ func TestM2MTLSConfigAcceptsMissingClientCertificate(t *testing.T) {
 }
 
 func TestPortalRawModbusMainAuditLogListsOnlySanitizedFields(t *testing.T) {
-	source, err := os.ReadFile("gateway_http_server.go")
+	source, err := os.ReadFile("gateway_http_portal_surface.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(source)
 	for _, required := range []string{"request_id=%s", "surface=%s", "tool=%s", "unit_id=%", "function=%", "offset=%", "quantity=%", "outcome=%s", "error_code=%s", "duration_ms=%", "endpoint_ref=%s"} {
 		if !strings.Contains(text, required) {
-			t.Fatalf("HTTP server audit log lacks %q", required)
+			t.Fatalf("Portal surface audit log lacks %q", required)
 		}
+	}
+	if !strings.Contains(text, " logGatewayPortalRawModbusAudit,") {
+		t.Fatal("Portal options do not bind the sanitized audit log")
 	}
 }
 

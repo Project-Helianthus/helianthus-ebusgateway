@@ -30,7 +30,11 @@ companions group the existing command declarations by responsibility:
 - `gateway_admission.go` -- startup admission and observe-first helpers.
 - `gateway_adapter_direct.go` -- adapter-direct wiring and proxy callbacks.
 - `gateway_v8_admin_http.go` -- V8 diagnostic event surface.
-- `gateway_http_server.go` -- HTTP, GraphQL, MCP, UI, Portal, and mDNS assembly.
+- `gateway_http_server.go` -- HTTP server lifecycle: validation, provider
+  composition, core routes, Portal mount, listener, and mDNS.
+- `gateway_http_mcp_surface.go` -- MCP surface: Vaillant B503 tools, responder
+  capability, and schedule and configuration writers.
+- `gateway_http_portal_surface.go` -- Portal surface options.
 - `gateway_portal_projection.go` -- Portal semantic projection helpers.
 - `gateway_responder_capability.go` -- responder capability projection.
 - `gateway_static_seed.go` -- static registry seed bootstrap.

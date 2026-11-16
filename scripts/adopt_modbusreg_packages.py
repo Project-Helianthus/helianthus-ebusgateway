@@ -1512,6 +1512,7 @@ def replace_imports(source: str, root_name: str, root_used: bool, sub_paths: lis
 
 def check_go(source: str, mapping: dict[str, tuple[str, str]], names: dict[str, frozenset[str]], relative: str = "") -> list[str]:
     """Problems in an already rewritten file: moved names, old calls, unused imports."""
+    del names  # kept for the call signature; import use is judged from any selector
     rewritten, problems = rewrite_go(source, mapping, relative)
     if problems:
         return problems
@@ -1528,9 +1529,8 @@ def check_go(source: str, mapping: dict[str, tuple[str, str]], names: dict[str, 
         if spec["path"] == ROOT_IMPORT:
             used = re.search(rf"{START}{re.escape(name)}\.{IDENT}", blanked) is not None
         else:
-            family = spec["path"].rsplit("/", 1)[1]
-            declared = names.get(family, frozenset())
-            used = any(match.group(1) in declared for match in re.finditer(rf"{START}{re.escape(name)}\.({IDENT})", blanked))
+            # Any selector on the import name is a use; moved-name validation is the rewrite check above.
+            used = re.search(rf"{START}{re.escape(name)}\.{IDENT}", blanked) is not None
         if not used:
             problems.append(f'import "{spec["path"]}" is not used')
     return problems

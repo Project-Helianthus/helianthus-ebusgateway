@@ -247,6 +247,10 @@ class CheckTests(unittest.TestCase):
         source = f'package sample\n\nimport (\n\tmodbusreg "{ROOT}"\n\t"{ROOT}/tesla"\n)\n\nvar a modbusreg.Observation\nvar tesla = 1\n'
         self.assertEqual(ADOPT.check_go(source, self.mapping, self.names), [f'import "{ROOT}/tesla" is not used'])
 
+    def test_subpackage_symbol_outside_the_tables_counts_as_use(self) -> None:
+        source = f'package sample\n\nimport "{ROOT}/tesla"\n\nvar a tesla.SomeFutureSymbol\n'
+        self.assertEqual(ADOPT.check_go(source, self.mapping, self.names), [])
+
     def test_unused_root_import_is_reported(self) -> None:
         source = f'package sample\n\nimport (\n\tmodbusreg "{ROOT}"\n\t"{ROOT}/tesla"\n)\n\nvar a tesla.Gen3HSCProfile\n'
         self.assertEqual(ADOPT.check_go(source, self.mapping, self.names), [f'import "{ROOT}" is not used'])

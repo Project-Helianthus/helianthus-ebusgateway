@@ -40,6 +40,7 @@ requires_ebus_transport_gate() {
     config.go|\
     gateway.go|\
     cmd/gateway/startup_scan*.go|\
+    cmd/gateway/gateway_ebus_generation_owners.go|\
     cmd/matrix-runner/*|\
     internal/matrix/*|\
     smoke.go|\

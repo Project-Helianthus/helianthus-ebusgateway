@@ -81,6 +81,9 @@ func (h *Hub) SetOperatorLinks(id semreg.AssetID, src semreg.SourceID, links []O
 	}
 	h.lock()
 	defer h.unlock()
+	if h.restoring {
+		return ErrRestoreInProgress
+	}
 	target := h.assets[id]
 	if target == nil {
 		return ErrUnknownAsset

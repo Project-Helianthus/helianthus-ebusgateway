@@ -575,3 +575,24 @@ func TestOperatorLinksDeclarationRules(t *testing.T) {
 		t.Fatalf("a refused declaration was held: %d", held)
 	}
 }
+
+// A declaration is refused while Restore installs state and is accepted again
+// once the restore ends.
+func TestOperatorLinksDeclarationIsRefusedWhileRestoring(t *testing.T) {
+	hub, _ := newOperatorLinkHub(t)
+	hub.mu.Lock()
+	hub.restoring = true
+	hub.mu.Unlock()
+	err := hub.SetOperatorLinks(opAsset, opSource, []OperatorLink{opDeclaration("a", graphInverter, "one")})
+	if !errors.Is(err, ErrRestoreInProgress) {
+		t.Fatalf("restoring=%v", err)
+	}
+	hub.mu.Lock()
+	hub.restoring = false
+	held := len(hub.assets[opAsset].operatorLinks)
+	hub.mu.Unlock()
+	if held != 0 {
+		t.Fatalf("a declaration was held while restoring: %d", held)
+	}
+	mustSetOperatorLinks(t, hub, opAsset, opSource, opDeclaration("a", graphInverter, "one"))
+}

@@ -3350,12 +3350,69 @@ static declaration and before any runtime starts: `composeSemanticPairings`
 ([`cmd/gateway/semantic_pairing_composition.go`](../../cmd/gateway/semantic_pairing_composition.go))
 and then `composeOperatorRecords`
 ([`cmd/gateway/operator_record_composition.go`](../../cmd/gateway/operator_record_composition.go)).
-A refusal of either is fatal like a declaration collision. Both compose
-nothing yet, so the preflight declares the same assets as before and no asset
-is graph-enforced. Synthetic hub tests in
+A refusal of either is fatal like a declaration collision. No configuration
+declares a pairing or an operator record yet, so both compose nothing, the
+preflight declares the same assets as before and no asset is graph-enforced.
+Synthetic hub tests in
 [`internal/semhub/graph_test.go`](../../internal/semhub/graph_test.go) cover
 the enforced and non-enforced kernels, the refused declaration, the fixed
 choice, a contributor and the reported state under the race detector.
+
+### Pairing
+
+A pairing declares one unit that two composed families observe through their
+own paths, so that the unit is published once, on one asset, instead of once
+per family. The pairing names:
+
+- the owner: the owning family's declaration of the asset (asset, owner
+  source, owner driver, packs and graph enforcement), without contributors;
+- each contributor: another family's source and driver, the packs it
+  publishes, which must be a subset of the owner's, and its reprojection
+  callback;
+- a capacity budget for the owner and for each contributor: its share of the
+  source descriptors, bindings and identity links of the asset.
+
+`composeSemanticPairings` reads the pairings from the composed configuration
+and declares each paired asset once, with its contributors, through
+`Hub.Declare`. Pairing is static: it is composed once at startup, before any
+runtime starts, and the hub never moves a resource to another asset at run
+time. Cross-path matches therefore rest on operator declarations: both
+families resolve the unit's resource from the same anchor, the owner publishes
+the resource record, and each family publishes its own binding with an
+identity link that names that resource.
+
+The kernel bounds the source descriptors (32), bindings (128) and identity
+links without a resource (128) of one asset, whatever source holds them. The
+budgets of one pairing must each be at least one in every dimension and must
+sum to at most each bound; identity links are counted against the lower of the
+kernel's two link bounds. The budgets are checked for every pairing before any
+pairing is declared. A refusal names no asset, source or driver.
+
+The hub keeps its own refusals, and each is fatal at startup:
+
+- an asset already held by another driver, or a contributor source held by
+  another driver, is a `CollisionError` naming both drivers;
+- an asset its owner already declared without these contributors, or a
+  contributor whose packs are not a subset of the asset's, is
+  `ErrDeclarationConflict`;
+- an undeclared second claimant of a paired asset stays a `CollisionError`,
+  and a source that is not declared on the asset cannot publish on it.
+
+The owner-first presentation policy presents one candidate per fact key, so a
+quantity both paths publish is one key with two candidates and is never
+counted twice. A fence of a contributor leaves the resource and the owner's
+facts in place, and the owner keeps publishing.
+
+No configuration declares a pairing yet, so no production asset has a
+contributor.
+[`cmd/gateway/semantic_pairing_composition_test.go`](../../cmd/gateway/semantic_pairing_composition_test.go)
+refuses every field of a pairing on its own and accepts budgets at the bound.
+[`cmd/gateway/semantic_multisource_acceptance_test.go`](../../cmd/gateway/semantic_multisource_acceptance_test.go)
+composes two synthetic families into one graph-enforced asset and checks the
+identity event of one unit observed through two paths at gateway level: one
+resource, one binding and one identity link per path, one fact key with two
+candidates of which exactly one is presented, the fence of the contributor and
+the undeclared claimant.
 
 ## 13. Acceptance scenarios for implementation
 

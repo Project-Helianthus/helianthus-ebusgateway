@@ -382,7 +382,7 @@ func newVaillantSemanticPoller(cfg ebusgateway.Config, gateway *ebusgateway.Gate
 		regulatorRecheckInterval: cfg.SemanticRegulatorRecheckInterval,
 		regulatorAbsenceGrace:    cfg.SemanticRegulatorAbsenceGrace,
 		regAbsenceState:          regulatorAbsenceUnknown,
-		fm5Mode:                  graphql.Fm5SemanticModeAbsent,
+		fm5Mode:                  vaillantFM5ModeAbsent,
 
 		zones:          make(map[byte]*vaillantZoneSnapshot),
 		presence:       make(map[byte]*zonePresenceRecord),

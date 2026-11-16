@@ -1,0 +1,3 @@
+## Keep FM5 interpretation and the startup plane defaults native
+
+The FM5 mode, degraded reason and interpretation are computed with acquisition-owned types (`vaillantFM5Mode`, `vaillantFM5DegradedReason` and `vaillantFM5Interpretation`) in the Vaillant poller and in its derivation, retention, withdrawal and commit functions, and the `vaillantSemanticPublication` owner maps them to the published GraphQL types. The FM5 interpretation, solar and cylinders reach the owner as a native view. The startup plane defaults (empty circuits, solar and cylinders) and the startup schedule placeholder are published through the owner. Published output is unchanged; the gateway binary changes.

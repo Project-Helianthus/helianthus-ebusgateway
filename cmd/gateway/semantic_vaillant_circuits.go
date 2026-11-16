@@ -529,18 +529,18 @@ const (
 	circuitManagingDeviceVR71Address = 0x26
 )
 
-func deriveCircuitManagingDevice(system *vaillantSystemSnapshot, fm5Mode graphql.Fm5SemanticMode) graphql.ManagingDevice {
+func deriveCircuitManagingDevice(system *vaillantSystemSnapshot, fm5Mode vaillantFM5Mode) graphql.ManagingDevice {
 	return circuitManagingDevice(circuitsManagedByFunctionModule(system, fm5Mode))
 }
 
 // circuitsManagedByFunctionModule reports whether the system scheme, the
 // module configuration and the interpreted FM5 mode place the heating
 // circuits under the function module.
-func circuitsManagedByFunctionModule(system *vaillantSystemSnapshot, fm5Mode graphql.Fm5SemanticMode) bool {
+func circuitsManagedByFunctionModule(system *vaillantSystemSnapshot, fm5Mode vaillantFM5Mode) bool {
 	return system != nil &&
 		system.SystemScheme != nil && *system.SystemScheme == 1 &&
 		system.ModuleConfigurationVR71 != nil && *system.ModuleConfigurationVR71 == 2 &&
-		fm5Mode == graphql.Fm5SemanticModeInterpreted
+		fm5Mode == vaillantFM5ModeInterpreted
 }
 
 // circuitManagingDevice returns a detached managing device for one circuit.

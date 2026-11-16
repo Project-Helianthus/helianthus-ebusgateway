@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"reflect"
 	"sort"
 	"strconv"
@@ -147,6 +148,7 @@ type operatorRecordPublisher struct {
 	handle  *semhub.Handle
 	desired map[semreg.AssetID]*operatorAssetState
 	pending map[semreg.AssetID]operatorAssetRecords
+	failed  map[semreg.AssetID]error
 }
 
 // newOperatorRecordPublisher returns the provider. It admits its source only
@@ -243,9 +245,21 @@ func (p *operatorRecordPublisher) Pending() []semreg.AssetID {
 	return out
 }
 
+// Failures returns the deferred record sets that were refused for a reason a
+// later publication cannot resolve, by asset. Those records are not published.
+func (p *operatorRecordPublisher) Failures() map[semreg.AssetID]error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make(map[semreg.AssetID]error, len(p.failed))
+	for id, err := range p.failed {
+		out[id] = err
+	}
+	return out
+}
+
 // Retry applies the pending record sets again and keeps those that still
-// wait. A set refused for another reason is dropped from the pending sets and
-// returned.
+// wait. A set refused for another reason is dropped from the pending sets,
+// recorded for Failures and returned.
 func (p *operatorRecordPublisher) Retry() error {
 	var first error
 	for _, id := range p.Pending() {
@@ -261,6 +275,12 @@ func (p *operatorRecordPublisher) Retry() error {
 		}
 		p.mu.Lock()
 		delete(p.pending, id)
+		if err != nil {
+			if p.failed == nil {
+				p.failed = make(map[semreg.AssetID]error)
+			}
+			p.failed[id] = err
+		}
 		p.mu.Unlock()
 		if err != nil && first == nil {
 			first = err
@@ -274,7 +294,9 @@ func (p *operatorRecordPublisher) watch(subscription *semhub.Subscription) {
 	defer subscription.Close()
 	for {
 		// Retry first: an event queued before the goroutine started is covered.
-		_ = p.Retry()
+		if err := p.Retry(); err != nil {
+			log.Printf("operator records: a deferred record set was refused and is not published: %v", err)
+		}
 		if len(p.Pending()) == 0 {
 			return
 		}

@@ -505,6 +505,34 @@ func TestOperatorRecordPublisherDefersARecordUntilItsOwnerResourceExists(t *test
 	oprRequireOperatorOrigin(t, held.Origin, audit)
 }
 
+// A deferred set that later fails for another reason is reported, not lost.
+func TestOperatorRecordPublisherReportsADeferredSetThatFailsLater(t *testing.T) {
+	f := newOprFixture(t)
+	bad := operatorRelation{Definition: semreg.DefinitionRef{Pack: semreg.PackRef{ID: "pack.unknown.opr", Version: "1.0.0"}, ID: "unknown.relation", Version: "1.0.0"}, From: oprMissing, To: oprArray}
+	if err := f.publisher.Compose([]operatorAssetRecords{{Asset: oprDriverAsset, Records: operatorRecords{Relations: []operatorRelation{bad}}, Audit: oprAudit("meter-role-bad")}}); err != nil {
+		t.Fatalf("compose: %v", err)
+	}
+	err := f.publishDriver(t, func(batch *semreg.PublicationBatch, current semreg.Snapshot) {
+		resource := current.Resources[0]
+		resource.ResourceID = oprMissing
+		slot := "inverter-9"
+		resource.Anchor.Slot = &slot
+		resource.Origin.OriginID = "origin:opr-driver:inverter-9"
+		resource.Revision = "1"
+		batch.ResourceUpserts = []semreg.Resource{resource}
+	})
+	if err != nil {
+		t.Fatalf("driver publication: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for len(f.publisher.Failures()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if failures := f.publisher.Failures(); failures[oprDriverAsset] == nil || len(f.publisher.Pending()) != 0 {
+		t.Fatalf("failures=%v pending=%v, want the failed set reported", failures, f.publisher.Pending())
+	}
+}
+
 // Any other refusal stays fatal at composition.
 func TestOperatorRecordPublisherComposeStopsOnAnotherRefusal(t *testing.T) {
 	f := newOprFixture(t)

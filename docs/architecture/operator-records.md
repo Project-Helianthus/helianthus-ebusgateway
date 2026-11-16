@@ -152,6 +152,14 @@ No family publisher carries the pending links yet, and the operator-record
 section has no identity-link form. Until a family adopts `Tx.OperatorLinks`,
 an operator identity declaration is never published.
 
+The same holds for the declarations the records need on the owner's side. No
+family composition names the provider as a contributor or declares a
+configuration-only home yet, and the startup composition has no configured
+record set. The acceptance test makes those declarations itself, as an owner
+would, so it proves the path from the document to the cut once the owner has
+declared them. A Portal replacement publishes nothing for an asset whose
+owner has not.
+
 ## Ownership
 
 A driver is never a source of the provider's configuration-only asset, so it

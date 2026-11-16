@@ -13,10 +13,13 @@ where TestName is Test or Test followed by a non-lower-case character, and that 
 part of the build of the release target: GOOS linux on every release architecture, with
 and without the race detector. A file that a file-name suffix or a //go:build (or legacy
 // +build) constraint excludes from any of those builds, whose // +build lines differ
-from its //go:build line, or whose name starts with '_' or '.', is never evidence. A Python test is named as '<script path> <test_name>' and
+from its //go:build line, whose // +build line has no blank line after it before the package
+clause, or whose name starts with '_' or '.', is never evidence. A Python test is named as '<script path> <test_name>' and
 exists when test_name starts with 'test' and the test runner collects it: a module-level
 'def <test_name>(', or a method of a module-level class the runner collects (a subclass
-of unittest.TestCase, or a class named Test... without __init__ or __new__). A test function nested
+of unittest.TestCase, or a class named Test... that neither defines nor inherits from a
+class of the same module __init__ or __new__), never of a class whose own or inherited
+__test__ is False. A test function nested
 inside another function or inside an uncollected class is never a test. A helper
 function is never a test, and a declaration-like line inside a comment or a string
 literal is never a declaration. Standard library only.
@@ -236,15 +239,22 @@ def _file_name_matches(name, goarch):
 
 
 def _header_constraints(text):
-    """Return the //go:build expressions and the // +build lines before the package clause."""
+    """Return the //go:build expressions and the // +build lines before the package clause.
+
+    A // +build line counts only when a blank line follows it before the package clause; go
+    vet (run by go test) refuses a file whose // +build line runs straight into the package
+    clause ('misplaced +build comment'), so such a line raises ValueError.
+    """
     expressions, legacy = [], []
     in_block = False
+    plus_build_awaits_blank_line = False
     for line in text.splitlines():
         stripped = line.strip()
         if in_block:
             in_block = "*/" not in stripped
             continue
         if not stripped:
+            plus_build_awaits_blank_line = False
             continue
         if stripped.startswith("/*"):
             in_block = "*/" not in stripped[2:]
@@ -256,6 +266,9 @@ def _header_constraints(text):
             expressions.append(body[8:].strip())
         elif body.strip().startswith("+build"):
             legacy.append(body.strip()[6:].strip())
+            plus_build_awaits_blank_line = True
+    if plus_build_awaits_blank_line:
+        raise ValueError("misplaced +build comment: no blank line before the package clause")
     return expressions, legacy
 
 
@@ -452,10 +465,10 @@ def in_release_build(root, path):
     text = _read(path)
     if text is None:
         return False
-    expressions, legacy = _header_constraints(text)
-    if len(expressions) > 1:
-        return False
     try:
+        expressions, legacy = _header_constraints(text)
+        if len(expressions) > 1:
+            return False
         constraint = _constraint_tree(expressions, legacy)
     except ValueError:
         return False
@@ -508,19 +521,51 @@ def _resolved_base(base, imports):
     return f"{target}.{rest}" if rest else target
 
 
+def _class_body_names(node):
+    """Map each name the class body binds (def or plain assignment) to its value node, or None for a def."""
+    bound = {}
+    for item in node.body:
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            bound[item.name] = None
+        elif isinstance(item, ast.Assign):
+            for target in item.targets:
+                if isinstance(target, ast.Name):
+                    bound[target.id] = item.value
+        elif isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name) and item.value is not None:
+            bound[item.target.id] = item.value
+    return bound
+
+
 def _collected_classes(tree):
-    """Return the names of the module-level classes the test runner collects."""
+    """Return the names of the module-level classes the test runner collects.
+
+    A class whose __test__ attribute, set in its body or inherited from a base class of the same
+    module, is not a true constant is never collected. A class that unittest.TestCase does not
+    underlie is collected only when it is named Test... and neither it nor a base class of the
+    same module defines __init__ or __new__ (pytest refuses a class with a constructor).
+    """
     collected = set()
+    # Module-level class name -> (derives from unittest.TestCase, __test__ value or None, has a constructor).
+    defined = {}
     imports = _module_imports(tree.body, {})
     for node in tree.body:
         if not isinstance(node, ast.ClassDef):
             continue
         bases = {_resolved_base(base, imports) for base in node.bases}
-        defines_constructor = any(isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
-                                  and item.name in ("__init__", "__new__") for item in node.body)
-        if bases & PYTHON_TEST_CASE_BASES or bases & collected:
-            collected.add(node.name)
-        elif node.name.startswith("Test") and not defines_constructor:
+        local_bases = [defined[base.id] for base in node.bases
+                       if isinstance(base, ast.Name) and base.id not in imports and base.id in defined]
+        bound = _class_body_names(node)
+        test_case = bool(bases & PYTHON_TEST_CASE_BASES) or any(base[0] for base in local_bases)
+        if "__test__" in bound:
+            value = bound["__test__"]
+            opted_in = isinstance(value, ast.Constant) and bool(value.value)
+        else:
+            opted_in = next((base[1] for base in local_bases if base[1] is not None), None)
+        constructor = "__init__" in bound or "__new__" in bound or any(base[2] for base in local_bases)
+        defined[node.name] = (test_case, opted_in, constructor)
+        if opted_in is False:
+            continue
+        if test_case or (node.name.startswith("Test") and not constructor):
             collected.add(node.name)
     return collected
 

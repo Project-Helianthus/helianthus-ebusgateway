@@ -107,6 +107,15 @@ GO_CONSTRAINED_FILES = {
     "feature_386_387_test.go":
         "//go:build !386 || 386.387\n\npackage sample\n\nimport \"testing\"\n\n"
         "func TestDeclaredOnlyForThe386X87FeatureLevel(t *testing.T) {}\n",
+    "misplaced_plus_build_test.go":
+        "// +build linux\npackage sample\n\nimport \"testing\"\n\n"
+        "func TestDeclaredOnlyUnderAMisplacedPlusBuildLine(t *testing.T) {}\n",
+    "misplaced_after_go_build_test.go":
+        "//go:build linux\n// +build linux\npackage sample\n\nimport \"testing\"\n\n"
+        "func TestDeclaredOnlyUnderAPlusBuildLineAgainstThePackageClause(t *testing.T) {}\n",
+    "separated_plus_build_test.go":
+        "// +build linux\n\n// Package comment.\npackage sample\n\nimport \"testing\"\n\n"
+        "func TestDeclaredUnderAPlusBuildLineFollowedByABlankLine(t *testing.T) {}\n",
     "_ignored_test.go":
         "package sample\n\nimport \"testing\"\n\nfunc TestDeclaredOnlyInAnIgnoredFile(t *testing.T) {}\n",
 }
@@ -128,6 +137,20 @@ PY_COLLECTION_SOURCE = (
     "    def test_method_of_a_class_with_init(self):\n        pass\n\n\n"
     "class TestWithNew:\n    def __new__(cls):\n        return super().__new__(cls)\n\n"
     "    def test_method_of_a_class_with_new(self):\n        pass\n\n\n"
+    "class Constructed:\n    def __init__(self):\n        pass\n\n\n"
+    "class TestInheritingInit(Constructed):\n    def test_method_of_a_class_inheriting_init(self):\n        pass\n\n\n"
+    "class Allocated:\n    def __new__(cls):\n        return super().__new__(cls)\n\n\n"
+    "class TestInheritingNew(Allocated):\n    def test_method_of_a_class_inheriting_new(self):\n        pass\n\n\n"
+    "class Plain:\n    pass\n\n\n"
+    "class TestWithAPlainBase(Plain):\n    def test_method_of_a_test_class_with_a_plain_base(self):\n        pass\n\n\n"
+    "class TestOptedOut:\n    __test__ = False\n\n    def test_method_of_an_opted_out_class(self):\n        pass\n\n\n"
+    "class OptedOutCase(unittest.TestCase):\n    __test__ = False\n\n"
+    "    def test_method_of_an_opted_out_test_case(self):\n        pass\n\n\n"
+    "class OptedOutBase:\n    __test__ = False\n\n\n"
+    "class TestInheritingOptOut(OptedOutBase):\n    def test_method_of_a_class_inheriting_an_opt_out(self):\n"
+    "        pass\n\n\n"
+    "class TestOptedBackIn(OptedOutBase):\n    __test__ = True\n\n"
+    "    def test_method_of_a_class_opting_back_in(self):\n        pass\n\n\n"
     "class Outer(unittest.TestCase):\n    class Inner:\n        def test_method_of_a_nested_class(self):\n"
     "            pass\n\n"
     "    def test_outer(self):\n        def test_nested_in_a_method():\n            pass\n"
@@ -358,7 +381,8 @@ class OfflineAcceptanceMatrixTests(unittest.TestCase):
                      "internal/sample TestDeclaredUnderALinuxConstraint",
                      "internal/sample TestDeclaredUnderAMatchingLegacyLine",
                      "internal/sample TestDeclaredUnderTheDefaultAmd64FeatureLevel",
-                     "internal/sample TestDeclaredUnderEachReleaseFeatureLevel"):
+                     "internal/sample TestDeclaredUnderEachReleaseFeatureLevel",
+                     "internal/sample TestDeclaredUnderAPlusBuildLineFollowedByABlankLine"):
             with self.subTest(test=test):
                 self.assertIsNone(MATRIX.missing_test(self.repo.root, test))
 
@@ -370,7 +394,9 @@ class OfflineAcceptanceMatrixTests(unittest.TestCase):
                          "TestDeclaredOnlyUnderAnUnparsableConstraint", "TestDeclaredOnlyInAnIgnoredFile",
                          "TestDeclaredOnlyUnderTwoBuildLines", "TestDeclaredOnlyUnderAMismatchedLegacyLine",
                          "TestDeclaredOnlyAboveTheDefaultAmd64FeatureLevel",
-                         "TestDeclaredOnlyForTheArmV7FeatureLevel", "TestDeclaredOnlyForThe386X87FeatureLevel"):
+                         "TestDeclaredOnlyForTheArmV7FeatureLevel", "TestDeclaredOnlyForThe386X87FeatureLevel",
+                         "TestDeclaredOnlyUnderAMisplacedPlusBuildLine",
+                         "TestDeclaredOnlyUnderAPlusBuildLineAgainstThePackageClause"):
             with self.subTest(function=function):
                 problem = MATRIX.missing_test(self.repo.root, f"internal/sample {function}")
                 self.assertIsNotNone(problem)
@@ -383,7 +409,8 @@ class OfflineAcceptanceMatrixTests(unittest.TestCase):
     def test_python_test_the_runner_collects_is_found(self):
         for function in ("test_module_level_function_is_collected", "test_method_of_a_test_named_class",
                          "test_method_of_an_indirect_test_case", "test_outer",
-                         "test_method_of_a_module_alias_test_case", "test_method_of_a_name_alias_test_case"):
+                         "test_method_of_a_module_alias_test_case", "test_method_of_a_name_alias_test_case",
+                         "test_method_of_a_test_class_with_a_plain_base", "test_method_of_a_class_opting_back_in"):
             with self.subTest(function=function):
                 self.assertIsNone(MATRIX.missing_test(self.repo.root, f"scripts/collection_test.py {function}"))
 
@@ -392,7 +419,9 @@ class OfflineAcceptanceMatrixTests(unittest.TestCase):
                          "test_method_of_a_class_with_init", "test_method_of_a_class_with_new",
                          "test_method_of_a_nested_class",
                          "test_method_of_a_class_whose_base_only_shares_the_name",
-                         "test_nested_in_a_method"):
+                         "test_nested_in_a_method", "test_method_of_a_class_inheriting_init",
+                         "test_method_of_a_class_inheriting_new", "test_method_of_an_opted_out_class",
+                         "test_method_of_an_opted_out_test_case", "test_method_of_a_class_inheriting_an_opt_out"):
             with self.subTest(function=function):
                 problem = MATRIX.missing_test(self.repo.root, f"scripts/collection_test.py {function}")
                 self.assertIsNotNone(problem)

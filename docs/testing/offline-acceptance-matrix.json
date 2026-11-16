@@ -1698,8 +1698,8 @@
           "issue": null
         },
         "partial_failure": {
-          "state": "pass",
-          "test": "cmd/gateway TestH08DialFailureOnOneInstanceLeavesTheOtherRunning",
+          "state": "not_run",
+          "test": null,
           "reason": null,
           "issue": null
         },
@@ -2072,8 +2072,8 @@
           "issue": null
         },
         "cleanup": {
-          "state": "pass",
-          "test": "cmd/gateway TestCX22LossWithdrawsAndQuarantines",
+          "state": "not_run",
+          "test": null,
           "reason": null,
           "issue": null
         }

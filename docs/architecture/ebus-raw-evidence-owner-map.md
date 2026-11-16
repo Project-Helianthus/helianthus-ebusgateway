@@ -27,8 +27,11 @@ namespace.
 Current entry is [main.go](../../cmd/gateway/main.go): `main` calls `run`, which
 delegates to `runGatewayLifecycle` in
 [gateway_run_lifecycle.go](../../cmd/gateway/gateway_run_lifecycle.go).
-The orchestration is in `gateway_run_lifecycle.go`, which calls the startup
-source-selection setup and the bus-observability providers in
+`runGatewayLifecycle` is the entry over four owners whose contracts are stated
+in [gateway composition owners](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/docs/architecture/gateway-composition-owners.md). The API
+composition `gatewayAPIComposition` in
+[gateway_api_composition.go](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/gateway_api_composition.go)
+calls the startup source-selection setup and the bus-observability providers in
 [gateway_lifecycle_observability.go](../../cmd/gateway/gateway_lifecycle_observability.go);
 the observer factory
 `wireObserveFirstObservers` is in
@@ -39,9 +42,11 @@ The process shell `gatewayProcessShell` in
 the run configuration, the synchronized evidence sidecar, the runtime state, the
 managed sidecars, the eBUS driver and the runtime control, and registers each
 release in one named shutdown sequence that runs last in, first out.
-`runGatewayLifecycle` composes the process observer chain on that shell,
+The API composition composes the process observer chain on that shell,
 constructs the gateway bus, installs retained-view providers, starts the HTTP
-control plane and registers its own releases in the same sequence. Post-start eBUS tasks run under an admitted generation;
+control plane and registers its releases in the same sequence;
+`runGatewayLifecycle` then creates the retained consumers and the generation
+owners and registers the generation-task release. Post-start eBUS tasks run under an admitted generation;
 process consumers are created once by the first admitted generation and survive
 stopped periods. Driver unavailability can leave the shell available. The native
 `ebusDriverRuntime` in
@@ -147,7 +152,7 @@ Unresolved edges blocking implementation:
 
 | Later file group | Minimal responsibility / required evidence |
 | --- | --- |
-| `gateway_admission.go`, `ebus_driver_runtime.go`, `gateway_process_shell.go`, `gateway_run_lifecycle.go` (linked above) | Move eBUS construction/writer lifetime under driver, retain shell provider handles; keep native generation fencing and current failure isolation. Follow the delivered [S7 contract](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/architecture/runtime-driver-lifecycle.md#s7-retained-ebus-evidence-and-deferred-store-move) and managed eBUS admission boundary; accepted lifecycle work is not an outstanding pre-G5 hold or proof that evidence writers have moved. |
+| `gateway_admission.go`, `ebus_driver_runtime.go`, `gateway_process_shell.go`, `gateway_api_composition.go`, `gateway_run_lifecycle.go` (linked above) | Move eBUS construction/writer lifetime under driver, retain shell provider handles; keep native generation fencing and current failure isolation. Follow the delivered [S7 contract](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/architecture/runtime-driver-lifecycle.md#s7-retained-ebus-evidence-and-deferred-store-move) and managed eBUS admission boundary; accepted lifecycle work is not an outstanding pre-G5 hold or proof that evidence writers have moved. |
 | `identification_evidence_wiring.go`, `bus_observability_provider.go` | Replace process publication/direct concrete-store coupling with driver-owned retained snapshots; prove absent/stopped/failed reads perform zero bus I/O and preserve historical provenance. |
 | `internal/ebus/evidence/{discovery,identification,specimens}`, root `identification_evidence.go`, `evidence_buffer.go`, `bus_observability_store.go`, `bus_observability_api.go` | Preserve the extracted mechanics and facade contracts, bounded retention/copy ownership, deterministic public ordering and age; separate gateway diagnostic fields; distinguish pause, worker close, eviction and explicit destruction. |
 | `passive_transaction_reconstructor.go`, `active_passive_deduplicator.go`, `shadow_cache.go` and poller/scheduler files above | Coordinate subscription withdrawal, stale callback fencing, new-generation admission and source-aware last-known-good behavior with their owners; do not silently change retry, dedup, qualification or semantic policy. |

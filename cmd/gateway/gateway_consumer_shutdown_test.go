@@ -7,7 +7,6 @@ import (
 	"go/printer"
 	"go/token"
 	"io"
-	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -96,28 +95,56 @@ func TestGatewayConsumerShutdownNilResources(t *testing.T) {
 	}
 }
 
-func TestGatewayConsumerShutdownLifecycleWiring(t *testing.T) {
-	data, err := os.ReadFile("gateway_run_lifecycle.go")
-	if err != nil {
-		t.Fatal(err)
+// requireStepsInOrder fails unless every step of want occurs in got, in the
+// order of want.
+func requireStepsInOrder(t *testing.T, label string, got, want []string) {
+	t.Helper()
+	next := 0
+	for _, step := range got {
+		if next < len(want) && step == want[next] {
+			next++
+		}
 	}
-	text := string(data)
+	if next != len(want) {
+		t.Fatalf("%s: %q is missing or out of order\n want in order: %s\n got: %s", label, want[next], strings.Join(want, " -> "), strings.Join(got, " -> "))
+	}
+}
+
+// The process registers the cancellation of the control-plane context, starts
+// the HTTP control plane, registers the consumer shutdown over its server and
+// only then registers and binds the generation tasks. At shutdown the
+// generation tasks join first, then the consumers close, then the control-plane
+// context is canceled.
+func TestGatewayConsumerShutdownLifecycleWiring(t *testing.T) {
+	trace := observeProcessShellSteps(t)
+	result := runRCCLifecycle(t, rccLifecycleOptions{dial: rccDialHealthyAfterRelease, scanOnStart: true, cancelAt: "background", releaseDialAtHTTP: true, observability: true})
+	if result.runErr != nil {
+		t.Fatalf("run result = %v; want nil", result.runErr)
+	}
+	requireStepsInOrder(t, "consumer shutdown wiring", trace.snapshot(), []string{
+		"register:control-plane context",
+		"acquire:HTTP control plane",
+		"register:consumers",
+		"register:generation tasks",
+		"release:generation tasks",
+		"release:consumers",
+		"release:control-plane context",
+	})
+
 	fset := token.NewFileSet()
 	files, compositionText := lifecycleCompositionSources(t, fset)
-	last := -1
-	for _, step := range []string{`shell.onShutdownFunc("control-plane context", controlPlaneCancel)`, "server, advertiser, err := startHTTPServerFn(", "consumerShutdown := gatewayConsumerShutdown{", `shell.onShutdownFunc("consumers", consumerShutdown.shutdown)`, "control.CloseAdmission(closeCtx)", "control.BindTasks(ctx, generationTasks"} {
-		position := strings.Index(text, step)
-		if step == "control.CloseAdmission(closeCtx)" {
-			position = strings.LastIndex(text, step)
-		}
-		if position <= last {
-			t.Fatalf("missing or reversed lifecycle step %q", step)
-		}
-		last = position
+	// The generation-task release closes the admission of the runtime control,
+	// which joins the generation tasks.
+	var lifecycle strings.Builder
+	if err := printer.Fprint(&lifecycle, fset, lifecycleFunctionDecl(t, files, "runGatewayLifecycle").Body); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(lifecycle.String(), `shell.onShutdown("generation tasks"`) || strings.Count(lifecycle.String(), "control.CloseAdmission(closeCtx)") != 1 {
+		t.Fatal("the generation-task release of runGatewayLifecycle does not close the runtime-control admission")
 	}
 	for _, binding := range []string{
 		"stopTransportWatch: stopTransportWatch,",
-		"publishManagedTransportRetirement(busObservability, cfg)",
+		"publishManagedTransportRetirement(busObservability, *cfg)",
 		"return shutdownHTTPControlPlane(server)",
 		"surface: retained.surface,",
 		"consumerShutdown.deduplicator = deduplicator", "consumerShutdown.busObservability = busObservability",

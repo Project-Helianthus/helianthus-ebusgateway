@@ -6,6 +6,7 @@ PRODUCTION_PATHS = (
     Path("config.go"), Path("modbus_config.go"),
     Path("cmd/gateway/gateway_run_lifecycle.go"),
     Path("cmd/gateway/gateway_process_shell.go"),
+    Path("cmd/gateway/gateway_api_composition.go"),
     Path("cmd/gateway/gateway_lifecycle_observability.go"),
     Path("cmd/gateway/gateway_retained_consumers.go"),
     Path("cmd/gateway/gateway_ebus_generation_owners.go"),

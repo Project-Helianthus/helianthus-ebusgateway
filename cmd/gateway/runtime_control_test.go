@@ -2360,8 +2360,8 @@ func TestRuntimeControlMCPDurableServiceEquivalence(t *testing.T) {
 // TestRuntimeControlMCPProductionWiring pins the production composition the
 // harness cannot reach behaviourally: startHTTPServer registers the
 // lifecycle tools unconditionally (not behind an eeBUS or driver condition)
-// before the MCP handler is mounted, and the lifecycle closure hands the
-// composed control path to startHTTPServer.
+// before the MCP handler is mounted, and the startHTTPServerFn closure of the
+// API composition hands the composed control path to startHTTPServer.
 func TestRuntimeControlMCPProductionWiring(t *testing.T) {
 	fset := token.NewFileSet()
 	serverFile, err := parser.ParseFile(fset, "gateway_http_server.go", nil, 0)
@@ -2407,24 +2407,25 @@ func TestRuntimeControlMCPProductionWiring(t *testing.T) {
 		t.Fatalf("startHTTPServer must register the lifecycle tools unconditionally before mounting MCP: register=%v completed=%v guarded=%v", registerAt, completedAt, guarded)
 	}
 
-	lifecycleFile, err := parser.ParseFile(fset, "gateway_run_lifecycle.go", nil, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	// The startHTTPServerFn closure of the API composition is the only
+	// lifecycle caller of startHTTPServer.
+	lifecycleFiles, _ := lifecycleCompositionSources(t, fset)
 	passed := 0
-	ast.Inspect(lifecycleFile, func(node ast.Node) bool {
-		call, ok := node.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		if ident, ok := call.Fun.(*ast.Ident); ok && ident.Name == "startHTTPServer" {
-			if last, ok := call.Args[len(call.Args)-1].(*ast.Ident); ok && last.Name == "control" {
-				passed++
+	for _, file := range lifecycleFiles {
+		ast.Inspect(file.syntax, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
 			}
-		}
-		return true
-	})
+			if ident, ok := call.Fun.(*ast.Ident); ok && ident.Name == "startHTTPServer" {
+				if last, ok := call.Args[len(call.Args)-1].(*ast.Ident); ok && last.Name == "control" {
+					passed++
+				}
+			}
+			return true
+		})
+	}
 	if passed != 1 {
-		t.Fatalf("gateway_run_lifecycle.go hands the composed control to startHTTPServer %d times; want 1", passed)
+		t.Fatalf("the lifecycle composition hands the composed control to startHTTPServer %d times; want 1", passed)
 	}
 }

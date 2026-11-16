@@ -112,32 +112,36 @@ func TestPortalCatalogRouteIsReservedAgainstConfigurableRoutes(t *testing.T) {
 	}
 }
 
+// The HTTP control plane starts before the generation tasks are registered and
+// bound, without waiting for a running eBUS driver, and it is retired after the
+// generation tasks have joined.
 func TestMainStartsControlPlaneBeforeWarmupAndRetiresItInLIFOOrder(t *testing.T) {
-	source, err := os.ReadFile("gateway_run_lifecycle.go")
-	if err != nil {
-		t.Fatalf("read gateway_run_lifecycle.go: %v", err)
+	trace := observeProcessShellSteps(t)
+	result := runRCCLifecycle(t, rccLifecycleOptions{dial: rccDialHealthyAfterRelease, scanOnStart: true, cancelAt: "background", releaseDialAtHTTP: true})
+	if result.runErr != nil {
+		t.Fatalf("run result = %v; want nil", result.runErr)
 	}
-	text := string(source)
-
-	start := strings.Index(text, "server, advertiser, err := startHTTPServerFn(")
-	warmup := strings.Index(text, "control.BindTasks(ctx, generationTasks")
+	requireStepsInOrder(t, "control plane before generation tasks", trace.snapshot(), []string{
+		"acquire:HTTP control plane",
+		"register:consumers",
+		"register:generation tasks",
+		"release:generation tasks",
+		"release:consumers",
+		"release:control-plane context",
+	})
+	if shell, poller := strings.Index(result.events, "http_shell("), strings.Index(result.events, "semantic_poller"); shell < 0 || poller < shell {
+		t.Fatalf("the HTTP control plane did not start before the generation tasks: %s", result.events)
+	}
 	_, compositionText := lifecycleCompositionSources(t, token.NewFileSet())
-	if start < 0 || warmup < 0 || start > warmup || strings.Contains(compositionText, "WaitRunning(") {
-		t.Fatalf("control-plane start must precede the generation-owned post-start tasks, with no WaitRunning gate: start=%d tasks=%d", start, warmup)
+	if strings.Contains(compositionText, "WaitRunning(") {
+		t.Fatal("the lifecycle composition gates the control plane on WaitRunning")
 	}
 
-	// TestGatewayProcessShellShutdownSequenceThroughLifecycle asserts the
-	// resulting release order: generation tasks, then consumers.
-	delegate := strings.Index(text, `shell.onShutdownFunc("consumers", consumerShutdown.shutdown)`)
-	join := strings.LastIndex(text, "control.CloseAdmission(closeCtx)")
-	if delegate < start || join < delegate {
-		t.Fatal("consumer shutdown must be registered after HTTP acquisition and before generation join")
-	}
-	source, err = os.ReadFile("gateway_consumer_shutdown.go")
+	source, err := os.ReadFile("gateway_consumer_shutdown.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	text = string(source)
+	text := string(source)
 	last := -1
 	for _, closeCall := range []string{
 		"s.stopTransportWatch()", "s.publishRetirement()", "s.drainHTTP()",
@@ -193,7 +197,9 @@ func TestRunOrchestrationNeverStartsTheEBusDriverDirectly(t *testing.T) {
 // The deferred shutdown stack is the process-shell shutdown sequence;
 // TestGatewayProcessShellShutdownSequenceThroughLifecycle asserts its complete
 // release order. The M2M release is registered by the lifecycle itself between
-// the retained EVSE owner and the final source-selection artifact.
+// the retained EVSE owner and the eeBUS surfaces, before the API composition;
+// the same test asserts that the eeBUS surfaces precede the registration of
+// the final source-selection artifact by the API composition.
 func TestRunOrchestrationRegistersTheM2MReleaseInAcquisitionOrder(t *testing.T) {
 	source, err := os.ReadFile("gateway_run_lifecycle.go")
 	if err != nil {
@@ -207,7 +213,8 @@ func TestRunOrchestrationRegistersTheM2MReleaseInAcquisitionOrder(t *testing.T) 
 		`shell.onShutdown("M2M sidecar"`,
 		"m2mRuntime.Close()",
 		"shell.acquireEEBusSurfaces()",
-		`shell.onShutdownFunc("final source-selection artifact", startupSelection.emitFinalArtifact)`,
+		"newGatewayAPIComposition(ctx, shell, &cfg, portalCatalogSource)",
+		"api.compose()",
 	} {
 		next := strings.Index(text, step)
 		if next < 0 || next < last || strings.Count(text, step) != 1 {
@@ -243,16 +250,13 @@ func TestRunOrchestrationKeepsFlagsConfigurationAdmissionAndStartupBarriersOrder
 
 	assertOrder(mainText, "flag.Parse()", "applyTransportSourcePolicy(&cfg)", "run(ctx, cfg)")
 	// The run configuration, the driver preparation and the runtime control
-	// start are process-shell acquisitions;
+	// start are process-shell acquisitions; the startup source selection is
+	// the first API composition step.
 	// TestGatewayProcessShellShutdownSequenceThroughLifecycle asserts their
-	// order and that every shell acquisition precedes the registration of the
-	// final source-selection artifact, which follows the startup source
-	// selection.
-	assertOrder(lifecycleText,
-		"shell.acquireResources()",
-		"newStartupSourceSelection(cfg)",
-		`shell.onShutdownFunc("final source-selection artifact", startupSelection.emitFinalArtifact)`,
-	)
+	// order and that every shell acquisition precedes the startup source
+	// selection, which precedes the registration of the final source-selection
+	// artifact.
+	assertOrder(lifecycleText, "shell.acquireResources()", "api.compose()")
 	// The semantic barrier and the once-only inserter subscription are owned
 	// by retainedEBusConsumers; TestRetainedEBusConsumersClosesSemanticBarrierOnce,
 	// TestRetainedEBusConsumersCreatesBarrierOnlyForDeferredStartupScan and
@@ -265,7 +269,9 @@ func TestRunOrchestrationKeepsFlagsConfigurationAdmissionAndStartupBarriersOrder
 	// order, and TestEBusGenerationOwnersTaskGraph pins the task names and
 	// their prerequisites.
 	assertOrder(lifecycleText,
+		"api.compose()",
 		"newRetainedEBusConsumers(ctx",
+		"api.serve(retained)",
 		"retained.openSemanticBarrierOnProcessExit()",
 		"newEBusGenerationOwners(ctx",
 		"newEBusGenerationTaskRunner(generationOwners.taskConfig())",

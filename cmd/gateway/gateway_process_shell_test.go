@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"net/http"
 	"reflect"
 	"strings"
 	"sync"
@@ -10,6 +11,13 @@ import (
 	"testing/iotest"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/releasecheck"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimestate"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/mdns"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/portal/catalogv1"
 )
 
 type processShellTrace struct {
@@ -90,10 +98,33 @@ var processShellAcquisitionOrder = []string{
 	"evidence configuration",
 }
 
+// apiCompositionAcquisitionOrder is the order of the API composition steps
+// that every started process runs; the static seed runs only when it is
+// enabled, right after the gateway.
+var apiCompositionAcquisitionOrder = []string{
+	"startup source selection",
+	"observe-first observers",
+	"gateway",
+	"graphql builder",
+	"address-table inserter",
+	"router plane",
+	"semantic runtime",
+	"late-bound writers",
+	"graphql builder start",
+	"HTTP control plane",
+}
+
+func processAcquisitionOrder(composition ...string) []string {
+	return append(append([]string(nil), processShellAcquisitionOrder...), composition...)
+}
+
 // The complete process, with every optional resource the in-process harness
 // can provide (synchronized evidence sidecar, retained EVSE owner, bus
-// observability), acquires the shell resources in order, registers each
-// release right after its acquisition and releases them last in, first out.
+// observability, static seed), acquires the shell resources and builds the API
+// composition in order, registers each release right after its acquisition and
+// releases them last in, first out. The HTTP control plane starts before the
+// generation tasks are registered and bound, and its context is canceled only
+// after the generation tasks have joined and the consumers have closed.
 func TestGatewayProcessShellShutdownSequenceThroughLifecycle(t *testing.T) {
 	useFullBuildIdentity(t)
 	trace := observeProcessShellSteps(t)
@@ -103,6 +134,7 @@ func TestGatewayProcessShellShutdownSequenceThroughLifecycle(t *testing.T) {
 		configure: func(cfg *ebusgateway.Config) {
 			cfg.EvidenceRecorderConfig = enabledSynchronizedEvidenceConfig(t)
 			cfg.ModbusTCPConfig.TeslaGen3HSC = teslaRetainedConfig()
+			cfg.EnableStaticSeedTable = true
 		},
 	})
 	if result.runErr != nil {
@@ -131,10 +163,21 @@ func TestGatewayProcessShellShutdownSequenceThroughLifecycle(t *testing.T) {
 		"acquire:eeBUS adapter",
 		"acquire:eeBUS admin handler",
 		"acquire:evidence configuration",
+		"acquire:startup source selection",
 		"register:final source-selection artifact",
+		"acquire:observe-first observers",
 		"register:transport watch",
+		"acquire:gateway",
 		"register:gateway",
+		"acquire:static seed",
+		"acquire:graphql builder",
+		"acquire:address-table inserter",
+		"acquire:router plane",
+		"acquire:semantic runtime",
+		"acquire:late-bound writers",
+		"acquire:graphql builder start",
 		"register:control-plane context",
+		"acquire:HTTP control plane",
 		"register:consumers",
 		"register:generation tasks",
 		"release:generation tasks",
@@ -151,7 +194,10 @@ func TestGatewayProcessShellShutdownSequenceThroughLifecycle(t *testing.T) {
 		"release:synchronized evidence sidecar",
 		"release:endpoint redaction",
 	})
-	requireProcessShellSteps(t, "acquisition order", trace.phase("acquire"), processShellAcquisitionOrder)
+	// The RCC harness records the HTTP shell start before any generation task.
+	if shell, poller := strings.Index(result.events, "http_shell("), strings.Index(result.events, "semantic_poller"); shell < 0 || poller < shell {
+		t.Fatalf("the HTTP control plane did not start before the generation tasks: %s", result.events)
+	}
 }
 
 // Without the optional resources the shell registers no release for them;
@@ -162,7 +208,7 @@ func TestGatewayProcessShellOmitsReleasesOfAbsentResources(t *testing.T) {
 	if result.runErr != nil {
 		t.Fatalf("run result = %v; want nil", result.runErr)
 	}
-	requireProcessShellSteps(t, "acquisition order", trace.phase("acquire"), processShellAcquisitionOrder)
+	requireProcessShellSteps(t, "acquisition order", trace.phase("acquire"), processAcquisitionOrder(apiCompositionAcquisitionOrder...))
 	requireProcessShellSteps(t, "release order", trace.phase("release"), []string{
 		"generation tasks",
 		"consumers",
@@ -215,6 +261,148 @@ func TestGatewayProcessShellReleasesOnlyAcquiredResourcesOnFailure(t *testing.T)
 			"synchronized evidence sidecar",
 			"endpoint redaction",
 		})
+	})
+}
+
+// A failed API composition step stops the startup with its own error and runs
+// only the releases registered before it, last in, first out.
+func TestGatewayProcessShellReleasesOnlyComposedAPIOnFailure(t *testing.T) {
+	t.Run("observe-first observers", func(t *testing.T) {
+		trace := observeProcessShellSteps(t)
+		result := runRCCLifecycle(t, rccLifecycleOptions{configure: func(*ebusgateway.Config) {
+			// runRCCLifecycle restores the seam it replaced when the test ends.
+			wireObserveFirstObserversFn = func(*ebusgateway.Config) (*ebusgateway.BusObservabilityStore, *ebusgateway.ActivePassiveDeduplicator, error) {
+				return nil, nil, errors.New("synthetic observer failure")
+			}
+		}})
+		if result.runErr == nil || result.runErr.Error() != "synthetic observer failure" {
+			t.Fatalf("run result = %v; want the observer failure", result.runErr)
+		}
+		requireProcessShellSteps(t, "acquisitions", trace.phase("acquire"), processAcquisitionOrder("startup source selection", "observe-first observers"))
+		requireProcessShellSteps(t, "releases", trace.phase("release"), []string{
+			"final source-selection artifact",
+			"runtime control",
+			"eBUS driver",
+			"portal configuration",
+			"runtime state",
+			"endpoint redaction",
+		})
+	})
+	t.Run("HTTP control plane", func(t *testing.T) {
+		trace := observeProcessShellSteps(t)
+		result := runRCCLifecycle(t, rccLifecycleOptions{observability: true, configure: func(*ebusgateway.Config) {
+			startHTTPServerFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder, *graphql.BroadcastHub, graphql.SemanticProvider, mcp.ScheduleWriter, mcp.ConfigWriter, *ebusgateway.BusObservabilityStore, *ebusgateway.ShadowCache) (*http.Server, mdns.Advertiser, error) {
+				return nil, nil, errors.New("synthetic control plane failure")
+			}
+		}})
+		if result.runErr == nil || result.runErr.Error() != "synthetic control plane failure" {
+			t.Fatalf("run result = %v; want the control plane failure", result.runErr)
+		}
+		requireProcessShellSteps(t, "acquisitions", trace.phase("acquire"), processAcquisitionOrder(apiCompositionAcquisitionOrder...))
+		requireProcessShellSteps(t, "releases", trace.phase("release"), []string{
+			"control-plane context",
+			"gateway",
+			"transport watch",
+			"final source-selection artifact",
+			"runtime control",
+			"eBUS driver",
+			"portal configuration",
+			"runtime state",
+			"endpoint redaction",
+		})
+	})
+}
+
+type apiCompositionInputs struct {
+	ctx    context.Context
+	shell  *gatewayProcessShell
+	cfg    *ebusgateway.Config
+	source catalogv1.SourceCapture
+}
+
+// completeAPICompositionInputs returns a process shell that holds every
+// collaborator the API composition requires. Nothing in it is started.
+func completeAPICompositionInputs(t *testing.T) apiCompositionInputs {
+	t.Helper()
+	cfg := ebusgateway.DefaultConfig()
+	ctx := context.Background()
+	shell, err := newGatewayProcessShell(ctx, &cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contributions, err := newGatewayPortalCatalogContributions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	shell.runtimeStateMgr = &runtimestate.Manager{}
+	shell.semanticHub = &semhub.Hub{}
+	shell.releaseChecker = releasecheck.New(releasecheck.Options{CurrentVersion: "0.0.0-test"})
+	shell.bindings = &managedSidecarBindings{}
+	shell.ebusDriver = &ebusDriverController{}
+	shell.control = &gatewayRuntimeControl{}
+	shell.eebusAdapter = &eebusRuntimeAdapter{}
+	shell.eebusAdminHandler = http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
+	return apiCompositionInputs{ctx: ctx, shell: shell, cfg: &cfg, source: newGatewayPortalCatalogSource(nil, nil, nil, contributions)}
+}
+
+// Each required collaborator of the API composition is rejected with its own
+// error before any step runs; a complete set is accepted without a step.
+func TestGatewayAPICompositionRejectsMissingWiring(t *testing.T) {
+	var missingContext context.Context
+	cases := []struct {
+		name   string
+		remove func(*apiCompositionInputs)
+	}{
+		{"process context", func(in *apiCompositionInputs) { in.ctx = missingContext }},
+		{"process shell", func(in *apiCompositionInputs) { in.shell = nil }},
+		{"run configuration", func(in *apiCompositionInputs) { in.cfg = nil }},
+		{"Portal catalog source", func(in *apiCompositionInputs) { in.source = nil }},
+		{"process shell run configuration", func(in *apiCompositionInputs) {
+			other := *in.cfg
+			in.cfg = &other
+		}},
+		{"runtime state", func(in *apiCompositionInputs) { in.shell.runtimeStateMgr = nil }},
+		{"semantic publication hub", func(in *apiCompositionInputs) { in.shell.semanticHub = nil }},
+		{"release checker", func(in *apiCompositionInputs) { in.shell.releaseChecker = nil }},
+		{"managed sidecar bindings", func(in *apiCompositionInputs) { in.shell.bindings = nil }},
+		{"eBUS driver", func(in *apiCompositionInputs) { in.shell.ebusDriver = nil }},
+		{"runtime control", func(in *apiCompositionInputs) { in.shell.control = nil }},
+		{"eeBUS adapter", func(in *apiCompositionInputs) { in.shell.eebusAdapter = nil }},
+		{"eeBUS admin handler", func(in *apiCompositionInputs) { in.shell.eebusAdminHandler = nil }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			inputs := completeAPICompositionInputs(t)
+			tc.remove(&inputs)
+			trace := observeProcessShellSteps(t)
+			api, err := newGatewayAPIComposition(inputs.ctx, inputs.shell, inputs.cfg, inputs.source)
+			want := "gateway API composition: " + tc.name + " is required"
+			if api != nil || err == nil || err.Error() != want {
+				t.Fatalf("newGatewayAPIComposition() = %v, %v; want nil, %q", api, err, want)
+			}
+			if steps := trace.snapshot(); len(steps) != 0 {
+				t.Fatalf("a rejected composition ran steps: %v", steps)
+			}
+		})
+	}
+	t.Run("complete", func(t *testing.T) {
+		inputs := completeAPICompositionInputs(t)
+		trace := observeProcessShellSteps(t)
+		api, err := newGatewayAPIComposition(inputs.ctx, inputs.shell, inputs.cfg, inputs.source)
+		if api == nil || err != nil {
+			t.Fatalf("newGatewayAPIComposition() = %v, %v; want a composition", api, err)
+		}
+		if steps := trace.snapshot(); len(steps) != 0 {
+			t.Fatalf("constructing the composition ran steps: %v", steps)
+		}
+		// serve runs after the retained eBUS consumers exist; without them it
+		// starts nothing.
+		if err := api.serve(nil); err == nil || err.Error() != "gateway API composition: retained eBUS consumers are required" {
+			t.Fatalf("serve(nil) = %v; want the missing retained consumers error", err)
+		}
+		if steps := trace.snapshot(); len(steps) != 0 {
+			t.Fatalf("a rejected serve ran steps: %v", steps)
+		}
 	})
 }
 

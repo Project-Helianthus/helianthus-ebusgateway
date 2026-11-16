@@ -3280,12 +3280,15 @@ Exact public source anchors for these statements:
 - Modbus public tool/provider surface and composition:
   [`mcp/modbus_v1.go#L15-L152`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/mcp/modbus_v1.go#L15-L152),
   [`cmd/gateway/modbus_mcp_provider.go#L32-L159`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/modbus_mcp_provider.go#L32-L159), and
-  [`cmd/gateway/gateway_http_server.go#L68-L85`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/gateway_http_server.go#L68-L85)
+  the composition owners: `gatewayAPIComposition.startControlPlane` creates the
+  managed Modbus provider and `newHTTPControlPlaneProviders` registers the
+  Modbus tools over it
 - Modbus adapter ownership and reconnect boundary:
   [`internal/modbusadapter/adapter.go#L19-L75`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/internal/modbusadapter/adapter.go#L19-L75) and
   [`#L257-L299`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/internal/modbusadapter/adapter.go#L257-L299)
 - independent driver startup and process availability behavior:
-  [`cmd/gateway/gateway_run_lifecycle.go#L43-L140`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/gateway_run_lifecycle.go#L43-L140)
+  `gatewayProcessShell.acquireDriverAndControl`, the process-shell owner (see
+  [gateway composition owners](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/docs/architecture/gateway-composition-owners.md))
 
 ## 12. SemReg cutover and retained native evidence
 
@@ -3469,8 +3472,8 @@ qualification, freshness and physical acceptance.
 | LIFE-11–13 | `internal/semhub` generation fencing and retained history, with checkpoint tests in `restore_test.go` | Hub/kernel evidence is distinct from end-to-end production acceptance; current complete vector execution remains unverified here. |
 | LIFE-14–24/27–30 semantic-asset paths, including LIFE-22 | Synthetic hub/recorder tests cover parts of staging, replay, ordering and cleanup; the lifecycle-only eBUS source has no assets to exercise them | Partial, not satisfied by an empty barrier. Registered managed families must still establish applicable staged-asset, per-asset cursor, shared-asset isolation and production restoration acceptance. |
 
-Production startup calls `prepareManagedSidecars` in
-[cmd/gateway/gateway_run_lifecycle.go](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/gateway_run_lifecycle.go)
+Production startup calls `prepareManagedSidecars` in the process-shell owner
+`gatewayProcessShell.acquireDriverAndControl`
 before composing the desired-state service and its five ordinary MCP tools.
 Acceptance must therefore include the registered managed families, including
 disabled descriptors: deterministic list/get, configured eligibility, durable

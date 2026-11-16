@@ -7,9 +7,12 @@ adjacent HTTP and retained native-consumer teardown previously held by
 part of the lifecycle decomposition; generation owners, startup, admission,
 source selection and driver registration remain with their existing owners.
 
-The shell registers the consumer shutdown after successful HTTP acquisition.
-Its later generation-admission defer closes admission and joins generation
-tasks first. The shutdown delegate then performs these steps synchronously:
+The API composition (`gatewayAPIComposition.serve`, see
+[gateway composition owners](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/docs/architecture/gateway-composition-owners.md)) registers the
+consumer shutdown in the process-shell shutdown sequence after successful HTTP
+acquisition. The generation-task release that `runGatewayLifecycle` registers
+afterwards runs first: it closes admission and joins the generation tasks. The
+shutdown delegate then performs these steps synchronously:
 
 1. Stop and join the transport watch.
 2. Publish managed transport retirement.
@@ -23,10 +26,11 @@ tasks first. The shutdown delegate then performs these steps synchronously:
 8. Close bus observability.
 9. Close the mDNS advertiser.
 
-The shell cancels the control-plane context after the delegate returns. The
-control plane remains independent of parent cancellation until then. Other
-resource defers retain their acquisition positions. Listener and reconstructor
-are resolved during cleanup, so installation by a later generation is retained.
+The control-plane context release, registered before the HTTP control plane
+started, cancels that context after the delegate returns. The control plane
+remains independent of parent cancellation until then. Other releases retain
+their acquisition positions. Listener and reconstructor are resolved during
+cleanup, so installation by a later generation is retained.
 Optional absent resources are ignored. Each HTTP or consumer close error keeps
 its existing log label; failures do not prevent subsequent closes and do not
 join the lifecycle result. The shell calls the delegate once.
@@ -34,9 +38,13 @@ join the lifecycle result. The shell calls the delegate once.
 [Fake-only characterization tests](../../cmd/gateway/gateway_consumer_shutdown_test.go)
 assert exact callback order and counts, each close failure, nil resources,
 late installation, canceled parent behavior and drain completion before consumer
-release. Lifecycle source assertions also guard the production delegate wiring
-and the generation-join defer position. These checks prove offline ordering,
-not physical qualification, deployed acceptance or binary neutrality.
+release. A lifecycle test asserts through the process-shell step trace that the
+control-plane context is registered, the HTTP control plane starts and the
+consumer shutdown is registered before the generation tasks, and that the
+generation tasks are released before the consumers and the control-plane
+context; source assertions guard the production delegate bindings. These checks
+prove offline ordering, not physical qualification, deployed acceptance or
+binary neutrality.
 
 This structural change affects the gateway runtime and binaries that contain
 it. Release, security and hardware evidence must be renewed for those artifacts;

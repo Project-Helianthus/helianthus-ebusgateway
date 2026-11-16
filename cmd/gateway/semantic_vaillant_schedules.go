@@ -4,10 +4,81 @@ import (
 	"context"
 	"fmt"
 	"math"
-
-	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
-	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 )
+
+// The B555 reads and the time-program writes of the poller use the native
+// schedule types below; the publication owner maps them to the GraphQL
+// schedules and the writer adapters map them to the MCP time-program forms.
+
+// vaillantScheduleTimerSlot is one timer slot read from B555 A5.
+// TemperatureRaw holds the raw deci-degree value; both temperature fields
+// are nil when the slot carries the unavailable sentinel.
+type vaillantScheduleTimerSlot struct {
+	StartHour      int
+	StartMinute    int
+	EndHour        int
+	EndMinute      int
+	TemperatureC   *float64
+	TemperatureRaw *int
+}
+
+// vaillantScheduleDay is the timer slots of one weekday of a program.
+type vaillantScheduleDay struct {
+	Weekday string
+	Slots   []vaillantScheduleTimerSlot
+}
+
+// vaillantScheduleConfig is the B555 A3 configuration of a program.
+type vaillantScheduleConfig struct {
+	MaxSlots       int
+	TimeResolution int
+	MinDuration    int
+	HasTemperature bool
+	TempSlots      int
+	MinTempC       *float64
+	MaxTempC       *float64
+}
+
+// vaillantScheduleProgram is one (zone, heating circuit kind) program with
+// its configuration, slots per day and day programs.
+type vaillantScheduleProgram struct {
+	Zone      int
+	HC        string
+	Config    *vaillantScheduleConfig
+	SlotsUsed []int
+	Days      []vaillantScheduleDay
+}
+
+// vaillantTimeProgramSlot is one slot of a time-program write request.
+type vaillantTimeProgramSlot struct {
+	StartHour    int
+	StartMinute  int
+	EndHour      int
+	EndMinute    int
+	TemperatureC *float64
+}
+
+// vaillantTimeProgramSlotResult is the B555 outcome of one written slot.
+type vaillantTimeProgramSlotResult struct {
+	SlotIndex int
+	Accepted  bool
+	ErrorCode int
+	ErrorDesc string
+}
+
+// vaillantTimeProgramWriteResult is the outcome of a time-program write.
+type vaillantTimeProgramWriteResult struct {
+	Success     bool
+	SlotResults []vaillantTimeProgramSlotResult
+	Error       string
+}
+
+// vaillantScheduleWriter writes zone and hot water time programs in native
+// form; the poller implements it.
+type vaillantScheduleWriter interface {
+	SetZoneTimeProgram(ctx context.Context, zone int, weekday int, slots []vaillantTimeProgramSlot) (*vaillantTimeProgramWriteResult, error)
+	SetDhwTimeProgram(ctx context.Context, weekday int, slots []vaillantTimeProgramSlot) (*vaillantTimeProgramWriteResult, error)
+}
 
 var b555ErrorDescriptions = map[byte]string{
 	0x00: "accepted",
@@ -23,23 +94,23 @@ func b555ErrorDesc(code byte) string {
 	return fmt.Sprintf("unknown error 0x%02X", code)
 }
 
-func (p *vaillantSemanticPoller) setZoneTimeProgram(ctx context.Context, zone int, weekday int, slots []mcp.TimeProgramSlot) (*mcp.TimeProgramWriteResult, error) {
+func (p *vaillantSemanticPoller) setZoneTimeProgram(ctx context.Context, zone int, weekday int, slots []vaillantTimeProgramSlot) (*vaillantTimeProgramWriteResult, error) {
 	if p == nil {
 		return nil, fmt.Errorf("schedule writer unavailable")
 	}
 	if zone < 0 || zone > 2 {
-		return &mcp.TimeProgramWriteResult{Success: false, Error: "zone must be 0-2"}, nil
+		return &vaillantTimeProgramWriteResult{Success: false, Error: "zone must be 0-2"}, nil
 	}
 	if weekday < 0 || weekday > 6 {
-		return &mcp.TimeProgramWriteResult{Success: false, Error: "weekday must be 0-6"}, nil
+		return &vaillantTimeProgramWriteResult{Success: false, Error: "weekday must be 0-6"}, nil
 	}
 	if len(slots) == 0 {
-		return &mcp.TimeProgramWriteResult{Success: false, Error: "slots array must not be empty"}, nil
+		return &vaillantTimeProgramWriteResult{Success: false, Error: "slots array must not be empty"}, nil
 	}
 
 	cfg := p.readB555Config(ctx, byte(zone), b555HCHeating)
 	if cfg == nil {
-		return &mcp.TimeProgramWriteResult{Success: false, Error: "unable to read B555 config for zone heating"}, nil
+		return &vaillantTimeProgramWriteResult{Success: false, Error: "unable to read B555 config for zone heating"}, nil
 	}
 
 	maxSlots := cfg.MaxSlots
@@ -47,7 +118,7 @@ func (p *vaillantSemanticPoller) setZoneTimeProgram(ctx context.Context, zone in
 		maxSlots = 3
 	}
 	if len(slots) > maxSlots {
-		return &mcp.TimeProgramWriteResult{
+		return &vaillantTimeProgramWriteResult{
 			Success: false,
 			Error:   fmt.Sprintf("slot count %d exceeds max_slots %d", len(slots), maxSlots),
 		}, nil
@@ -64,28 +135,28 @@ func (p *vaillantSemanticPoller) setZoneTimeProgram(ctx context.Context, zone in
 
 	for i, slot := range slots {
 		if slot.StartHour < 0 || slot.StartHour > 24 {
-			return &mcp.TimeProgramWriteResult{Success: false, Error: fmt.Sprintf("slot %d: start_hour %d out of range 0-24", i, slot.StartHour)}, nil
+			return &vaillantTimeProgramWriteResult{Success: false, Error: fmt.Sprintf("slot %d: start_hour %d out of range 0-24", i, slot.StartHour)}, nil
 		}
 		if slot.StartMinute < 0 || slot.StartMinute > 59 {
-			return &mcp.TimeProgramWriteResult{Success: false, Error: fmt.Sprintf("slot %d: start_minute %d out of range 0-59", i, slot.StartMinute)}, nil
+			return &vaillantTimeProgramWriteResult{Success: false, Error: fmt.Sprintf("slot %d: start_minute %d out of range 0-59", i, slot.StartMinute)}, nil
 		}
 		if slot.EndHour < 0 || slot.EndHour > 24 {
-			return &mcp.TimeProgramWriteResult{Success: false, Error: fmt.Sprintf("slot %d: end_hour %d out of range 0-24", i, slot.EndHour)}, nil
+			return &vaillantTimeProgramWriteResult{Success: false, Error: fmt.Sprintf("slot %d: end_hour %d out of range 0-24", i, slot.EndHour)}, nil
 		}
 		if slot.EndMinute < 0 || slot.EndMinute > 59 {
-			return &mcp.TimeProgramWriteResult{Success: false, Error: fmt.Sprintf("slot %d: end_minute %d out of range 0-59", i, slot.EndMinute)}, nil
+			return &vaillantTimeProgramWriteResult{Success: false, Error: fmt.Sprintf("slot %d: end_minute %d out of range 0-59", i, slot.EndMinute)}, nil
 		}
 		if slot.TemperatureC == nil {
-			return &mcp.TimeProgramWriteResult{Success: false, Error: fmt.Sprintf("slot %d: temperature_c is required for heating", i)}, nil
+			return &vaillantTimeProgramWriteResult{Success: false, Error: fmt.Sprintf("slot %d: temperature_c is required for heating", i)}, nil
 		}
 		if *slot.TemperatureC < minTemp || *slot.TemperatureC > maxTemp {
-			return &mcp.TimeProgramWriteResult{Success: false, Error: fmt.Sprintf("slot %d: temperature_c %.1f out of range [%.0f, %.0f]", i, *slot.TemperatureC, minTemp, maxTemp)}, nil
+			return &vaillantTimeProgramWriteResult{Success: false, Error: fmt.Sprintf("slot %d: temperature_c %.1f out of range [%.0f, %.0f]", i, *slot.TemperatureC, minTemp, maxTemp)}, nil
 		}
 	}
 
-	result := &mcp.TimeProgramWriteResult{
+	result := &vaillantTimeProgramWriteResult{
 		Success:     true,
-		SlotResults: make([]mcp.TimeProgramSlotResult, len(slots)),
+		SlotResults: make([]vaillantTimeProgramSlotResult, len(slots)),
 	}
 
 	for i, slot := range slots {
@@ -98,7 +169,7 @@ func (p *vaillantSemanticPoller) setZoneTimeProgram(ctx context.Context, zone in
 			tempRaw,
 		)
 		if err != nil {
-			result.SlotResults[i] = mcp.TimeProgramSlotResult{
+			result.SlotResults[i] = vaillantTimeProgramSlotResult{
 				SlotIndex: i,
 				Accepted:  false,
 				ErrorCode: 0xFF,
@@ -111,7 +182,7 @@ func (p *vaillantSemanticPoller) setZoneTimeProgram(ctx context.Context, zone in
 		if !accepted {
 			result.Success = false
 		}
-		result.SlotResults[i] = mcp.TimeProgramSlotResult{
+		result.SlotResults[i] = vaillantTimeProgramSlotResult{
 			SlotIndex: i,
 			Accepted:  accepted,
 			ErrorCode: int(code),
@@ -124,20 +195,20 @@ func (p *vaillantSemanticPoller) setZoneTimeProgram(ctx context.Context, zone in
 	return result, nil
 }
 
-func (p *vaillantSemanticPoller) setDhwTimeProgram(ctx context.Context, weekday int, slots []mcp.TimeProgramSlot) (*mcp.TimeProgramWriteResult, error) {
+func (p *vaillantSemanticPoller) setDhwTimeProgram(ctx context.Context, weekday int, slots []vaillantTimeProgramSlot) (*vaillantTimeProgramWriteResult, error) {
 	if p == nil {
 		return nil, fmt.Errorf("schedule writer unavailable")
 	}
 	if weekday < 0 || weekday > 6 {
-		return &mcp.TimeProgramWriteResult{Success: false, Error: "weekday must be 0-6"}, nil
+		return &vaillantTimeProgramWriteResult{Success: false, Error: "weekday must be 0-6"}, nil
 	}
 	if len(slots) == 0 {
-		return &mcp.TimeProgramWriteResult{Success: false, Error: "slots array must not be empty"}, nil
+		return &vaillantTimeProgramWriteResult{Success: false, Error: "slots array must not be empty"}, nil
 	}
 
 	cfg := p.readB555Config(ctx, b555ZoneDHW, b555HCDHW)
 	if cfg == nil {
-		return &mcp.TimeProgramWriteResult{Success: false, Error: "unable to read B555 config for DHW"}, nil
+		return &vaillantTimeProgramWriteResult{Success: false, Error: "unable to read B555 config for DHW"}, nil
 	}
 
 	maxSlots := cfg.MaxSlots
@@ -145,7 +216,7 @@ func (p *vaillantSemanticPoller) setDhwTimeProgram(ctx context.Context, weekday 
 		maxSlots = 3
 	}
 	if len(slots) > maxSlots {
-		return &mcp.TimeProgramWriteResult{
+		return &vaillantTimeProgramWriteResult{
 			Success: false,
 			Error:   fmt.Sprintf("slot count %d exceeds max_slots %d", len(slots), maxSlots),
 		}, nil
@@ -162,27 +233,27 @@ func (p *vaillantSemanticPoller) setDhwTimeProgram(ctx context.Context, weekday 
 
 	for i, slot := range slots {
 		if slot.StartHour < 0 || slot.StartHour > 24 {
-			return &mcp.TimeProgramWriteResult{Success: false, Error: fmt.Sprintf("slot %d: start_hour %d out of range 0-24", i, slot.StartHour)}, nil
+			return &vaillantTimeProgramWriteResult{Success: false, Error: fmt.Sprintf("slot %d: start_hour %d out of range 0-24", i, slot.StartHour)}, nil
 		}
 		if slot.StartMinute < 0 || slot.StartMinute > 59 {
-			return &mcp.TimeProgramWriteResult{Success: false, Error: fmt.Sprintf("slot %d: start_minute %d out of range 0-59", i, slot.StartMinute)}, nil
+			return &vaillantTimeProgramWriteResult{Success: false, Error: fmt.Sprintf("slot %d: start_minute %d out of range 0-59", i, slot.StartMinute)}, nil
 		}
 		if slot.EndHour < 0 || slot.EndHour > 24 {
-			return &mcp.TimeProgramWriteResult{Success: false, Error: fmt.Sprintf("slot %d: end_hour %d out of range 0-24", i, slot.EndHour)}, nil
+			return &vaillantTimeProgramWriteResult{Success: false, Error: fmt.Sprintf("slot %d: end_hour %d out of range 0-24", i, slot.EndHour)}, nil
 		}
 		if slot.EndMinute < 0 || slot.EndMinute > 59 {
-			return &mcp.TimeProgramWriteResult{Success: false, Error: fmt.Sprintf("slot %d: end_minute %d out of range 0-59", i, slot.EndMinute)}, nil
+			return &vaillantTimeProgramWriteResult{Success: false, Error: fmt.Sprintf("slot %d: end_minute %d out of range 0-59", i, slot.EndMinute)}, nil
 		}
 		if slot.TemperatureC != nil {
 			if *slot.TemperatureC < minTemp || *slot.TemperatureC > maxTemp {
-				return &mcp.TimeProgramWriteResult{Success: false, Error: fmt.Sprintf("slot %d: temperature_c %.1f out of range [%.0f, %.0f]", i, *slot.TemperatureC, minTemp, maxTemp)}, nil
+				return &vaillantTimeProgramWriteResult{Success: false, Error: fmt.Sprintf("slot %d: temperature_c %.1f out of range [%.0f, %.0f]", i, *slot.TemperatureC, minTemp, maxTemp)}, nil
 			}
 		}
 	}
 
-	result := &mcp.TimeProgramWriteResult{
+	result := &vaillantTimeProgramWriteResult{
 		Success:     true,
-		SlotResults: make([]mcp.TimeProgramSlotResult, len(slots)),
+		SlotResults: make([]vaillantTimeProgramSlotResult, len(slots)),
 	}
 
 	for i, slot := range slots {
@@ -200,7 +271,7 @@ func (p *vaillantSemanticPoller) setDhwTimeProgram(ctx context.Context, weekday 
 			tempRaw,
 		)
 		if err != nil {
-			result.SlotResults[i] = mcp.TimeProgramSlotResult{
+			result.SlotResults[i] = vaillantTimeProgramSlotResult{
 				SlotIndex: i,
 				Accepted:  false,
 				ErrorCode: 0xFF,
@@ -213,7 +284,7 @@ func (p *vaillantSemanticPoller) setDhwTimeProgram(ctx context.Context, weekday 
 		if !accepted {
 			result.Success = false
 		}
-		result.SlotResults[i] = mcp.TimeProgramSlotResult{
+		result.SlotResults[i] = vaillantTimeProgramSlotResult{
 			SlotIndex: i,
 			Accepted:  accepted,
 			ErrorCode: int(code),
@@ -226,14 +297,16 @@ func (p *vaillantSemanticPoller) setDhwTimeProgram(ctx context.Context, weekday 
 	return result, nil
 }
 
-func (p *vaillantSemanticPoller) SetZoneTimeProgram(ctx context.Context, zone int, weekday int, slots []mcp.TimeProgramSlot) (*mcp.TimeProgramWriteResult, error) {
+func (p *vaillantSemanticPoller) SetZoneTimeProgram(ctx context.Context, zone int, weekday int, slots []vaillantTimeProgramSlot) (*vaillantTimeProgramWriteResult, error) {
 	return p.setZoneTimeProgram(ctx, zone, weekday, slots)
 }
 
-func (p *vaillantSemanticPoller) SetDhwTimeProgram(ctx context.Context, weekday int, slots []mcp.TimeProgramSlot) (*mcp.TimeProgramWriteResult, error) {
+func (p *vaillantSemanticPoller) SetDhwTimeProgram(ctx context.Context, weekday int, slots []vaillantTimeProgramSlot) (*vaillantTimeProgramWriteResult, error) {
 	return p.setDhwTimeProgram(ctx, weekday, slots)
 }
 
+// refreshScheduleForProgram rereads one weekday of a program after a write
+// and hands it to the publication owner.
 func (p *vaillantSemanticPoller) refreshScheduleForProgram(ctx context.Context, zone, hc, weekday byte) {
 	if p == nil || p.bus == nil || p.liveProvider() == nil {
 		return
@@ -263,18 +336,13 @@ func (p *vaillantSemanticPoller) refreshScheduleForProgram(ctx context.Context, 
 		slotCount = slotsPerDay[weekday]
 	}
 
-	var timerSlots []graphql.ScheduleTimerSlot
+	var timerSlots []vaillantScheduleTimerSlot
 	for ss := 0; ss < slotCount; ss++ {
 		slot := p.readB555Timer(ctx, zone, hc, weekday, byte(ss))
 		if slot == nil {
 			break
 		}
 		timerSlots = append(timerSlots, *slot)
-	}
-
-	status := p.liveProvider().Schedules()
-	if status == nil {
-		return
 	}
 
 	hcName := b555HCNames[hc]
@@ -286,25 +354,14 @@ func (p *vaillantSemanticPoller) refreshScheduleForProgram(ctx context.Context, 
 		zoneIdx = 255
 	}
 
-	for i, prog := range status.Programs {
-		if prog.Zone == zoneIdx && prog.HC == hcName {
-			if int(weekday) < len(prog.Days) {
-				status.Programs[i].Days[weekday] = graphql.ScheduleDayProgram{
-					Weekday: b555WeekdayNames[weekday],
-					Slots:   timerSlots,
-				}
-			}
-			if slotsPerDay != nil {
-				status.Programs[i].SlotsUsed = slotsPerDay
-			}
-			p.liveProvider().SetSchedules(status)
-			return
-		}
-	}
+	p.publication.publishScheduleDay(zoneIdx, hcName, int(weekday), vaillantScheduleDay{
+		Weekday: b555WeekdayNames[weekday],
+		Slots:   timerSlots,
+	}, slotsPerDay)
 }
 
 // readB555Config reads a B555 A3 config response for a zone+HC.
-func (p *vaillantSemanticPoller) readB555Config(ctx context.Context, zone, hc byte) *graphql.ScheduleConfig {
+func (p *vaillantSemanticPoller) readB555Config(ctx context.Context, zone, hc byte) *vaillantScheduleConfig {
 	data, ok := p.readB555Frame(ctx, []byte{b555OpcodeConfigRead, zone, hc})
 	if !ok || len(data) < 9 {
 		return nil
@@ -313,7 +370,7 @@ func (p *vaillantSemanticPoller) readB555Config(ctx context.Context, zone, hc by
 	if status != 0x00 {
 		return nil
 	}
-	cfg := &graphql.ScheduleConfig{
+	cfg := &vaillantScheduleConfig{
 		MaxSlots:       int(data[1]),
 		TimeResolution: int(data[2]),
 		MinDuration:    int(data[3]),
@@ -352,7 +409,7 @@ func (p *vaillantSemanticPoller) readB555Slots(ctx context.Context, zone, hc byt
 }
 
 // readB555Timer reads a single timer slot from B555 A5.
-func (p *vaillantSemanticPoller) readB555Timer(ctx context.Context, zone, hc, weekday, slotIdx byte) *graphql.ScheduleTimerSlot {
+func (p *vaillantSemanticPoller) readB555Timer(ctx context.Context, zone, hc, weekday, slotIdx byte) *vaillantScheduleTimerSlot {
 	data, ok := p.readB555Frame(ctx, []byte{b555OpcodeTimerRead, zone, hc, weekday, slotIdx})
 	if !ok || len(data) < 7 {
 		return nil
@@ -361,7 +418,7 @@ func (p *vaillantSemanticPoller) readB555Timer(ctx context.Context, zone, hc, we
 	if status != 0x00 {
 		return nil
 	}
-	slot := &graphql.ScheduleTimerSlot{
+	slot := &vaillantScheduleTimerSlot{
 		StartHour:   int(data[1]),
 		StartMinute: int(data[2]),
 		EndHour:     int(data[3]),
@@ -383,7 +440,8 @@ type b555ProgramSpec struct {
 	hc   byte
 }
 
-// refreshSchedules polls B555 timer schedules and publishes to the semantic provider.
+// refreshSchedules polls B555 timer schedules and hands the native programs
+// to the publication owner.
 func (p *vaillantSemanticPoller) refreshSchedules(ctx context.Context) {
 	if p == nil || p.bus == nil || p.liveProvider() == nil {
 		return
@@ -411,7 +469,7 @@ func (p *vaillantSemanticPoller) refreshSchedules(ctx context.Context) {
 		{zone: b555ZoneDHW, hc: b555HCSilent},
 	}
 
-	var programs []graphql.ScheduleProgram
+	var programs []vaillantScheduleProgram
 
 	for _, spec := range specs {
 		select {
@@ -435,7 +493,7 @@ func (p *vaillantSemanticPoller) refreshSchedules(ctx context.Context) {
 			zoneIdx = 255
 		}
 
-		prog := graphql.ScheduleProgram{
+		prog := vaillantScheduleProgram{
 			Zone:   zoneIdx,
 			HC:     hcName,
 			Config: cfg,
@@ -453,7 +511,7 @@ func (p *vaillantSemanticPoller) refreshSchedules(ctx context.Context) {
 			maxSlots = 3
 		}
 
-		days := make([]graphql.ScheduleDayProgram, 7)
+		days := make([]vaillantScheduleDay, 7)
 		for dd := byte(0); dd < 7; dd++ {
 			select {
 			case <-ctx.Done():
@@ -461,7 +519,7 @@ func (p *vaillantSemanticPoller) refreshSchedules(ctx context.Context) {
 			default:
 			}
 
-			day := graphql.ScheduleDayProgram{
+			day := vaillantScheduleDay{
 				Weekday: b555WeekdayNames[dd],
 			}
 
@@ -485,8 +543,6 @@ func (p *vaillantSemanticPoller) refreshSchedules(ctx context.Context) {
 	}
 
 	if len(programs) > 0 {
-		p.liveProvider().SetSchedules(&graphql.ScheduleStatus{
-			Programs: programs,
-		})
+		p.publication.publishSchedulePrograms(programs)
 	}
 }

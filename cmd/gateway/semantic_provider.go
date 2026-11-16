@@ -532,10 +532,13 @@ func admittedSourceActive(provider admittedSourceProvider) bool {
 	return admitted && source != 0
 }
 
+// admittedGraphQLSemanticWriter gates the poller's writers behind the
+// admitted source; its schedule path maps MCP slots to the native schedule
+// writer and the native write results back to their MCP form.
 type admittedGraphQLSemanticWriter struct {
 	boiler   graphql.BoilerConfigWriter
 	system   graphql.SystemConfigWriter
-	schedule graphql.ScheduleWriter
+	schedule vaillantScheduleWriter
 	admitted admittedSourceProvider
 }
 
@@ -566,7 +569,7 @@ func (writer admittedGraphQLSemanticWriter) SetZoneTimeProgram(ctx context.Conte
 	if writer.schedule == nil {
 		return &mcp.TimeProgramWriteResult{Success: false, Error: "schedule writer unavailable"}, nil
 	}
-	return writer.schedule.SetZoneTimeProgram(ctx, zone, weekday, slots)
+	return mcpTimeProgramWriteResult(writer.schedule.SetZoneTimeProgram(ctx, zone, weekday, timeProgramSlotsFromMCP(slots)))
 }
 
 func (writer admittedGraphQLSemanticWriter) SetDhwTimeProgram(ctx context.Context, weekday int, slots []mcp.TimeProgramSlot) (*mcp.TimeProgramWriteResult, error) {
@@ -576,7 +579,7 @@ func (writer admittedGraphQLSemanticWriter) SetDhwTimeProgram(ctx context.Contex
 	if writer.schedule == nil {
 		return &mcp.TimeProgramWriteResult{Success: false, Error: "schedule writer unavailable"}, nil
 	}
-	return writer.schedule.SetDhwTimeProgram(ctx, weekday, slots)
+	return mcpTimeProgramWriteResult(writer.schedule.SetDhwTimeProgram(ctx, weekday, timeProgramSlotsFromMCP(slots)))
 }
 
 type admittedMCPConfigWriter struct {
@@ -624,8 +627,10 @@ func (writer admittedMCPConfigWriter) SetBoilerConfig(ctx context.Context, field
 	return writer.writer.SetBoilerConfig(ctx, field, value)
 }
 
+// admittedMCPScheduleWriter gates the native schedule writer behind the
+// admitted source and maps MCP slots and native write results.
 type admittedMCPScheduleWriter struct {
-	writer   mcp.ScheduleWriter
+	writer   vaillantScheduleWriter
 	admitted admittedSourceProvider
 }
 
@@ -652,7 +657,7 @@ func (writer admittedMCPScheduleWriter) SetZoneTimeProgram(ctx context.Context, 
 	if writer.writer == nil {
 		return &mcp.TimeProgramWriteResult{Success: false, Error: "schedule writer unavailable"}, nil
 	}
-	return writer.writer.SetZoneTimeProgram(ctx, zone, weekday, slots)
+	return mcpTimeProgramWriteResult(writer.writer.SetZoneTimeProgram(ctx, zone, weekday, timeProgramSlotsFromMCP(slots)))
 }
 
 func (writer admittedMCPScheduleWriter) SetDhwTimeProgram(ctx context.Context, weekday int, slots []mcp.TimeProgramSlot) (*mcp.TimeProgramWriteResult, error) {
@@ -662,7 +667,7 @@ func (writer admittedMCPScheduleWriter) SetDhwTimeProgram(ctx context.Context, w
 	if writer.writer == nil {
 		return &mcp.TimeProgramWriteResult{Success: false, Error: "schedule writer unavailable"}, nil
 	}
-	return writer.writer.SetDhwTimeProgram(ctx, weekday, slots)
+	return mcpTimeProgramWriteResult(writer.writer.SetDhwTimeProgram(ctx, weekday, timeProgramSlotsFromMCP(slots)))
 }
 
 // mcpConfigWriterAdapter adapts the semantic poller's config write methods

@@ -1,0 +1,3 @@
+## Return native schedules and time-program write results
+
+The schedule reads and the time-program writes of the Vaillant poller use native types: the B555 configuration, slots-per-day and timer reads and the two schedule refreshes produce native schedule programs, and the zone and hot-water time-program writes take native slots and return a native write result. The `vaillantSemanticPublication` owner maps the native programs to the published GraphQL schedules, and the admitted GraphQL and MCP schedule writer adapters map the MCP slots to native slots and the native write results back to their MCP form. Published output and write results are unchanged; the gateway binary changes.

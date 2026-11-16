@@ -242,13 +242,19 @@ def selector_edits(src: str, masked: str, functions: set[str], findings: list[tu
             if assign and name in COLLABORATORS:
                 line_end = masked.find("\n", end)
                 line_end = len(masked) if line_end < 0 else line_end
-                value = src[end + assign.end():line_end].strip()
-                if not value or masked[end + assign.end():line_end].count("(") != masked[end + assign.end():line_end].count(")"):
+                # The masked source blanks comments but keeps literal quotes,
+                # so its last non-blank character ends the expression and a
+                # trailing comment stays outside the replacement.
+                value_start = end + assign.end()
+                value_end = value_start + len(masked[value_start:line_end].rstrip())
+                value = src[value_start:value_end].strip()
+                expr = masked[value_start:value_end]
+                if not value or expr.count("(") != expr.count(")"):
                     raise ValueError("unsupported assignment to " + owner + "." + name)
                 args = []
                 for other in COLLABORATORS:
                     args.append(value if other == name else owner + "." + ACCESSORS[other])
-                edits.append(Edit(start, line_end, owner + ".publication = " + CONSTRUCTOR + "(" + ", ".join(args) + ")"))
+                edits.append(Edit(start, value_end, owner + ".publication = " + CONSTRUCTOR + "(" + ", ".join(args) + ")"))
                 continue
             edits.append(Edit(start, end, owner + "." + ACCESSORS[name]))
     return edits

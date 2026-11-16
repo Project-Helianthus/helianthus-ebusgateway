@@ -69,5 +69,42 @@ class PollerFunctionsTest(unittest.TestCase):
                 self.assertIn("_ = poller.liveProvider()", rewritten)
 
 
+ASSIGN = """package main
+
+func set(p *vaillantSemanticPoller, provider *liveProvider) {
+	%s
+}
+"""
+
+
+class AssignmentTest(unittest.TestCase):
+    def rewrite(self, line: str) -> str:
+        src = ASSIGN % line
+        rewritten, findings = RELOCATE.rewrite(src, RELOCATE.mask(src), set())
+        self.assertEqual([what for _, what in findings], [line.split(" ", 1)[0]])
+        return rewritten
+
+    def test_trailing_line_comment_stays_after_the_constructor(self) -> None:
+        rewritten = self.rewrite("p.provider = provider // explanation")
+        self.assertIn(
+            "\tp.publication = newVaillantSemanticPublication(provider, p.broadcastHub(), p.cachePersister()) // explanation\n",
+            rewritten,
+        )
+
+    def test_trailing_block_comment_stays_after_the_constructor(self) -> None:
+        rewritten = self.rewrite("p.cache = persister(1) /* why */")
+        self.assertIn(
+            "\tp.publication = newVaillantSemanticPublication(p.liveProvider(), p.broadcastHub(), persister(1)) /* why */\n",
+            rewritten,
+        )
+
+    def test_comment_marker_inside_a_string_stays_in_the_value(self) -> None:
+        rewritten = self.rewrite('p.hub = hubFor("a // b")')
+        self.assertIn(
+            '\tp.publication = newVaillantSemanticPublication(p.liveProvider(), hubFor("a // b"), p.cachePersister())\n',
+            rewritten,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

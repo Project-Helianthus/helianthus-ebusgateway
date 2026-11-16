@@ -1,13 +1,13 @@
 # Gateway composition owners
 
 `runGatewayLifecycle` in
-[gateway_run_lifecycle.go](../../cmd/gateway/gateway_run_lifecycle.go) is the
+[gateway_run_lifecycle.go](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/gateway_run_lifecycle.go) is the
 entry of the gateway process. It composes four owners, each with its own
 contract: the process shell, the API composition, the retained eBUS consumers
 and the eBUS generation owners. `startHTTPServer` in
-[gateway_http_server.go](../../cmd/gateway/gateway_http_server.go) is the
+[gateway_http_server.go](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/gateway_http_server.go) is the
 server-lifecycle entry over two surface builders; its contract is stated in
-[HTTP control-plane composition](http-control-plane-composition.md).
+[HTTP control-plane composition](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/docs/architecture/http-control-plane-composition.md).
 
 This page states each owner's contract: required collaborators, defaults,
 startup validation, failure isolation and shutdown order, followed by the
@@ -49,7 +49,7 @@ and a manager-driven replacement, cancelled and joined before any successor.
 ## Process shell
 
 Owner: `gatewayProcessShell` in
-[gateway_process_shell.go](../../cmd/gateway/gateway_process_shell.go).
+[gateway_process_shell.go](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/gateway_process_shell.go).
 
 - Collaborators: the process context and the gateway configuration, which the
   shell updates in place while it prepares the run configuration and the eBUS
@@ -78,7 +78,7 @@ Owner: `gatewayProcessShell` in
 ## API composition
 
 Owner: `gatewayAPIComposition` in
-[gateway_api_composition.go](../../cmd/gateway/gateway_api_composition.go).
+[gateway_api_composition.go](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/gateway_api_composition.go).
 
 - Collaborators: the process context, the process shell after
   `acquireResources` and `acquireEEBusSurfaces` (runtime state, semantic
@@ -119,9 +119,9 @@ Owner: `gatewayAPIComposition` in
 ## Retained eBUS consumers
 
 Owner: `retainedEBusConsumers` in
-[gateway_retained_consumers.go](../../cmd/gateway/gateway_retained_consumers.go);
+[gateway_retained_consumers.go](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/gateway_retained_consumers.go);
 the full contract is in
-[gateway consumer shutdown](gateway-consumer-shutdown.md#retained-ebus-consumers).
+[gateway consumer shutdown](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/docs/architecture/gateway-consumer-shutdown.md#retained-ebus-consumers).
 
 - Collaborators: the gateway, GraphQL builder, semantic runtime, semantic
   publication hub, broadcast hub, runtime control, address-table inserter,
@@ -144,7 +144,7 @@ the full contract is in
 ## eBUS generation owners
 
 Owner: `ebusGenerationOwners` in
-[gateway_ebus_generation_owners.go](../../cmd/gateway/gateway_ebus_generation_owners.go).
+[gateway_ebus_generation_owners.go](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/gateway_ebus_generation_owners.go).
 
 - Collaborators: the process context, the runtime-state manager, the gateway,
   the GraphQL builder, the runtime control, the retained consumers and the
@@ -187,7 +187,7 @@ order. Optional releases are registered only when their resource exists.
 | 14 | 1 | `runGatewayLifecycle` | close the runtime-control admission and join the generation tasks |
 
 The consumer shutdown steps are detailed in
-[gateway consumer shutdown](gateway-consumer-shutdown.md).
+[gateway consumer shutdown](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/docs/architecture/gateway-consumer-shutdown.md).
 
 ## Size budget and tests
 

@@ -21,7 +21,13 @@ type ContributorSpec struct {
 	// OnControl reprojects the contributor family's cache after a control
 	// event of the asset, whichever source of the asset the event belongs to,
 	// and after a publication of another source of the asset (a ControlEvent
-	// of kind published with a zero Control).
+	// of kind published with a zero Control). It runs through the hub's one
+	// scheduler outside every hub, source and asset commit lock; a peer
+	// reprojection starts only after the publishing commit's onCommit has
+	// returned, and a control operation, RetryControl or Resettle called from
+	// that onCommit never waits on it. A nil OnControl declares a contributor
+	// that keeps no cache: it receives no event, is never owed a peer
+	// reprojection, and its place in a control attempt succeeds at once.
 	OnControl func(ControlEvent) error
 }
 
@@ -150,7 +156,8 @@ func (a *asset) reprojectionsLocked() []func(ControlEvent) error {
 }
 
 // checkContributorPacks refuses a batch of a declared contributor that
-// publishes a fact, service or capability of a pack the contributor did not
+// publishes a fact, service or capability, or publishes or withdraws a
+// relation instance or absence statement, of a pack the contributor did not
 // declare. The owner's batches are bounded by the asset's packs only.
 func (a *asset) checkContributorPacks(batch semreg.PublicationBatch) error {
 	var own *contributor
@@ -182,6 +189,26 @@ func (a *asset) checkContributorPacks(batch semreg.PublicationBatch) error {
 	}
 	for _, capability := range batch.CapabilityUpserts {
 		if err := declared(capability.Definition.Pack); err != nil {
+			return err
+		}
+	}
+	for _, relation := range batch.RelationUpserts {
+		if err := declared(relation.Definition.Pack); err != nil {
+			return err
+		}
+	}
+	for _, relation := range batch.RelationWithdrawals {
+		if err := declared(relation.Definition.Pack); err != nil {
+			return err
+		}
+	}
+	for _, absence := range batch.AbsenceUpserts {
+		if err := declared(absence.Definition.Pack); err != nil {
+			return err
+		}
+	}
+	for _, absence := range batch.AbsenceWithdrawals {
+		if err := declared(absence.Definition.Pack); err != nil {
 			return err
 		}
 	}

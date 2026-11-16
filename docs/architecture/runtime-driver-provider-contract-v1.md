@@ -186,14 +186,22 @@ profile, profile version, capability definition, and operation definition.
 An asset may name contributor sources when it is declared. The owner holds the
 asset claim and fixes its packs; each contributor names a subset of those
 packs. Contributors publish their own bindings, identity links, observed facts,
-services and capabilities. Binding, service and capability identifiers belong
-to the driver of the publishing source, and an inferred or operator-origin
-record on such an asset belongs to the driver that created it. The publication
-hub keeps one control gate per asset and publishing source (the owner and each
-contributor), as section 7 describes under "Control gates of a shared asset",
-so a production hub accepts a contributor list. No production declaration names
-a contributor yet. The service recorder of S3.7 to S3.9 and the hub's recovery
-record still assume one source per asset.
+services and capabilities. A contributor's fact, service, capability, relation
+instance or absence statement of a pack it did not name is refused. Binding, service and capability identifiers belong
+to the driver of the publishing source. On such an asset an inferred or
+operator-origin fact candidate (one without a binding) belongs to the driver
+that created it: another driver's upsert or withdrawal of it is refused as a
+collision naming both drivers. The hub records no such claim for resources and
+relation instances yet, so it does not refuse another publishing source's
+revision or withdrawal of them.
+The publication hub keeps one control gate per asset and publishing source (the
+owner and each contributor), as section 7 describes under "Control gates of a
+shared asset", so a production hub accepts a contributor list. The gateway's
+configuration provider, which publishes operator records
+([operator-records.md](./operator-records.md)), is the only production source
+that offers itself as a contributor, and no production declaration names it
+yet. The service recorder of S3.7 to S3.9 and the hub's recovery record still
+assume one source per asset.
 
 ## 4. Control-plane types
 
@@ -2169,7 +2177,10 @@ unchanged.
 
 Every declared source's reprojection callback (`OnControl`) receives each
 control event of the asset, so a control operation reprojects the owner's and
-every contributor's family cache. When one source of a shared asset commits a
+every contributor's family cache. A contributor declared without a callback
+keeps no cache: it receives no event, is never owed a peer reprojection, and
+its place in a control attempt succeeds at once. When one source of a shared
+asset commits a
 publication, every other
 publishing source with a bound reprojection callback receives the asset's
 current snapshot once, as a control event of kind `published` with a zero

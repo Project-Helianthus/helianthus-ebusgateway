@@ -44,10 +44,11 @@ declares the `go test` entry point `func <TestName>(t *testing.T)`, where `TestN
 by a character that is not a lower-case letter, and that file is part of the build of the release target: `linux`
 on every release architecture (`amd64`, `arm64`, `arm`, `386`), with and without the race detector. A file that a
 file-name suffix or a `//go:build` (or legacy `// +build`) constraint excludes from any of those builds, or whose
-name starts with `_` or `.`, or that carries more than one `//go:build` line, is never evidence; a custom build tag is unset. A Python test is named as
+name starts with `_` or `.`, or that carries more than one `//go:build` line or `// +build` lines that differ from
+its `//go:build` line, is never evidence; a custom build tag is unset. A Python test is named as
 `<script path> <test_name>` and exists when `test_name` starts with `test` and the test runner collects it: a
 module-level `def <test_name>(`, or a method of a module-level class the runner collects (a subclass of
-`unittest.TestCase`, or a class named `Test...` without `__init__`). A `test_` function nested inside another
+`unittest.TestCase`, or a class named `Test...` without `__init__` or `__new__`). A `test_` function nested inside another
 function or inside an uncollected class is never a test. A helper declared in a test file is never a test, and a
 declaration-like line inside a comment or a string literal is never a declaration. Test names describe behaviour;
 normative conformance identifiers stay in the tests as traceability only and claim no certification.

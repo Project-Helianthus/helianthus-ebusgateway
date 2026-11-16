@@ -86,6 +86,12 @@ GO_CONSTRAINED_FILES = {
     "double_constraint_test.go":
         "//go:build linux\n//go:build amd64 || arm64 || arm || 386\n\npackage sample\n\nimport \"testing\"\n\n"
         "func TestDeclaredOnlyUnderTwoBuildLines(t *testing.T) {}\n",
+    "mismatched_legacy_test.go":
+        "//go:build linux\n// +build windows\n\npackage sample\n\nimport \"testing\"\n\n"
+        "func TestDeclaredOnlyUnderAMismatchedLegacyLine(t *testing.T) {}\n",
+    "matching_legacy_test.go":
+        "//go:build linux && (amd64 || arm64 || arm || 386)\n// +build linux\n// +build amd64 arm64 arm 386\n\n"
+        "package sample\n\nimport \"testing\"\n\nfunc TestDeclaredUnderAMatchingLegacyLine(t *testing.T) {}\n",
     "_ignored_test.go":
         "package sample\n\nimport \"testing\"\n\nfunc TestDeclaredOnlyInAnIgnoredFile(t *testing.T) {}\n",
 }
@@ -100,6 +106,8 @@ PY_COLLECTION_SOURCE = (
     "class Helper:\n    def test_method_of_an_uncollected_class(self):\n        pass\n\n\n"
     "class TestWithInit:\n    def __init__(self):\n        pass\n\n"
     "    def test_method_of_a_class_with_init(self):\n        pass\n\n\n"
+    "class TestWithNew:\n    def __new__(cls):\n        return super().__new__(cls)\n\n"
+    "    def test_method_of_a_class_with_new(self):\n        pass\n\n\n"
     "class Outer(unittest.TestCase):\n    class Inner:\n        def test_method_of_a_nested_class(self):\n"
     "            pass\n\n"
     "    def test_outer(self):\n        def test_nested_in_a_method():\n            pass\n"
@@ -327,7 +335,8 @@ class OfflineAcceptanceMatrixTests(unittest.TestCase):
 
     def test_go_test_in_a_file_the_linux_release_build_includes_is_found(self):
         for test in ("internal/sample TestDeclaredInALinuxFile",
-                     "internal/sample TestDeclaredUnderALinuxConstraint"):
+                     "internal/sample TestDeclaredUnderALinuxConstraint",
+                     "internal/sample TestDeclaredUnderAMatchingLegacyLine"):
             with self.subTest(test=test):
                 self.assertIsNone(MATRIX.missing_test(self.repo.root, test))
 
@@ -337,7 +346,7 @@ class OfflineAcceptanceMatrixTests(unittest.TestCase):
                          "TestDeclaredOnlyUnderACustomTag", "TestDeclaredOnlyWithoutTheRaceDetector",
                          "TestDeclaredOnlyUnderALegacyConstraint",
                          "TestDeclaredOnlyUnderAnUnparsableConstraint", "TestDeclaredOnlyInAnIgnoredFile",
-                         "TestDeclaredOnlyUnderTwoBuildLines"):
+                         "TestDeclaredOnlyUnderTwoBuildLines", "TestDeclaredOnlyUnderAMismatchedLegacyLine"):
             with self.subTest(function=function):
                 problem = MATRIX.missing_test(self.repo.root, f"internal/sample {function}")
                 self.assertIsNotNone(problem)
@@ -355,7 +364,8 @@ class OfflineAcceptanceMatrixTests(unittest.TestCase):
 
     def test_python_test_the_runner_does_not_collect_is_refused(self):
         for function in ("test_nested_in_a_function", "test_method_of_an_uncollected_class",
-                         "test_method_of_a_class_with_init", "test_method_of_a_nested_class",
+                         "test_method_of_a_class_with_init", "test_method_of_a_class_with_new",
+                         "test_method_of_a_nested_class",
                          "test_nested_in_a_method"):
             with self.subTest(function=function):
                 problem = MATRIX.missing_test(self.repo.root, f"scripts/collection_test.py {function}")

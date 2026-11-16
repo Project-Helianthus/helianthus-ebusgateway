@@ -12,11 +12,11 @@ file in that directory declares the go test entry point 'func <TestName>(t *test
 where TestName is Test or Test followed by a non-lower-case character, and that file is
 part of the build of the release target: GOOS linux on every release architecture, with
 and without the race detector. A file that a file-name suffix or a //go:build (or legacy
-// +build) constraint excludes from any of those builds, or whose name starts with '_'
-or '.', is never evidence. A Python test is named as '<script path> <test_name>' and
+// +build) constraint excludes from any of those builds, whose // +build lines differ
+from its //go:build line, or whose name starts with '_' or '.', is never evidence. A Python test is named as '<script path> <test_name>' and
 exists when test_name starts with 'test' and the test runner collects it: a module-level
 'def <test_name>(', or a method of a module-level class the runner collects (a subclass
-of unittest.TestCase, or a class named Test... without __init__). A test function nested
+of unittest.TestCase, or a class named Test... without __init__ or __new__). A test function nested
 inside another function or inside an uncollected class is never a test. A helper
 function is never a test, and a declaration-like line inside a comment or a string
 literal is never a declaration. Standard library only.
@@ -249,9 +249,13 @@ def _header_constraints(text):
 
 
 class _BuildExpression:
-    """Evaluate one //go:build expression; any syntax error raises ValueError."""
+    """Parse one //go:build expression into a tree; any syntax error raises ValueError.
 
-    def __init__(self, text, tags):
+    A node is ("tag", name), ("not", x), ("and", x, y) or ("or", x, y), built left-associative
+    as go/build/constraint builds it.
+    """
+
+    def __init__(self, text):
         self.tokens = []
         position = 0
         while position < len(text):
@@ -262,10 +266,9 @@ class _BuildExpression:
                 break
             self.tokens.append(match.group(1))
             position = match.end()
-        self.tags = tags
         self.index = 0
 
-    def value(self):
+    def tree(self):
         result = self._or()
         if self.index != len(self.tokens):
             raise ValueError("trailing tokens")
@@ -285,20 +288,22 @@ class _BuildExpression:
         result = self._and()
         while self._peek() == "||":
             self._next()
-            result = self._and() or result
+            result = ("or", result, self._and())
         return result
 
     def _and(self):
         result = self._not()
         while self._peek() == "&&":
             self._next()
-            result = self._not() and result
+            result = ("and", result, self._not())
         return result
 
     def _not(self):
         token = self._next()
         if token == "!":
-            return not self._not()
+            if self._peek() == "!":
+                raise ValueError("double negation not allowed")
+            return ("not", self._not())
         if token == "(":
             result = self._or()
             if self._next() != ")":
@@ -306,18 +311,109 @@ class _BuildExpression:
             return result
         if token in ("||", "&&", ")"):
             raise ValueError("operator without operand")
-        return token in self.tags
+        return ("tag", token)
 
 
-def _legacy_line_matches(line, tags):
+def _evaluate(node, tags):
+    kind = node[0]
+    if kind == "tag":
+        return node[1] in tags
+    if kind == "not":
+        return not _evaluate(node[1], tags)
+    if kind == "and":
+        return _evaluate(node[1], tags) and _evaluate(node[2], tags)
+    return _evaluate(node[1], tags) or _evaluate(node[2], tags)
+
+
+def _render(node):
+    """The constraint's String form: ! binds a tag or a parenthesised group, && parenthesises ||."""
+    kind = node[0]
+    if kind == "tag":
+        return node[1]
+    if kind == "not":
+        inner = _render(node[1])
+        return "!" + (f"({inner})" if node[1][0] in ("and", "or") else inner)
+    other = "or" if kind == "and" else "and"
+    operator = " && " if kind == "and" else " || "
+    return operator.join(f"({_render(arg)})" if arg[0] == other else _render(arg) for arg in node[1:])
+
+
+def _join(kind, nodes):
+    result = None
+    for node in nodes:
+        result = node if result is None else (kind, result, node)
+    return result
+
+
+def _legacy_line_tree(line):
     """A // +build line: space-separated options are ORed, comma-separated terms are ANDed."""
     def term(word):
         negated = word.startswith("!")
         name = word[1:] if negated else word
         if not name or not re.fullmatch(r"[A-Za-z0-9_.]+", name):
             raise ValueError(word)
-        return (name not in tags) if negated else (name in tags)
-    return any(all(term(word) for word in option.split(",")) for option in line.split())
+        return ("not", ("tag", name)) if negated else ("tag", name)
+    options = [_join("and", [term(word) for word in option.split(",")]) for option in line.split()]
+    if not options:
+        raise ValueError("empty +build line")
+    return _join("or", options)
+
+
+def _push_not(node, negate):
+    kind = node[0]
+    if kind == "tag":
+        return ("not", node) if negate else node
+    if kind == "not":
+        if node[1][0] == "tag" and not negate:
+            return node
+        return _push_not(node[1], not negate)
+    left, right = _push_not(node[1], negate), _push_not(node[2], negate)
+    if negate:
+        kind = "or" if kind == "and" else "and"
+    return (kind, left, right)
+
+
+def _split(kind, node):
+    if node[0] == kind:
+        return _split(kind, node[1]) + _split(kind, node[2])
+    return [node]
+
+
+def _plus_build_trees(expression):
+    """The // +build lines that go/build/constraint derives from a //go:build tree, parsed back.
+
+    ValueError when the expression is too complex for // +build lines.
+    """
+    split = []
+    for disjunction in _split("and", _push_not(expression, False)):
+        clauses = []
+        for conjunction in _split("or", disjunction):
+            literals = _split("and", conjunction)
+            if any(literal[0] not in ("tag", "not") for literal in literals):
+                raise ValueError("expression too complex for // +build lines")
+            clauses.append(literals)
+        split.append(clauses)
+    if max(len(clauses) for clauses in split) == 1:
+        split = [[[literal for clauses in split for literal in clauses[0]]]]
+    return [_join("or", [_join("and", literals) for literals in clauses]) for clauses in split]
+
+
+def _constraint_tree(expressions, legacy):
+    """The file's build constraint, or ValueError when go test would refuse its header.
+
+    With both forms present, go vet (run by go test) requires the // +build lines to equal the
+    lines derived from the //go:build expression; this compares them as vet does.
+    """
+    if expressions:
+        tree = _BuildExpression(expressions[0]).tree()
+        if legacy:
+            plus_build = _join("and", [_legacy_line_tree(line) for line in legacy])
+            if _render(_join("and", _plus_build_trees(tree))) != _render(plus_build):
+                raise ValueError("+build lines do not match //go:build condition")
+        return tree
+    if legacy:
+        return _join("and", [_legacy_line_tree(line) for line in legacy])
+    return None
 
 
 def _release_go_minor(root):
@@ -347,20 +443,16 @@ def in_release_build(root, path):
     expressions, legacy = _header_constraints(text)
     if len(expressions) > 1:
         return False
+    try:
+        constraint = _constraint_tree(expressions, legacy)
+    except ValueError:
+        return False
     go_minor = _release_go_minor(root)
     for goarch in RELEASE_GOARCHES:
         if not _file_name_matches(path.name, goarch):
             return False
         for race in (False, True):
-            tags = _release_tags(goarch, race, go_minor)
-            try:
-                if expressions:
-                    included = all(_BuildExpression(expression, tags).value() for expression in expressions)
-                else:
-                    included = all(_legacy_line_matches(line, tags) for line in legacy)
-            except ValueError:
-                return False
-            if not included:
+            if constraint is not None and not _evaluate(constraint, _release_tags(goarch, race, go_minor)):
                 return False
     return True
 
@@ -372,11 +464,11 @@ def _collected_classes(tree):
         if not isinstance(node, ast.ClassDef):
             continue
         bases = {ast.unparse(base) for base in node.bases}
-        defines_init = any(isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == "__init__"
-                           for item in node.body)
+        defines_constructor = any(isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                                  and item.name in ("__init__", "__new__") for item in node.body)
         if bases & PYTHON_TEST_CASE_BASES or bases & collected:
             collected.add(node.name)
-        elif node.name.startswith("Test") and not defines_init:
+        elif node.name.startswith("Test") and not defines_constructor:
             collected.add(node.name)
     return collected
 

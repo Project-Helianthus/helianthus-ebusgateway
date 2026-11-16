@@ -9,9 +9,10 @@ observation. Last-known-good retention then applies only to observations
 qualified by the running process, under the M14 freshness rules.
 
 **Proven:** The legacy boiler return field keeps its cache behaviour and stays
-outside this flow-publication slice. Cache conversion restores that field, and
-`hydrateFromCache` in `cmd/gateway/semantic_vaillant_snapshots.go` preserves it
-through hydration. A fresh qualified flow observation does not change the legacy
+outside this flow-publication slice. Cache conversion restores that field,
+`cacheHydrationFromSnapshot` in `cmd/gateway/vaillant_semantic_publication_cache.go`
+keeps it in the native hydration value, and `hydrateFromCache` in
+`cmd/gateway/semantic_vaillant_snapshots.go` preserves it through hydration. A fresh qualified flow observation does not change the legacy
 return. A restored return value is visible only until the first boiler merge:
 `mergeBoilerSnapshotNonDestructive` in `cmd/gateway/semantic_vaillant_boiler.go` clears
 it, including when the merge contains only an unrelated successful read. This

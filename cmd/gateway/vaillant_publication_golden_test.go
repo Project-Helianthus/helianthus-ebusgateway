@@ -131,7 +131,7 @@ func newVaillantPublicationHarness(t *testing.T, seed string) *vaillantPublicati
 	h := &vaillantPublicationHarness{t: t, ctx: ctx, site: site, provider: graphql.NewLiveSemanticProvider()}
 	clock := site.clock
 	h.provider.SetEnergyClock(clock.Now)
-	var cached semanticCacheSnapshot
+	var cached vaillantCacheHydration
 	cacheLoaded := false
 	if seed != "" {
 		cached, cacheLoaded = preloadSemanticCache(h.provider, newSemanticCacheStore(seed, t.Logf))

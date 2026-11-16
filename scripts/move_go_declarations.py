@@ -211,18 +211,37 @@ def declaration_key(kind: str, masked: str) -> str:
     return kind + ":" + match.group(0)
 
 
+def _has_receive(masked: str) -> bool:
+    """Report whether masked code holds a receive operator.
+
+    The arrow of a directional channel type (chan<- T, <-chan T) is not a
+    receive.
+    """
+    for match in re.finditer(r"<-", masked):
+        if re.search(r"\bchan\s*$", masked[:match.start()]):
+            continue
+        if re.match(r"\s*chan\b", masked[match.end():]):
+            continue
+        return True
+    return False
+
+
 def initializer_calls(masked: str, shadowed=frozenset()) -> bool:
-    """Report whether a var declaration's initializers contain a call.
+    """Report whether a var declaration's initializers contain a call or receive.
 
     Everything after the first initializer is scanned, so a call nested in a
     multi-line composite literal counts; conversions to predeclared types and
     function types do not. A predeclared type name that the package redeclares
-    as a function or variable is a call, not a conversion.
+    as a function or variable is a call, not a conversion. A channel receive
+    can block or consume state like a call, so it pins the declaration too.
     """
     assign = re.search(r"(?<![=!<>:])=(?!=)", masked)
     if not assign:
         return False
-    for match in CALL.finditer(masked[assign.end():]):
+    tail = masked[assign.end():]
+    if _has_receive(tail):
+        return True
+    for match in CALL.finditer(tail):
         if match.group(1) not in CONVERSIONS or match.group(1) in shadowed:
             return True
     return False
@@ -594,6 +613,8 @@ def check_manifest(manifest_path: pathlib.Path, root: pathlib.Path) -> list[str]
 
 
 _SEMICOLON_END = re.compile(r"(?:[A-Za-z0-9_)\]}\"'`]|\+\+|--)$")
+# A compiler directive, as go/ast recognizes one; its payload is kept verbatim.
+_DIRECTIVE = re.compile(r"//(?:line |extern |export |[a-z0-9]+:[a-z0-9])")
 
 
 def _separator(last_code: str, newline: bool) -> str:
@@ -606,7 +627,9 @@ def normalize(text: str) -> str:
     """Collapse whitespace outside string and rune literals; keep literal text.
 
     Comments are kept with their inner whitespace collapsed, so only
-    formatting whitespace is ignored. A newline that follows a token which
+    formatting whitespace is ignored; a compiler directive (//go:embed and
+    the like) is kept verbatim but for trailing blanks, because its payload
+    can be whitespace-sensitive. A newline that follows a token which
     makes Go insert a semicolon is kept, because it separates statements.
     Comments are transparent to that rule, as in Go: the token before a
     comment decides, and a line comment or a block comment spanning lines
@@ -628,7 +651,10 @@ def normalize(text: str) -> str:
             pending = False
             if end >= 0 and char == "/":
                 comment = text[index:end]
-                out.append(re.sub(r"\s+", " ", comment))
+                if _DIRECTIVE.match(comment):
+                    out.append(comment.rstrip())
+                else:
+                    out.append(re.sub(r"\s+", " ", comment))
                 pending = True
                 newline = newline or comment.startswith("//") or "\n" in comment
                 index = end

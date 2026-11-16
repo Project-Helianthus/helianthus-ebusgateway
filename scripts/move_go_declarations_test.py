@@ -156,6 +156,24 @@ class ParserTests(MoveTestCase):
         self.assertTrue(units["var:state"].has_call_initializer())
         self.assertTrue(units["var:wrapped"].has_call_initializer())
 
+    def test_call_initializer_detection_sees_channel_receives(self):
+        package = self.package({"recv.go": (
+            "package sample\n\nvar state = <-source\n\nvar first = struct{ v int }{v: <-ready}\n\n"
+            "var sink chan<- int = nil\n\nvar tap = map[string]<-chan int{}\n\n"
+            "var arrow = \"<-\"\n")})
+        units = {u.key: u for u in MOVE.parse_file(package / "recv.go").units}
+        self.assertTrue(units["var:state"].has_call_initializer())
+        self.assertTrue(units["var:first"].has_call_initializer())
+        self.assertFalse(units["var:sink"].has_call_initializer())
+        self.assertFalse(units["var:tap"].has_call_initializer())
+        self.assertFalse(units["var:arrow"].has_call_initializer())
+        manifest = write_manifest(self.root, {"recv.go": ["var:first", "var:sink", "var:tap",
+                                                          "var:arrow"],
+                                              "moved.go": ["var:state"]},
+                                  source="recv.go")
+        errors = MOVE.check_manifest(manifest, self.root)
+        self.assertIn("var:state must stay in recv.go (init or call initializer)", errors)
+
 
     def test_call_initializer_detection_treats_shadowed_predeclared_names_as_calls(self):
         package = self.package({"shadow.go": (
@@ -327,6 +345,18 @@ class CompareTests(MoveTestCase):
         self.assertEqual(len(MOVE.compare_dirs(before, package)), 2)
         (package / "lit.go").write_text(text.replace("var a =", "var a  ="), encoding="utf-8")
         self.assertEqual(MOVE.compare_dirs(before, package), [])
+
+    def test_compare_detects_whitespace_inside_a_compiler_directive(self):
+        before = self.root / "before"
+        body = 'package sample\n\nimport "embed"\n\n//go:embed "a  b"\nvar files embed.FS\n'
+        package = self.package({"embed.go": body})
+        shutil.copytree(package, before)
+        (package / "embed.go").write_text(body.replace('"a  b"', '"a b"'), encoding="utf-8")
+        self.assertEqual(len(MOVE.compare_dirs(before, package)), 2)
+        self.assertNotEqual(MOVE.normalize("//go:embed a  b\nvar f embed.FS"),
+                            MOVE.normalize("//go:embed a b\nvar f embed.FS"))
+        self.assertEqual(MOVE.normalize("// plain  note\nvar f int"),
+                         MOVE.normalize("// plain note\nvar f int"))
 
 
 class NewlineCompareTests(MoveTestCase):

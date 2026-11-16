@@ -436,20 +436,20 @@
           "issue": null
         },
         "semantic_mcp": {
-          "state": "pass",
-          "test": "cmd/gateway TestH11ComposedHuaweiPathOffline",
+          "state": "not_run",
+          "test": null,
           "reason": null,
           "issue": null
         },
         "graphql": {
-          "state": "pass",
-          "test": "cmd/gateway TestH11ComposedHuaweiPathOffline",
+          "state": "not_run",
+          "test": null,
           "reason": null,
           "issue": null
         },
         "portal": {
-          "state": "pass",
-          "test": "cmd/gateway TestH11ComposedHuaweiPathOffline",
+          "state": "not_run",
+          "test": null,
           "reason": null,
           "issue": null
         },
@@ -492,20 +492,20 @@
           "issue": null
         },
         "semantic_mcp": {
-          "state": "pass",
-          "test": "cmd/gateway TestH11ComposedHuaweiPathOffline",
+          "state": "not_run",
+          "test": null,
           "reason": null,
           "issue": null
         },
         "graphql": {
-          "state": "pass",
-          "test": "cmd/gateway TestH11ComposedHuaweiPathOffline",
+          "state": "not_run",
+          "test": null,
           "reason": null,
           "issue": null
         },
         "portal": {
-          "state": "pass",
-          "test": "cmd/gateway TestH11ComposedHuaweiPathOffline",
+          "state": "not_run",
+          "test": null,
           "reason": null,
           "issue": null
         },
@@ -1730,8 +1730,8 @@
       },
       "huawei_smartlogger": {
         "normal": {
-          "state": "pass",
-          "test": "cmd/gateway TestH11ComposedHuaweiPathOffline",
+          "state": "not_run",
+          "test": null,
           "reason": null,
           "issue": null
         },
@@ -1742,8 +1742,8 @@
           "issue": null
         },
         "reset": {
-          "state": "pass",
-          "test": "cmd/gateway TestH11ComposedHuaweiPathOffline",
+          "state": "not_run",
+          "test": null,
           "reason": null,
           "issue": null
         },
@@ -1760,28 +1760,28 @@
           "issue": null
         },
         "identity_conflict": {
-          "state": "pass",
-          "test": "cmd/gateway TestH11ComposedHuaweiPathOffline",
+          "state": "not_run",
+          "test": null,
           "reason": null,
           "issue": null
         },
         "unknown_capability": {
-          "state": "pass",
-          "test": "cmd/gateway TestH11ComposedHuaweiPathOffline",
+          "state": "not_run",
+          "test": null,
           "reason": null,
           "issue": null
         },
         "cleanup": {
-          "state": "pass",
-          "test": "cmd/gateway TestH11ComposedHuaweiPathOffline",
+          "state": "not_run",
+          "test": null,
           "reason": null,
           "issue": null
         }
       },
       "huawei_sdongle": {
         "normal": {
-          "state": "pass",
-          "test": "cmd/gateway TestH11ComposedHuaweiPathOffline",
+          "state": "not_run",
+          "test": null,
           "reason": null,
           "issue": null
         },
@@ -1810,14 +1810,14 @@
           "issue": null
         },
         "identity_conflict": {
-          "state": "pass",
-          "test": "cmd/gateway TestH11ComposedHuaweiPathOffline",
+          "state": "not_run",
+          "test": null,
           "reason": null,
           "issue": null
         },
         "unknown_capability": {
-          "state": "pass",
-          "test": "cmd/gateway TestH11ComposedHuaweiPathOffline",
+          "state": "not_run",
+          "test": null,
           "reason": null,
           "issue": null
         },

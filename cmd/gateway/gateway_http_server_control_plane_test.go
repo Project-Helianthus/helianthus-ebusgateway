@@ -254,12 +254,19 @@ func TestRunOrchestrationKeepsFlagsConfigurationAdmissionAndStartupBarriersOrder
 	// by retainedEBusConsumers; TestRetainedEBusConsumersClosesSemanticBarrierOnce,
 	// TestRetainedEBusConsumersCreatesBarrierOnlyForDeferredStartupScan and
 	// TestRetainedEBusConsumersSubscribesInserterOnceAfterAdmission pin them.
-	// The lifecycle creates that owner before any generation scan starts.
+	// The lifecycle creates that owner, then the generation owners, before
+	// it binds the generation tasks. The startup discovery scan and the
+	// background full scan are methods of ebusGenerationOwners:
+	// TestRuntimeControlCharacterizationLifecycleOrderingHealthy pins the
+	// semantic poller, the discovery scan and the background full scan in that
+	// order, and TestEBusGenerationOwnersTaskGraph pins the task names and
+	// their prerequisites.
 	assertOrder(lifecycleText,
 		"newRetainedEBusConsumers(ctx",
 		"retained.openSemanticBarrierOnProcessExit()",
-		"startDiscoveryScanLoopFn(genCtx, startupCfg, gateway, builder, adapterClassifier)",
-		"startBackgroundFullScanFn(runCtx, startupCfg, gateway, builder, startupScanSignals.semanticBootstrapReady)",
+		"newEBusGenerationOwners(ctx",
+		"newEBusGenerationTaskRunner(generationOwners.taskConfig())",
+		"control.BindTasks(ctx, generationTasks",
 	)
 }
 

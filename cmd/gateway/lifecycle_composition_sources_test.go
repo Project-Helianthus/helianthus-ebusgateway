@@ -18,6 +18,7 @@ var lifecycleCompositionFileNames = []string{
 	"gateway_run_lifecycle.go",
 	"gateway_lifecycle_observability.go",
 	"gateway_retained_consumers.go",
+	"gateway_ebus_generation_owners.go",
 }
 
 type lifecycleCompositionFile struct {

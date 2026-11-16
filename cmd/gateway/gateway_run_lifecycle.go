@@ -6,18 +6,15 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"sync"
 	"time"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/releasecheck"
-	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimecontrol"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimestate"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mdns"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal/catalogv1"
-	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 )
 
 // startGatewayReleaseChecker starts the cache-only release discovery task.
@@ -187,8 +184,9 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 	if err != nil {
 		return err
 	}
-	admissionPath, metrics, artifactBuilder := startupSelection.admissionPath, startupSelection.metrics, startupSelection.artifactBuilder
-	overrideSet, overrideSource := startupSelection.overrideSet, startupSelection.overrideSource
+	// The generation owners below hold the remaining source-selection values.
+	admissionPath, artifactBuilder := startupSelection.admissionPath, startupSelection.artifactBuilder
+	overrideSet := startupSelection.overrideSet
 	startupSelection.startArtifactEmission(ctx)
 	defer startupSelection.emitFinalArtifact()
 
@@ -428,367 +426,27 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 	// generation ever reported an admission outcome.
 	retained.openSemanticBarrierOnProcessExit()
 
-	// runEBusGenerationStartup is the generation-owned post-start task. It
-	// reuses the existing native selection, scan, revalidation, background
-	// scan and promotion functions unchanged; every effect it installs goes
-	// through the generation scope, and every goroutine it starts is joined
+	// The eBUS generation owners hold the generation-owned post-start tasks.
+	// They reuse the existing native selection, scan, revalidation, background
+	// scan and promotion functions unchanged; every effect they install goes
+	// through the generation scope, and every goroutine they start is joined
 	// with the generation.
-	// Per-generation hand-off between the ordered startup tasks. Only the
-	// newest admitted generation keeps an entry.
-	type ebusStartupState struct {
-		cfg               ebusgateway.Config
-		selection         *protocol.SourceAddressSelection
-		staticSource      byte
-		static            bool
-		signals           startupScanSignals
-		admitted, scanned bool
-	}
-	var startupStateMu sync.Mutex
-	startupStates := map[runtimecontrol.NativeGeneration]*ebusStartupState{}
-	startupStateFor := func(scope *ebusGenerationScope) *ebusStartupState {
-		startupStateMu.Lock()
-		defer startupStateMu.Unlock()
-		native := scope.Key().Native
-		state := startupStates[native]
-		if state == nil {
-			for other := range startupStates {
-				delete(startupStates, other)
-			}
-			state = &ebusStartupState{}
-			startupStates[native] = state
-		}
-		return state
-	}
-
-	// runEBusSourceAdmission: current-session source validation and
-	// admission of the generation (start-critical).
-	runEBusSourceAdmission := func(genCtx context.Context, scope *ebusGenerationScope) error {
-		genCfg := cfg
-		var sourceSelection *protocol.SourceAddressSelection
-		if admissionPath == ebusgateway.TransportAdmissionSourceSelectionCapable && !overrideSet && genCfg.ScanSourceAuto && genCfg.ScanSource == 0x00 && !shouldStartPassiveObserveFirst(genCfg) {
-			result, err := ebusgateway.SelectDefaultStartupSourceAddress(genCtx)
-			if err != nil {
-				log.Printf("startup source selection degraded reason=source_selection_default_policy_failed err=%v", err)
-				metrics.MarkDegraded(time.Now())
-				artifactBuilder.SetDegraded("source_selection_default_policy_failed")
-			} else {
-				sourceSelection = &result
-				genCfg.ScanSource = result.Source
-				genCfg.ScanSourceAuto = false
-				genCfg.StartupCompanionTarget = result.Companion
-				genCfg.StartupProbeTargets = append(append([]byte(nil), genCfg.StartupProbeTargets...), startupProbeTargetsForSelection(result)...)
-				artifactBuilder.SetPromotedSuspects(len(startupProbeTargets(genCfg)))
-				artifactBuilder.SetSourceSelection(result.Source, result.Companion, result.Metrics.WarmupDurationActual)
-				if perr := artifactBuilder.SetSourceSelectionMode("source_selection"); perr != nil {
-					return fmt.Errorf("set default-policy source-selection mode: %w", perr)
-				}
-				log.Printf("startup source selection candidate source=0x%02X companion_target=0x%02X provenance=source_selection_default_policy", result.Source, result.Companion)
-				recordBusAdmissionTransitionWithStabilityRefresh(genCtx, busObservability, "pending", result.Source, result.Companion, "active_probe_pending")
-			}
-		}
-		if sourceSelection == nil {
-			result, ok := configuredStartupSourceAdmissionCandidate(genCfg, admissionPath, overrideSet)
-			if ok {
-				sourceSelection = &result
-				genCfg.ScanSource = result.Source
-				genCfg.ScanSourceAuto = false
-				genCfg.StartupCompanionTarget = result.Companion
-				genCfg.StartupProbeTargets = append(append([]byte(nil), genCfg.StartupProbeTargets...), startupProbeTargetsForSelection(result)...)
-				artifactBuilder.SetPromotedSuspects(len(startupProbeTargets(genCfg)))
-				artifactBuilder.SetSourceSelection(result.Source, result.Companion, 0)
-				if perr := artifactBuilder.SetSourceSelectionMode("source_selection"); perr != nil {
-					return fmt.Errorf("set configured source-selection mode: %w", perr)
-				}
-				log.Printf("startup source selection candidate source=0x%02X companion_target=0x%02X provenance=configured_source", result.Source, result.Companion)
-				recordBusAdmissionTransitionWithStabilityRefresh(genCtx, busObservability, "pending", result.Source, result.Companion, "active_probe_pending")
-			}
-		}
-
-		runAdvisorySourceSelector := admissionPath == ebusgateway.TransportAdmissionSourceSelectionCapable && shouldStartPassiveObserveFirst(genCfg) && (!overrideSet || genCfg.StartupSource.Validate)
-		if runAdvisorySourceSelector {
-			// The passive reconstructor is a process handle: it is started
-			// once and reused by every later generation's warmup.
-			active := retained.currentReconstructor()
-			if active == nil {
-				started, err := startPassiveTransactionReconstructor(ctx, genCfg)
-				if err != nil {
-					return err
-				}
-				// Only a generation that is still live publishes the
-				// handle; a stopped or replaced one closes it and ends.
-				if !retained.publishReconstructor(scope, started) {
-					return nil
-				}
-				active = started
-				log.Printf("passive reconstructor started")
-			}
-			// The inserter is not subscribed here: warmup runs before the
-			// admitted source is installed, so its self-source filter would
-			// see 0 (Codex P2 round 2). attachPassiveObserveFirst binds it
-			// after admission is finalized.
-			selectionBus, err := ebusgateway.NewSourceSelectionBusAdapter(active, "startup_source_selection_bus", false)
-			if err != nil {
-				return fmt.Errorf("m3: new source address selection bus: %w", err)
-			}
-			// M4_SOURCE_SELECTION_HINT: the cached admitted source orders
-			// candidates; validation still runs in full.
-			hintCandidate, hintSet := runtimestate.HintFromState(runtimeState)
-			if hintSet {
-				log.Printf("source address selection hint=0x%02X (cached from prior admission cycle; warmup validation still required)", hintCandidate)
-			}
-			selector := protocol.NewSourceAddressSelector(selectionBus, ebusgateway.StartupAdmissionConfigWithHint(hintCandidate, hintSet))
-			if busObservability != nil {
-				busObservability.SetAdmissionStabilityWindow(
-					ebusgateway.NewAdmissionStabilityWindow(ebusgateway.StartupAdmissionStateMinStabilitySecondsDefault),
-				)
-				recordBusAdmissionTransitionWithStabilityRefresh(genCtx, busObservability, "pending", 0, 0, "source_selection_warmup_in_progress")
-			}
-			metrics.MarkPending()
-			metrics.StartWarmupCycle()
-
-			log.Printf("source address selection warmup begin")
-			warmupCtx, cancel := context.WithTimeout(genCtx, 6*time.Second)
-			warmupStartedAt := time.Now()
-			result, err := selector.Select(warmupCtx)
-			cancel()
-			if err != nil {
-				log.Printf("startup source selection degraded reason=source_selection_failed err=%v", err)
-				recordBusAdmissionTransitionWithStabilityRefresh(genCtx, busObservability, "degraded", 0, 0, "source_selection_failed")
-				metrics.MarkDegraded(time.Now())
-				artifactBuilder.SetDegraded("source_selection_failed")
-				if perr := artifactBuilder.SetSourceSelectionMode("degraded_no_events"); perr != nil {
-					return fmt.Errorf("set degraded source-selection mode: %w", perr)
-				}
-			} else if overrideSet {
-				_ = ebusgateway.CheckExplicitSourceCompanionConflict(overrideSource, &result, metrics)
-			} else {
-				sourceSelection = &result
-				genCfg.ScanSource = result.Source
-				genCfg.ScanSourceAuto = false
-				genCfg.StartupCompanionTarget = result.Companion
-				genCfg.StartupProbeTargets = append(append([]byte(nil), genCfg.StartupProbeTargets...), startupProbeTargetsForSelection(result)...)
-				artifactBuilder.SetPromotedSuspects(len(startupProbeTargets(genCfg)))
-				artifactBuilder.SetSourceSelection(result.Source, result.Companion, time.Since(warmupStartedAt))
-				if perr := artifactBuilder.SetSourceSelectionMode("source_selection"); perr != nil {
-					return fmt.Errorf("set selected source-selection mode: %w", perr)
-				}
-				log.Printf("startup source selection candidate source=0x%02X companion_target=0x%02X", result.Source, result.Companion)
-				recordBusAdmissionTransitionWithStabilityRefresh(genCtx, busObservability, "pending", result.Source, result.Companion, "active_probe_pending")
-			}
-		}
-
-		if admissionPath == ebusgateway.TransportAdmissionSourceSelectionCapable && overrideSet {
-			genCfg.ScanSource = overrideSource
-			genCfg.ScanSourceAuto = false
-		}
-		syncStaticAdmittedSource, syncStaticAdmitted := admittedMutationSourceForGateway(genCfg, admissionPath, overrideSet)
-		if syncStaticAdmitted {
-			if !retained.installAdmittedSource(scope, syncStaticAdmittedSource) {
-				return nil
-			}
-			// Admission resolved synchronously (override / static
-			// fallback): bind the inserter and write ebus.self now. The M5
-			// revalidator waits for activeProbePassed below.
-			retained.subscribeAddressTableInserter()
-			selectionMethod := runtimestate.SelectionMethodExplicitValidateOnly
-			if isEbusdTransportProtocol(genCfg.TransportConfig.Protocol) {
-				selectionMethod = runtimestate.SelectionMethodEbusdTCPFallback
-			}
-			recordAdmittedSourceInRuntimeState(runtimeStateMgr, syncStaticAdmittedSource, 0, selectionMethod, false)
-		} else if !retained.clearAdmittedSource(scope) {
-			return nil
-		}
-		state := startupStateFor(scope)
-		startupStateMu.Lock()
-		state.cfg, state.selection = genCfg, sourceSelection
-		state.staticSource, state.static, state.admitted = syncStaticAdmittedSource, syncStaticAdmitted, true
-		startupStateMu.Unlock()
-		return nil
-	}
-
-	// runEBusSemanticSurface creates the process-scoped consumers from the
-	// first admitted generation's validated configuration (start-critical).
-	runEBusSemanticSurface := func(_ context.Context, scope *ebusGenerationScope) error {
-		state := startupStateFor(scope)
-		startupStateMu.Lock()
-		genCfg, ready := state.cfg, state.admitted
-		startupStateMu.Unlock()
-		if !ready {
-			return nil
-		}
-		// The install runs through the generation fence: a generation that
-		// was withdrawn before this point creates no process-scoped consumer,
-		// and only a live generation resumes the retained poller.
-		return installProcessSurface(scope, func() error { return retained.ensureProcessSurface(scope.Context(), genCfg) })
-	}
-
-	// runEBusStartupScan starts the startup discovery scan of the generation
-	// and its admission follow-ups; revalidation, background scanning and
-	// passive promotion run as joined, best-effort generation work.
-	runEBusStartupScan := func(genCtx context.Context, scope *ebusGenerationScope) error {
-		state := startupStateFor(scope)
-		startupStateMu.Lock()
-		genCfg, sourceSelection, ready := state.cfg, state.selection, state.admitted
-		syncStaticAdmittedSource, syncStaticAdmitted := state.staticSource, state.static
-		startupStateMu.Unlock()
-		if !ready {
-			return nil
-		}
-		poller, passivePromoter := retained.pollerAndPromoter()
-
-		startupCfg := resolveStartupScanSourceConfig(genCfg)
-		startupSourceProvenance := startupScanSourceMode(genCfg, startupCfg)
-		if admissionPath == ebusgateway.TransportAdmissionSourceSelectionCapable && overrideSet {
-			startupCfg.ScanSource = overrideSource
-			startupCfg.ScanSourceAuto = false
-			startupSourceProvenance = "explicit_validate_only"
-		} else if admissionPath == ebusgateway.TransportAdmissionSourceSelectionCapable && sourceSelection != nil {
-			startupCfg.ScanSource = sourceSelection.Source
-			startupCfg.ScanSourceAuto = false
-			startupSourceProvenance = "source_selection"
-		}
-
-		log.Printf("startup scan pass")
-		log.Printf("startup_directed_probe_phase begin source=0x%02X provenance=%s", startupCfg.ScanSource, startupSourceProvenance)
-		if overrideSet {
-			artifactBuilder.SetExplicitSource(startupCfg.ScanSource)
-		}
-		startupScanSignals := startDiscoveryScanLoopFn(genCtx, startupCfg, gateway, builder, adapterClassifier)
-		// The scan loop goroutine is joined with the generation through its
-		// completion signal: it runs on the generation context, and the
-		// generation is not joined before the loop returned.
-		if loopDone := startupScanSignals.done; loopDone != nil {
-			joinLoop := func() {
-				<-loopDone
-				// The loop has returned, so no further delayed identity
-				// enrichment can be scheduled; wait for the ones it started.
-				postStartupIdentityRetryWG.Wait()
-			}
-			if !scope.GoJoin(func(context.Context) { joinLoop() }) {
-				joinLoop()
-			}
-		}
-		startupStateMu.Lock()
-		state.signals, state.scanned = startupScanSignals, true
-		startupStateMu.Unlock()
-
-		// Static / override admission: the M5 revalidator starts only after
-		// activeProbePassed, so directed 07 04 probes stay outside the
-		// startup admission scan window (Codex P2 follow-up on PR #615).
-		if syncStaticAdmitted && !sourceSelectionAdmit {
-			source := syncStaticAdmittedSource
-			scope.Go(func(runCtx context.Context) {
-				select {
-				case <-runCtx.Done():
-				case <-startupScanSignals.activeProbePassed:
-					runRuntimeStateRevalidatorLoop(runCtx, runtimeStateMgr, gateway, genCfg, source, 0)
-				case <-startupScanSignals.admissionFailed:
-				}
-			})
-		}
-
-		if retained.hasSemanticBarrier() || sourceSelection != nil {
-			selection := sourceSelection
-			scope.Go(func(runCtx context.Context) {
-				select {
-				case <-runCtx.Done():
-					return
-				case <-startupScanSignals.activeProbePassed:
-					if selection != nil {
-						if !retained.installAdmittedSource(scope, selection.Source) {
-							return
-						}
-						artifactBuilder.SetSourceSelectionActive()
-						metrics.MarkActive()
-						recordBusAdmissionTransitionWithStabilityRefresh(runCtx, busObservability, "active", selection.Source, selection.Companion, "active_probe_passed")
-						// Admission finalized asynchronously: bind the
-						// inserter now that AdmittedSource() returns the
-						// selected source (Codex P2 round 3).
-						retained.subscribeAddressTableInserter()
-						selectionMethod := runtimestate.SelectionMethodWarmup
-						if overrideSet {
-							selectionMethod = runtimestate.SelectionMethodExplicitValidateOnly
-						}
-						recordAdmittedSourceInRuntimeState(runtimeStateMgr, selection.Source, selection.Companion, selectionMethod, true)
-						scope.Go(func(revalidateCtx context.Context) {
-							runRuntimeStateRevalidatorLoop(revalidateCtx, runtimeStateMgr, gateway, genCfg, selection.Source, 0)
-						})
-					}
-				case <-startupScanSignals.admissionFailed:
-					if selection != nil {
-						if !retained.clearAdmittedSource(scope) {
-							return
-						}
-						artifactBuilder.SetDegraded("active_probe_failed")
-						metrics.MarkDegraded(time.Now())
-						recordBusAdmissionTransitionWithStabilityRefresh(runCtx, busObservability, "degraded", selection.Source, selection.Companion, "active_probe_failed")
-					}
-					if shouldCloseSemanticBarrier(admissionPath, overrideSet, selection != nil) {
-						retained.closeSemanticBarrier()
-					}
-					return
-				}
-				if shouldCloseSemanticBarrier(admissionPath, overrideSet, selection != nil) {
-					retained.closeSemanticBarrier()
-				}
-			})
-		}
-
-		scope.Go(func(runCtx context.Context) {
-			startBackgroundFullScanFn(runCtx, startupCfg, gateway, builder, startupScanSignals.semanticBootstrapReady)
-		})
-		if passivePromoter != nil && poller != nil {
-			scope.Go(passivePromoter.Run)
-		}
-		return nil
-	}
-
-	// runEBusPassiveObserveFirst starts the process-scoped passive
-	// reconstructor after the generation's first scan pass and attaches the
-	// observe-first consumers (start-critical).
-	runEBusPassiveObserveFirst := func(genCtx context.Context, scope *ebusGenerationScope) error {
-		state := startupStateFor(scope)
-		startupStateMu.Lock()
-		genCfg, startupScanSignals, ready := state.cfg, state.signals, state.scanned
-		startupStateMu.Unlock()
-		if !ready {
-			return nil
-		}
-		if shouldStartPassiveObserveFirst(genCfg) {
-			if retained.currentReconstructor() == nil {
-				waitForStartupScanFirstPass(genCtx, genCfg, startupScanSignals.firstPassDone)
-				if genCtx.Err() != nil {
-					return nil
-				}
-				started, err := startPassiveTransactionReconstructor(ctx, genCfg)
-				if err != nil {
-					return err
-				}
-				// Only a generation that is still live publishes the
-				// handle; a stopped or replaced one closes it and ends.
-				if !retained.publishReconstructor(scope, started) {
-					return nil
-				}
-			}
-			if err := retained.attachPassiveObserveFirst(); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-
-	generationTasks, err := newEBusGenerationTaskRunner(ebusGenerationTaskConfig{
-		Tasks: []ebusGenerationTask{
-			{Name: ebusTaskSourceAdmission, Run: runEBusSourceAdmission},
-			{Name: ebusTaskSemanticSurface, Requires: []string{ebusTaskSourceAdmission}, Run: runEBusSemanticSurface},
-			{Name: ebusTaskStartupScan, Requires: []string{ebusTaskSemanticSurface}, Run: runEBusStartupScan},
-			{Name: ebusTaskPassiveObserveFirst, Requires: []string{ebusTaskStartupScan}, Run: runEBusPassiveObserveFirst},
-		},
-		Admitted: control.GenerationAdmitted(),
-		Failure: func(key ebusGenerationKey, task string, err error) {
-			log.Printf("ebus generation task failed task=%s native_generation=%d err=%v", task, key.Native, err)
-		},
+	generationOwners, err := newEBusGenerationOwners(ctx, ebusGenerationOwnerOptions{
+		Config:              cfg,
+		Selection:           startupSelection,
+		RuntimeStateManager: runtimeStateMgr,
+		RuntimeState:        runtimeState,
+		Gateway:             gateway,
+		Builder:             builder,
+		AdapterClassifier:   adapterClassifier,
+		Control:             control,
+		Retained:            retained,
+		BusObservability:    busObservability,
 	})
+	if err != nil {
+		return err
+	}
+	generationTasks, err := newEBusGenerationTaskRunner(generationOwners.taskConfig())
 	if err != nil {
 		return fmt.Errorf("ebus generation tasks: %w", err)
 	}

@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"go/ast"
 	"go/token"
 	"sync"
 	"sync/atomic"
@@ -271,18 +272,43 @@ func TestPassiveReconstructorGenerationFencePublishMethod(t *testing.T) {
 	}
 }
 
-// Both generation tasks that create the reconstructor publish it only through
-// the retained owner's fenced publication method.
+// Both generation steps that create the reconstructor publish it only through
+// the retained owner's fenced publication method, and the lifecycle shell
+// creates none itself.
 func TestPassiveReconstructorGenerationFenceTasksPublishThroughOwner(t *testing.T) {
 	files, _ := lifecycleCompositionSources(t, token.NewFileSet())
 	lifecycle := lifecycleFunctionDecl(t, files, "runGatewayLifecycle")
-	calls := lifecycleSelectorCallPositions(lifecycle.Body)
-	if got := len(calls["publishReconstructor"]); got != 2 {
-		t.Fatalf("runGatewayLifecycle publishes the reconstructor through the owner %d times; want 2", got)
+	if got := lifecycleIdentCallCount(lifecycle.Body, "startPassiveTransactionReconstructor"); got != 0 {
+		t.Fatalf("runGatewayLifecycle creates the reconstructor %d times; want it only in the generation owners", got)
+	}
+	for _, step := range []string{"advisoryWarmupReconstructor", "runPassiveObserveFirst"} {
+		method := lifecycleMethodDecl(t, files, "ebusGenerationOwners", step)
+		if got := lifecycleIdentCallCount(method.Body, "startPassiveTransactionReconstructor"); got != 1 {
+			t.Fatalf("(*ebusGenerationOwners).%s creates the reconstructor %d times; want 1", step, got)
+		}
+		calls := lifecycleSelectorCallPositions(method.Body)
+		if got := len(calls["publishReconstructor"]); got != 1 {
+			t.Fatalf("(*ebusGenerationOwners).%s publishes the reconstructor through the owner %d times; want 1", step, got)
+		}
 	}
 	publish := lifecycleMethodDecl(t, files, "retainedEBusConsumers", "publishReconstructor")
 	inner := lifecycleSelectorCallPositions(publish.Body)
 	if len(inner["Commit"]) != 1 || len(inner["Close"]) != 1 {
 		t.Fatalf("(*retainedEBusConsumers).publishReconstructor must commit once and close the refused handle: %v", inner)
 	}
+}
+
+// lifecycleIdentCallCount counts the calls to the package-level function or
+// variable name inside node.
+func lifecycleIdentCallCount(node ast.Node, name string) int {
+	count := 0
+	ast.Inspect(node, func(child ast.Node) bool {
+		if call, ok := child.(*ast.CallExpr); ok {
+			if ident, ok := call.Fun.(*ast.Ident); ok && ident.Name == name {
+				count++
+			}
+		}
+		return true
+	})
+	return count
 }

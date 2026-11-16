@@ -149,6 +149,13 @@ class ParserTests(MoveTestCase):
         self.assertFalse(units["var:hooks"].has_call_initializer())
         self.assertTrue(units["var:nested"].has_call_initializer())
 
+    def test_call_initializer_detection_sees_parenthesized_calls(self):
+        package = self.package({"paren.go": (
+            "package sample\n\nvar state = (register)()\n\nvar wrapped = (build())(1)\n")})
+        units = {u.key: u for u in MOVE.parse_file(package / "paren.go").units}
+        self.assertTrue(units["var:state"].has_call_initializer())
+        self.assertTrue(units["var:wrapped"].has_call_initializer())
+
 
 class ApplyTests(MoveTestCase):
     def apply(self, files):
@@ -277,6 +284,17 @@ class CompareTests(MoveTestCase):
         text = (package / "big.go").read_text(encoding="utf-8")
         (package / "big.go").write_text(text.replace("counts things", "counts"), encoding="utf-8")
         self.assertEqual(len(MOVE.compare_dirs(before, package)), 2)
+
+
+    def test_compare_detects_a_changed_literal_whitespace(self):
+        before = self.root / "before"
+        package = self.package({"lit.go": 'package sample\n\nvar a = "x  y"\n\nvar b = `p  q`\n'})
+        shutil.copytree(package, before)
+        text = (package / "lit.go").read_text(encoding="utf-8")
+        (package / "lit.go").write_text(text.replace("x  y", "x y"), encoding="utf-8")
+        self.assertEqual(len(MOVE.compare_dirs(before, package)), 2)
+        (package / "lit.go").write_text(text.replace("var a =", "var a  ="), encoding="utf-8")
+        self.assertEqual(MOVE.compare_dirs(before, package), [])
 
 
 class ReportTests(MoveTestCase):

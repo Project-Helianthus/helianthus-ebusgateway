@@ -66,7 +66,7 @@ CONVERSIONS = {
     "float64", "complex64", "complex128", "func",
 }
 IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-CALL = re.compile(r"(?:([A-Za-z_][A-Za-z0-9_]*)|[\]}])\s*\(")
+CALL = re.compile(r"(?:([A-Za-z_][A-Za-z0-9_]*)|[\])}])\s*\(")
 SELECTOR = re.compile(r"(?<![A-Za-z0-9_.])([A-Za-z_][A-Za-z0-9_]*)\s*\.")
 IMPORT_SPEC = re.compile(r'^\s*(?:([A-Za-z_][A-Za-z0-9_]*|\.)\s+)?"([^"]+)"')
 
@@ -538,7 +538,32 @@ def check_manifest(manifest_path: pathlib.Path, root: pathlib.Path) -> list[str]
 
 
 def normalize(text: str) -> str:
-    return " ".join(text.split())
+    """Collapse whitespace outside string and rune literals; keep literal text.
+
+    Comments are collapsed like code, so only formatting whitespace is ignored.
+    """
+    out = []
+    pending = False
+    index = 0
+    while index < len(text):
+        char = text[index]
+        end = _literal_end(text, index)
+        if end >= 0 and char != "/":
+            if pending and out:
+                out.append(" ")
+            pending = False
+            out.append(text[index:end])
+            index = end
+            continue
+        if char.isspace():
+            pending = True
+        else:
+            if pending and out:
+                out.append(" ")
+            pending = False
+            out.append(char)
+        index += 1
+    return "".join(out)
 
 
 def declaration_multiset(directory: pathlib.Path) -> collections.Counter:

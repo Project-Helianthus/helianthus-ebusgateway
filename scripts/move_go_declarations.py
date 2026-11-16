@@ -228,6 +228,57 @@ def initializer_calls(masked: str, shadowed=frozenset()) -> bool:
     return False
 
 
+_NAME_LIST = re.compile(r"\s*([A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*)*)")
+
+
+def _ends_statement(masked: str, index: int) -> bool:
+    """Report whether Go inserts a semicolon at the newline at index."""
+    head = masked[:index].rstrip()
+    return bool(head) and bool(_SEMICOLON_END.search(head))
+
+
+def _group_spec_names(body: str) -> list[str]:
+    """Return the names each spec of a parenthesized group declares."""
+    names = []
+    depth = 0
+    at_start = True
+    index = 0
+    while index < len(body):
+        if depth == 0 and at_start:
+            match = _NAME_LIST.match(body, index)
+            if match:
+                names.extend(IDENT.findall(match.group(1)))
+                index = match.end()
+                at_start = False
+                continue
+        char = body[index]
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+            if depth < 0:
+                break
+        elif depth == 0 and (char == ";" or (char == "\n" and _ends_statement(body, index))):
+            at_start = True
+        index += 1
+    return names
+
+
+def declared_names(unit: Unit) -> list[str]:
+    """Return the package-level names a declaration unit declares.
+
+    Every spec of a grouped declaration counts, not only the first one that
+    keys the unit. Methods declare no package-level name.
+    """
+    if unit.kind == "func":
+        return [unit.key.split(":", 1)[1]] if unit.key.startswith("func:") else []
+    rest = unit.masked[len(unit.kind):].lstrip()
+    if rest.startswith("("):
+        return _group_spec_names(rest[1:])
+    match = _NAME_LIST.match(rest)
+    return IDENT.findall(match.group(1)) if match else []
+
+
 def _keyword_at(line: str) -> str:
     for keyword in KEYWORDS:
         if line.startswith(keyword) and not IDENT.match(line[len(keyword):len(keyword) + 1] or " "):
@@ -425,9 +476,9 @@ def _listing_errors(plan: Plan, located: dict) -> list[str]:
 def _pinned_errors(plan: Plan, located: dict) -> list[str]:
     errors = []
     shadowed = frozenset(
-        key.split(":", 1)[1] for key in located
-        if key.split(":", 1)[0] in ("func", "var", "const")
-        and key.split(":", 1)[1] in CONVERSIONS)
+        name for entries in located.values() for _, unit in entries
+        if unit.kind in ("func", "var", "const")
+        for name in declared_names(unit) if name in CONVERSIONS)
     for name, keys in plan.targets.items():
         for key in keys:
             units = [u for _, u in located.get(key, [])]
@@ -542,11 +593,11 @@ def check_manifest(manifest_path: pathlib.Path, root: pathlib.Path) -> list[str]
 # ---------------------------------------------------------------- compare
 
 
-_SEMICOLON_END = re.compile(r"[A-Za-z0-9_)\]}\"'`+-]$")
+_SEMICOLON_END = re.compile(r"(?:[A-Za-z0-9_)\]}\"'`]|\+\+|--)$")
 
 
-def _separator(out: list, newline: bool) -> str:
-    if newline and _SEMICOLON_END.search(out[-1]):
+def _separator(last_code: str, newline: bool) -> str:
+    if newline and _SEMICOLON_END.search(last_code):
         return "\n"
     return " "
 
@@ -554,32 +605,43 @@ def _separator(out: list, newline: bool) -> str:
 def normalize(text: str) -> str:
     """Collapse whitespace outside string and rune literals; keep literal text.
 
-    Comments are collapsed like code, so only formatting whitespace is ignored.
-    A newline that follows a token which makes Go insert a semicolon is kept,
-    because it separates statements.
+    Comments are kept with their inner whitespace collapsed, so only
+    formatting whitespace is ignored. A newline that follows a token which
+    makes Go insert a semicolon is kept, because it separates statements.
+    Comments are transparent to that rule, as in Go: the token before a
+    comment decides, and a line comment or a block comment spanning lines
+    acts as a newline.
     """
     out = []
+    last_code = ""
     pending = False
     newline = False
     index = 0
     while index < len(text):
         char = text[index]
         end = _literal_end(text, index)
-        if end >= 0 and char != "/":
-            if pending and out:
-                out.append(_separator(out, newline))
-            pending = newline = False
-            out.append(text[index:end])
-            index = end
+        if end >= 0 or not char.isspace():
+            separated = pending and bool(out)
+            if separated:
+                out.append(_separator(last_code, newline))
+                newline = newline and out[-1] == " "
+            pending = False
+            if end >= 0 and char == "/":
+                comment = text[index:end]
+                out.append(re.sub(r"\s+", " ", comment))
+                pending = True
+                newline = newline or comment.startswith("//") or "\n" in comment
+                index = end
+                continue
+            newline = False
+            token = text[index:end] if end >= 0 else char
+            out.append(token)
+            # Two adjacent characters are kept so "++" and "--" are seen.
+            last_code = token if separated else (last_code + token)[-2:]
+            index = end if end >= 0 else index + 1
             continue
-        if char.isspace():
-            pending = True
-            newline = newline or char == "\n"
-        else:
-            if pending and out:
-                out.append(_separator(out, newline))
-            pending = newline = False
-            out.append(char)
+        pending = True
+        newline = newline or char == "\n"
         index += 1
     return "".join(out)
 

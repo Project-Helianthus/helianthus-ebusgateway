@@ -168,6 +168,26 @@ class ParserTests(MoveTestCase):
         errors = MOVE.check_manifest(manifest, self.root)
         self.assertIn("var:state must stay in shadow.go (init or call initializer)", errors)
 
+    def test_check_sees_a_predeclared_name_shadowed_by_a_later_grouped_spec(self):
+        self.package({"shadow.go": (
+            "package sample\n\nvar (\n\tmarker = 0\n\tint    = func() int64 { return 1 }\n)\n\n"
+            "var first, uint8 = 1, func() int { return 2 }\n\nvar state = int()\n")})
+        units = MOVE.parse_file(self.root / "pkg" / "shadow.go").units
+        self.assertEqual([MOVE.declared_names(u) for u in units],
+                         [["marker", "int"], ["first", "uint8"], ["state"]])
+        manifest = write_manifest(self.root, {"shadow.go": ["var:marker", "var:first"],
+                                              "moved.go": ["var:state"]},
+                                  source="shadow.go")
+        errors = MOVE.check_manifest(manifest, self.root)
+        self.assertIn("var:state must stay in shadow.go (init or call initializer)", errors)
+
+    def test_grouped_spec_names_skip_continued_and_nested_lines(self):
+        self.package({"group.go": (
+            "package sample\n\nvar (\n\ttotal = 1 +\n\t\tint64(2)\n\tpair = struct {\n"
+            "\t\tbyte int\n\t}{}\n)\n")})
+        units = MOVE.parse_file(self.root / "pkg" / "group.go").units
+        self.assertEqual(MOVE.declared_names(units[0]), ["total", "pair"])
+
 
 class ApplyTests(MoveTestCase):
     def apply(self, files):
@@ -318,6 +338,25 @@ class NewlineCompareTests(MoveTestCase):
         (package / "nl.go").write_text(body.replace("return\n\tg()", "return g()"),
                                        encoding="utf-8")
         self.assertEqual(len(MOVE.compare_dirs(before, package)), 2)
+
+    def test_compare_detects_a_statement_separating_newline_after_a_comment(self):
+        before = self.root / "before"
+        body = "package sample\n\nfunc f() (n int) {\n\treturn /* early */\n\tg()\n}\n"
+        package = self.package({"nl.go": body})
+        shutil.copytree(package, before)
+        (package / "nl.go").write_text(body.replace("/* early */\n\tg()", "/* early */ g()"),
+                                       encoding="utf-8")
+        self.assertEqual(len(MOVE.compare_dirs(before, package)), 2)
+
+    def test_normalize_treats_comments_as_go_does_for_semicolons(self):
+        self.assertNotEqual(MOVE.normalize("return /* a\nb */ g()"),
+                            MOVE.normalize("return /* a b */ g()"))
+        self.assertNotEqual(MOVE.normalize("return // c\ng()"), MOVE.normalize("return g()"))
+        self.assertNotEqual(MOVE.normalize("i++\ng()"), MOVE.normalize("i++ g()"))
+        self.assertEqual(MOVE.normalize("x := a + /* c */\n\tb"),
+                         MOVE.normalize("x := a + /* c */ b"))
+        self.assertEqual(MOVE.normalize("// one\n//  two\nfunc f() {}"),
+                         MOVE.normalize("// one\n// two\nfunc f() {}"))
 
 
 class ReportTests(MoveTestCase):

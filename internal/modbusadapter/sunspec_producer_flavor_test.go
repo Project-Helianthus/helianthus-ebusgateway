@@ -8,17 +8,18 @@ import (
 	"time"
 
 	sunspectest "github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter/testfixture"
-	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	"github.com/Project-Helianthus/helianthus-modbusreg/fronius"
+	"github.com/Project-Helianthus/helianthus-modbusreg/sunspec"
 )
 
 // froniusFlavorEvaluationIDs is the registry's flavor evaluation order.
 var froniusFlavorEvaluationIDs = []string{
-	modbusreg.SunSpecFroniusObservedFlavorID,
-	modbusreg.SunSpecFroniusObservedFlavorV11ID,
-	modbusreg.SunSpecFroniusObservedFlavorV12ID,
+	fronius.SunSpecFroniusObservedFlavorID,
+	fronius.SunSpecFroniusObservedFlavorV11ID,
+	fronius.SunSpecFroniusObservedFlavorV12ID,
 }
 
-func froniusFlavorEvaluations(reasons ...modbusreg.SunSpecFroniusFlavorReason) []SunSpecFlavorEvaluation {
+func froniusFlavorEvaluations(reasons ...fronius.SunSpecFroniusFlavorReason) []SunSpecFlavorEvaluation {
 	evaluations := make([]SunSpecFlavorEvaluation, len(reasons))
 	for index, reason := range reasons {
 		evaluations[index] = SunSpecFlavorEvaluation{FlavorID: froniusFlavorEvaluationIDs[index], Reason: reason}
@@ -52,20 +53,20 @@ func TestSunSpecProducerQualifiesFroniusCurrentFirmwareTupleThroughRegistry(t *t
 		t.Fatalf("Qualify(current firmware tuple): %v", err)
 	}
 	if result.Outcome != SunSpecQualificationGO || result.ObservationCount != 1 || result.SampleID == "" ||
-		result.CapabilityID != modbusreg.SunSpecThreePhaseMonitoringCapabilityID ||
-		result.CapabilityReason != modbusreg.SunSpecCapabilityReasonAdmitted ||
-		result.FlavorID != modbusreg.SunSpecFroniusObservedFlavorV12ID ||
-		result.FlavorReason != modbusreg.SunSpecFroniusFlavorReasonMatched {
+		result.CapabilityID != sunspec.ThreePhaseMonitoringCapabilityID ||
+		result.CapabilityReason != sunspec.CapabilityReasonAdmitted ||
+		result.FlavorID != fronius.SunSpecFroniusObservedFlavorV12ID ||
+		result.FlavorReason != fronius.SunSpecFroniusFlavorReasonMatched {
 		t.Fatalf("qualification result = %#v; want one GO observation on flavor 1.2.0", result)
 	}
 	if want := froniusFlavorEvaluations(
-		modbusreg.SunSpecFroniusFlavorReasonFirmwareMismatch,
-		modbusreg.SunSpecFroniusFlavorReasonFirmwareMismatch,
-		modbusreg.SunSpecFroniusFlavorReasonMatched,
+		fronius.SunSpecFroniusFlavorReasonFirmwareMismatch,
+		fronius.SunSpecFroniusFlavorReasonFirmwareMismatch,
+		fronius.SunSpecFroniusFlavorReasonMatched,
 	); !reflect.DeepEqual(result.FlavorEvaluations, want) {
 		t.Fatalf("flavor evaluations = %#v; want %#v", result.FlavorEvaluations, want)
 	}
-	if got := sunSpecWireKeys(result.Chain.Occurrences()); !reflect.DeepEqual(got, []modbusreg.SunSpecWireKey{
+	if got := sunSpecWireKeys(result.Chain.Occurrences()); !reflect.DeepEqual(got, []sunspec.WireKey{
 		{ModelID: 1, ModelLength: 65}, {ModelID: 113, ModelLength: 60},
 		{ModelID: 120, ModelLength: 26}, {ModelID: 121, ModelLength: 30},
 		{ModelID: 122, ModelLength: 44}, {ModelID: 123, ModelLength: 24},
@@ -77,40 +78,40 @@ func TestSunSpecProducerQualifiesFroniusCurrentFirmwareTupleThroughRegistry(t *t
 	// A terminal GO is publishable only with its registry-owned capture
 	// retained and serializable under the new flavor.
 	retained, encoded, ok := adapter.SunSpecQualificationObservation(result.CapabilityID, result.SampleID)
-	if !ok || retained.SampleID() != result.SampleID || retained.Flavor().FlavorID() != modbusreg.SunSpecFroniusObservedFlavorV12ID {
+	if !ok || retained.SampleID() != result.SampleID || retained.Flavor().FlavorID() != fronius.SunSpecFroniusObservedFlavorV12ID {
 		t.Fatalf("retained observation ok=%v flavor=%q; want sample %q on flavor 1.2.0", ok, retained.Flavor().FlavorID(), result.SampleID)
 	}
-	if !strings.Contains(string(encoded), `"flavor_id":"`+modbusreg.SunSpecFroniusObservedFlavorV12ID+`"`) {
+	if !strings.Contains(string(encoded), `"flavor_id":"`+fronius.SunSpecFroniusObservedFlavorV12ID+`"`) {
 		t.Fatal("retained serialized evidence does not carry flavor 1.2.0")
 	}
 }
 
 func TestSunSpecProducerReportsRegistryFlavorEvaluationsInRegistryOrder(t *testing.T) {
 	const (
-		firmwareMismatch = modbusreg.SunSpecFroniusFlavorReasonFirmwareMismatch
-		chainMismatch    = modbusreg.SunSpecFroniusFlavorReasonChainMismatch
-		matched          = modbusreg.SunSpecFroniusFlavorReasonMatched
+		firmwareMismatch = fronius.SunSpecFroniusFlavorReasonFirmwareMismatch
+		chainMismatch    = fronius.SunSpecFroniusFlavorReasonChainMismatch
+		matched          = fronius.SunSpecFroniusFlavorReasonMatched
 	)
 	for _, test := range []struct {
 		name            string
 		words           []uint16
 		wantOutcome     SunSpecQualificationOutcome
 		wantFlavorID    string
-		wantFlavor      modbusreg.SunSpecFroniusFlavorReason
+		wantFlavor      fronius.SunSpecFroniusFlavorReason
 		wantEvaluations []SunSpecFlavorEvaluation
 	}{
 		{
 			name:         "GO flavor 1.0.0",
 			words:        sunspectest.ObservedFroniusFloatWords(),
 			wantOutcome:  SunSpecQualificationGO,
-			wantFlavorID: modbusreg.SunSpecFroniusObservedFlavorID, wantFlavor: matched,
+			wantFlavorID: fronius.SunSpecFroniusObservedFlavorID, wantFlavor: matched,
 			wantEvaluations: froniusFlavorEvaluations(matched, chainMismatch, firmwareMismatch),
 		},
 		{
 			name:         "GO flavor 1.1.0",
 			words:        sunspectest.ObservedFroniusFloatControlsWords(),
 			wantOutcome:  SunSpecQualificationGO,
-			wantFlavorID: modbusreg.SunSpecFroniusObservedFlavorV11ID, wantFlavor: matched,
+			wantFlavorID: fronius.SunSpecFroniusObservedFlavorV11ID, wantFlavor: matched,
 			wantEvaluations: froniusFlavorEvaluations(chainMismatch, matched, firmwareMismatch),
 		},
 		{
@@ -149,7 +150,7 @@ func TestSunSpecProducerReportsRegistryFlavorEvaluationsInRegistryOrder(t *testi
 				t.Fatalf("Qualify: %v", err)
 			}
 			if result.Outcome != test.wantOutcome ||
-				result.CapabilityReason != modbusreg.SunSpecCapabilityReasonAdmitted ||
+				result.CapabilityReason != sunspec.CapabilityReasonAdmitted ||
 				result.FlavorID != test.wantFlavorID || result.FlavorReason != test.wantFlavor ||
 				!reflect.DeepEqual(result.FlavorEvaluations, test.wantEvaluations) {
 				t.Fatalf("result = %#v; want outcome=%s flavor=%q reason=%q evaluations=%#v",
@@ -171,7 +172,7 @@ func TestSunSpecProducerLeavesFlavorEvaluationsEmptyBeforeCapabilityAdmission(t 
 	if err != nil {
 		t.Fatalf("Qualify: %v", err)
 	}
-	if result.Outcome == SunSpecQualificationGO || result.CapabilityReason == modbusreg.SunSpecCapabilityReasonAdmitted ||
+	if result.Outcome == SunSpecQualificationGO || result.CapabilityReason == sunspec.CapabilityReasonAdmitted ||
 		len(result.FlavorEvaluations) != 0 || result.FlavorID != "" {
 		t.Fatalf("result = %#v; want a refused capability without flavor evaluations", result)
 	}

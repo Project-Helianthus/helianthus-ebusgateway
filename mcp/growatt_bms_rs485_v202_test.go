@@ -8,6 +8,7 @@ import (
 
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	"github.com/Project-Helianthus/helianthus-modbusreg/growatt"
 )
 
 type growattBMSRS485V202Fixture struct{ *modbusV1FixtureProvider }
@@ -93,7 +94,7 @@ func TestGrowattBMSRS485V202ToolFailsClosedWithoutObservationReceipt(t *testing.
 
 type growattBMSRS485V202ResultFixture struct {
 	*modbusV1FixtureProvider
-	status modbusreg.GrowattBMSTypedReadOnlyStatus
+	status growatt.BMSTypedReadOnlyStatus
 }
 
 type growattBMSRS485V202NoReceiptFixture struct{ *modbusV1FixtureProvider }
@@ -106,8 +107,8 @@ func (f growattBMSRS485V202ResultFixture) GrowattBMSRS485V202(context.Context) (
 	return GrowattBMSRS485V202Observation{Status: f.status, ReceiptWall: time.Unix(1_800_000_000, 123).UTC()}, nil
 }
 
-func growattBMSRS485V202FixtureStatus() modbusreg.GrowattBMSTypedReadOnlyStatus {
-	status, err := modbusreg.DecodeGrowattBMSTypedReadOnlyStatus(modbusreg.GrowattBMSReadOnlyInput{UnitID: 7, Function: modbusreg.FunctionReadHoldingRegisters, Revision: modbusreg.GrowattBMSRevisionTuple{Family: "1xSxxP ESS", FileRevision: "Rev2.01", HeaderVersion: "V2.0", CumulativeRevision: "2.02"}, Slices: []modbusreg.GrowattBMSReadOnlySlice{{Offset: 1, Words: []uint16{0x0102, 0x0304, 0, 0, 0, 0, 0}}, {Offset: 13, Words: []uint16{0x0204, 0x0301, 0, 0, 0, 0, 2, 0, 75, 5200, 0xff9c, 25, 0, 3200, 5000, 0, 0, 110, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}}, {Offset: 256, Words: []uint16{100, 123, 3300, 0, 512, 5, 6, 0, 0, 0, 0, 0}}, {Offset: 269, Words: []uint16{0, 0}}}})
+func growattBMSRS485V202FixtureStatus() growatt.BMSTypedReadOnlyStatus {
+	status, err := growatt.DecodeGrowattBMSTypedReadOnlyStatus(growatt.BMSReadOnlyInput{UnitID: 7, Function: modbusreg.FunctionReadHoldingRegisters, Revision: growatt.BMSRevisionTuple{Family: "1xSxxP ESS", FileRevision: "Rev2.01", HeaderVersion: "V2.0", CumulativeRevision: "2.02"}, Slices: []growatt.BMSReadOnlySlice{{Offset: 1, Words: []uint16{0x0102, 0x0304, 0, 0, 0, 0, 0}}, {Offset: 13, Words: []uint16{0x0204, 0x0301, 0, 0, 0, 0, 2, 0, 75, 5200, 0xff9c, 25, 0, 3200, 5000, 0, 0, 110, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}}, {Offset: 256, Words: []uint16{100, 123, 3300, 0, 512, 5, 6, 0, 0, 0, 0, 0}}, {Offset: 269, Words: []uint16{0, 0}}}})
 	if err != nil {
 		panic(err)
 	}

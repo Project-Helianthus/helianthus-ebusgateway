@@ -23,7 +23,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/m2mgraphql"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
-	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	"github.com/Project-Helianthus/helianthus-modbusreg/tesla"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 )
 
@@ -418,7 +418,7 @@ func TestTeslaHSCRetainedOwnerDelayedReadbackIsImmediatelyExpiredAndRejectsRegre
 	owner, anchor, provisional := startTeslaDelayedReadbackFixture(t, 70*time.Second)
 	evidence := owner.RetainedEvidence()
 	if len(evidence) != 3 || evidence[0].CorrelationID != 1 || evidence[1].CorrelationID != 2 || evidence[2].CorrelationID != 3 ||
-		evidence[1].Operation != modbusreg.TeslaFC100OperationWCSetProvisional || evidence[2].Operation != modbusreg.TeslaFC100OperationWCGetProvisional ||
+		evidence[1].Operation != tesla.FC100OperationWCSetProvisional || evidence[2].Operation != tesla.FC100OperationWCGetProvisional ||
 		!evidence[1].ReceiptWall.Equal(provisional.Set.ReceiptWall) || evidence[1].ReceiptMonotonic != 10*time.Second {
 		t.Fatalf("exact retained correlation = %#v", evidence)
 	}
@@ -786,7 +786,7 @@ func teslaRetainedConfig() ebusgateway.TeslaGen3HSCRetainedConfig {
 	return ebusgateway.TeslaGen3HSCRetainedConfig{
 		Enabled: true, EndpointID: "tesla-hsc-public-a", AssetID: "asset:tesla-wc3-a", SourceID: "source:tesla-wc3-a",
 		SourceEpoch: "epoch:tesla-wc3-a", ClockEpoch: "clock:tesla-wc3-a", EVSEID: "evse-a", ConnectorID: "connector-a",
-		Profile: modbusreg.TeslaGen3CurrentLimitOperationVersion24443, DriverGeneration: 7, Node: 0x10,
+		Profile: tesla.Gen3CurrentLimitOperationVersion24443, DriverGeneration: 7, Node: 0x10,
 	}
 }
 
@@ -929,7 +929,7 @@ func teslaOwnerCandidate(t *testing.T, current mcp.SemanticEVSECurrent, factID s
 func teslaPersistentOutcome(t *testing.T, correlation uint64, amps uint32) TeslaGen3PersistentOutcome {
 	t.Helper()
 	body := []byte{0x0a, 0x02, 0x08, byte(amps)}
-	return TeslaGen3PersistentOutcome{MaxOutputCurrentAmps: amps, Exchange: teslaExchange(t, modbusreg.TeslaFC100OperationWCConfigureSettings, body, body, correlation)}
+	return TeslaGen3PersistentOutcome{MaxOutputCurrentAmps: amps, Exchange: teslaExchange(t, tesla.FC100OperationWCConfigureSettings, body, body, correlation)}
 }
 
 func teslaProvisionalOutcome(t *testing.T, correlation uint64, amps, timeout uint32, inhibit bool, configured uint32) TeslaGen3ProvisionalOutcome {
@@ -945,14 +945,14 @@ func teslaProvisionalOutcome(t *testing.T, correlation uint64, amps, timeout uin
 	readbackBody := append(append([]byte(nil), setBody...), 0x10, byte(configured))
 	return TeslaGen3ProvisionalOutcome{
 		LimitCurrentMaxAmps: amps, LimitTimeoutSeconds: timeout, InhibitCharging: inhibit,
-		Set:      teslaExchange(t, modbusreg.TeslaFC100OperationWCSetProvisional, setBody, nil, correlation),
-		Readback: teslaExchange(t, modbusreg.TeslaFC100OperationWCGetProvisional, nil, readbackBody, correlation+1),
+		Set:      teslaExchange(t, tesla.FC100OperationWCSetProvisional, setBody, nil, correlation),
+		Readback: teslaExchange(t, tesla.FC100OperationWCGetProvisional, nil, readbackBody, correlation+1),
 	}
 }
 
-func teslaExchange(t *testing.T, operation modbusreg.TeslaFC100Operation, requestBody, responseBody []byte, correlation uint64) TeslaGen3CompletedExchange {
+func teslaExchange(t *testing.T, operation tesla.FC100Operation, requestBody, responseBody []byte, correlation uint64) TeslaGen3CompletedExchange {
 	t.Helper()
-	request, err := modbusreg.BuildTeslaFC100OperationRequest(modbusreg.TeslaGen3CurrentLimitOperationVersion24443, operation, requestBody)
+	request, err := tesla.BuildTeslaFC100OperationRequest(tesla.Gen3CurrentLimitOperationVersion24443, operation, requestBody)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -972,18 +972,18 @@ func teslaExchange(t *testing.T, operation modbusreg.TeslaFC100Operation, reques
 	now := time.Unix(1_700_000_000+int64(correlation), 123).UTC()
 	return TeslaGen3CompletedExchange{
 		EndpointID: "tesla-hsc-public-a", SourceID: "source:tesla-wc3-a", SourceEpoch: "epoch:tesla-wc3-a",
-		DriverGeneration: 7, Node: 0x10, OperationVersion: modbusreg.TeslaGen3CurrentLimitOperationVersion24443,
+		DriverGeneration: 7, Node: 0x10, OperationVersion: tesla.Gen3CurrentLimitOperationVersion24443,
 		Operation: operation, CorrelationID: correlation, RequestPayload: request.Payload(), RequestADU: requestADU,
 		ResponseFrames: []TeslaGen3CompletedFrame{{Payload: responsePayload, ADU: responseADU}},
 		ReceiptWall:    now, ReceiptMonotonic: time.Duration(correlation) * time.Second, TerminalOutcome: "success",
 	}
 }
 
-func teslaTestTerminal(operation modbusreg.TeslaFC100Operation, body []byte) []byte {
-	tags := map[modbusreg.TeslaFC100Operation]byte{
-		modbusreg.TeslaFC100OperationWCConfigureSettings: 8,
-		modbusreg.TeslaFC100OperationWCSetProvisional:    26,
-		modbusreg.TeslaFC100OperationWCGetProvisional:    28,
+func teslaTestTerminal(operation tesla.FC100Operation, body []byte) []byte {
+	tags := map[tesla.FC100Operation]byte{
+		tesla.FC100OperationWCConfigureSettings: 8,
+		tesla.FC100OperationWCSetProvisional:    26,
+		tesla.FC100OperationWCGetProvisional:    28,
 	}
 	inner := append(encodeTeslaTestVarint(uint32(tags[operation])<<3|2), encodeTeslaTestVarint(uint32(len(body)))...)
 	inner = append(inner, body...)

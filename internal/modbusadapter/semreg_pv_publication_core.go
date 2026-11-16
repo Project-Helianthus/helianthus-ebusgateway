@@ -16,6 +16,8 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semselect"
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	"github.com/Project-Helianthus/helianthus-modbusreg/fronius"
+	"github.com/Project-Helianthus/helianthus-modbusreg/sunspec"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 	pvpack "github.com/Project-Helianthus/helianthus-semreg/semreg/v1/packs/pv"
 	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/projection"
@@ -223,7 +225,7 @@ var pvPublicationMappings = []pvMappingSpec{
 	{"inverter.events.2", "", "", "", "", "", projection.ProjectionWithheld, projection.LossProvenance, "provenance: event word has no accepted semantic mapping"},
 }
 
-func buildPVPublicationDraft(observation modbusreg.SunSpecQualificationObservation, lifecycle pvPublicationLifecycle) (pvPublicationDraft, error) {
+func buildPVPublicationDraft(observation fronius.SunSpecQualificationObservation, lifecycle pvPublicationLifecycle) (pvPublicationDraft, error) {
 	if err := lifecycle.validate(); err != nil {
 		return pvPublicationDraft{}, err
 	}
@@ -232,7 +234,7 @@ func buildPVPublicationDraft(observation modbusreg.SunSpecQualificationObservati
 		return pvPublicationDraft{}, fmt.Errorf("validate qualified SunSpec observation: %w", err)
 	}
 	capability := observation.Capability()
-	if !capability.Admitted() || capability.Reason() != modbusreg.SunSpecCapabilityReasonAdmitted || capability.ProfileID() != modbusreg.SunSpecThreePhaseMonitoringCapabilityID {
+	if !capability.Admitted() || capability.Reason() != sunspec.CapabilityReasonAdmitted || capability.ProfileID() != sunspec.ThreePhaseMonitoringCapabilityID {
 		return pvPublicationDraft{}, errors.New("PV source capability is not admitted")
 	}
 	identity, nativeResource, err := resolvePVPublicationIdentity(observation)
@@ -258,7 +260,7 @@ func buildPVPublicationDraft(observation modbusreg.SunSpecQualificationObservati
 		manifest:  projection.ProjectionManifest{TargetID: "target:gateway-semantic-pv", TargetVersion: "1.0.0", KernelVersion: semreg.ContractKernelV1, PackVersions: []semreg.PackRef{{ID: pvPackID, Version: pvPackVersion}}, MappingRevision: pvMappingRevision},
 		requested: []projection.RequestedItem{}, dispositions: []projection.ProjectionDisposition{},
 	}
-	facts := make(map[string]modbusreg.SunSpecCapabilityFact, len(capability.Facts()))
+	facts := make(map[string]sunspec.CapabilityFact, len(capability.Facts()))
 	for _, fact := range capability.Facts() {
 		if _, duplicate := facts[fact.FieldID()]; duplicate {
 			return pvPublicationDraft{}, fmt.Errorf("duplicate PV native fact %s", fact.FieldID())
@@ -324,8 +326,8 @@ func buildPVPublicationDraft(observation modbusreg.SunSpecQualificationObservati
 	return draft, nil
 }
 
-func resolvePVPublicationIdentity(observation modbusreg.SunSpecQualificationObservation) ([]byte, []byte, error) {
-	decoder, err := modbusreg.NewStandardSunSpecDecoderRegistry(modbusreg.SunSpecModelsRevisionV1)
+func resolvePVPublicationIdentity(observation fronius.SunSpecQualificationObservation) ([]byte, []byte, error) {
+	decoder, err := sunspec.NewStandardSunSpecDecoderRegistry(sunspec.ModelsRevisionV1)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -378,7 +380,7 @@ func resolvePVPublicationIdentity(observation modbusreg.SunSpecQualificationObse
 	return identityBytes, nativeBytes, nil
 }
 
-func pvPublicationCandidate(native modbusreg.SunSpecCapabilityFact, mapping pvMappingSpec, draft pvPublicationDraft, observationEvidence semreg.EvidenceRef) (semreg.FactCandidate, error) {
+func pvPublicationCandidate(native sunspec.CapabilityFact, mapping pvMappingSpec, draft pvPublicationDraft, observationEvidence semreg.EvidenceRef) (semreg.FactCandidate, error) {
 	dimension := pvDimensionValue(mapping, draft.assetID)
 	key := semreg.FactKey{PackID: pvPackID, PackVersion: pvPackVersion, FactID: mapping.factID, Dimensions: []semreg.Dimension{{ID: mapping.dimensionID, Value: semreg.Value{Kind: semreg.ValueText, Text: &dimension}}}}
 	var value semreg.Value

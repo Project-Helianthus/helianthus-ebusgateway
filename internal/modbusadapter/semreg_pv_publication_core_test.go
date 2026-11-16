@@ -22,6 +22,8 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	"github.com/Project-Helianthus/helianthus-modbusreg/fronius"
+	"github.com/Project-Helianthus/helianthus-modbusreg/sunspec"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 	pvpack "github.com/Project-Helianthus/helianthus-semreg/semreg/v1/packs/pv"
 	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/projection"
@@ -940,30 +942,30 @@ func pvCoreMonotonic(nanoseconds uint64) semreg.MonotonicPoint {
 	return semreg.MonotonicPoint{ClockEpochID: "clock-epoch:pv-core-test", Nanoseconds: semreg.Uint64(strconv.FormatUint(nanoseconds, 10))}
 }
 
-func pvCoreObservation(t *testing.T, words []uint16, pollGeneration, deadlineIdentity uint64) modbusreg.SunSpecQualificationObservation {
+func pvCoreObservation(t *testing.T, words []uint16, pollGeneration, deadlineIdentity uint64) fronius.SunSpecQualificationObservation {
 	t.Helper()
 	return pvCoreScopedObservation(t, words, pollGeneration, deadlineIdentity, "fixture:pv-publication-core")
 }
 
 // pvCoreScopedObservation replays words under one authorization scope; a
 // different scope is a different native resource tuple and PV source.
-func pvCoreScopedObservation(t *testing.T, words []uint16, pollGeneration, deadlineIdentity uint64, scope string) modbusreg.SunSpecQualificationObservation {
+func pvCoreScopedObservation(t *testing.T, words []uint16, pollGeneration, deadlineIdentity uint64, scope string) fronius.SunSpecQualificationObservation {
 	t.Helper()
-	registry, err := modbusreg.NewStandardSunSpecDecoderRegistry(modbusreg.SunSpecModelsRevisionV1)
+	registry, err := sunspec.NewStandardSunSpecDecoderRegistry(sunspec.ModelsRevisionV1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan, err := modbusreg.NewSunSpecChainPlan(modbusreg.SunSpecChainPlanSpec{
-		SchemaRevision: modbusreg.SunSpecModelsRevisionV1,
+	plan, err := sunspec.NewChainPlan(sunspec.ChainPlanSpec{
+		SchemaRevision: sunspec.ModelsRevisionV1,
 		BaseCandidates: []uint16{sunSpecBaseAddress},
-		Limits:         modbusreg.SunSpecChainLimits{MaxTotalWords: sunSpecMaxTotalWords, MaxOccurrences: sunSpecMaxOccurrences},
+		Limits:         sunspec.ChainLimits{MaxTotalWords: sunSpecMaxTotalWords, MaxOccurrences: sunSpecMaxOccurrences},
 		DecoderKeys:    registry.DecoderKeys(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	chain, offset := modbusreg.NewSunSpecChain(plan), 0
-	var completed modbusreg.SunSpecChainSnapshot
+	chain, offset := sunspec.NewChain(plan), 0
+	var completed sunspec.ChainSnapshot
 	for id := uint64(1); ; id++ {
 		requests := chain.NextRequests()
 		if len(requests) != 1 {
@@ -995,7 +997,7 @@ func pvCoreScopedObservation(t *testing.T, words []uint16, pollGeneration, deadl
 			break
 		}
 	}
-	observation, err := modbusreg.NewSunSpecQualificationObservation(registry, completed)
+	observation, err := fronius.NewSunSpecQualificationObservation(registry, completed)
 	if err != nil {
 		t.Fatal(err)
 	}

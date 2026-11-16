@@ -14,13 +14,13 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal/contributionv1"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
-	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	"github.com/Project-Helianthus/helianthus-modbusreg/growatt"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 )
 
 const growattBMSRS485ClockEpoch = "system-monotonic-v1"
 
-var growattBMSRS485Revision = modbusreg.GrowattBMSRevisionTuple{
+var growattBMSRS485Revision = growatt.BMSRevisionTuple{
 	Family: "1xSxxP ESS", FileRevision: "Rev2.01", HeaderVersion: "V2.0", CumulativeRevision: "2.02",
 }
 

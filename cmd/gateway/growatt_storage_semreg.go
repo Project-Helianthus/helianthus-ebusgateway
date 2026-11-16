@@ -20,7 +20,7 @@ import (
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
-	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	"github.com/Project-Helianthus/helianthus-modbusreg/growatt"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 	storage "github.com/Project-Helianthus/helianthus-semreg/semreg/v1/packs/storage"
 	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/projection"
@@ -88,7 +88,7 @@ func (p *growattStoragePublication) onControl(semhub.ControlEvent) error {
 // Publish commits one sealed source-bound batch only after all field and
 // evidence checks have completed. Any error occurs before the live kernel is
 // replaced, preserving the last known good public projection.
-func (p *growattStoragePublication) Publish(status modbusreg.GrowattBMSTypedReadOnlyStatus, evidence GrowattBMSRS485ObservationEvidence) (any, error) {
+func (p *growattStoragePublication) Publish(status growatt.BMSTypedReadOnlyStatus, evidence GrowattBMSRS485ObservationEvidence) (any, error) {
 	if p == nil || p.hub == nil || p.handle == nil {
 		return nil, errors.New("growatt BMS storage publication unavailable")
 	}
@@ -217,7 +217,7 @@ func (p *growattStoragePublication) currentAtWithElapsed(asset string, at time.T
 	return current, current.Projection.SnapshotID == current.Snapshot.SnapshotID
 }
 
-func validateGrowattStorageInput(status modbusreg.GrowattBMSTypedReadOnlyStatus, evidence GrowattBMSRS485ObservationEvidence, asset semreg.AssetID, source semreg.SourceID) error {
+func validateGrowattStorageInput(status growatt.BMSTypedReadOnlyStatus, evidence GrowattBMSRS485ObservationEvidence, asset semreg.AssetID, source semreg.SourceID) error {
 	// Precedence deliberately matches the accepted public mapping gate.
 	if evidence.ObservationID == "" || evidence.ReceiptWall.IsZero() || len(evidence.Slices) != 4 {
 		return errors.New("native_evidence_missing")
@@ -262,7 +262,7 @@ func growattStorageServiceID(asset semreg.AssetID, binding semreg.NativeBindingI
 	return semreg.ServiceInstanceID("service:semantic-storage:" + growattStorageHash(string(asset), string(binding), "pack")[:32])
 }
 
-func growattStorageBatch(inc semhub.Incarnation, status modbusreg.GrowattBMSTypedReadOnlyStatus, evidence GrowattBMSRS485ObservationEvidence, sequence semreg.Uint64, current semreg.Snapshot, exists bool, retirements []semreg.SourceEpochID) (semreg.PublicationBatch, projection.ProjectionManifest, []projection.RequestedItem, []projection.ProjectionDisposition, error) {
+func growattStorageBatch(inc semhub.Incarnation, status growatt.BMSTypedReadOnlyStatus, evidence GrowattBMSRS485ObservationEvidence, sequence semreg.Uint64, current semreg.Snapshot, exists bool, retirements []semreg.SourceEpochID) (semreg.PublicationBatch, projection.ProjectionManifest, []projection.RequestedItem, []projection.ProjectionDisposition, error) {
 	asset, source := inc.Asset, inc.Source
 	minter, err := semhub.NewLegacyMinter(semhub.LegacyGrowattStorage)
 	if err != nil {
@@ -333,7 +333,7 @@ func growattStorageBatch(inc semhub.Incarnation, status modbusreg.GrowattBMSType
 		batch.IdentityLinkUpserts = []semreg.IdentityLink{}
 		batch.ServiceUpserts = []semreg.ServiceInstance{}
 	}
-	if status.OperatingState == modbusreg.GrowattBMSStateSoftStarting && exists {
+	if status.OperatingState == growatt.BMSStateSoftStarting && exists {
 		for _, envelope := range current.Facts {
 			if envelope.Key.FactID != "storage.status.operating" {
 				continue
@@ -410,7 +410,7 @@ type growattStorageDisposition struct {
 	candidate []semreg.FactCandidate
 }
 
-func growattStorageDispositions(status modbusreg.GrowattBMSTypedReadOnlyStatus, asset semreg.AssetID, binding semreg.NativeBindingID, source semreg.SourceID, epoch semreg.SourceEpochID, generation semreg.Uint64, ev semreg.EvidenceRef, wall semreg.TimePoint, mono semreg.MonotonicPoint) ([]projection.RequestedItem, []growattStorageDisposition) {
+func growattStorageDispositions(status growatt.BMSTypedReadOnlyStatus, asset semreg.AssetID, binding semreg.NativeBindingID, source semreg.SourceID, epoch semreg.SourceEpochID, generation semreg.Uint64, ev semreg.EvidenceRef, wall semreg.TimePoint, mono semreg.MonotonicPoint) ([]projection.RequestedItem, []growattStorageDisposition) {
 	type field struct {
 		id          semreg.DefinitionID
 		nativeID    semreg.DefinitionID
@@ -436,12 +436,12 @@ func growattStorageDispositions(status modbusreg.GrowattBMSTypedReadOnlyStatus, 
 		out = append(out, growattStorageDisposition{item: projection.ProjectionDisposition{Kind: projection.ItemFact, ItemID: f.id, Outcome: f.outcome, SourceKeys: []semreg.FactKey{candidate.Key}, Loss: growattStorageLoss(f.loss, f.nativeID, f.description)}, candidate: []semreg.FactCandidate{candidate}})
 	}
 	requested = append(requested, projection.RequestedItem{Kind: projection.ItemFact, ItemID: "storage.status.operating"})
-	if status.OperatingState == modbusreg.GrowattBMSStateSoftStarting {
+	if status.OperatingState == growatt.BMSStateSoftStarting {
 		reason := semreg.DefinitionID("unsupported_or_withheld")
 		out = append(out, growattStorageDisposition{item: projection.ProjectionDisposition{Kind: projection.ItemFact, ItemID: "storage.status.operating", Outcome: projection.ProjectionWithheld, Reason: &reason, SourceKeys: []semreg.FactKey{}, Loss: []projection.LossDetail{{Kind: projection.LossSymbol, SourceItems: []semreg.DefinitionID{"native.growatt.bms.rs485.v202.operating_state"}, Description: "soft_starting is withheld"}}}})
 	} else {
 		token := "active"
-		if status.OperatingState == modbusreg.GrowattBMSStateStandby {
+		if status.OperatingState == growatt.BMSStateStandby {
 			token = "standby"
 		}
 		candidate := growattStorageSymbolCandidate(asset, binding, source, epoch, generation, ev, wall, mono, "storage.status.operating", token)

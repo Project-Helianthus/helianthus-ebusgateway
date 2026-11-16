@@ -26,7 +26,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal/contributionv1"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
-	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	"github.com/Project-Helianthus/helianthus-modbusreg/huawei"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 )
 
@@ -103,7 +103,7 @@ func h11CrossLoopback(t *testing.T, responder *h11CrossResponder) string {
 
 // h11CrossCycle runs the real registry provider of the declared family once
 // against the other family's fixture.
-func h11CrossCycle(t *testing.T, declared modbusTCPFamily, faced h10Replay, units []byte, label string) (modbusreg.HuaweiProviderCycle, error) {
+func h11CrossCycle(t *testing.T, declared modbusTCPFamily, faced h10Replay, units []byte, label string) (huawei.ProviderCycle, error) {
 	t.Helper()
 	responder := h11NewCrossResponder(faced)
 	clock := &h10Clock{now: time.Now().Add(time.Second)}
@@ -130,7 +130,7 @@ func h11CrossCycle(t *testing.T, declared modbusTCPFamily, faced h10Replay, unit
 	if err != nil {
 		t.Fatal(err)
 	}
-	provider, err := newHuaweiRegistryProvider(declared, modbusreg.HuaweiProviderConfig{Source: label, AllowedUnits: units, Clock: clock.Now, Wait: clock.Wait})
+	provider, err := newHuaweiRegistryProvider(declared, huawei.ProviderConfig{Source: label, AllowedUnits: units, Clock: clock.Now, Wait: clock.Wait})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,10 +144,10 @@ func h11CrossCycle(t *testing.T, declared modbusTCPFamily, faced h10Replay, unit
 }
 
 // h11Assets lists the PV assets a published cycle owns: one per admitted child.
-func h11Assets(label string, cycle modbusreg.HuaweiProviderCycle) []string {
+func h11Assets(label string, cycle huawei.ProviderCycle) []string {
 	var out []string
 	for _, child := range cycle.Children {
-		if child.Evidence != modbusreg.HuaweiProviderEvidenceWithheld {
+		if child.Evidence != huawei.ProviderEvidenceWithheld {
 			out = append(out, string(huaweiAssetID(label, "pv", child.UnitID)))
 		}
 	}
@@ -181,8 +181,8 @@ func h11AssertNoStorageOrMeter(t *testing.T, hub *semhub.Hub) {
 	}
 }
 
-func h11LossKinds(cycle modbusreg.HuaweiProviderCycle) map[modbusreg.HuaweiProviderLossKind]bool {
-	out := map[modbusreg.HuaweiProviderLossKind]bool{}
+func h11LossKinds(cycle huawei.ProviderCycle) map[huawei.ProviderLossKind]bool {
+	out := map[huawei.ProviderLossKind]bool{}
 	for _, loss := range cycle.Loss {
 		out[loss.Kind] = true
 	}
@@ -210,7 +210,7 @@ func TestH11StorageAndMeterStayWithheldUnknownNeverZero(t *testing.T) {
 			}
 			admitted := 0
 			for _, child := range cycle.Children {
-				if child.Evidence == modbusreg.HuaweiProviderEvidenceWithheld {
+				if child.Evidence == huawei.ProviderEvidenceWithheld {
 					continue
 				}
 				admitted++
@@ -224,7 +224,7 @@ func TestH11StorageAndMeterStayWithheldUnknownNeverZero(t *testing.T) {
 			loss := h11LossKinds(cycle)
 			// The absent battery group and the withheld capacity are an explicit
 			// native loss; every meter value is an explicit native loss.
-			if !loss[modbusreg.HuaweiProviderLossBattery] || !loss[modbusreg.HuaweiProviderLossMeter] {
+			if !loss[huawei.ProviderLossBattery] || !loss[huawei.ProviderLossMeter] {
 				t.Fatalf("losses = %v, want explicit battery and meter losses", loss)
 			}
 			h11AssertNoStorageOrMeter(t, hub)
@@ -415,12 +415,12 @@ func TestH11PortalContributionWithdrawnBeforePublicationScopeCloses(t *testing.T
 }
 
 // h11Provider serves one recorded registry cycle to the managed lifecycle.
-func h11InstallProviders(t *testing.T, cycles map[string]modbusreg.HuaweiProviderCycle) *atomic.Int32 {
+func h11InstallProviders(t *testing.T, cycles map[string]huawei.ProviderCycle) *atomic.Int32 {
 	t.Helper()
 	var built atomic.Int32
 	original := newHuaweiRegistryProviderFn
 	t.Cleanup(func() { newHuaweiRegistryProviderFn = original })
-	newHuaweiRegistryProviderFn = func(family modbusTCPFamily, config modbusreg.HuaweiProviderConfig) (huaweiRegistryProvider, error) {
+	newHuaweiRegistryProviderFn = func(family modbusTCPFamily, config huawei.ProviderConfig) (huaweiRegistryProvider, error) {
 		cycle, ok := cycles[config.Source]
 		if !ok {
 			return nil, errors.New("no synthetic cycle for instance")
@@ -451,12 +451,12 @@ func TestH11ComposedHuaweiPathOffline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name, cycle := range map[string]modbusreg.HuaweiProviderCycle{"delta": deltaCycle, "epsilon": epsilonCycle} {
-		if cycle.Gateway.State == modbusreg.HuaweiProviderGatewayIdentified || len(cycle.Children) != 0 {
+	for name, cycle := range map[string]huawei.ProviderCycle{"delta": deltaCycle, "epsilon": epsilonCycle} {
+		if cycle.Gateway.State == huawei.ProviderGatewayIdentified || len(cycle.Children) != 0 {
 			t.Fatalf("%s: a foreign family fixture was identified: %+v", name, cycle.Gateway)
 		}
 	}
-	built := h11InstallProviders(t, map[string]modbusreg.HuaweiProviderCycle{"alpha": alphaCycle, "beta": betaCycle, "delta": deltaCycle, "epsilon": epsilonCycle})
+	built := h11InstallProviders(t, map[string]huawei.ProviderCycle{"alpha": alphaCycle, "beta": betaCycle, "delta": deltaCycle, "epsilon": epsilonCycle})
 	h08InstallTransport(t)
 	h08FakeSiblings(t)
 	cfg := ebusgateway.DefaultConfig()
@@ -506,7 +506,7 @@ func TestH11ComposedHuaweiPathOffline(t *testing.T) {
 	m03Eventually(t, "every running instance published its first cycle", func() bool {
 		for label, assets := range want {
 			got, err := status(label)
-			if err != nil || got.Disposition == string(modbusreg.HuaweiProviderCycleIncomplete) || !reflect.DeepEqual(got.PublishedAssetIDs, append([]string{}, assets...)) {
+			if err != nil || got.Disposition == string(huawei.ProviderCycleIncomplete) || !reflect.DeepEqual(got.PublishedAssetIDs, append([]string{}, assets...)) {
 				return false
 			}
 		}
@@ -534,18 +534,18 @@ func TestH11ComposedHuaweiPathOffline(t *testing.T) {
 			t.Fatalf("%s promoted authority", label)
 		}
 		if label == "delta" || label == "epsilon" {
-			if got.Qualified || got.Disposition != string(modbusreg.HuaweiProviderCycleInsufficient) || len(got.Children) != 0 {
+			if got.Qualified || got.Disposition != string(huawei.ProviderCycleInsufficient) || len(got.Children) != 0 {
 				t.Fatalf("%s facing a foreign family = %+v", label, got)
 			}
 			continue
 		}
-		if !got.Qualified || !slices.Contains(got.Loss, string(modbusreg.HuaweiProviderLossBattery)) || !slices.Contains(got.Loss, string(modbusreg.HuaweiProviderLossMeter)) {
+		if !got.Qualified || !slices.Contains(got.Loss, string(huawei.ProviderLossBattery)) || !slices.Contains(got.Loss, string(huawei.ProviderLossMeter)) {
 			t.Fatalf("%s status = %+v", label, got)
 		}
 		for _, child := range got.Children {
 			// A routed child either publishes its class and asset, or is
 			// withheld with a reason and no asset.
-			withheld := child.Evidence == string(modbusreg.HuaweiProviderEvidenceWithheld)
+			withheld := child.Evidence == string(huawei.ProviderEvidenceWithheld)
 			if child.Evidence == "" || withheld && (child.Reason == "" || child.AssetID != "") || !withheld && (child.Family == "" || child.AssetID == "") {
 				t.Fatalf("%s child routing = %+v", label, child)
 			}

@@ -21,7 +21,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semanticview"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
-	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	"github.com/Project-Helianthus/helianthus-modbusreg/huawei"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 )
 
@@ -227,7 +227,7 @@ func h10Native(t *testing.T, fixture h10Replay) (huaweiRegistryProvider, *modbus
 	if fixture.Family == "S-Dongle" {
 		family = modbusTCPFamilyHuaweiSDongle
 	}
-	provider, err := newHuaweiRegistryProvider(family, modbusreg.HuaweiProviderConfig{Source: "alpha", AllowedUnits: fixture.AllowedUnits, Clock: clock.Now, Wait: clock.Wait})
+	provider, err := newHuaweiRegistryProvider(family, huawei.ProviderConfig{Source: "alpha", AllowedUnits: fixture.AllowedUnits, Clock: clock.Now, Wait: clock.Wait})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +237,7 @@ func h10Native(t *testing.T, fixture h10Replay) (huaweiRegistryProvider, *modbus
 	t.Cleanup(func() { _ = provider.Close() })
 	return provider, adapter, conn, clock
 }
-func h10Refresh(t *testing.T, provider huaweiRegistryProvider, clock *h10Clock) modbusreg.HuaweiProviderCycle {
+func h10Refresh(t *testing.T, provider huaweiRegistryProvider, clock *h10Clock) huawei.ProviderCycle {
 	t.Helper()
 	if next := provider.NextRefreshAt(); next.After(clock.Now()) {
 		_ = clock.Wait(context.Background(), next.Sub(clock.Now()))
@@ -262,7 +262,7 @@ func TestH10TCPProviderPVSnapshotParity(t *testing.T) {
 				t.Fatal(err)
 			}
 			cycle := h10Refresh(t, provider, clock)
-			if cycle.Outcome != modbusreg.HuaweiProviderCycleComplete {
+			if cycle.Outcome != huawei.ProviderCycleComplete {
 				t.Fatalf("identity: %+v", cycle)
 			}
 			if err := publication.Publish(cycle); err != nil {
@@ -323,7 +323,7 @@ func TestH10TCPProviderPVSnapshotParity(t *testing.T) {
 					view, _ := hub.Inspect(asset)
 					for _, env := range view.Snapshot.Facts {
 						for _, fact := range env.Candidates {
-							if child.Evidence == modbusreg.HuaweiProviderEvidenceStale {
+							if child.Evidence == huawei.ProviderEvidenceStale {
 								stale = stale || fact.Quality.Freshness == semreg.FreshnessStale
 								if fact.Times.ReceivedAt != baselineReceipts[fact.CandidateID] {
 									t.Fatal("retained child fact received a new receipt time")
@@ -362,7 +362,7 @@ func TestH10TCPProviderPVSnapshotParity(t *testing.T) {
 					t.Fatalf("unreplayed PDUs without bounded failed attempts: %d", len(remaining))
 				}
 				for i, exchange := range last.Exchanges[len(last.Exchanges)-4:] {
-					if exchange.Attempt != i+1 || exchange.UnitID != remaining[0].Unit || exchange.Outcome == modbusreg.HuaweiProviderExchangeAnswered || exchange.Outcome == modbusreg.HuaweiProviderExchangeException {
+					if exchange.Attempt != i+1 || exchange.UnitID != remaining[0].Unit || exchange.Outcome == huawei.ProviderExchangeAnswered || exchange.Outcome == huawei.ProviderExchangeException {
 						t.Fatal("missing wire requests lack native failure evidence")
 					}
 				}
@@ -520,11 +520,11 @@ func TestH10LostChildIdentityWithdrawsOnlyThatChild(t *testing.T) {
 	originalCycle := cycle
 	cycle.Cycle++
 	cycle.CompletedAt = cycle.CompletedAt.Add(time.Second)
-	cycle.Children = append([]modbusreg.HuaweiProviderChildObservation(nil), cycle.Children...)
+	cycle.Children = append([]huawei.ProviderChildObservation(nil), cycle.Children...)
 	for i := range cycle.Children {
 		if cycle.Children[i].UnitID == victim {
-			cycle.Children[i].Evidence = modbusreg.HuaweiProviderEvidenceWithheld
-			cycle.Children[i].Reason = modbusreg.HuaweiProviderReasonIdentityMismatch
+			cycle.Children[i].Evidence = huawei.ProviderEvidenceWithheld
+			cycle.Children[i].Reason = huawei.ProviderReasonIdentityMismatch
 		}
 	}
 	if err := publication.Publish(cycle); err != nil {
@@ -570,7 +570,7 @@ func TestH10LostChildIdentityWithdrawsOnlyThatChild(t *testing.T) {
 	// An incomplete listing is not evidence of an empty inventory.
 	cycle.Cycle++
 	cycle.CompletedAt = cycle.CompletedAt.Add(time.Second)
-	cycle.Outcome = modbusreg.HuaweiProviderCycleIncomplete
+	cycle.Outcome = huawei.ProviderCycleIncomplete
 	cycle.Children = nil
 	count := len(publication.published)
 	if err := publication.Publish(cycle); err != nil {
@@ -614,13 +614,13 @@ func TestH10LostChildIdentityWithdrawsOnlyThatChild(t *testing.T) {
 	}
 }
 
-type h10SingleCycleProvider struct{ cycle modbusreg.HuaweiProviderCycle }
+type h10SingleCycleProvider struct{ cycle huawei.ProviderCycle }
 
-func (p *h10SingleCycleProvider) Start(modbusreg.HuaweiProviderSession) error     { return nil }
-func (p *h10SingleCycleProvider) Reconnect(modbusreg.HuaweiProviderSession) error { return nil }
-func (p *h10SingleCycleProvider) Close() error                                    { return nil }
-func (p *h10SingleCycleProvider) NextRefreshAt() time.Time                        { return time.Now().Add(time.Hour) }
-func (p *h10SingleCycleProvider) Refresh(ctx context.Context) (modbusreg.HuaweiProviderCycle, error) {
+func (p *h10SingleCycleProvider) Start(huawei.ProviderSession) error     { return nil }
+func (p *h10SingleCycleProvider) Reconnect(huawei.ProviderSession) error { return nil }
+func (p *h10SingleCycleProvider) Close() error                           { return nil }
+func (p *h10SingleCycleProvider) NextRefreshAt() time.Time               { return time.Now().Add(time.Hour) }
+func (p *h10SingleCycleProvider) Refresh(ctx context.Context) (huawei.ProviderCycle, error) {
 	return p.cycle, ctx.Err()
 }
 
@@ -650,7 +650,7 @@ func TestH10ManagedDriverStopRestartFencesHuaweiWork(t *testing.T) {
 	asset := huaweiAssetID("alpha", "pv", 1)
 	m03Eventually(t, "all Huawei publications", func() bool {
 		for _, child := range cycle.Children {
-			if child.Evidence == modbusreg.HuaweiProviderEvidenceWithheld {
+			if child.Evidence == huawei.ProviderEvidenceWithheld {
 				continue
 			}
 			view, err := hub.Inspect(huaweiAssetID("alpha", "pv", child.UnitID))
@@ -665,7 +665,7 @@ func TestH10ManagedDriverStopRestartFencesHuaweiWork(t *testing.T) {
 	}
 	retainedAcrossAssets := 0
 	for _, child := range cycle.Children {
-		if child.Evidence == modbusreg.HuaweiProviderEvidenceWithheld {
+		if child.Evidence == huawei.ProviderEvidenceWithheld {
 			continue
 		}
 		childAsset := huaweiAssetID("alpha", "pv", child.UnitID)
@@ -690,7 +690,7 @@ func TestH10ManagedDriverStopRestartFencesHuaweiWork(t *testing.T) {
 	}
 	m03Eventually(t, "all Huawei successor publications", func() bool {
 		for _, child := range cycle.Children {
-			if child.Evidence == modbusreg.HuaweiProviderEvidenceWithheld {
+			if child.Evidence == huawei.ProviderEvidenceWithheld {
 				continue
 			}
 			view, err := hub.Inspect(huaweiAssetID("alpha", "pv", child.UnitID))
@@ -742,7 +742,7 @@ func TestH10ThirdGenerationWithdrawsOldestRetainedForCapacity(t *testing.T) {
 	})
 	var assets []semreg.AssetID
 	for _, child := range cycle.Children {
-		if child.Evidence != modbusreg.HuaweiProviderEvidenceWithheld {
+		if child.Evidence != huawei.ProviderEvidenceWithheld {
 			assets = append(assets, huaweiAssetID("alpha", "pv", child.UnitID))
 		}
 	}
@@ -855,8 +855,8 @@ func TestHuaweiSourceEpochCapacityExhaustionFailsStart(t *testing.T) {
 	cycle := h10Refresh(t, native, clock)
 	// One admitted inverter keeps 33 restarts affordable; the bound is per asset.
 	for _, child := range cycle.Children {
-		if child.Evidence != modbusreg.HuaweiProviderEvidenceWithheld {
-			cycle.Children = []modbusreg.HuaweiProviderChildObservation{child}
+		if child.Evidence != huawei.ProviderEvidenceWithheld {
+			cycle.Children = []huawei.ProviderChildObservation{child}
 			break
 		}
 	}
@@ -963,9 +963,9 @@ func TestH10NonFamilyWithholdingReportsUnavailable(t *testing.T) {
 func TestHuaweiRepeatedReadmissionRefusesBeyondBindingCapacity(t *testing.T) {
 	provider, _, _, clock := h10Native(t, h10Load(t, "smartlogger"))
 	cycle := h10Refresh(t, provider, clock)
-	var admitted []modbusreg.HuaweiProviderChildObservation
+	var admitted []huawei.ProviderChildObservation
 	for _, child := range cycle.Children {
-		if child.Evidence != modbusreg.HuaweiProviderEvidenceWithheld {
+		if child.Evidence != huawei.ProviderEvidenceWithheld {
 			admitted = append(admitted, child)
 		}
 	}
@@ -986,13 +986,13 @@ func TestHuaweiRepeatedReadmissionRefusesBeyondBindingCapacity(t *testing.T) {
 	advance := func(withheld, full bool) error {
 		cycle.Cycle++
 		cycle.CompletedAt = cycle.CompletedAt.Add(time.Second)
-		cycle.Children, cycle.Outcome = []modbusreg.HuaweiProviderChildObservation{admitted[0]}, modbusreg.HuaweiProviderCycleIncomplete
+		cycle.Children, cycle.Outcome = []huawei.ProviderChildObservation{admitted[0]}, huawei.ProviderCycleIncomplete
 		if full {
 			cycle.Children, cycle.Outcome = append(cycle.Children, admitted[1]), complete
 		}
 		if withheld {
-			cycle.Children[0].Evidence = modbusreg.HuaweiProviderEvidenceWithheld
-			cycle.Children[0].Reason = modbusreg.HuaweiProviderReasonIdentityMismatch
+			cycle.Children[0].Evidence = huawei.ProviderEvidenceWithheld
+			cycle.Children[0].Reason = huawei.ProviderReasonIdentityMismatch
 		}
 		return publication.Publish(cycle)
 	}
@@ -1085,8 +1085,8 @@ func TestH10RetainedGroupFromEarlierGenerationPublishesStale(t *testing.T) {
 		t.Fatal("fixture needs a published child")
 	}
 	child := cycle.Children[index]
-	var profile modbusreg.HuaweiSUN2000MonitoringProfile
-	for _, candidate := range modbusreg.HuaweiSUN2000MonitoringProfiles() {
+	var profile huawei.SUN2000MonitoringProfile
+	for _, candidate := range huawei.SUN2000MonitoringProfiles() {
 		if candidate.ID() == child.ProfileID {
 			profile = candidate
 		}
@@ -1102,16 +1102,16 @@ func TestH10RetainedGroupFromEarlierGenerationPublishesStale(t *testing.T) {
 	next.Generation++
 	next.StartedAt = cycle.CompletedAt.Add(time.Second)
 	next.CompletedAt = cycle.CompletedAt.Add(2 * time.Second)
-	next.Outcome = modbusreg.HuaweiProviderCycleIncomplete
-	var readings []modbusreg.HuaweiSUN2000GroupReading
+	next.Outcome = huawei.ProviderCycleIncomplete
+	var readings []huawei.SUN2000GroupReading
 	for _, group := range child.Reading.Groups() {
-		if group.Outcome != modbusreg.HuaweiSUN2000GroupAnswered {
+		if group.Outcome != huawei.SUN2000GroupAnswered {
 			continue
 		}
 		reading := group
 		reading.Retained, reading.Cycle = false, next.Cycle
 		if group.Offset == failed {
-			reading = modbusreg.HuaweiSUN2000GroupReading{Offset: group.Offset, Quantity: group.Quantity, Outcome: modbusreg.HuaweiSUN2000GroupFailed, Cycle: next.Cycle}
+			reading = huawei.SUN2000GroupReading{Offset: group.Offset, Quantity: group.Quantity, Outcome: huawei.SUN2000GroupFailed, Cycle: next.Cycle}
 		}
 		readings = append(readings, reading)
 	}
@@ -1119,7 +1119,7 @@ func TestH10RetainedGroupFromEarlierGenerationPublishesStale(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	retained := modbusreg.RetainHuaweiSUN2000Monitoring(child.Reading, current)
+	retained := huawei.RetainHuaweiSUN2000Monitoring(child.Reading, current)
 	kept := false
 	for _, group := range retained.Groups() {
 		kept = kept || group.Offset == failed && group.Retained
@@ -1129,17 +1129,17 @@ func TestH10RetainedGroupFromEarlierGenerationPublishesStale(t *testing.T) {
 	}
 	child.Reading = retained
 	child.IdentifiedGeneration = next.Generation
-	child.Groups = append([]modbusreg.HuaweiProviderGroupEvidence(nil), child.Groups...)
+	child.Groups = append([]huawei.ProviderGroupEvidence(nil), child.Groups...)
 	for i := range child.Groups {
 		g := &child.Groups[i]
 		switch {
 		case g.Offset == failed:
-			g.Outcome, g.Retained = modbusreg.HuaweiSUN2000GroupFailed, true
-		case g.Outcome == modbusreg.HuaweiSUN2000GroupAnswered:
+			g.Outcome, g.Retained = huawei.SUN2000GroupFailed, true
+		case g.Outcome == huawei.SUN2000GroupAnswered:
 			g.Cycle, g.Generation, g.ReadAt = next.Cycle, next.Generation, next.StartedAt.Add(time.Millisecond)
 		}
 	}
-	next.Children = []modbusreg.HuaweiProviderChildObservation{child}
+	next.Children = []huawei.ProviderChildObservation{child}
 	if err := publication.Publish(next); err != nil {
 		t.Fatalf("publication after the reconnect: %v", err)
 	}
@@ -1251,7 +1251,7 @@ func TestH10PartialGroupFailurePreservesFactFreshness(t *testing.T) {
 	childStale := false
 	for _, child := range second.Children {
 		if child.UnitID == 2 {
-			childStale = child.Evidence == modbusreg.HuaweiProviderEvidenceStale
+			childStale = child.Evidence == huawei.ProviderEvidenceStale
 		}
 	}
 	if !childStale {
@@ -1292,7 +1292,7 @@ type h10FlakyRebindProvider struct {
 	calls    int
 }
 
-func (p *h10FlakyRebindProvider) Reconnect(modbusreg.HuaweiProviderSession) error {
+func (p *h10FlakyRebindProvider) Reconnect(huawei.ProviderSession) error {
 	p.calls++
 	if p.calls <= p.failures {
 		return errors.New("rebind refused")

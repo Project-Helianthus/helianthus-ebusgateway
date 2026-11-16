@@ -9,7 +9,7 @@ import (
 	"time"
 
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
-	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	"github.com/Project-Helianthus/helianthus-modbusreg/huawei"
 )
 
 func TestH10ReadOnlySessionMethodSetAndAdmission(t *testing.T) {
@@ -39,7 +39,7 @@ func TestH10ReadOnlySessionMethodSetAndAdmission(t *testing.T) {
 			t.Fatal("unadmitted request accepted")
 		}
 	}
-	if _, err := session.ReadDeviceIdentification(context.Background(), 1, modbusreg.HuaweiIdentificationRequest{ReadDeviceIDCode: 4}); err == nil {
+	if _, err := session.ReadDeviceIdentification(context.Background(), 1, huawei.IdentificationRequest{ReadDeviceIDCode: 4}); err == nil {
 		t.Fatal("individual access accepted")
 	}
 	if endpoint.enqueueCalls != 0 {

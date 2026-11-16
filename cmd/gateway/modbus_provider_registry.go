@@ -5,13 +5,13 @@ import (
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
-	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	"github.com/Project-Helianthus/helianthus-modbusreg/sunspec"
 )
 
 type modbusProviderProfileID string
 
 const (
-	modbusProviderSunSpec           modbusProviderProfileID = modbusreg.SunSpecThreePhaseMonitoringCapabilityID
+	modbusProviderSunSpec           modbusProviderProfileID = sunspec.ThreePhaseMonitoringCapabilityID
 	modbusProviderGrowattBMS        modbusProviderProfileID = "growatt.bms.rs485.v2.02"
 	modbusProviderTeslaRetained     modbusProviderProfileID = "tesla.gen3.retained"
 	modbusProviderSmartLogger       modbusProviderProfileID = "huawei.smartlogger"

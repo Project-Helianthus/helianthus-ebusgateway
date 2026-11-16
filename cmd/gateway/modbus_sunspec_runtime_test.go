@@ -9,7 +9,8 @@ import (
 	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter"
-	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	"github.com/Project-Helianthus/helianthus-modbusreg/fronius"
+	"github.com/Project-Helianthus/helianthus-modbusreg/sunspec"
 )
 
 type sunSpecLiveSmokeFakeDriver struct {
@@ -62,22 +63,22 @@ func TestRunSunSpecLiveSmokeMapsQualificationDecision(t *testing.T) {
 		{name: "matched", qualification: goSunSpecQualification(), want: sunSpecLiveSmokeDecisionGO},
 		{name: "matched v1.2.0", qualification: sunSpecLiveSmokeQualification{
 			Outcome: modbusadapter.SunSpecQualificationGO, Sample: "sample-1",
-			Capability:       modbusreg.SunSpecThreePhaseMonitoringCapabilityID,
-			Flavor:           modbusreg.SunSpecFroniusObservedFlavorV12ID,
-			CapabilityReason: modbusreg.SunSpecCapabilityReasonAdmitted,
-			FlavorReason:     modbusreg.SunSpecFroniusFlavorReasonMatched,
+			Capability:       sunspec.ThreePhaseMonitoringCapabilityID,
+			Flavor:           fronius.SunSpecFroniusObservedFlavorV12ID,
+			CapabilityReason: sunspec.CapabilityReasonAdmitted,
+			FlavorReason:     fronius.SunSpecFroniusFlavorReasonMatched,
 		}, want: sunSpecLiveSmokeDecisionGO},
 		{name: "contradictory matched tuple", qualification: sunSpecLiveSmokeQualification{
 			Outcome: modbusadapter.SunSpecQualificationGO, Sample: "sample-1",
-			Capability: modbusreg.SunSpecThreePhaseMonitoringCapabilityID,
-			Flavor:     modbusreg.SunSpecFroniusObservedFlavorID,
+			Capability: sunspec.ThreePhaseMonitoringCapabilityID,
+			Flavor:     fronius.SunSpecFroniusObservedFlavorID,
 		}, want: sunSpecLiveSmokeDecisionStop},
 		{name: "unselected flavor", qualification: sunSpecLiveSmokeQualification{
 			Outcome: modbusadapter.SunSpecQualificationGO, Sample: "sample-1",
-			Capability:       modbusreg.SunSpecThreePhaseMonitoringCapabilityID,
+			Capability:       sunspec.ThreePhaseMonitoringCapabilityID,
 			Flavor:           "sunspec.flavor.fronius.unselected@1.0.0",
-			CapabilityReason: modbusreg.SunSpecCapabilityReasonAdmitted,
-			FlavorReason:     modbusreg.SunSpecFroniusFlavorReasonMatched,
+			CapabilityReason: sunspec.CapabilityReasonAdmitted,
+			FlavorReason:     fronius.SunSpecFroniusFlavorReasonMatched,
 		}, want: sunSpecLiveSmokeDecisionStop},
 		{name: "not qualified", qualification: sunSpecLiveSmokeQualification{Outcome: modbusadapter.SunSpecQualificationNoGo}, want: sunSpecLiveSmokeDecisionNoGo},
 		{name: "stop", qualification: sunSpecLiveSmokeQualification{Outcome: modbusadapter.SunSpecQualificationStop}, want: sunSpecLiveSmokeDecisionStop},
@@ -103,15 +104,15 @@ func TestRunSunSpecLiveSmokeAcceptsRegistrySelectedV11Qualification(t *testing.T
 	qualifier := &sunSpecLiveSmokeFakeQualifier{qualifications: []sunSpecLiveSmokeQualification{{
 		Outcome:          modbusadapter.SunSpecQualificationGO,
 		Sample:           "sample-v1.1",
-		Capability:       modbusreg.SunSpecThreePhaseMonitoringCapabilityID,
-		Flavor:           modbusreg.SunSpecFroniusObservedFlavorV11ID,
-		CapabilityReason: modbusreg.SunSpecCapabilityReasonAdmitted,
-		FlavorReason:     modbusreg.SunSpecFroniusFlavorReasonMatched,
+		Capability:       sunspec.ThreePhaseMonitoringCapabilityID,
+		Flavor:           fronius.SunSpecFroniusObservedFlavorV11ID,
+		CapabilityReason: sunspec.CapabilityReasonAdmitted,
+		FlavorReason:     fronius.SunSpecFroniusFlavorReasonMatched,
 	}}}
 
 	result := runSunSpecLiveSmoke(context.Background(), time.Second, driver, qualifier, func(string, ...any) {})
 	if result.Decision != sunSpecLiveSmokeDecisionGO ||
-		result.Flavor != modbusreg.SunSpecFroniusObservedFlavorV11ID {
+		result.Flavor != fronius.SunSpecFroniusObservedFlavorV11ID {
 		t.Fatalf("V1.1 result = %#v; want registry-selected GO", result)
 	}
 }
@@ -121,24 +122,24 @@ func TestRunSunSpecLiveSmokeAcceptsRegistrySelectedV12Qualification(t *testing.T
 	qualifier := &sunSpecLiveSmokeFakeQualifier{qualifications: []sunSpecLiveSmokeQualification{{
 		Outcome:          modbusadapter.SunSpecQualificationGO,
 		Sample:           "sample-v1.2",
-		Capability:       modbusreg.SunSpecThreePhaseMonitoringCapabilityID,
-		Flavor:           modbusreg.SunSpecFroniusObservedFlavorV12ID,
-		CapabilityReason: modbusreg.SunSpecCapabilityReasonAdmitted,
-		FlavorReason:     modbusreg.SunSpecFroniusFlavorReasonMatched,
+		Capability:       sunspec.ThreePhaseMonitoringCapabilityID,
+		Flavor:           fronius.SunSpecFroniusObservedFlavorV12ID,
+		CapabilityReason: sunspec.CapabilityReasonAdmitted,
+		FlavorReason:     fronius.SunSpecFroniusFlavorReasonMatched,
 	}}}
 
 	result := runSunSpecLiveSmoke(context.Background(), time.Second, driver, qualifier, func(string, ...any) {})
 	if result.Decision != sunSpecLiveSmokeDecisionGO || result.Category != "registry_match" ||
-		result.Flavor != modbusreg.SunSpecFroniusObservedFlavorV12ID {
+		result.Flavor != fronius.SunSpecFroniusObservedFlavorV12ID {
 		t.Fatalf("V1.2 result = %#v; want registry-selected GO", result)
 	}
 }
 
 func TestIsSupportedSunSpecLiveSmokeFlavorIsTheExactRegistryFlavorSet(t *testing.T) {
 	for _, flavor := range []string{
-		modbusreg.SunSpecFroniusObservedFlavorID,
-		modbusreg.SunSpecFroniusObservedFlavorV11ID,
-		modbusreg.SunSpecFroniusObservedFlavorV12ID,
+		fronius.SunSpecFroniusObservedFlavorID,
+		fronius.SunSpecFroniusObservedFlavorV11ID,
+		fronius.SunSpecFroniusObservedFlavorV12ID,
 	} {
 		if !isSupportedSunSpecLiveSmokeFlavor(flavor) {
 			t.Fatalf("flavor %q is not supported", flavor)
@@ -149,7 +150,7 @@ func TestIsSupportedSunSpecLiveSmokeFlavorIsTheExactRegistryFlavorSet(t *testing
 		"sunspec.flavor.fronius.gen24.float.observed@1.3.0",
 		"sunspec.flavor.fronius.gen24.float.observed",
 		"sunspec.flavor.fronius.unselected@1.0.0",
-		modbusreg.SunSpecFroniusObservedFlavorV12ID + " ",
+		fronius.SunSpecFroniusObservedFlavorV12ID + " ",
 	} {
 		if isSupportedSunSpecLiveSmokeFlavor(flavor) {
 			t.Fatalf("flavor %q is supported; want exact registry IDs only", flavor)
@@ -429,10 +430,10 @@ func goSunSpecQualification() sunSpecLiveSmokeQualification {
 	return sunSpecLiveSmokeQualification{
 		Outcome:          modbusadapter.SunSpecQualificationGO,
 		Sample:           "sample-1",
-		Capability:       modbusreg.SunSpecThreePhaseMonitoringCapabilityID,
-		Flavor:           modbusreg.SunSpecFroniusObservedFlavorID,
-		CapabilityReason: modbusreg.SunSpecCapabilityReasonAdmitted,
-		FlavorReason:     modbusreg.SunSpecFroniusFlavorReasonMatched,
+		Capability:       sunspec.ThreePhaseMonitoringCapabilityID,
+		Flavor:           fronius.SunSpecFroniusObservedFlavorID,
+		CapabilityReason: sunspec.CapabilityReasonAdmitted,
+		FlavorReason:     fronius.SunSpecFroniusFlavorReasonMatched,
 	}
 }
 

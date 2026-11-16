@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	"github.com/Project-Helianthus/helianthus-modbusreg/growatt"
 )
 
 const (
@@ -88,7 +88,7 @@ type GrowattBMSRS485V202Provider interface {
 // GrowattBMSRS485V202Observation binds a successful on-demand status to the
 // immutable completed RTU observation receipt that produced it.
 type GrowattBMSRS485V202Observation struct {
-	Status      modbusreg.GrowattBMSTypedReadOnlyStatus
+	Status      growatt.BMSTypedReadOnlyStatus
 	ReceiptWall time.Time
 }
 
@@ -135,9 +135,9 @@ func (server *Server) handleGrowattBMSRS485V202Call(ctx context.Context, name st
 	return callToolResultText(mustJSON(newModbusV1Envelope(result, nil, true, "LIVE", observation.ReceiptWall.UTC().Format(time.RFC3339Nano))), false), true
 }
 
-func growattBMSRS485V202Result(status modbusreg.GrowattBMSTypedReadOnlyStatus) (GrowattBMSRS485V202Result, error) {
+func growattBMSRS485V202Result(status growatt.BMSTypedReadOnlyStatus) (GrowattBMSRS485V202Result, error) {
 	if status.OutboundAllowed() ||
-		status.Revision != (modbusreg.GrowattBMSRevisionTuple{Family: "1xSxxP ESS", FileRevision: "Rev2.01", HeaderVersion: "V2.0", CumulativeRevision: "2.02"}) ||
+		status.Revision != (growatt.BMSRevisionTuple{Family: "1xSxxP ESS", FileRevision: "Rev2.01", HeaderVersion: "V2.0", CumulativeRevision: "2.02"}) ||
 		!growattBMSRS485V202Version.MatchString(status.MCUSoftwareVersion) || !growattBMSRS485V202Version.MatchString(status.GaugeVersion) ||
 		status.SOCPercent > 100 || status.TemperatureCelsius < -127 || status.TemperatureCelsius > 127 ||
 		!validGrowattBMSRS485V202State(status.OperatingState) || !validGrowattBMSRS485V202Telemetry(status) {
@@ -180,16 +180,16 @@ func growattBMSRS485V202Result(status modbusreg.GrowattBMSTypedReadOnlyStatus) (
 	}, nil
 }
 
-func validGrowattBMSRS485V202State(state modbusreg.GrowattBMSOperatingState) bool {
+func validGrowattBMSRS485V202State(state growatt.BMSOperatingState) bool {
 	switch state {
-	case modbusreg.GrowattBMSStateSoftStarting, modbusreg.GrowattBMSStateStandby, modbusreg.GrowattBMSStateCharging, modbusreg.GrowattBMSStateDischarging:
+	case growatt.BMSStateSoftStarting, growatt.BMSStateStandby, growatt.BMSStateCharging, growatt.BMSStateDischarging:
 		return true
 	default:
 		return false
 	}
 }
 
-func validGrowattBMSRS485V202Telemetry(status modbusreg.GrowattBMSTypedReadOnlyStatus) bool {
+func validGrowattBMSRS485V202Telemetry(status growatt.BMSTypedReadOnlyStatus) bool {
 	for _, value := range []float64{
 		status.PackVoltageVolts, status.PackCurrentAmps, status.RemainingCapacityAmpHours, status.FullChargeCapacityAmpHours,
 		status.CurrentCycleChargeAmpHours, status.AverageCellVoltageVolts, status.FloatingPackVoltageVolts,

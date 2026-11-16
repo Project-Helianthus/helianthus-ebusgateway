@@ -9,7 +9,7 @@ import (
 
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
-	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	"github.com/Project-Helianthus/helianthus-modbusreg/growatt"
 )
 
 func TestGrowattBMSRS485V202RuntimeFeedsRedactedMCPStatus(t *testing.T) {
@@ -207,8 +207,8 @@ func (session *growattBMSRS485RuntimeSessionFake) ReadHolding(
 	return response, nil
 }
 
-func growattBMSRS485RuntimeRevision() modbusreg.GrowattBMSRevisionTuple {
-	return modbusreg.GrowattBMSRevisionTuple{Family: "1xSxxP ESS", FileRevision: "Rev2.01", HeaderVersion: "V2.0", CumulativeRevision: "2.02"}
+func growattBMSRS485RuntimeRevision() growatt.BMSRevisionTuple {
+	return growatt.BMSRevisionTuple{Family: "1xSxxP ESS", FileRevision: "Rev2.01", HeaderVersion: "V2.0", CumulativeRevision: "2.02"}
 }
 
 func growattBMSRS485RuntimeReadPDU(words []uint16) []byte {

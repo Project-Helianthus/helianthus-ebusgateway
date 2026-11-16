@@ -4,13 +4,13 @@ import (
 	"testing"
 	"time"
 
-	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	"github.com/Project-Helianthus/helianthus-modbusreg/growatt"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 )
 
 func TestGrowattStorageDispositionsUseExactNativeLossDefinitionIDs(t *testing.T) {
-	status := modbusreg.GrowattBMSTypedReadOnlyStatus{
-		OperatingState:              modbusreg.GrowattBMSStateCharging,
+	status := growatt.BMSTypedReadOnlyStatus{
+		OperatingState:              growatt.BMSStateCharging,
 		PackVoltageVolts:            52,
 		PackCurrentAmps:             -12.5,
 		SOCPercent:                  75,

@@ -14,7 +14,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimecontrol"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
-	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	"github.com/Project-Helianthus/helianthus-modbusreg/huawei"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 )
 
@@ -36,15 +36,15 @@ func TestH10AssetIdentity(t *testing.T) {
 }
 
 func TestH10EMMAFailsClosed(t *testing.T) {
-	d, ok := modbusreg.HuaweiRecordedProviderDisposition(modbusreg.HuaweiProviderPathEMMA)
+	d, ok := huawei.RecordedProviderDisposition(huawei.ProviderPathEMMA)
 	if !ok {
 		t.Fatal("missing disposition")
 	}
-	e := modbusreg.EvaluateHuaweiProviderEnablement(d)
-	if e.Admitted || e.Reason != modbusreg.HuaweiProviderNoAdmittedChildProfile {
+	e := huawei.EvaluateHuaweiProviderEnablement(d)
+	if e.Admitted || e.Reason != huawei.ProviderNoAdmittedChildProfile {
 		t.Fatalf("EMMA: %+v", e)
 	}
-	if _, err := newHuaweiRegistryProvider(modbusTCPFamilyHuaweiEMMA, modbusreg.HuaweiProviderConfig{}); err == nil {
+	if _, err := newHuaweiRegistryProvider(modbusTCPFamilyHuaweiEMMA, huawei.ProviderConfig{}); err == nil {
 		t.Fatal("EMMA acquisition admitted")
 	}
 }
@@ -144,7 +144,7 @@ func TestH10StatusCycleSharesPublicationLock(t *testing.T) {
 	go func() {
 		defer close(done)
 		for i := uint64(1); i <= 200; i++ {
-			_ = p.Publish(modbusreg.HuaweiProviderCycle{Source: "alpha", Cycle: i})
+			_ = p.Publish(huawei.ProviderCycle{Source: "alpha", Cycle: i})
 		}
 	}()
 	for i := 0; i < 200; i++ {

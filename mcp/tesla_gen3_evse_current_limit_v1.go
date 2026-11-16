@@ -5,7 +5,7 @@ import (
 	"errors"
 	"sync"
 
-	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	"github.com/Project-Helianthus/helianthus-modbusreg/tesla"
 )
 
 const TeslaGen3EVSECurrentLimitV1GetTool = "modbus_v1_tesla_gen3_evse_current_limit_get"
@@ -18,8 +18,8 @@ var (
 // TeslaGen3EVSECurrentLimitV1Source supplies already-injected registry records.
 // It has no transport, acquisition, or request-construction capability.
 type TeslaGen3EVSECurrentLimitV1Source struct {
-	Persistent  *modbusreg.TeslaGen3PersistentCurrentLimit
-	Provisional *modbusreg.TeslaGen3ProvisionalCurrentLimit
+	Persistent  *tesla.Gen3PersistentCurrentLimit
+	Provisional *tesla.Gen3ProvisionalCurrentLimit
 }
 
 // TeslaGen3EVSECurrentLimitV1Provider supplies the version-qualified records
@@ -99,7 +99,7 @@ func (server *Server) handleTeslaGen3EVSECurrentLimitV1Call(ctx context.Context,
 
 func teslaGen3EVSECurrentLimitV1Result(source TeslaGen3EVSECurrentLimitV1Source) (TeslaGen3EVSECurrentLimitV1Result, error) {
 	result := TeslaGen3EVSECurrentLimitV1Result{
-		OperationVersion: modbusreg.TeslaGen3CurrentLimitOperationVersion24443,
+		OperationVersion: tesla.Gen3CurrentLimitOperationVersion24443,
 		OutboundAllowed:  false,
 	}
 	invalid := source.Persistent == nil && source.Provisional == nil

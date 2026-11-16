@@ -21,7 +21,13 @@ type ContributorSpec struct {
 	// OnControl reprojects the contributor family's cache after a control
 	// event of the asset, whichever source of the asset the event belongs to,
 	// and after a publication of another source of the asset (a ControlEvent
-	// of kind published with a zero Control).
+	// of kind published with a zero Control). It runs through the hub's one
+	// scheduler outside every hub, source and asset commit lock; a peer
+	// reprojection starts only after the publishing commit's onCommit has
+	// returned, and a control operation, RetryControl or Resettle called from
+	// that onCommit never waits on it. A nil OnControl declares a contributor
+	// that keeps no cache: it receives no event, is never owed a peer
+	// reprojection, and its place in a control attempt succeeds at once.
 	OnControl func(ControlEvent) error
 }
 

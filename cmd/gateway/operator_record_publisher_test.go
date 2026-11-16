@@ -432,6 +432,37 @@ func TestOperatorRecordPublisherKeepsTheProvidersRecordsFromADriver(t *testing.T
 	}
 }
 
+// The provider is a contributor without a reprojection callback: it keeps no
+// cache, so a control operation of the driver settles the shared asset at
+// once and a publication of the driver owes the provider nothing. Reads of
+// the shared asset are never withheld on the provider's account.
+func TestOperatorRecordPublisherNeedsNoReprojectionOnASharedAsset(t *testing.T) {
+	f := newOprFixture(t)
+	relation := oprInverterArray(oprArray)
+	if err := f.publisher.Set(oprDriverAsset, operatorRecords{Relations: []operatorRelation{relation}}, oprAudit("meter-role-3")); err != nil {
+		t.Fatal(err)
+	}
+	if spec := f.publisher.Contributor(pv.New()); spec.OnControl != nil {
+		t.Fatal("the provider declares a reprojection callback")
+	}
+	if !f.hub.Settled(oprDriverAsset) || !f.hub.Readable(oprDriverAsset) {
+		t.Fatal("the provider's publication left the shared asset unsettled or withheld")
+	}
+	if err := f.publishDriver(t, nil); err != nil {
+		t.Fatalf("driver publication: %v", err)
+	}
+	if !f.hub.Settled(oprDriverAsset) || !f.hub.Readable(oprDriverAsset) {
+		t.Fatal("a driver publication owed the provider a peer reprojection")
+	}
+	f.fenceDriver(t)
+	if !f.hub.Settled(oprDriverAsset) || !f.hub.Readable(oprDriverAsset) {
+		t.Fatal("the driver's fence left the shared asset unsettled on the provider's account")
+	}
+	if _, ok := oprRelationIn(f.snapshot(t, oprDriverAsset), relation); !ok {
+		t.Fatal("the configuration relation did not survive the driver's fence")
+	}
+}
+
 // The composition seam wires the provider with an empty record set: it
 // admits no source, declares no asset and emits no event.
 func TestOperatorRecordPublisherComposesAnEmptyRecordSet(t *testing.T) {

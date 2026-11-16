@@ -27,6 +27,18 @@ func use() {
 
 UNNAMED = NAMED.replace("(poller *vaillantSemanticPoller, err error)", "(*vaillantSemanticPoller, error)")
 
+GENERIC = """package main
+
+func load[T any]() *vaillantSemanticPoller { return nil }
+
+func use() {
+	poller := load[int]()
+	_ = poller.provider
+}
+"""
+
+NESTED_GENERIC = GENERIC.replace("load[int]()", "load[map[string]int]()")
+
 
 class PollerFunctionsTest(unittest.TestCase):
     def functions(self, src: str) -> set[str]:
@@ -46,6 +58,15 @@ class PollerFunctionsTest(unittest.TestCase):
         msk = RELOCATE.mask(NAMED)
         _, findings = RELOCATE.rewrite(NAMED, msk, self.functions(NAMED))
         self.assertEqual(len(findings), 1)
+
+    def test_generic_call_with_type_arguments_is_found(self) -> None:
+        for src in (GENERIC, NESTED_GENERIC):
+            with self.subTest(src=src):
+                functions = self.functions(src)
+                self.assertIn("load", functions)
+                rewritten, findings = RELOCATE.rewrite(src, RELOCATE.mask(src), functions)
+                self.assertEqual([what for _, what in findings], ["poller.provider"])
+                self.assertIn("_ = poller.liveProvider()", rewritten)
 
 
 if __name__ == "__main__":

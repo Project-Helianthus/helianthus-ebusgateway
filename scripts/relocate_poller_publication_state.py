@@ -21,7 +21,8 @@ A poller ``X`` is a name the same top-level declaration binds to a poller: a
 receiver or parameter of type ``*vaillantSemanticPoller``, a ``var`` of that
 type, or a variable assigned from a poller literal, from
 ``newVaillantSemanticPoller``, from ``startVaillantSemanticPolling`` or from a
-package function whose first result is a poller. Comments and string literals
+package function whose first result is a poller, with or without explicit type
+arguments at the call. Comments and string literals
 are never rewritten.
 
 Usage:
@@ -51,6 +52,9 @@ ACCESSORS = {
     "boilerPublishMu": "boilerPublishLock()",
 }
 IDENT = r"[A-Za-z_][A-Za-z0-9_]*"
+# An optional type-parameter or type-argument list such as "[T any]" or
+# "[map[string]int]"; one level of nested brackets is accepted.
+TYPE_LIST = r"(?:\[(?:[^\[\]]|\[[^\[\]]*\])*\])?"
 
 
 def mask(src: str) -> str:
@@ -94,7 +98,7 @@ def mask(src: str) -> str:
 def poller_functions(masked_sources: list[str]) -> set[str]:
     """Package functions whose first result is a poller."""
     pattern = re.compile(
-        r"^func\s+(" + IDENT + r")\s*(?:\[[^\]]*\])?\((?:[^()]|\([^()]*\))*\)\s*\(?\s*(?:" + IDENT + r"\s+)?\*" + POLLER + r"\b",
+        r"^func\s+(" + IDENT + r")\s*" + TYPE_LIST + r"\((?:[^()]|\([^()]*\))*\)\s*\(?\s*(?:" + IDENT + r"\s+)?\*" + POLLER + r"\b",
         re.M,
     )
     names = {"newVaillantSemanticPoller", "startVaillantSemanticPolling"}
@@ -117,7 +121,7 @@ def poller_names(decl: str, functions: set[str]) -> set[str]:
     literal = re.compile(r"\b(" + IDENT + r")\s*:?=\s*&" + POLLER + r"\s*\{")
     names.update(m.group(1) for m in literal.finditer(decl))
     call = re.compile(
-        r"\b(" + IDENT + r")\s*(?:,\s*" + IDENT + r"\s*)*:?=\s*(" + IDENT + r")\s*\("
+        r"\b(" + IDENT + r")\s*(?:,\s*" + IDENT + r"\s*)*:?=\s*(" + IDENT + r")\s*" + TYPE_LIST + r"\s*\("
     )
     names.update(m.group(1) for m in call.finditer(decl) if m.group(2) in functions)
     names.discard("_")

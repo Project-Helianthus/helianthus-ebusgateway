@@ -2720,7 +2720,7 @@ func TestDeriveCircuitManagingDevice(t *testing.T) {
 	tests := []struct {
 		name     string
 		system   *vaillantSystemSnapshot
-		fm5Mode  graphql.Fm5SemanticMode
+		fm5Mode  vaillantFM5Mode
 		wantRole graphql.ManagingDeviceRole
 		wantID   *string
 		wantAddr *int
@@ -2728,7 +2728,7 @@ func TestDeriveCircuitManagingDevice(t *testing.T) {
 		{
 			name:     "unknown without proven topology",
 			system:   nil,
-			fm5Mode:  graphql.Fm5SemanticModeAbsent,
+			fm5Mode:  vaillantFM5ModeAbsent,
 			wantRole: graphql.ManagingDeviceRoleUnknown,
 		},
 		{
@@ -2737,7 +2737,7 @@ func TestDeriveCircuitManagingDevice(t *testing.T) {
 				SystemScheme:            uint16Ptr(1),
 				ModuleConfigurationVR71: uint16Ptr(2),
 			},
-			fm5Mode:  graphql.Fm5SemanticModeInterpreted,
+			fm5Mode:  vaillantFM5ModeInterpreted,
 			wantRole: graphql.ManagingDeviceRoleFunctionModule,
 			wantID:   stringPtr(circuitManagingDeviceVR71ID),
 			wantAddr: intPtr(circuitManagingDeviceVR71Address),
@@ -2768,7 +2768,7 @@ func TestFM5InventoryRegistryInfos_MaterializesVR71ForInterpretedTopology(t *tes
 	got := fm5InventoryRegistryInfos(&vaillantSystemSnapshot{
 		SystemScheme:            uint16Ptr(1),
 		ModuleConfigurationVR71: uint16Ptr(2),
-	}, graphql.Fm5SemanticModeInterpreted)
+	}, vaillantFM5ModeInterpreted)
 	if len(got) != 1 {
 		t.Fatalf("fm5InventoryRegistryInfos(...) len = %d; want 1", len(got))
 	}
@@ -2787,7 +2787,7 @@ func TestDeriveFM5SemanticModeTransitions(t *testing.T) {
 		solarReadable       bool
 		cylindersReadable   bool
 		hasEvidence         bool
-		want                graphql.Fm5SemanticMode
+		want                vaillantFM5Mode
 	}{
 		{
 			name:                "interpreted",
@@ -2796,7 +2796,7 @@ func TestDeriveFM5SemanticModeTransitions(t *testing.T) {
 			solarReadable:       true,
 			cylindersReadable:   true,
 			hasEvidence:         true,
-			want:                graphql.Fm5SemanticModeInterpreted,
+			want:                vaillantFM5ModeInterpreted,
 		},
 		{
 			name:                "gpio only",
@@ -2805,7 +2805,7 @@ func TestDeriveFM5SemanticModeTransitions(t *testing.T) {
 			solarReadable:       false,
 			cylindersReadable:   false,
 			hasEvidence:         true,
-			want:                graphql.Fm5SemanticModeGPIOOnly,
+			want:                vaillantFM5ModeGPIOOnly,
 		},
 		{
 			name:                "partial solar evidence is not interpreted",
@@ -2814,7 +2814,7 @@ func TestDeriveFM5SemanticModeTransitions(t *testing.T) {
 			solarReadable:       true,
 			cylindersReadable:   false,
 			hasEvidence:         true,
-			want:                graphql.Fm5SemanticModeGPIOOnly,
+			want:                vaillantFM5ModeGPIOOnly,
 		},
 		{
 			name:                "partial cylinder evidence is not interpreted",
@@ -2823,7 +2823,7 @@ func TestDeriveFM5SemanticModeTransitions(t *testing.T) {
 			solarReadable:       false,
 			cylindersReadable:   true,
 			hasEvidence:         true,
-			want:                graphql.Fm5SemanticModeGPIOOnly,
+			want:                vaillantFM5ModeGPIOOnly,
 		},
 		{
 			name:                "gate failure prevents interpretation",
@@ -2832,7 +2832,7 @@ func TestDeriveFM5SemanticModeTransitions(t *testing.T) {
 			solarReadable:       true,
 			cylindersReadable:   true,
 			hasEvidence:         true,
-			want:                graphql.Fm5SemanticModeGPIOOnly,
+			want:                vaillantFM5ModeGPIOOnly,
 		},
 		{
 			name:                "absent",
@@ -2841,7 +2841,7 @@ func TestDeriveFM5SemanticModeTransitions(t *testing.T) {
 			solarReadable:       false,
 			cylindersReadable:   false,
 			hasEvidence:         false,
-			want:                graphql.Fm5SemanticModeAbsent,
+			want:                vaillantFM5ModeAbsent,
 		},
 	}
 
@@ -2949,7 +2949,7 @@ func TestPublishCircuits_UsesExplicitManagingDeviceForProvenTopology(t *testing.
 	provider := graphql.NewLiveSemanticProvider()
 	poller := &vaillantSemanticPoller{
 		publication: newVaillantSemanticPublication(provider, nil, nil),
-		fm5Mode:     graphql.Fm5SemanticModeInterpreted,
+		fm5Mode:     vaillantFM5ModeInterpreted,
 		system: &vaillantSystemSnapshot{
 			SystemScheme:            &scheme,
 			ModuleConfigurationVR71: &module,
@@ -2989,7 +2989,7 @@ func TestPublishCircuits_UsesUnknownManagingDeviceForUnprovenTopology(t *testing
 	provider := graphql.NewLiveSemanticProvider()
 	poller := &vaillantSemanticPoller{
 		publication: newVaillantSemanticPublication(provider, nil, nil),
-		fm5Mode:     graphql.Fm5SemanticModeInterpreted,
+		fm5Mode:     vaillantFM5ModeInterpreted,
 		system: &vaillantSystemSnapshot{
 			SystemScheme:            &scheme,
 			ModuleConfigurationVR71: &module,
@@ -3029,7 +3029,7 @@ func TestPublishSystem_RehydratesCircuitOwnershipAfterSystemArrives(t *testing.T
 	provider := graphql.NewLiveSemanticProvider()
 	poller := &vaillantSemanticPoller{
 		publication: newVaillantSemanticPublication(provider, nil, nil),
-		fm5Mode:     graphql.Fm5SemanticModeInterpreted,
+		fm5Mode:     vaillantFM5ModeInterpreted,
 		circuits: map[byte]*vaillantCircuitSnapshot{
 			0x00: {
 				Instance:       0x00,
@@ -3750,7 +3750,7 @@ func TestPublishFM5Semantic_SkipsConfigOnlyCylinderWithoutTemperature(t *testing
 	chargeOffset := 5.0
 	poller := &vaillantSemanticPoller{
 		publication: newVaillantSemanticPublication(provider, nil, nil),
-		fm5Mode:     graphql.Fm5SemanticModeInterpreted,
+		fm5Mode:     vaillantFM5ModeInterpreted,
 		solarCylinders: map[byte]*vaillantCylinderSnapshot{
 			0x00: {
 				Instance:         0x00,
@@ -3788,7 +3788,7 @@ func TestPublishFM5Semantic_DowngradeRehydratesCircuitOwnershipToUnknown(t *test
 	provider := graphql.NewLiveSemanticProvider()
 	poller := &vaillantSemanticPoller{
 		publication: newVaillantSemanticPublication(provider, nil, nil),
-		fm5Mode:     graphql.Fm5SemanticModeInterpreted,
+		fm5Mode:     vaillantFM5ModeInterpreted,
 		system: &vaillantSystemSnapshot{
 			SystemScheme:            &scheme,
 			ModuleConfigurationVR71: &module,
@@ -3810,7 +3810,7 @@ func TestPublishFM5Semantic_DowngradeRehydratesCircuitOwnershipToUnknown(t *test
 	}
 
 	poller.mu.Lock()
-	poller.fm5Mode = graphql.Fm5SemanticModeGPIOOnly
+	poller.fm5Mode = vaillantFM5ModeGPIOOnly
 	poller.mu.Unlock()
 	poller.publishFM5Semantic(semanticSnapshotSourceLive)
 

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"slices"
 	"sync"
 	"time"
 
@@ -16,7 +15,9 @@ import (
 // reach it as native views that the poller builds under its snapshot lock,
 // and the regulator capability as the native controller capability; the
 // owner maps them to GraphQL values in vaillant_semantic_publication_views.go.
-// It is also the energy ledger of a register acquisition: it derives the
+// The FM5 verdict, solar and cylinders reach it as a native view that it maps
+// in vaillant_semantic_publication_fm5.go, and it publishes the startup plane
+// defaults and the startup schedule placeholder. It is also the energy ledger of a register acquisition: it derives the
 // provider's energy keys from native channel, usage and window values.
 //
 // boilerPublishMu orders GraphQL boiler-status publication against the
@@ -238,82 +239,28 @@ func (p *vaillantSemanticPoller) publishSystem(source semanticSnapshotSource) {
 	p.publishCircuits(source)
 }
 
-func (p *vaillantSemanticPoller) publishFM5Semantic(source semanticSnapshotSource) {
-	if p == nil || p.liveProvider() == nil {
+// publishStartupPlaneDefaults publishes an empty circuits, solar and
+// cylinders plane for each of them that the provider does not hold yet, so
+// that startup readers see published planes before the first acquisition.
+func (o *vaillantSemanticPublication) publishStartupPlaneDefaults() {
+	if o.provider.Circuits() == nil {
+		o.provider.SetCircuits([]graphql.CircuitStatus{})
+	}
+	if o.provider.Solar() == nil {
+		o.provider.SetSolar(&graphql.SolarStatus{})
+	}
+	if o.provider.Cylinders() == nil {
+		o.provider.SetCylinders([]graphql.CylinderStatus{})
+	}
+}
+
+// publishStartupSchedulePlaceholder publishes an empty schedule program list
+// when the provider holds no schedules yet.
+func (o *vaillantSemanticPublication) publishStartupSchedulePlaceholder() {
+	if o.provider.Schedules() != nil {
 		return
 	}
-
-	p.mu.Lock()
-	verdict := p.fm5Interpretation
-	solarSnapshot := cloneSolarSnapshot(p.solar)
-	cylindersSnapshot := cloneCylinderSnapshotsMap(p.solarCylinders)
-	p.mu.Unlock()
-
-	switch source {
-	case semanticSnapshotSourceCache:
-		p.liveProvider().SetFM5InterpretationFromCache(verdict)
-	default:
-		p.liveProvider().SetFM5Interpretation(verdict)
-	}
-
-	if isFM5StructuralWithdrawal(verdict) || (solarSnapshot == nil && len(cylindersSnapshot) == 0) {
-		emptySolar := &graphql.SolarStatus{}
-		emptyCylinders := []graphql.CylinderStatus{}
-		switch source {
-		case semanticSnapshotSourceCache:
-			p.liveProvider().SetSolarFromCache(emptySolar)
-			p.liveProvider().SetCylindersFromCache(emptyCylinders)
-		default:
-			p.liveProvider().SetSolar(emptySolar)
-			p.liveProvider().SetCylinders(emptyCylinders)
-		}
-		p.publishCircuits(source)
-		return
-	}
-
-	var solar *graphql.SolarStatus
-	if solarSnapshot != nil {
-		solar = &graphql.SolarStatus{
-			CollectorTemperatureC: cloneFloat64Ptr(solarSnapshot.CollectorTemperatureC),
-			ReturnTemperatureC:    cloneFloat64Ptr(solarSnapshot.ReturnTemperatureC),
-			PumpActive:            cloneBoilerBoolPtr(solarSnapshot.PumpActive),
-			CurrentYield:          cloneFloat64Ptr(solarSnapshot.CurrentYield),
-			PumpHours:             decodeUint32Float64(solarSnapshot.PumpHours),
-			SolarEnabled:          cloneBoilerBoolPtr(solarSnapshot.SolarEnabled),
-			FunctionMode:          cloneBoilerBoolPtr(solarSnapshot.FunctionMode),
-		}
-	}
-
-	instances := make([]byte, 0, len(cylindersSnapshot))
-	for instance := range cylindersSnapshot {
-		instances = append(instances, instance)
-	}
-	slices.Sort(instances)
-	cylinders := make([]graphql.CylinderStatus, 0, len(instances))
-	for _, instance := range instances {
-		snapshot := cylindersSnapshot[instance]
-		if snapshot == nil || !hasLiveCylinderEvidence(snapshot) {
-			continue
-		}
-		cylinders = append(cylinders, graphql.CylinderStatus{
-			Index:             int(snapshot.Instance),
-			TemperatureC:      cloneFloat64Ptr(snapshot.TemperatureC),
-			MaxSetpointC:      cloneFloat64Ptr(snapshot.MaxSetpointC),
-			ChargeHysteresisC: cloneFloat64Ptr(snapshot.ChargeHysteresis),
-			ChargeOffsetC:     cloneFloat64Ptr(snapshot.ChargeOffset),
-		})
-	}
-
-	switch source {
-	case semanticSnapshotSourceCache:
-		p.liveProvider().SetSolarFromCache(solar)
-		p.liveProvider().SetCylindersFromCache(cylinders)
-	default:
-		p.liveProvider().SetSolar(solar)
-		p.liveProvider().SetCylinders(cylinders)
-	}
-
-	p.publishCircuits(source)
+	o.provider.SetSchedules(&graphql.ScheduleStatus{Programs: []graphql.ScheduleProgram{}})
 }
 
 func boilerSnapshotFromGraphQL(status *graphql.BoilerStatus) *vaillantBoilerSnapshot {

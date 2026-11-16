@@ -8,7 +8,6 @@ import (
 	"time"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
-	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 )
 
@@ -185,19 +184,13 @@ func (p *vaillantSemanticPoller) refreshStartupSemanticPlanes(ctx context.Contex
 	}
 }
 
+// publishStartupPlaneDefaults has the publication owner publish the empty
+// circuits, solar and cylinders planes that are not published yet.
 func (p *vaillantSemanticPoller) publishStartupPlaneDefaults() {
 	if p == nil || p.liveProvider() == nil {
 		return
 	}
-	if p.liveProvider().Circuits() == nil {
-		p.liveProvider().SetCircuits([]graphql.CircuitStatus{})
-	}
-	if p.liveProvider().Solar() == nil {
-		p.liveProvider().SetSolar(&graphql.SolarStatus{})
-	}
-	if p.liveProvider().Cylinders() == nil {
-		p.liveProvider().SetCylinders([]graphql.CylinderStatus{})
-	}
+	p.publication.publishStartupPlaneDefaults()
 }
 
 func (p *vaillantSemanticPoller) refreshStartupCriticalSemanticPlanes(ctx context.Context) {
@@ -331,9 +324,8 @@ func (p *vaillantSemanticPoller) startupL1PrimingStatus() startupL1PrimingStatus
 	cylinders := p.liveProvider().Cylinders()
 	cylindersPublished := cylinders != nil
 	interpretedCylindersReady := len(cylinders) > 0
-	fm5Mode := p.liveProvider().FM5SemanticMode()
 	fm5NonInterpretedPublished := fm5Evidence &&
-		fm5Mode == graphql.Fm5SemanticModeGPIOOnly &&
+		p.publication.fm5PublishedAsGPIOOnly() &&
 		solarReady &&
 		cylindersPublished
 	fm5Satisfied := !fm5Evidence ||
@@ -381,11 +373,13 @@ func (p *vaillantSemanticPoller) readB524Uint16Startup(ctx context.Context, opco
 	return &value, true
 }
 
+// publishStartupSchedules has the publication owner publish the empty
+// schedule placeholder when no schedules are published yet.
 func (p *vaillantSemanticPoller) publishStartupSchedules() {
-	if p == nil || p.liveProvider() == nil || p.liveProvider().Schedules() != nil {
+	if p == nil || p.liveProvider() == nil {
 		return
 	}
-	p.liveProvider().SetSchedules(&graphql.ScheduleStatus{Programs: []graphql.ScheduleProgram{}})
+	p.publication.publishStartupSchedulePlaceholder()
 }
 
 func (p *vaillantSemanticPoller) refreshDHWStartup(ctx context.Context) {
@@ -832,10 +826,10 @@ func (p *vaillantSemanticPoller) refreshFM5SemanticStartup(ctx context.Context) 
 	negativeIdentityObserved := evidence.hasNegativeObservation() && currentEvidence.hasNegativeObservation()
 	freshNegativeIdentityObserved := evidence.hasFreshNegativeObservation(observedAt, p.fm5EvidenceTTL) &&
 		currentEvidence.hasFreshNegativeObservation(observedAt, p.fm5EvidenceTTL)
-	var verdict graphql.Fm5Interpretation
+	var verdict vaillantFM5Interpretation
 	if freshNegativeIdentityObserved && !incoherent && evidence.controller != 0 && moduleConfig != nil {
-		verdict = graphql.Fm5Interpretation{
-			Mode:             graphql.Fm5SemanticModeAbsent,
+		verdict = vaillantFM5Interpretation{
+			Mode:             vaillantFM5ModeAbsent,
 			EvidenceRevision: evidenceRevision,
 		}
 	} else {

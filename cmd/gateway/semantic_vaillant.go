@@ -157,8 +157,8 @@ type vaillantSemanticPoller struct {
 	deviceSlotDiscoveryAt       time.Time
 	startupSemanticPrimed       bool
 	startupRadioDevicesProbed   bool
-	fm5Mode                     graphql.Fm5SemanticMode
-	fm5Interpretation           graphql.Fm5Interpretation
+	fm5Mode                     vaillantFM5Mode
+	fm5Interpretation           vaillantFM5Interpretation
 	fm5EvidenceRevision         uint64
 	fm5EvidenceGeneration       uint64
 	fm5IdentityScanComplete     bool

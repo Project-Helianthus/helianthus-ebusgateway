@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 )
 
@@ -280,10 +279,10 @@ func (p *vaillantSemanticPoller) refreshFM5Semantic(ctx context.Context) {
 	negativeIdentityObserved := evidence.hasNegativeObservation() && currentEvidence.hasNegativeObservation()
 	freshNegativeIdentityObserved := evidence.hasFreshNegativeObservation(observedAt, p.fm5EvidenceTTL) &&
 		currentEvidence.hasFreshNegativeObservation(observedAt, p.fm5EvidenceTTL)
-	var verdict graphql.Fm5Interpretation
+	var verdict vaillantFM5Interpretation
 	if freshNegativeIdentityObserved && !incoherent && evidence.controller != 0 && moduleConfig != nil {
-		verdict = graphql.Fm5Interpretation{
-			Mode:             graphql.Fm5SemanticModeAbsent,
+		verdict = vaillantFM5Interpretation{
+			Mode:             vaillantFM5ModeAbsent,
 			EvidenceRevision: evidenceRevision,
 		}
 	} else {
@@ -306,14 +305,69 @@ func (p *vaillantSemanticPoller) refreshFM5Semantic(ctx context.Context) {
 	p.publishFM5Semantic(semanticSnapshotSourceLive)
 }
 
-func deriveFM5SemanticMode(controllerReachable, fm5GateSatisfied, solarReadable, cylindersReadable, hasEvidence bool) graphql.Fm5SemanticMode {
+// vaillantFM5Mode is the acquisition verdict on the function module: its
+// solar and cylinder planes are interpreted, it is known only at GPIO level,
+// or it is absent. The zero value means that no verdict was reached yet. The
+// publication owner maps it to the published mode; the values are spelled
+// like the published ones so that diagnostics read the same.
+type vaillantFM5Mode string
+
+const (
+	vaillantFM5ModeInterpreted vaillantFM5Mode = "INTERPRETED"
+	vaillantFM5ModeGPIOOnly    vaillantFM5Mode = "GPIO_ONLY"
+	vaillantFM5ModeAbsent      vaillantFM5Mode = "ABSENT"
+)
+
+// vaillantFM5DegradedReason says why an acquisition did not reach, or did
+// not keep, an interpreted verdict. Every reason except a configuration that
+// is not interpretable is transient. The zero value means not degraded.
+type vaillantFM5DegradedReason string
+
+const (
+	vaillantFM5DegradedControllerUnreachable         vaillantFM5DegradedReason = "CONTROLLER_UNREACHABLE"
+	vaillantFM5DegradedConfigurationUnavailable      vaillantFM5DegradedReason = "CONFIGURATION_UNAVAILABLE"
+	vaillantFM5DegradedConfigurationNotInterpretable vaillantFM5DegradedReason = "CONFIGURATION_NOT_INTERPRETABLE"
+	vaillantFM5DegradedSolarAcquisitionFailed        vaillantFM5DegradedReason = "SOLAR_ACQUISITION_FAILED"
+	vaillantFM5DegradedCylinderAcquisitionFailed     vaillantFM5DegradedReason = "CYLINDER_ACQUISITION_FAILED"
+	vaillantFM5DegradedEvidenceStale                 vaillantFM5DegradedReason = "EVIDENCE_STALE"
+	vaillantFM5DegradedIncoherentAcquisition         vaillantFM5DegradedReason = "INCOHERENT_ACQUISITION"
+)
+
+// vaillantFM5Interpretation is one acquisition verdict: the mode, the reason
+// it is degraded, and the revision of the identity evidence it was derived
+// from.
+type vaillantFM5Interpretation struct {
+	Mode             vaillantFM5Mode
+	DegradedReason   vaillantFM5DegradedReason
+	EvidenceRevision string
+}
+
+// valid reports whether the verdict is complete: it names its evidence
+// revision, a retained interpreted or absent mode carries at most a transient
+// reason, and a GPIO-only mode carries the not-interpretable configuration
+// reason. The publication accepts exactly the valid verdicts.
+func (verdict vaillantFM5Interpretation) valid() bool {
+	if strings.TrimSpace(verdict.EvidenceRevision) == "" {
+		return false
+	}
+	switch verdict.Mode {
+	case vaillantFM5ModeInterpreted, vaillantFM5ModeAbsent:
+		return verdict.DegradedReason == "" || isFM5TransientAcquisitionReason(verdict.DegradedReason)
+	case vaillantFM5ModeGPIOOnly:
+		return verdict.DegradedReason == vaillantFM5DegradedConfigurationNotInterpretable
+	default:
+		return false
+	}
+}
+
+func deriveFM5SemanticMode(controllerReachable, fm5GateSatisfied, solarReadable, cylindersReadable, hasEvidence bool) vaillantFM5Mode {
 	if controllerReachable && fm5GateSatisfied && solarReadable && cylindersReadable {
-		return graphql.Fm5SemanticModeInterpreted
+		return vaillantFM5ModeInterpreted
 	}
 	if hasEvidence {
-		return graphql.Fm5SemanticModeGPIOOnly
+		return vaillantFM5ModeGPIOOnly
 	}
-	return graphql.Fm5SemanticModeAbsent
+	return vaillantFM5ModeAbsent
 }
 
 type fm5EvidenceCapture struct {
@@ -428,10 +482,10 @@ func (capture fm5EvidenceCapture) matchesLockedPoller(p *vaillantSemanticPoller)
 
 func (p *vaillantSemanticPoller) commitFM5Acquisition(
 	captured fm5EvidenceCapture,
-	verdict graphql.Fm5Interpretation,
+	verdict vaillantFM5Interpretation,
 	incomingSolar *vaillantSolarSnapshot,
 	incomingCylinders map[byte]*vaillantCylinderSnapshot,
-) graphql.Fm5Interpretation {
+) vaillantFM5Interpretation {
 	commit := func(registryGeneration uint64, registryCoherent bool) {
 		p.mu.Lock()
 		defer p.mu.Unlock()
@@ -439,9 +493,9 @@ func (p *vaillantSemanticPoller) commitFM5Acquisition(
 			captured.registryGeneration != registryGeneration ||
 			!captured.matchesLockedPoller(p) {
 			p.fm5EvidenceRevision++
-			verdict = graphql.Fm5Interpretation{
-				Mode:             graphql.Fm5SemanticModeGPIOOnly,
-				DegradedReason:   graphql.Fm5SemanticDegradedReasonIncoherentAcquisition,
+			verdict = vaillantFM5Interpretation{
+				Mode:             vaillantFM5ModeGPIOOnly,
+				DegradedReason:   vaillantFM5DegradedIncoherentAcquisition,
 				EvidenceRevision: formatFM5EvidenceRevision(captured.generation, p.fm5EvidenceGeneration, p.fm5EvidenceRevision),
 			}
 		}
@@ -501,59 +555,59 @@ func deriveFM5Interpretation(
 	evidenceStale bool,
 	incoherent bool,
 	evidenceRevision string,
-) graphql.Fm5Interpretation {
-	verdict := graphql.Fm5Interpretation{EvidenceRevision: evidenceRevision}
-	verdict.Mode = graphql.Fm5SemanticModeGPIOOnly
+) vaillantFM5Interpretation {
+	verdict := vaillantFM5Interpretation{EvidenceRevision: evidenceRevision}
+	verdict.Mode = vaillantFM5ModeGPIOOnly
 	switch {
 	case incoherent:
-		verdict.DegradedReason = graphql.Fm5SemanticDegradedReasonIncoherentAcquisition
+		verdict.DegradedReason = vaillantFM5DegradedIncoherentAcquisition
 	case !hasEvidence:
-		return graphql.Fm5Interpretation{}
+		return vaillantFM5Interpretation{}
 	case !controllerReachable:
-		verdict.DegradedReason = graphql.Fm5SemanticDegradedReasonControllerUnreachable
+		verdict.DegradedReason = vaillantFM5DegradedControllerUnreachable
 	case moduleConfig == nil:
-		verdict.DegradedReason = graphql.Fm5SemanticDegradedReasonConfigurationUnavailable
+		verdict.DegradedReason = vaillantFM5DegradedConfigurationUnavailable
 	case evidenceStale:
-		verdict.DegradedReason = graphql.Fm5SemanticDegradedReasonEvidenceStale
+		verdict.DegradedReason = vaillantFM5DegradedEvidenceStale
 	case *moduleConfig > 2:
-		verdict.DegradedReason = graphql.Fm5SemanticDegradedReasonConfigurationNotInterpretable
+		verdict.DegradedReason = vaillantFM5DegradedConfigurationNotInterpretable
 	case !solarReadable:
-		verdict.DegradedReason = graphql.Fm5SemanticDegradedReasonSolarAcquisitionFailed
+		verdict.DegradedReason = vaillantFM5DegradedSolarAcquisitionFailed
 	case !cylindersReadable:
-		verdict.DegradedReason = graphql.Fm5SemanticDegradedReasonCylinderAcquisitionFailed
+		verdict.DegradedReason = vaillantFM5DegradedCylinderAcquisitionFailed
 	default:
-		verdict.Mode = graphql.Fm5SemanticModeInterpreted
+		verdict.Mode = vaillantFM5ModeInterpreted
 	}
 	return verdict
 }
 
-func retainFM5StructuralMode(previous, candidate graphql.Fm5Interpretation) graphql.Fm5Interpretation {
+func retainFM5StructuralMode(previous, candidate vaillantFM5Interpretation) vaillantFM5Interpretation {
 	if !isFM5TransientAcquisitionReason(candidate.DegradedReason) {
 		return candidate
 	}
-	if previous.Validate() != nil {
-		return graphql.Fm5Interpretation{}
+	if !previous.valid() {
+		return vaillantFM5Interpretation{}
 	}
 	switch previous.Mode {
-	case graphql.Fm5SemanticModeInterpreted, graphql.Fm5SemanticModeAbsent:
+	case vaillantFM5ModeInterpreted, vaillantFM5ModeAbsent:
 		candidate.Mode = previous.Mode
 		return candidate
-	case graphql.Fm5SemanticModeGPIOOnly:
+	case vaillantFM5ModeGPIOOnly:
 		previous.EvidenceRevision = candidate.EvidenceRevision
 		return previous
 	default:
-		return graphql.Fm5Interpretation{}
+		return vaillantFM5Interpretation{}
 	}
 }
 
-func isFM5TransientAcquisitionReason(reason graphql.Fm5SemanticDegradedReason) bool {
+func isFM5TransientAcquisitionReason(reason vaillantFM5DegradedReason) bool {
 	switch reason {
-	case graphql.Fm5SemanticDegradedReasonControllerUnreachable,
-		graphql.Fm5SemanticDegradedReasonConfigurationUnavailable,
-		graphql.Fm5SemanticDegradedReasonSolarAcquisitionFailed,
-		graphql.Fm5SemanticDegradedReasonCylinderAcquisitionFailed,
-		graphql.Fm5SemanticDegradedReasonEvidenceStale,
-		graphql.Fm5SemanticDegradedReasonIncoherentAcquisition:
+	case vaillantFM5DegradedControllerUnreachable,
+		vaillantFM5DegradedConfigurationUnavailable,
+		vaillantFM5DegradedSolarAcquisitionFailed,
+		vaillantFM5DegradedCylinderAcquisitionFailed,
+		vaillantFM5DegradedEvidenceStale,
+		vaillantFM5DegradedIncoherentAcquisition:
 		return true
 	default:
 		return false
@@ -565,12 +619,12 @@ func applyFM5Acquisition(
 	previousCylinders map[byte]*vaillantCylinderSnapshot,
 	incomingSolar *vaillantSolarSnapshot,
 	incomingCylinders map[byte]*vaillantCylinderSnapshot,
-	verdict graphql.Fm5Interpretation,
+	verdict vaillantFM5Interpretation,
 ) (*vaillantSolarSnapshot, map[byte]*vaillantCylinderSnapshot) {
 	switch {
 	case isFM5TransientAcquisitionReason(verdict.DegradedReason):
 		return cloneSolarSnapshot(previousSolar), cloneCylinderSnapshotsMap(previousCylinders)
-	case verdict.Mode == graphql.Fm5SemanticModeInterpreted:
+	case verdict.Mode == vaillantFM5ModeInterpreted:
 		return mergeSolarSnapshotNonDestructive(previousSolar, incomingSolar),
 			mergeCylinderSnapshotMapNonDestructive(previousCylinders, incomingCylinders)
 	case isFM5StructuralWithdrawal(verdict):
@@ -580,10 +634,10 @@ func applyFM5Acquisition(
 	}
 }
 
-func isFM5StructuralWithdrawal(verdict graphql.Fm5Interpretation) bool {
-	return (verdict.Mode == graphql.Fm5SemanticModeAbsent && verdict.DegradedReason == "") ||
-		(verdict.Mode == graphql.Fm5SemanticModeGPIOOnly &&
-			verdict.DegradedReason == graphql.Fm5SemanticDegradedReasonConfigurationNotInterpretable)
+func isFM5StructuralWithdrawal(verdict vaillantFM5Interpretation) bool {
+	return (verdict.Mode == vaillantFM5ModeAbsent && verdict.DegradedReason == "") ||
+		(verdict.Mode == vaillantFM5ModeGPIOOnly &&
+			verdict.DegradedReason == vaillantFM5DegradedConfigurationNotInterpretable)
 }
 
 func (p *vaillantSemanticPoller) nextFM5EvidenceRevision(startGeneration, endGeneration uint64) string {
@@ -669,11 +723,11 @@ func (p *vaillantSemanticPoller) fm5RegistryEvidenceFingerprint() string {
 	return strings.Join(identities, "|")
 }
 
-func fm5InventoryRegistryInfos(system *vaillantSystemSnapshot, fm5Mode graphql.Fm5SemanticMode) []registry.DeviceInfo {
+func fm5InventoryRegistryInfos(system *vaillantSystemSnapshot, fm5Mode vaillantFM5Mode) []registry.DeviceInfo {
 	if system != nil &&
 		system.SystemScheme != nil && *system.SystemScheme == 1 &&
 		system.ModuleConfigurationVR71 != nil && *system.ModuleConfigurationVR71 == 2 &&
-		fm5Mode == graphql.Fm5SemanticModeInterpreted {
+		fm5Mode == vaillantFM5ModeInterpreted {
 		return []registry.DeviceInfo{{
 			Address:      circuitManagingDeviceVR71Address,
 			Manufacturer: "Vaillant",

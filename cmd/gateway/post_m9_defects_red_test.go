@@ -247,7 +247,7 @@ func TestRefreshFM5Semantic_StaleEvidenceSkipsReadsAndRetainsCoherentFamily(t *t
 	provider := graphql.NewLiveSemanticProvider()
 	poller := &vaillantSemanticPoller{
 		reg:                   registry.NewDeviceRegistry(nil),
-		provider:              provider,
+		publication:           newVaillantSemanticPublication(provider, nil, nil),
 		controller:            0x15,
 		system:                &vaillantSystemSnapshot{Controller: 0x15, ModuleConfigurationVR71: &config},
 		radioDevices:          map[radioDeviceKey]*vaillantRadioDeviceSnapshot{{Group: remoteFunctionalModules.group}: {DeviceClassAddress: &classAddress}},
@@ -338,7 +338,7 @@ func TestRefreshDiscovery_TransientRootFailureRetainsFM5ClassificationAndValues(
 	reg.Register(registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV2"})
 	poller := &vaillantSemanticPoller{
 		reg:                   reg,
-		provider:              provider,
+		publication:           newVaillantSemanticPublication(provider, nil, nil),
 		controller:            0x15,
 		system:                &vaillantSystemSnapshot{Controller: 0x15, ModuleConfigurationVR71: &config},
 		radioDevices:          map[radioDeviceKey]*vaillantRadioDeviceSnapshot{{Group: remoteFunctionalModules.group}: {DeviceClassAddress: &classAddress}},
@@ -383,7 +383,7 @@ func TestRefreshFM5Semantic_StaleIdentityOutranksUnsupportedConfiguration(t *tes
 	newPoller := func(provider *graphql.LiveSemanticProvider) *vaillantSemanticPoller {
 		return &vaillantSemanticPoller{
 			reg:                   registry.NewDeviceRegistry(nil),
-			provider:              provider,
+			publication:           newVaillantSemanticPublication(provider, nil, nil),
 			controller:            0x15,
 			system:                &vaillantSystemSnapshot{Controller: 0x15, ModuleConfigurationVR71: &configUnsupported},
 			radioDevices:          map[radioDeviceKey]*vaillantRadioDeviceSnapshot{{Group: remoteFunctionalModules.group}: {DeviceClassAddress: &classAddress}},
@@ -441,7 +441,7 @@ func TestRefreshFM5Semantic_AbsenceRequiresFreshCompletedNegativeIdentityAcquisi
 	newPoller := func(provider *graphql.LiveSemanticProvider) *vaillantSemanticPoller {
 		return &vaillantSemanticPoller{
 			reg:            registry.NewDeviceRegistry(nil),
-			provider:       provider,
+			publication:    newVaillantSemanticPublication(provider, nil, nil),
 			controller:     0x15,
 			system:         &vaillantSystemSnapshot{Controller: 0x15, ModuleConfigurationVR71: &config},
 			radioDevices:   make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot),
@@ -537,7 +537,7 @@ func TestFM5IdentityClassification_RequiresCompleteFunctionalModuleNamespaceScan
 		return &vaillantSemanticPoller{
 			scheduler:               ebusgateway.NewSemanticReadScheduler(),
 			reg:                     registry.NewDeviceRegistry(nil),
-			provider:                provider,
+			publication:             newVaillantSemanticPublication(provider, nil, nil),
 			source:                  0x7F,
 			controller:              0x15,
 			requestTimeout:          50 * time.Millisecond,
@@ -674,7 +674,7 @@ func TestFM5StartupIdentityClassification_UsesCompleteFunctionalModuleIdentityTu
 			poller := &vaillantSemanticPoller{
 				scheduler:       ebusgateway.NewSemanticReadScheduler(),
 				reg:             registry.NewDeviceRegistry(nil),
-				provider:        provider,
+				publication:     newVaillantSemanticPublication(provider, nil, nil),
 				source:          0x7F,
 				controller:      0x15,
 				requestTimeout:  50 * time.Millisecond,
@@ -767,7 +767,7 @@ func TestRefreshRadioDevices_IncompleteCurrentFM5IdentityTupleRetainsPriorClassi
 			scheduler:               ebusgateway.NewSemanticReadScheduler(),
 			watchObserver:           zeroFreshnessObserver,
 			reg:                     registry.NewDeviceRegistry(nil),
-			provider:                provider,
+			publication:             newVaillantSemanticPublication(provider, nil, nil),
 			source:                  0x7F,
 			controller:              0x15,
 			requestTimeout:          50 * time.Millisecond,
@@ -1137,7 +1137,7 @@ func TestRefreshSystem_FM5ConfigurationRequiresCurrentAcquisition(t *testing.T) 
 		return &vaillantSemanticPoller{
 			scheduler:             ebusgateway.NewSemanticReadScheduler(),
 			reg:                   registry.NewDeviceRegistry(nil),
-			provider:              provider,
+			publication:           newVaillantSemanticPublication(provider, nil, nil),
 			source:                0x7F,
 			controller:            0x15,
 			requestTimeout:        50 * time.Millisecond,
@@ -1260,7 +1260,7 @@ func TestFM5PositiveIdentityDoesNotRequireNegativeNamespaceCompleteness(t *testi
 		return &vaillantSemanticPoller{
 			scheduler:       ebusgateway.NewSemanticReadScheduler(),
 			reg:             reg,
-			provider:        provider,
+			publication:     newVaillantSemanticPublication(provider, nil, nil),
 			source:          0x7F,
 			controller:      0x15,
 			requestTimeout:  50 * time.Millisecond,
@@ -1355,7 +1355,7 @@ func TestFM5Startup_UnseededLowSlotPositiveDoesNotLosePrimingBudget(t *testing.T
 	poller := &vaillantSemanticPoller{
 		scheduler:       ebusgateway.NewSemanticReadScheduler(),
 		reg:             registry.NewDeviceRegistry(nil),
-		provider:        provider,
+		publication:     newVaillantSemanticPublication(provider, nil, nil),
 		source:          0x7F,
 		controller:      0x15,
 		requestTimeout:  50 * time.Millisecond,
@@ -1457,7 +1457,7 @@ func TestEnqueueAddressIdentityProbe_LateFM5SuccessTriggersBoundedSemanticReacqu
 		tasks:                    taskScheduler,
 		reg:                      registry.NewDeviceRegistry(nil),
 		bus:                      &protocol.Bus{},
-		provider:                 provider,
+		publication:              newVaillantSemanticPublication(provider, nil, nil),
 		source:                   0x7F,
 		controller:               0x15,
 		requestTimeout:           50 * time.Millisecond,
@@ -1574,7 +1574,7 @@ func newFM5DeadlineRecoveryTestPoller(tasks *semanticTaskScheduler) (*vaillantSe
 		tasks:                    tasks,
 		reg:                      registry.NewDeviceRegistry(nil),
 		bus:                      &protocol.Bus{},
-		provider:                 provider,
+		publication:              newVaillantSemanticPublication(provider, nil, nil),
 		source:                   0x7F,
 		controller:               0x15,
 		requestTimeout:           50 * time.Millisecond,
@@ -2290,7 +2290,7 @@ func TestRefreshRadioDevices_CompleteNegativeFM5ScanSupersedesRetainedRegistryId
 	poller := &vaillantSemanticPoller{
 		scheduler:             ebusgateway.NewSemanticReadScheduler(),
 		reg:                   reg,
-		provider:              provider,
+		publication:           newVaillantSemanticPublication(provider, nil, nil),
 		source:                0x7F,
 		controller:            0x15,
 		requestTimeout:        50 * time.Millisecond,

@@ -484,7 +484,7 @@ func TestRefreshStateSkipsSlowZoneAndDHWB524Selectors(t *testing.T) {
 	var selectors [][]byte
 	poller := &vaillantSemanticPoller{
 		scheduler:      ebusgateway.NewSemanticReadScheduler(),
-		provider:       graphql.NewLiveSemanticProvider(),
+		publication:    newVaillantSemanticPublication(graphql.NewLiveSemanticProvider(), nil, nil),
 		source:         0x7F,
 		controller:     0x15,
 		requestTimeout: 50 * time.Millisecond,
@@ -552,7 +552,7 @@ func TestRefreshConfigReadsSlowZoneAndDHWB524Selectors(t *testing.T) {
 	var selectors [][]byte
 	poller := &vaillantSemanticPoller{
 		scheduler:      ebusgateway.NewSemanticReadScheduler(),
-		provider:       graphql.NewLiveSemanticProvider(),
+		publication:    newVaillantSemanticPublication(graphql.NewLiveSemanticProvider(), nil, nil),
 		source:         0x7F,
 		controller:     0x15,
 		requestTimeout: 50 * time.Millisecond,
@@ -675,7 +675,7 @@ func TestRefreshBoilerStatusFastIgnoresStaleB524Mirrors(t *testing.T) {
 	heatingRaw := uint16(2)
 	poller := &vaillantSemanticPoller{
 		scheduler:          ebusgateway.NewSemanticReadScheduler(),
-		provider:           graphql.NewLiveSemanticProvider(),
+		publication:        newVaillantSemanticPublication(graphql.NewLiveSemanticProvider(), nil, nil),
 		source:             0x7F,
 		controller:         0x15,
 		configInterval:     5 * time.Minute,
@@ -718,7 +718,7 @@ func TestRefreshBoilerStatusFastIgnoresDifferentControllerB524Mirrors(t *testing
 	heatingRaw := uint16(2)
 	poller := &vaillantSemanticPoller{
 		scheduler:          ebusgateway.NewSemanticReadScheduler(),
-		provider:           graphql.NewLiveSemanticProvider(),
+		publication:        newVaillantSemanticPublication(graphql.NewLiveSemanticProvider(), nil, nil),
 		source:             0x7F,
 		controller:         0x26,
 		configInterval:     5 * time.Minute,
@@ -802,7 +802,7 @@ func TestRefreshBoilerStatusFastIgnoresRestampedPartialMirrorSnapshots(t *testin
 
 	poller := &vaillantSemanticPoller{
 		scheduler:          ebusgateway.NewSemanticReadScheduler(),
-		provider:           graphql.NewLiveSemanticProvider(),
+		publication:        newVaillantSemanticPublication(graphql.NewLiveSemanticProvider(), nil, nil),
 		source:             0x7F,
 		controller:         0x26,
 		configInterval:     5 * time.Minute,
@@ -827,7 +827,7 @@ func TestRefreshConfigDHWOnlySuccessKeepsZonesCacheSource(t *testing.T) {
 	provider := graphql.NewLiveSemanticProvider()
 	poller := &vaillantSemanticPoller{
 		scheduler:      ebusgateway.NewSemanticReadScheduler(),
-		provider:       provider,
+		publication:    newVaillantSemanticPublication(provider, nil, nil),
 		source:         0x7F,
 		controller:     0x15,
 		requestTimeout: 50 * time.Millisecond,
@@ -859,7 +859,7 @@ func TestRefreshConfigNoZonesStillRefreshesDHWSlowConfig(t *testing.T) {
 	provider := graphql.NewLiveSemanticProvider()
 	poller := &vaillantSemanticPoller{
 		scheduler:             ebusgateway.NewSemanticReadScheduler(),
-		provider:              provider,
+		publication:           newVaillantSemanticPublication(provider, nil, nil),
 		reg:                   newTestRegistry(registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV"}),
 		source:                0x7F,
 		controller:            0x15,
@@ -998,7 +998,7 @@ func TestRefreshDiscoveryPrimesDHWBeforeStartupZoneScan(t *testing.T) {
 
 	var selectors [][]byte
 	poller := &vaillantSemanticPoller{
-		provider:       graphql.NewLiveSemanticProvider(),
+		publication:    newVaillantSemanticPublication(graphql.NewLiveSemanticProvider(), nil, nil),
 		reg:            newTestRegistry(registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV"}),
 		tasks:          newSemanticTaskScheduler(),
 		zones:          make(map[byte]*vaillantZoneSnapshot),
@@ -1045,7 +1045,7 @@ func TestRefreshDiscoveryPrimesDHWBeforeStartupZoneScan(t *testing.T) {
 	if first[2] != localDHW.group || first[3] != dhwInstance {
 		t.Fatalf("first startup selector = % x; want DHW before zone scan", first)
 	}
-	if dhw := poller.provider.DHW(); dhw == nil {
+	if dhw := poller.liveProvider().DHW(); dhw == nil {
 		t.Fatal("provider.DHW() = nil; want critical DHW singleton primed during discovery")
 	}
 }
@@ -1060,7 +1060,7 @@ func TestRefreshDiscoveryRetriesDHWBeforeStartupZoneScan(t *testing.T) {
 	zoneRequestsBeforeDHWSuccess := 0
 	dhwSawLiveResponse := false
 	poller := &vaillantSemanticPoller{
-		provider:       graphql.NewLiveSemanticProvider(),
+		publication:    newVaillantSemanticPublication(graphql.NewLiveSemanticProvider(), nil, nil),
 		reg:            newTestRegistry(registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV"}),
 		tasks:          newSemanticTaskScheduler(),
 		zones:          make(map[byte]*vaillantZoneSnapshot),
@@ -1116,7 +1116,7 @@ func TestRefreshDiscoveryRetriesDHWBeforeStartupZoneScan(t *testing.T) {
 	if zoneRequestsBeforeDHWSuccess != 0 {
 		t.Fatalf("zone requests before DHW live response = %d; want 0", zoneRequestsBeforeDHWSuccess)
 	}
-	if dhw := poller.provider.DHW(); dhw == nil {
+	if dhw := poller.liveProvider().DHW(); dhw == nil {
 		t.Fatal("provider.DHW() = nil; want retry to prime DHW before startup zone scan")
 	}
 }
@@ -2538,8 +2538,8 @@ func TestRefreshBoilerStatusTier_NoSuccessfulReadsPreservesSnapshot(t *testing.T
 			heatingStatus := 4
 			provider := graphql.NewLiveSemanticProvider()
 			poller := &vaillantSemanticPoller{
-				provider:   provider,
-				controller: 0x15,
+				publication: newVaillantSemanticPublication(provider, nil, nil),
+				controller:  0x15,
 				boiler: &vaillantBoilerSnapshot{
 					FlowTemperatureC:         &flow,
 					CentralHeatingPumpActive: &pump,
@@ -2588,7 +2588,7 @@ func TestRefreshBoilerStatusFastUsesCachedDHWWithoutB524DHWReads(t *testing.T) {
 	var selectors [][]byte
 	poller := &vaillantSemanticPoller{
 		scheduler:      ebusgateway.NewSemanticReadScheduler(),
-		provider:       graphql.NewLiveSemanticProvider(),
+		publication:    newVaillantSemanticPublication(graphql.NewLiveSemanticProvider(), nil, nil),
 		source:         0x7F,
 		controller:     0x15,
 		requestTimeout: 50 * time.Millisecond,
@@ -2632,7 +2632,7 @@ func TestRefreshBoilerStatusFastCachedDHWOnlyDoesNotPublishLive(t *testing.T) {
 	provider := graphql.NewLiveSemanticProvider()
 	poller := &vaillantSemanticPoller{
 		scheduler:      ebusgateway.NewSemanticReadScheduler(),
-		provider:       provider,
+		publication:    newVaillantSemanticPublication(provider, nil, nil),
 		source:         0x7F,
 		controller:     0x15,
 		requestTimeout: 50 * time.Millisecond,
@@ -2662,7 +2662,7 @@ func TestRefreshBoilerStatusFastMergesCachedDHWWhenB509UpdatesWithoutB524Mirrors
 	provider := graphql.NewLiveSemanticProvider()
 	poller := &vaillantSemanticPoller{
 		scheduler:      ebusgateway.NewSemanticReadScheduler(),
-		provider:       provider,
+		publication:    newVaillantSemanticPublication(provider, nil, nil),
 		source:         0x7F,
 		controller:     0x15,
 		boilerAddress:  0x08,
@@ -2948,8 +2948,8 @@ func TestPublishCircuits_UsesExplicitManagingDeviceForProvenTopology(t *testing.
 	circuitType := uint16(1)
 	provider := graphql.NewLiveSemanticProvider()
 	poller := &vaillantSemanticPoller{
-		provider: provider,
-		fm5Mode:  graphql.Fm5SemanticModeInterpreted,
+		publication: newVaillantSemanticPublication(provider, nil, nil),
+		fm5Mode:     graphql.Fm5SemanticModeInterpreted,
 		system: &vaillantSystemSnapshot{
 			SystemScheme:            &scheme,
 			ModuleConfigurationVR71: &module,
@@ -2988,8 +2988,8 @@ func TestPublishCircuits_UsesUnknownManagingDeviceForUnprovenTopology(t *testing
 	circuitType := uint16(1)
 	provider := graphql.NewLiveSemanticProvider()
 	poller := &vaillantSemanticPoller{
-		provider: provider,
-		fm5Mode:  graphql.Fm5SemanticModeInterpreted,
+		publication: newVaillantSemanticPublication(provider, nil, nil),
+		fm5Mode:     graphql.Fm5SemanticModeInterpreted,
 		system: &vaillantSystemSnapshot{
 			SystemScheme:            &scheme,
 			ModuleConfigurationVR71: &module,
@@ -3028,8 +3028,8 @@ func TestPublishSystem_RehydratesCircuitOwnershipAfterSystemArrives(t *testing.T
 	module := uint16(2)
 	provider := graphql.NewLiveSemanticProvider()
 	poller := &vaillantSemanticPoller{
-		provider: provider,
-		fm5Mode:  graphql.Fm5SemanticModeInterpreted,
+		publication: newVaillantSemanticPublication(provider, nil, nil),
+		fm5Mode:     graphql.Fm5SemanticModeInterpreted,
 		circuits: map[byte]*vaillantCircuitSnapshot{
 			0x00: {
 				Instance:       0x00,
@@ -3160,7 +3160,7 @@ func TestRefreshCircuits_PromotesDhwPseudoCircuitWithTemperatureEvidence(t *test
 	poller := &vaillantSemanticPoller{
 		controller:                  0x15,
 		source:                      0x7F,
-		provider:                    provider,
+		publication:                 newVaillantSemanticPublication(provider, nil, nil),
 		scheduler:                   ebusgateway.NewSemanticReadScheduler(),
 		requestTimeout:              50 * time.Millisecond,
 		circuitFullScanInterval:     semanticCircuitFullScanInterval,
@@ -3239,7 +3239,7 @@ func TestRefreshCircuits_DoesNotPromoteDhwPseudoCircuitWithoutTemperatureEvidenc
 	poller := &vaillantSemanticPoller{
 		controller:                  0x15,
 		source:                      0x7F,
-		provider:                    graphql.NewLiveSemanticProvider(),
+		publication:                 newVaillantSemanticPublication(graphql.NewLiveSemanticProvider(), nil, nil),
 		scheduler:                   ebusgateway.NewSemanticReadScheduler(),
 		requestTimeout:              50 * time.Millisecond,
 		circuitFullScanInterval:     semanticCircuitFullScanInterval,
@@ -3285,7 +3285,7 @@ func TestRefreshCircuits_PreservesDhwPseudoCircuitWhenEvidenceReadsFail(t *testi
 	poller := &vaillantSemanticPoller{
 		controller:                  0x15,
 		source:                      0x7F,
-		provider:                    graphql.NewLiveSemanticProvider(),
+		publication:                 newVaillantSemanticPublication(graphql.NewLiveSemanticProvider(), nil, nil),
 		scheduler:                   ebusgateway.NewSemanticReadScheduler(),
 		requestTimeout:              50 * time.Millisecond,
 		circuitFullScanInterval:     semanticCircuitFullScanInterval,
@@ -3543,7 +3543,7 @@ func TestRefreshCircuits_ReadsCircuitStateFromRR001EAndPumpFromRR001B(t *testing
 			poller := &vaillantSemanticPoller{
 				controller:                  0x15,
 				source:                      0x7F,
-				provider:                    provider,
+				publication:                 newVaillantSemanticPublication(provider, nil, nil),
 				scheduler:                   ebusgateway.NewSemanticReadScheduler(),
 				requestTimeout:              50 * time.Millisecond,
 				circuitFullScanInterval:     semanticCircuitFullScanInterval,
@@ -3646,7 +3646,7 @@ func TestRefreshEnergy_NilControllerKeepsEnergyNull(t *testing.T) {
 
 	provider := graphql.NewLiveSemanticProvider()
 	poller := &vaillantSemanticPoller{
-		provider:            provider,
+		publication:         newVaillantSemanticPublication(provider, nil, nil),
 		regulatorCapability: productids.ControllerPresent,
 	}
 
@@ -3663,7 +3663,7 @@ func TestRefreshEnergy_NoRegulatorKeepsEnergyNull(t *testing.T) {
 	provider := graphql.NewLiveSemanticProvider()
 	provider.SetEnergyClock(func() time.Time { return time.Date(2026, time.February, 26, 12, 0, 0, 0, time.UTC) })
 	poller := &vaillantSemanticPoller{
-		provider:            provider,
+		publication:         newVaillantSemanticPublication(provider, nil, nil),
 		controller:          0x15,
 		regulatorCapability: productids.ControllerNone,
 	}
@@ -3681,8 +3681,8 @@ func TestRefreshEnergy_ReadFailurePreservesLastKnown(t *testing.T) {
 	provider := graphql.NewLiveSemanticProvider()
 	provider.SetEnergyClock(func() time.Time { return time.Date(2026, time.February, 26, 12, 0, 0, 0, time.UTC) })
 	poller := &vaillantSemanticPoller{
-		provider:   provider,
-		controller: 0x15,
+		publication: newVaillantSemanticPublication(provider, nil, nil),
+		controller:  0x15,
 	}
 
 	provider.ApplyEnergyFromRegister(provider.EnergyWindowKey("gas", "hot_water", "day", ""), 3.5)
@@ -3726,8 +3726,7 @@ func TestPublishEnergyTotals_PublishesProviderSnapshot(t *testing.T) {
 	}
 
 	poller := &vaillantSemanticPoller{
-		provider: provider,
-		hub:      hub,
+		publication: newVaillantSemanticPublication(provider, hub, nil),
 	}
 	poller.publishEnergyTotals()
 
@@ -3753,8 +3752,8 @@ func TestPublishFM5Semantic_SkipsConfigOnlyCylinderWithoutTemperature(t *testing
 	maxSetpoint := 60.0
 	chargeOffset := 5.0
 	poller := &vaillantSemanticPoller{
-		provider: provider,
-		fm5Mode:  graphql.Fm5SemanticModeInterpreted,
+		publication: newVaillantSemanticPublication(provider, nil, nil),
+		fm5Mode:     graphql.Fm5SemanticModeInterpreted,
 		solarCylinders: map[byte]*vaillantCylinderSnapshot{
 			0x00: {
 				Instance:         0x00,
@@ -3791,8 +3790,8 @@ func TestPublishFM5Semantic_DowngradeRehydratesCircuitOwnershipToUnknown(t *test
 	module := uint16(2)
 	provider := graphql.NewLiveSemanticProvider()
 	poller := &vaillantSemanticPoller{
-		provider: provider,
-		fm5Mode:  graphql.Fm5SemanticModeInterpreted,
+		publication: newVaillantSemanticPublication(provider, nil, nil),
+		fm5Mode:     graphql.Fm5SemanticModeInterpreted,
 		system: &vaillantSystemSnapshot{
 			SystemScheme:            &scheme,
 			ModuleConfigurationVR71: &module,
@@ -3878,7 +3877,7 @@ func TestVaillantSemanticPoller_DHWTransientCacheFailurePreservesLastKnown(t *te
 
 	provider := graphql.NewLiveSemanticProvider()
 	poller := &vaillantSemanticPoller{
-		provider: provider,
+		publication: newVaillantSemanticPublication(provider, nil, nil),
 		dhw: &vaillantDhwSnapshot{
 			OperatingMode: "auto",
 			Preset:        "schedule",
@@ -3915,8 +3914,7 @@ func TestVaillantSemanticPoller_DHWCacheFailureExpiresAfterTTL(t *testing.T) {
 	provider := graphql.NewLiveSemanticProvider()
 	cacheSpy := &semanticSnapshotCaptureSpy{}
 	poller := &vaillantSemanticPoller{
-		provider: provider,
-		cache:    cacheSpy,
+		publication: newVaillantSemanticPublication(provider, nil, cacheSpy),
 		dhw: &vaillantDhwSnapshot{
 			OperatingMode: "auto",
 			Preset:        "schedule",
@@ -3955,8 +3953,7 @@ func TestVaillantSemanticPoller_HydrateFromCacheSeedsDHWStalenessFromPersistedAt
 	provider := graphql.NewLiveSemanticProvider()
 	cacheSpy := &semanticSnapshotCaptureSpy{}
 	poller := &vaillantSemanticPoller{
-		provider:    provider,
-		cache:       cacheSpy,
+		publication: newVaillantSemanticPublication(provider, nil, cacheSpy),
 		dhwStaleTTL: 15 * time.Minute,
 	}
 	poller.nowFn = func() time.Time { return now }
@@ -3998,7 +3995,7 @@ func TestVaillantSemanticPoller_HydrateFromCacheFallsBackToNowWhenPersistedAtZer
 	current := 45.0
 
 	poller := &vaillantSemanticPoller{
-		provider:    graphql.NewLiveSemanticProvider(),
+		publication: newVaillantSemanticPublication(graphql.NewLiveSemanticProvider(), nil, nil),
 		dhwStaleTTL: 15 * time.Minute,
 	}
 	poller.nowFn = func() time.Time { return now }
@@ -4029,8 +4026,7 @@ func TestVaillantSemanticPoller_DiscoveryLossTTLExpiresDHW(t *testing.T) {
 	provider := graphql.NewLiveSemanticProvider()
 	cacheSpy := &semanticSnapshotCaptureSpy{}
 	poller := &vaillantSemanticPoller{
-		provider:    provider,
-		cache:       cacheSpy,
+		publication: newVaillantSemanticPublication(provider, nil, cacheSpy),
 		dhwStaleTTL: 10 * time.Minute,
 		dhw: &vaillantDhwSnapshot{
 			OperatingMode: "auto",
@@ -4075,8 +4071,7 @@ func TestVaillantSemanticPoller_DiscoveryLossPreservesDHWBeforeTTL(t *testing.T)
 	provider := graphql.NewLiveSemanticProvider()
 	cacheSpy := &semanticSnapshotCaptureSpy{}
 	poller := &vaillantSemanticPoller{
-		provider:    provider,
-		cache:       cacheSpy,
+		publication: newVaillantSemanticPublication(provider, nil, cacheSpy),
 		dhwStaleTTL: 15 * time.Minute,
 		dhw: &vaillantDhwSnapshot{
 			OperatingMode: "auto",
@@ -4132,7 +4127,7 @@ func TestVaillantSemanticPoller_DiscoveryFlapDuringStartup(t *testing.T) {
 	}
 
 	poller := &vaillantSemanticPoller{
-		provider:    provider,
+		publication: newVaillantSemanticPublication(provider, nil, nil),
 		dhwStaleTTL: 30 * time.Minute,
 	}
 	poller.nowFn = func() time.Time { return now }
@@ -4269,7 +4264,7 @@ func TestVaillantSemanticPoller_PublishZones_SeparatesRoomTemperatureZoneMapping
 	associatedCircuit := uint16(resolveAssociatedCircuitInstance(&roomTemperatureZoneMapping, 1))
 
 	poller := &vaillantSemanticPoller{
-		provider: provider,
+		publication: newVaillantSemanticPublication(provider, nil, nil),
 		zones: map[byte]*vaillantZoneSnapshot{
 			0x01: {
 				Instance:      0x01,
@@ -4312,7 +4307,7 @@ func TestVaillantSemanticPoller_PublishZones_FillsRoomStateFromMappedRadioSensor
 	thermostatHumidity := 53.0
 
 	poller := &vaillantSemanticPoller{
-		provider: provider,
+		publication: newVaillantSemanticPublication(provider, nil, nil),
 		zones: map[byte]*vaillantZoneSnapshot{
 			0x00: {
 				Instance: 0x00,
@@ -4376,8 +4371,7 @@ func TestVaillantSemanticPoller_PublishZones_InfersThermostatMappingFromRadioAss
 	radioHumidity := 53.0
 
 	poller := &vaillantSemanticPoller{
-		provider: provider,
-		cache:    cache,
+		publication: newVaillantSemanticPublication(provider, nil, cache),
 		zones: map[byte]*vaillantZoneSnapshot{
 			0x01: {
 				Instance: 0x01,
@@ -4440,8 +4434,7 @@ func TestVaillantSemanticPoller_PublishZones_DoesNotInferAmbiguousThermostatAssi
 	secondTemp := 18.25
 
 	poller := &vaillantSemanticPoller{
-		provider: provider,
-		cache:    cache,
+		publication: newVaillantSemanticPublication(provider, nil, cache),
 		zones: map[byte]*vaillantZoneSnapshot{
 			0x01: {
 				Instance: 0x01,
@@ -4505,7 +4498,7 @@ func TestVaillantSemanticPoller_PublishZones_KeepsDirectRoomStateOverRadioFallba
 	radioHumidity := 53.0
 
 	poller := &vaillantSemanticPoller{
-		provider: provider,
+		publication: newVaillantSemanticPublication(provider, nil, nil),
 		zones: map[byte]*vaillantZoneSnapshot{
 			0x01: {
 				Instance:     0x01,
@@ -4552,8 +4545,7 @@ func TestVaillantSemanticPoller_PublishZones_RadioFallbackDoesNotPersistAsDirect
 	radioHumidity := 53.0
 
 	poller := &vaillantSemanticPoller{
-		provider: provider,
-		cache:    cache,
+		publication: newVaillantSemanticPublication(provider, nil, cache),
 		zones: map[byte]*vaillantZoneSnapshot{
 			0x01: {
 				Instance: 0x01,
@@ -4605,7 +4597,7 @@ func TestVaillantSemanticPoller_PublishZones_SkipsUnknownRoomSensorMappingFallba
 			connected := true
 			radioTemp := 17.6875
 			poller := &vaillantSemanticPoller{
-				provider: provider,
+				publication: newVaillantSemanticPublication(provider, nil, nil),
 				zones: map[byte]*vaillantZoneSnapshot{
 					0x01: {
 						Instance: 0x01,
@@ -5307,7 +5299,7 @@ func TestVaillantSemanticPoller_RefreshDiscoverySetsRegulatorCapability(t *testi
 	provider := graphql.NewLiveSemanticProvider()
 	poller := &vaillantSemanticPoller{
 		reg:               reg,
-		provider:          provider,
+		publication:       newVaillantSemanticPublication(provider, nil, nil),
 		catalog:           catalog,
 		zones:             make(map[byte]*vaillantZoneSnapshot),
 		presence:          make(map[byte]*zonePresenceRecord),
@@ -5352,7 +5344,7 @@ func TestVaillantSemanticPoller_RefreshDiscoveryNoBasvSetsRegulatorCapability(t 
 	provider := graphql.NewLiveSemanticProvider()
 	poller := &vaillantSemanticPoller{
 		reg:               reg,
-		provider:          provider,
+		publication:       newVaillantSemanticPublication(provider, nil, nil),
 		catalog:           catalog,
 		zones:             make(map[byte]*vaillantZoneSnapshot),
 		presence:          make(map[byte]*zonePresenceRecord),
@@ -5888,7 +5880,7 @@ func TestReconcileDiscoveryPresence_PublishesStartupZonesOnFirstHit(t *testing.T
 
 	provider := graphql.NewLiveSemanticProvider()
 	poller := &vaillantSemanticPoller{
-		provider:         provider,
+		publication:      newVaillantSemanticPublication(provider, nil, nil),
 		zones:            make(map[byte]*vaillantZoneSnapshot),
 		presence:         make(map[byte]*zonePresenceRecord),
 		zoneHitThreshold: 2,
@@ -6771,7 +6763,7 @@ func TestRefreshRadioDevicesSkipsVolatileDetailsForDisconnectedFunctionalModuleI
 	var selectors [][]byte
 	poller := &vaillantSemanticPoller{
 		scheduler:                ebusgateway.NewSemanticReadScheduler(),
-		provider:                 graphql.NewLiveSemanticProvider(),
+		publication:              newVaillantSemanticPublication(graphql.NewLiveSemanticProvider(), nil, nil),
 		reg:                      newTestRegistry(),
 		source:                   0x7F,
 		controller:               0x15,
@@ -6846,7 +6838,7 @@ func TestRefreshRadioDevicesClearsStaleSnapshotsWhenDiscoveryFindsNoRefreshableS
 
 	poller := &vaillantSemanticPoller{
 		scheduler:      ebusgateway.NewSemanticReadScheduler(),
-		provider:       graphql.NewLiveSemanticProvider(),
+		publication:    newVaillantSemanticPublication(graphql.NewLiveSemanticProvider(), nil, nil),
 		source:         0x7F,
 		controller:     0x15,
 		requestTimeout: 50 * time.Millisecond,
@@ -6880,7 +6872,7 @@ func TestRefreshRadioDevicesPreservesSnapshotsWhenRediscoveryOnlyTimesOut(t *tes
 
 	poller := &vaillantSemanticPoller{
 		scheduler:                ebusgateway.NewSemanticReadScheduler(),
-		provider:                 graphql.NewLiveSemanticProvider(),
+		publication:              newVaillantSemanticPublication(graphql.NewLiveSemanticProvider(), nil, nil),
 		source:                   0x7F,
 		controller:               0x15,
 		requestTimeout:           50 * time.Millisecond,
@@ -6986,7 +6978,7 @@ func TestAcquireEnergy_BoundaryCrossingDiscardsLaterReplies(t *testing.T) {
 	clock := time.Date(2026, time.December, 31, 23, 59, 59, 0, time.UTC)
 	provider := graphql.NewLiveSemanticProvider()
 	provider.SetEnergyClock(func() time.Time { return clock })
-	poller := &vaillantSemanticPoller{provider: provider}
+	poller := &vaillantSemanticPoller{publication: newVaillantSemanticPublication(provider, nil, nil)}
 
 	calls := 0
 	poller.acquireEnergy(func(q b524EnergyQuery, _ time.Time) (uint32, bool) {
@@ -7075,7 +7067,7 @@ func TestReadEnergyRegister_MonthlyNeverServedFromCache(t *testing.T) {
 func newFallbackGatePoller(controller byte, zoneKnown bool, state regulatorAbsenceState, probes *int) *vaillantSemanticPoller {
 	poller := &vaillantSemanticPoller{
 		reg:               newTestRegistry(registry.DeviceInfo{Address: 0x08, Manufacturer: "Vaillant", DeviceID: "BAI00"}),
-		provider:          graphql.NewLiveSemanticProvider(),
+		publication:       newVaillantSemanticPublication(graphql.NewLiveSemanticProvider(), nil, nil),
 		controller:        controller,
 		regAbsenceState:   state,
 		discoveryInterval: 10 * time.Minute,
@@ -7191,7 +7183,7 @@ func TestVaillantSemanticPollerFallbackSuspensionLogsOnTransition(t *testing.T) 
 	// provider, so the successful pass runs no startup priming in this test;
 	// a task queue, as in production, so the controller priming is queued and
 	// no other refresh re-evaluates the gate before the check.
-	poller.provider = nil
+	poller.publication = newVaillantSemanticPublication(nil, poller.broadcastHub(), poller.cachePersister())
 	poller.tasks = newSemanticTaskScheduler()
 	poller.b524ProbeFn = func(_ context.Context, target, _, _, _ byte, _ uint16) bool {
 		probes++

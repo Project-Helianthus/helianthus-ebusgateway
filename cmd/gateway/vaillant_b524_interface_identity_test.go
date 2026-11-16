@@ -52,8 +52,8 @@ func newB524InterfaceIdentityFixture(t *testing.T) (*registry.DeviceRegistry, *v
 	}}
 	poller := &vaillantSemanticPoller{
 		reg: reg, controller: 0x15, source: 0x71,
-		provider: graphql.NewLiveSemanticProvider(),
-		system:   &vaillantSystemSnapshot{Controller: 0x15}, sendFrameFn: bus.Send,
+		publication: newVaillantSemanticPublication(graphql.NewLiveSemanticProvider(), nil, nil),
+		system:      &vaillantSystemSnapshot{Controller: 0x15}, sendFrameFn: bus.Send,
 	}
 	t.Cleanup(func() { b524InterfaceIdentityStores.Delete(reg) })
 	return reg, poller, bus
@@ -66,11 +66,11 @@ func assertB524InterfaceBound(t *testing.T, poller *vaillantSemanticPoller, max 
 		t.Fatalf("discovery bound = %+v; want -20..%g source %s", bound, max, source)
 	}
 	poller.publishSystem(semanticSnapshotSourceLive)
-	published := poller.provider.System().Config.DhwBivalenceBound
+	published := poller.liveProvider().System().Config.DhwBivalenceBound
 	if published == nil || published.MinC != bound.MinC || published.MaxC != bound.MaxC || published.Source != bound.Source {
 		t.Fatalf("published bound = %+v; want %+v", published, bound)
 	}
-	mcpSystem := (mcpSemanticProviderAdapter{provider: poller.provider}).System()
+	mcpSystem := (mcpSemanticProviderAdapter{provider: poller.liveProvider()}).System()
 	if mcpSystem == nil || mcpSystem.Config == nil || mcpSystem.Config.DhwBivalenceBound == nil {
 		t.Fatal("MCP bound absent")
 	}

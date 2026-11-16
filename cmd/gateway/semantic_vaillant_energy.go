@@ -53,7 +53,7 @@ var b524EnergyQueries = []b524EnergyQuery{
 }
 
 func (p *vaillantSemanticPoller) refreshEnergy(ctx context.Context) {
-	if p == nil || p.provider == nil {
+	if p == nil || p.liveProvider() == nil {
 		return
 	}
 
@@ -76,7 +76,7 @@ func (p *vaillantSemanticPoller) refreshEnergy(ctx context.Context) {
 // reply read after the crossing is discarded (its relative window would be
 // mislabelled) and the acquisition stops; the next poll re-acquires.
 func (p *vaillantSemanticPoller) acquireEnergy(read func(b524EnergyQuery, time.Time) (uint32, bool)) {
-	ref := p.provider.EnergyReferenceTime()
+	ref := p.liveProvider().EnergyReferenceTime()
 	accepted, failed := 0, 0
 	for _, q := range b524EnergyQueries {
 		val, ok := read(q, ref)
@@ -84,18 +84,18 @@ func (p *vaillantSemanticPoller) acquireEnergy(read func(b524EnergyQuery, time.T
 			failed++
 			continue
 		}
-		if now := p.provider.EnergyReferenceTime(); now.Year() != ref.Year() || now.Month() != ref.Month() {
+		if now := p.liveProvider().EnergyReferenceTime(); now.Year() != ref.Year() || now.Month() != ref.Month() {
 			log.Printf("semantic energy b524: window boundary crossed during acquisition (ref=%s now=%s); discarding remaining replies", ref.Format("2006-01"), now.Format("2006-01"))
 			failed++
 			break
 		}
 		kwh := float64(val)
 
-		key := p.provider.EnergyLifetimeKey(q.channel, q.usage)
+		key := p.liveProvider().EnergyLifetimeKey(q.channel, q.usage)
 		if q.period != "all" {
-			key = p.provider.EnergyWindowKeyAt(q.channel, q.usage, q.period, q.yearKind, ref)
+			key = p.liveProvider().EnergyWindowKeyAt(q.channel, q.usage, q.period, q.yearKind, ref)
 		}
-		if p.provider.ApplyEnergyFromRegister(key, kwh) {
+		if p.liveProvider().ApplyEnergyFromRegister(key, kwh) {
 			accepted++
 		}
 	}

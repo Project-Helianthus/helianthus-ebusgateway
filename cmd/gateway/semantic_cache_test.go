@@ -250,8 +250,7 @@ func TestVaillantSemanticPoller_PersistsOnlyOnLivePublish(t *testing.T) {
 	current := 21.5
 	target := 22.0
 	poller := &vaillantSemanticPoller{
-		provider: provider,
-		cache:    cacheSpy,
+		publication: newVaillantSemanticPublication(provider, nil, cacheSpy),
 		zones: map[byte]*vaillantZoneSnapshot{
 			0x00: {
 				Instance:      0x00,
@@ -314,10 +313,9 @@ func TestVaillantSemanticPoller_CachePublishKeepsPreloadedSnapshotWhenEmpty(t *t
 	provider.SetDHWFromCache(preloadedDHW)
 
 	poller := &vaillantSemanticPoller{
-		provider: provider,
-		cache:    &semanticCachePersisterSpy{},
-		zones:    map[byte]*vaillantZoneSnapshot{},
-		dhw:      nil,
+		publication: newVaillantSemanticPublication(provider, nil, &semanticCachePersisterSpy{}),
+		zones:       map[byte]*vaillantZoneSnapshot{},
+		dhw:         nil,
 	}
 
 	poller.publishZones(semanticSnapshotSourceCache)

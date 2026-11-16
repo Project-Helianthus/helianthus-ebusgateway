@@ -71,20 +71,21 @@ func (p *vaillantSemanticPoller) attachBoilerThermal(hub *semhub.Hub, handle fun
 	}
 	pub := &boilerThermalPublisher{hub: hub, handle: handle, start: time.Now()}
 	pub.onControl = func(semhub.ControlEvent) error {
-		p.boilerPublishMu.Lock()
-		defer p.boilerPublishMu.Unlock()
+		boilerPublish := p.boilerPublishLock()
+		boilerPublish.Lock()
+		defer boilerPublish.Unlock()
 		p.mu.Lock()
 		if p.boiler != nil {
 			p.boiler.FlowTemperatureC = nil
 		}
 		p.mu.Unlock()
-		if p.provider != nil {
-			status := p.provider.BoilerStatus()
+		if p.liveProvider() != nil {
+			status := p.liveProvider().BoilerStatus()
 			if status != nil && status.State.FlowTemperatureC != nil {
 				status.State.FlowTemperatureC = nil
-				p.provider.SetBoilerStatus(status)
-				if p.hub != nil {
-					p.hub.PublishBoilerStatusUpdate(status)
+				p.liveProvider().SetBoilerStatus(status)
+				if p.broadcastHub() != nil {
+					p.broadcastHub().PublishBoilerStatusUpdate(status)
 				}
 			}
 		}

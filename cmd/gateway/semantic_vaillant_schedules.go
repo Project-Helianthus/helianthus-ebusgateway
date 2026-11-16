@@ -235,7 +235,7 @@ func (p *vaillantSemanticPoller) SetDhwTimeProgram(ctx context.Context, weekday 
 }
 
 func (p *vaillantSemanticPoller) refreshScheduleForProgram(ctx context.Context, zone, hc, weekday byte) {
-	if p == nil || p.bus == nil || p.provider == nil {
+	if p == nil || p.bus == nil || p.liveProvider() == nil {
 		return
 	}
 
@@ -272,7 +272,7 @@ func (p *vaillantSemanticPoller) refreshScheduleForProgram(ctx context.Context, 
 		timerSlots = append(timerSlots, *slot)
 	}
 
-	status := p.provider.Schedules()
+	status := p.liveProvider().Schedules()
 	if status == nil {
 		return
 	}
@@ -297,7 +297,7 @@ func (p *vaillantSemanticPoller) refreshScheduleForProgram(ctx context.Context, 
 			if slotsPerDay != nil {
 				status.Programs[i].SlotsUsed = slotsPerDay
 			}
-			p.provider.SetSchedules(status)
+			p.liveProvider().SetSchedules(status)
 			return
 		}
 	}
@@ -385,7 +385,7 @@ type b555ProgramSpec struct {
 
 // refreshSchedules polls B555 timer schedules and publishes to the semantic provider.
 func (p *vaillantSemanticPoller) refreshSchedules(ctx context.Context) {
-	if p == nil || p.bus == nil || p.provider == nil {
+	if p == nil || p.bus == nil || p.liveProvider() == nil {
 		return
 	}
 
@@ -485,7 +485,7 @@ func (p *vaillantSemanticPoller) refreshSchedules(ctx context.Context) {
 	}
 
 	if len(programs) > 0 {
-		p.provider.SetSchedules(&graphql.ScheduleStatus{
+		p.liveProvider().SetSchedules(&graphql.ScheduleStatus{
 			Programs: programs,
 		})
 	}

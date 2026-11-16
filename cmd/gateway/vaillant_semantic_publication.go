@@ -5,28 +5,95 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	"github.com/Project-Helianthus/helianthus-ebusreg/vaillant/productids"
 )
 
+// vaillantSemanticPublication owns the collaborators through which the
+// Vaillant poller publishes its snapshots: the GraphQL provider, the
+// broadcast hub and the semantic cache persister. It holds no bus access.
+//
+// boilerPublishMu orders GraphQL boiler-status publication against the
+// thermal withdrawal: publishBoilerStatus and the thermal publisher's
+// control callback each hold it across their read, change and publish of
+// the provider's boiler status, so a withdrawn flow temperature is never
+// overwritten by an interleaved publication and neither path publishes a
+// status the other is still changing. The lock guards no other state.
+type vaillantSemanticPublication struct {
+	provider *graphql.LiveSemanticProvider
+	hub      *graphql.BroadcastHub
+	cache    semanticCachePersister
+
+	boilerPublishMu sync.Mutex
+}
+
+func newVaillantSemanticPublication(provider *graphql.LiveSemanticProvider, hub *graphql.BroadcastHub, cache semanticCachePersister) *vaillantSemanticPublication {
+	return &vaillantSemanticPublication{provider: provider, hub: hub, cache: cache}
+}
+
+// vaillantPublicationNoLock is the publish lock of a poller without a
+// publication owner, such as the registry-only classifier built during the
+// startup scan: it never publishes, so there is nothing to order.
+type vaillantPublicationNoLock struct{}
+
+func (vaillantPublicationNoLock) Lock()   {}
+func (vaillantPublicationNoLock) Unlock() {}
+
+// liveProvider returns the GraphQL provider, or nil when the poller has no
+// publication owner.
+func (p *vaillantSemanticPoller) liveProvider() *graphql.LiveSemanticProvider {
+	if p == nil || p.publication == nil {
+		return nil
+	}
+	return p.publication.provider
+}
+
+// broadcastHub returns the broadcast hub, or nil when the poller has no
+// publication owner.
+func (p *vaillantSemanticPoller) broadcastHub() *graphql.BroadcastHub {
+	if p == nil || p.publication == nil {
+		return nil
+	}
+	return p.publication.hub
+}
+
+// cachePersister returns the semantic cache persister, or nil when the
+// poller has no publication owner.
+func (p *vaillantSemanticPoller) cachePersister() semanticCachePersister {
+	if p == nil || p.publication == nil {
+		return nil
+	}
+	return p.publication.cache
+}
+
+// boilerPublishLock returns the owner's boiler publication lock, or a
+// no-op lock when the poller has no publication owner.
+func (p *vaillantSemanticPoller) boilerPublishLock() sync.Locker {
+	if p == nil || p.publication == nil {
+		return vaillantPublicationNoLock{}
+	}
+	return &p.publication.boilerPublishMu
+}
+
 func (p *vaillantSemanticPoller) publishRegulatorCapability(capability productids.ControllerCapability) {
-	if p == nil || p.provider == nil {
+	if p == nil || p.liveProvider() == nil {
 		return
 	}
 	switch capability {
 	case productids.ControllerPresent:
-		p.provider.SetVaillantRegulatorCapability(graphql.VaillantRegulatorCapabilityPresent)
+		p.liveProvider().SetVaillantRegulatorCapability(graphql.VaillantRegulatorCapabilityPresent)
 	case productids.ControllerNone:
-		p.provider.SetVaillantRegulatorCapability(graphql.VaillantRegulatorCapabilityNone)
+		p.liveProvider().SetVaillantRegulatorCapability(graphql.VaillantRegulatorCapabilityNone)
 	default:
-		p.provider.SetVaillantRegulatorCapability(graphql.VaillantRegulatorCapabilityUnknown)
+		p.liveProvider().SetVaillantRegulatorCapability(graphql.VaillantRegulatorCapabilityUnknown)
 	}
 }
 
 func (p *vaillantSemanticPoller) publishZones(source semanticSnapshotSource) {
-	if p.provider == nil {
+	if p.liveProvider() == nil {
 		return
 	}
 
@@ -106,25 +173,25 @@ func (p *vaillantSemanticPoller) publishZones(source semanticSnapshotSource) {
 	}
 	p.mu.Unlock()
 
-	previous := p.provider.Zones()
+	previous := p.liveProvider().Zones()
 	if source == semanticSnapshotSourceCache && len(zones) == 0 && len(previous) > 0 {
 		return
 	}
 	switch source {
 	case semanticSnapshotSourceCache:
-		p.provider.SetZonesFromCache(zones)
+		p.liveProvider().SetZonesFromCache(zones)
 	default:
-		p.provider.SetZones(zones)
+		p.liveProvider().SetZones(zones)
 	}
 
-	if p.hub != nil {
+	if p.broadcastHub() != nil {
 		prevByID := make(map[string]graphql.Zone, len(previous))
 		for _, z := range previous {
 			prevByID[z.ID] = z
 		}
 		for _, zone := range zones {
 			if !zoneEquals(prevByID[zone.ID], zone) {
-				p.hub.PublishZoneUpdate(zone)
+				p.broadcastHub().PublishZoneUpdate(zone)
 			}
 		}
 	}
@@ -132,18 +199,18 @@ func (p *vaillantSemanticPoller) publishZones(source semanticSnapshotSource) {
 }
 
 func (p *vaillantSemanticPoller) publishEnergyTotals() {
-	if p == nil || p.provider == nil || p.hub == nil {
+	if p == nil || p.liveProvider() == nil || p.broadcastHub() == nil {
 		return
 	}
-	totals := p.provider.EnergyTotals()
+	totals := p.liveProvider().EnergyTotals()
 	if totals == nil {
 		return
 	}
-	p.hub.PublishEnergyUpdate(totals)
+	p.broadcastHub().PublishEnergyUpdate(totals)
 }
 
 func (p *vaillantSemanticPoller) publishDHW(source semanticSnapshotSource) {
-	if p.provider == nil {
+	if p.liveProvider() == nil {
 		return
 	}
 
@@ -152,19 +219,19 @@ func (p *vaillantSemanticPoller) publishDHW(source semanticSnapshotSource) {
 	snapshot := p.dhw
 	p.mu.Unlock()
 
-	previous := p.provider.DHW()
+	previous := p.liveProvider().DHW()
 	if snapshot == nil {
 		if source == semanticSnapshotSourceCache && previous != nil && !expired {
 			return
 		}
 		switch source {
 		case semanticSnapshotSourceCache:
-			p.provider.SetDHWFromCache(nil)
+			p.liveProvider().SetDHWFromCache(nil)
 		default:
-			p.provider.SetDHW(nil)
+			p.liveProvider().SetDHW(nil)
 		}
-		if previous != nil && p.hub != nil {
-			p.hub.PublishDHWUpdate(nil)
+		if previous != nil && p.broadcastHub() != nil {
+			p.broadcastHub().PublishDHWUpdate(nil)
 		}
 		if expired {
 			p.persistSemanticSnapshot()
@@ -190,18 +257,18 @@ func (p *vaillantSemanticPoller) publishDHW(source semanticSnapshotSource) {
 
 	switch source {
 	case semanticSnapshotSourceCache:
-		p.provider.SetDHWFromCache(current)
+		p.liveProvider().SetDHWFromCache(current)
 	default:
-		p.provider.SetDHW(current)
+		p.liveProvider().SetDHW(current)
 	}
-	if p.hub != nil && !dhwEquals(previous, current) {
-		p.hub.PublishDHWUpdate(current)
+	if p.broadcastHub() != nil && !dhwEquals(previous, current) {
+		p.broadcastHub().PublishDHWUpdate(current)
 	}
 	p.persistSemanticCache(source)
 }
 
 func (p *vaillantSemanticPoller) publishCircuits(source semanticSnapshotSource) {
-	if p == nil || p.provider == nil {
+	if p == nil || p.liveProvider() == nil {
 		return
 	}
 
@@ -258,7 +325,7 @@ func (p *vaillantSemanticPoller) publishCircuits(source semanticSnapshotSource) 
 		out = append(out, status)
 	}
 
-	previous := p.provider.Circuits()
+	previous := p.liveProvider().Circuits()
 	if len(out) == 0 && previous == nil {
 		return
 	}
@@ -267,12 +334,12 @@ func (p *vaillantSemanticPoller) publishCircuits(source semanticSnapshotSource) 
 	}
 	switch source {
 	case semanticSnapshotSourceCache:
-		p.provider.SetCircuitsFromCache(out)
+		p.liveProvider().SetCircuitsFromCache(out)
 	default:
-		p.provider.SetCircuits(out)
+		p.liveProvider().SetCircuits(out)
 	}
-	if p.hub != nil && !circuitsEqual(previous, out) {
-		publisher := reflect.ValueOf(p.hub).MethodByName("PublishCircuitsUpdate")
+	if p.broadcastHub() != nil && !circuitsEqual(previous, out) {
+		publisher := reflect.ValueOf(p.broadcastHub()).MethodByName("PublishCircuitsUpdate")
 		if publisher.IsValid() && publisher.Type().NumIn() == 1 {
 			arg := reflect.ValueOf(out)
 			paramType := publisher.Type().In(0)
@@ -288,27 +355,28 @@ func (p *vaillantSemanticPoller) publishCircuits(source semanticSnapshotSource) 
 }
 
 func (p *vaillantSemanticPoller) publishBoilerStatus(source semanticSnapshotSource) {
-	if p == nil || p.provider == nil {
+	if p == nil || p.liveProvider() == nil {
 		return
 	}
 
-	p.boilerPublishMu.Lock()
-	defer p.boilerPublishMu.Unlock()
+	boilerPublish := p.boilerPublishLock()
+	boilerPublish.Lock()
+	defer boilerPublish.Unlock()
 
 	p.mergePublishedBoilerFlow()
 	p.mu.Lock()
 	snapshot := cloneBoilerSnapshot(p.boiler)
 	p.mu.Unlock()
 
-	previous := p.provider.BoilerStatus()
+	previous := p.liveProvider().BoilerStatus()
 
 	if snapshot == nil {
 		if previous != nil {
 			switch source {
 			case semanticSnapshotSourceCache:
-				p.provider.SetBoilerStatusFromCache(nil)
+				p.liveProvider().SetBoilerStatusFromCache(nil)
 			default:
-				p.provider.SetBoilerStatus(nil)
+				p.liveProvider().SetBoilerStatus(nil)
 			}
 		}
 		return
@@ -369,18 +437,18 @@ func (p *vaillantSemanticPoller) publishBoilerStatus(source semanticSnapshotSour
 
 	switch source {
 	case semanticSnapshotSourceCache:
-		p.provider.SetBoilerStatusFromCache(current)
+		p.liveProvider().SetBoilerStatusFromCache(current)
 	default:
-		p.provider.SetBoilerStatus(current)
+		p.liveProvider().SetBoilerStatus(current)
 	}
-	if p.hub != nil && !boilerStatusEquals(previous, current) {
-		p.hub.PublishBoilerStatusUpdate(current)
+	if p.broadcastHub() != nil && !boilerStatusEquals(previous, current) {
+		p.broadcastHub().PublishBoilerStatusUpdate(current)
 	}
 	p.persistSemanticCache(source)
 }
 
 func (p *vaillantSemanticPoller) publishRadioDevices(source semanticSnapshotSource) {
-	if p == nil || p.provider == nil {
+	if p == nil || p.liveProvider() == nil {
 		return
 	}
 
@@ -437,24 +505,24 @@ func (p *vaillantSemanticPoller) publishRadioDevices(source semanticSnapshotSour
 		})
 	}
 
-	previous := p.provider.RadioDevices()
+	previous := p.liveProvider().RadioDevices()
 	if source == semanticSnapshotSourceCache && len(out) == 0 && len(previous) > 0 {
 		return
 	}
 	switch source {
 	case semanticSnapshotSourceCache:
-		p.provider.SetRadioDevicesFromCache(out)
+		p.liveProvider().SetRadioDevicesFromCache(out)
 	default:
-		p.provider.SetRadioDevices(out)
+		p.liveProvider().SetRadioDevices(out)
 	}
-	if p.hub != nil && !radioDevicesEqual(previous, out) {
-		p.hub.PublishRadioDevicesUpdate(out)
+	if p.broadcastHub() != nil && !radioDevicesEqual(previous, out) {
+		p.broadcastHub().PublishRadioDevicesUpdate(out)
 	}
 	p.persistSemanticCache(source)
 }
 
 func (p *vaillantSemanticPoller) publishSystem(source semanticSnapshotSource) {
-	if p == nil || p.provider == nil {
+	if p == nil || p.liveProvider() == nil {
 		return
 	}
 
@@ -462,13 +530,13 @@ func (p *vaillantSemanticPoller) publishSystem(source semanticSnapshotSource) {
 	snapshot := cloneSystemSnapshot(p.system)
 	p.mu.Unlock()
 
-	previous := p.provider.System()
+	previous := p.liveProvider().System()
 	if snapshot == nil {
 		switch source {
 		case semanticSnapshotSourceCache:
-			p.provider.SetSystemFromCache(nil)
+			p.liveProvider().SetSystemFromCache(nil)
 		default:
-			p.provider.SetSystem(nil)
+			p.liveProvider().SetSystem(nil)
 		}
 		return
 	}
@@ -507,13 +575,13 @@ func (p *vaillantSemanticPoller) publishSystem(source semanticSnapshotSource) {
 
 	switch source {
 	case semanticSnapshotSourceCache:
-		p.provider.SetSystemFromCache(current)
+		p.liveProvider().SetSystemFromCache(current)
 	default:
-		p.provider.SetSystem(current)
+		p.liveProvider().SetSystem(current)
 	}
 
-	if p.hub != nil && !systemStatusEquals(previous, current) {
-		publisher := reflect.ValueOf(p.hub).MethodByName("PublishSystemUpdate")
+	if p.broadcastHub() != nil && !systemStatusEquals(previous, current) {
+		publisher := reflect.ValueOf(p.broadcastHub()).MethodByName("PublishSystemUpdate")
 		if publisher.IsValid() && publisher.Type().NumIn() == 1 {
 			arg := reflect.ValueOf(current)
 			paramType := publisher.Type().In(0)
@@ -531,7 +599,7 @@ func (p *vaillantSemanticPoller) publishSystem(source semanticSnapshotSource) {
 }
 
 func (p *vaillantSemanticPoller) publishFM5Semantic(source semanticSnapshotSource) {
-	if p == nil || p.provider == nil {
+	if p == nil || p.liveProvider() == nil {
 		return
 	}
 
@@ -543,9 +611,9 @@ func (p *vaillantSemanticPoller) publishFM5Semantic(source semanticSnapshotSourc
 
 	switch source {
 	case semanticSnapshotSourceCache:
-		p.provider.SetFM5InterpretationFromCache(verdict)
+		p.liveProvider().SetFM5InterpretationFromCache(verdict)
 	default:
-		p.provider.SetFM5Interpretation(verdict)
+		p.liveProvider().SetFM5Interpretation(verdict)
 	}
 
 	if isFM5StructuralWithdrawal(verdict) || (solarSnapshot == nil && len(cylindersSnapshot) == 0) {
@@ -553,11 +621,11 @@ func (p *vaillantSemanticPoller) publishFM5Semantic(source semanticSnapshotSourc
 		emptyCylinders := []graphql.CylinderStatus{}
 		switch source {
 		case semanticSnapshotSourceCache:
-			p.provider.SetSolarFromCache(emptySolar)
-			p.provider.SetCylindersFromCache(emptyCylinders)
+			p.liveProvider().SetSolarFromCache(emptySolar)
+			p.liveProvider().SetCylindersFromCache(emptyCylinders)
 		default:
-			p.provider.SetSolar(emptySolar)
-			p.provider.SetCylinders(emptyCylinders)
+			p.liveProvider().SetSolar(emptySolar)
+			p.liveProvider().SetCylinders(emptyCylinders)
 		}
 		p.publishCircuits(source)
 		return
@@ -598,11 +666,11 @@ func (p *vaillantSemanticPoller) publishFM5Semantic(source semanticSnapshotSourc
 
 	switch source {
 	case semanticSnapshotSourceCache:
-		p.provider.SetSolarFromCache(solar)
-		p.provider.SetCylindersFromCache(cylinders)
+		p.liveProvider().SetSolarFromCache(solar)
+		p.liveProvider().SetCylindersFromCache(cylinders)
 	default:
-		p.provider.SetSolar(solar)
-		p.provider.SetCylinders(cylinders)
+		p.liveProvider().SetSolar(solar)
+		p.liveProvider().SetCylinders(cylinders)
 	}
 
 	p.publishCircuits(source)
@@ -662,16 +730,16 @@ func (p *vaillantSemanticPoller) persistSemanticCache(source semanticSnapshotSou
 }
 
 func (p *vaillantSemanticPoller) persistSemanticSnapshot() {
-	if p == nil || p.cache == nil || p.provider == nil {
+	if p == nil || p.cachePersister() == nil || p.liveProvider() == nil {
 		return
 	}
 	p.mu.Lock()
-	zones := p.cacheZonesLocked(p.provider.Zones())
+	zones := p.cacheZonesLocked(p.liveProvider().Zones())
 	p.mu.Unlock()
-	_ = p.cache.Save(semanticCacheSnapshot{
+	_ = p.cachePersister().Save(semanticCacheSnapshot{
 		Zones:  zones,
-		DHW:    p.provider.DHW(),
-		Boiler: p.provider.BoilerStatus(),
+		DHW:    p.liveProvider().DHW(),
+		Boiler: p.liveProvider().BoilerStatus(),
 	})
 }
 

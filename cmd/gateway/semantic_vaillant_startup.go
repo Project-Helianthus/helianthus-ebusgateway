@@ -106,7 +106,7 @@ func (p *vaillantSemanticPoller) refreshStartupSemanticPlanes(ctx context.Contex
 	if controller == 0 {
 		return
 	}
-	if p.provider == nil {
+	if p.liveProvider() == nil {
 		return
 	}
 
@@ -186,22 +186,22 @@ func (p *vaillantSemanticPoller) refreshStartupSemanticPlanes(ctx context.Contex
 }
 
 func (p *vaillantSemanticPoller) publishStartupPlaneDefaults() {
-	if p == nil || p.provider == nil {
+	if p == nil || p.liveProvider() == nil {
 		return
 	}
-	if p.provider.Circuits() == nil {
-		p.provider.SetCircuits([]graphql.CircuitStatus{})
+	if p.liveProvider().Circuits() == nil {
+		p.liveProvider().SetCircuits([]graphql.CircuitStatus{})
 	}
-	if p.provider.Solar() == nil {
-		p.provider.SetSolar(&graphql.SolarStatus{})
+	if p.liveProvider().Solar() == nil {
+		p.liveProvider().SetSolar(&graphql.SolarStatus{})
 	}
-	if p.provider.Cylinders() == nil {
-		p.provider.SetCylinders([]graphql.CylinderStatus{})
+	if p.liveProvider().Cylinders() == nil {
+		p.liveProvider().SetCylinders([]graphql.CylinderStatus{})
 	}
 }
 
 func (p *vaillantSemanticPoller) refreshStartupCriticalSemanticPlanes(ctx context.Context) {
-	if p == nil || p.provider == nil {
+	if p == nil || p.liveProvider() == nil {
 		return
 	}
 
@@ -305,7 +305,7 @@ func (status startupL1PrimingStatus) String() string {
 }
 
 func (p *vaillantSemanticPoller) startupL1PrimingStatus() startupL1PrimingStatus {
-	if p == nil || p.provider == nil {
+	if p == nil || p.liveProvider() == nil {
 		return startupL1PrimingStatus{}
 	}
 	p.mu.Lock()
@@ -326,12 +326,12 @@ func (p *vaillantSemanticPoller) startupL1PrimingStatus() startupL1PrimingStatus
 	liveFM5Evidence := hasFM5EvidenceFromRadioSnapshots(radioSnapshots)
 	fm5Evidence := liveFM5Evidence || (!fm5RegistryEvidenceIgnored && p.hasFM5RegistryEvidence())
 	fm5Required := fm5Evidence && moduleConfig != nil && *moduleConfig <= 2
-	zonesReady := p.provider.Zones() != nil
-	solarReady := p.provider.Solar() != nil
-	cylinders := p.provider.Cylinders()
+	zonesReady := p.liveProvider().Zones() != nil
+	solarReady := p.liveProvider().Solar() != nil
+	cylinders := p.liveProvider().Cylinders()
 	cylindersPublished := cylinders != nil
 	interpretedCylindersReady := len(cylinders) > 0
-	fm5Mode := p.provider.FM5SemanticMode()
+	fm5Mode := p.liveProvider().FM5SemanticMode()
 	fm5NonInterpretedPublished := fm5Evidence &&
 		fm5Mode == graphql.Fm5SemanticModeGPIOOnly &&
 		solarReady &&
@@ -342,17 +342,17 @@ func (p *vaillantSemanticPoller) startupL1PrimingStatus() startupL1PrimingStatus
 		(fm5Required && solarReady && interpretedCylindersReady)
 	return startupL1PrimingStatus{
 		zones:        zonesReady,
-		dhw:          p.provider.DHW() != nil,
-		circuits:     p.provider.Circuits() != nil,
-		system:       p.provider.System() != nil,
-		radioDevices: radioProbed || len(p.provider.RadioDevices()) > 0,
+		dhw:          p.liveProvider().DHW() != nil,
+		circuits:     p.liveProvider().Circuits() != nil,
+		system:       p.liveProvider().System() != nil,
+		radioDevices: radioProbed || len(p.liveProvider().RadioDevices()) > 0,
 		fm5GateKnown: fm5GateKnown,
 		fm5Evidence:  fm5Evidence,
 		fm5Required:  fm5Required,
 		fm5Satisfied: fm5Satisfied,
 		solar:        solarReady,
 		cylinders:    cylindersPublished,
-		boilerStatus: p.provider.BoilerStatus() != nil,
+		boilerStatus: p.liveProvider().BoilerStatus() != nil,
 	}
 }
 
@@ -382,10 +382,10 @@ func (p *vaillantSemanticPoller) readB524Uint16Startup(ctx context.Context, opco
 }
 
 func (p *vaillantSemanticPoller) publishStartupSchedules() {
-	if p == nil || p.provider == nil || p.provider.Schedules() != nil {
+	if p == nil || p.liveProvider() == nil || p.liveProvider().Schedules() != nil {
 		return
 	}
-	p.provider.SetSchedules(&graphql.ScheduleStatus{Programs: []graphql.ScheduleProgram{}})
+	p.liveProvider().SetSchedules(&graphql.ScheduleStatus{Programs: []graphql.ScheduleProgram{}})
 }
 
 func (p *vaillantSemanticPoller) refreshDHWStartup(ctx context.Context) {
@@ -806,7 +806,7 @@ func (p *vaillantSemanticPoller) readB524U8Startup(ctx context.Context, opcode, 
 }
 
 func (p *vaillantSemanticPoller) refreshFM5SemanticStartup(ctx context.Context) {
-	if p == nil || p.provider == nil {
+	if p == nil || p.liveProvider() == nil {
 		return
 	}
 

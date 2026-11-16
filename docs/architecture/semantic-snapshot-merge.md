@@ -24,9 +24,19 @@ seeding remain in
 [`semantic_snapshot_merge.go`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/semantic_snapshot_merge.go)
 owns field freshness assignment and zone and domestic-hot-water field merging.
 It receives typed observations, their source and the set of attempted fields.
-It performs no bus access or publication. The existing poller publication methods
-in [`vaillant_semantic_publication.go`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/vaillant_semantic_publication.go)
-compose the retained snapshots into the GraphQL provider and broadcast hub. This extraction is one part of the acquisition and
+It performs no bus access or publication. The poller no longer holds the GraphQL
+provider, the broadcast hub, the semantic cache persister or the boiler
+publication lock as fields: they belong to the `vaillantSemanticPublication`
+owner in
+[`vaillant_semantic_publication.go`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/vaillant_semantic_publication.go),
+which the poller reaches through nil-safe accessors. A poller without that owner,
+such as the registry-only classifier of the startup scan, sees nil collaborators
+and a no-op publish lock. The lock orders GraphQL boiler-status publication
+against the thermal withdrawal of the boiler flow temperature. The poller
+publication methods in the same file compose the retained snapshots into the
+provider and hub through the owner; the committed
+[`relocate_poller_publication_state.py`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/scripts/relocate_poller_publication_state.py)
+rewrote the direct field uses, and its `--check` mode lists any that remain. This extraction is one part of the acquisition and
 publication separation; the complete separation remains open in
 [the parent issue](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1480).
 

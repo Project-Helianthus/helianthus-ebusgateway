@@ -94,7 +94,7 @@ def mask(src: str) -> str:
 def poller_functions(masked_sources: list[str]) -> set[str]:
     """Package functions whose first result is a poller."""
     pattern = re.compile(
-        r"^func\s+(" + IDENT + r")\s*(?:\[[^\]]*\])?\((?:[^()]|\([^()]*\))*\)\s*\(?\s*\*" + POLLER + r"\b",
+        r"^func\s+(" + IDENT + r")\s*(?:\[[^\]]*\])?\((?:[^()]|\([^()]*\))*\)\s*\(?\s*(?:" + IDENT + r"\s+)?\*" + POLLER + r"\b",
         re.M,
     )
     names = {"newVaillantSemanticPoller", "startVaillantSemanticPolling"}

@@ -186,7 +186,8 @@ profile, profile version, capability definition, and operation definition.
 An asset may name contributor sources when it is declared. The owner holds the
 asset claim and fixes its packs; each contributor names a subset of those
 packs. Contributors publish their own bindings, identity links, observed facts,
-services and capabilities. Binding, service and capability identifiers belong
+services and capabilities. A contributor's fact, service, capability, relation
+instance or absence statement of a pack it did not name is refused. Binding, service and capability identifiers belong
 to the driver of the publishing source. On such an asset an inferred or
 operator-origin fact candidate (one without a binding) belongs to the driver
 that created it: another driver's upsert or withdrawal of it is refused as a

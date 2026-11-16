@@ -27,7 +27,8 @@ batch sequence.
   array, or a meter role on a meter. The asset's owner names the provider as a
   declared contributor (`operatorRecordPublisher.Contributor`). The
   contributor's packs are the packs of the record definitions, a subset of the
-  asset's packs.
+  asset's packs. The hub refuses a relation instance of any other pack, so the
+  provider cannot publish outside the packs its contributor declaration names.
 - **A resource that only configuration knows** is homed in an asset whose
   single source is the provider (`operatorRecordPublisher.DeclareHome`). That
   asset is graph-enforced. It holds no binding and no fact, and its resources

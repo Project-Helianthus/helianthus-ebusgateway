@@ -14,6 +14,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/packs/pv"
+	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/packs/storage"
 )
 
 // The operator-record fixture is one synthetic PV installation. The driver
@@ -76,6 +77,13 @@ type oprFixture struct {
 // driver and publishes its inverter resource.
 func newOprFixture(t *testing.T) *oprFixture {
 	t.Helper()
+	return newOprFixtureWith(t, []semreg.PackValidator{pv.New()}, []semreg.PackValidator{pv.New()})
+}
+
+// newOprFixtureWith is newOprFixture with the driver asset's packs and the
+// packs the asset's owner declares for the configuration provider.
+func newOprFixtureWith(t *testing.T, assetPacks, contributorPacks []semreg.PackValidator) *oprFixture {
+	t.Helper()
 	hub, err := semhub.New(semhub.Options{})
 	if err != nil {
 		t.Fatal(err)
@@ -88,8 +96,8 @@ func newOprFixture(t *testing.T) *oprFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := hub.Declare(semhub.AssetSpec{AssetID: oprDriverAsset, SourceID: oprDriverSource, Driver: oprDriver, Validators: []semreg.PackValidator{pv.New()}, Graph: true,
-		Contributors: []semhub.ContributorSpec{f.publisher.Contributor(pv.New())}}); err != nil {
+	if _, err := hub.Declare(semhub.AssetSpec{AssetID: oprDriverAsset, SourceID: oprDriverSource, Driver: oprDriver, Validators: assetPacks, Graph: true,
+		Contributors: []semhub.ContributorSpec{f.publisher.Contributor(contributorPacks...)}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.publisher.DeclareHome(oprHomeAsset, pv.New()); err != nil {
@@ -374,6 +382,33 @@ func TestOperatorRecordPublisherRefusesAnUnresolvedStartingEnd(t *testing.T) {
 	err = f.publisher.Set(oprDriverAsset, operatorRecords{Relations: []operatorRelation{oprInverterArray(oprArray)}}, operatorAudit{})
 	if !errors.As(err, &refusal) || refusal.Reason != operatorReasonAuditMissing {
 		t.Fatalf("refusal=%v, want %s", err, operatorReasonAuditMissing)
+	}
+}
+
+// The provider publishes relations only of the packs the asset's owner
+// declared for it: on an asset that holds the PV and storage packs, a
+// provider declared with the storage pack alone cannot publish a PV relation,
+// and the refused set changes neither the snapshot nor the desired records.
+func TestOperatorRecordPublisherPublishesOnlyTheDeclaredPacksRelations(t *testing.T) {
+	f := newOprFixtureWith(t, []semreg.PackValidator{pv.New(), storage.New()}, []semreg.PackValidator{storage.New()})
+	before, err := f.hub.Inspect(oprDriverAsset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relation := oprInverterArray(oprArray)
+	err = f.publisher.Set(oprDriverAsset, operatorRecords{Relations: []operatorRelation{relation}}, oprAudit("meter-role-undeclared-pack"))
+	if !errors.Is(err, semhub.ErrTransaction) {
+		t.Fatalf("err=%v, want the hub's refusal of a relation of an undeclared pack", err)
+	}
+	after, err := f.hub.Inspect(oprDriverAsset)
+	if err != nil || string(after.Canonical) != string(before.Canonical) {
+		t.Fatalf("a refused record set changed the snapshot (err=%v)", err)
+	}
+	if _, ok := oprRelationIn(after.Snapshot, relation); ok {
+		t.Fatal("a relation of an undeclared pack was published")
+	}
+	if desired := f.publisher.Desired(oprDriverAsset); len(desired.Relations) != 0 {
+		t.Fatalf("a refused record set changed the desired records: %+v", desired)
 	}
 }
 

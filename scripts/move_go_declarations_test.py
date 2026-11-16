@@ -157,6 +157,18 @@ class ParserTests(MoveTestCase):
         self.assertTrue(units["var:wrapped"].has_call_initializer())
 
 
+    def test_call_initializer_detection_treats_shadowed_predeclared_names_as_calls(self):
+        package = self.package({"shadow.go": (
+            "package sample\n\nfunc int() int64 { return 1 }\n\nvar state = int()\n")})
+        located = {u.key: u for u in MOVE.parse_file(package / "shadow.go").units}
+        self.assertFalse(located["var:state"].has_call_initializer())
+        self.assertTrue(located["var:state"].has_call_initializer(frozenset({"int"})))
+        manifest = write_manifest(self.root, {"shadow.go": ["func:int"], "moved.go": ["var:state"]},
+                                  source="shadow.go")
+        errors = MOVE.check_manifest(manifest, self.root)
+        self.assertIn("var:state must stay in shadow.go (init or call initializer)", errors)
+
+
 class ApplyTests(MoveTestCase):
     def apply(self, files):
         manifest = write_manifest(self.root, files)
@@ -295,6 +307,17 @@ class CompareTests(MoveTestCase):
         self.assertEqual(len(MOVE.compare_dirs(before, package)), 2)
         (package / "lit.go").write_text(text.replace("var a =", "var a  ="), encoding="utf-8")
         self.assertEqual(MOVE.compare_dirs(before, package), [])
+
+
+class NewlineCompareTests(MoveTestCase):
+    def test_compare_detects_a_statement_separating_newline(self):
+        before = self.root / "before"
+        body = "package sample\n\nfunc f() (n int) {\n\treturn\n\tg()\n}\n"
+        package = self.package({"nl.go": body})
+        shutil.copytree(package, before)
+        (package / "nl.go").write_text(body.replace("return\n\tg()", "return g()"),
+                                       encoding="utf-8")
+        self.assertEqual(len(MOVE.compare_dirs(before, package)), 2)
 
 
 class ReportTests(MoveTestCase):

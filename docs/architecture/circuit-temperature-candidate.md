@@ -103,7 +103,7 @@ acceptance. Documentation acceptance requires manual source, claim, transition,
 loss, example and link review; no keyword test establishes correctness.
 
 The existing eBUS MCP envelope, namespace and circuit field shape remain in place.
-The [existing circuit reader](../../cmd/gateway/semantic_vaillant_circuits.go) now follows the native
+The [existing circuit reader](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/semantic_vaillant_circuits.go) now follows the native
 RR0020 correction: ordinary circuit refresh and pseudo-circuit evidence no longer
 acquire RR0020 as a float, including startup pseudo-circuit discovery. Startup
 uses measured RR0008 alone as temperature evidence for that pseudo-circuit;

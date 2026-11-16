@@ -92,8 +92,8 @@ class Unit:
     def is_init(self) -> bool:
         return self.key.startswith("func:init#")
 
-    def has_call_initializer(self) -> bool:
-        return self.kind == "var" and initializer_calls(self.masked)
+    def has_call_initializer(self, shadowed=frozenset()) -> bool:
+        return self.kind == "var" and initializer_calls(self.masked, shadowed)
 
 
 @dataclasses.dataclass
@@ -211,18 +211,19 @@ def declaration_key(kind: str, masked: str) -> str:
     return kind + ":" + match.group(0)
 
 
-def initializer_calls(masked: str) -> bool:
+def initializer_calls(masked: str, shadowed=frozenset()) -> bool:
     """Report whether a var declaration's initializers contain a call.
 
     Everything after the first initializer is scanned, so a call nested in a
     multi-line composite literal counts; conversions to predeclared types and
-    function types do not.
+    function types do not. A predeclared type name that the package redeclares
+    as a function or variable is a call, not a conversion.
     """
     assign = re.search(r"(?<![=!<>:])=(?!=)", masked)
     if not assign:
         return False
     for match in CALL.finditer(masked[assign.end():]):
-        if match.group(1) not in CONVERSIONS:
+        if match.group(1) not in CONVERSIONS or match.group(1) in shadowed:
             return True
     return False
 
@@ -423,10 +424,14 @@ def _listing_errors(plan: Plan, located: dict) -> list[str]:
 
 def _pinned_errors(plan: Plan, located: dict) -> list[str]:
     errors = []
+    shadowed = frozenset(
+        key.split(":", 1)[1] for key in located
+        if key.split(":", 1)[0] in ("func", "var", "const")
+        and key.split(":", 1)[1] in CONVERSIONS)
     for name, keys in plan.targets.items():
         for key in keys:
             units = [u for _, u in located.get(key, [])]
-            pinned = any(u.is_init() or u.has_call_initializer() for u in units)
+            pinned = any(u.is_init() or u.has_call_initializer(shadowed) for u in units)
             if pinned and name != plan.source:
                 errors.append("%s must stay in %s (init or call initializer)" % (key, plan.source))
     return errors
@@ -537,30 +542,43 @@ def check_manifest(manifest_path: pathlib.Path, root: pathlib.Path) -> list[str]
 # ---------------------------------------------------------------- compare
 
 
+_SEMICOLON_END = re.compile(r"[A-Za-z0-9_)\]}\"'`+-]$")
+
+
+def _separator(out: list, newline: bool) -> str:
+    if newline and _SEMICOLON_END.search(out[-1]):
+        return "\n"
+    return " "
+
+
 def normalize(text: str) -> str:
     """Collapse whitespace outside string and rune literals; keep literal text.
 
     Comments are collapsed like code, so only formatting whitespace is ignored.
+    A newline that follows a token which makes Go insert a semicolon is kept,
+    because it separates statements.
     """
     out = []
     pending = False
+    newline = False
     index = 0
     while index < len(text):
         char = text[index]
         end = _literal_end(text, index)
         if end >= 0 and char != "/":
             if pending and out:
-                out.append(" ")
-            pending = False
+                out.append(_separator(out, newline))
+            pending = newline = False
             out.append(text[index:end])
             index = end
             continue
         if char.isspace():
             pending = True
+            newline = newline or char == "\n"
         else:
             if pending and out:
-                out.append(" ")
-            pending = False
+                out.append(_separator(out, newline))
+            pending = newline = False
             out.append(char)
         index += 1
     return "".join(out)

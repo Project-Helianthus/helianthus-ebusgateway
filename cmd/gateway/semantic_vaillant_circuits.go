@@ -23,6 +23,56 @@ func (p *vaillantSemanticPoller) refreshCircuits(ctx context.Context) {
 		return
 	}
 
+	discovered, inactive, probeSuccess := p.probeCircuitInstances(ctx, controller, instances)
+	if !probeSuccess {
+		if !fullScan {
+			p.mu.Lock()
+			p.lastCircuitFullScanAt = time.Time{}
+			p.lastCircuitFullScanComplete = false
+			p.mu.Unlock()
+		}
+		return
+	}
+
+	updates := make(map[byte]*vaillantCircuitSnapshot, len(discovered))
+	anyRead := false
+	for instance, discoveredSnapshot := range discovered {
+		snapshot := cloneCircuitSnapshot(discoveredSnapshot)
+		if snapshot == nil {
+			continue
+		}
+		anyRead = true
+		p.readCircuitDetails(ctx, instance, snapshot, now)
+		updates[instance] = snapshot
+	}
+
+	p.mu.Lock()
+	if p.circuits == nil {
+		p.circuits = make(map[byte]*vaillantCircuitSnapshot)
+	}
+	for instance := range inactive {
+		delete(p.circuits, instance)
+	}
+	for instance, incoming := range updates {
+		p.circuits[instance] = mergeCircuitSnapshotNonDestructive(p.circuits[instance], incoming)
+	}
+	if fullScan {
+		p.lastCircuitFullScanAt = now
+		p.lastCircuitFullScanComplete = len(discovered)+len(inactive) == len(instances)
+	}
+	p.mu.Unlock()
+
+	source := semanticSnapshotSourceCache
+	if anyRead || len(inactive) > 0 {
+		source = semanticSnapshotSourceLive
+	}
+	p.publishCircuits(source)
+}
+
+// probeCircuitInstances reads the circuit type of each instance in order. It
+// returns the active circuits, the instances that reported no circuit, and
+// whether any type read succeeded.
+func (p *vaillantSemanticPoller) probeCircuitInstances(ctx context.Context, controller byte, instances []byte) (map[byte]*vaillantCircuitSnapshot, map[byte]struct{}, bool) {
 	discovered := make(map[byte]*vaillantCircuitSnapshot, 4)
 	inactive := make(map[byte]struct{})
 	probeSuccess := false
@@ -52,127 +102,92 @@ func (p *vaillantSemanticPoller) refreshCircuits(ctx context.Context) {
 			}
 		}
 	}
-	if !probeSuccess {
-		if !fullScan {
-			p.mu.Lock()
-			p.lastCircuitFullScanAt = time.Time{}
-			p.lastCircuitFullScanComplete = false
-			p.mu.Unlock()
-		}
-		return
-	}
+	return discovered, inactive, probeSuccess
+}
 
-	updates := make(map[byte]*vaillantCircuitSnapshot, len(discovered))
-	anyRead := false
-	for instance, discoveredSnapshot := range discovered {
-		snapshot := cloneCircuitSnapshot(discoveredSnapshot)
-		if snapshot == nil {
-			continue
-		}
-		anyRead = true
+// readCircuitDetails reads the detail registers of one active circuit in a
+// fixed order. A failed read keeps the field the snapshot already holds.
+func (p *vaillantSemanticPoller) readCircuitDetails(ctx context.Context, instance byte, snapshot *vaillantCircuitSnapshot, now time.Time) {
+	if raw := p.readCircuitUint16(ctx, instance, circuit_cooling_enabled); raw != nil {
+		snapshot.CoolingEnabledRaw = raw
+	}
+	if value := p.readCircuitFloat(ctx, instance, circuit_flow_setpoint); value != nil {
+		snapshot.FlowSetpointC = value
+	}
+	if value := p.readCircuitFloat(ctx, instance, circuit_flow_temp); value != nil {
+		snapshot.FlowTemperatureC = value
+	}
+	if value := p.readCircuitFloat(ctx, instance, circuit_heating_curve); value != nil {
+		snapshot.HeatingCurve = value
+	}
+	if value := p.readCircuitFloat(ctx, instance, circuit_flow_temp_max); value != nil {
+		snapshot.FlowTempMaxC = value
+	}
+	if value := p.readCircuitFloat(ctx, instance, circuit_flow_temp_min); value != nil {
+		snapshot.FlowTempMinC = value
+	}
+	if value := p.readCircuitFloat(ctx, instance, circuit_summer_limit); value != nil {
+		snapshot.SummerLimitC = value
+	}
+	if raw := p.readCircuitUint16(ctx, instance, circuit_room_temp_control); raw != nil {
+		snapshot.RoomTempControlRaw = raw
+	}
+	if raw := p.readCircuitUint16(ctx, instance, circuit_circuit_state); raw != nil {
+		snapshot.CircuitStateRaw = raw
+		snapshot.CircuitStateLiveAt = now
+	}
+	if value := p.readB524U8(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_special_function_mode); value != nil {
+		snapshot.SpecialFunctionMode = cloneUint8Ptr(value)
+	}
+	if raw := p.readCircuitUint16(ctx, instance, circuit_pump_status); raw != nil {
+		snapshot.PumpStatusRaw = raw
+		snapshot.PumpStatusLiveAt = now
+	}
+	if value := p.readCircuitFloat(ctx, instance, circuit_mixer_position); value != nil {
+		snapshot.MixerPositionPct = value
+	}
+	if value := p.readCircuitFloat(ctx, instance, circuit_humidity); value != nil {
+		snapshot.HumidityPct = value
+	}
+	if value := p.readCircuitFloat(ctx, instance, circuit_dew_point); value != nil {
+		snapshot.DewPointC = value
+	}
+	if value := p.readCircuitUint32(ctx, instance, circuit_pump_hours); value != nil {
+		snapshot.PumpHoursRaw = value
+	}
+	if value := p.readCircuitUint32(ctx, instance, circuit_pump_starts); value != nil {
+		snapshot.PumpStartsRaw = value
+	}
+}
 
-		if raw, ok := p.readB524Uint16(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_cooling_enabled); ok && raw != nil {
-			snapshot.CoolingEnabledRaw = cloneUint16Ptr(raw)
-			anyRead = true
-		}
-		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_flow_setpoint); ok {
-			v := value
-			snapshot.FlowSetpointC = &v
-			anyRead = true
-		}
-		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_flow_temp); ok {
-			v := value
-			snapshot.FlowTemperatureC = &v
-			anyRead = true
-		}
-		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_heating_curve); ok {
-			v := value
-			snapshot.HeatingCurve = &v
-			anyRead = true
-		}
-		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_flow_temp_max); ok {
-			v := value
-			snapshot.FlowTempMaxC = &v
-			anyRead = true
-		}
-		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_flow_temp_min); ok {
-			v := value
-			snapshot.FlowTempMinC = &v
-			anyRead = true
-		}
-		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_summer_limit); ok {
-			v := value
-			snapshot.SummerLimitC = &v
-			anyRead = true
-		}
-		if raw, ok := p.readB524Uint16(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_room_temp_control); ok && raw != nil {
-			snapshot.RoomTempControlRaw = cloneUint16Ptr(raw)
-			anyRead = true
-		}
-		if raw, ok := p.readB524Uint16(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_circuit_state); ok && raw != nil {
-			snapshot.CircuitStateRaw = cloneUint16Ptr(raw)
-			snapshot.CircuitStateLiveAt = now
-			anyRead = true
-		}
-		if value := p.readB524U8(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_special_function_mode); value != nil {
-			snapshot.SpecialFunctionMode = cloneUint8Ptr(value)
-			anyRead = true
-		}
-		if raw, ok := p.readB524Uint16(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_pump_status); ok && raw != nil {
-			snapshot.PumpStatusRaw = cloneUint16Ptr(raw)
-			snapshot.PumpStatusLiveAt = now
-			anyRead = true
-		}
-		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_mixer_position); ok {
-			v := value
-			snapshot.MixerPositionPct = &v
-			anyRead = true
-		}
-		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_humidity); ok {
-			v := value
-			snapshot.HumidityPct = &v
-			anyRead = true
-		}
-		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_dew_point); ok {
-			v := value
-			snapshot.DewPointC = &v
-			anyRead = true
-		}
-		if value, ok := p.readB524Uint32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_pump_hours); ok {
-			v := value
-			snapshot.PumpHoursRaw = &v
-			anyRead = true
-		}
-		if value, ok := p.readB524Uint32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_pump_starts); ok {
-			v := value
-			snapshot.PumpStartsRaw = &v
-			anyRead = true
-		}
+// readCircuitFloat reads one float register of a circuit, or nil when the
+// read fails.
+func (p *vaillantSemanticPoller) readCircuitFloat(ctx context.Context, instance byte, addr uint16) *float64 {
+	value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, addr)
+	if !ok {
+		return nil
+	}
+	return &value
+}
 
-		updates[instance] = snapshot
+// readCircuitUint16 reads one 16-bit register of a circuit as a detached
+// value, or nil when the read fails or carries no value.
+func (p *vaillantSemanticPoller) readCircuitUint16(ctx context.Context, instance byte, addr uint16) *uint16 {
+	raw, ok := p.readB524Uint16(ctx, localCircuits.opcode, localCircuits.group, instance, addr)
+	if !ok || raw == nil {
+		return nil
 	}
+	return cloneUint16Ptr(raw)
+}
 
-	p.mu.Lock()
-	if p.circuits == nil {
-		p.circuits = make(map[byte]*vaillantCircuitSnapshot)
+// readCircuitUint32 reads one 32-bit counter register of a circuit, or nil
+// when the read fails.
+func (p *vaillantSemanticPoller) readCircuitUint32(ctx context.Context, instance byte, addr uint16) *uint32 {
+	value, ok := p.readB524Uint32LE(ctx, localCircuits.opcode, localCircuits.group, instance, addr)
+	if !ok {
+		return nil
 	}
-	for instance := range inactive {
-		delete(p.circuits, instance)
-	}
-	for instance, incoming := range updates {
-		p.circuits[instance] = mergeCircuitSnapshotNonDestructive(p.circuits[instance], incoming)
-	}
-	if fullScan {
-		p.lastCircuitFullScanAt = now
-		p.lastCircuitFullScanComplete = len(discovered)+len(inactive) == len(instances)
-	}
-	p.mu.Unlock()
-
-	source := semanticSnapshotSourceCache
-	if anyRead || len(inactive) > 0 {
-		source = semanticSnapshotSourceLive
-	}
-	p.publishCircuits(source)
+	return &value
 }
 
 func (p *vaillantSemanticPoller) readDhwPseudoCircuitEvidence(ctx context.Context, instance byte) (*vaillantCircuitSnapshot, bool) {
@@ -328,6 +343,29 @@ func mergeCircuitSnapshotNonDestructive(existing, incoming *vaillantCircuitSnaps
 		merged.PumpStartsRaw = cloneUint32Ptr(incoming.PumpStartsRaw)
 	}
 	return merged
+}
+
+// circuitsViewLocked builds the native view of the active circuits in
+// instance order with the managing-device decision taken from the retained
+// system snapshot and FM5 mode. The caller holds p.mu.
+func (p *vaillantSemanticPoller) circuitsViewLocked() vaillantCircuitsView {
+	instances := make([]byte, 0, len(p.circuits))
+	for instance := range p.circuits {
+		instances = append(instances, instance)
+	}
+	slices.Sort(instances)
+	circuits := make([]*vaillantCircuitSnapshot, 0, len(instances))
+	for _, instance := range instances {
+		entry := p.circuits[instance]
+		if entry == nil || !entry.Active {
+			continue
+		}
+		circuits = append(circuits, cloneCircuitSnapshot(entry))
+	}
+	return vaillantCircuitsView{
+		circuits:                circuits,
+		managedByFunctionModule: circuitsManagedByFunctionModule(p.system, p.fm5Mode),
+	}
 }
 
 func cloneCircuitSnapshot(snapshot *vaillantCircuitSnapshot) *vaillantCircuitSnapshot {
@@ -492,10 +530,22 @@ const (
 )
 
 func deriveCircuitManagingDevice(system *vaillantSystemSnapshot, fm5Mode graphql.Fm5SemanticMode) graphql.ManagingDevice {
-	if system != nil &&
+	return circuitManagingDevice(circuitsManagedByFunctionModule(system, fm5Mode))
+}
+
+// circuitsManagedByFunctionModule reports whether the system scheme, the
+// module configuration and the interpreted FM5 mode place the heating
+// circuits under the function module.
+func circuitsManagedByFunctionModule(system *vaillantSystemSnapshot, fm5Mode graphql.Fm5SemanticMode) bool {
+	return system != nil &&
 		system.SystemScheme != nil && *system.SystemScheme == 1 &&
 		system.ModuleConfigurationVR71 != nil && *system.ModuleConfigurationVR71 == 2 &&
-		fm5Mode == graphql.Fm5SemanticModeInterpreted {
+		fm5Mode == graphql.Fm5SemanticModeInterpreted
+}
+
+// circuitManagingDevice returns a detached managing device for one circuit.
+func circuitManagingDevice(managedByFunctionModule bool) graphql.ManagingDevice {
+	if managedByFunctionModule {
 		deviceID := circuitManagingDeviceVR71ID
 		address := circuitManagingDeviceVR71Address
 		return graphql.ManagingDevice{

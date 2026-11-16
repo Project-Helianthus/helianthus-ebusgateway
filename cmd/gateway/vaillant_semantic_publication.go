@@ -1,10 +1,8 @@
 package main
 
 import (
-	"fmt"
 	"reflect"
 	"slices"
-	"strings"
 	"sync"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
@@ -15,6 +13,9 @@ import (
 // vaillantSemanticPublication owns the collaborators through which the
 // Vaillant poller publishes its snapshots: the GraphQL provider, the
 // broadcast hub and the semantic cache persister. It holds no bus access.
+// Zones, hot water, circuits and radio devices reach it as native views that
+// the poller builds under its snapshot lock; the owner maps them to GraphQL
+// values in vaillant_semantic_publication_views.go.
 //
 // boilerPublishMu orders GraphQL boiler-status publication against the
 // thermal withdrawal: publishBoilerStatus and the thermal publisher's
@@ -92,110 +93,20 @@ func (p *vaillantSemanticPoller) publishRegulatorCapability(capability productid
 	}
 }
 
+// publishZones hands the native zone views to the publication owner and
+// persists the semantic cache after a publication.
 func (p *vaillantSemanticPoller) publishZones(source semanticSnapshotSource) {
 	if p.liveProvider() == nil {
 		return
 	}
 
 	p.mu.Lock()
-	instances := make([]byte, 0, len(p.zones))
-	for instance := range p.zones {
-		instances = append(instances, instance)
-	}
-	slices.Sort(instances)
-	zones := make([]graphql.Zone, 0, len(instances))
-	for _, instance := range instances {
-		entry := p.zones[instance]
-		if entry == nil {
-			continue
-		}
-
-		name := entry.Name
-		if strings.TrimSpace(name) == "" {
-			name = fmt.Sprintf("Zone %d", instance+1)
-		}
-
-		quickVetoActive := entry.Preset == "quickveto"
-		var qvExpiry string
-		if quickVetoActive && entry.QuickVetoEndDate != "" && entry.QuickVetoEndTime != "" {
-			qvExpiry = entry.QuickVetoEndDate + "T" + entry.QuickVetoEndTime
-		}
-		currentTempC := entry.CurrentTempC
-		currentHumidityPct := entry.HumidityPct
-		if currentTempC == nil || currentHumidityPct == nil {
-			radioTempC, radioHumidityPct := p.mappedRadioRoomStateForZoneLocked(entry)
-			if currentTempC == nil {
-				currentTempC = radioTempC
-			}
-			if currentHumidityPct == nil {
-				currentHumidityPct = radioHumidityPct
-			}
-		}
-		roomMappingRaw := entry.ConfigurationRoomTemperatureZoneMappingRaw
-		if roomMappingRaw == nil {
-			roomMappingRaw = p.inferRadioRoomMappingForZoneLocked(entry.Instance)
-		}
-		associatedCircuitRaw := entry.ConfigurationAssociatedCircuitRaw
-		if associatedCircuitRaw == nil && roomMappingRaw != nil {
-			value := uint16(resolveAssociatedCircuitInstance(roomMappingRaw, entry.Instance))
-			associatedCircuitRaw = &value
-		}
-		zone := graphql.Zone{
-			ID:   fmt.Sprintf("zone-%d", instance+1),
-			Name: name,
-			State: graphql.ZoneState{
-				CurrentTempC:       currentTempC,
-				CurrentHumidityPct: currentHumidityPct,
-				HvacAction:         entry.HvacAction,
-				SpecialFunction:    entry.StateSpecialFunction,
-				ValvePositionPct:   decodeValvePositionPct(entry.StateValveStatusRaw),
-			},
-			Config: graphql.ZoneConfig{
-				OperatingMode:              entry.OperatingMode,
-				Preset:                     entry.Preset,
-				TargetTempC:                entry.TargetTempC,
-				AllowedModes:               append([]string(nil), entry.AllowedModes...),
-				CircuitType:                decodeCircuitType(entry.ConfigurationCircuitTypeRaw),
-				AssociatedCircuit:          decodeAssociatedCircuit(associatedCircuitRaw),
-				RoomTemperatureZoneMapping: decodeRoomTemperatureZoneMapping(roomMappingRaw),
-				QuickVeto:                  quickVetoActive,
-				QuickVetoSetpointC:         entry.QuickVetoTempC,
-				QuickVetoDurationH:         entry.QuickVetoDurationH,
-				QuickVetoExpiry:            qvExpiry,
-				HolidayStartDate:           entry.HolidayStartDate,
-				HolidayEndDate:             entry.HolidayEndDate,
-				HolidaySetpointC:           entry.HolidaySetpointC,
-				HolidayStartTime:           entry.HolidayStartTime,
-				HolidayEndTime:             entry.HolidayEndTime,
-			},
-		}
-		zones = append(zones, zone)
-	}
+	views := p.zoneViewsLocked()
 	p.mu.Unlock()
 
-	previous := p.liveProvider().Zones()
-	if source == semanticSnapshotSourceCache && len(zones) == 0 && len(previous) > 0 {
-		return
+	if p.publication.publishZoneViews(views, source) {
+		p.persistSemanticCache(source)
 	}
-	switch source {
-	case semanticSnapshotSourceCache:
-		p.liveProvider().SetZonesFromCache(zones)
-	default:
-		p.liveProvider().SetZones(zones)
-	}
-
-	if p.broadcastHub() != nil {
-		prevByID := make(map[string]graphql.Zone, len(previous))
-		for _, z := range previous {
-			prevByID[z.ID] = z
-		}
-		for _, zone := range zones {
-			if !zoneEquals(prevByID[zone.ID], zone) {
-				p.broadcastHub().PublishZoneUpdate(zone)
-			}
-		}
-	}
-	p.persistSemanticCache(source)
 }
 
 func (p *vaillantSemanticPoller) publishEnergyTotals() {
@@ -209,6 +120,9 @@ func (p *vaillantSemanticPoller) publishEnergyTotals() {
 	p.broadcastHub().PublishEnergyUpdate(totals)
 }
 
+// publishDHW applies stale expiry, hands the native hot water view to the
+// publication owner and persists the semantic cache after a publication; an
+// expiry persists the snapshot whatever its source.
 func (p *vaillantSemanticPoller) publishDHW(source semanticSnapshotSource) {
 	if p.liveProvider() == nil {
 		return
@@ -216,142 +130,33 @@ func (p *vaillantSemanticPoller) publishDHW(source semanticSnapshotSource) {
 
 	p.mu.Lock()
 	expired := p.expireDHWIfStaleLocked(source)
-	snapshot := p.dhw
+	view := p.dhwViewLocked(expired)
 	p.mu.Unlock()
 
-	previous := p.liveProvider().DHW()
-	if snapshot == nil {
-		if source == semanticSnapshotSourceCache && previous != nil && !expired {
-			return
-		}
-		switch source {
-		case semanticSnapshotSourceCache:
-			p.liveProvider().SetDHWFromCache(nil)
-		default:
-			p.liveProvider().SetDHW(nil)
-		}
-		if previous != nil && p.broadcastHub() != nil {
-			p.broadcastHub().PublishDHWUpdate(nil)
-		}
-		if expired {
-			p.persistSemanticSnapshot()
-		} else {
-			p.persistSemanticCache(source)
-		}
+	if !p.publication.publishDhwView(view, source) {
 		return
 	}
-
-	current := &graphql.DhwStatus{
-		State: graphql.DhwState{
-			CurrentTempC:    snapshot.CurrentTempC,
-			SpecialFunction: snapshot.StateSpecialFunction,
-		},
-		Config: graphql.DhwConfig{
-			OperatingMode:    snapshot.OperatingMode,
-			Preset:           snapshot.Preset,
-			TargetTempC:      snapshot.TargetTempC,
-			HolidayStartDate: snapshot.HolidayStartDate,
-			HolidayEndDate:   snapshot.HolidayEndDate,
-		},
-	}
-
-	switch source {
-	case semanticSnapshotSourceCache:
-		p.liveProvider().SetDHWFromCache(current)
-	default:
-		p.liveProvider().SetDHW(current)
-	}
-	if p.broadcastHub() != nil && !dhwEquals(previous, current) {
-		p.broadcastHub().PublishDHWUpdate(current)
+	if view.snapshot == nil && view.expired {
+		p.persistSemanticSnapshot()
+		return
 	}
 	p.persistSemanticCache(source)
 }
 
+// publishCircuits hands the native circuits view to the publication owner
+// and persists the semantic cache after a publication.
 func (p *vaillantSemanticPoller) publishCircuits(source semanticSnapshotSource) {
 	if p == nil || p.liveProvider() == nil {
 		return
 	}
 
 	p.mu.Lock()
-	instances := make([]byte, 0, len(p.circuits))
-	systemSnapshot := cloneSystemSnapshot(p.system)
-	fm5Mode := p.fm5Mode
-	for instance := range p.circuits {
-		instances = append(instances, instance)
-	}
-	slices.Sort(instances)
-	snapshots := make([]*vaillantCircuitSnapshot, 0, len(instances))
-	for _, instance := range instances {
-		entry := p.circuits[instance]
-		if entry == nil || !entry.Active {
-			continue
-		}
-		snapshots = append(snapshots, cloneCircuitSnapshot(entry))
-	}
+	view := p.circuitsViewLocked()
 	p.mu.Unlock()
 
-	out := make([]graphql.CircuitStatus, 0, len(snapshots))
-	for _, snapshot := range snapshots {
-		if snapshot == nil {
-			continue
-		}
-		status := graphql.CircuitStatus{
-			Index:       int(snapshot.Instance),
-			CircuitType: decodeHeatingCircuitTypeToken(snapshot.CircuitTypeRaw),
-			HasMixer:    snapshot.MixerPositionPct != nil,
-			State: graphql.CircuitState{
-				PumpActive:       decodeUint16Bool(snapshot.PumpStatusRaw),
-				MixerPositionPct: cloneFloat64Ptr(snapshot.MixerPositionPct),
-				FlowTemperatureC: cloneFloat64Ptr(snapshot.FlowTemperatureC),
-				FlowSetpointC:    cloneFloat64Ptr(snapshot.FlowSetpointC),
-				CalcFlowTempC:    cloneFloat64Ptr(snapshot.CalcFlowTempC),
-				CircuitState:     decodeCircuitStateToken(snapshot.CircuitStateRaw),
-				Humidity:         cloneFloat64Ptr(snapshot.HumidityPct),
-				DewPoint:         cloneFloat64Ptr(snapshot.DewPointC),
-				PumpHours:        decodeUint32Float64(snapshot.PumpHoursRaw),
-				PumpStarts:       decodeUint32Int(snapshot.PumpStartsRaw),
-			},
-			Config: graphql.CircuitConfig{
-				HeatingCurve:        cloneFloat64Ptr(snapshot.HeatingCurve),
-				FlowTempMaxC:        cloneFloat64Ptr(snapshot.FlowTempMaxC),
-				FlowTempMinC:        cloneFloat64Ptr(snapshot.FlowTempMinC),
-				SummerLimitC:        cloneFloat64Ptr(snapshot.SummerLimitC),
-				SpecialFunctionMode: decodeUint8Int(snapshot.SpecialFunctionMode),
-				RoomTempControl:     decodeRoomTempControlToken(snapshot.RoomTempControlRaw),
-				CoolingEnabled:      decodeUint16Bool(snapshot.CoolingEnabledRaw),
-			},
-			ManagingDevice: deriveCircuitManagingDevice(systemSnapshot, fm5Mode),
-		}
-		out = append(out, status)
+	if p.publication.publishCircuitsView(view, source) {
+		p.persistSemanticCache(source)
 	}
-
-	previous := p.liveProvider().Circuits()
-	if len(out) == 0 && previous == nil {
-		return
-	}
-	if source == semanticSnapshotSourceCache && len(out) == 0 && len(previous) > 0 {
-		return
-	}
-	switch source {
-	case semanticSnapshotSourceCache:
-		p.liveProvider().SetCircuitsFromCache(out)
-	default:
-		p.liveProvider().SetCircuits(out)
-	}
-	if p.broadcastHub() != nil && !circuitsEqual(previous, out) {
-		publisher := reflect.ValueOf(p.broadcastHub()).MethodByName("PublishCircuitsUpdate")
-		if publisher.IsValid() && publisher.Type().NumIn() == 1 {
-			arg := reflect.ValueOf(out)
-			paramType := publisher.Type().In(0)
-			switch {
-			case arg.Type().AssignableTo(paramType):
-				publisher.Call([]reflect.Value{arg})
-			case arg.Type().ConvertibleTo(paramType):
-				publisher.Call([]reflect.Value{arg.Convert(paramType)})
-			}
-		}
-	}
-	p.persistSemanticCache(source)
 }
 
 func (p *vaillantSemanticPoller) publishBoilerStatus(source semanticSnapshotSource) {
@@ -447,78 +252,20 @@ func (p *vaillantSemanticPoller) publishBoilerStatus(source semanticSnapshotSour
 	p.persistSemanticCache(source)
 }
 
+// publishRadioDevices hands the native radio device views to the publication
+// owner and persists the semantic cache after a publication.
 func (p *vaillantSemanticPoller) publishRadioDevices(source semanticSnapshotSource) {
 	if p == nil || p.liveProvider() == nil {
 		return
 	}
 
 	p.mu.Lock()
-	keys := make([]radioDeviceKey, 0, len(p.radioDevices))
-	for key := range p.radioDevices {
-		keys = append(keys, key)
-	}
-	slices.SortFunc(keys, func(a, b radioDeviceKey) int {
-		if a.Group != b.Group {
-			if a.Group < b.Group {
-				return -1
-			}
-			return 1
-		}
-		if a.Instance < b.Instance {
-			return -1
-		}
-		if a.Instance > b.Instance {
-			return 1
-		}
-		return 0
-	})
-	snapshots := make([]*vaillantRadioDeviceSnapshot, 0, len(keys))
-	for _, key := range keys {
-		snapshot := p.radioDevices[key]
-		if snapshot == nil {
-			continue
-		}
-		snapshots = append(snapshots, cloneRadioSnapshot(snapshot))
-	}
+	views := p.radioDeviceViewsLocked()
 	p.mu.Unlock()
 
-	out := make([]graphql.RadioDevice, 0, len(snapshots))
-	for _, snapshot := range snapshots {
-		if snapshot == nil {
-			continue
-		}
-		out = append(out, graphql.RadioDevice{
-			Group:                int(snapshot.Group),
-			Instance:             int(snapshot.Instance),
-			SlotMode:             snapshot.SlotMode,
-			DeviceConnected:      cloneBoilerBoolPtr(snapshot.DeviceConnected),
-			DeviceClassAddress:   uint8ToIntPtr(snapshot.DeviceClassAddress),
-			DeviceModel:          snapshot.DeviceModel,
-			FirmwareVersion:      cloneStringPtr(snapshot.FirmwareVersion),
-			HardwareIdentifier:   uint16ToIntPtr(snapshot.HardwareIdentifier),
-			RemoteControlAddress: uint8ToIntPtr(snapshot.RemoteControlAddress),
-			DevicePaired:         cloneBoilerBoolPtr(snapshot.DevicePaired),
-			ReceptionStrength:    uint8ToIntPtr(snapshot.ReceptionStrength),
-			ZoneAssignment:       uint8ToIntPtr(snapshot.ZoneAssignment),
-			RoomTemperatureC:     cloneFloat64Ptr(snapshot.RoomTemperatureC),
-			RoomHumidityPct:      cloneFloat64Ptr(snapshot.RoomHumidityPct),
-		})
+	if p.publication.publishRadioDeviceViews(views, source) {
+		p.persistSemanticCache(source)
 	}
-
-	previous := p.liveProvider().RadioDevices()
-	if source == semanticSnapshotSourceCache && len(out) == 0 && len(previous) > 0 {
-		return
-	}
-	switch source {
-	case semanticSnapshotSourceCache:
-		p.liveProvider().SetRadioDevicesFromCache(out)
-	default:
-		p.liveProvider().SetRadioDevices(out)
-	}
-	if p.broadcastHub() != nil && !radioDevicesEqual(previous, out) {
-		p.broadcastHub().PublishRadioDevicesUpdate(out)
-	}
-	p.persistSemanticCache(source)
 }
 
 func (p *vaillantSemanticPoller) publishSystem(source semanticSnapshotSource) {

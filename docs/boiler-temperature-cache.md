@@ -13,7 +13,7 @@ outside this flow-publication slice. Cache conversion restores that field, and
 `hydrateFromCache` in `cmd/gateway/semantic_vaillant_snapshots.go` preserves it
 through hydration. A fresh qualified flow observation does not change the legacy
 return. A restored return value is visible only until the first boiler merge:
-`mergeBoilerSnapshotNonDestructive` in `cmd/gateway/semantic_vaillant.go` clears
+`mergeBoilerSnapshotNonDestructive` in `cmd/gateway/semantic_vaillant_boiler.go` clears
 it, including when the merge contains only an unrelated successful read. This
 slice does not change that pre-existing behaviour. No boiler return fact is
 emitted.

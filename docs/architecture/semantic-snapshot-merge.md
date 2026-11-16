@@ -1,17 +1,32 @@
 # Semantic snapshot field merging
 
-The Vaillant-family poller acquires native observations in
-[`semantic_vaillant.go`](../../cmd/gateway/semantic_vaillant.go) and its native
-read and refresh helpers. Snapshot declarations, cache hydration, cloning and
-freshness seeding remain in
+The Vaillant-family poller type, its start and scheduling hooks and its expvar
+counters are declared in
+[`semantic_vaillant.go`](../../cmd/gateway/semantic_vaillant.go). The poller
+acquires native observations through read, refresh, discovery and write methods
+kept in thematic files of the same package: register constants in
+[`semantic_vaillant_registers.go`](../../cmd/gateway/semantic_vaillant_registers.go),
+discovery, zones, hot water (with cylinders and solar), circuits, boiler, boiler
+configuration, system, radio devices, FM5, energy and schedules in the
+`semantic_vaillant_<theme>.go` files, B524 access in
+[`semantic_vaillant_b524_access.go`](../../cmd/gateway/semantic_vaillant_b524_access.go),
+B509 and B555 access with the shared read-watch runtime in
+[`semantic_vaillant_b509_access.go`](../../cmd/gateway/semantic_vaillant_b509_access.go)
+and value decoding in
+[`semantic_vaillant_codec.go`](../../cmd/gateway/semantic_vaillant_codec.go).
+The committed [`move_go_declarations.py`](../../scripts/move_go_declarations.py)
+moved these declarations unchanged as
+[`semantic_vaillant_split.json`](../../scripts/semantic_vaillant_split.json)
+lists them. Snapshot declarations, cache hydration, cloning and freshness
+seeding remain in
 [`semantic_vaillant_snapshots.go`](../../cmd/gateway/semantic_vaillant_snapshots.go).
 
 [`semantic_snapshot_merge.go`](../../cmd/gateway/semantic_snapshot_merge.go)
 owns field freshness assignment and zone and domestic-hot-water field merging.
 It receives typed observations, their source and the set of attempted fields.
 It performs no bus access or publication. The existing poller publication methods
-in `semantic_vaillant.go` compose the retained snapshots into the GraphQL
-provider and broadcast hub. This extraction is one part of the acquisition and
+in [`vaillant_semantic_publication.go`](../../cmd/gateway/vaillant_semantic_publication.go)
+compose the retained snapshots into the GraphQL provider and broadcast hub. This extraction is one part of the acquisition and
 publication separation; the complete separation remains open in
 [the parent issue](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1480).
 

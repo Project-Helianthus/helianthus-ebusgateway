@@ -7,7 +7,8 @@ result supplies `CentralHeatingPumpActive` in the incoming boiler snapshot.
 `readB509OnOff` requires both a successful `readB509Value` and successful
 `decodeOnOff`; otherwise it returns nil. This identifies the implemented direct
 boiler on/off source, without establishing a new native wire interpretation.
-See [the boiler refresh and read helpers](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/semantic_vaillant.go).
+See [the boiler refresh](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/semantic_vaillant_boiler.go)
+and [the B509 read helpers](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/semantic_vaillant_b509_access.go).
 
 The fast B524 path uses `mergeBoilerMirrorFieldsFromSnapshots`, which leaves the
 boiler pump field absent rather than deriving it from circuit 0's
@@ -57,7 +58,7 @@ synthetic boiler evidence; it does not execute a successful B509 wire read.
 pointer is non-nil. Omission or a failed pump read leaves the last-known value
 intact while other successful fields can update. This applies to both true and
 false, independently of circuit pump changes. See the merge implementation in
-[the semantic poller](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/semantic_vaillant.go)
+[the boiler file of the semantic poller](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/semantic_vaillant_boiler.go)
 and `TestK01PartialUpdatesPreserveIndependentBoilerPump` in the linked regression.
 This live retention is separate from the load-time discard of unproven cache
 state.

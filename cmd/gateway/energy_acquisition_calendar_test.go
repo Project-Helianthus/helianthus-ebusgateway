@@ -44,7 +44,7 @@ func TestEnergyAcquisitionCalendar(t *testing.T) {
 			clock := tc.start.Add(-time.Minute)
 			provider := graphql.NewLiveSemanticProvider()
 			provider.SetEnergyClock(func() time.Time { return clock })
-			poller := &vaillantSemanticPoller{provider: provider}
+			poller := &vaillantSemanticPoller{publication: newVaillantSemanticPublication(provider, nil, nil)}
 
 			selectors := []struct{ channel, usage string }{
 				{"gas", "climate"}, {"gas", "hot_water"},

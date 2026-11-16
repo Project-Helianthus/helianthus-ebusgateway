@@ -88,12 +88,14 @@ type vaillantSemanticPoller struct {
 	scheduler *ebusgateway.SemanticReadScheduler
 	tasks     *semanticTaskScheduler
 
-	reg      *registry.DeviceRegistry
-	bus      *protocol.Bus
-	provider *graphql.LiveSemanticProvider
-	hub      *graphql.BroadcastHub
-	cache    semanticCachePersister
-	shadow   *ebusgateway.ShadowCache
+	reg    *registry.DeviceRegistry
+	bus    *protocol.Bus
+	shadow *ebusgateway.ShadowCache
+
+	// publication owns the GraphQL provider, the broadcast hub, the cache
+	// persister and the boiler publication lock; nil for a registry-only
+	// poller, whose accessors then return nil collaborators.
+	publication *vaillantSemanticPublication
 
 	transportConfig ebusgateway.TransportConfig
 	watchObserver   ebusgateway.WatchObserver
@@ -117,9 +119,8 @@ type vaillantSemanticPoller struct {
 	fm5EvidenceTTL           time.Duration
 	circuitFullScanInterval  time.Duration
 
-	pollMu          sync.Mutex
-	boilerPublishMu sync.Mutex
-	readMu          sync.Mutex
+	pollMu sync.Mutex
+	readMu sync.Mutex
 
 	// identityProbedAddresses tracks per-address probe attempts for
 	// EnqueueAddressIdentityProbe (P5). Each address is probed at

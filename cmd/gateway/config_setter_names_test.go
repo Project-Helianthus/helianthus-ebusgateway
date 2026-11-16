@@ -120,7 +120,7 @@ func newCfgKeysPoller(t *testing.T, bus *cfgKeysFakeBus) (*vaillantSemanticPolle
 	poller := &vaillantSemanticPoller{
 		scheduler:      ebusgateway.NewSemanticReadScheduler(),
 		reg:            reg,
-		provider:       provider,
+		publication:    newVaillantSemanticPublication(provider, nil, nil),
 		source:         0x71,
 		controller:     0x15,
 		boilerAddress:  cfgKeysBoilerAddress,

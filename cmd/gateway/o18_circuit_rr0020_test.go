@@ -72,7 +72,7 @@ func TestO18RefreshDoesNotAcquireRawTemperature(t *testing.T) {
 				provider := graphql.NewLiveSemanticProvider()
 				requests := 0
 				p := &vaillantSemanticPoller{
-					controller: 0x15, source: 0x7f, provider: provider,
+					controller: 0x15, source: 0x7f, publication: newVaillantSemanticPublication(provider, nil, nil),
 					nowFn:                 func() time.Time { return now },
 					lastCircuitFullScanAt: now, lastCircuitFullScanComplete: true,
 					circuits: map[byte]*vaillantCircuitSnapshot{instance: {Instance: instance, Active: true, CircuitTypeRaw: &kind, CalcFlowTempC: &prior}},
@@ -147,9 +147,9 @@ func TestO18RetainedAndIncomingSnapshots(t *testing.T) {
 		t.Fatal("input mutated")
 	}
 	// Cache-source publication uses cloneCircuitSnapshot even without a refresh.
-	p := &vaillantSemanticPoller{provider: graphql.NewLiveSemanticProvider(), circuits: map[byte]*vaillantCircuitSnapshot{1: old}}
+	p := &vaillantSemanticPoller{publication: newVaillantSemanticPublication(graphql.NewLiveSemanticProvider(), nil, nil), circuits: map[byte]*vaillantCircuitSnapshot{1: old}}
 	p.publishCircuits(semanticSnapshotSourceCache)
-	out := p.provider.Circuits()
+	out := p.liveProvider().Circuits()
 	if len(out) != 1 || out[0].State.CalcFlowTempC != nil || out[0].State.FlowTemperatureC == nil || *out[0].State.FlowTemperatureC != 41.5 || out[0].State.FlowSetpointC == nil || *out[0].State.FlowSetpointC != 46.25 {
 		t.Fatalf("cached publication=%+v", out)
 	}
@@ -181,7 +181,7 @@ func TestO18StartupRawCannotEstablishPseudoCircuit(t *testing.T) {
 				rawRequests, flowRequests := 0, 0
 				provider := graphql.NewLiveSemanticProvider()
 				p := &vaillantSemanticPoller{
-					controller: 0x15, source: 0x7f, provider: provider,
+					controller: 0x15, source: 0x7f, publication: newVaillantSemanticPublication(provider, nil, nil),
 					sendFrameFn: func(_ context.Context, f protocol.Frame) (*protocol.Frame, error) {
 						if len(f.Data) != 6 || f.Data[0] != 2 || f.Data[2] != 2 {
 							t.Fatalf("unexpected selector %v", f.Data)

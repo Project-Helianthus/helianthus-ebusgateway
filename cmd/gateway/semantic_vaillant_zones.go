@@ -66,10 +66,10 @@ func (p *vaillantSemanticPoller) reconcileDiscoveryPresence(ctx context.Context,
 }
 
 func (p *vaillantSemanticPoller) startupZonesNeedImmediatePresence() bool {
-	if p == nil || p.provider == nil {
+	if p == nil || p.liveProvider() == nil {
 		return false
 	}
-	if len(p.provider.Zones()) > 0 {
+	if len(p.liveProvider().Zones()) > 0 {
 		return false
 	}
 	p.mu.Lock()

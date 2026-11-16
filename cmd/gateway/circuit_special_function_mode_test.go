@@ -86,7 +86,7 @@ func sfmCircuitPoller(now *time.Time, circuitReplies map[uint16][]byte) (*vailla
 	poller := &vaillantSemanticPoller{
 		controller:                  0x15,
 		source:                      0x7F,
-		provider:                    provider,
+		publication:                 newVaillantSemanticPublication(provider, nil, nil),
 		scheduler:                   ebusgateway.NewSemanticReadScheduler(),
 		requestTimeout:              50 * time.Millisecond,
 		circuitFullScanInterval:     semanticCircuitFullScanInterval,
@@ -109,7 +109,7 @@ func sfmReaderPoller(now *time.Time, replies map[sfmSelector][]byte) *vaillantSe
 	return &vaillantSemanticPoller{
 		controller:     0x15,
 		source:         0x7F,
-		provider:       graphql.NewLiveSemanticProvider(),
+		publication:    newVaillantSemanticPublication(graphql.NewLiveSemanticProvider(), nil, nil),
 		scheduler:      ebusgateway.NewSemanticReadScheduler(),
 		requestTimeout: 50 * time.Millisecond,
 		nowFn:          func() time.Time { return *now },

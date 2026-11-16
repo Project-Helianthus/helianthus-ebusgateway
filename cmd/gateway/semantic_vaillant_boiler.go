@@ -785,7 +785,7 @@ func (p *vaillantSemanticPoller) findHeatPumpClassAddress() byte {
 // reason clear: there the missing root is a failing read, not a bus without a
 // supported path. It reads the registry only and sends nothing.
 func (p *vaillantSemanticPoller) refreshHeatSourcePathReason() {
-	if p == nil || p.provider == nil {
+	if p == nil || p.liveProvider() == nil {
 		return
 	}
 	p.mu.Lock()
@@ -796,7 +796,7 @@ func (p *vaillantSemanticPoller) refreshHeatSourcePathReason() {
 	if controller == 0 && boilerAddress == 0 && !everDiscovered && regCap != productids.ControllerPresent {
 		heatPump = p.findHeatPumpClassAddress()
 	}
-	if !p.provider.SetNoSupportedHeatSourcePath(heatPump != 0) {
+	if !p.liveProvider().SetNoSupportedHeatSourcePath(heatPump != 0) {
 		return
 	}
 	if heatPump != 0 {

@@ -76,7 +76,7 @@ func newDHWBoundPoller(t *testing.T, deviceID, software, hardware string, bus *d
 	poller := &vaillantSemanticPoller{
 		scheduler:      ebusgateway.NewSemanticReadScheduler(),
 		reg:            reg,
-		provider:       provider,
+		publication:    newVaillantSemanticPublication(provider, nil, nil),
 		source:         0x71,
 		controller:     0x15,
 		requestTimeout: 50 * time.Millisecond,

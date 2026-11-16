@@ -56,7 +56,7 @@ func newHeatSourcePathPoller(t *testing.T, devices ...registry.DeviceInfo) *vail
 	}
 	return &vaillantSemanticPoller{
 		reg:               newTestRegistry(devices...),
-		provider:          graphql.NewLiveSemanticProvider(),
+		publication:       newVaillantSemanticPublication(graphql.NewLiveSemanticProvider(), nil, nil),
 		catalog:           catalog,
 		tasks:             newSemanticTaskScheduler(),
 		zones:             make(map[byte]*vaillantZoneSnapshot),
@@ -136,13 +136,13 @@ func TestHeatSourcePathReasonCondition(t *testing.T) {
 				wantReason = graphql.SemanticStartupReasonNoSupportedHeatSourcePath
 				wantLines = []string{fmt.Sprintf(heatSourcePathSetLine, tc.wantAddress)}
 			}
-			if got := p.provider.StartupReason(); got != wantReason {
+			if got := p.liveProvider().StartupReason(); got != wantReason {
 				t.Errorf("StartupReason() = %q; want %q", got, wantReason)
 			}
 			if strings.Join(lines, "\n") != strings.Join(wantLines, "\n") {
 				t.Errorf("log lines = %q; want %q", lines, wantLines)
 			}
-			if got := p.provider.StartupPhase(); got != graphql.SemanticStartupPhaseBootInit {
+			if got := p.liveProvider().StartupPhase(); got != graphql.SemanticStartupPhaseBootInit {
 				t.Errorf("phase = %s; want BOOT_INIT (the reason is not a phase)", got)
 			}
 			// A second evaluation of an unchanged state logs nothing.
@@ -164,7 +164,7 @@ func TestHeatSourcePathReasonFollowsDiscoveryPasses(t *testing.T) {
 	p.b524ProbeFn = func(_ context.Context, target, _, _, _ byte, _ uint16) bool { return rootAt != 0 && target == rootAt }
 
 	lines := captureHeatSourcePathLog(t, func() { p.refreshDiscovery(context.Background()) })
-	if got := p.provider.StartupReason(); got != graphql.SemanticStartupReasonNoSupportedHeatSourcePath {
+	if got := p.liveProvider().StartupReason(); got != graphql.SemanticStartupReasonNoSupportedHeatSourcePath {
 		t.Fatalf("StartupReason() after a pass without a root = %q; want the reason", got)
 	}
 	if want := []string{"semantic_startup_reason reason=no_supported_heat_source_path state=set heat_source=0x08"}; strings.Join(lines, "\n") != strings.Join(want, "\n") {
@@ -184,7 +184,7 @@ func TestHeatSourcePathReasonFollowsDiscoveryPasses(t *testing.T) {
 	if controller != 0x08 {
 		t.Fatalf("controller = 0x%02x; want the heat-pump-class unit adopted as root at 0x08", controller)
 	}
-	if got := p.provider.StartupReason(); got != "" {
+	if got := p.liveProvider().StartupReason(); got != "" {
 		t.Fatalf("StartupReason() with a root = %q; want empty", got)
 	}
 	if want := []string{"semantic_startup_reason reason=no_supported_heat_source_path state=cleared controller=0x08 boiler=0x00"}; strings.Join(lines, "\n") != strings.Join(want, "\n") {
@@ -194,7 +194,7 @@ func TestHeatSourcePathReasonFollowsDiscoveryPasses(t *testing.T) {
 	// The root stops answering: a failing read, not a bus without a path.
 	rootAt = 0
 	lines = captureHeatSourcePathLog(t, func() { p.refreshDiscovery(context.Background()) })
-	if got := p.provider.StartupReason(); got != "" || len(lines) != 0 {
+	if got := p.liveProvider().StartupReason(); got != "" || len(lines) != 0 {
 		t.Fatalf("after losing a discovered root: StartupReason() = %q, log %q; want empty and no line", got, lines)
 	}
 }
@@ -204,12 +204,12 @@ func TestHeatSourcePathReasonFollowsDiscoveryPasses(t *testing.T) {
 func TestHeatSourcePathReasonClearedByBoilerClassHeatSource(t *testing.T) {
 	p := newHeatSourcePathPoller(t, registry.DeviceInfo{Address: 0x76, Manufacturer: "Vaillant", DeviceID: "VWZIO"})
 	p.refreshBoilerAddress(context.Background())
-	if got := p.provider.StartupReason(); got != graphql.SemanticStartupReasonNoSupportedHeatSourcePath {
+	if got := p.liveProvider().StartupReason(); got != graphql.SemanticStartupReasonNoSupportedHeatSourcePath {
 		t.Fatalf("StartupReason() = %q; want the reason", got)
 	}
 	p.reg.Register(registry.DeviceInfo{Address: 0x08, Manufacturer: "Vaillant", DeviceID: "BAI00"})
 	lines := captureHeatSourcePathLog(t, func() { p.refreshBoilerAddress(context.Background()) })
-	if got := p.provider.StartupReason(); got != "" {
+	if got := p.liveProvider().StartupReason(); got != "" {
 		t.Fatalf("StartupReason() with a boiler-class heat source = %q; want empty", got)
 	}
 	if want := []string{"semantic_startup_reason reason=no_supported_heat_source_path state=cleared controller=0x00 boiler=0x08"}; strings.Join(lines, "\n") != strings.Join(want, "\n") {
@@ -228,12 +228,12 @@ func TestHeatSourcePathReasonClearedByCapabilityRecheck(t *testing.T) {
 		registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV"},
 	)
 	p.refreshRegulatorCapability(context.Background())
-	if got := p.provider.StartupReason(); got != graphql.SemanticStartupReasonNoSupportedHeatSourcePath {
+	if got := p.liveProvider().StartupReason(); got != graphql.SemanticStartupReasonNoSupportedHeatSourcePath {
 		t.Fatalf("StartupReason() before enrichment = %q; want the reason", got)
 	}
 	p.reg.Register(registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV", SerialNumber: regulatorSerial})
 	p.refreshRegulatorCapability(context.Background())
-	if got := p.provider.StartupReason(); got != "" {
+	if got := p.liveProvider().StartupReason(); got != "" {
 		t.Fatalf("StartupReason() after a controller serial = %q; want empty", got)
 	}
 }

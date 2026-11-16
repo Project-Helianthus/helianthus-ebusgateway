@@ -66,7 +66,7 @@ func TestRefreshDHWStartup_DoesNotPromoteCacheWithoutLiveProbe(t *testing.T) {
 		State: graphql.DhwState{CurrentTempC: &currentTemp},
 	})
 	poller := &vaillantSemanticPoller{
-		provider: provider,
+		publication: newVaillantSemanticPublication(provider, nil, nil),
 		dhw: &vaillantDhwSnapshot{
 			CurrentTempC: &currentTemp,
 		},
@@ -92,7 +92,7 @@ func TestRefreshBoilerStatusStartup_DoesNotPromoteCacheWithoutLiveProbe(t *testi
 		State: graphql.BoilerState{FlowTemperatureC: &flowTemp},
 	})
 	poller := &vaillantSemanticPoller{
-		provider:      provider,
+		publication:   newVaillantSemanticPublication(provider, nil, nil),
 		boilerAddress: 0x08,
 		boiler: &vaillantBoilerSnapshot{
 			FlowTemperatureC: &flowTemp,
@@ -114,7 +114,7 @@ func TestStartupL1PrimingStatusRequiresCriticalPlanes(t *testing.T) {
 	t.Parallel()
 
 	provider := graphql.NewLiveSemanticProvider()
-	poller := &vaillantSemanticPoller{provider: provider}
+	poller := &vaillantSemanticPoller{publication: newVaillantSemanticPublication(provider, nil, nil)}
 
 	if status := poller.startupL1PrimingStatus(); status.ready() {
 		t.Fatalf("empty startup status ready = true; status=%s", status.String())
@@ -161,7 +161,7 @@ func TestStartupL1PrimingStatusTreatsOptionalFM5AndEmptyRadioAsReady(t *testing.
 	provider.SetSystem(&graphql.SystemStatus{})
 	provider.SetBoilerStatus(&graphql.BoilerStatus{})
 	poller := &vaillantSemanticPoller{
-		provider:                  provider,
+		publication:               newVaillantSemanticPublication(provider, nil, nil),
 		startupRadioDevicesProbed: true,
 	}
 
@@ -195,7 +195,7 @@ func TestStartupL1PrimingStatusRequiresFM5PlanesWhenInterpreted(t *testing.T) {
 
 	moduleConfig := uint16(1)
 	poller := &vaillantSemanticPoller{
-		provider: provider,
+		publication: newVaillantSemanticPublication(provider, nil, nil),
 		reg: newTestRegistry(
 			registry.DeviceInfo{Address: 0x26, Manufacturer: "Vaillant", DeviceID: "VR_71"},
 		),
@@ -238,7 +238,7 @@ func TestStartupL1PrimingStatusRejectsEmptyInterpretedCylinders(t *testing.T) {
 
 	moduleConfig := uint16(1)
 	poller := &vaillantSemanticPoller{
-		provider: provider,
+		publication: newVaillantSemanticPublication(provider, nil, nil),
 		reg: newTestRegistry(
 			registry.DeviceInfo{Address: 0x26, Manufacturer: "Vaillant", DeviceID: "VR_71"},
 		),
@@ -276,7 +276,7 @@ func TestStartupL1PrimingStatusAcceptsPublishedGPIOOnlyFM5Planes(t *testing.T) {
 	provider.SetCylinders([]graphql.CylinderStatus{})
 	provider.SetBoilerStatus(&graphql.BoilerStatus{})
 	poller := &vaillantSemanticPoller{
-		provider: provider,
+		publication: newVaillantSemanticPublication(provider, nil, nil),
 		reg: newTestRegistry(
 			registry.DeviceInfo{Address: 0x26, Manufacturer: "Vaillant", DeviceID: "VR_71"},
 		),
@@ -302,7 +302,7 @@ func TestRefreshStartupSemanticPlanesPublishesAbsentFM5Planes(t *testing.T) {
 
 	poller := &vaillantSemanticPoller{
 		controller:                0x15,
-		provider:                  provider,
+		publication:               newVaillantSemanticPublication(provider, nil, nil),
 		reg:                       newTestRegistry(),
 		startupRadioDevicesProbed: true,
 	}

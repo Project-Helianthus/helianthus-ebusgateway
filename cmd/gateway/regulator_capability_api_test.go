@@ -66,10 +66,10 @@ func TestIssue946CatalogAggregateProjectsVaillantRegulatorCapability(t *testing.
 		t.Run(tc.name, func(t *testing.T) {
 			provider := graphql.NewLiveSemanticProvider()
 			poller := &vaillantSemanticPoller{
-				reg:        newTestRegistry(tc.devices...),
-				catalog:    catalog,
-				catalogErr: tc.catalogErr,
-				provider:   provider,
+				reg:         newTestRegistry(tc.devices...),
+				catalog:     catalog,
+				catalogErr:  tc.catalogErr,
+				publication: newVaillantSemanticPublication(provider, nil, nil),
 			}
 			poller.refreshRegulatorCapability(context.Background())
 			if got := provider.VaillantRegulatorCapability(); got != tc.want {

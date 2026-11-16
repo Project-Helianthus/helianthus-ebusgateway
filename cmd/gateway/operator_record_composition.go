@@ -9,8 +9,9 @@ import (
 // records of the composed families. The preflight calls it once, after the
 // pairings and before any runtime starts; a refusal is fatal like a
 // declaration collision. It wires the gateway's configuration provider with
-// the configured record set. No operator record is configured yet, so the
-// provider admits no source and publishes nothing.
+// the configured record set; a set that waits for its owner's resources stays
+// pending and is applied after the owner publishes. No operator record is
+// configured yet, so the provider admits no source and publishes nothing.
 func composeOperatorRecords(hub *semhub.Hub, cfg ebusgateway.Config) error {
 	publisher, err := newOperatorRecordPublisher(hub, operatorRecordOptions{})
 	if err != nil {

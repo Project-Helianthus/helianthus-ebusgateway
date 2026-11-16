@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -145,6 +146,7 @@ type operatorRecordPublisher struct {
 	mu      sync.Mutex
 	handle  *semhub.Handle
 	desired map[semreg.AssetID]*operatorAssetState
+	pending map[semreg.AssetID]operatorAssetRecords
 }
 
 // newOperatorRecordPublisher returns the provider. It admits its source only
@@ -184,15 +186,102 @@ func (p *operatorRecordPublisher) DeclareHome(id semreg.AssetID, validators ...s
 	return err
 }
 
-// Compose applies every configured record set in order and stops at the
-// first refusal.
+// Compose applies every configured record set in order. A set whose starting
+// end does not resolve yet, or whose asset is not declared yet, because its
+// owner has not published, stays pending and is applied again after each
+// later publication of the hub; any other refusal stops the composition.
 func (p *operatorRecordPublisher) Compose(sets []operatorAssetRecords) error {
+	if len(sets) == 0 {
+		return nil
+	}
+	// Subscribing before the first attempt leaves no publication unseen.
+	subscription := p.hub.Subscribe()
 	for _, set := range sets {
-		if err := p.Set(set.Asset, set.Records, set.Audit); err != nil {
+		err := p.Set(set.Asset, set.Records, set.Audit)
+		if err == nil {
+			continue
+		}
+		if !operatorRecordDeferred(err) {
+			subscription.Close()
 			return err
 		}
+		p.mu.Lock()
+		if p.pending == nil {
+			p.pending = make(map[semreg.AssetID]operatorAssetRecords)
+		}
+		p.pending[set.Asset] = set
+		p.mu.Unlock()
 	}
+	if len(p.Pending()) == 0 {
+		subscription.Close()
+		return nil
+	}
+	go p.watch(subscription)
 	return nil
+}
+
+// operatorRecordDeferred reports a refusal that a later publication of the
+// asset's owner can resolve.
+func operatorRecordDeferred(err error) bool {
+	var refusal *operatorRecordRefusal
+	if errors.As(err, &refusal) {
+		return refusal.Reason == operatorReasonStartingEndUnresolved
+	}
+	return errors.Is(err, semhub.ErrUnknownAsset)
+}
+
+// Pending returns the assets whose configured records wait for their owner's
+// resources, in order.
+func (p *operatorRecordPublisher) Pending() []semreg.AssetID {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([]semreg.AssetID, 0, len(p.pending))
+	for id := range p.pending {
+		out = append(out, id)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+// Retry applies the pending record sets again and keeps those that still
+// wait. A set refused for another reason is dropped from the pending sets and
+// returned.
+func (p *operatorRecordPublisher) Retry() error {
+	var first error
+	for _, id := range p.Pending() {
+		p.mu.Lock()
+		set, ok := p.pending[id]
+		p.mu.Unlock()
+		if !ok {
+			continue
+		}
+		err := p.Set(set.Asset, set.Records, set.Audit)
+		if err != nil && operatorRecordDeferred(err) {
+			continue
+		}
+		p.mu.Lock()
+		delete(p.pending, id)
+		p.mu.Unlock()
+		if err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
+}
+
+// watch retries the pending sets after every hub event until none is left.
+func (p *operatorRecordPublisher) watch(subscription *semhub.Subscription) {
+	defer subscription.Close()
+	for {
+		// Retry first: an event queued before the goroutine started is covered.
+		_ = p.Retry()
+		if len(p.Pending()) == 0 {
+			return
+		}
+		if _, err := subscription.Next(context.Background()); err != nil && !errors.Is(err, context.Canceled) {
+			return
+		}
+	}
 }
 
 // Desired returns the provider's desired records of one asset with their

@@ -68,7 +68,11 @@ as they were. The refusal names the asset, the resource and one reason:
 
 The kernel's own checks still apply to the batch. They cover catalog
 membership, the basis classes a definition admits, end kinds and revision
-order. A preflight refusal is fatal, as a declaration collision is.
+order. A preflight refusal is fatal, as a declaration collision is, with one
+exception: at startup no driver has published yet, so a set whose starting end
+does not resolve, or whose asset is not declared yet, stays pending instead of
+failing. The provider touches nothing for it and applies it again after each
+later publication of the hub, until the owner's resource exists.
 
 ## Lifecycle against fences
 

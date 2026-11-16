@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
@@ -455,5 +456,61 @@ func TestOperatorRecordPublisherComposesAnEmptyRecordSet(t *testing.T) {
 	after, err := hub.GraphState()
 	if err != nil || !reflect.DeepEqual(after, state) {
 		t.Fatalf("an empty record set changed the declared assets: %+v (err=%v)", after, err)
+	}
+}
+
+// A configured relation whose starting end belongs to a driver that has not
+// published it yet is neither fatal nor lost: the composition keeps it pending
+// without touching the hub and publishes it after the driver's publication.
+func TestOperatorRecordPublisherDefersARecordUntilItsOwnerResourceExists(t *testing.T) {
+	f := newOprFixture(t)
+	cursor := f.hub.Cursor()
+	late := operatorRelation{Definition: oprInverterArray(oprArray).Definition, From: oprMissing, To: oprArray}
+	audit := oprAudit("meter-role-late")
+	if err := f.publisher.Compose([]operatorAssetRecords{{Asset: oprDriverAsset, Records: operatorRecords{Relations: []operatorRelation{late}}, Audit: audit}}); err != nil {
+		t.Fatalf("compose refused a record that waits for its owner: %v", err)
+	}
+	if pending := f.publisher.Pending(); len(pending) != 1 || pending[0] != oprDriverAsset {
+		t.Fatalf("pending=%v, want the driver asset", pending)
+	}
+	if events, err := f.hub.Since(cursor); err != nil || len(events) != 0 {
+		t.Fatalf("a pending record emitted %d events (%v)", len(events), err)
+	}
+	if info, ok := f.hub.Source(operatorRecordSource); !ok || info.Live {
+		t.Fatalf("a pending record admitted the configuration source: %+v", info)
+	}
+	err := f.publishDriver(t, func(batch *semreg.PublicationBatch, current semreg.Snapshot) {
+		resource := current.Resources[0]
+		resource.ResourceID = oprMissing
+		slot := "inverter-9"
+		resource.Anchor.Slot = &slot
+		resource.Origin.OriginID = "origin:opr-driver:inverter-9"
+		resource.Revision = "1"
+		batch.ResourceUpserts = []semreg.Resource{resource}
+	})
+	if err != nil {
+		t.Fatalf("driver publication of the late resource: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for len(f.publisher.Pending()) != 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if pending := f.publisher.Pending(); len(pending) != 0 {
+		t.Fatalf("pending=%v after the owner published", pending)
+	}
+	held, ok := oprRelationIn(f.snapshot(t, oprDriverAsset), late)
+	if !ok {
+		t.Fatal("the deferred relation was not published after its owner resource appeared")
+	}
+	oprRequireOperatorOrigin(t, held.Origin, audit)
+}
+
+// Any other refusal stays fatal at composition.
+func TestOperatorRecordPublisherComposeStopsOnAnotherRefusal(t *testing.T) {
+	f := newOprFixture(t)
+	err := f.publisher.Compose([]operatorAssetRecords{{Asset: oprDriverAsset, Records: operatorRecords{Relations: []operatorRelation{oprInverterArray(oprArray)}}}})
+	var refusal *operatorRecordRefusal
+	if !errors.As(err, &refusal) || refusal.Reason != operatorReasonAuditMissing || len(f.publisher.Pending()) != 0 {
+		t.Fatalf("compose=%v pending=%v, want a fatal %s", err, f.publisher.Pending(), operatorReasonAuditMissing)
 	}
 }

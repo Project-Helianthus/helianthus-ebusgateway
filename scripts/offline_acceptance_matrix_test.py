@@ -83,6 +83,9 @@ GO_CONSTRAINED_FILES = {
     "constrained_broken_test.go":
         "//go:build linux ||\n\npackage sample\n\nimport \"testing\"\n\n"
         "func TestDeclaredOnlyUnderAnUnparsableConstraint(t *testing.T) {}\n",
+    "double_constraint_test.go":
+        "//go:build linux\n//go:build amd64 || arm64 || arm || 386\n\npackage sample\n\nimport \"testing\"\n\n"
+        "func TestDeclaredOnlyUnderTwoBuildLines(t *testing.T) {}\n",
     "_ignored_test.go":
         "package sample\n\nimport \"testing\"\n\nfunc TestDeclaredOnlyInAnIgnoredFile(t *testing.T) {}\n",
 }
@@ -333,7 +336,8 @@ class OfflineAcceptanceMatrixTests(unittest.TestCase):
                          "TestDeclaredOnlyInOneArchitectureFile", "TestDeclaredOnlyUnderANotLinuxConstraint",
                          "TestDeclaredOnlyUnderACustomTag", "TestDeclaredOnlyWithoutTheRaceDetector",
                          "TestDeclaredOnlyUnderALegacyConstraint",
-                         "TestDeclaredOnlyUnderAnUnparsableConstraint", "TestDeclaredOnlyInAnIgnoredFile"):
+                         "TestDeclaredOnlyUnderAnUnparsableConstraint", "TestDeclaredOnlyInAnIgnoredFile",
+                         "TestDeclaredOnlyUnderTwoBuildLines"):
             with self.subTest(function=function):
                 problem = MATRIX.missing_test(self.repo.root, f"internal/sample {function}")
                 self.assertIsNotNone(problem)

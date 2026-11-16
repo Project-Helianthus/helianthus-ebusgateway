@@ -345,6 +345,8 @@ def in_release_build(root, path):
     if text is None:
         return False
     expressions, legacy = _header_constraints(text)
+    if len(expressions) > 1:
+        return False
     go_minor = _release_go_minor(root)
     for goarch in RELEASE_GOARCHES:
         if not _file_name_matches(path.name, goarch):

@@ -44,7 +44,7 @@ declares the `go test` entry point `func <TestName>(t *testing.T)`, where `TestN
 by a character that is not a lower-case letter, and that file is part of the build of the release target: `linux`
 on every release architecture (`amd64`, `arm64`, `arm`, `386`), with and without the race detector. A file that a
 file-name suffix or a `//go:build` (or legacy `// +build`) constraint excludes from any of those builds, or whose
-name starts with `_` or `.`, is never evidence; a custom build tag is unset. A Python test is named as
+name starts with `_` or `.`, or that carries more than one `//go:build` line, is never evidence; a custom build tag is unset. A Python test is named as
 `<script path> <test_name>` and exists when `test_name` starts with `test` and the test runner collects it: a
 module-level `def <test_name>(`, or a method of a module-level class the runner collects (a subclass of
 `unittest.TestCase`, or a class named `Test...` without `__init__`). A `test_` function nested inside another
@@ -78,11 +78,11 @@ acceptance is closed; it is not part of the local gate.
 
 | Axis | Cells | `not_run` | `pass` | `not_applicable` | `not_in_0_7` |
 |---|---|---|---|---|---|
-| `family_surface` | 135 | 117 | 9 | 0 | 9 |
+| `family_surface` | 135 | 118 | 8 | 0 | 9 |
 | `family_graph` | 75 | 70 | 0 | 0 | 5 |
-| `family_condition` | 120 | 87 | 25 | 0 | 8 |
+| `family_condition` | 120 | 90 | 22 | 0 | 8 |
 | `graph_negative` | 7 | 7 | 0 | 0 | 0 |
-| total | 337 | 281 | 34 | 0 | 22 |
+| total | 337 | 285 | 30 | 0 | 22 |
 
 ### Families
 
@@ -153,7 +153,7 @@ acceptance is closed; it is not part of the local gate.
 | `huawei_sdongle` | `not_run` | `pass` | `pass` | `pass` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
 | `huawei_energy_manager` | `not_in_0_7` | `not_in_0_7` | `not_in_0_7` | `not_in_0_7` | `not_in_0_7` | `not_in_0_7` | `not_in_0_7` | `not_in_0_7` | `not_in_0_7` |
 | `growatt_inverter_rtu` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
-| `growatt_bms_rs485` | `pass` | `pass` | `pass` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
+| `growatt_bms_rs485` | `not_run` | `pass` | `pass` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
 | `growatt_bms_can` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
 | `growatt_bms_pcs_can` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
 | `growatt_bms_link_can` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
@@ -190,12 +190,12 @@ acceptance is closed; it is not part of the local gate.
 | `eebus_energy_manager` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
 | `sunspec_inverter` | `not_run` | `not_run` | `not_run` | `pass` | `not_run` | `not_run` | `not_run` | `not_run` |
 | `huawei_smartlogger` | `pass` | `not_run` | `pass` | `not_run` | `not_run` | `pass` | `pass` | `pass` |
-| `huawei_sdongle` | `pass` | `not_run` | `pass` | `not_run` | `not_run` | `pass` | `pass` | `pass` |
+| `huawei_sdongle` | `pass` | `not_run` | `not_run` | `not_run` | `not_run` | `pass` | `pass` | `not_run` |
 | `huawei_energy_manager` | `not_in_0_7` | `not_in_0_7` | `not_in_0_7` | `not_in_0_7` | `not_in_0_7` | `not_in_0_7` | `not_in_0_7` | `not_in_0_7` |
 | `growatt_inverter_rtu` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
 | `growatt_bms_rs485` | `pass` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `pass` |
 | `growatt_bms_can` | `pass` | `pass` | `not_run` | `not_run` | `pass` | `not_run` | `not_run` | `not_run` |
-| `growatt_bms_pcs_can` | `pass` | `pass` | `not_run` | `not_run` | `not_run` | `pass` | `not_run` | `pass` |
+| `growatt_bms_pcs_can` | `pass` | `pass` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `pass` |
 | `growatt_bms_link_can` | `pass` | `pass` | `not_run` | `not_run` | `pass` | `pass` | `not_run` | `pass` |
 | `tesla_wall_connector` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
 | `outback_power` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` | `not_run` |
@@ -232,7 +232,6 @@ acceptance is closed; it is not part of the local gate.
 | family_surface huawei_energy_manager x prometheus_native | `not_in_0_7` |  | Acquisition of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits it; the composed instance is never dialled and publishes nothing, so the cell cannot be exercised in the release. | helianthus-modbusreg#199 |
 | family_surface huawei_energy_manager x eebus_output | `not_in_0_7` |  | Acquisition of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits it; the composed instance is never dialled and publishes nothing, so the cell cannot be exercised in the release. | helianthus-modbusreg#199 |
 | family_surface huawei_energy_manager x matter_output | `not_in_0_7` |  | Acquisition of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits it; the composed instance is never dialled and publishes nothing, so the cell cannot be exercised in the release. | helianthus-modbusreg#199 |
-| family_surface growatt_bms_rs485 x native_mcp | `pass` | cmd/gateway TestM57LifecycleToolsReplaceGenerationsAndRefuseLatePublication |  |  |
 | family_surface growatt_bms_rs485 x semantic_mcp | `pass` | cmd/gateway TestM57ComposedDriversShareOneNorthboundPath |  |  |
 | family_surface growatt_bms_rs485 x graphql | `pass` | cmd/gateway TestM57ComposedDriversShareOneNorthboundPath |  |  |
 | family_graph huawei_energy_manager x resources | `not_in_0_7` |  | Semantic publication of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits acquisition; the composed instance publishes nothing. | helianthus-modbusreg#199 |
@@ -247,10 +246,8 @@ acceptance is closed; it is not part of the local gate.
 | family_condition huawei_smartlogger x unknown_capability | `pass` | cmd/gateway TestH11ComposedHuaweiPathOffline |  |  |
 | family_condition huawei_smartlogger x cleanup | `pass` | cmd/gateway TestH11ComposedHuaweiPathOffline |  |  |
 | family_condition huawei_sdongle x normal | `pass` | cmd/gateway TestH11ComposedHuaweiPathOffline |  |  |
-| family_condition huawei_sdongle x reset | `pass` | cmd/gateway TestH11ComposedHuaweiPathOffline |  |  |
 | family_condition huawei_sdongle x identity_conflict | `pass` | cmd/gateway TestH11ComposedHuaweiPathOffline |  |  |
 | family_condition huawei_sdongle x unknown_capability | `pass` | cmd/gateway TestH11ComposedHuaweiPathOffline |  |  |
-| family_condition huawei_sdongle x cleanup | `pass` | cmd/gateway TestH11ComposedHuaweiPathOffline |  |  |
 | family_condition huawei_energy_manager x normal | `not_in_0_7` |  | Acquisition of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits it; the composed instance is never dialled and publishes nothing, so the cell cannot be exercised in the release. | helianthus-modbusreg#199 |
 | family_condition huawei_energy_manager x degraded | `not_in_0_7` |  | Acquisition of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits it; the composed instance is never dialled and publishes nothing, so the cell cannot be exercised in the release. | helianthus-modbusreg#199 |
 | family_condition huawei_energy_manager x reset | `not_in_0_7` |  | Acquisition of this family is withheld by its native contract (NO_ADMITTED_CHILD_PROFILE) until that contract admits it; the composed instance is never dialled and publishes nothing, so the cell cannot be exercised in the release. | helianthus-modbusreg#199 |
@@ -266,7 +263,6 @@ acceptance is closed; it is not part of the local gate.
 | family_condition growatt_bms_can x stale_generation | `pass` | cmd/gateway TestCAN03ReceiveFailureReachesLifecycleAndRestart |  |  |
 | family_condition growatt_bms_pcs_can x normal | `pass` | cmd/gateway TestCX22ComposedThreeFamiliesAndTwoProviderIsolation |  |  |
 | family_condition growatt_bms_pcs_can x degraded | `pass` | cmd/gateway TestCX22LossWithdrawsAndQuarantines |  |  |
-| family_condition growatt_bms_pcs_can x identity_conflict | `pass` | cmd/gateway TestCX22NativeContextDoesNotInventTopology |  |  |
 | family_condition growatt_bms_pcs_can x cleanup | `pass` | cmd/gateway TestCX22LossWithdrawsAndQuarantines |  |  |
 | family_condition growatt_bms_link_can x normal | `pass` | cmd/gateway TestCX22ComposedThreeFamiliesAndTwoProviderIsolation |  |  |
 | family_condition growatt_bms_link_can x degraded | `pass` | cmd/gateway TestCX22LossWithdrawsAndQuarantines |  |  |

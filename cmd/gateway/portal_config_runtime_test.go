@@ -22,7 +22,10 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/portalconfig"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimecontrol"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimestate"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal"
+	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
+	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/packs/pv"
 )
 
 var m28SidecarIDs = []runtimecontrol.DriverID{managedEEBusID, managedGrowattID, managedSunSpecID}
@@ -883,5 +886,253 @@ func TestM28RegistrationRefusalKeepsPortalWithholdMarker(t *testing.T) {
 	withheld := sidecars.portalWithheld()
 	if _, ok := withheld[managedGrowattID]; !ok {
 		t.Fatalf("withheld %v; want the refused Growatt registration to keep the Portal marker", withheld)
+	}
+}
+
+// opr27Runtime opens a Portal configuration runtime over a synthetic store
+// with no editable driver; the operator-record section is its only content.
+func opr27Runtime(t *testing.T) *gatewayPortalConfigRuntime {
+	t.Helper()
+	store, err := portalconfig.Open(t.TempDir(), portalconfig.Record{Format: portalconfig.Format, Revision: "0", Drivers: []portalconfig.Driver{}}, portalconfig.Constraints{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &gatewayPortalConfigRuntime{store: store, applied: map[runtimecontrol.DriverID]portalConfigApplication{}}
+	t.Cleanup(func() {
+		if err := runtime.Close(); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	})
+	return runtime
+}
+
+func opr27Definition(id string) *semreg.DefinitionRef {
+	return &semreg.DefinitionRef{Pack: oprPVPack, ID: semreg.DefinitionID(id), Version: "1.0.0"}
+}
+
+func opr27Relation(home semreg.AssetID, definition string, from, to semreg.ResourceID) portalconfig.OperatorRecord {
+	return portalconfig.OperatorRecord{Form: portalconfig.OperatorFormRelation, Home: string(home), Definition: opr27Definition(definition), From: string(from), To: string(to), BasisClass: string(semreg.RelationConfiguration)}
+}
+
+// opr27Set is one record of each form: the array the operator anchored in
+// the provider's home asset, the relation from the driver's inverter to it,
+// and a pairing of two views of one PV system whose second home no owner has
+// declared.
+func opr27Set(revision string) portalconfig.OperatorRecordSet {
+	return portalconfig.OperatorRecordSet{Format: portalconfig.OperatorRecordsFormat, Revision: revision, Records: []portalconfig.OperatorRecord{
+		{Form: portalconfig.OperatorFormAnchor, Home: string(oprHomeAsset), ResourceID: string(oprArray), Kind: "resource.pv_array", Slot: "array-south"},
+		opr27Relation(oprDriverAsset, "pv.relation.inverter_array", oprInverter, oprArray),
+		{Form: portalconfig.OperatorFormPairing, Kind: "resource.pv_system", Slot: "system-main", Views: []portalconfig.OperatorView{
+			{Home: string(oprHomeAsset), ResourceID: "resource:opr:system-a"},
+			{Home: "asset:opr-undeclared", ResourceID: "resource:opr:system-b"},
+		}},
+	}}
+}
+
+func opr27States(t *testing.T, callbacks *portal.ConfigOperatorRecords, set portalconfig.OperatorRecordSet) []string {
+	t.Helper()
+	out := []string{}
+	for i, state := range callbacks.States(context.Background(), set) {
+		if state.Index != i || state.Form != set.Records[i].Form {
+			t.Fatalf("state %d=%+v does not name its record", i, state)
+		}
+		out = append(out, state.Status+":"+state.Reason)
+	}
+	return out
+}
+
+func opr27Await(t *testing.T, callbacks *portal.ConfigOperatorRecords, set portalconfig.OperatorRecordSet, want []string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !reflect.DeepEqual(opr27States(t, callbacks, set), want) && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := opr27States(t, callbacks, set); !reflect.DeepEqual(got, want) {
+		t.Fatalf("states=%v, want %v", got, want)
+	}
+}
+
+// The Portal section feeds the configuration provider through the runtime
+// control's hub. Each record shows published, waiting (home asset not
+// declared, or starting end not yet published by its owner) or refused with
+// the kernel's stable error; a waiting record is published once its owner
+// publishes, and a cleared section withdraws what was published.
+func TestOperatorRecordRuntimeFeedsThePublisherAndShowsEachStatus(t *testing.T) {
+	f := newOprFixture(t)
+	runtime := opr27Runtime(t)
+	callbacks := runtime.callbacks(ebusgateway.Config{}, &gatewayRuntimeControl{hub: f.hub}).OperatorRecords
+	if callbacks == nil || callbacks.Read == nil || callbacks.Replace == nil || callbacks.States == nil {
+		t.Fatal("the runtime serves no operator-record section")
+	}
+
+	saved, err := callbacks.Replace(context.Background(), opr27Set("0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	opr27Await(t, callbacks, saved, []string{"published:", "published:", "waiting:home_not_declared"})
+	relation := oprInverterArray(oprArray)
+	held, ok := oprRelationIn(f.snapshot(t, oprDriverAsset), relation)
+	if !ok || held.BasisClass != semreg.RelationConfiguration || held.Origin.Kind != semreg.OriginOperator {
+		t.Fatalf("relation=%+v present=%v, want the configured relation on the driver asset", held, ok)
+	}
+	home := f.snapshot(t, oprHomeAsset)
+	for _, id := range []semreg.ResourceID{oprArray, "resource:opr:system-a"} {
+		resource, ok := oprResourceIn(home, id)
+		if !ok || resource.State != semreg.ResourceCurrent || resource.Anchor.Basis != semreg.AnchorOperatorSlot || resource.Origin.Kind != semreg.OriginOperator {
+			t.Fatalf("resource %s=%+v present=%v, want a current operator-slot resource", id, resource, ok)
+		}
+	}
+	if resource, _ := oprResourceIn(home, oprArray); resource.Anchor.Class != semreg.AnchorFunction || *resource.Anchor.Slot != "array-south" {
+		t.Fatalf("array anchor=%+v, want the catalog class and the declared slot", resource.Anchor)
+	}
+
+	// A starting end the driver has not published yet keeps the driver
+	// asset's records waiting until it does.
+	late := saved
+	late.Records = append(append([]portalconfig.OperatorRecord{}, saved.Records...), opr27Relation(oprDriverAsset, "pv.relation.inverter_array", oprMissing, oprArray))
+	late, err = callbacks.Replace(context.Background(), late)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opr27Await(t, callbacks, late, []string{"published:", "waiting:starting_end_unresolved", "waiting:home_not_declared", "waiting:starting_end_unresolved"})
+	if err := f.publishDriver(t, func(batch *semreg.PublicationBatch, current semreg.Snapshot) {
+		resource := current.Resources[0]
+		resource.ResourceID = oprMissing
+		slot := "inverter-9"
+		resource.Anchor.Slot = &slot
+		resource.Origin.OriginID = "origin:opr-driver:inverter-9"
+		resource.Revision = "1"
+		batch.ResourceUpserts = []semreg.Resource{resource}
+	}); err != nil {
+		t.Fatalf("driver publication of the late resource: %v", err)
+	}
+	opr27Await(t, callbacks, late, []string{"published:", "published:", "waiting:home_not_declared", "published:"})
+
+	// A record the kernel refuses is shown with the kernel's stable error;
+	// the refused set changes nothing that was published.
+	refused := late
+	refused.Records = append(append([]portalconfig.OperatorRecord{}, late.Records[:3]...), opr27Relation(oprDriverAsset, "pv.relation.system_inverter", oprInverter, oprArraySecond))
+	refused, err = callbacks.Replace(context.Background(), refused)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opr27Await(t, callbacks, refused, []string{"published:", "refused:identity_drift", "waiting:home_not_declared", "refused:identity_drift"})
+	if _, ok := oprRelationIn(f.snapshot(t, oprDriverAsset), operatorRelation{Definition: relation.Definition, From: oprMissing, To: oprArray}); !ok {
+		t.Fatal("a refused set withdrew a published relation")
+	}
+
+	// Clearing the section withdraws the provider's records.
+	cleared, err := callbacks.Replace(context.Background(), portalconfig.OperatorRecordSet{Format: portalconfig.OperatorRecordsFormat, Revision: refused.Revision, Records: []portalconfig.OperatorRecord{}})
+	if err != nil || len(callbacks.States(context.Background(), cleared)) != 0 {
+		t.Fatalf("clear: %+v %v", cleared, err)
+	}
+	if _, ok := oprRelationIn(f.snapshot(t, oprDriverAsset), relation); ok {
+		t.Fatal("the cleared relation is still published")
+	}
+	if resource, _ := oprResourceIn(f.snapshot(t, oprHomeAsset), oprArray); resource.State != semreg.ResourceWithdrawn {
+		t.Fatalf("cleared resource=%+v, want withdrawn", resource)
+	}
+}
+
+// A section stored before the runtime binds is applied when it binds; a
+// runtime without a hub keeps every record waiting and publishes nothing.
+func TestOperatorRecordRuntimeAppliesTheStoredSectionWhenBound(t *testing.T) {
+	f := newOprFixture(t)
+	runtime := opr27Runtime(t)
+	unbound := runtime.callbacks(ebusgateway.Config{}, nil).OperatorRecords
+	saved, err := unbound.Replace(context.Background(), opr27Set("0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"waiting:publisher_unavailable", "waiting:publisher_unavailable", "waiting:publisher_unavailable"}
+	if got := opr27States(t, unbound, saved); !reflect.DeepEqual(got, want) {
+		t.Fatalf("unbound states=%v, want %v", got, want)
+	}
+	if info, ok := f.hub.Source(operatorRecordSource); ok && info.Live {
+		t.Fatalf("an unbound runtime admitted the configuration source: %+v", info)
+	}
+	bound := runtime.callbacks(ebusgateway.Config{}, &gatewayRuntimeControl{hub: f.hub}).OperatorRecords
+	opr27Await(t, bound, saved, []string{"published:", "published:", "waiting:home_not_declared"})
+	// Binding again keeps the one provider and its outcomes.
+	again := runtime.callbacks(ebusgateway.Config{}, &gatewayRuntimeControl{hub: f.hub}).OperatorRecords
+	opr27Await(t, again, saved, []string{"published:", "published:", "waiting:home_not_declared"})
+}
+
+// The audit digest of a home's records follows every record field: two sets
+// that differ in one field never share a declaration digest.
+func TestOperatorRecordRuntimeAuditFollowsTheDeclaration(t *testing.T) {
+	base := opr27Set("0").Records[1]
+	seen := map[semreg.Digest]string{portalOperatorAudit(oprDriverAsset, []portalconfig.OperatorRecord{base}).Declaration: "base"}
+	for name, edit := range map[string]func(*portalconfig.OperatorRecord){
+		"definition": func(r *portalconfig.OperatorRecord) { r.Definition = opr27Definition("pv.relation.system_inverter") },
+		"from":       func(r *portalconfig.OperatorRecord) { r.From = string(oprMissing) },
+		"to":         func(r *portalconfig.OperatorRecord) { r.To = string(oprArraySecond) },
+	} {
+		record := base
+		record.Definition = opr27Definition(string(base.Definition.ID))
+		edit(&record)
+		digest := portalOperatorAudit(oprDriverAsset, []portalconfig.OperatorRecord{record}).Declaration
+		if previous, ok := seen[digest]; ok {
+			t.Fatalf("%s shares the declaration digest of %s", name, previous)
+		}
+		seen[digest] = name
+	}
+	if other := portalOperatorAudit(oprHomeAsset, []portalconfig.OperatorRecord{base}).Declaration; seen[other] != "" {
+		t.Fatal("the home asset is not part of the declaration digest")
+	}
+	if (operatorAudit{Declaration: portalOperatorAudit(oprDriverAsset, nil).Declaration}).evidence().Validate() != nil {
+		t.Fatal("the audit of an empty home is not valid evidence")
+	}
+}
+
+// A home declared without the configuration provider waits as not admitted.
+// Declarations are static, so later hub events do not retry it: the provider
+// is not admitted and withdrawn again after every event of another source.
+func TestOperatorRecordRuntimeDoesNotChurnOnAHomeThatDoesNotAdmitTheProvider(t *testing.T) {
+	f := newOprFixture(t)
+	const closed semreg.AssetID = "asset:opr-closed"
+	if _, err := f.hub.Declare(semhub.AssetSpec{AssetID: closed, SourceID: "source:opr-closed", Driver: "driver-opr-closed", Validators: []semreg.PackValidator{pv.New()}, Graph: true}); err != nil {
+		t.Fatal(err)
+	}
+	runtime := opr27Runtime(t)
+	callbacks := runtime.callbacks(ebusgateway.Config{}, &gatewayRuntimeControl{hub: f.hub}).OperatorRecords
+	set := portalconfig.OperatorRecordSet{Format: portalconfig.OperatorRecordsFormat, Revision: "0", Records: []portalconfig.OperatorRecord{
+		{Form: portalconfig.OperatorFormAnchor, Home: string(closed), ResourceID: string(oprArray), Kind: "resource.pv_array", Slot: "array-south"},
+	}}
+	saved, err := callbacks.Replace(context.Background(), set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opr27Await(t, callbacks, saved, []string{"waiting:home_not_admitted"})
+	cursor := f.hub.Cursor()
+	for i := 0; i < 3; i++ {
+		if err := f.publishDriver(t, func(batch *semreg.PublicationBatch, current semreg.Snapshot) {
+			resource := current.Resources[0]
+			resource.ResourceID = semreg.ResourceID("resource:opr:inverter-extra-" + string(rune('a'+i)))
+			slot := "inverter-extra-" + string(rune('a'+i))
+			resource.Anchor.Slot = &slot
+			resource.Origin.OriginID = semreg.OriginID("origin:opr-driver:" + slot)
+			resource.Revision = "1"
+			batch.ResourceUpserts = []semreg.Resource{resource}
+		}); err != nil {
+			t.Fatalf("driver publication %d: %v", i, err)
+		}
+	}
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		events, err := f.hub.Since(cursor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, event := range events {
+			if event.Source == operatorRecordSource {
+				t.Fatalf("the provider was retried on a home that does not admit it: %+v", event)
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	opr27Await(t, callbacks, saved, []string{"waiting:home_not_admitted"})
+	if info, ok := f.hub.Source(operatorRecordSource); ok && info.Live {
+		t.Fatalf("the provider stayed admitted without a publication: %+v", info)
 	}
 }

@@ -414,6 +414,91 @@ and closed codes; omit driver IDs, record bytes, revisions, raw errors, native
 evidence, endpoints, secrets, private runtime data and caller context. Do not
 export this record or a generic runtime/configuration dump as a diagnostic.
 
+## Operator-record section
+
+**Proven**: the store holds one optional section of operator declarations
+next to the record, implemented in
+[`internal/portalconfig/operator_records.go`](../../internal/portalconfig/operator_records.go).
+It is persisted as `portal-config-operator-records.json` in the same root,
+under the same exclusive writer and with the same atomic replacement as the
+record. The file is absent until the first non-empty section is accepted, so a
+stored record without operator records loads unchanged and `portal-config.json`
+keeps its exact bytes. The section has its own expected revision, independent
+of the record's. A failed directory flush after the rename blocks the whole
+store, record included, until restart.
+
+The section lists at most 128 records, in the operator's order, in three
+forms:
+
+- `anchor`: a resource that only configuration knows (`home`, `resource_id`,
+  `kind`, `slot`, optional `parent`), anchored by an operator slot;
+- `relation`: a configured relation instance (`home`, `definition`, `from`,
+  `to`, `basis_class`) whose starting end is homed in `home`;
+- `pairing`: two views of one unit (`kind`, `slot`, optional `parent`, exactly
+  two `views` of `home` and `resource_id`), which become two operator-slot
+  resources with one anchor key in two different home assets.
+
+Synthetic section (a design example):
+
+```json
+{
+  "format": "helianthus.portal-config.operator-records/v1",
+  "revision": "1",
+  "records": [
+    {"form": "anchor", "home": "asset:configuration-1", "resource_id": "resource:array-1", "kind": "resource.pv_array", "slot": "array-south"},
+    {"form": "relation", "home": "asset:inverter-1", "definition": {"pack": {"id": "helianthus.pack.pv", "version": "1.0.0"}, "id": "pv.relation.inverter_array", "version": "1.0.0"}, "from": "resource:inverter-1", "to": "resource:array-1", "basis_class": "configuration"}
+  ]
+}
+```
+
+The shape is closed per form, as the record's is. Every replacement is
+validated against the element catalog compiled into the SemReg graph package
+before anything is written. A refusal returns the first failing record's field
+(for example `records[1].definition`) with one closed code:
+`relation_definition_unknown` (not a member definition of the catalog),
+`basis_class_not_admitted` (anything but `configuration`, or a definition that
+does not admit it), `starting_end_invalid` (a starting end that is not a
+resource identifier, or a declared resource of another home or of a kind the
+definition does not admit), `far_end_invalid`, `resource_kind_unknown` (not a
+member resource kind), `anchor_invalid` (a component without a parent, or an
+episode kind), `pairing_invalid` (two views in one home), `duplicate_key` (one
+resource identifier declared twice; one anchor key of home, kind, parent and
+slot declared twice; one relation key of definition, starting end and far end
+declared twice), `bounds_exceeded`, or the record's structural codes.
+
+The API serves the section under the existing configuration route:
+`GET ?section=operator_records` reads it with the status of every record,
+`PUT ?section=operator_records` replaces it whole with the expected revision,
+and the plain configuration view carries it as `operator_records` only when it
+holds records. A refused replacement keeps the accepted section visible as
+historical.
+
+The [runtime](../../cmd/gateway/portal_config_runtime.go) feeds the accepted
+section to the gateway's configuration provider (see
+[operator records](operator-records.md)) once the Portal is mounted on the
+runtime control's publication hub, and again after every accepted replacement.
+Records are grouped by home asset; each home is published as one set with the
+digest of its declarations as audit evidence, and a home that no longer holds
+a record is withdrawn. Each record shows one status:
+
+- `published`: its home sets were accepted;
+- `waiting`: a home asset is not declared (`home_not_declared`), not open to
+  the provider (`home_not_admitted`), or a starting end is not yet published
+  by its owner (`starting_end_unresolved`). The runtime retries after every
+  later hub event of another source, except for a home declared without the
+  provider: declarations are static, so that home is applied again only by
+  the next accepted replacement, and the provider is never admitted and
+  withdrawn in a loop. Before the hub is bound every record waits with
+  `publisher_unavailable`;
+- `refused`: with the kernel's stable error, such as `identity_drift`, or the
+  provider's refusal reason. A refused set leaves what was published as it
+  was.
+
+The runtime declares no home asset itself: the asset's owner names the
+provider as a contributor, and a configuration-only home is declared by the
+provider's declaration path. The startup preflight still composes no
+operator record of its own.
+
 ## Subsequent implementation acceptance
 
 Offline tests must cover valid load/save, server-owned successor persistence and

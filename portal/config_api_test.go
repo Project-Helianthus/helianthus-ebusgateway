@@ -7,10 +7,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/portalconfig"
+	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 )
 
 func TestM26ConfigAPI(t *testing.T) {
@@ -294,5 +296,193 @@ func TestIssue1375ConfigDriverRecoveryIsOptionalAndClosed(t *testing.T) {
 		`{"driver_id":"family.secondary","desired":true,"effective":true,"status":"effective","reason":"running"}]`
 	if string(got.State.Drivers) != want {
 		t.Fatalf("rows = %s\nwant %s", got.State.Drivers, want)
+	}
+}
+
+// operatorRecordFixture is a synthetic section with one record of each form.
+func operatorRecordFixture() portalconfig.OperatorRecordSet {
+	definition := func(id string) *semreg.DefinitionRef {
+		return &semreg.DefinitionRef{Pack: semreg.PackRef{ID: "helianthus.pack.pv", Version: "1.0.0"}, ID: semreg.DefinitionID(id), Version: "1.0.0"}
+	}
+	return portalconfig.OperatorRecordSet{Format: portalconfig.OperatorRecordsFormat, Revision: "0", Records: []portalconfig.OperatorRecord{
+		{Form: portalconfig.OperatorFormAnchor, Home: "asset:portal-opr-home", ResourceID: "resource:portal-opr:array-1", Kind: "resource.pv_array", Slot: "array-south"},
+		{Form: portalconfig.OperatorFormRelation, Home: "asset:portal-opr-inverter", Definition: definition("pv.relation.inverter_array"), From: "resource:portal-opr:inverter-1", To: "resource:portal-opr:array-1", BasisClass: "configuration"},
+		{Form: portalconfig.OperatorFormPairing, Kind: "resource.pv_system", Slot: "system-main", Views: []portalconfig.OperatorView{
+			{Home: "asset:portal-opr-home", ResourceID: "resource:portal-opr:system-a"},
+			{Home: "asset:portal-opr-other", ResourceID: "resource:portal-opr:system-b"},
+		}},
+	}}
+}
+
+type operatorRecordView struct {
+	Desired    *portalconfig.OperatorRecordSet `json:"desired"`
+	Historical bool                            `json:"historical"`
+	Error      *portalconfig.Error             `json:"error"`
+	State      struct {
+		Records []portalconfig.OperatorRecordState `json:"records"`
+	} `json:"state"`
+}
+
+// The operator-record section is read, replaced and reported under the
+// configuration route; the configuration view carries it only when it holds
+// records, and a refusal names its field.
+func TestOperatorRecordConfigAPIReadReplaceAndStatus(t *testing.T) {
+	initial := portalconfig.Record{Format: portalconfig.Format, Revision: "0", Drivers: []portalconfig.Driver{{ID: "family.primary", Enabled: true}}}
+	store, e := portalconfig.Open(t.TempDir(), initial, portalconfig.Constraints{Drivers: []string{"family.primary"}})
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer func() { _ = store.Close() }()
+	outcomes := []portalconfig.OperatorRecordState{
+		{Status: portalconfig.OperatorRecordPublished},
+		{Status: portalconfig.OperatorRecordWaiting, Reason: "home_not_declared"},
+		{Status: portalconfig.OperatorRecordRefused, Reason: "identity_drift"},
+	}
+	h := NewHandler(Options{Config: &ConfigCallbacks{
+		Read:   func(context.Context) (portalconfig.Record, error) { return store.Read() },
+		Update: func(_ context.Context, r portalconfig.Record) (portalconfig.Record, error) { return store.Update(r) },
+		OperatorRecords: &ConfigOperatorRecords{
+			Read: func(context.Context) (portalconfig.OperatorRecordSet, error) { return store.OperatorRecords() },
+			Replace: func(_ context.Context, set portalconfig.OperatorRecordSet) (portalconfig.OperatorRecordSet, error) {
+				return store.ReplaceOperatorRecords(set)
+			},
+			States: func(_ context.Context, set portalconfig.OperatorRecordSet) []portalconfig.OperatorRecordState {
+				states := []portalconfig.OperatorRecordState{}
+				for i, record := range set.Records {
+					state := outcomes[i%len(outcomes)]
+					state.Index, state.Form = i, record.Form
+					states = append(states, state)
+				}
+				return states
+			},
+		},
+	}})
+	request := func(method, target, body string) (*httptest.ResponseRecorder, operatorRecordView) {
+		t.Helper()
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(method, target, strings.NewReader(body)))
+		var view operatorRecordView
+		if w.Code != http.StatusMethodNotAllowed {
+			if e := json.Unmarshal(w.Body.Bytes(), &view); e != nil {
+				t.Fatalf("%s %s: %v %s", method, target, e, w.Body.String())
+			}
+		}
+		return w, view
+	}
+	const section = "/api/v1/config?section=operator_records"
+
+	w, view := request(http.MethodGet, section, "")
+	if w.Code != 200 || view.Desired == nil || view.Desired.Revision != "0" || len(view.Desired.Records) != 0 || len(view.State.Records) != 0 || view.Error != nil {
+		t.Fatal("empty section", w.Code, w.Body.String())
+	}
+	w, _ = request(http.MethodGet, "/api/v1/config", "")
+	if w.Code != 200 || strings.Contains(w.Body.String(), "operator_records") {
+		t.Fatal("an empty section is not omitted from the configuration view", w.Body.String())
+	}
+
+	body, _ := json.Marshal(operatorRecordFixture())
+	w, view = request(http.MethodPut, section, string(body))
+	if w.Code != 200 || view.Desired == nil || view.Desired.Revision != "1" || len(view.Desired.Records) != 3 {
+		t.Fatal("replace", w.Code, w.Body.String())
+	}
+	want := []portalconfig.OperatorRecordState{
+		{Index: 0, Form: "anchor", Status: "published"},
+		{Index: 1, Form: "relation", Status: "waiting", Reason: "home_not_declared"},
+		{Index: 2, Form: "pairing", Status: "refused", Reason: "identity_drift"},
+	}
+	if !reflect.DeepEqual(view.State.Records, want) {
+		t.Fatalf("states %+v, want %+v", view.State.Records, want)
+	}
+	var config struct {
+		OperatorRecords operatorRecordView `json:"operator_records"`
+	}
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/config", nil))
+	if e := json.Unmarshal(w.Body.Bytes(), &config); e != nil || w.Code != 200 {
+		t.Fatal(e, w.Code)
+	}
+	if config.OperatorRecords.Desired == nil || config.OperatorRecords.Desired.Revision != "1" || !reflect.DeepEqual(config.OperatorRecords.State.Records, want) {
+		t.Fatal("the configuration view does not carry the section", w.Body.String())
+	}
+
+	refused := operatorRecordFixture()
+	refused.Revision = "1"
+	refused.Records[1].Definition.ID = "pv.relation.inverter_meter"
+	body, _ = json.Marshal(refused)
+	w, view = request(http.MethodPut, section, string(body))
+	if w.Code != http.StatusBadRequest || view.Error == nil || view.Error.Code != "relation_definition_unknown" || view.Error.Field != "records[1].definition" || view.Error.NextStep == "" {
+		t.Fatal("refusal without its field", w.Code, w.Body.String())
+	}
+	if !view.Historical || view.Desired == nil || view.Desired.Revision != "1" || len(view.State.Records) != 3 {
+		t.Fatal("a refusal hides the accepted section", w.Body.String())
+	}
+
+	stale, _ := json.Marshal(operatorRecordFixture())
+	w, view = request(http.MethodPut, section, string(stale))
+	if w.Code != http.StatusConflict || view.Error == nil || view.Error.Code != "revision_conflict" {
+		t.Fatal("stale replace", w.Code, w.Body.String())
+	}
+	for _, malformed := range []string{`{"private_marker":true}`, strings.Repeat("x", portalconfig.MaxBytes+1)} {
+		w, view = request(http.MethodPut, section, malformed)
+		if w.Code != http.StatusBadRequest || view.Error == nil || view.Error.Code != "invalid_record" || strings.Contains(w.Body.String(), "private_marker") {
+			t.Fatal("malformed section", w.Code, w.Body.String())
+		}
+	}
+	for _, target := range []string{"/api/v1/config?section=drivers", "/api/v1/config?section=operator_records&section=operator_records"} {
+		w, view = request(http.MethodGet, target, "")
+		if w.Code != http.StatusBadRequest || view.Error == nil || view.Error.Code != "invalid_record" || view.Error.Field != "section" {
+			t.Fatal("unknown section", target, w.Code, w.Body.String())
+		}
+	}
+	w, _ = request(http.MethodPost, section, string(body))
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatal(w.Code)
+	}
+	if read, e := store.OperatorRecords(); e != nil || read.Revision != "1" {
+		t.Fatal("refused requests changed the section", read, e)
+	}
+}
+
+// Without host callbacks the section is unavailable and never claims
+// publication; without a status callback every record waits.
+func TestOperatorRecordConfigAPIWithholdsWithoutHostCallbacks(t *testing.T) {
+	record := portalconfig.Record{Format: portalconfig.Format, Revision: "0", Drivers: []portalconfig.Driver{}}
+	read := func(context.Context) (portalconfig.Record, error) { return record, nil }
+	h := NewHandler(Options{Config: &ConfigCallbacks{Read: read}})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/config?section=operator_records", nil))
+	var view operatorRecordView
+	if e := json.Unmarshal(w.Body.Bytes(), &view); e != nil || w.Code != http.StatusServiceUnavailable || view.Error == nil || view.Error.Code != "persistence_failed" || view.Desired != nil {
+		t.Fatal("unavailable section", w.Code, w.Body.String())
+	}
+	set := operatorRecordFixture()
+	h = NewHandler(Options{Config: &ConfigCallbacks{Read: read, OperatorRecords: &ConfigOperatorRecords{
+		Read: func(context.Context) (portalconfig.OperatorRecordSet, error) { return set, nil },
+	}}})
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/config?section=operator_records", nil))
+	view = operatorRecordView{}
+	if e := json.Unmarshal(w.Body.Bytes(), &view); e != nil || w.Code != 200 || len(view.State.Records) != 3 {
+		t.Fatal(e, w.Code, w.Body.String())
+	}
+	for i, state := range view.State.Records {
+		if state.Index != i || state.Status != portalconfig.OperatorRecordWaiting || state.Reason != "evidence_unavailable" {
+			t.Fatal("a record claims publication without host status", w.Body.String())
+		}
+	}
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/v1/config?section=operator_records", strings.NewReader("{}")))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatal("replace without a host callback", w.Code, w.Body.String())
+	}
+	failing := NewHandler(Options{Config: &ConfigCallbacks{Read: read, OperatorRecords: &ConfigOperatorRecords{
+		Read: func(context.Context) (portalconfig.OperatorRecordSet, error) {
+			return portalconfig.OperatorRecordSet{}, &portalconfig.Error{Code: "private_code_marker", Field: "private_field_marker"}
+		},
+	}}})
+	w = httptest.NewRecorder()
+	failing.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/config", nil))
+	if w.Code != 200 || strings.Contains(w.Body.String(), "private_") || !strings.Contains(w.Body.String(), `"operator_records":{"desired":null,"error":{"code":"persistence_failed"`) {
+		t.Fatal("a section failure is hidden or leaks", w.Code, w.Body.String())
 	}
 }

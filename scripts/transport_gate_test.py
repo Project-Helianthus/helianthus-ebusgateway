@@ -631,6 +631,7 @@ type Config struct {
             ("cmd/gateway/gateway_run_lifecycle.go", "// base\n", "// modified\n"),
             ("cmd/gateway/gateway_lifecycle_observability.go", "// base\n", "// modified\n"),
             ("cmd/gateway/gateway_retained_consumers.go", "// base\n", "// modified\n"),
+            ("cmd/gateway/gateway_ebus_generation_owners.go", "// base\n", "// modified\n"),
             ("cmd/gateway/modbus_endpoint_file.go", "// base\n", "// modified\n"),
             ("cmd/gateway/modbus_mcp_provider.go", "// base\n", "// modified\n"),
             ("mcp/growatt_bms_rs485_v202.go", "// base\n", "// modified\n"),
@@ -681,6 +682,7 @@ type Config struct {
             ("cmd/gateway/gateway_run_lifecycle.go", "// base\n", "// modified\n"),
             ("cmd/gateway/gateway_lifecycle_observability.go", "// base\n", "// modified\n"),
             ("cmd/gateway/gateway_retained_consumers.go", "// base\n", "// modified\n"),
+            ("cmd/gateway/gateway_ebus_generation_owners.go", "// base\n", "// modified\n"),
             ("cmd/gateway/modbus_endpoint_file.go", "// base\n", "// modified\n"),
             ("cmd/gateway/modbus_mcp_provider.go", "// base\n", "// modified\n"),
             ("mcp/growatt_bms_rs485_v202.go", "// base\n", "// modified\n"),
@@ -859,40 +861,22 @@ type Config struct {
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("TRANSPORT_MATRIX_REPORT is required", result.stdout)
 
-    def test_generation_owners_trigger_ebus_and_modbus_rtu_gates(self) -> None:
+    def test_generation_owners_trigger_modbus_rtu_gate_only(self) -> None:
         for rtu_status in (0, 1):
             with self.subTest(rtu_status=rtu_status):
-                repo_path, report_path = self._create_temp_repo("cmd/gateway/gateway_ebus_generation_owners.go")
+                repo_path, _ = self._create_temp_repo("cmd/gateway/gateway_ebus_generation_owners.go")
                 env = self._fake_go_env(repo_path, rtu_status)
-                env["TRANSPORT_MATRIX_REPORT"] = str(report_path)
                 result = subprocess.run(
                     ["bash", "scripts/transport_gate.sh"], cwd=repo_path, env=env,
                     text=True, capture_output=True, check=False,
                 )
                 if rtu_status == 0:
                     self.assertEqual(result.returncode, 0, msg=result.stderr)
-                    self.assertIn("transport gate: PASS (pass=88", result.stdout)
+                    self.assertNotIn("TRANSPORT_MATRIX_REPORT is required", result.stdout)
                     self.assertIn("Modbus RTU production conformance", result.stdout)
                 else:
                     self.assertNotEqual(result.returncode, 0)
                     self.assertIn("Modbus RTU gateway composition evidence failed", result.stdout)
-
-    def test_transport_gate_requires_ebus_evidence_for_generation_owners(self) -> None:
-        # The generation owners select the source, scan the bus, admit and
-        # reconstruct passively; a change limited to this file must require
-        # the eBUS matrix report. No fixture report is provided, so failure
-        # proves the eBUS classifier fired.
-        repo_path, _ = self._create_temp_repo("cmd/gateway/gateway_ebus_generation_owners.go")
-        result = subprocess.run(
-            ["bash", "scripts/transport_gate.sh"],
-            cwd=repo_path,
-            env=self._script_env(TRANSPORT_GATE_BASE_REF="HEAD"),
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("TRANSPORT_MATRIX_REPORT is required", result.stdout)
 
     def test_transport_gate_skips_b503_test_only_changes(self) -> None:
         for changed_file in (

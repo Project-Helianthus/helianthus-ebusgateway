@@ -8,7 +8,7 @@ part of the lifecycle decomposition; generation owners, startup, admission,
 source selection and driver registration remain with their existing owners.
 
 The API composition (`gatewayAPIComposition.serve`, see
-[gateway composition owners](gateway-composition-owners.md)) registers the
+[gateway composition owners](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/docs/architecture/gateway-composition-owners.md)) registers the
 consumer shutdown in the process-shell shutdown sequence after successful HTTP
 acquisition. The generation-task release that `runGatewayLifecycle` registers
 afterwards runs first: it closes admission and joins the generation tasks. The

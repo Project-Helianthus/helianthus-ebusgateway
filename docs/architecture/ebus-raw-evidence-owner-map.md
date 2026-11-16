@@ -28,9 +28,9 @@ Current entry is [main.go](../../cmd/gateway/main.go): `main` calls `run`, which
 delegates to `runGatewayLifecycle` in
 [gateway_run_lifecycle.go](../../cmd/gateway/gateway_run_lifecycle.go).
 `runGatewayLifecycle` is the entry over four owners whose contracts are stated
-in [gateway composition owners](gateway-composition-owners.md). The API
+in [gateway composition owners](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/docs/architecture/gateway-composition-owners.md). The API
 composition `gatewayAPIComposition` in
-[gateway_api_composition.go](../../cmd/gateway/gateway_api_composition.go)
+[gateway_api_composition.go](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/gateway_api_composition.go)
 calls the startup source-selection setup and the bus-observability providers in
 [gateway_lifecycle_observability.go](../../cmd/gateway/gateway_lifecycle_observability.go);
 the observer factory

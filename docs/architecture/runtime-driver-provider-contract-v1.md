@@ -3288,7 +3288,7 @@ Exact public source anchors for these statements:
   [`#L257-L299`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/internal/modbusadapter/adapter.go#L257-L299)
 - independent driver startup and process availability behavior:
   `gatewayProcessShell.acquireDriverAndControl`, the process-shell owner (see
-  [gateway composition owners](gateway-composition-owners.md))
+  [gateway composition owners](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/docs/architecture/gateway-composition-owners.md))
 
 ## 12. SemReg cutover and retained native evidence
 

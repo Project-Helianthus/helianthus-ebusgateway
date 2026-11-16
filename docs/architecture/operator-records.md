@@ -72,7 +72,10 @@ order. A preflight refusal is fatal, as a declaration collision is, with one
 exception: at startup no driver has published yet, so a set whose starting end
 does not resolve, or whose asset is not declared yet, stays pending instead of
 failing. The provider touches nothing for it and applies it again after each
-later publication of the hub, until the owner's resource exists.
+later publication of the hub, until the owner's resource exists. A pending set
+that a later attempt refuses for another reason is dropped and not published;
+every such refusal of one attempt is logged on its own, so none is lost when
+one publication resolves several sets.
 
 ## Lifecycle against fences
 

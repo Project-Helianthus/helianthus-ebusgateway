@@ -259,9 +259,10 @@ func (p *operatorRecordPublisher) Failures() map[semreg.AssetID]error {
 
 // Retry applies the pending record sets again and keeps those that still
 // wait. A set refused for another reason is dropped from the pending sets,
-// recorded for Failures and returned.
+// recorded for Failures and returned: every refusal of one retry is joined
+// into the returned error, in asset order, so none is lost.
 func (p *operatorRecordPublisher) Retry() error {
-	var first error
+	var refused []error
 	for _, id := range p.Pending() {
 		p.mu.Lock()
 		set, ok := p.pending[id]
@@ -282,11 +283,24 @@ func (p *operatorRecordPublisher) Retry() error {
 			p.failed[id] = err
 		}
 		p.mu.Unlock()
-		if err != nil && first == nil {
-			first = err
+		if err != nil {
+			refused = append(refused, err)
 		}
 	}
-	return first
+	return errors.Join(refused...)
+}
+
+// operatorRecordRefusals splits an error returned by Retry into its
+// refusals, one per record set.
+func operatorRecordRefusals(err error) []error {
+	if err == nil {
+		return nil
+	}
+	var joined interface{ Unwrap() []error }
+	if errors.As(err, &joined) {
+		return joined.Unwrap()
+	}
+	return []error{err}
 }
 
 // watch retries the pending sets after every hub event until none is left.
@@ -294,7 +308,7 @@ func (p *operatorRecordPublisher) watch(subscription *semhub.Subscription) {
 	defer subscription.Close()
 	for {
 		// Retry first: an event queued before the goroutine started is covered.
-		if err := p.Retry(); err != nil {
+		for _, err := range operatorRecordRefusals(p.Retry()) {
 			log.Printf("operator records: a deferred record set was refused and is not published: %v", err)
 		}
 		if len(p.Pending()) == 0 {

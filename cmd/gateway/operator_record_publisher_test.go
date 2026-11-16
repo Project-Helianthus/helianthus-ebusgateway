@@ -533,6 +533,36 @@ func TestOperatorRecordPublisherReportsADeferredSetThatFailsLater(t *testing.T) 
 	}
 }
 
+// When one retry refuses several deferred sets, every refusal is returned and
+// recorded, none only through Failures.
+func TestOperatorRecordPublisherReportsEveryDeferredRefusalOfOneRetry(t *testing.T) {
+	f := newOprFixture(t)
+	first, second := semreg.AssetID("asset:opr-late-a"), semreg.AssetID("asset:opr-late-b")
+	relation := operatorRelation{Definition: oprInverterArray(oprArray).Definition, From: oprMissing, To: oprArray}
+	f.publisher.mu.Lock()
+	f.publisher.pending = map[semreg.AssetID]operatorAssetRecords{
+		first:  {Asset: first, Records: operatorRecords{Relations: []operatorRelation{relation}}},
+		second: {Asset: second, Records: operatorRecords{Relations: []operatorRelation{relation}}},
+	}
+	f.publisher.mu.Unlock()
+	refusals := operatorRecordRefusals(f.publisher.Retry())
+	if len(refusals) != 2 {
+		t.Fatalf("retry returned %d refusals (%v), want both deferred sets", len(refusals), refusals)
+	}
+	for i, want := range []semreg.AssetID{first, second} {
+		var refusal *operatorRecordRefusal
+		if !errors.As(refusals[i], &refusal) || refusal.Asset != want || refusal.Reason != operatorReasonAuditMissing {
+			t.Fatalf("refusal %d=%v, want %s refused for %s", i, refusals[i], want, operatorReasonAuditMissing)
+		}
+	}
+	if failures := f.publisher.Failures(); failures[first] == nil || failures[second] == nil || len(f.publisher.Pending()) != 0 {
+		t.Fatalf("failures=%v pending=%v, want both sets recorded and none pending", failures, f.publisher.Pending())
+	}
+	if refusals := operatorRecordRefusals(f.publisher.Retry()); len(refusals) != 0 {
+		t.Fatalf("a retry with nothing pending returned %v", refusals)
+	}
+}
+
 // Any other refusal stays fatal at composition.
 func TestOperatorRecordPublisherComposeStopsOnAnotherRefusal(t *testing.T) {
 	f := newOprFixture(t)

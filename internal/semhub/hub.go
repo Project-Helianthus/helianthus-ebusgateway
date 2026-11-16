@@ -157,6 +157,10 @@ type asset struct {
 	// is owed and the latest view it acknowledged. It exists only on an asset
 	// with contributors.
 	peers map[semreg.SourceID]*peerView
+	// operatorLinks holds, per publishing source, the operator identity
+	// declarations its batches carry (see SetOperatorLinks). It is guarded by
+	// the hub mutex and is nil until a declaration is set.
+	operatorLinks map[semreg.SourceID][]OperatorLink
 }
 
 type source struct {
@@ -1303,6 +1307,10 @@ func (tx *Tx) Apply(batch semreg.PublicationBatch, monotonic semreg.MonotonicPoi
 // together with a *CoverError naming the cover's ControlID. The other assets
 // stay behind the cover's control gate until RetryControl resolves them, as
 // for a failed Fence.
+//
+// A batch whose operator identity links differ from the links pending for its
+// source is refused with ErrOperatorLink before anything is journalled or
+// swapped (see Tx.OperatorLinks).
 func (tx *Tx) Commit(onCommit func(Committed)) (outcome Outcome, err error) {
 	if tx == nil || tx.done {
 		return "", ErrTransaction
@@ -1381,6 +1389,12 @@ func (tx *Tx) Commit(onCommit func(Committed)) (outcome Outcome, err error) {
 		recovery = replayedAcceptanceLocked(tx.asset, recovery)
 		h.unlock()
 		return Replayed, nil
+	}
+	// A driver batch publishes operator identity links only as declared: the
+	// operator links it carries must equal the pending set of its source.
+	if err := h.checkOperatorLinksLocked(tx); err != nil {
+		h.unlock()
+		return "", err
 	}
 	src := h.sources[tx.handle.source]
 	// The batch's nested identifiers are validated against every claimed

@@ -97,20 +97,30 @@ The subcommand is selected from argv before any gateway configuration. It
 opens the port at 115200 baud, 8 data bits, no parity and 1 stop bit (Linux
 only; other platforms record an open failure) and transmits nothing.
 
+The operator starts `tesla-observe` before the charger gets power. The
+activation exchange happens once after the charger gets power, and only if
+the host answers the greeting. This tool sends nothing, so it never sees
+that confirmation and does not expect it. The tool has to be running before
+the charger gets power, or that one exchange is missed. Starting the tool
+does not power the charger and does not answer the greeting. The
+`-window-bytes` flag default remains 64. A sufficient capture count is not
+established and must be measured.
+
 ```sh
 helianthus-gateway tesla-observe \
   -serial-path /dev/ttyUSB0 \
   -case initial -repeats 3 -pause 30s \
   -window 30s -window-bytes 64 -segment-cap 64 -segment-gap 2ms \
-  -prior-state fresh_session -prior-state-basis "unit powered up just before the run" \
+  -prior-state unavailable -prior-state-basis "observation started before the charger received power" \
   -other-initiators unknown -action-time-authorization recorded \
   -out /var/lib/helianthus-observe/evidence.json \
   -worksheet-out /var/lib/helianthus-observe/worksheet.md
 ```
 
-- `-case` is `initial`, `recovery` or `idle`. The operator performs any
-  power-up or reset separately, under its own action-time authorization; the
-  run never does.
+- `-case` is `initial`, `recovery` or `idle`. The operator starts
+  `tesla-observe` before the charger gets power, and performs any power-up
+  or reset separately, under its own action-time authorization; the run
+  never does. The tool sends nothing and does not expect the confirmation.
 - `-append` adds attempts to an existing evidence file. Labels continue
   (`a01`, `a02`, ...). The rows are rebuilt and the offline controls are
   rerun. Without `-append` an existing file is never overwritten. Evidence and
@@ -157,9 +167,11 @@ helianthus-gateway tesla-observe \
   when opening or closing it failed; other platforms fail to open. See
   [Receive-only boundary on Linux](#receive-only-boundary-on-linux) for when to
   run it.
-- `-window-bytes 11` limits a window to the comparator length. The default
-  of 64 keeps leading and trailing bytes. Unread bytes outside a window are
-  not evidence of absence.
+- `-window-bytes` defaults to 64, and the example passes that default. A
+  sufficient capture count is not established and must be measured.
+  `-window-bytes 11` limits a window to the comparator length. The default
+  of 64 keeps leading and trailing bytes around that comparator length.
+  Unread bytes outside a window are not evidence of absence.
 - The serial path is used only to open the port. It never appears in the
   evidence, and file errors are redacted before they are recorded. Operator
   text is limited to 200 printable ASCII characters and must not contain
@@ -244,8 +256,9 @@ Required run order:
    `helianthus-gateway tesla-observe -prepare -serial-path <serial-device>`.
 2. Connect the RS-485 pair to the bus, with the hardware boundary above in
    place.
-3. Observe, using the same `<serial-device>` and with no other program opening
-   it in between.
+3. Start `tesla-observe` before the charger gets power, using the same
+   `<serial-device>` and with no other program opening it in between. The
+   tool sends nothing and does not expect the confirmation.
 
 ## Building for ARM Linux boards
 

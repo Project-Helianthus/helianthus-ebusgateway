@@ -13,11 +13,14 @@ grades and per-row evidence rules apply unchanged. Site names, addresses of the
 installation, serial numbers and device identifiers are recorded only in the
 operator's private record.
 
-The handoff is the only hardware session package in this repository. Its
-transport, adapter-direct, passive, retained and consumer rows are defined by
-their governing references, which the handoff links. No separate site run
-sheet exists under `docs/testing`, `docs/observability`, `docs/architecture` or
-`matrix`, so this sheet is self-contained.
+The [run sheet of the consolidated hardware session](hardware-session-run-sheet.md)
+holds the per-setup order of the `adaptermux-v2` cells, the graph-axis,
+identification, native point and setpoint-write checks, and the site rows; this
+sheet keeps the observations specific to a bus without a vendor system
+controller. The retained, passive and consumer rows below keep the governing
+references the handoff links. A site where a third-party room-control bridge is
+the controller-class initiator uses this sheet with the changes of its own
+section below.
 
 ## Offline expectation
 
@@ -52,7 +55,11 @@ a difference is a finding, not a reason to adjust the expectation.
   passively. Every gateway frame on this profile is a read.
 - Not allowed: any write through GraphQL, MCP, the Portal or Home Assistant;
   any device or configuration change not named by a row; anything that answers
-  or acts as a controller.
+  or acts as a controller. The
+  [bridge variant](#variant-third-party-controller-bridge) permits the
+  already-installed third-party room-control bridge to take the controller's
+  place. That permission does not extend to the gateway, and it does not
+  allow the operator to add a controller.
 - Additional stop condition: the heat source shows a fault, a changed
   operating state or the internet module loses its service while the gateway
   probes. Record the time and stop the affected row.
@@ -87,15 +94,47 @@ target, use the heat source instead of a controller.
 | CL-09 Restart with cache | CL-01 to CL-06 done. | Restart the add-on once. | Phase passes through `CACHE_LOADED_STALE` to `LIVE_READY` (boiler-class) within 120 s; CL-03 and CL-06 hold again. The offline scenario does not cover a restart with a cache; this row is the first evidence. | Not run |
 | CL-10 Home Assistant view | Integration configured against this gateway. | Read the integration's devices and entities. | Boiler-class heat source: boiler sensors present and plausible. Heat-pump-class heat source: no entity for the heat source (no boiler sensors), and the gateway's startup block shows reason `no_supported_heat_source_path` (GraphQL and MCP, as in CL-11). Either class: no climate or water-heater entity; the six energy sensors exist with state unknown, not 0 kWh. | Not run |
 | CL-11 Heat-pump-class heat source | Heat-pump-class heat source; CL-01 and CL-04 running. | Read GraphQL `bus_summary { status { startup { phase reason } } }`, MCP `ebus_v1_bus_summary_get` and logs; observe the bus passively. | GraphQL and MCP show the same phase and reason `no_supported_heat_source_path` while no root and no boiler-class heat source exist. Recorded as evidence (Unknown until reviewed): the heat source's device identity family (exact identity in the private record); whether it answers the gateway's B524 root probe, and how (no answer, NACK, a reply; a coherent reply makes it the semantic root and clears the reason). Which documented heat-pump register ids it answers is not observed under this sheet: those reads need the operator's separate authorization of an allowlist of read-only requests. | Not run |
-| T01–T04 | Only the installed direct transport; matrix workload aimed at the heat source. | As the [smoke matrix](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/development/smoke-matrix.md) defines for that case; read-only smoke. | Gateway smoke (`startup`, `scan`, `graphql`, `mcp`) and the Home Assistant inventory verifier pass without a controller. | Not run |
-| T05–T88, PX01–PX12 | Only if the session brings ebusd or the proxy to this site; otherwise outside this site's installed topology. | As the handoff's governing references define. | As defined there; workload aimed at the heat source. | Not run |
-| AD01–AD04, AD09, AD12 | Adapter-direct installed; third-party traffic between the internet module and the heat source present for AD03. | As the [AD01–AD12 index](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/development/ad01-ad12-evidence-index.md) requires per row. | That row's assertion, with the heat source as active target. | Not run |
-| AD05–AD08, AD10, AD11 | Only if an ebusd client or a migration target is brought to this site. | As the AD index requires per row. | That row's assertion. | Not run |
-| P01, P02, P04, P05, P06 | The topology each case names. | As the passive gate defines. | That case's passive mode and outcome. | Not run |
+| `adaptermux-v2` cells | Adapter-direct installed; third-party traffic between the internet module and the heat source present for `AD03`. | The [per-setup order](hardware-session-run-sheet.md#per-setup-order) of the session run sheet, with the heat source as workload target. | As the [matrix runner](../../cmd/matrix-runner/README.md) defines per cell; the Explorer run is not made at this site. | Not run |
+| Last `full88` report | The `adaptermux-v2` cells of the same setup run up to their reserved cells. | The [last `full88` report](hardware-session-run-sheet.md#last-full88-report) of the session run sheet: each setup runs only the cases that belong to it, before that setup's restore, with the heat source as workload target, and one index is assembled from those case directories after the last setup. | One assembled `full88` index covering every case `T01` to `T88`, each taken from the setup that case belongs to, on the same session, candidate and setups as the `adaptermux-v2` report, classified by the current transport gate. A per-setup index is not that report. | Not run |
+| P01, P02, P06 | The topology each case names. | As the passive gate defines. | That case's passive mode and outcome. | Not run |
 | ESERA / FOLLOWUP-01 | ESERA passive equipment and its separate authorization. | As K05 defines. | As K05 defines. | Not run |
 | LEGACY-PERSIST P1–P6, N1–N4; LEGACY-IDENTITY P1–P6, N1–N5; LEGACY-MUX | Owner reviews each retained criterion first. | As the retained acceptance defines. | As defined there; a criterion that needs zones, DHW or a controller identity is recorded Not applicable with that reason, never passed. | Not run |
 | HA/Ingress routing, trust, lifecycle and identity | Add-on installed with Ingress. | As the [HA checklist](https://github.com/Project-Helianthus/helianthus-ha-addon/blob/main/docs/portal-ingress-offline-acceptance.md) defines. | As defined there; independent of the controller. | Not run |
 | INT-12, INT-13, prior RTU applicability, HUAWEI rows | Their own equipment, not part of this profile. | As the handoff defines. | Unchanged; not run at this site unless that equipment is present. | Not run |
+
+The passive cases P04 and P05 depend on proxy topologies and are not run under
+this sheet; the last section of the
+[cell map](../../matrix/M7-adaptermux-conformance-cell-map.md) relates them to
+the `AD03` cells and leaves their decision open.
+
+## Variant: third-party controller bridge
+
+On this variant a third-party room-control bridge takes the controller's place
+on the bus: it arbitrates as an initiator, addresses the heat source, and may
+or may not answer identification or the gateway's root probe. This variant
+overrides the session rule that forbids anything which answers or acts as a
+controller, and only for the bridge that is already installed. That bridge
+may take the controller's place, arbitrate as an initiator and answer
+identification or the gateway's root probe. The operator runs the rows of
+this variant while that bridge stays in place. The gateway still must not
+answer or act as a controller, and the operator does not add another
+controller. The other session prohibitions stay.
+
+The rows
+`CL-01` to `CL-11` above apply with the changed expectations below; the rows
+the session run sheet adds for this site are its
+[site B rows](hardware-session-run-sheet.md#site-b-rows-third-party-controller-bridge).
+A difference from the expectation is a **finding**: it is recorded and never
+adjusted away.
+
+| ID | Changed or new expectation | Recorded | Result |
+|---|---|---|---|
+| CL-02 Inventory | A participant may be listed at a controller address. No vendor regulator identity may appear because of it, and no zone, circuit or hot-water object may appear because of it. | Its manufacturer class and whether it answered identification; its exact identity only in the private record. | Not run |
+| CL-03 Absence signal | `vaillant_regulator_capability` is `NONE`, or `UNKNOWN` with the unidentified participant named in the private record; the absence state reaches `ABSENT` as on a bus without a controller. | GraphQL and MCP values and the debug state sequence. | Not run |
+| CL-04 Answer class of the root probe | The probe plan of `CL-04` above. In addition, how the bridge answers the gateway's root probe: no answer, a negative acknowledge, or a reply. A coherent reply would make the bridge the semantic root: the row stops and the reply is recorded. | The answer class per probe. | Not run |
+| CL-12 Arbitration beside a controller-class initiator | Start requests the gateway loses to the bridge are reported as failed arbitration and retried. No mismatch, no deadline expiry and no out-of-step hold is reported. | The share of failed start requests and every other ending. | Not run |
+| CL-07, CL-08 Coexistence | The bridge keeps controlling and the internet module and its app keep working throughout; the operator observes the room-control app and the appliance at the start, after each host-link switch and at the end. | The operator's observations. | Not run |
+| CL-13 Third-party traffic on the passive path | The bridge's exchanges with the heat source are reconstructed on the passive path, so `AD03` has third-party traffic beyond the internet module's. | Completed passive transactions per minute. | Not run |
 
 ## Open points carried into the session
 

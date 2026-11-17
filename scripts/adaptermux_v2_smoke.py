@@ -11,7 +11,8 @@ counters are read once at the start and again until the invariant's flow
 requirements hold or the window ends.
 
 The adapter-action cells AD04 and AD09 announce the operator action once the
-first reading is taken; the operator then resets the adapter (AD04) or
+first reading is taken and ask for a fresh typed confirmation of the case
+identifier at that moment; without it the cell fails. The operator then resets the adapter (AD04) or
 disconnects and reconnects its host link (AD09) inside the case window.
 
 It never sends a mutation, never calls a tool that writes and never invokes a
@@ -930,21 +931,27 @@ def operator_action_text(context, check, settings):
 OPERATOR_CHANNEL = "/dev/tty"
 
 
-def announce_to_operator(text, stream):
-    """Print the cue to the log stream and, when there is one, the operator's terminal.
+def announce_to_operator(text, stream, case_id):
+    """Print the cue to the log stream and ask the operator, on the terminal, to confirm now.
 
     The runner captures this command's output in the case log, so the cue is
     also written to the controlling terminal the operator started the run on.
-    Returns where the cue went: "terminal", or "case_log_only" when there is
-    no terminal to write to.
+    The operator types the case identifier at that moment: a confirmation given
+    before the gateway started and the baseline was sampled may be stale.
+    Returns (where the cue went, whether the operator confirmed): "terminal" or
+    "case_log_only" when there is no terminal to write to.
     """
     print(text, file=stream, flush=True)
     try:
-        with open(OPERATOR_CHANNEL, "w", encoding="utf-8") as channel:
-            channel.write(text + "\n")
+        with open(OPERATOR_CHANNEL, "r", encoding="utf-8") as source:
+            with open(OPERATOR_CHANNEL, "a", encoding="utf-8") as channel:
+                channel.write(text + "\nType " + case_id
+                              + " to confirm the adapter-side action now, anything else to skip: \n")
+                channel.flush()
+                line = source.readline()
     except OSError:
-        return CUE_CASE_LOG_ONLY
-    return CUE_TERMINAL
+        return CUE_CASE_LOG_ONLY, False
+    return CUE_TERMINAL, line.strip() == case_id
 
 
 CUE_TERMINAL = "terminal"
@@ -959,7 +966,8 @@ def judge(context, check, urls, settings, clock, stream=None):
         cue_text = operator_action_text(context, check, settings)
 
         def announce():
-            evidence["operator_cue"] = announce_to_operator(cue_text, stream)
+            evidence["operator_cue"], evidence["operator_confirmed"] = announce_to_operator(
+                cue_text, stream, context["case_id"])
     readings, own, window, backwards = observe_window(urls, settings, check, clock, announce)
     baseline, current = readings[0], readings[-1]
     evidence["window"] = dict(window, window_seconds=settings["window"])
@@ -985,6 +993,10 @@ def judge(context, check, urls, settings, clock, stream=None):
     reasons += flow_reasons
     if check.get("semantic") and not reasons:
         reasons += attach_semantic(context, check, urls, settings, evidence)
+    if check.get("operator_action") and not evidence.get("operator_confirmed"):
+        reasons.append("the operator did not type the case identifier to confirm the adapter-side action"
+                       " at action time: " + ("no terminal was available" if evidence.get("operator_cue")
+                                              == CUE_CASE_LOG_ONLY else "the action was skipped"))
     if reasons and evidence.get("operator_cue") == CUE_CASE_LOG_ONLY:
         reasons.append("the operator cue reached only the case log: " + OPERATOR_CHANNEL
                        + " could not be opened, so no terminal showed the operator action")

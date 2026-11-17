@@ -101,7 +101,7 @@ become cells of the mux, with these scope notes:
 
 - PX05–PX08 assert FIFO registration order between external contenders
   ("not initiator priority"). Address priority replaced FIFO order
-  ([adapter-arbitration-decision.md](../docs/architecture/adapter-arbitration-decision.md)):
+  ([adapter-arbitration-decision.md](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/docs/architecture/adapter-arbitration-decision.md)):
   the lowest initiator low nibble wins, then the lowest high nibble, then the
   lowest session identity, so these statements cannot hold. The cells stay in
   the inventory and are reserved under PL-04 (`planned`,
@@ -115,7 +115,7 @@ become cells of the mux, with these scope notes:
   [#991](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/991),
   which is deferred, so these cells are planned (PL-02). They wait for the
   design in
-  [registered target-address subscribers](../docs/architecture/adaptermux-responder-subscribers.md).
+  [registered target-address subscribers](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/docs/architecture/adaptermux-responder-subscribers.md).
 - The proxy's outcome policy carries over: `xpass` is never accepted.
 - The external contender in PX cells may be a synthetic ENH client from the
   test harness; that is software, not additional hardware.
@@ -151,7 +151,7 @@ gateway runs its active identification and read transactions while the
 guarded ebusd command workload (`state`, an identification scan of the
 workload target, 07 04 as a hex telegram) bids at the same SYN boundaries.
 Selection follows
-[adapter-arbitration-decision.md](../docs/architecture/adapter-arbitration-decision.md):
+[adapter-arbitration-decision.md](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/docs/architecture/adapter-arbitration-decision.md):
 an owner or a busy bus prevents selection and keeps every pending bid;
 otherwise the lowest initiator low nibble wins, then the lowest high nibble,
 then the lowest session identity, and equal priority keeps the first bid;
@@ -164,7 +164,7 @@ has no age limit and there is no fairness rotation.
 
 The smoke checks of these three cells also read AdapterMux series that the
 gateway does not publish yet
-([cmd/matrix-runner/README.md](../cmd/matrix-runner/README.md), smoke
+([cmd/matrix-runner/README.md](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/matrix-runner/README.md), smoke
 command). Until it does, each check ends with its own status and names the
 missing series, and the cell does not pass.
 
@@ -198,7 +198,7 @@ through one of these):
 | PL-01 | `planned` | every `UDP-*` and `TCP-*` grid cell | `mux_southbound_plain_not_implemented` | the mux accepts only `enh`/`ens` upstream; no open ticket implements plain southbound framing |
 | PL-02 | `planned` | every `*-PX09`, `*-PX10`, `*-PX11` cell | `mux_local_responder_not_implemented` | #991 (deferred) |
 | PL-03 | `planned` | `ENS-AD05`, `ENH-AD05`, `ENS-AD08`, `ENH-AD08`, `ENS-AD12`, `ENH-AD12` | `mux_raw_symbol_forwarding_not_implemented` | the raw-symbol contract is settled but not implemented: ENH/ENS decoding still collapses escape pairs before the mux sees them, so raw-pair delivery to an external session (AD05), per-symbol echo of raw symbols (AD08) and the wire-symbol assertions (AD12) cannot hold ([mux-raw-symbol-continuity.md](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/docs/architecture/mux-raw-symbol-continuity.md)); the cells leave PL-03 when the raw-forwarding slice of #1003 lands and the inventory version is bumped |
-| PL-04 | `planned` | `ENS-PX05`, `ENH-PX05`, `ENS-PX06`, `ENH-PX06`, `ENS-PX07`, `ENH-PX07`, `ENS-PX08`, `ENH-PX08` | `fifo_order_superseded_by_address_priority` | address priority replaced FIFO order ([adapter-arbitration-decision.md](../docs/architecture/adapter-arbitration-decision.md)), so the FIFO registration-order statements of PX05–PX08 cannot hold; the cells stay in the inventory and leave PL-04 when they are re-specified for address priority and the inventory version is bumped |
+| PL-04 | `planned` | `ENS-PX05`, `ENH-PX05`, `ENS-PX06`, `ENH-PX06`, `ENS-PX07`, `ENH-PX07`, `ENS-PX08`, `ENH-PX08` | `fifo_order_superseded_by_address_priority` | address priority replaced FIFO order ([adapter-arbitration-decision.md](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/docs/architecture/adapter-arbitration-decision.md)), so the FIFO registration-order statements of PX05–PX08 cannot hold; the cells stay in the inventory and leave PL-04 when they are re-specified for address priority and the inventory version is bumped |
 
 Precedence for the reported reason when categories overlap: BI-02, then PL-01,
 then PL-02, then PL-03, then PL-04. Old expected-failure reasons that are not carried (T07/T08, and

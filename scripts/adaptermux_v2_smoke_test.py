@@ -604,8 +604,10 @@ class RefusalTests(SmokeTestCase):
 class AdapterActionTests(SmokeTestCase):
     """AD04 (adapter reset) and AD09 (host-link disconnect and reconnect)."""
 
-    def run_action(self, invariant, southbound, phases):
+    def run_action(self, invariant, southbound, phases, typed=None):
         self.stub.load(phases)
+        confirmation = case_id(invariant, southbound) if typed is None else typed
+        self.operator_channel.write_text(confirmation + "\n", encoding="utf-8")
         return self.run_smoke(self.environ(invariant, "mux", southbound, MATRIX_CELL_CLASS="W"))
 
     def each_cell(self):
@@ -632,6 +634,20 @@ class AdapterActionTests(SmokeTestCase):
                 self.assertIn("operator action for " + case_id(invariant, southbound),
                               self.operator_channel.read_text(encoding="utf-8"))
                 self.assertEqual(evidence["operator_cue"], SMOKE.CUE_TERMINAL)
+                self.assertTrue(evidence["operator_confirmed"])
+                self.assertIn("Type " + case_id(invariant, southbound) + " to confirm",
+                              self.operator_channel.read_text(encoding="utf-8"))
+
+    def test_action_without_a_fresh_typed_confirmation_fails(self):
+        # The confirmation is asked at action time, after the baseline sample.
+        for typed in ("", "skip"):
+            for invariant, southbound in self.each_cell():
+                with self.subTest(case=case_id(invariant, southbound), typed=typed):
+                    status, evidence = self.run_action(
+                        invariant, southbound, self.action_phases(southbound), typed=typed)
+                    self.assertEqual(status, SMOKE.EXIT_FAIL)
+                    self.assertFalse(evidence["operator_confirmed"])
+                    self.assertIn("did not type the case identifier", self.reasons(evidence))
 
     def test_cue_without_a_terminal_is_recorded_and_named_when_the_cell_fails(self):
         # Without a controlling terminal the cue reaches only the case log;
@@ -645,13 +661,15 @@ class AdapterActionTests(SmokeTestCase):
                 self.assertIn("operator action for " + case_id(invariant, southbound), self.output)
                 self.assertIn("the operator cue reached only the case log", self.reasons(evidence))
 
-    def test_cue_without_a_terminal_does_not_fail_a_passing_cell(self):
+    def test_cue_without_a_terminal_cannot_be_confirmed_and_fails_a_passing_cell(self):
         SMOKE.OPERATOR_CHANNEL = str(self.output_dir / "absent-directory" / "tty")
         for invariant, southbound in self.each_cell():
             with self.subTest(case=case_id(invariant, southbound)):
                 status, evidence = self.run_action(invariant, southbound, self.action_phases(southbound))
-                self.assertEqual(status, SMOKE.EXIT_PASS, evidence["reasons"])
+                self.assertEqual(status, SMOKE.EXIT_FAIL)
                 self.assertEqual(evidence["operator_cue"], SMOKE.CUE_CASE_LOG_ONLY)
+                self.assertFalse(evidence["operator_confirmed"])
+                self.assertIn("no terminal was available", self.reasons(evidence))
 
     def test_no_discontinuity_fails(self):
         for invariant, southbound in self.each_cell():
@@ -1049,6 +1067,7 @@ class ReadOnlyTests(SmokeTestCase):
             self.run_smoke(self.environ(invariant, "mux", "enh"))
         for invariant in ADAPTER_ACTION_INVARIANTS + PRIORITY_INVARIANTS:
             self.stub.load(self.respecified_phases(invariant, "enh"))
+            self.operator_channel.write_text(case_id(invariant, "enh") + "\n", encoding="utf-8")
             status, _ = self.run_smoke(self.environ(invariant, "mux", "enh"))
             self.assertEqual(status, SMOKE.EXIT_PASS)
         methods = {(method, path) for method, path, _ in self.stub.requests}

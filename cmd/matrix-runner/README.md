@@ -132,8 +132,9 @@ smoke command uses them to run the check for that invariant.
   output and on the controlling terminal, once its first reading is taken)
   the operator resets the adapter (AD04) or disconnects the adapter's host
   link and reconnects it (AD09) inside the case window. The evidence records
-  `operator_cue` as `terminal` or `case_log_only`; a failing cell whose cue
-  reached only the case log says so in its reasons. Set
+  `operator_cue` as `terminal` or `case_log_only`. The smoke command asks
+  again, at that moment, for the case ID typed on the terminal; without it
+  (skipped, or no terminal) the cell fails and says so in its reasons. Set
   `MATRIX_SMOKE_WINDOW_SEC` long enough for the action and the recovery.
 - PX cells also run the synthetic ENH contender: INIT, then three 07 04
   identification telegrams through START/SEND, with every echoed symbol and

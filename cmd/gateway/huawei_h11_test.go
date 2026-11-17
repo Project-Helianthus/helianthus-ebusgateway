@@ -551,12 +551,18 @@ func TestH11ComposedHuaweiPathOffline(t *testing.T) {
 			}
 		}
 	}
-	// Publication: only the identified instances' PV assets exist.
-	var published []string
-	for _, assets := range want {
+	// Publication: only the identified instances' PV assets exist, each
+	// instance with a published child adding its logger's asset.
+	var published, children []string
+	for label, assets := range want {
+		children = append(children, assets...)
 		published = append(published, assets...)
+		if len(assets) != 0 {
+			published = append(published, string(huaweiLoggerAssetID(label)))
+		}
 	}
 	sort.Strings(published)
+	sort.Strings(children)
 	var inHub []string
 	for _, id := range hub.AssetIDs() {
 		if hub.Readable(id) {
@@ -577,7 +583,8 @@ func TestH11ComposedHuaweiPathOffline(t *testing.T) {
 	}
 	snapshots.now = func() time.Time { return evaluated }
 	gql, mcpHandler := m11Handlers(t, snapshots)
-	for _, asset := range published {
+	// The logger assets hold no fact, so parity is read on the child assets.
+	for _, asset := range children {
 		selection := m11Selection(reflect.TypeOf(semanticview.View{}))
 		query := fmt.Sprintf("{a:semantic_snapshot(asset_ids:[%q])%s b:semantic_snapshot(asset_ids:[%q])%s}", asset, selection, asset, selection)
 		response := mcpRPC(t, mcpHandler, fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"semantic_v1_snapshot_get","arguments":{"asset_ids":[%q]}}}`, asset))

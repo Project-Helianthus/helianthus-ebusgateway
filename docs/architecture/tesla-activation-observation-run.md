@@ -98,10 +98,14 @@ opens the port at 115200 baud, 8 data bits, no parity and 1 stop bit (Linux
 only; other platforms record an open failure) and transmits nothing.
 
 The operator starts `tesla-observe` before the charger gets power. The
+working hypothesis, graded Hypothesis in the status table, is that the
 activation exchange happens once after the charger gets power, and only if
-the host answers the greeting. This tool sends nothing, so it never sees
-that confirmation and does not expect it. The tool has to be running before
-the charger gets power, or that one exchange is missed. Starting the tool
+the host answers the greeting. This tool sends nothing, so it does not
+expect the confirmation. Starting the tool before the charger gets power
+keeps that hypothesized exchange inside the window. Whether the exchange
+occurs, when it occurs and whether a reset repeats it stay Unknown pending
+owner review. A window that captures no exchange is retained as evidence
+for that review and is not dismissed as a missed exchange. Starting the tool
 does not power the charger and does not answer the greeting. Each attempt
 closes its source when the window ends. A later repeat opens a new source
 after any pause and does not observe the exchange from the earlier power-up.
@@ -146,8 +150,8 @@ helianthus-gateway tesla-observe \
   never does. The tool sends nothing and does not expect the confirmation.
   The worked example uses one repeat, so its prior-state basis matches that
   single startup. Each repeat is a new window on a freshly opened source.
-  The exchange from one power-up is visible only in the window that was
-  already open. A later repeat is not another initial session of that
+  Under the working hypothesis, the exchange from one power-up is visible
+  only in the window that was already open. A later repeat is not another initial session of that
   power-up, and nothing is printed when that later window opens. Do not
   coordinate a fresh power-up with a repeated window. Record another
   initial session by starting another invocation before a fresh power-up;

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
+	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
 )
 
 const (
@@ -22,6 +23,17 @@ const (
 
 	contenderTelegramCount = 3
 	clientStepTimeout      = 5 * time.Second
+
+	// ebusdCommandAddrEnv carries --ebusd-command-addr to the cell commands.
+	ebusdCommandAddrEnv = "MATRIX_EBUSD_COMMAND_ADDR"
+	// smokeReadyFileEnv names the file the smoke command creates once it has
+	// taken its baseline reading; the client workload starts only then.
+	smokeReadyFileEnv = "MATRIX_SMOKE_READY_FILE"
+	smokeReadyFile    = "smoke.ready"
+	smokeReadyPoll    = 20 * time.Millisecond
+	// staleResultWindow is how long a contender listens after its last
+	// transaction for a STARTED or FAILED that no bid of its own explains.
+	staleResultWindow = 300 * time.Millisecond
 )
 
 // labelPattern bounds the opaque session, candidate and setup labels.
@@ -106,6 +118,12 @@ func validateAdapterMuxOptions(options *RunnerOptions) (workloadAddresses, error
 		return workload, fmt.Errorf("unsupported --external-client %q (allowed: ebusd, vrc-explorer)", options.ExternalClient)
 	}
 	options.ExternalClient = client
+
+	options.EbusdCommandAddr = strings.TrimSpace(options.EbusdCommandAddr)
+	if exported := strings.TrimSpace(os.Getenv(ebusdCommandAddrEnv)); exported != "" && exported != options.EbusdCommandAddr {
+		return workload, fmt.Errorf("%s in the runner's environment differs from --ebusd-command-addr; "+
+			"the runner hands --ebusd-command-addr to the cell commands, so unset the variable or export the same host:port", ebusdCommandAddrEnv)
+	}
 
 	workload.initiator, workload.initiatorSet, err = parseWorkloadByte("--workload-initiator-addr", options.WorkloadInitiator)
 	if err != nil {
@@ -408,10 +426,12 @@ func (runner *Runner) executeAdapterMuxCase(
 		caseCtx, cancel = context.WithTimeout(ctx, runner.options.CaseTimeout)
 		defer cancel()
 	}
+	readyPath := filepath.Join(logDir, smokeReadyFile)
 	env := append(
 		buildCaseEnv(testCase, runner.options.Target, runner.options.Suite, caseDir, configDir, logDir),
 		runner.adapterMuxEnv(testCase)...,
 	)
+	env = append(env, smokeReadyFileEnv+"="+readyPath)
 	appendResult := func(result commandResult) {
 		commands = append(commands, result)
 		logFiles = append(logFiles, filepath.ToSlash(result.LogFile))
@@ -445,14 +465,23 @@ func (runner *Runner) executeAdapterMuxCase(
 		var clientResult commandResult
 		var wait sync.WaitGroup
 		hasClient := cell.NorthboundClient != NorthboundNone
+		smokeDone := make(chan struct{})
 		if hasClient {
 			wait.Add(1)
 			go func() {
 				defer wait.Done()
+				// The client starts only after the smoke command has taken its
+				// baseline reading, so its first frames fall inside the
+				// measured window.
+				if err := awaitSmokeBaseline(caseCtx, readyPath, smokeDone); err != nil {
+					clientResult = runner.clientNotStarted(testCase, logDir, err)
+					return
+				}
 				clientResult = runner.runClientWorkload(caseCtx, testCase, logDir)
 			}()
 		}
 		smokeResult := runner.runPlannedCommand(caseCtx, commandLogPath, "smoke", runner.options.SmokeCommand, true, env)
+		close(smokeDone)
 		wait.Wait()
 		appendResult(smokeResult)
 		if hasClient {
@@ -494,7 +523,50 @@ func (runner *Runner) adapterMuxEnv(testCase TopologyCase) []string {
 		"MATRIX_CELL_CLASS=" + string(cell.Class),
 		"MATRIX_OUTPUT_DIR=" + runner.options.OutputDir,
 		"MATRIX_AD10_PAIRED_CASES=" + strings.Join(cell.PairedCases, ","),
+		ebusdCommandAddrEnv + "=" + runner.options.EbusdCommandAddr,
 	}
+}
+
+// errSmokeEndedBeforeBaseline marks a client that never started because the
+// smoke command returned without signalling its baseline.
+var errSmokeEndedBeforeBaseline = errors.New("the smoke command ended before it signalled its baseline reading")
+
+// awaitSmokeBaseline waits until the smoke command has created readyPath.
+func awaitSmokeBaseline(ctx context.Context, readyPath string, smokeDone <-chan struct{}) error {
+	ticker := time.NewTicker(smokeReadyPoll)
+	defer ticker.Stop()
+	for {
+		if _, err := os.Stat(readyPath); err == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("waiting for the smoke command's baseline reading: %w", ctx.Err())
+		case <-smokeDone:
+			if _, err := os.Stat(readyPath); err == nil {
+				return nil
+			}
+			return errSmokeEndedBeforeBaseline
+		case <-ticker.C:
+		}
+	}
+}
+
+// clientNotStarted records a client workload that was never started.
+func (runner *Runner) clientNotStarted(testCase TopologyCase, logDir string, cause error) commandResult {
+	cell := testCase.AdapterMux
+	recordPath := filepath.Join(logDir, "client.json")
+	result := commandResult{
+		Name:      "client-" + cell.NorthboundClient,
+		Command:   cell.Workload,
+		LogFile:   filepath.ToSlash(recordPath),
+		StartedAt: runner.nowUTC().Format(time.RFC3339),
+		Status:    actualStatusFailed,
+		Error:     "client not started: " + cause.Error(),
+	}
+	_ = writeJSON(recordPath, map[string]any{"client": cell.NorthboundClient, "record": nil, "error": result.Error})
+	result.EndedAt = runner.nowUTC().Format(time.RFC3339)
+	return result
 }
 
 func (runner *Runner) writeAdapterMuxConfigs(testCase TopologyCase, verdict CaseVerdict, configDir string) ([]string, error) {
@@ -582,7 +654,7 @@ func (runner *Runner) runClientWorkload(ctx context.Context, testCase TopologyCa
 	var err error
 	switch cell.NorthboundClient {
 	case NorthboundSyntheticENH:
-		record, err = runner.runContenderClient(ctx)
+		record, err = runner.runContenderStimulus(ctx, cell.Invariant)
 	case NorthboundEbusd:
 		record, err = runner.runEbusdClient(ctx)
 	case NorthboundVRCExplorer:
@@ -610,25 +682,278 @@ func errorText(err error) string {
 	return err.Error()
 }
 
-func (runner *Runner) runContenderClient(ctx context.Context) (ContenderResult, error) {
-	config := ContenderConfig{
-		Source:      runner.workload.initiator,
-		Telegrams:   IdentificationWorkload(runner.workload.target, contenderTelegramCount),
-		StepTimeout: clientStepTimeout,
+// Contender stimuli: each PX cell drives the stimulus of its own invariant
+// on the mux ENH listener, then the identification workload, which must
+// complete after the stimulus. Every telegram passes ClassifyTelegram before
+// the first byte is written; a refused workload never opens a connection.
+const (
+	// StimulusReplacedBid (PX01): two START requests for one source back to
+	// back, so the first bid is replaced while its result may be under way.
+	// The mux absorbs the replaced bid's result: the contender receives one
+	// STARTED, completes its telegram, and no further STARTED or FAILED
+	// arrives in the stale-result window.
+	StimulusReplacedBid = "replaced-bid"
+	// StimulusCancelledBid (PX02): one START, then the session closes before
+	// any result. The mux must absorb the outstanding result or let its absorb
+	// budget expire: a new session's workload completes inside the step bound.
+	StimulusCancelledBid = "cancelled-bid"
+	// StimulusCommandWithoutCRC (PX03): the contender wins the bus, sends the
+	// command up to its length byte and stops before the CRC, so no command
+	// ACK can come and the bus closes the telegram with SYN. The contender
+	// bids again at once.
+	StimulusCommandWithoutCRC = "command-stopped-before-crc"
+	// StimulusResponseUnacknowledged (PX04): the contender completes its
+	// command, receives the target's ACK and response and sends neither its
+	// ACK nor the closing SYN, so the bus closes the response phase with SYN.
+	// A client cannot make the target withhold response bytes; this is the
+	// last point of the response phase the client controls.
+	StimulusResponseUnacknowledged = "response-left-unacknowledged"
+	// StimulusNonOwnerSend (PX12): one SEND of a SYN symbol without owning the
+	// bus; the mux answers ERROR_HOST and forwards nothing. SYN is the bus's
+	// idle symbol, so even a forwarded symbol cannot form a request.
+	StimulusNonOwnerSend = "non-owner-send"
+)
+
+// contenderStimuli maps each executable PX invariant to its stimulus.
+var contenderStimuli = map[string]string{
+	"PX01": StimulusReplacedBid,
+	"PX02": StimulusCancelledBid,
+	"PX03": StimulusCommandWithoutCRC,
+	"PX04": StimulusResponseUnacknowledged,
+	"PX12": StimulusNonOwnerSend,
+}
+
+// StimulusRecord is the client record of one PX cell.
+type StimulusRecord struct {
+	Invariant string `json:"invariant"`
+	Stimulus  string `json:"stimulus"`
+	// Observed is what the contender saw as the answer to its stimulus.
+	Observed string `json:"observed,omitempty"`
+	// Workload is the identification workload run after the stimulus.
+	Workload ContenderResult `json:"workload"`
+}
+
+var errStimulusNotObserved = errors.New("contender stimulus not answered as the invariant requires")
+
+func (runner *Runner) runContenderStimulus(ctx context.Context, invariant string) (StimulusRecord, error) {
+	record := StimulusRecord{Invariant: invariant, Stimulus: contenderStimuli[invariant]}
+	source := runner.workload.initiator
+	telegrams := IdentificationWorkload(runner.workload.target, contenderTelegramCount)
+	record.Workload.Transactions = len(telegrams)
+	fail := func(err error) (StimulusRecord, error) {
+		if record.Workload.Error == "" {
+			record.Workload.Error = err.Error()
+		}
+		return record, err
 	}
-	// The guard also runs before dialing, so a refused workload never opens
-	// a connection to the listener.
-	for _, telegram := range config.Telegrams {
-		if _, err := ClassifyTelegram(telegram); err != nil {
-			return ContenderResult{RefusedBeforeWrite: true, Error: err.Error()}, err
+	if record.Stimulus == "" {
+		return fail(fmt.Errorf("%w: %s has no contender stimulus", ErrWriteGuardRefused, invariant))
+	}
+	if !protocol.IsInitiatorCapableAddress(source) {
+		record.Workload.RefusedBeforeWrite = true
+		return fail(fmt.Errorf("%w: source 0x%02X is not an initiator address", ErrWriteGuardRefused, source))
+	}
+	for _, telegram := range telegrams {
+		requestType, err := ClassifyTelegram(telegram)
+		if err != nil {
+			record.Workload.RefusedBeforeWrite = true
+			record.Workload.RequestTypes = nil
+			return fail(err)
+		}
+		record.Workload.RequestTypes = append(record.Workload.RequestTypes, requestType)
+	}
+
+	if record.Stimulus == StimulusCancelledBid {
+		first, err := runner.openContenderSession(ctx)
+		if err != nil {
+			return fail(err)
+		}
+		sendErr := first.send(transport.ENHReqStart, source)
+		_ = first.conn.Close()
+		if sendErr != nil {
+			return fail(fmt.Errorf("cancelled bid: %w", sendErr))
+		}
+		record.Observed = "session closed with its bid outstanding"
+	}
+
+	session, err := runner.openContenderSession(ctx)
+	if err != nil {
+		return fail(err)
+	}
+	defer func() { _ = session.conn.Close() }()
+
+	switch record.Stimulus {
+	case StimulusReplacedBid:
+		if err := session.send(transport.ENHReqStart, source); err != nil {
+			return fail(err)
+		}
+		// transact sends the replacing START and must see exactly one result.
+		record.Observed = "replaced bid answered once"
+	case StimulusCommandWithoutCRC, StimulusResponseUnacknowledged:
+		observed, err := leaveTelegramOpen(session, source, telegrams[0], record.Stimulus)
+		record.Observed = observed
+		if err != nil {
+			return fail(err)
+		}
+	case StimulusNonOwnerSend:
+		observed, err := sendWithoutOwnership(session)
+		record.Observed = observed
+		if err != nil {
+			return fail(err)
 		}
 	}
+
+	for _, telegram := range telegrams {
+		failed, err := session.transact(source, telegram, 5)
+		record.Workload.ArbitrationFailed += failed
+		if err != nil {
+			return fail(err)
+		}
+		record.Workload.Completed++
+	}
+	if record.Stimulus == StimulusReplacedBid {
+		if stray, err := strayArbitrationResult(session, staleResultWindow); err != nil {
+			return fail(err)
+		} else if stray != "" {
+			record.Observed = stray
+			return fail(fmt.Errorf("%w: %s", errStimulusNotObserved, stray))
+		}
+	}
+	return record, nil
+}
+
+// openContenderSession dials the mux ENH listener and completes INIT.
+func (runner *Runner) openContenderSession(ctx context.Context) (*enhContenderSession, error) {
 	conn, err := runner.dial(ctx, runner.options.MuxENHAddr)
 	if err != nil {
-		return ContenderResult{}, fmt.Errorf("dial mux ENH listener: %w", err)
+		return nil, fmt.Errorf("dial mux ENH listener: %w", err)
 	}
-	defer func() { _ = conn.Close() }()
-	return RunSyntheticContender(ctx, conn, config)
+	session := &enhContenderSession{ctx: ctx, conn: conn, timeout: clientStepTimeout}
+	if err := session.send(transport.ENHReqInit, 0x00); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	if _, err := session.await(func(message transport.ENHMessage) (bool, error) {
+		return message.Command == transport.ENHResResetted, nil
+	}); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("await RESETTED after INIT: %w", err)
+	}
+	return session, nil
+}
+
+// leaveTelegramOpen wins the bus and leaves the telegram open at the
+// stimulus's point, then waits for the bus to close it with SYN.
+func leaveTelegramOpen(session *enhContenderSession, source byte, telegram GuardTelegram, stimulus string) (string, error) {
+	if err := session.send(transport.ENHReqStart, source); err != nil {
+		return "", err
+	}
+	message, err := session.await(func(message transport.ENHMessage) (bool, error) {
+		switch message.Command {
+		case transport.ENHResStarted:
+			return true, nil
+		case transport.ENHResFailed, transport.ENHResResetted:
+			return false, fmt.Errorf("%w: 0x%X before the open telegram", errContenderProtocol, byte(message.Command))
+		default:
+			return false, nil
+		}
+	})
+	if err != nil {
+		return "", fmt.Errorf("await arbitration: %w", err)
+	}
+	if message.Data != source {
+		return "", fmt.Errorf("%w: STARTED 0x%02X for source 0x%02X", errContenderProtocol, message.Data, source)
+	}
+	logical := append([]byte{source, telegram.Target, telegram.Primary, telegram.Secondary, byte(len(telegram.Data))}, telegram.Data...)
+	if stimulus == StimulusCommandWithoutCRC {
+		for _, symbol := range escapeSymbols(logical[1:]) {
+			if err := session.sendSymbol(symbol); err != nil {
+				return "", err
+			}
+		}
+	} else {
+		logical = append(logical, protocol.CRC(logical))
+		for _, symbol := range escapeSymbols(logical[1:]) {
+			if err := session.sendSymbol(symbol); err != nil {
+				return "", err
+			}
+		}
+		ack, err := session.receive()
+		if err != nil {
+			return "", fmt.Errorf("await target ACK: %w", err)
+		}
+		if ack != protocol.SymbolAck {
+			return "", fmt.Errorf("target answered 0x%02X instead of ACK", ack)
+		}
+	}
+	// Read until the bus closes the telegram. Response bytes of the target
+	// arrive first in the response phase; any arbitration result does not
+	// belong here.
+	for {
+		message, err := session.next()
+		if err != nil {
+			return "", fmt.Errorf("await the closing SYN: %w", err)
+		}
+		switch message.Command {
+		case transport.ENHResReceived:
+			if message.Data == protocol.SymbolSyn {
+				if stimulus == StimulusCommandWithoutCRC {
+					return "bus closed the command before its CRC with SYN", nil
+				}
+				return "bus closed the unacknowledged response with SYN", nil
+			}
+		default:
+			return "", fmt.Errorf("%w: ENH command 0x%X while the telegram was open", errContenderProtocol, byte(message.Command))
+		}
+	}
+}
+
+// sendWithoutOwnership sends one SYN symbol without owning the bus and
+// expects the mux to refuse it with ERROR_HOST.
+func sendWithoutOwnership(session *enhContenderSession) (string, error) {
+	if err := session.send(transport.ENHReqSend, protocol.SymbolSyn); err != nil {
+		return "", err
+	}
+	for {
+		message, err := session.next()
+		if err != nil {
+			if message.Command == transport.ENHResErrorHost {
+				return "non-owner SEND refused with ERROR_HOST", nil
+			}
+			return "", fmt.Errorf("await the refusal of a non-owner SEND: %w", err)
+		}
+		switch message.Command {
+		case transport.ENHResReceived:
+			// Bus traffic of other owners keeps arriving; a forwarded SYN
+			// cannot be told apart from it, so only the refusal counts.
+		default:
+			return "", fmt.Errorf("%w: ENH command 0x%X instead of the refusal of a non-owner SEND", errStimulusNotObserved, byte(message.Command))
+		}
+	}
+}
+
+// strayArbitrationResult listens for window and reports a STARTED or FAILED
+// that no bid of the session explains.
+func strayArbitrationResult(session *enhContenderSession, window time.Duration) (string, error) {
+	saved := session.timeout
+	session.timeout = window
+	defer func() { session.timeout = saved }()
+	deadline := time.Now().Add(window)
+	for time.Now().Before(deadline) {
+		message, err := session.next()
+		if err != nil {
+			var netErr net.Error
+			if errors.As(err, &netErr) && netErr.Timeout() {
+				return "", nil
+			}
+			return "", err
+		}
+		switch message.Command {
+		case transport.ENHResStarted, transport.ENHResFailed:
+			return fmt.Sprintf("stale arbitration result 0x%X (0x%02X) after the replaced bid", byte(message.Command), message.Data), nil
+		}
+	}
+	return "", nil
 }
 
 func (runner *Runner) runEbusdClient(ctx context.Context) (EbusdWorkloadResult, error) {

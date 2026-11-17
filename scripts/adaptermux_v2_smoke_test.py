@@ -615,11 +615,20 @@ class AdapterActionTests(SmokeTestCase):
             for southbound in ("ens", "enh"):
                 yield invariant, southbound
 
-    def test_discontinuity_seen_by_every_session_with_one_reconnect_and_resumption_passes(self):
+    def assert_fails_only_on_the_unprovable_hold(self, status, evidence):
+        self.assertEqual(status, SMOKE.EXIT_FAIL)
+        self.assertEqual(evidence["reasons"], ["out_of_step_holds_raised cannot be measured: "
+                                               + SMOKE.HOLD_NOT_PROVABLE])
+        unmet = [row["measure"] for row in evidence["requirements"] if not row["met"]]
+        self.assertEqual(unmet, ["out_of_step_holds_raised"])
+
+    def test_discontinuity_seen_by_every_session_with_one_reconnect_and_resumption_meets_every_sampled_rule(self):
+        # Every requirement a reading can prove holds; the cell still fails
+        # because no hold raised between two readings can be ruled out.
         for invariant, southbound in self.each_cell():
             with self.subTest(case=case_id(invariant, southbound)):
                 status, evidence = self.run_action(invariant, southbound, self.action_phases(southbound))
-                self.assertEqual(status, SMOKE.EXIT_PASS, evidence["reasons"])
+                self.assert_fails_only_on_the_unprovable_hold(status, evidence)
                 measures = evidence["measures"]
                 self.assertEqual(measures["consumer_sessions_observing_discontinuity"], 3)
                 self.assertEqual(measures["consumer_sessions_missing_discontinuity"], 0)
@@ -737,6 +746,38 @@ class AdapterActionTests(SmokeTestCase):
                 self.assertEqual(status, SMOKE.EXIT_FAIL)
                 self.assertGreater(evidence["measures"]["active_frames"], 0)
                 self.assertIn("resumed_mux_transactions_done did not move", self.reasons(evidence))
+
+    def test_hold_raised_and_cleared_between_readings_is_not_provable(self):
+        # The gauge reads 0 at every reading; a hold that was raised and
+        # cleared between two of them would look exactly the same, so the
+        # check must not count the zero readings as proof.
+        for invariant, southbound in self.each_cell():
+            with self.subTest(case=case_id(invariant, southbound)):
+                phases = self.action_phases(southbound)
+                for phase in phases:
+                    phase.set(SMOKE.MUX_HELD, {}, 0)
+                status, evidence = self.run_action(invariant, southbound, phases)
+                self.assertEqual(evidence["measures"]["out_of_step_hold_readings"], 0)
+                self.assertIsNone(evidence["measures"]["out_of_step_holds_raised"])
+                self.assertIn("not provable with a sampled gauge", self.reasons(evidence))
+                self.assert_fails_only_on_the_unprovable_hold(status, evidence)
+
+    def test_recovery_between_the_same_two_readings_as_the_discontinuity_counts(self):
+        # The discontinuity and the first resumed transactions fall between
+        # the baseline and the next reading: the detecting reading already
+        # holds the recovery, so the resumption is measured from the reading
+        # before it.
+        for invariant, southbound in self.each_cell():
+            with self.subTest(case=case_id(invariant, southbound)):
+                baseline = Phase("baseline", "mux", southbound, signals="baseline")
+                recovered = Phase("flow", "mux", southbound, signals="discontinuity")
+                status, evidence = self.run_action(invariant, southbound, [baseline, recovered])
+                self.assertEqual(evidence["discontinuity_reading"], 1)
+                measures = evidence["measures"]
+                self.assertGreater(measures["resumed_active_frames"], 0)
+                self.assertGreater(measures["resumed_mux_transactions_done"], 0)
+                self.assertGreater(measures["resumed_passive_completed_transactions"], 0)
+                self.assert_fails_only_on_the_unprovable_hold(status, evidence)
 
     def test_out_of_step_hold_fails(self):
         for invariant, southbound in self.each_cell():
@@ -909,6 +950,33 @@ class MissingSignalTests(SmokeTestCase):
         self.assertTrue(evidence["mux_diagnostics"])
         self.assertNotIn("AdapterMux diagnostics are absent", "\n".join(reasons))
 
+    def test_idle_mux_is_seen_from_any_family_it_renders(self):
+        # An idle mux renders the endings family with no sample yet; any mux
+        # family, declared or sampled, shows the mux runs.
+        for family in ("ebus_adaptermux_transaction_endings_total", "ebus_adaptermux_syn_suppressed_pre_echo_total",
+                       "ebus_adaptermux_stale_active_bytes_discarded_total"):
+            with self.subTest(family=family):
+                declared = SMOKE.declared_families("# HELP %s text\n# TYPE %s counter\n" % (family, family))
+                sample = {"metrics": {(SMOKE.PASSIVE_COMPLETED, ()): 1.0}, "families": sorted(declared)}
+                self.assertTrue(SMOKE.mux_diagnostics_present(sample))
+                sampled = {"metrics": {(family, ()): 0.0}}
+                self.assertTrue(SMOKE.mux_diagnostics_present(sampled))
+        self.assertFalse(SMOKE.mux_diagnostics_present({"metrics": {}, "families": ["ebus_passive_completed_transactions_total"]}))
+
+    def test_compatibility_cell_with_an_idle_mux_fails(self):
+        # Only HELP and TYPE lines of the mux endings family: no mux sample at all.
+        for invariant, composition, southbound in (("DS01", "direct", "ens"), ("ES01", "ebusd-tcp", "ebusd-tcp")):
+            with self.subTest(case=case_id(invariant, southbound)):
+                phases = self.phases(composition, southbound)
+                self.stub.load(phases)
+                declaration = ("# HELP ebus_adaptermux_transaction_endings_total endings\n"
+                               "# TYPE ebus_adaptermux_transaction_endings_total counter\n")
+                self.stub.answers["/metrics"] = [declaration + body for body in self.stub.answers["/metrics"]]
+                status, evidence = self.run_smoke(self.environ(invariant, composition, southbound))
+                self.assertEqual(status, SMOKE.EXIT_FAIL)
+                self.assertIn("AdapterMux diagnostics are present", self.reasons(evidence))
+                self.assertEqual(evidence["transport"]["mux_families"], ["ebus_adaptermux_transaction_endings_total"])
+
     def test_gateway_without_any_new_series_names_every_missing_one(self):
         self.stub.load(self.phases("mux", "ens"))
         status, evidence = self.run_smoke(self.environ("AD04", "mux", "ens"))
@@ -1022,6 +1090,26 @@ class MigrationEquivalenceTests(SmokeTestCase):
         self.assertEqual(status, SMOKE.EXIT_FAIL)
         self.assertEqual(evidence["semantic_record"]["parity_mismatches"], ["outdoor_temperature"])
 
+    def test_value_arriving_between_the_two_requests_is_not_drift(self):
+        # GraphQL answers the old value first, then the new one; MCP already
+        # answers the new one. The pair is repeated until GraphQL is stable.
+        drifted = DATA["semantic"]["drifted_state"]
+        self.stub.load(self.phases("direct", "ens"))
+        self.stub.answers["/graphql"] = [graphql_body(DATA["semantic"]["state"]), graphql_body(drifted)]
+        self.stub.answers["/mcp"] = [mcp_body(drifted, DATA["semantic"]["mcp_contract"])]
+        status, evidence = self.run_smoke(self.environ("DS01", "direct", "ens"))
+        self.assertEqual(status, SMOKE.EXIT_PASS, evidence["reasons"])
+        self.assertEqual(evidence["semantic_record"]["parity_mismatches"], [])
+        self.assertEqual(evidence["semantic_record"]["parity_attempts"], 2)
+
+    def test_state_changing_around_every_mcp_read_fails(self):
+        states = [DATA["semantic"]["state"], DATA["semantic"]["drifted_state"]]
+        self.stub.load(self.phases("direct", "ens"))
+        self.stub.answers["/graphql"] = [graphql_body(states[index % 2]) for index in range(SMOKE.PARITY_ATTEMPTS + 1)]
+        status, evidence = self.run_smoke(self.environ("DS01", "direct", "ens"))
+        self.assertEqual(status, SMOKE.EXIT_FAIL)
+        self.assertIn("MCP/GraphQL parity has no consistent snapshot", self.reasons(evidence))
+
     def test_missing_mcp_contract_fails_the_semantic_record(self):
         state = DATA["semantic"]["state"]
         missing = json.loads(json.loads(mcp_body(state, "x"))["result"]["content"][0]["text"])
@@ -1059,6 +1147,34 @@ class MigrationEquivalenceTests(SmokeTestCase):
                 self.assertEqual(field["lineage"]["mcp_contract"], DATA["semantic"]["mcp_contract"])
 
 
+class ReadinessTests(SmokeTestCase):
+    def test_ready_file_is_created_after_the_baseline_reading(self):
+        ready = self.output_dir / "ready"
+        seen = []
+
+        def observe():
+            seen.append(ready.exists())
+
+        self.stub.load(self.phases("mux", "enh"))
+        self.stub.on_request = observe
+        status, evidence = self.run_smoke(self.environ("PX01", "mux", "enh", MATRIX_SMOKE_READY_FILE=str(ready)))
+        self.assertEqual(status, SMOKE.EXIT_PASS, evidence["reasons"])
+        self.assertTrue(ready.exists())
+        # The three baseline reads happen before the file exists, later reads after.
+        self.assertEqual(seen[:3], [False, False, False])
+        self.assertTrue(all(seen[3:]))
+
+    def test_no_ready_file_when_a_signal_is_missing_or_the_cell_is_refused(self):
+        ready = self.output_dir / "ready"
+        self.stub.load(self.phases("mux", "ens"))
+        status, _ = self.run_smoke(self.environ("AD07", "mux", "ens", MATRIX_SMOKE_READY_FILE=str(ready)))
+        self.assertEqual(status, SMOKE.EXIT_SIGNAL_MISSING)
+        self.assertFalse(ready.exists())
+        status, _ = self.run_smoke(self.environ("PX05", "mux", "ens", MATRIX_SMOKE_READY_FILE=str(ready)))
+        self.assertEqual(status, SMOKE.EXIT_REFUSED)
+        self.assertFalse(ready.exists())
+
+
 class ReadOnlyTests(SmokeTestCase):
     def test_every_request_is_a_read(self):
         self.prepare_pairs("enh")
@@ -1068,8 +1184,12 @@ class ReadOnlyTests(SmokeTestCase):
         for invariant in ADAPTER_ACTION_INVARIANTS + PRIORITY_INVARIANTS:
             self.stub.load(self.respecified_phases(invariant, "enh"))
             self.operator_channel.write_text(case_id(invariant, "enh") + "\n", encoding="utf-8")
-            status, _ = self.run_smoke(self.environ(invariant, "mux", "enh"))
-            self.assertEqual(status, SMOKE.EXIT_PASS)
+            status, evidence = self.run_smoke(self.environ(invariant, "mux", "enh"))
+            if invariant in ADAPTER_ACTION_INVARIANTS:
+                self.assertEqual(evidence["reasons"], ["out_of_step_holds_raised cannot be measured: "
+                                                       + SMOKE.HOLD_NOT_PROVABLE])
+            else:
+                self.assertEqual(status, SMOKE.EXIT_PASS)
         methods = {(method, path) for method, path, _ in self.stub.requests}
         self.assertEqual(methods, {("GET", "/portal/api/v1/bus/observability"), ("GET", "/metrics"),
                                    ("GET", "/debug/vars"), ("POST", "/graphql"), ("POST", "/mcp")})

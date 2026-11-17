@@ -8,7 +8,9 @@ Prometheus text (AdapterMux diagnostics included), the expvar counters and,
 for the semantic record, one GraphQL query and one MCP read tool. It proves
 eBUS data flow on the selected southbound transport during the case window:
 counters are read once at the start and again until the invariant's flow
-requirements hold or the window ends.
+requirements hold or the window ends. Once the first reading is taken it
+creates the file named by MATRIX_SMOKE_READY_FILE, and the runner starts the
+cell's client workload only then, so the client's first frames are counted.
 
 The adapter-action cells AD04 and AD09 announce the operator action once the
 first reading is taken and ask for a fresh typed confirmation of the case
@@ -101,7 +103,16 @@ ADAPTER_ACTION_REQUIRES = (
     ("resumed_mux_transactions_done", GT0),
     ("resumed_passive_completed_transactions", GT0),
     ("out_of_step_hold_readings", EQ0),
+    ("out_of_step_holds_raised", EQ0),
 )
+# The gateway publishes the out-of-step hold only as an instantaneous gauge.
+# A hold raised and cleared between two readings leaves no trace in it, so
+# "no hold was raised" cannot be proven by sampling; the requirement stays
+# unmeasured, and the cell fails, until the gateway exports a latched signal
+# (a counter of hold transitions).
+HOLD_NOT_PROVABLE = ("not provable with a sampled gauge: the gateway publishes the out-of-step hold only as "
+                     "the instantaneous gauge " + MUX_HELD + ", so a hold raised and cleared between two "
+                     "readings is not seen; a latched signal (a counter of hold transitions) is needed")
 
 # AD07: with no owner and an idle bus, the lowest initiator low nibble wins,
 # then the lowest high nibble (docs/architecture/adapter-arbitration-decision.md);
@@ -231,7 +242,7 @@ def read_context(environ):
     context = {name.lower(): env_value(environ, "MATRIX_" + name) for name in (
         "CASE_ID", "INVARIANT", "SOUTHBOUND_TRANSPORT", "COMPOSITION", "CASE_DIR",
         "OUTPUT_DIR", "SESSION_ID", "CANDIDATE", "HARDWARE_SETUP", "CELL_CLASS",
-        "AD10_PAIRED_CASES", "EXTERNAL_WRITE_POLICY", "CONFIG_DIR")}
+        "AD10_PAIRED_CASES", "EXTERNAL_WRITE_POLICY", "CONFIG_DIR", "SMOKE_READY_FILE")}
     context["invariant"] = context["invariant"].upper()
     context["case_id"] = context["case_id"].upper()
     context["southbound_transport"] = context["southbound_transport"].lower()
@@ -380,7 +391,9 @@ def take_sample(urls, settings):
     sample = {}
     try:
         sample["observability"] = read_json(http_get(urls["observability"], timeout), "bus observability")
-        sample["metrics"] = parse_prometheus(http_get(urls["metrics"], timeout))
+        metrics_text = http_get(urls["metrics"], timeout)
+        sample["metrics"] = parse_prometheus(metrics_text)
+        sample["families"] = sorted(declared_families(metrics_text))
         sample["vars"] = read_json(http_get(urls["vars"], timeout), "expvar")
     except SurfaceError as error:
         raise SurfaceError("gateway read surface: " + str(error)) from error
@@ -490,8 +503,11 @@ def discontinuity_measures(readings):
     """Measures of an adapter-action cell over every judged reading.
 
     The consumer sessions are those the mux reports at the first reading. The
-    discontinuity reading is the first one in which any of them moved; the
-    resumption is measured from that reading to the last one.
+    discontinuity reading is the first one in which any of them moved. The
+    resumption is measured from the last reading before it to the last
+    reading: when the discontinuity and the first resumed transactions fall
+    between the same two readings, the detecting reading already holds the
+    recovery, so it cannot be the baseline.
     """
     baseline, final = readings[0], readings[-1]
     sessions = series_values(baseline, MUX_SESSION_DISCONTINUITIES)
@@ -502,6 +518,7 @@ def discontinuity_measures(readings):
         "consumer_sessions_missing_discontinuity": float(len(sessions) - observed),
         "mux_upstream_reconnects": metric_delta(baseline, final, MUX_UPSTREAM_RECONNECTS),
         "out_of_step_hold_readings": float(sum(1 for reading in readings[1:] if metric_sum(reading, MUX_HELD) >= 1)),
+        "out_of_step_holds_raised": None,
     }
     boundary = None
     for index, reading in enumerate(readings[1:], start=1):
@@ -509,14 +526,14 @@ def discontinuity_measures(readings):
         if any(current.get(labels, 0.0) > value for labels, value in sessions.items()):
             boundary = index
             break
-    unmeasured = {}
+    unmeasured = {"out_of_step_holds_raised": HOLD_NOT_PROVABLE}
     resumed = ("resumed_active_frames", "resumed_mux_transactions_done", "resumed_passive_completed_transactions")
     if boundary is None:
         for name in resumed:
             measures[name] = None
             unmeasured[name] = "no consumer session observed a discontinuity during the case window"
         return measures, unmeasured, None
-    reading = readings[boundary]
+    reading = readings[boundary - 1]
     measures["resumed_active_frames"] = frame_delta(reading, final, lambda key: key[0] == "active")
     measures["resumed_mux_transactions_done"] = metric_delta(
         reading, final, MUX_ENDINGS, [("reason", "transaction_done")])
@@ -589,16 +606,32 @@ def priority_measures(baseline, current, own):
     return measures, unmeasured, evidence
 
 
-# Families the gateway renders whenever the AdapterMux diagnostics provider
-# runs. The transaction-endings family is not one of them alone: it carries a
-# sample only per ending reason already seen, so it is empty before the first
-# ending, while these scalar series are always written.
-MUX_PRESENCE_FAMILIES = (MUX_HELD, MUX_FOREIGN, MUX_ESCAPE, MUX_ENDINGS)
+# Every family the AdapterMux diagnostics provider renders starts with this
+# prefix, and the gateway renders them only while a mux is instantiated. The
+# transaction-endings family alone is not enough: it carries a sample only per
+# ending reason already seen, so an idle mux on a direct or compatibility
+# target shows none. Presence is therefore read from every family of the
+# prefix, from its samples and from its HELP and TYPE lines.
+MUX_FAMILY_PREFIX = "ebus_adaptermux_"
+PROM_DECLARATION = re.compile(r"^#\s+(?:HELP|TYPE)\s+([a-zA-Z_:][a-zA-Z0-9_:]*)")
+
+
+def declared_families(text):
+    families = set()
+    for raw in text.splitlines():
+        match = PROM_DECLARATION.match(raw.strip())
+        if match:
+            families.add(match.group(1))
+    return families
+
+
+def mux_families(sample):
+    published = {name for name, _ in sample["metrics"]} | set(sample.get("families") or ())
+    return sorted(name for name in published if name.startswith(MUX_FAMILY_PREFIX))
 
 
 def mux_diagnostics_present(sample):
-    published = {name for name, _ in sample["metrics"]}
-    return any(name in published for name in MUX_PRESENCE_FAMILIES)
+    return bool(mux_families(sample))
 
 
 def missing_signals(check, sample):
@@ -648,7 +681,8 @@ def check_transport(context, sample, check):
         reasons.append("AdapterMux diagnostics are absent: the gateway does not run the mux")
     if check["composition"] != "mux" and mux_present:
         reasons.append("AdapterMux diagnostics are present: the composition must bypass the mux")
-    return {"reported": reported, "expected": expected, "mux_diagnostics": mux_present}, reasons
+    return {"reported": reported, "expected": expected, "mux_diagnostics": mux_present,
+            "mux_families": mux_families(sample)}, reasons
 
 
 def read_workload(context):
@@ -730,7 +764,13 @@ def flow_ready(check, measures):
     return True
 
 
-def observe_window(urls, settings, check, clock, announce=None):
+def signal_baseline(path):
+    """Create the readiness file: the baseline reading is taken."""
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write("baseline\n")
+
+
+def observe_window(urls, settings, check, clock, announce=None, ready_file=""):
     """Sample until the flow requirements hold or the window ends.
 
     Every consecutive pair of samples is compared for a counter moving
@@ -742,13 +782,16 @@ def observe_window(urls, settings, check, clock, announce=None):
     after the window ends may count traffic outside the window, so it is
     discarded and the last sample completed inside the window is judged.
     A check whose series the gateway does not publish stops after the first
-    sample, before any operator action is announced.
+    sample, before any operator action is announced and before the readiness
+    file is created, so no client workload starts for it.
     """
     full_window = any(rule in (EQ0, EQ1) for _, rule in check["requires"])
     baseline = take_sample(urls, settings)
     missing = missing_signals(check, baseline)
     if missing:
         raise SignalMissingError(missing)
+    if ready_file:
+        signal_baseline(ready_file)
     if announce is not None:
         announce()
     deadline = clock.monotonic() + settings["window"]
@@ -832,9 +875,30 @@ def json_type(value):
     return "string" if isinstance(value, str) else "object"
 
 
+# GraphQL is read before and after each MCP read; the pair is compared only
+# when both GraphQL readings agree, so a value that arrives between two
+# requests is not reported as drift.
+PARITY_ATTEMPTS = 3
+
+
+def consistent_semantic_pair(urls, settings):
+    """Return (GraphQL state, MCP state, contract, attempts) from a stable pair.
+
+    Raises SurfaceError when the GraphQL state changed around every MCP read.
+    """
+    before = graphql_semantic(urls, settings)
+    for attempt in range(1, PARITY_ATTEMPTS + 1):
+        mcp_state, contract = mcp_semantic(urls, settings)
+        after = graphql_semantic(urls, settings)
+        if after == before:
+            return after, mcp_state, contract, attempt
+        before = after
+    raise SurfaceError("the semantic state changed around every one of %d MCP reads; "
+                       "MCP/GraphQL parity has no consistent snapshot to compare" % PARITY_ATTEMPTS)
+
+
 def semantic_record(urls, settings):
-    graphql_state = graphql_semantic(urls, settings)
-    mcp_state, contract = mcp_semantic(urls, settings)
+    graphql_state, mcp_state, contract, attempts = consistent_semantic_pair(urls, settings)
     fields, parity = {}, []
     for name, spec in SEMANTIC_FIELDS.items():
         value = graphql_state.get(name)
@@ -844,7 +908,7 @@ def semantic_record(urls, settings):
         # An omitted MCP key and a GraphQL null are the same absence.
         if mcp_state.get(name) != value:
             parity.append(name)
-    return {"plane": SEMANTIC_PLANE, "fields": fields, "parity_mismatches": parity}
+    return {"plane": SEMANTIC_PLANE, "fields": fields, "parity_mismatches": parity, "parity_attempts": attempts}
 
 
 # ---------------------------------------------------------------- AD10
@@ -968,7 +1032,8 @@ def judge(context, check, urls, settings, clock, stream=None):
         def announce():
             evidence["operator_cue"], evidence["operator_confirmed"] = announce_to_operator(
                 cue_text, stream, context["case_id"])
-    readings, own, window, backwards = observe_window(urls, settings, check, clock, announce)
+    readings, own, window, backwards = observe_window(urls, settings, check, clock, announce,
+                                                      context.get("smoke_ready_file", ""))
     baseline, current = readings[0], readings[-1]
     evidence["window"] = dict(window, window_seconds=settings["window"])
     evidence["gateway_source"] = own

@@ -199,6 +199,19 @@ func (a *arbitrator) tryGrant(busIdle bool) (*startRequest, bool) {
 	return winner, winner != nil
 }
 
+// externalBid returns the session's queued external bid, or nil when it has
+// none. The pointer is the request a later grant snapshot includes.
+func (a *arbitrator) externalBid(sessionID uint64) *startRequest {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, req := range a.pendingExternal {
+		if req.sessionID == sessionID {
+			return req
+		}
+	}
+	return nil
+}
+
 // snapshotBids identifies the waiters admitted before the SYN state lock is
 // released. Including notify distinguishes a same-address re-bid that coalesces
 // onto the same request after the boundary.

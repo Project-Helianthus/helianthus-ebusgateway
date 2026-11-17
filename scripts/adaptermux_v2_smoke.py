@@ -18,12 +18,13 @@ identifier at that moment; without it the cell fails. The operator then resets t
 disconnects and reconnects its host link (AD09) inside the case window. A hold
 that a reading shows fails the cell. A hold raised and cleared between
 readings is not provable with a sampled gauge: the report records that limit
-and the cell passes when every provable requirement holds. Resumption counts
-only after the reading that shows the discontinuity. The discontinuity,
-reconnect, contended-selection and retained-bid series are not published by
-this gateway: each absent series is recorded as not provable, and the cell
-passes when every requirement the published series can prove holds. A bus
-that stays quiet still fails.
+and the cell passes when every provable requirement holds. Resumption is the
+increase since the reading before the one that first shows the discontinuity,
+so a recovery between those two readings counts. The discontinuity, reconnect,
+contended-selection and retained-bid series are part of the pass criterion:
+when a required series is absent the command ends with status 4, signal_missing,
+after the first reading, and the cell does not pass. A bus that stays quiet
+still fails.
 
 It never sends a mutation, never calls a tool that writes and never invokes a
 bus method. Every run writes one JSON object, smoke_evidence.json, into the

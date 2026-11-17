@@ -18,11 +18,12 @@ import (
 )
 
 // fakeMuxPeer models the mux ENH listener as an external session sees it.
-// It answers INFO in order after the START before it. A queued bid's
+// It holds the INFO answer for a queued bid until that bid is forwarded,
+// which is when the grant step returns from RequestStart. A queued bid's
 // selecting SYN is delivered at fakeInFlightArm, before the bid is written
 // to the adapter, as the mux delivers a SYN before its grant step; the bid
-// is forwarded fakeForwardLag later and the next received symbol follows
-// that. Its STARTED waits until fakeLateAfter, so a contender can replace or
+// is forwarded fakeForwardLag later, the held INFO answer is released, and
+// the next received symbol follows that. Its STARTED waits until fakeLateAfter, so a contender can replace or
 // abandon it once it is forwarded. The late STARTED of a replaced bid is
 // absorbed unless deliverStaleResult. Closing an in-flight bid arms the
 // absorb barrier, which the peer clears after fakeAbsorbBudget as the mux
@@ -68,6 +69,12 @@ type fakeMuxPeer struct {
 	// infoErrorHost answers INFO with ERROR_HOST, as a mux without a cached
 	// adapter answer does.
 	infoErrorHost bool
+	// excludedSnapshot is a START queued after the snapshot of a SYN.
+	// The INFO answer is written before that SYN is delivered, then the
+	// SYN and one following symbol. The bid is never handed on.
+	excludedSnapshot  bool
+	excludedFollowing byte
+	excludedDelivered bool
 	// staleFailedWithGrant sends the replacement grant and a FAILED naming
 	// the replaced initiator in one write, so they arrive in one read.
 	staleFailedWithGrant bool
@@ -118,6 +125,8 @@ type fakeBid struct {
 	signalled      bool
 	forwarded      bool
 	prompt         bool
+	answerOwed     int
+	answerHost     bool
 }
 
 const (
@@ -271,6 +280,15 @@ func (peer *fakeMuxPeer) serve(conn net.Conn) {
 		frame := transport.EncodeENH(command, data)
 		out <- frame[:]
 	}
+	writeInfo := func(host bool) {
+		if host {
+			write(transport.ENHResErrorHost, 0x00)
+			return
+		}
+		write(transport.ENHResInfo, 0x02)
+		write(transport.ENHResInfo, 0x01)
+		write(transport.ENHResInfo, 0x02)
+	}
 	// releaseBus clears this connection's ownership. Caller holds stateMu.
 	releaseBus := func() {
 		peer.mu.Lock()
@@ -330,7 +348,15 @@ func (peer *fakeMuxPeer) serve(conn net.Conn) {
 			return
 		}
 		bid.forwarded = true
+		owed := bid.answerOwed
+		host := bid.answerHost
+		bid.answerOwed = 0
 		peer.mu.Unlock()
+		// The selecting SYN is already delivered. The INFO answer follows
+		// the return from RequestStart, then the next symbol.
+		for i := 0; i < owed; i++ {
+			writeInfo(host)
+		}
 		write(transport.ENHResReceived, protocol.SymbolSyn)
 	}
 	// signalInFlight delivers the SYN that selects the bid; the bid is
@@ -459,13 +485,40 @@ func (peer *fakeMuxPeer) serve(conn net.Conn) {
 			case transport.ENHReqInit:
 				write(transport.ENHResResetted, message.Data)
 			case transport.ENHReqInfo:
-				if peer.infoErrorHost {
-					write(transport.ENHResErrorHost, 0x00)
+				if peer.excludedSnapshot {
+					peer.mu.Lock()
+					first := !peer.excludedDelivered
+					peer.excludedDelivered = true
+					symbol := peer.excludedFollowing
+					host := peer.infoErrorHost
+					peer.mu.Unlock()
+					if first {
+						if host {
+							write(transport.ENHResErrorHost, 0x00)
+						} else {
+							write(transport.ENHResInfo, 0x02)
+							write(transport.ENHResInfo, 0x01)
+							write(transport.ENHResInfo, 0x02)
+						}
+						// The answer is already on the wire when the
+						// excluded SYN, and the symbol after it, arrive.
+						write(transport.ENHResReceived, protocol.SymbolSyn)
+						write(transport.ENHResReceived, symbol)
+					}
 					continue
 				}
-				write(transport.ENHResInfo, 0x02)
-				write(transport.ENHResInfo, 0x01)
-				write(transport.ENHResInfo, 0x02)
+				peer.mu.Lock()
+				bid := peer.inFlight
+				park := bid != nil && bid.conn == conn && !bid.forwarded && !bid.prompt
+				if park {
+					bid.answerOwed++
+					bid.answerHost = peer.infoErrorHost
+					peer.mu.Unlock()
+					continue
+				}
+				host := peer.infoErrorHost
+				peer.mu.Unlock()
+				writeInfo(host)
 			case transport.ENHReqStart:
 				initiator := message.Data
 				peer.mu.Lock()
@@ -509,7 +562,14 @@ func (peer *fakeMuxPeer) serve(conn net.Conn) {
 					peer.bidGen++
 					gen := peer.bidGen
 					prompt := (peer.promptResult || peer.promptFailed) && peer.starts == 1
+					excluded := peer.excludedSnapshot
 					peer.inFlight = &fakeBid{initiator: initiator, conn: conn, generation: gen, queuedAt: now, prompt: prompt}
+					if excluded {
+						// The snapshot already closed. This START stays
+						// queued and is never marked forwarded.
+						peer.mu.Unlock()
+						continue
+					}
 					forwardBid := !peer.neverForward || peer.starts != 1
 					earlySyn := peer.synBeforeFence
 					peer.mu.Unlock()
@@ -858,10 +918,10 @@ func TestContenderStimulusFailsWhenTheMuxDoesNotAnswerAsRequired(t *testing.T) {
 }
 
 // The mux delivers the SYN that selects a bid before it writes the bid to
-// the adapter, and a SYN it handled before it queued the bid can reach the
-// contender after the START. Neither is the proof: PX01 replaces and PX02
-// abandons the bid only after it was forwarded, with the INFO answered with
-// data or with ERROR_HOST.
+// the adapter, and it releases the INFO answer only after that write
+// returns. PX01 replaces and PX02 abandons the bid only after that answer
+// completes, with the answer carried as INFO data or as ERROR_HOST. A SYN
+// the mux handled before it queued the bid is not enough on its own.
 func TestStimulusActsOnlyAfterTheBidReachedTheAdapter(t *testing.T) {
 	t.Parallel()
 

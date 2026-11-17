@@ -181,6 +181,12 @@ type session struct {
 
 	// wg waits for reader, writer, and handleStart goroutines to finish.
 	wg sync.WaitGroup
+
+	// infoHold guards the queued external bid and the INFO answer held
+	// until the grant step that included that bid returns from RequestStart.
+	infoHold   sync.Mutex
+	heldReq    *startRequest
+	parkedInfo []sessionFrame
 }
 
 // rawTCPDiagnosticThreshold is the number of consecutive SEND-rejections
@@ -629,6 +635,7 @@ func (s *session) handleStart(initiator byte) {
 		s.mux.logger.Printf("adaptermux: session %d START 0xAA (SYN cancel)", s.id)
 		s.sawHandshake.Store(true) // F-7: SYN-cancel is still a START
 		s.mux.arb.cancelStart(s.id)
+		s.dropInfoHold(nil)
 		s.mux.releaseSessionGrant(s)
 		s.mux.cancelPendingStart(s.id)
 		return
@@ -717,24 +724,126 @@ func (s *session) handleInfo(id byte) {
 	// F-6 observability: log INFO dispatch (EBUSD-VERIFICATION-2026-05-10.md).
 	s.mux.logger.Printf("adaptermux: session %d INFO id=0x%02X", s.id, id)
 	s.sawHandshake.Store(true) // F-7 diagnostic: legitimate ENH client
+	frames := s.infoAnswer(id)
+	if s.parkInfo(frames) {
+		return
+	}
+	s.deliverInfoFrames(frames)
+}
+
+// infoAnswer is the cached INFO body, or ERROR_HOST when the cache cannot
+// answer. The bytes are the whole response, in order.
+func (s *session) infoAnswer(id byte) []sessionFrame {
+	now := time.Since(monoAnchor).Nanoseconds()
 	data, err := s.mux.CachedInfo(transport.AdapterInfoID(id))
 	if err != nil {
 		s.mux.logger.Printf("adaptermux: session %d INFO id=0x%02X: %v", s.id, id, err)
-		s.deliverErrorHost()
-		return
+		return []sessionFrame{{kind: sessionFrameErrorHost, enqueuedAtNano: now}}
 	}
 	// AM39: guard against payload >255 which would silently truncate
 	// via byte(len(data)) wrap-around.
 	if len(data) > 255 {
 		s.mux.logger.Printf("adaptermux: session %d INFO id=0x%02X payload too large (%d bytes, max 255)", s.id, id, len(data))
-		s.deliverErrorHost()
-		return
+		return []sessionFrame{{kind: sessionFrameErrorHost, enqueuedAtNano: now}}
 	}
 	// AM35: zero-length INFO payload is valid per ENH spec (N=0).
 	// Deliver just the length prefix (0x00) with no data bytes.
-	s.deliverInfo(byte(len(data)))
+	frames := make([]sessionFrame, 0, 1+len(data))
+	frames = append(frames, sessionFrame{kind: sessionFrameInfo, payload: byte(len(data)), enqueuedAtNano: now})
 	for _, b := range data {
-		s.deliverInfo(b)
+		frames = append(frames, sessionFrame{kind: sessionFrameInfo, payload: b, enqueuedAtNano: now})
+	}
+	return frames
+}
+
+// parkInfo holds frames while this session has a queued bid that the
+// including grant step has not yet returned from RequestStart.
+func (s *session) parkInfo(frames []sessionFrame) bool {
+	s.infoHold.Lock()
+	defer s.infoHold.Unlock()
+	if s.heldReq == nil {
+		return false
+	}
+	s.parkedInfo = append(s.parkedInfo, frames...)
+	return true
+}
+
+// bindInfoHold remembers the session's current queued bid. A replacement
+// keeps answers already parked so they are released for the new bid.
+func (s *session) bindInfoHold(req *startRequest) {
+	if req == nil {
+		return
+	}
+	s.infoHold.Lock()
+	s.heldReq = req
+	s.infoHold.Unlock()
+}
+
+// releaseInfoHold delivers the parked answer when req is the bid the
+// grant step handed to RequestStart.
+func (s *session) releaseInfoHold(req *startRequest) {
+	s.infoHold.Lock()
+	if s.heldReq != req {
+		s.infoHold.Unlock()
+		return
+	}
+	frames := s.parkedInfo
+	s.parkedInfo = nil
+	s.heldReq = nil
+	s.infoHold.Unlock()
+	s.deliverInfoFrames(frames)
+}
+
+// dropInfoHold discards a parked answer. A nil req clears whatever is held;
+// a non-nil req clears only that bid, so a replacement's answer stays.
+func (s *session) dropInfoHold(req *startRequest) {
+	s.infoHold.Lock()
+	defer s.infoHold.Unlock()
+	if req != nil && s.heldReq != req {
+		return
+	}
+	s.heldReq = nil
+	s.parkedInfo = nil
+}
+
+func (s *session) deliverInfoFrames(frames []sessionFrame) {
+	for _, frame := range frames {
+		switch frame.kind {
+		case sessionFrameErrorHost:
+			s.deliverErrorHost()
+		case sessionFrameInfo:
+			s.deliverInfo(frame.payload)
+		default:
+			s.mux.logger.Printf("adaptermux: session %d dropped parked frame kind %d", s.id, frame.kind)
+		}
+	}
+}
+
+func (m *Mux) sessionByID(sessionID uint64) *session {
+	if sessionID == gatewaySessionID {
+		return nil
+	}
+	m.sessionsMu.Lock()
+	sess := m.sessions[sessionID]
+	m.sessionsMu.Unlock()
+	return sess
+}
+
+func (m *Mux) bindSessionInfoHold(sessionID uint64, req *startRequest) {
+	if sess := m.sessionByID(sessionID); sess != nil {
+		sess.bindInfoHold(req)
+	}
+}
+
+func (m *Mux) releaseSessionInfoHold(sessionID uint64, req *startRequest) {
+	if sess := m.sessionByID(sessionID); sess != nil {
+		sess.releaseInfoHold(req)
+	}
+}
+
+func (m *Mux) dropSessionInfoHold(sessionID uint64, req *startRequest) {
+	if sess := m.sessionByID(sessionID); sess != nil {
+		sess.dropInfoHold(req)
 	}
 }
 

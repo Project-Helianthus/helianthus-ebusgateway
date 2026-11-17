@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 )
 
 // fakeExplorerEnv turns the test binary into a fake VRC Explorer: it parses
@@ -737,5 +739,67 @@ func TestAdapterMuxV2ExplorerScanIsGuarded(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.FromSlash(record.Record.LogFile)); err != nil {
 		t.Fatalf("explorer log: %v", err)
+	}
+}
+
+// TestContendedBidExcludedFromTheGrantSnapshotIsNotInFlight drives a START
+// queued after the snapshot of a SYN. The INFO answer is delivered before
+// that SYN, then the SYN and one following symbol, and the bid is never
+// handed to the adapter. The stimulus must leave the bid queued.
+//
+// Fields of the in-flight proof, and the production mutation each row catches:
+//   - answer placement: the answer is written before the excluded SYN.
+//     A proof that still treats the symbol after a SYN which follows the
+//     answer as in-flight lets the stimulus act.
+//   - answer command: cached INFO data, or ERROR_HOST. A proof that
+//     special-cases one command lets the other command act.
+//   - following symbol: a non-SYN byte, or SYN. A proof that ignores only
+//     one of those values lets the other value act.
+//   - stimulus: PX01 replaces the bid, PX02 closes the session. A guard
+//     on only one stimulus lets the other act.
+func TestContendedBidExcludedFromTheGrantSnapshotIsNotInFlight(t *testing.T) {
+	t.Parallel()
+
+	answers := []struct {
+		name string
+		host bool
+	}{
+		{name: "INFO data", host: false},
+		{name: "ERROR_HOST", host: true},
+	}
+	symbols := []struct {
+		name   string
+		symbol byte
+	}{
+		{name: "following symbol", symbol: 0x01},
+		{name: "following SYN", symbol: protocol.SymbolSyn},
+	}
+	for _, invariant := range []string{"PX01", "PX02"} {
+		for _, answer := range answers {
+			for _, symbol := range symbols {
+				invariant, answer, symbol := invariant, answer, symbol
+				t.Run(invariant+"/"+answer.name+"/"+symbol.name, func(t *testing.T) {
+					t.Parallel()
+					fixture, err := newExecuteFixture(t, []string{"ENH-" + invariant}, nil)
+					if err != nil {
+						t.Fatalf("fixture: %v", err)
+					}
+					fixture.enhPeer.excludedSnapshot = true
+					fixture.enhPeer.excludedFollowing = symbol.symbol
+					fixture.enhPeer.infoErrorHost = answer.host
+					verdicts, err := fixture.runner.Run(context.Background())
+					if err != nil {
+						t.Fatalf("Run error = %v", err)
+					}
+					client := clientResultOf(verdicts[0])
+					peer := fixture.enhPeer.snapshot()
+					if verdicts[0].Outcome == caseOutcomePass || peer.starts != 1 || peer.dials != 1 ||
+						!strings.Contains(client.Error, "stayed queued") {
+						t.Fatalf("verdict %+v, client %+v, starts %d, dials %d; the stimulus acted on a bid the snapshot excluded",
+							verdicts[0], client, peer.starts, peer.dials)
+					}
+				})
+			}
+		}
 	}
 }

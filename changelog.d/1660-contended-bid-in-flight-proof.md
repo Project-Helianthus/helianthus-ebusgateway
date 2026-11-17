@@ -1,0 +1,3 @@
+## Count a contended bid as in flight only after the grant step saw it
+
+A contender's bid counts as in flight when its INFO answer, or the ERROR_HOST that stands in for that answer, completes after a SYN observed since the START. The adapter multiplexer holds that answer while the START is queued and releases it when the grant step whose snapshot included the START returns from RequestStart. A bid queued after that snapshot stays queued through the answer, the excluded SYN and the following symbol. The smoke command header states that resumption is the increase since the reading before the discontinuity, and that an absent discontinuity, reconnect, contended-selection or retained-bid series ends the command with status 4 signal_missing.

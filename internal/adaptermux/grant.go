@@ -371,6 +371,7 @@ func (m *Mux) notifyGrantLosersLocked(g *grantAttempt) {
 		m.sessionsMu.Lock()
 		if sess := m.sessions[loser.sessionID]; sess != nil {
 			sess.parserResetNeeded.Store(true)
+			sess.dropInfoHold(loser)
 			sess.deliverFailed(g.req.initiator)
 			queued = true
 		}
@@ -547,6 +548,7 @@ func (m *Mux) sendGrantStart(g *grantAttempt) {
 		m.startBlockingGrant(g, starter)
 	} else {
 		m.logger.Printf("adaptermux: transport does not support arbitration")
+		m.dropSessionInfoHold(g.sessionID, g.req)
 		m.settleLocalLosses(g, errors.New("adaptermux: transport does not support arbitration"))
 		m.stateMu.Lock()
 		m.applyStartWriteLocked(m.decideStartWriteLocked(g, startWriteUnsupported, nil, 0))
@@ -617,8 +619,10 @@ func (m *Mux) requestGrantStart(g *grantAttempt, requester arbitrationRequester)
 	err := requester.RequestStart(g.initiator)
 	if err == nil {
 		m.settleLocalLosses(g, nil)
+		m.releaseSessionInfoHold(g.sessionID, g.req)
 		return
 	}
+	m.dropSessionInfoHold(g.sessionID, g.req)
 	m.logger.Printf("adaptermux: RequestStart failed for session %d: %v", g.sessionID, err)
 	m.settleLocalLosses(g, err)
 	// P1 fix: only send failure if we still own the pending slot.
@@ -698,6 +702,7 @@ func (m *Mux) startBlockingGrant(g *grantAttempt, starter blockingArbitrationSta
 	m.closeMu.Lock()
 	if m.closing.Load() {
 		m.closeMu.Unlock()
+		m.dropSessionInfoHold(g.sessionID, g.req)
 		m.settleLocalLosses(g, errors.New("adaptermux: closed"))
 		m.stateMu.Lock()
 		m.applyStartWriteLocked(m.decideStartWriteLocked(g, startWriteRefused, nil, 0))
@@ -734,10 +739,12 @@ func (m *Mux) runBlockingStart(g *grantAttempt, starter blockingArbitrationStart
 		m.endManagedConnectionUse(blockingGateHeld)
 	}
 	if startErr != nil {
+		m.dropSessionInfoHold(g.sessionID, g.req)
 		m.failBlockingStart(g, arbGen, startErr)
 		return
 	}
 	m.settleLocalLosses(g, nil)
+	m.releaseSessionInfoHold(g.sessionID, g.req)
 	m.completeBlockingStart(g, arbGen)
 }
 

@@ -41,7 +41,8 @@ const (
 	bidInFlightAttempts = 5
 	// fenceInfoID is the INFO request the contender writes after each START
 	// (adapter version). The mux session answers INFO from its cache, without
-	// adapter traffic, and only after it has queued the START before it.
+	// adapter traffic, and releases that answer only after the grant step
+	// whose snapshot included the START has returned from RequestStart.
 	fenceInfoID = 0x00
 	// absorbExpiryWait is how long the session that follows a cancelled
 	// in-flight bid waits for the grant. It outlasts the absorb bound, so
@@ -959,24 +960,22 @@ func (fence *infoFence) consumeErrorHost() bool {
 	return true
 }
 
-// awaitBidForwarded waits until the outstanding START has been written to
-// the adapter. The mux selects an idle bid at a SYN and writes it to the
-// adapter in the same step of its read loop, but it delivers that SYN to
-// the sessions before the step, so the SYN alone does not prove the bid
-// was sent. The proof has two parts. The INFO request written after the
-// START is answered by the mux session only after it queued the bid, so a
-// SYN delivered after the whole answer is one the bid waited for, and an
-// earlier or buffered SYN does not count. The next symbol the mux delivers
-// after that SYN comes from a later step of the read loop, so the step
-// that selected and wrote the bid has returned. Silence is not proof: on a
-// busy bus the bid may still be queued. A STARTED or FAILED before the
-// proof, or buffered with it, is returned as answered, not as an error.
+// awaitBidForwarded waits until the outstanding START has been handed to
+// the adapter. The mux delivers the selecting SYN before its grant step,
+// and it releases the INFO answer only after the grant step whose snapshot
+// included this START has returned from RequestStart. A SYN observed while
+// that answer is still open is one this bid could have waited for, and the
+// answer completing after that SYN is the proof. An answer that finishes
+// with no such SYN was released for a bid the snapshot excluded; a SYN
+// after that answer, and the symbol after the SYN, leave the bid queued.
+// Silence is not proof. A STARTED or FAILED before the proof, or buffered
+// with it, is returned as answered, not as an error.
 func awaitBidForwarded(session *enhContenderSession, fence *infoFence) (bidForwarded, error) {
 	saved := session.timeout
 	defer func() { session.timeout = saved }()
 	deadline := time.Now().Add(saved)
-	queued := fmt.Errorf("%w: START stayed queued: no symbol after a SYN showed the bid in flight", errStimulusNotObserved)
-	synAfterFence := false
+	queued := fmt.Errorf("%w: START stayed queued: the INFO answer did not complete after a SYN observed since the START", errStimulusNotObserved)
+	synSinceStart := false
 	for {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
@@ -986,6 +985,9 @@ func awaitBidForwarded(session *enhContenderSession, fence *infoFence) (bidForwa
 		message, err := session.next()
 		if err != nil {
 			if message.Command == transport.ENHResErrorHost && fence.consumeErrorHost() {
+				if synSinceStart && fence.done() {
+					return forwardedOrBuffered(session, fence)
+				}
 				continue
 			}
 			var netErr net.Error
@@ -995,21 +997,15 @@ func awaitBidForwarded(session *enhContenderSession, fence *infoFence) (bidForwa
 			return bidForwarded{}, fmt.Errorf("await the bid to go in flight: %w", err)
 		}
 		if fence.consume(message) {
+			if synSinceStart && fence.done() {
+				return forwardedOrBuffered(session, fence)
+			}
 			continue
 		}
 		switch message.Command {
 		case transport.ENHResReceived:
-			if !fence.done() {
-				continue
-			}
-			if synAfterFence {
-				if result, ok := bufferedResult(session, fence); ok {
-					return bidForwarded{answered: true, message: result}, nil
-				}
-				return bidForwarded{}, nil
-			}
-			if message.Data == protocol.SymbolSyn {
-				synAfterFence = true
+			if message.Data == protocol.SymbolSyn && !fence.done() {
+				synSinceStart = true
 			}
 		case transport.ENHResStarted, transport.ENHResFailed:
 			return bidForwarded{answered: true, message: message}, nil
@@ -1017,6 +1013,15 @@ func awaitBidForwarded(session *enhContenderSession, fence *infoFence) (bidForwa
 			return bidForwarded{}, fmt.Errorf("%w: RESETTED while the bid was outstanding", errContenderProtocol)
 		}
 	}
+}
+
+// forwardedOrBuffered reports the bid in flight, or a STARTED or FAILED
+// that was already buffered with the completing INFO answer.
+func forwardedOrBuffered(session *enhContenderSession, fence *infoFence) (bidForwarded, error) {
+	if result, ok := bufferedResult(session, fence); ok {
+		return bidForwarded{answered: true, message: result}, nil
+	}
+	return bidForwarded{}, nil
 }
 
 // bufferedResult takes the frames already received with the proof that a
@@ -1062,6 +1067,13 @@ func bidUntilInFlight(session *enhContenderSession, initiator byte) error {
 		}
 		if !forwarded.answered {
 			return nil
+		}
+		// The attempt ended on STARTED or FAILED before the fence
+		// completed, so the withheld answer must not stay open across
+		// the INFO request of the next bid.
+		if !fence.done() {
+			fence.requested = 0
+			fence.tail = 0
 		}
 		if forwarded.message.Command == transport.ENHResStarted {
 			if err := session.send(transport.ENHReqStart, protocol.SymbolSyn); err != nil {

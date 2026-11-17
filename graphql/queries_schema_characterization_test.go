@@ -1,8 +1,12 @@
 package graphql
 
 import (
-	"crypto/sha256"
+	"bytes"
+	"encoding/json"
+	"flag"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -10,32 +14,218 @@ import (
 	graphqlgo "github.com/graphql-go/graphql"
 )
 
-// Computed by querySchemaShapeDigest after every system-plane register field
-// except system_off took its docs-ebus name (issue #1483), the circuit
-// configuration published RR001D as the integer circuit_special_function_mode
-// in place of the removed float field (issue #1474), and the semantic snapshot
-// gained the additive optional resource and relation fields of the re-pinned
-// semreg snapshot records (issue #1554), and the semantic snapshot resource
-// anchor gained the additive nullable scheme field of the semreg revision that
-// carries the element catalog (issue #1539), and the boiler state,
-// configuration and diagnostics fields that one B509 register feeds took
-// their docs-ebus names, with the unit in the field description (issue #1483),
-// and the zone, circuit and hot water fields that one B524 register feeds
-// took their docs-ebus names, with the unit in the field description where
-// the previous name carried it (issue #1483).
-var querySchemaShapeSHA256 = fmt.Sprintf("%x", [sha256.Size]byte{33, 114, 98, 248, 52, 222, 207, 244, 231, 140, 172, 154, 214, 128, 229, 26, 32, 153, 56, 182, 7, 159, 87, 149, 39, 74, 86, 215, 143, 95, 246, 193})
+var updateQuerySchemaIntrospectionGolden = flag.Bool("update", false, "regenerate graphql/testdata/query_schema_introspection.golden.json")
 
-func TestQuerySchemaKeepsIntrospectionShape(t *testing.T) {
-	t.Parallel()
+const querySchemaIntrospectionGoldenPath = "testdata/query_schema_introspection.golden.json"
 
+// querySchemaIntrospectionDocument is the one fixed introspection document the
+// golden records. The type reference chain is seven levels deep, enough for
+// the deepest wrapping a field type can carry.
+const querySchemaIntrospectionDocument = `query QuerySchemaIntrospection {
+  __schema {
+    queryType { name }
+    types {
+      kind
+      name
+      fields(includeDeprecated: true) {
+        name
+        args { name type { ...TypeRef } }
+        type { ...TypeRef }
+      }
+      inputFields { name type { ...TypeRef } }
+      enumValues(includeDeprecated: true) { name }
+    }
+  }
+}
+
+fragment TypeRef on __Type {
+  kind
+  name
+  ofType {
+    kind
+    name
+    ofType {
+      kind
+      name
+      ofType {
+        kind
+        name
+        ofType {
+          kind
+          name
+          ofType {
+            kind
+            name
+            ofType {
+              kind
+              name
+              ofType { kind name }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+`
+
+func TestQuerySchemaMatchesIntrospectionGolden(t *testing.T) {
 	schema, err := NewQuerySchema(NewBuilder(nil, nil))
 	if err != nil {
 		t.Fatalf("NewQuerySchema() error = %v", err)
 	}
 
-	got := querySchemaShapeDigest(schema)
-	if got != querySchemaShapeSHA256 {
-		t.Fatalf("query schema shape SHA-256 = %s; want %s", got, querySchemaShapeSHA256)
+	got, err := canonicalSchemaIntrospection(schema)
+	if err != nil {
+		t.Fatalf("canonicalSchemaIntrospection() error = %v", err)
+	}
+
+	if *updateQuerySchemaIntrospectionGolden {
+		if err := os.MkdirAll(filepath.Dir(querySchemaIntrospectionGoldenPath), 0o755); err != nil {
+			t.Fatalf("create golden directory: %v", err)
+		}
+		if err := os.WriteFile(querySchemaIntrospectionGoldenPath, got, 0o644); err != nil {
+			t.Fatalf("write golden: %v", err)
+		}
+	}
+
+	want, err := os.ReadFile(querySchemaIntrospectionGoldenPath)
+	if err != nil {
+		t.Fatalf("read golden %s: %v (run go test ./graphql -run TestQuerySchema -update to regenerate it)", querySchemaIntrospectionGoldenPath, err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("query schema introspection differs from %s (run go test ./graphql -run TestQuerySchema -update to regenerate it and review the diff)\n%s",
+			querySchemaIntrospectionGoldenPath, firstGoldenLineDifference(want, got))
+	}
+}
+
+func TestQuerySchemaIntrospectionGoldenRecordsTheDocument(t *testing.T) {
+	t.Parallel()
+
+	raw, err := os.ReadFile(querySchemaIntrospectionGoldenPath)
+	if err != nil {
+		t.Fatalf("read golden %s: %v", querySchemaIntrospectionGoldenPath, err)
+	}
+	var golden struct {
+		Document string `json:"document"`
+		Response struct {
+			Schema struct {
+				QueryType struct {
+					Name string `json:"name"`
+				} `json:"queryType"`
+				Types []map[string]any `json:"types"`
+			} `json:"__schema"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal(raw, &golden); err != nil {
+		t.Fatalf("decode golden: %v", err)
+	}
+	if golden.Document != querySchemaIntrospectionDocument {
+		t.Fatalf("golden document differs from the executed introspection document")
+	}
+	schema, err := NewQuerySchema(NewBuilder(nil, nil))
+	if err != nil {
+		t.Fatalf("NewQuerySchema() error = %v", err)
+	}
+	if want := schema.QueryType().Name(); golden.Response.Schema.QueryType.Name != want {
+		t.Fatalf("golden query type = %q; want %q", golden.Response.Schema.QueryType.Name, want)
+	}
+	if len(golden.Response.Schema.Types) == 0 {
+		t.Fatalf("golden records no types")
+	}
+}
+
+// TestQuerySchemaIntrospectionDetectsEveryRecordedChange varies each recorded
+// element of a small schema and requires the canonical introspection to change.
+func TestQuerySchemaIntrospectionDetectsEveryRecordedChange(t *testing.T) {
+	t.Parallel()
+
+	type shape struct {
+		typeName   string
+		fieldName  string
+		fieldType  graphqlgo.Output
+		argName    string
+		argType    graphqlgo.Input
+		enumName   string
+		enumValue  string
+		inputName  string
+		inputField string
+		inputType  graphqlgo.Input
+	}
+	base := shape{
+		typeName:   "Probe",
+		fieldName:  "reading",
+		fieldType:  graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(graphqlgo.Int))),
+		argName:    "limit",
+		argType:    graphqlgo.Int,
+		enumName:   "ProbeMode",
+		enumValue:  "AUTO",
+		inputName:  "ProbeFilter",
+		inputField: "min",
+		inputType:  graphqlgo.Float,
+	}
+	build := func(s shape) []byte {
+		t.Helper()
+		enum := graphqlgo.NewEnum(graphqlgo.EnumConfig{
+			Name:   s.enumName,
+			Values: graphqlgo.EnumValueConfigMap{s.enumValue: &graphqlgo.EnumValueConfig{Value: s.enumValue}},
+		})
+		input := graphqlgo.NewInputObject(graphqlgo.InputObjectConfig{
+			Name:   s.inputName,
+			Fields: graphqlgo.InputObjectConfigFieldMap{s.inputField: &graphqlgo.InputObjectFieldConfig{Type: s.inputType}},
+		})
+		args := graphqlgo.FieldConfigArgument{
+			s.argName: &graphqlgo.ArgumentConfig{Type: s.argType},
+			"mode":    &graphqlgo.ArgumentConfig{Type: enum},
+			"filter":  &graphqlgo.ArgumentConfig{Type: input},
+		}
+		probe := graphqlgo.NewObject(graphqlgo.ObjectConfig{
+			Name: s.typeName,
+			Fields: graphqlgo.Fields{
+				s.fieldName: &graphqlgo.Field{Type: s.fieldType, Args: args},
+			},
+		})
+		schema, err := graphqlgo.NewSchema(graphqlgo.SchemaConfig{
+			Query: graphqlgo.NewObject(graphqlgo.ObjectConfig{
+				Name:   "Query",
+				Fields: graphqlgo.Fields{"probe": &graphqlgo.Field{Type: probe}},
+			}),
+		})
+		if err != nil {
+			t.Fatalf("NewSchema() error = %v", err)
+		}
+		out, err := canonicalSchemaIntrospection(schema)
+		if err != nil {
+			t.Fatalf("canonicalSchemaIntrospection() error = %v", err)
+		}
+		return out
+	}
+
+	reference := build(base)
+	if !bytes.Equal(reference, build(base)) {
+		t.Fatalf("canonical introspection is not deterministic")
+	}
+	variations := map[string]func(*shape){
+		"object type name": func(s *shape) { s.typeName = "Sensor" },
+		"field name":       func(s *shape) { s.fieldName = "value" },
+		"field named type": func(s *shape) {
+			s.fieldType = graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(graphqlgo.String)))
+		},
+		"field wrapper kind": func(s *shape) { s.fieldType = graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.Int)) },
+		"argument name":      func(s *shape) { s.argName = "first" },
+		"argument type":      func(s *shape) { s.argType = graphqlgo.NewNonNull(graphqlgo.Int) },
+		"enum type name":     func(s *shape) { s.enumName = "ProbeSetting" },
+		"enum value":         func(s *shape) { s.enumValue = "MANUAL" },
+		"input type name":    func(s *shape) { s.inputName = "ProbeRange" },
+		"input field name":   func(s *shape) { s.inputField = "max" },
+		"input field type":   func(s *shape) { s.inputType = graphqlgo.String },
+	}
+	for name, vary := range variations {
+		varied := base
+		vary(&varied)
+		if bytes.Equal(reference, build(varied)) {
+			t.Errorf("changing the %s left the canonical introspection unchanged", name)
+		}
 	}
 }
 
@@ -94,47 +284,117 @@ func TestQuerySchemaKeepsExactRootFieldSet(t *testing.T) {
 	}
 }
 
-func querySchemaShapeDigest(schema graphqlgo.Schema) string {
-	var lines []string
-	for name, schemaType := range schema.TypeMap() {
-		if strings.HasPrefix(name, "__") {
-			continue
+// canonicalSchemaIntrospection executes the fixed introspection document and
+// returns the golden bytes: the document and the response with types, fields,
+// arguments, input fields and enum values sorted by name, indented JSON with a
+// trailing newline.
+func canonicalSchemaIntrospection(schema graphqlgo.Schema) ([]byte, error) {
+	result := graphqlgo.Do(graphqlgo.Params{Schema: schema, RequestString: querySchemaIntrospectionDocument})
+	if len(result.Errors) > 0 {
+		return nil, fmt.Errorf("introspection errors: %v", result.Errors)
+	}
+	// Round-trip through JSON so the response is plain maps and slices.
+	raw, err := json.Marshal(result.Data)
+	if err != nil {
+		return nil, fmt.Errorf("encode introspection response: %w", err)
+	}
+	var response map[string]any
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return nil, fmt.Errorf("decode introspection response: %w", err)
+	}
+	schemaNode, ok := response["__schema"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("introspection response has no __schema object")
+	}
+	types, ok := schemaNode["types"].([]any)
+	if !ok {
+		return nil, fmt.Errorf("introspection response has no types list")
+	}
+	sortIntrospectionByName(types)
+	for _, entry := range types {
+		typeNode, ok := entry.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("introspection type entry is not an object")
 		}
-		switch typed := schemaType.(type) {
-		case *graphqlgo.Object:
-			fieldNames := make([]string, 0, len(typed.Fields()))
-			for fieldName := range typed.Fields() {
-				fieldNames = append(fieldNames, fieldName)
+		for _, key := range []string{"fields", "inputFields", "enumValues"} {
+			list, _ := typeNode[key].([]any)
+			sortIntrospectionByName(list)
+		}
+		fields, _ := typeNode["fields"].([]any)
+		for _, field := range fields {
+			fieldNode, ok := field.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("introspection field entry is not an object")
 			}
-			sort.Strings(fieldNames)
-			for _, fieldName := range fieldNames {
-				field := typed.Fields()[fieldName]
-				arguments := make([]string, 0, len(field.Args))
-				for _, argument := range field.Args {
-					arguments = append(arguments, fmt.Sprintf("%s:%s", argument.Name(), argument.Type.String()))
-				}
-				sort.Strings(arguments)
-				lines = append(lines, fmt.Sprintf("object:%s:%s:%s:(%s)", name, fieldName, field.Type.String(), strings.Join(arguments, ",")))
+			if err := requireCompleteTypeChain(fieldNode["type"]); err != nil {
+				return nil, fmt.Errorf("type %v field %v: %w", typeNode["name"], fieldNode["name"], err)
 			}
-		case *graphqlgo.Enum:
-			values := make([]string, 0, len(typed.Values()))
-			for _, value := range typed.Values() {
-				values = append(values, value.Name)
-			}
-			sort.Strings(values)
-			lines = append(lines, fmt.Sprintf("enum:%s:%s", name, strings.Join(values, ",")))
-		case *graphqlgo.InputObject:
-			fieldNames := make([]string, 0, len(typed.Fields()))
-			for fieldName := range typed.Fields() {
-				fieldNames = append(fieldNames, fieldName)
-			}
-			sort.Strings(fieldNames)
-			for _, fieldName := range fieldNames {
-				field := typed.Fields()[fieldName]
-				lines = append(lines, fmt.Sprintf("input:%s:%s:%s", name, fieldName, field.Type.String()))
-			}
+			args, _ := fieldNode["args"].([]any)
+			sortIntrospectionByName(args)
 		}
 	}
-	sort.Strings(lines)
-	return fmt.Sprintf("%x", sha256.Sum256([]byte(strings.Join(lines, "\n"))))
+
+	var out bytes.Buffer
+	encoder := json.NewEncoder(&out)
+	encoder.SetEscapeHTML(false)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(map[string]any{
+		"document": querySchemaIntrospectionDocument,
+		"response": response,
+	}); err != nil {
+		return nil, fmt.Errorf("encode golden: %w", err)
+	}
+	return out.Bytes(), nil
+}
+
+// requireCompleteTypeChain fails when a type reference ends in a wrapper the
+// document's chain depth did not reach, so the golden never records a
+// truncated type.
+func requireCompleteTypeChain(node any) error {
+	for node != nil {
+		typeRef, ok := node.(map[string]any)
+		if !ok {
+			return fmt.Errorf("type reference is not an object")
+		}
+		kind, _ := typeRef["kind"].(string)
+		if kind != "LIST" && kind != "NON_NULL" {
+			return nil
+		}
+		next, present := typeRef["ofType"]
+		if !present {
+			return fmt.Errorf("type chain deeper than the introspection document records")
+		}
+		node = next
+	}
+	return fmt.Errorf("type chain ends in a wrapper without a named type")
+}
+
+func sortIntrospectionByName(list []any) {
+	sort.SliceStable(list, func(i, j int) bool {
+		return introspectionEntryName(list[i]) < introspectionEntryName(list[j])
+	})
+}
+
+func introspectionEntryName(entry any) string {
+	node, _ := entry.(map[string]any)
+	name, _ := node["name"].(string)
+	return name
+}
+
+func firstGoldenLineDifference(want, got []byte) string {
+	wantLines := strings.Split(string(want), "\n")
+	gotLines := strings.Split(string(got), "\n")
+	for i := 0; i < len(wantLines) || i < len(gotLines); i++ {
+		var w, g string
+		if i < len(wantLines) {
+			w = wantLines[i]
+		}
+		if i < len(gotLines) {
+			g = gotLines[i]
+		}
+		if w != g {
+			return fmt.Sprintf("first difference at line %d:\n  golden: %s\n  schema: %s", i+1, w, g)
+		}
+	}
+	return "no line difference (trailing bytes differ)"
 }

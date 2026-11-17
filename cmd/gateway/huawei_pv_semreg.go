@@ -1097,16 +1097,21 @@ func huaweiLoggerAssetID(label string) semreg.AssetID {
 }
 
 // huaweiPublishedLoggerAsset is the logger asset when this publication has
-// published it. Publication is the current equipment resource on that asset,
-// which lives outside the child-asset map. The caller holds the publication
+// published it. The operator-origin equipment record stays current after the
+// epoch that wrote it is retired, so that record alone is not publication.
+// The asset must also carry a current source descriptor or a current binding
+// of this publication's source and epoch. The caller holds the publication
 // lock.
 func huaweiPublishedLoggerAsset(p *huaweiPVPublication) (semreg.AssetID, bool) {
-	if p == nil || p.hub == nil || p.label == "" {
+	if p == nil || p.hub == nil || p.handle == nil || p.label == "" {
 		return "", false
 	}
 	id := huaweiLoggerAssetID(p.label)
 	view, err := p.hub.Inspect(id)
 	if err != nil || !view.Present {
+		return "", false
+	}
+	if !huaweiPublicationEpochEvidence(view.Snapshot, p.handle.Source(), p.handle.Epoch()) {
 		return "", false
 	}
 	for _, resource := range view.Snapshot.Resources {
@@ -1115,6 +1120,22 @@ func huaweiPublishedLoggerAsset(p *huaweiPVPublication) (semreg.AssetID, bool) {
 		}
 	}
 	return "", false
+}
+
+// huaweiPublicationEpochEvidence reports whether snapshot carries a current
+// source descriptor or a current binding of source at epoch.
+func huaweiPublicationEpochEvidence(snapshot semreg.Snapshot, source semreg.SourceID, epoch semreg.SourceEpochID) bool {
+	for _, descriptor := range snapshot.Sources {
+		if descriptor.SourceID == source && descriptor.SourceEpochID == epoch && descriptor.State == semreg.SourceCurrent {
+			return true
+		}
+	}
+	for _, binding := range snapshot.Bindings {
+		if binding.SourceID == source && binding.SourceEpochID == epoch && binding.State == semreg.BindingCurrent {
+			return true
+		}
+	}
+	return false
 }
 
 // huaweiRelaysRef returns the reference that names the core relays definition

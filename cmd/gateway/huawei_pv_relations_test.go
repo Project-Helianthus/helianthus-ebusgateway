@@ -757,3 +757,38 @@ func TestHuaweiPVRelationsNamesPublishedLoggerAsset(t *testing.T) {
 		t.Fatalf("unpublished logger asset %s reported", id)
 	}
 }
+
+// TestHuaweiPVRelationsLoggerStatusFollowsPublicationEpoch: fencing leaves the
+// logger's operator-origin equipment current. A successor has not published
+// that asset until its own source epoch has a current source descriptor or
+// binding there, so instance status omits the logger before that batch.
+func TestHuaweiPVRelationsLoggerStatusFollowsPublicationEpoch(t *testing.T) {
+	hub := newTestSemanticHub(t)
+	publication, cycle, _ := huaweiRelationsFixture(t, hub, "smartlogger", "alpha")
+	loggerAsset := huaweiLoggerAssetID("alpha")
+	if logger, ok := huaweiPublishedLoggerAsset(publication); !ok || logger != loggerAsset {
+		t.Fatalf("published logger = %s, %v", logger, ok)
+	}
+	if err := publication.Fence(); err != nil {
+		t.Fatal(err)
+	}
+	if huaweiGraphOf(t, hub, loggerAsset).one(t, "resource.equipment").State != semreg.ResourceCurrent {
+		t.Fatal("the fence withdrew the operator-origin logger")
+	}
+	successor, err := newHuaweiPVPublication(hub, "relations-alpha", string(publication.handle.Source()), "alpha", publication.handle, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if successor.handle.Epoch() == publication.handle.Epoch() {
+		t.Fatal("the successor reused the fenced epoch")
+	}
+	if id, ok := huaweiPublishedLoggerAsset(successor); ok {
+		t.Fatalf("instance status lists logger %s before the successor's logger batch", id)
+	}
+	if err := successor.Publish(huaweiRelationsNext(cycle, nil)); err != nil {
+		t.Fatal(err)
+	}
+	if logger, ok := huaweiPublishedLoggerAsset(successor); !ok || logger != loggerAsset {
+		t.Fatalf("successor logger after its batch = %s, %v", logger, ok)
+	}
+}

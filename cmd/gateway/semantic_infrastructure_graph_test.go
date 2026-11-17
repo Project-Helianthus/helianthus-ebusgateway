@@ -327,15 +327,16 @@ func igtRequest(t *testing.T, f *oraFixture, p *oraPath, binding semreg.NativeBi
 	}
 }
 
-// The meter role grants no control. While the role is a qualified, coherent
-// edge from the grid connection to the meter, an intent on the grid
-// connection is refused without a send: through a capability of the grid
-// connection that the publisher does not publish, and through the meter's
-// qualified read capability reached by the role. Both refusals are
-// definition_owner_missing, because the pack defines no operation and so no
-// capability of the grid connection can carry one. The role, the snapshot
-// and the executor are unchanged.
-func TestInfrastructureGraphIntentOnTheGridConnectionRefusedWithoutItsOwnCapability(t *testing.T) {
+// The infrastructure pack defines no operation, so an intent on the grid
+// connection has no owner and is refused without a send, whichever capability
+// it names: one of the grid connection that the publisher does not publish, or
+// the meter's qualified read capability. Both refusals are
+// definition_owner_missing and come from the missing operation owner before
+// capability admission. This test therefore covers the pack's lack of
+// operations, not capability isolation across the role; it does not show that
+// the role transfers or withholds a capability. The role, the snapshot and the
+// executor are unchanged.
+func TestInfrastructureGraphPackDefinesNoOperationSoAnIntentOnTheGridConnectionIsRefused(t *testing.T) {
 	f, site := newIGTFixture(t)
 	f.replace(t, oraDecode(t, igtDocument), "published:", "published:")
 	oraRequireCoherent(t, f.cut(t), igtAsset, igtMeasures, igtConnection, igtMeter)

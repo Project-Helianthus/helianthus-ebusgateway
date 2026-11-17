@@ -73,6 +73,9 @@ production uses for configuration:
   label. The synthetic publisher anchors them by its own native slots, because
   a fact's subject must be a resource of the publishing asset that the
   publisher's binding observes.
+- The intent refusal covers the pack's lack of operations. It is raised before
+  capability admission, so it does not show whether the role reaches or
+  withholds a capability; that needs an operation owned by a kernel pack.
 - No production composition declares the configuration provider as a
   contributor of an infrastructure asset, and the startup configuration holds
   no infrastructure record. A production infrastructure publisher remains

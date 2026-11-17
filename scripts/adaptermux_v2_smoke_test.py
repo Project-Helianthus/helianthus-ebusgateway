@@ -213,8 +213,13 @@ class SmokeTestCase(unittest.TestCase):
         self.stub.on_request = None
         self.temp = tempfile.TemporaryDirectory()
         self.output_dir = pathlib.Path(self.temp.name)
+        self.operator_channel = self.output_dir / "operator_channel.txt"
+        self.operator_channel.write_text("", encoding="utf-8")
+        self.saved_channel = SMOKE.OPERATOR_CHANNEL
+        SMOKE.OPERATOR_CHANNEL = str(self.operator_channel)
 
     def tearDown(self):
+        SMOKE.OPERATOR_CHANNEL = self.saved_channel
         self.temp.cleanup()
 
     def environ(self, invariant, composition, southbound, **overrides):
@@ -624,6 +629,8 @@ class AdapterActionTests(SmokeTestCase):
                 self.assertEqual(evidence["discontinuity_reading"], 1)
                 self.assertEqual(evidence["operator_action"], SMOKE.CHECKS[invariant]["operator_action"])
                 self.assertIn("operator action for " + case_id(invariant, southbound), self.output)
+                self.assertIn("operator action for " + case_id(invariant, southbound),
+                              self.operator_channel.read_text(encoding="utf-8"))
 
     def test_no_discontinuity_fails(self):
         for invariant, southbound in self.each_cell():
@@ -776,6 +783,7 @@ class AddressPriorityTests(SmokeTestCase):
         reasons = self.reasons(evidence)
         self.assertIn("external_identification_frames did not move", reasons)
         self.assertIn("the external session's initiator is not one address (none)", reasons)
+        self.assertIn("must use a different initiator", reasons)
 
     def test_starved_gateway_session_fails(self):
         phases = self.priority_phases("ens")

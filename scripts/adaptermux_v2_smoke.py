@@ -559,8 +559,14 @@ def priority_measures(baseline, current, own):
     evidence = {"gateway_source": own, "external_initiators": external, "expected_winner": None}
     measures, unmeasured = {}, {}
     if gateway is None or len(external) != 1 or parse_address(external[0]) is None:
-        why = ("the gateway reports no own source address" if gateway is None
-               else "the external session's initiator is not one address (" + ", ".join(external or ["none"]) + ")")
+        if gateway is None:
+            why = "the gateway reports no own source address"
+        elif not external:
+            why = ("the external session's initiator is not one address (none); frames of an external session "
+                   "that uses the gateway's own initiator cannot be told apart, so the external session must "
+                   "use a different initiator")
+        else:
+            why = "the external session's initiator is not one address (" + ", ".join(external) + ")"
         for name in names:
             measures[name] = None
             unmeasured[name] = why
@@ -910,12 +916,29 @@ def operator_action_text(context, check, settings):
             + " now, inside the " + format_number(settings["window"]) + " s case window")
 
 
+OPERATOR_CHANNEL = "/dev/tty"
+
+
+def announce_to_operator(text, stream):
+    """Print the cue to the log stream and, when there is one, the operator's terminal.
+
+    The runner captures this command's output in the case log, so the cue is
+    also written to the controlling terminal the operator started the run on.
+    """
+    print(text, file=stream, flush=True)
+    try:
+        with open(OPERATOR_CHANNEL, "w", encoding="utf-8") as channel:
+            channel.write(text + "\n")
+    except OSError:
+        pass
+
+
 def judge(context, check, urls, settings, clock, stream=None):
     evidence = {}
     announce = None
     if check.get("operator_action"):
         evidence["operator_action"] = check["operator_action"]
-        announce = functools.partial(print, operator_action_text(context, check, settings), file=stream, flush=True)
+        announce = functools.partial(announce_to_operator, operator_action_text(context, check, settings), stream)
     readings, own, window, backwards = observe_window(urls, settings, check, clock, announce)
     baseline, current = readings[0], readings[-1]
     evidence["window"] = dict(window, window_seconds=settings["window"])

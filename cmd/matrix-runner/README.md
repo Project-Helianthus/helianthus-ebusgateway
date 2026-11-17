@@ -11,9 +11,9 @@ one directory per case (`configs/`, `logs/runner.log`, `verdict.json`) and an
 | `adaptermux-v2` | 173 cells of the two-axis AdapterMux conformance matrix | new; not yet the gate's form |
 
 `full88` stays the default. Switching the gate to `adaptermux-v2` is a separate
-change ([transport-gate-policy-v2.md](../../docs/testing/transport-gate-policy-v2.md)).
+change ([transport-gate-policy-v2.md](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/docs/testing/transport-gate-policy-v2.md)).
 The schema is defined in
-[M7-adaptermux-conformance-matrix.md](../../matrix/M7-adaptermux-conformance-matrix.md).
+[M7-adaptermux-conformance-matrix.md](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/matrix/M7-adaptermux-conformance-matrix.md).
 
 Without `--execute` every suite is a dry run: nothing is executed, and each
 log lists the commands a real run would execute.
@@ -42,7 +42,7 @@ more than one category, the first matching row below wins:
 
 PL-04 holds the cells that assert FIFO registration order between external
 contenders: address priority replaced FIFO order
-([adapter-arbitration-decision.md](../../docs/architecture/adapter-arbitration-decision.md)),
+([adapter-arbitration-decision.md](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/docs/architecture/adapter-arbitration-decision.md)),
 so they stay reserved until they are re-specified for address priority. The
 category RS (`cell_awaiting_respecification`, not accepted by the gate) stays
 defined for a future re-specification, and no cell carries it.

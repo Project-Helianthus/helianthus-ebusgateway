@@ -147,16 +147,17 @@ smoke command uses them to run the check for that invariant.
 
   | Invariant | Stimulus | The contender requires |
   |---|---|---|
-  | PX01 | two START requests for one source back to back, so the first bid is replaced | one STARTED; no further STARTED or FAILED during the telegrams or in the 300 ms after them |
-  | PX02 | one START, then the session closes before any result | a new session's telegrams complete inside the step bound |
+  | PX01 | one START, then, once that bid is in flight, a START for a different initiator so the first bid is replaced | the replacement is granted once and the replaced bid's STARTED or FAILED does not arrive; a delivered result of the replaced bid fails the cell |
+  | PX02 | one START, then the session closes only after that bid is in flight, leaving it for the absorb barrier | the next session's telegrams complete after the barrier expires, and do not complete while the barrier stays up |
   | PX03 | the contender wins the bus, sends the command up to its length byte and stops before the CRC, so no command ACK can come | the bus closes the telegram with SYN; the contender bids again at once |
-  | PX04 | the contender completes its command, receives the target's ACK and response, and sends neither its ACK nor the closing SYN | the bus closes the response phase with SYN; the contender bids again at once |
-  | PX12 | one SEND of a SYN symbol without owning the bus | the mux answers `ERROR_HOST` |
+  | PX04 | the contender wins the bus and completes its command; a controlled target stops mid-response and SYN arrives while response bytes are still missing | the next bid is granted from that state; a target that delivers its whole response fails the cell |
+  | PX12 | another session has won the bus and sent a command byte; this session sends one SYN without owning the bus | the mux answers `ERROR_HOST` during that transaction |
 
-  A client cannot make the target withhold its response bytes, so PX04 ends
-  the response phase at the last point the client controls. Every stimulus
-  sends only symbols of an allowlisted identification telegram, or a SYN, so
-  no request other than 07 04 can reach a device.
+  PX04 needs a controlled target that stops after the response length byte.
+  A target that delivers the whole response fails the cell, because the
+  contender would then be in the response-ACK phase. Every stimulus sends
+  only symbols of an allowlisted identification telegram, or a SYN, so no
+  request other than 07 04 can reach a device.
 - CX01 runs the client chosen with `--external-client`. With `ebusd`, it is
   the ebusd workload. With `vrc-explorer`, it is a read-only scan whose only
   endpoint is the guarded ebusd command relay.
@@ -243,7 +244,7 @@ another source.
 | AD01 | active frames > 0 and mux `transaction_done` endings > 0 |
 | AD02 | active frames > 0, passive frames > 0, passive copies matched to the gateway's own transactions > 0, and self-echo frames (own passive frames not matched) = 0; passive tap connected |
 | AD03 | third-party passive frames > 0 and completed passive transactions > 0; passive tap connected |
-| AD04, AD09 | the consumer sessions the mux reports at the first reading each observe the discontinuity (their discontinuity count moves by at least 1) and at least one does; upstream reconnects = 1; from the last reading before the first one that shows the discontinuity, active frames > 0, mux `transaction_done` endings > 0 and completed passive transactions > 0; no reading after the first shows the out-of-step hold; no hold was raised during the window (not provable today, see below); passive tap connected |
+| AD04, AD09 | the consumer sessions the mux reports at the first reading each observe the discontinuity (their discontinuity count moves by at least 1) and at least one does; upstream reconnects = 1; from the last reading before the first one that shows the discontinuity, active frames > 0, mux `transaction_done` endings > 0 and completed passive transactions > 0; no reading after the first shows the out-of-step hold; whether a hold was raised between readings is recorded as not provable with a sampled gauge and is not a pass/fail requirement (see below); passive tap connected |
 | AD06 | AD01, plus external identification frames > 0 |
 | AD07 | AD06; contended selections won by the side with initiator priority > 0 and won by the other side = 0, where the gateway's source and the single external initiator seen in the window are ordered by the lowest low nibble, then the lowest high nibble; losing bids kept and later granted > 0, and losing bids that ended any other way = 0 |
 | AD10 | AD01, plus the semantic record and the comparison below |
@@ -264,9 +265,10 @@ precisely the resumption is attributed.
 The gateway publishes the out-of-step hold only as the instantaneous gauge
 `ebus_adaptermux_active_arbitration_held`. A hold raised and cleared between
 two readings leaves no trace in it, so "no hold was raised" is not provable
-with a sampled gauge. The requirement `out_of_step_holds_raised` stays
-unmeasured and AD04 and AD09 fail on it, naming that reason, until the
-gateway exports a latched signal such as a counter of hold transitions.
+with a sampled gauge. The report records that limit and AD04 and AD09 pass
+when every provable requirement holds. A hold that a reading does show still
+fails the cell. This stays until the gateway exports a latched signal such
+as a counter of hold transitions.
 
 The semantic record covers the `system` plane's state fields. For each field
 it holds presence, JSON type, unit, value and lineage (plane, path and MCP

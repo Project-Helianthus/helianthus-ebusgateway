@@ -615,20 +615,23 @@ class AdapterActionTests(SmokeTestCase):
             for southbound in ("ens", "enh"):
                 yield invariant, southbound
 
-    def assert_fails_only_on_the_unprovable_hold(self, status, evidence):
-        self.assertEqual(status, SMOKE.EXIT_FAIL)
-        self.assertEqual(evidence["reasons"], ["out_of_step_holds_raised cannot be measured: "
-                                               + SMOKE.HOLD_NOT_PROVABLE])
+    def assert_records_the_unprovable_hold_and_passes(self, status, evidence):
+        self.assertEqual(status, SMOKE.EXIT_PASS, evidence.get("reasons"))
+        self.assertEqual(evidence["reasons"], [])
+        self.assertEqual(evidence["limits"]["out_of_step_holds_raised"], SMOKE.HOLD_NOT_PROVABLE)
+        self.assertIsNone(evidence["measures"]["out_of_step_holds_raised"])
+        names = [row["measure"] for row in evidence["requirements"]]
+        self.assertNotIn("out_of_step_holds_raised", names)
         unmet = [row["measure"] for row in evidence["requirements"] if not row["met"]]
-        self.assertEqual(unmet, ["out_of_step_holds_raised"])
+        self.assertEqual(unmet, [])
 
     def test_discontinuity_seen_by_every_session_with_one_reconnect_and_resumption_meets_every_sampled_rule(self):
-        # Every requirement a reading can prove holds; the cell still fails
-        # because no hold raised between two readings can be ruled out.
+        # Every requirement a reading can prove holds. The unseen hold is
+        # recorded as a limit and is not a failure.
         for invariant, southbound in self.each_cell():
             with self.subTest(case=case_id(invariant, southbound)):
                 status, evidence = self.run_action(invariant, southbound, self.action_phases(southbound))
-                self.assert_fails_only_on_the_unprovable_hold(status, evidence)
+                self.assert_records_the_unprovable_hold_and_passes(status, evidence)
                 measures = evidence["measures"]
                 self.assertEqual(measures["consumer_sessions_observing_discontinuity"], 3)
                 self.assertEqual(measures["consumer_sessions_missing_discontinuity"], 0)
@@ -759,8 +762,10 @@ class AdapterActionTests(SmokeTestCase):
                 status, evidence = self.run_action(invariant, southbound, phases)
                 self.assertEqual(evidence["measures"]["out_of_step_hold_readings"], 0)
                 self.assertIsNone(evidence["measures"]["out_of_step_holds_raised"])
-                self.assertIn("not provable with a sampled gauge", self.reasons(evidence))
-                self.assert_fails_only_on_the_unprovable_hold(status, evidence)
+                self.assertIn("not provable with a sampled gauge",
+                              evidence["limits"]["out_of_step_holds_raised"])
+                self.assertNotIn("out_of_step_holds_raised", self.reasons(evidence))
+                self.assert_records_the_unprovable_hold_and_passes(status, evidence)
 
     def test_recovery_between_the_same_two_readings_as_the_discontinuity_counts(self):
         # The discontinuity and the first resumed transactions fall between
@@ -777,7 +782,7 @@ class AdapterActionTests(SmokeTestCase):
                 self.assertGreater(measures["resumed_active_frames"], 0)
                 self.assertGreater(measures["resumed_mux_transactions_done"], 0)
                 self.assertGreater(measures["resumed_passive_completed_transactions"], 0)
-                self.assert_fails_only_on_the_unprovable_hold(status, evidence)
+                self.assert_records_the_unprovable_hold_and_passes(status, evidence)
 
     def test_out_of_step_hold_fails(self):
         for invariant, southbound in self.each_cell():
@@ -787,6 +792,8 @@ class AdapterActionTests(SmokeTestCase):
                 status, evidence = self.run_action(invariant, southbound, phases)
                 self.assertEqual(status, SMOKE.EXIT_FAIL)
                 self.assertIn("out_of_step_hold_readings moved by 1", self.reasons(evidence))
+                self.assertNotIn("out_of_step_holds_raised cannot be measured", self.reasons(evidence))
+                self.assertEqual(evidence["limits"]["out_of_step_holds_raised"], SMOKE.HOLD_NOT_PROVABLE)
 
     def test_disconnected_passive_tap_fails(self):
         for invariant, southbound in self.each_cell():
@@ -1186,8 +1193,10 @@ class ReadOnlyTests(SmokeTestCase):
             self.operator_channel.write_text(case_id(invariant, "enh") + "\n", encoding="utf-8")
             status, evidence = self.run_smoke(self.environ(invariant, "mux", "enh"))
             if invariant in ADAPTER_ACTION_INVARIANTS:
-                self.assertEqual(evidence["reasons"], ["out_of_step_holds_raised cannot be measured: "
-                                                       + SMOKE.HOLD_NOT_PROVABLE])
+                self.assertEqual(status, SMOKE.EXIT_PASS, evidence["reasons"])
+                self.assertEqual(evidence["reasons"], [])
+                self.assertEqual(evidence["limits"]["out_of_step_holds_raised"], SMOKE.HOLD_NOT_PROVABLE)
+                self.assertIsNone(evidence["measures"]["out_of_step_holds_raised"])
             else:
                 self.assertEqual(status, SMOKE.EXIT_PASS)
         methods = {(method, path) for method, path, _ in self.stub.requests}

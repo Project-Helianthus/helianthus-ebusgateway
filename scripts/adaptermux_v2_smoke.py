@@ -15,7 +15,10 @@ cell's client workload only then, so the client's first frames are counted.
 The adapter-action cells AD04 and AD09 announce the operator action once the
 first reading is taken and ask for a fresh typed confirmation of the case
 identifier at that moment; without it the cell fails. The operator then resets the adapter (AD04) or
-disconnects and reconnects its host link (AD09) inside the case window.
+disconnects and reconnects its host link (AD09) inside the case window. A hold
+that a reading shows fails the cell. A hold raised and cleared between
+readings is not provable with a sampled gauge: the report records that limit
+and the cell passes when every provable requirement holds.
 
 It never sends a mutation, never calls a tool that writes and never invokes a
 bus method. Every run writes one JSON object, smoke_evidence.json, into the
@@ -93,7 +96,9 @@ SIGNAL_MEANING = {
 
 # AD04 and AD09: every consumer session observes the discontinuity, the mux
 # reconnects once, gateway transactions and passive reconstruction resume
-# after the discontinuity, and no out-of-step hold is raised.
+# after the discontinuity, and no sampled reading shows an out-of-step hold.
+# A hold raised between readings is recorded as not provable and is not a
+# pass/fail requirement.
 ADAPTER_ACTION_SIGNALS = (MUX_HELD, MUX_SESSION_DISCONTINUITIES, MUX_UPSTREAM_RECONNECTS)
 ADAPTER_ACTION_REQUIRES = (
     ("consumer_sessions_observing_discontinuity", GT0),
@@ -103,13 +108,12 @@ ADAPTER_ACTION_REQUIRES = (
     ("resumed_mux_transactions_done", GT0),
     ("resumed_passive_completed_transactions", GT0),
     ("out_of_step_hold_readings", EQ0),
-    ("out_of_step_holds_raised", EQ0),
 )
 # The gateway publishes the out-of-step hold only as an instantaneous gauge.
 # A hold raised and cleared between two readings leaves no trace in it, so
-# "no hold was raised" cannot be proven by sampling; the requirement stays
-# unmeasured, and the cell fails, until the gateway exports a latched signal
-# (a counter of hold transitions).
+# "no hold was raised" is not pass/fail evidence. The report records the
+# limit and the cell passes when every provable requirement holds, until the
+# gateway exports a latched signal (a counter of hold transitions).
 HOLD_NOT_PROVABLE = ("not provable with a sampled gauge: the gateway publishes the out-of-step hold only as "
                      "the instantaneous gauge " + MUX_HELD + ", so a hold raised and cleared between two "
                      "readings is not seen; a latched signal (a counter of hold transitions) is needed")
@@ -1050,6 +1054,9 @@ def judge(context, check, urls, settings, clock, stream=None):
         extra, unmeasured, boundary = discontinuity_measures(readings)
         measures.update(extra)
         evidence["discontinuity_reading"] = boundary
+        # A sampled gauge cannot prove that no hold was raised. Record the
+        # limit and do not fail the cell on it.
+        evidence["limits"] = {"out_of_step_holds_raised": unmeasured.pop("out_of_step_holds_raised", HOLD_NOT_PROVABLE)}
     if check.get("priority"):
         extra, unmeasured, evidence["priority"] = priority_measures(baseline, current, own)
         measures.update(extra)

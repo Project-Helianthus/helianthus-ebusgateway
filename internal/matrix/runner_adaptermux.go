@@ -34,6 +34,15 @@ const (
 	// staleResultWindow is how long a contender listens after its last
 	// transaction for a STARTED or FAILED that no bid of its own explains.
 	staleResultWindow = 300 * time.Millisecond
+	// bidInFlightSettle is how long a contender waits after START before it
+	// replaces that bid or closes the session. On an idle bus the mux has
+	// forwarded the bid by then, and a prompt STARTED arrives later, so the
+	// bid is in flight with its result still outstanding.
+	bidInFlightSettle = 60 * time.Millisecond
+	// absorbExpiryWait is how long the session that follows a cancelled
+	// in-flight bid waits for the absorb barrier to expire. The barrier's
+	// bound is the mux START deadline.
+	absorbExpiryWait = 8 * time.Second
 )
 
 // labelPattern bounds the opaque session, candidate and setup labels.
@@ -687,30 +696,31 @@ func errorText(err error) string {
 // complete after the stimulus. Every telegram passes ClassifyTelegram before
 // the first byte is written; a refused workload never opens a connection.
 const (
-	// StimulusReplacedBid (PX01): two START requests for one source back to
-	// back, so the first bid is replaced while its result may be under way.
-	// The mux absorbs the replaced bid's result: the contender receives one
-	// STARTED, completes its telegram, and no further STARTED or FAILED
-	// arrives in the stale-result window.
+	// StimulusReplacedBid (PX01): one START, then, once that bid is in flight,
+	// a START for a different initiator. The first bid is replaced. The mux
+	// absorbs its late STARTED or FAILED: that result does not reach the
+	// contender. The cell fails when it does.
 	StimulusReplacedBid = "replaced-bid"
-	// StimulusCancelledBid (PX02): one START, then the session closes before
-	// any result. The mux must absorb the outstanding result or let its absorb
-	// budget expire: a new session's workload completes inside the step bound.
+	// StimulusCancelledBid (PX02): one START, then the session closes only
+	// after that bid is in flight, so the absorb barrier is armed. The next
+	// session's workload completes once the barrier expires, and does not
+	// complete while the barrier stays up.
 	StimulusCancelledBid = "cancelled-bid"
 	// StimulusCommandWithoutCRC (PX03): the contender wins the bus, sends the
 	// command up to its length byte and stops before the CRC, so no command
 	// ACK can come and the bus closes the telegram with SYN. The contender
 	// bids again at once.
 	StimulusCommandWithoutCRC = "command-stopped-before-crc"
-	// StimulusResponseUnacknowledged (PX04): the contender completes its
-	// command, receives the target's ACK and response and sends neither its
-	// ACK nor the closing SYN, so the bus closes the response phase with SYN.
-	// A client cannot make the target withhold response bytes; this is the
-	// last point of the response phase the client controls.
-	StimulusResponseUnacknowledged = "response-left-unacknowledged"
-	// StimulusNonOwnerSend (PX12): one SEND of a SYN symbol without owning the
-	// bus; the mux answers ERROR_HOST and forwards nothing. SYN is the bus's
-	// idle symbol, so even a forwarded symbol cannot form a request.
+	// StimulusResponseUnacknowledged (PX04): the contender wins the bus and
+	// completes its command, then the target stops mid-response. SYN while
+	// response bytes are still missing reopens arbitration, and the next bid
+	// is granted from that state. A target that delivers the whole response
+	// has not exercised the cell.
+	StimulusResponseUnacknowledged = "syn-while-response-missing"
+	// StimulusNonOwnerSend (PX12): another session holds an open transaction
+	// and this session sends one SYN without owning the bus. The mux answers
+	// ERROR_HOST. SYN is the bus's idle symbol, so even a forwarded symbol
+	// cannot form a request.
 	StimulusNonOwnerSend = "non-owner-send"
 )
 
@@ -769,11 +779,14 @@ func (runner *Runner) runContenderStimulus(ctx context.Context, invariant string
 			return fail(err)
 		}
 		sendErr := first.send(transport.ENHReqStart, source)
+		if sendErr == nil {
+			sendErr = waitUntilBidInFlight(first)
+		}
 		_ = first.conn.Close()
 		if sendErr != nil {
 			return fail(fmt.Errorf("cancelled bid: %w", sendErr))
 		}
-		record.Observed = "session closed with its bid outstanding"
+		record.Observed = "in-flight bid left for the absorb barrier"
 	}
 
 	session, err := runner.openContenderSession(ctx)
@@ -784,25 +797,35 @@ func (runner *Runner) runContenderStimulus(ctx context.Context, invariant string
 
 	switch record.Stimulus {
 	case StimulusReplacedBid:
-		if err := session.send(transport.ENHReqStart, source); err != nil {
+		observed, err := replaceInFlightBid(session, source)
+		record.Observed = observed
+		if err != nil {
 			return fail(err)
 		}
-		// transact sends the replacing START and must see exactly one result.
-		record.Observed = "replaced bid answered once"
-	case StimulusCommandWithoutCRC, StimulusResponseUnacknowledged:
-		observed, err := leaveTelegramOpen(session, source, telegrams[0], record.Stimulus)
+	case StimulusCommandWithoutCRC:
+		observed, err := leaveTelegramOpen(session, source, telegrams[0])
+		record.Observed = observed
+		if err != nil {
+			return fail(err)
+		}
+	case StimulusResponseUnacknowledged:
+		observed, err := synWhileResponseMissing(session, source, telegrams[0])
 		record.Observed = observed
 		if err != nil {
 			return fail(err)
 		}
 	case StimulusNonOwnerSend:
-		observed, err := sendWithoutOwnership(session)
+		observed, err := runner.nonOwnerSendDuringActive(ctx, session, source, telegrams[0])
 		record.Observed = observed
 		if err != nil {
 			return fail(err)
 		}
 	}
 
+	if record.Stimulus == StimulusCancelledBid {
+		// The absorb barrier holds the next grant until it expires.
+		session.timeout = absorbExpiryWait
+	}
 	for _, telegram := range telegrams {
 		failed, err := session.transact(source, telegram, 5)
 		record.Workload.ArbitrationFailed += failed
@@ -842,9 +865,88 @@ func (runner *Runner) openContenderSession(ctx context.Context) (*enhContenderSe
 	return session, nil
 }
 
-// leaveTelegramOpen wins the bus and leaves the telegram open at the
-// stimulus's point, then waits for the bus to close it with SYN.
-func leaveTelegramOpen(session *enhContenderSession, source byte, telegram GuardTelegram, stimulus string) (string, error) {
+// otherInitiator is an initiator address different from source, so a second
+// START replaces the in-flight bid instead of moving its waiter.
+func otherInitiator(source byte) byte {
+	for _, candidate := range []byte{0xF1, 0xF3, 0xF7, 0x71, 0x31, 0x13, 0x17, 0x10, 0x30, 0x70, 0xFF} {
+		if candidate != source && protocol.IsInitiatorCapableAddress(candidate) {
+			return candidate
+		}
+	}
+	return 0xFF
+}
+
+// waitUntilBidInFlight waits until the outstanding START is old enough to
+// have been forwarded and returns if a STARTED or FAILED arrives first.
+func waitUntilBidInFlight(session *enhContenderSession) error {
+	saved := session.timeout
+	defer func() { session.timeout = saved }()
+	deadline := time.Now().Add(bidInFlightSettle)
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return nil
+		}
+		session.timeout = remaining
+		message, err := session.next()
+		if err != nil {
+			var netErr net.Error
+			if errors.As(err, &netErr) && netErr.Timeout() {
+				return nil
+			}
+			return fmt.Errorf("await the bid to go in flight: %w", err)
+		}
+		switch message.Command {
+		case transport.ENHResStarted, transport.ENHResFailed:
+			return fmt.Errorf("%w: bid answered before it was in flight", errStimulusNotObserved)
+		}
+	}
+}
+
+// replaceInFlightBid leaves one bid in flight and replaces it with a
+// different initiator. The replaced bid's STARTED or FAILED fails the cell.
+func replaceInFlightBid(session *enhContenderSession, source byte) (string, error) {
+	replacement := otherInitiator(source)
+	if err := session.send(transport.ENHReqStart, source); err != nil {
+		return "", err
+	}
+	if err := waitUntilBidInFlight(session); err != nil {
+		return "", err
+	}
+	if err := session.send(transport.ENHReqStart, replacement); err != nil {
+		return "", err
+	}
+	message, err := session.await(func(message transport.ENHMessage) (bool, error) {
+		switch message.Command {
+		case transport.ENHResStarted, transport.ENHResFailed:
+			return true, nil
+		case transport.ENHResResetted:
+			return false, fmt.Errorf("%w: RESETTED during replacement", errContenderProtocol)
+		default:
+			return false, nil
+		}
+	})
+	if err != nil {
+		return "", fmt.Errorf("await the replacement grant: %w", err)
+	}
+	if message.Command == transport.ENHResFailed || message.Data == source {
+		return "", fmt.Errorf("%w: stale arbitration result 0x%X (0x%02X) of the replaced bid",
+			errStimulusNotObserved, byte(message.Command), message.Data)
+	}
+	if message.Command != transport.ENHResStarted || message.Data != replacement {
+		return "", fmt.Errorf("%w: replacement grant 0x%X (0x%02X), want STARTED 0x%02X",
+			errStimulusNotObserved, byte(message.Command), message.Data, replacement)
+	}
+	// Release the replacement grant so the identification workload can bid.
+	if err := session.send(transport.ENHReqStart, protocol.SymbolSyn); err != nil {
+		return "", err
+	}
+	return "replaced bid absorbed and its late result did not arrive", nil
+}
+
+// leaveTelegramOpen wins the bus, sends the command up to its length byte
+// and waits for the bus to close it with SYN before the CRC.
+func leaveTelegramOpen(session *enhContenderSession, source byte, telegram GuardTelegram) (string, error) {
 	if err := session.send(transport.ENHReqStart, source); err != nil {
 		return "", err
 	}
@@ -865,30 +967,11 @@ func leaveTelegramOpen(session *enhContenderSession, source byte, telegram Guard
 		return "", fmt.Errorf("%w: STARTED 0x%02X for source 0x%02X", errContenderProtocol, message.Data, source)
 	}
 	logical := append([]byte{source, telegram.Target, telegram.Primary, telegram.Secondary, byte(len(telegram.Data))}, telegram.Data...)
-	if stimulus == StimulusCommandWithoutCRC {
-		for _, symbol := range escapeSymbols(logical[1:]) {
-			if err := session.sendSymbol(symbol); err != nil {
-				return "", err
-			}
-		}
-	} else {
-		logical = append(logical, protocol.CRC(logical))
-		for _, symbol := range escapeSymbols(logical[1:]) {
-			if err := session.sendSymbol(symbol); err != nil {
-				return "", err
-			}
-		}
-		ack, err := session.receive()
-		if err != nil {
-			return "", fmt.Errorf("await target ACK: %w", err)
-		}
-		if ack != protocol.SymbolAck {
-			return "", fmt.Errorf("target answered 0x%02X instead of ACK", ack)
+	for _, symbol := range escapeSymbols(logical[1:]) {
+		if err := session.sendSymbol(symbol); err != nil {
+			return "", err
 		}
 	}
-	// Read until the bus closes the telegram. Response bytes of the target
-	// arrive first in the response phase; any arbitration result does not
-	// belong here.
 	for {
 		message, err := session.next()
 		if err != nil {
@@ -897,10 +980,7 @@ func leaveTelegramOpen(session *enhContenderSession, source byte, telegram Guard
 		switch message.Command {
 		case transport.ENHResReceived:
 			if message.Data == protocol.SymbolSyn {
-				if stimulus == StimulusCommandWithoutCRC {
-					return "bus closed the command before its CRC with SYN", nil
-				}
-				return "bus closed the unacknowledged response with SYN", nil
+				return "bus closed the command before its CRC with SYN", nil
 			}
 		default:
 			return "", fmt.Errorf("%w: ENH command 0x%X while the telegram was open", errContenderProtocol, byte(message.Command))
@@ -908,8 +988,109 @@ func leaveTelegramOpen(session *enhContenderSession, source byte, telegram Guard
 	}
 }
 
+// synWhileResponseMissing wins the bus, completes the command and requires
+// SYN before the target response is complete. The following bid is the
+// identification workload.
+func synWhileResponseMissing(session *enhContenderSession, source byte, telegram GuardTelegram) (string, error) {
+	if err := session.send(transport.ENHReqStart, source); err != nil {
+		return "", err
+	}
+	message, err := session.await(func(message transport.ENHMessage) (bool, error) {
+		switch message.Command {
+		case transport.ENHResStarted:
+			return true, nil
+		case transport.ENHResFailed, transport.ENHResResetted:
+			return false, fmt.Errorf("%w: 0x%X before the open telegram", errContenderProtocol, byte(message.Command))
+		default:
+			return false, nil
+		}
+	})
+	if err != nil {
+		return "", fmt.Errorf("await arbitration: %w", err)
+	}
+	if message.Data != source {
+		return "", fmt.Errorf("%w: STARTED 0x%02X for source 0x%02X", errContenderProtocol, message.Data, source)
+	}
+	logical := append([]byte{source, telegram.Target, telegram.Primary, telegram.Secondary, byte(len(telegram.Data))}, telegram.Data...)
+	logical = append(logical, protocol.CRC(logical))
+	for _, symbol := range escapeSymbols(logical[1:]) {
+		if err := session.sendSymbol(symbol); err != nil {
+			return "", err
+		}
+	}
+	ack, err := session.receive()
+	if err != nil {
+		return "", fmt.Errorf("await target ACK: %w", err)
+	}
+	if ack != protocol.SymbolAck {
+		return "", fmt.Errorf("target answered 0x%02X instead of ACK", ack)
+	}
+	got, need := 0, -1
+	for {
+		message, err := session.next()
+		if err != nil {
+			return "", fmt.Errorf("await SYN while response bytes are missing: %w", err)
+		}
+		if message.Command != transport.ENHResReceived {
+			return "", fmt.Errorf("%w: ENH command 0x%X while waiting for response bytes", errContenderProtocol, byte(message.Command))
+		}
+		if message.Data == protocol.SymbolSyn {
+			if need >= 0 && got >= need {
+				return "", fmt.Errorf("%w: target delivered its response before SYN", errStimulusNotObserved)
+			}
+			return "SYN while response bytes were still missing", nil
+		}
+		got++
+		if got == 1 {
+			need = 1 + int(message.Data) + 1
+		}
+		if need > 0 && got >= need {
+			return "", fmt.Errorf("%w: target delivered its response before SYN", errStimulusNotObserved)
+		}
+	}
+}
+
+// nonOwnerSendDuringActive has another session hold an open transaction,
+// then sends one SYN from contender. The mux must refuse that SEND.
+func (runner *Runner) nonOwnerSendDuringActive(ctx context.Context, contender *enhContenderSession, source byte, telegram GuardTelegram) (string, error) {
+	owner, err := runner.openContenderSession(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = owner.conn.Close() }()
+	if err := owner.send(transport.ENHReqStart, source); err != nil {
+		return "", err
+	}
+	message, err := owner.await(func(message transport.ENHMessage) (bool, error) {
+		switch message.Command {
+		case transport.ENHResStarted:
+			return true, nil
+		case transport.ENHResFailed, transport.ENHResResetted:
+			return false, fmt.Errorf("%w: 0x%X before the active transaction", errContenderProtocol, byte(message.Command))
+		default:
+			return false, nil
+		}
+	})
+	if err != nil {
+		return "", fmt.Errorf("await the active owner: %w", err)
+	}
+	if message.Data != source {
+		return "", fmt.Errorf("%w: STARTED 0x%02X for source 0x%02X", errContenderProtocol, message.Data, source)
+	}
+	logical := append([]byte{source, telegram.Target, telegram.Primary, telegram.Secondary, byte(len(telegram.Data))}, telegram.Data...)
+	symbols := escapeSymbols(logical[1:])
+	if len(symbols) == 0 {
+		return "", fmt.Errorf("%w: active transaction has no command byte", errContenderProtocol)
+	}
+	if err := owner.sendSymbol(symbols[0]); err != nil {
+		return "", err
+	}
+	return sendWithoutOwnership(contender)
+}
+
 // sendWithoutOwnership sends one SYN symbol without owning the bus and
-// expects the mux to refuse it with ERROR_HOST.
+// expects the mux to refuse it with ERROR_HOST while another session holds
+// the bus.
 func sendWithoutOwnership(session *enhContenderSession) (string, error) {
 	if err := session.send(transport.ENHReqSend, protocol.SymbolSyn); err != nil {
 		return "", err
@@ -918,7 +1099,7 @@ func sendWithoutOwnership(session *enhContenderSession) (string, error) {
 		message, err := session.next()
 		if err != nil {
 			if message.Command == transport.ENHResErrorHost {
-				return "non-owner SEND refused with ERROR_HOST", nil
+				return "non-owner SEND refused with ERROR_HOST during an active transaction", nil
 			}
 			return "", fmt.Errorf("await the refusal of a non-owner SEND: %w", err)
 		}

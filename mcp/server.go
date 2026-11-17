@@ -83,9 +83,9 @@ type ZoneState struct {
 	CurrentTempC       *float64 `json:"zone_room_temperature,omitempty"`
 	CurrentHumidityPct *float64 `json:"zone_room_humidity,omitempty"`
 	HvacAction         string   `json:"hvac_action,omitempty"`
-	SpecialFunction    string   `json:"special_function,omitempty"`
+	SpecialFunction    string   `json:"zone_special_function_mode,omitempty"`
 	HeatingDemandPct   *float64 `json:"heating_demand_pct,omitempty"`
-	ValvePositionPct   *float64 `json:"valve_position_pct,omitempty"`
+	ValvePositionPct   *float64 `json:"zone_valve_position,omitempty"`
 }
 
 type ZoneConfig struct {
@@ -97,14 +97,14 @@ type ZoneConfig struct {
 	AssociatedCircuit          *int     `json:"associated_circuit,omitempty"`
 	RoomTemperatureZoneMapping *int     `json:"room_temperature_zone_mapping,omitempty"`
 	QuickVeto                  bool     `json:"quick_veto"`
-	QuickVetoSetpointC         *float64 `json:"quick_veto_setpoint_c,omitempty"`
-	QuickVetoDurationH         *float64 `json:"quick_veto_duration_h,omitempty"`
+	QuickVetoSetpointC         *float64 `json:"zone_room_temperature_setpoint_at_quick_veto,omitempty"`
+	QuickVetoDurationH         *float64 `json:"zone_quick_veto_time,omitempty"`
 	QuickVetoExpiry            string   `json:"quick_veto_expiry,omitempty"`
-	HolidayStartDate           string   `json:"holiday_start_date,omitempty"`
-	HolidayEndDate             string   `json:"holiday_end_date,omitempty"`
-	HolidaySetpointC           *float64 `json:"holiday_setpoint_c,omitempty"`
-	HolidayStartTime           string   `json:"holiday_start_time,omitempty"`
-	HolidayEndTime             string   `json:"holiday_end_time,omitempty"`
+	HolidayStartDate           string   `json:"zone_holiday_start_date,omitempty"`
+	HolidayEndDate             string   `json:"zone_holiday_end_date,omitempty"`
+	HolidaySetpointC           *float64 `json:"zone_room_temperature_setpoint_at_holiday,omitempty"`
+	HolidayStartTime           string   `json:"zone_holiday_start_clock_time,omitempty"`
+	HolidayEndTime             string   `json:"zone_holiday_end_clock_time,omitempty"`
 }
 
 type Zone struct {
@@ -115,17 +115,17 @@ type Zone struct {
 }
 
 type DhwState struct {
-	CurrentTempC     *float64 `json:"current_temp_c,omitempty"`
-	SpecialFunction  string   `json:"special_function,omitempty"`
+	CurrentTempC     *float64 `json:"dhw_temperature,omitempty"`
+	SpecialFunction  string   `json:"dhw_special_function_mode,omitempty"`
 	HeatingDemandPct *float64 `json:"heating_demand_pct,omitempty"`
 }
 
 type DhwConfig struct {
-	OperatingMode    string   `json:"operating_mode"`
+	OperatingMode    string   `json:"dhw_operating_mode"`
 	Preset           string   `json:"preset"`
-	TargetTempC      *float64 `json:"target_temp_c,omitempty"`
-	HolidayStartDate string   `json:"holiday_start_date,omitempty"`
-	HolidayEndDate   string   `json:"holiday_end_date,omitempty"`
+	TargetTempC      *float64 `json:"dhw_temperature_setpoint,omitempty"`
+	HolidayStartDate string   `json:"dhw_holiday_start_date,omitempty"`
+	HolidayEndDate   string   `json:"dhw_holiday_end_date,omitempty"`
 }
 
 type DhwStatus struct {
@@ -268,26 +268,26 @@ type SystemStatus struct {
 }
 
 type CircuitState struct {
-	PumpActive       *bool    `json:"pump_active,omitempty"`
-	MixerPositionPct *float64 `json:"mixer_position_pct,omitempty"`
-	FlowTemperatureC *float64 `json:"flow_temperature_c,omitempty"`
-	FlowSetpointC    *float64 `json:"flow_setpoint_c,omitempty"`
+	PumpActive       *bool    `json:"circuit_pump_unknown_8,omitempty"`
+	MixerPositionPct *float64 `json:"circuit_mixer_position,omitempty"`
+	FlowTemperatureC *float64 `json:"circuit_flow_temperature,omitempty"`
+	FlowSetpointC    *float64 `json:"circuit_flow_temperature_setpoint,omitempty"`
 	CalcFlowTempC    *float64 `json:"calc_flow_temp_c,omitempty"`
 	CircuitState     string   `json:"circuit_state,omitempty"`
-	Humidity         *float64 `json:"humidity,omitempty"`
-	DewPoint         *float64 `json:"dew_point,omitempty"`
-	PumpHours        *float64 `json:"pump_hours,omitempty"`
-	PumpStarts       *int     `json:"pump_starts,omitempty"`
+	Humidity         *float64 `json:"circuit_room_humidity,omitempty"`
+	DewPoint         *float64 `json:"circuit_dew_point_temperature,omitempty"`
+	PumpHours        *float64 `json:"circuit_pump_operating_time_total,omitempty"`
+	PumpStarts       *int     `json:"circuit_pump_start_count_total,omitempty"`
 }
 
 type CircuitConfig struct {
-	HeatingCurve        *float64 `json:"heating_curve,omitempty"`
-	FlowTempMaxC        *float64 `json:"flow_temp_max_c,omitempty"`
-	FlowTempMinC        *float64 `json:"flow_temp_min_c,omitempty"`
-	SummerLimitC        *float64 `json:"summer_limit_c,omitempty"`
+	HeatingCurve        *float64 `json:"circuit_heating_curve_factor,omitempty"`
+	FlowTempMaxC        *float64 `json:"heating_circuit_flow_temperature_setpoint_maximum,omitempty"`
+	FlowTempMinC        *float64 `json:"circuit_flow_temperature_setpoint_minimum,omitempty"`
+	SummerLimitC        *float64 `json:"heating_circuit_outdoor_temperature_limit_maximum,omitempty"`
 	SpecialFunctionMode *int     `json:"circuit_special_function_mode,omitempty"`
-	RoomTempControl     string   `json:"room_temp_control,omitempty"`
-	CoolingEnabled      *bool    `json:"cooling_enabled,omitempty"`
+	RoomTempControl     string   `json:"circuit_room_temperature_influence_mode,omitempty"`
+	CoolingEnabled      *bool    `json:"circuit_cooling_enabled,omitempty"`
 }
 
 type ManagingDevice struct {

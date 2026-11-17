@@ -31,7 +31,7 @@ func TestPromotedSemanticGraphQL_AllEighteenValuesFillOnlyMissing(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	result := graphqlgo.Do(graphqlgo.Params{Schema: schema, RequestString: `{ zones { id name state { zone_room_temperature } config { target_temp_c operating_mode operation_mode_changeable source_label } } dhw { state { current_temp_c overrun_active } config { target_temp_c operating_mode operation_mode_changeable } } system { gateway_brand gateway_vendor state { outdoor_temperature } } }`})
+	result := graphqlgo.Do(graphqlgo.Params{Schema: schema, RequestString: `{ zones { id name state { zone_room_temperature } config { target_temp_c operating_mode operation_mode_changeable source_label } } dhw { state { dhw_temperature overrun_active } config { dhw_temperature_setpoint dhw_operating_mode operation_mode_changeable } } system { gateway_brand gateway_vendor state { outdoor_temperature } } }`})
 	if len(result.Errors) != 0 {
 		t.Fatalf("query errors: %v", result.Errors)
 	}
@@ -50,7 +50,7 @@ func TestPromotedSemanticGraphQL_AllEighteenValuesFillOnlyMissing(t *testing.T) 
 	dhw := data["dhw"].(map[string]any)
 	ds := dhw["state"].(map[string]any)
 	dc := dhw["config"].(map[string]any)
-	if ds["current_temp_c"] != 48.0 || ds["overrun_active"] != false || dc["target_temp_c"] != 52.0 || dc["operating_mode"] != "auto" || dc["operation_mode_changeable"] != true {
+	if ds["dhw_temperature"] != 48.0 || ds["overrun_active"] != false || dc["dhw_temperature_setpoint"] != 52.0 || dc["dhw_operating_mode"] != "auto" || dc["operation_mode_changeable"] != true {
 		t.Fatalf("dhw = %#v", dhw)
 	}
 	system := data["system"].(map[string]any)

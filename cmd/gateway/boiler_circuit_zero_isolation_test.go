@@ -282,7 +282,7 @@ func m62AssertSurfaces(t *testing.T, poller *vaillantSemanticPoller, wantBoilerP
 			state { central_heating_pump_active central_heating_pump_active }
 			diagnostics { heating_status_raw heating_status_raw }
 		}
-		circuits { index state { pump_active pump_active circuit_state } }
+		circuits { index state { circuit_pump_unknown_8 circuit_pump_unknown_8 circuit_state } }
 	}`})
 	if len(result.Errors) != 0 {
 		t.Fatalf("GraphQL errors: %+v", result.Errors)
@@ -304,7 +304,7 @@ func m62AssertSurfaces(t *testing.T, poller *vaillantSemanticPoller, wantBoilerP
 		t.Fatalf("GraphQL circuits = %v; want one circuit", data["circuits"])
 	}
 	circuitState := m62Object(t, gqlCircuits[0].(map[string]any), "state")
-	for _, key := range []string{"pump_active", "pump_active"} {
+	for _, key := range []string{"circuit_pump_unknown_8", "circuit_pump_unknown_8"} {
 		m62AssertJSONBool(t, "GraphQL circuits[0].state."+key, circuitState, key, true, &wantCircuitPump)
 	}
 	if circuitState["circuit_state"] != wantCircuitState {
@@ -324,7 +324,7 @@ func m62AssertSurfaces(t *testing.T, poller *vaillantSemanticPoller, wantBoilerP
 	if len(mcpCircuits) != 1 {
 		t.Fatalf("MCP circuits = %+v; want one circuit", mcpCircuits)
 	}
-	m62AssertJSONBool(t, "MCP circuits[0].state.pump_active", m62Object(t, m62JSONObject(t, mcpCircuits[0]), "state"), "pump_active", false, &wantCircuitPump)
+	m62AssertJSONBool(t, "MCP circuits[0].state.circuit_pump_unknown_8", m62Object(t, m62JSONObject(t, mcpCircuits[0]), "state"), "circuit_pump_unknown_8", false, &wantCircuitPump)
 
 	// Portal projection.
 	portalBoiler := m62JSONObject(t, mapPortalBoilerStatus(status))
@@ -338,7 +338,7 @@ func m62AssertSurfaces(t *testing.T, poller *vaillantSemanticPoller, wantBoilerP
 	if len(portalCircuits) != 1 {
 		t.Fatalf("Portal circuits = %+v; want one circuit", portalCircuits)
 	}
-	m62AssertJSONBool(t, "Portal circuits[0].state.pump_active", m62Object(t, m62JSONObject(t, portalCircuits[0]), "state"), "pump_active", false, &wantCircuitPump)
+	m62AssertJSONBool(t, "Portal circuits[0].state.circuit_pump_unknown_8", m62Object(t, m62JSONObject(t, portalCircuits[0]), "state"), "circuit_pump_unknown_8", false, &wantCircuitPump)
 }
 
 func m62AssertOptionalBool(t *testing.T, label string, got, want *bool) {

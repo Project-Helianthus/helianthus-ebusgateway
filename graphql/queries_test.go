@@ -1248,9 +1248,9 @@ func TestQueryResolvers_Integration(t *testing.T) {
 						zone_room_temperature
 						zone_room_humidity
 						hvac_action
-						special_function
+						zone_special_function_mode
 						heating_demand_pct
-						valve_position_pct
+						zone_valve_position
 					}
 					config {
 						operating_mode
@@ -1264,14 +1264,14 @@ func TestQueryResolvers_Integration(t *testing.T) {
 				}
 				dhw {
 					state {
-						current_temp_c
-						special_function
+						dhw_temperature
+						dhw_special_function_mode
 						heating_demand_pct
 					}
 					config {
-						operating_mode
+						dhw_operating_mode
 						preset
-						target_temp_c
+						dhw_temperature_setpoint
 					}
 				}
 				circuits {
@@ -1279,25 +1279,25 @@ func TestQueryResolvers_Integration(t *testing.T) {
 					circuit_type
 					has_mixer
 					state {
-						pump_active
-						mixer_position_pct
-						flow_temperature_c
-						flow_setpoint_c
+						circuit_pump_unknown_8
+						circuit_mixer_position
+						circuit_flow_temperature
+						circuit_flow_temperature_setpoint
 						calc_flow_temp_c
 						circuit_state
-						humidity
-						dew_point
-						pump_hours
-						pump_starts
+						circuit_room_humidity
+						circuit_dew_point_temperature
+						circuit_pump_operating_time_total
+						circuit_pump_start_count_total
 					}
 					config {
-						heating_curve
-						flow_temp_max_c
-						flow_temp_min_c
-						summer_limit_c
+						circuit_heating_curve_factor
+						heating_circuit_flow_temperature_setpoint_maximum
+						circuit_flow_temperature_setpoint_minimum
+						heating_circuit_outdoor_temperature_limit_maximum
 						circuit_special_function_mode
-						room_temp_control
-						cooling_enabled
+						circuit_room_temperature_influence_mode
+						circuit_cooling_enabled
 					}
 					managing_device {
 						role
@@ -1406,9 +1406,9 @@ func TestQueryResolvers_Integration(t *testing.T) {
 					CurrentTempC       *float64 `json:"zone_room_temperature"`
 					CurrentHumidityPct *float64 `json:"zone_room_humidity"`
 					HvacAction         *string  `json:"hvac_action"`
-					SpecialFunction    *string  `json:"special_function"`
+					SpecialFunction    *string  `json:"zone_special_function_mode"`
 					HeatingDemandPct   *float64 `json:"heating_demand_pct"`
-					ValvePositionPct   *float64 `json:"valve_position_pct"`
+					ValvePositionPct   *float64 `json:"zone_valve_position"`
 				} `json:"state"`
 				Config struct {
 					OperatingMode              *string  `json:"operating_mode"`
@@ -1422,14 +1422,14 @@ func TestQueryResolvers_Integration(t *testing.T) {
 			} `json:"zones"`
 			DHW *struct {
 				State struct {
-					CurrentTempC     *float64 `json:"current_temp_c"`
-					SpecialFunction  *string  `json:"special_function"`
+					CurrentTempC     *float64 `json:"dhw_temperature"`
+					SpecialFunction  *string  `json:"dhw_special_function_mode"`
 					HeatingDemandPct *float64 `json:"heating_demand_pct"`
 				} `json:"state"`
 				Config struct {
-					OperatingMode *string  `json:"operating_mode"`
+					OperatingMode *string  `json:"dhw_operating_mode"`
 					Preset        *string  `json:"preset"`
-					TargetTempC   *float64 `json:"target_temp_c"`
+					TargetTempC   *float64 `json:"dhw_temperature_setpoint"`
 				} `json:"config"`
 			} `json:"dhw"`
 			Circuits []struct {
@@ -1437,25 +1437,25 @@ func TestQueryResolvers_Integration(t *testing.T) {
 				CircuitType string `json:"circuit_type"`
 				HasMixer    bool   `json:"has_mixer"`
 				State       struct {
-					PumpActive       *bool    `json:"pump_active"`
-					MixerPositionPct *float64 `json:"mixer_position_pct"`
-					FlowTemperatureC *float64 `json:"flow_temperature_c"`
-					FlowSetpointC    *float64 `json:"flow_setpoint_c"`
+					PumpActive       *bool    `json:"circuit_pump_unknown_8"`
+					MixerPositionPct *float64 `json:"circuit_mixer_position"`
+					FlowTemperatureC *float64 `json:"circuit_flow_temperature"`
+					FlowSetpointC    *float64 `json:"circuit_flow_temperature_setpoint"`
 					CalcFlowTempC    *float64 `json:"calc_flow_temp_c"`
 					CircuitState     *string  `json:"circuit_state"`
-					Humidity         *float64 `json:"humidity"`
-					DewPoint         *float64 `json:"dew_point"`
-					PumpHours        *float64 `json:"pump_hours"`
-					PumpStarts       *int     `json:"pump_starts"`
+					Humidity         *float64 `json:"circuit_room_humidity"`
+					DewPoint         *float64 `json:"circuit_dew_point_temperature"`
+					PumpHours        *float64 `json:"circuit_pump_operating_time_total"`
+					PumpStarts       *int     `json:"circuit_pump_start_count_total"`
 				} `json:"state"`
 				Config struct {
-					HeatingCurve        *float64 `json:"heating_curve"`
-					FlowTempMaxC        *float64 `json:"flow_temp_max_c"`
-					FlowTempMinC        *float64 `json:"flow_temp_min_c"`
-					SummerLimitC        *float64 `json:"summer_limit_c"`
+					HeatingCurve        *float64 `json:"circuit_heating_curve_factor"`
+					FlowTempMaxC        *float64 `json:"heating_circuit_flow_temperature_setpoint_maximum"`
+					FlowTempMinC        *float64 `json:"circuit_flow_temperature_setpoint_minimum"`
+					SummerLimitC        *float64 `json:"heating_circuit_outdoor_temperature_limit_maximum"`
 					SpecialFunctionMode *int     `json:"circuit_special_function_mode"`
-					RoomTempControl     *string  `json:"room_temp_control"`
-					CoolingEnabled      *bool    `json:"cooling_enabled"`
+					RoomTempControl     *string  `json:"circuit_room_temperature_influence_mode"`
+					CoolingEnabled      *bool    `json:"circuit_cooling_enabled"`
 				} `json:"config"`
 				ManagingDevice struct {
 					Role     string  `json:"role"`

@@ -1136,7 +1136,7 @@ func TestGraphQLFieldRegistersRecordEveryPublishedField(t *testing.T) {
 // and requires the checkers to report each change.
 func TestRegisterNamesFieldCheckersCatchEachMutation(t *testing.T) {
 	t.Parallel()
-	base := loadRegisterNamesDoc(t)
+	base := registerNamesWithPendingField(t, loadRegisterNamesDoc(t))
 	if len(registerNamesFieldErrors(base)) != 0 {
 		t.Fatal("base fixture must be clean")
 	}
@@ -1295,6 +1295,49 @@ func TestRegisterNamesFieldCheckersCatchEachMutation(t *testing.T) {
 			t.Errorf("coverage mutation %q not caught", name)
 		}
 	}
+}
+
+// TestRegisterNamesNoFieldPending requires every single-register zone,
+// circuit and hot water field to be published under the docs-ebus name of its
+// register, with nothing left pending.
+func TestRegisterNamesNoFieldPending(t *testing.T) {
+	t.Parallel()
+	doc := loadRegisterNamesDoc(t)
+	if len(doc.Pending) != 0 {
+		t.Errorf("pending lists %d fields; want none", len(doc.Pending))
+	}
+	for _, field := range doc.Fields {
+		if field.Derived == nil && field.PublishedName != field.DocsEbusName {
+			t.Errorf("%s.%s: docs-ebus name %s", field.Object, field.PublishedName, field.DocsEbusName)
+		}
+	}
+}
+
+// registerNamesWithPendingField returns a copy of doc in which one
+// single-register field that no row records is published under a name other
+// than its docs-ebus name and is listed in pending, so the checkers can be
+// exercised on a record with a pending field.
+func registerNamesWithPendingField(t *testing.T, doc registerNamesDoc) registerNamesDoc {
+	t.Helper()
+	rows := map[string]bool{}
+	for _, row := range doc.Rows {
+		if row.Service == "B524" {
+			rows[row.Group+"/"+row.Register] = true
+		}
+	}
+	out := doc
+	out.Fields = append([]registerNamesField(nil), doc.Fields...)
+	out.Pending = append([]registerNamesPending(nil), doc.Pending...)
+	for i, field := range out.Fields {
+		if field.Derived != nil || field.PublishedName != field.DocsEbusName || rows[field.Group+"/"+field.Register] {
+			continue
+		}
+		out.Fields[i].PublishedName = field.DocsEbusName + "_value"
+		out.Pending = append(out.Pending, registerNamesPending{Object: field.Object, PublishedName: field.DocsEbusName + "_value", DocsEbusName: field.DocsEbusName})
+		return out
+	}
+	t.Fatal("fixture needs a single-register field that no row records")
+	return out
 }
 
 // filterFields returns the fields outside one object.

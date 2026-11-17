@@ -10,16 +10,22 @@ eBUS data flow on the selected southbound transport during the case window:
 counters are read once at the start and again until the invariant's flow
 requirements hold or the window ends.
 
+The adapter-action cells AD04 and AD09 announce the operator action once the
+first reading is taken; the operator then resets the adapter (AD04) or
+disconnects and reconnects its host link (AD09) inside the case window.
+
 It never sends a mutation, never calls a tool that writes and never invokes a
 bus method. Every run writes one JSON object, smoke_evidence.json, into the
 case directory.
 
 Exit statuses: 0 pass, 1 fail, 2 usage error (missing or invalid context),
-3 refused (an invariant this command cannot judge).
+3 refused (an invariant this command cannot judge), 4 signal missing (the
+gateway does not publish a series the invariant needs).
 """
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
@@ -32,6 +38,7 @@ EXIT_PASS = 0
 EXIT_FAIL = 1
 EXIT_USAGE = 2
 EXIT_REFUSED = 3
+EXIT_SIGNAL_MISSING = 4
 
 EVIDENCE_FILE = "smoke_evidence.json"
 EVIDENCE_SCHEMA = "adaptermux-v2-smoke/1"
@@ -55,9 +62,58 @@ ROW_TOKEN = {"ens": "ENS", "enh": "ENH", "udp": "UDP", "tcp": "TCP", "ebusd-tcp"
 
 GT0 = "greater_than_zero"
 EQ0 = "equal_to_zero"
+EQ1 = "equal_to_one"
 
 FLOW_ACTIVE = (("active_frames", GT0), ("mux_transactions_done", GT0))
 CONTENTION = FLOW_ACTIVE + (("external_identification_frames", GT0),)
+
+MUX_ENDINGS = "ebus_adaptermux_transaction_endings_total"
+MUX_FOREIGN = "ebus_adaptermux_foreign_initiator_releases_total"
+MUX_ESCAPE = "ebus_adaptermux_escape_pair_verify_failures_total"
+MUX_HELD = "ebus_adaptermux_active_arbitration_held"
+# Series AD04, AD07 and AD09 read that the gateway does not publish today.
+# A check that needs one refuses with EXIT_SIGNAL_MISSING and names it.
+MUX_SESSION_DISCONTINUITIES = "ebus_adaptermux_session_discontinuities_total"
+MUX_UPSTREAM_RECONNECTS = "ebus_adaptermux_upstream_reconnects_total"
+MUX_CONTENDED_SELECTIONS = "ebus_adaptermux_contended_selections_total"
+MUX_RETAINED_BIDS = "ebus_adaptermux_retained_bids_total"
+PASSIVE_COMPLETED = "ebus_passive_completed_transactions_total"
+WRITE_POLICY_STATE = "external_write_policy_state"
+DEDUP_ADJUDICATIONS = "observe_first_dedup_adjudications_total"
+
+SIGNAL_MEANING = {
+    MUX_HELD: "the out-of-step active-arbitration hold gauge",
+    MUX_SESSION_DISCONTINUITIES: "discontinuity boundaries delivered to each consumer session of the mux (label session)",
+    MUX_UPSTREAM_RECONNECTS: "completed upstream reconnects of the mux",
+    MUX_CONTENDED_SELECTIONS: "SYN boundaries at which a gateway bid and an external bid competed, by winner (label winner: gateway or external)",
+    MUX_RETAINED_BIDS: "losing bids kept for a later boundary, by how they ended (label result: granted or another ending)",
+}
+
+# AD04 and AD09: every consumer session observes the discontinuity, the mux
+# reconnects once, gateway transactions and passive reconstruction resume
+# after the discontinuity, and no out-of-step hold is raised.
+ADAPTER_ACTION_SIGNALS = (MUX_HELD, MUX_SESSION_DISCONTINUITIES, MUX_UPSTREAM_RECONNECTS)
+ADAPTER_ACTION_REQUIRES = (
+    ("consumer_sessions_observing_discontinuity", GT0),
+    ("consumer_sessions_missing_discontinuity", EQ0),
+    ("mux_upstream_reconnects", EQ1),
+    ("resumed_active_frames", GT0),
+    ("resumed_mux_transactions_done", GT0),
+    ("resumed_passive_completed_transactions", GT0),
+    ("out_of_step_hold_readings", EQ0),
+)
+
+# AD07: with no owner and an idle bus, the lowest initiator low nibble wins,
+# then the lowest high nibble (docs/architecture/adapter-arbitration-decision.md);
+# the losing bid is kept and completes at a later boundary; neither session
+# is starved.
+PRIORITY_SIGNALS = (MUX_CONTENDED_SELECTIONS, MUX_RETAINED_BIDS)
+PRIORITY_REQUIRES = CONTENTION + (
+    ("contended_selections_won_by_priority", GT0),
+    ("contended_selections_won_against_priority", EQ0),
+    ("retained_bids_granted", GT0),
+    ("retained_bids_not_granted", EQ0),
+)
 
 # One entry per executable invariant: the composition it runs on, the
 # southbound transports it may run on, its flow requirements and whether it
@@ -70,7 +126,17 @@ CHECKS = {
     "AD03": {"composition": "mux", "rows": ("ens", "enh"), "passive_tap": True,
              "requires": (("passive_third_party_frames", GT0),
                           ("passive_completed_transactions", GT0))},
+    "AD04": {"composition": "mux", "rows": ("ens", "enh"), "passive_tap": True,
+             "signals": ADAPTER_ACTION_SIGNALS, "discontinuity": True,
+             "operator_action": "reset the adapter",
+             "requires": ADAPTER_ACTION_REQUIRES},
     "AD06": {"composition": "mux", "rows": ("ens", "enh"), "requires": CONTENTION},
+    "AD07": {"composition": "mux", "rows": ("ens", "enh"), "signals": PRIORITY_SIGNALS,
+             "priority": True, "requires": PRIORITY_REQUIRES},
+    "AD09": {"composition": "mux", "rows": ("ens", "enh"), "passive_tap": True,
+             "signals": ADAPTER_ACTION_SIGNALS, "discontinuity": True,
+             "operator_action": "disconnect the adapter's host link and reconnect it",
+             "requires": ADAPTER_ACTION_REQUIRES},
     "AD10": {"composition": "mux", "rows": ("ens", "enh"), "requires": FLOW_ACTIVE,
              "semantic": True, "paired": True},
     "PX01": {"composition": "mux", "rows": ("ens", "enh"),
@@ -93,10 +159,10 @@ CHECKS = {
 
 # Cells of the inventory that are never executed; asking for them is refused.
 RESERVED = {
-    "AD04": "cell_awaiting_respecification", "AD07": "cell_awaiting_respecification",
-    "AD09": "cell_awaiting_respecification", "PX05": "cell_awaiting_respecification",
-    "PX06": "cell_awaiting_respecification", "PX07": "cell_awaiting_respecification",
-    "PX08": "cell_awaiting_respecification",
+    "PX05": "fifo_order_superseded_by_address_priority",
+    "PX06": "fifo_order_superseded_by_address_priority",
+    "PX07": "fifo_order_superseded_by_address_priority",
+    "PX08": "fifo_order_superseded_by_address_priority",
     "AD05": "mux_raw_symbol_forwarding_not_implemented",
     "AD08": "mux_raw_symbol_forwarding_not_implemented",
     "AD12": "mux_raw_symbol_forwarding_not_implemented",
@@ -113,13 +179,6 @@ RESERVED_ROWS = {
     "uart-enh": "uart_direct_hardware_absent",
     "uart-raw": "uart_direct_hardware_absent",
 }
-
-MUX_ENDINGS = "ebus_adaptermux_transaction_endings_total"
-MUX_FOREIGN = "ebus_adaptermux_foreign_initiator_releases_total"
-MUX_ESCAPE = "ebus_adaptermux_escape_pair_verify_failures_total"
-PASSIVE_COMPLETED = "ebus_passive_completed_transactions_total"
-WRITE_POLICY_STATE = "external_write_policy_state"
-DEDUP_ADJUDICATIONS = "observe_first_dedup_adjudications_total"
 
 # The semantic record: one GraphQL query and the MCP read tool of the same
 # plane. Units are those of the semantic contract for each field.
@@ -151,6 +210,14 @@ class UsageError(Exception):
 
 class SurfaceError(Exception):
     """A gateway read surface did not answer as expected."""
+
+
+class SignalMissingError(Exception):
+    """The gateway does not publish a series the invariant needs."""
+
+    def __init__(self, names):
+        super().__init__(", ".join(names))
+        self.names = list(names)
 
 
 # ---------------------------------------------------------------- context
@@ -410,6 +477,125 @@ def compute_measures(baseline, current, own):
     return measures
 
 
+def series_values(sample, name):
+    """Return {labels: value} of every sample of one series."""
+    return {labels: value for (metric, labels), value in sample["metrics"].items() if metric == name}
+
+
+def label_value(labels, key):
+    return dict(labels).get(key)
+
+
+def discontinuity_measures(readings):
+    """Measures of an adapter-action cell over every judged reading.
+
+    The consumer sessions are those the mux reports at the first reading. The
+    discontinuity reading is the first one in which any of them moved; the
+    resumption is measured from that reading to the last one.
+    """
+    baseline, final = readings[0], readings[-1]
+    sessions = series_values(baseline, MUX_SESSION_DISCONTINUITIES)
+    after = series_values(final, MUX_SESSION_DISCONTINUITIES)
+    observed = sum(1 for labels, value in sessions.items() if after.get(labels, 0.0) - value >= 1)
+    measures = {
+        "consumer_sessions_observing_discontinuity": float(observed),
+        "consumer_sessions_missing_discontinuity": float(len(sessions) - observed),
+        "mux_upstream_reconnects": metric_delta(baseline, final, MUX_UPSTREAM_RECONNECTS),
+        "out_of_step_hold_readings": float(sum(1 for reading in readings[1:] if metric_sum(reading, MUX_HELD) >= 1)),
+    }
+    boundary = None
+    for index, reading in enumerate(readings[1:], start=1):
+        current = series_values(reading, MUX_SESSION_DISCONTINUITIES)
+        if any(current.get(labels, 0.0) > value for labels, value in sessions.items()):
+            boundary = index
+            break
+    unmeasured = {}
+    resumed = ("resumed_active_frames", "resumed_mux_transactions_done", "resumed_passive_completed_transactions")
+    if boundary is None:
+        for name in resumed:
+            measures[name] = None
+            unmeasured[name] = "no consumer session observed a discontinuity during the case window"
+        return measures, unmeasured, None
+    reading = readings[boundary]
+    measures["resumed_active_frames"] = frame_delta(reading, final, lambda key: key[0] == "active")
+    measures["resumed_mux_transactions_done"] = metric_delta(
+        reading, final, MUX_ENDINGS, [("reason", "transaction_done")])
+    measures["resumed_passive_completed_transactions"] = metric_delta(reading, final, PASSIVE_COMPLETED)
+    return measures, unmeasured, boundary
+
+
+def priority_key(address):
+    """Selection order of an initiator: lowest low nibble, then lowest high nibble."""
+    return (address & 0x0F, address >> 4)
+
+
+def priority_winner(gateway, external):
+    """The side whose bid wins a contended boundary under initiator priority."""
+    return "gateway" if priority_key(gateway) < priority_key(external) else "external"
+
+
+def external_initiators(baseline, current, own):
+    before = frame_series(baseline)
+    sources = set()
+    for key, value in frame_series(current).items():
+        if key[0] == "passive" and key[1] != own and key[3] == "0704" and value - before.get(key, 0.0) > 0:
+            sources.add(key[1])
+    return sorted(str(source) for source in sources)
+
+
+def parse_address(text):
+    try:
+        value = int(str(text), 16)
+    except ValueError:
+        return None
+    return value if 0 < value <= 0xFF else None
+
+
+def priority_measures(baseline, current, own):
+    """Measures of the address-priority cell and the priority it expects."""
+    names = ("contended_selections_won_by_priority", "contended_selections_won_against_priority")
+    external = external_initiators(baseline, current, own)
+    gateway = parse_address(own) if own else None
+    evidence = {"gateway_source": own, "external_initiators": external, "expected_winner": None}
+    measures, unmeasured = {}, {}
+    if gateway is None or len(external) != 1 or parse_address(external[0]) is None:
+        why = ("the gateway reports no own source address" if gateway is None
+               else "the external session's initiator is not one address (" + ", ".join(external or ["none"]) + ")")
+        for name in names:
+            measures[name] = None
+            unmeasured[name] = why
+    else:
+        winner = priority_winner(gateway, parse_address(external[0]))
+        loser = "external" if winner == "gateway" else "gateway"
+        evidence["expected_winner"] = winner
+        measures[names[0]] = metric_delta(baseline, current, MUX_CONTENDED_SELECTIONS, [("winner", winner)])
+        measures[names[1]] = metric_delta(baseline, current, MUX_CONTENDED_SELECTIONS, [("winner", loser)])
+    before = series_values(baseline, MUX_RETAINED_BIDS)
+    granted = not_granted = 0.0
+    for labels, value in series_values(current, MUX_RETAINED_BIDS).items():
+        delta = value - before.get(labels, 0.0)
+        if label_value(labels, "result") == "granted":
+            granted += delta
+        else:
+            not_granted += delta
+    measures["retained_bids_granted"] = granted
+    measures["retained_bids_not_granted"] = not_granted
+    return measures, unmeasured, evidence
+
+
+def missing_signals(check, sample):
+    """Series the check needs that the gateway does not publish.
+
+    Without any AdapterMux diagnostics the composition is wrong, which the
+    transport check fails; only a mux that runs but lacks a series is a
+    missing signal.
+    """
+    published = {name for name, _ in sample["metrics"]}
+    if MUX_ENDINGS not in published:
+        return []
+    return [name for name in check.get("signals", ()) if name not in published]
+
+
 def tracked_counters(sample):
     counters = {"frames " + "/".join(str(part) for part in key): value
                 for key, value in frame_series(sample).items()}
@@ -485,17 +671,28 @@ def check_passive_tap(sample):
 # ---------------------------------------------------------------- judgement
 
 
-def judge_requirements(check, measures):
+def rule_met(rule, value):
+    if value is None:
+        return False
+    if rule == GT0:
+        return value > 0
+    return value == (1 if rule == EQ1 else 0)
+
+
+def judge_requirements(check, measures, unmeasured=None):
     """Return one row per requirement and the reasons of the unmet ones."""
     rows, reasons = [], []
     for name, rule in check["requires"]:
         value = measures.get(name)
-        met = value is not None and (value > 0 if rule == GT0 else value == 0)
+        met = rule_met(rule, value)
         rows.append({"measure": name, "rule": rule, "value": value, "met": met})
         if met:
             continue
         if value is None:
-            reasons.append(name + " cannot be measured: the gateway reports no own source address")
+            why = (unmeasured or {}).get(name, "the gateway reports no own source address")
+            reasons.append(name + " cannot be measured: " + why)
+        elif rule == EQ1:
+            reasons.append(name + " is " + format_number(value) + " during the case window; it must be exactly 1")
         elif rule == EQ0:
             reasons.append(name + " moved by " + format_number(value) + " during the case window; it must stay")
         else:
@@ -515,7 +712,7 @@ def flow_ready(check, measures):
     return True
 
 
-def observe_window(urls, settings, check, clock):
+def observe_window(urls, settings, check, clock, announce=None):
     """Sample until the flow requirements hold or the window ends.
 
     Every consecutive pair of samples is compared for a counter moving
@@ -526,12 +723,20 @@ def observe_window(urls, settings, check, clock):
     confirms that no counter fell. A sample whose sleep or reads complete
     after the window ends may count traffic outside the window, so it is
     discarded and the last sample completed inside the window is judged.
+    A check whose series the gateway does not publish stops after the first
+    sample, before any operator action is announced.
     """
-    full_window = any(rule == EQ0 for _, rule in check["requires"])
+    full_window = any(rule in (EQ0, EQ1) for _, rule in check["requires"])
     baseline = take_sample(urls, settings)
+    missing = missing_signals(check, baseline)
+    if missing:
+        raise SignalMissingError(missing)
+    if announce is not None:
+        announce()
     deadline = clock.monotonic() + settings["window"]
     window = {"samples": 1, "discarded_after_window": 0}
     final = baseline
+    readings = [baseline]
     regressions = set(())
     ready = False
     while True:
@@ -546,11 +751,12 @@ def observe_window(urls, settings, check, clock):
         window["samples"] += 1
         regressions.update(backward_counters(final, current))
         final = current
+        readings.append(current)
         if ready:
             break
         own = own_source(baseline) or own_source(final)
         ready = not full_window and flow_ready(check, compute_measures(baseline, final, own))
-    return baseline, final, own_source(baseline) or own_source(final), window, sorted(regressions)
+    return readings, own_source(baseline) or own_source(final), window, sorted(regressions)
 
 
 # ---------------------------------------------------------------- semantic record
@@ -699,9 +905,19 @@ def compare_pairs(context, mux_record):
 # ---------------------------------------------------------------- run
 
 
-def judge(context, check, urls, settings, clock):
+def operator_action_text(context, check, settings):
+    return ("operator action for " + context["case_id"] + ": " + check["operator_action"]
+            + " now, inside the " + format_number(settings["window"]) + " s case window")
+
+
+def judge(context, check, urls, settings, clock, stream=None):
     evidence = {}
-    baseline, current, own, window, backwards = observe_window(urls, settings, check, clock)
+    announce = None
+    if check.get("operator_action"):
+        evidence["operator_action"] = check["operator_action"]
+        announce = functools.partial(print, operator_action_text(context, check, settings), file=stream, flush=True)
+    readings, own, window, backwards = observe_window(urls, settings, check, clock, announce)
+    baseline, current = readings[0], readings[-1]
     evidence["window"] = dict(window, window_seconds=settings["window"])
     evidence["gateway_source"] = own
     evidence["transport"], reasons = check_transport(context, current, check)
@@ -712,8 +928,16 @@ def judge(context, check, urls, settings, clock):
     if backwards:
         reasons.append("counters moved backwards during the case window: " + ", ".join(backwards))
     measures = compute_measures(baseline, current, own)
+    unmeasured = {}
+    if check.get("discontinuity"):
+        extra, unmeasured, boundary = discontinuity_measures(readings)
+        measures.update(extra)
+        evidence["discontinuity_reading"] = boundary
+    if check.get("priority"):
+        extra, unmeasured, evidence["priority"] = priority_measures(baseline, current, own)
+        measures.update(extra)
     evidence["measures"] = measures
-    evidence["requirements"], flow_reasons = judge_requirements(check, measures)
+    evidence["requirements"], flow_reasons = judge_requirements(check, measures, unmeasured)
     reasons += flow_reasons
     if check.get("semantic") and not reasons:
         reasons += attach_semantic(context, check, urls, settings, evidence)
@@ -752,7 +976,8 @@ def write_evidence(case_dir, evidence):
         handle.write("\n")
 
 
-RESULT_NAMES = {EXIT_PASS: "pass", EXIT_FAIL: "fail", EXIT_USAGE: "usage_error", EXIT_REFUSED: "refused"}
+RESULT_NAMES = {EXIT_PASS: "pass", EXIT_FAIL: "fail", EXIT_USAGE: "usage_error", EXIT_REFUSED: "refused",
+                EXIT_SIGNAL_MISSING: "signal_missing"}
 
 
 def finish(context, evidence, status, reasons, stream):
@@ -781,9 +1006,14 @@ def run(environ, stream=sys.stdout, clock=time):
     except UsageError as error:
         return finish(context, evidence, EXIT_USAGE, [str(error)], stream)
     try:
-        judged, reasons = judge(context, check, urls, settings, clock)
+        judged, reasons = judge(context, check, urls, settings, clock, stream)
     except SurfaceError as error:
         return finish(context, evidence, EXIT_FAIL, [str(error)], stream)
+    except SignalMissingError as error:
+        evidence["missing_signals"] = error.names
+        reasons = ["signal missing: the gateway does not publish " + name + " (" + SIGNAL_MEANING[name]
+                   + "), which " + context["invariant"] + " needs" for name in error.names]
+        return finish(context, evidence, EXIT_SIGNAL_MISSING, reasons, stream)
     evidence.update(judged)
     return finish(context, evidence, EXIT_FAIL if reasons else EXIT_PASS, reasons, stream)
 

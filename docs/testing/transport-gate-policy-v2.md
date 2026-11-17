@@ -105,7 +105,7 @@ Acceptance per outcome:
 | `xpass` | never | gate fails |
 | `fail` | never | gate fails |
 | `blocked-infra` | `infra_reason = adapter_no_signal` on an executable cell (BI-01), or `infra_reason = uart_direct_hardware_absent` on a UART cell (BI-02) | gate fails |
-| `planned` | the cell is in PL-01, PL-02 or PL-03 and `planned_reason` equals its category reason | gate fails |
+| `planned` | the cell is in PL-01, PL-02, PL-03 or PL-04 and `planned_reason` equals its category reason | gate fails |
 
 The gate prints one summary line with counts per outcome and per transport,
 like today's `transport gate: PASS (...)` line. Pairing the two reports of the
@@ -119,7 +119,7 @@ Synthetic shape (values illustrative, two of 173 cases shown):
   "generated_at": "synthetic",
   "target": "ha-addon",
   "suite": "adaptermux-v2",
-  "matrix_inventory_version": "1",
+  "matrix_inventory_version": "2",
   "session_id": "session-a",
   "candidate": "candidate-a",
   "cases": [
@@ -152,9 +152,11 @@ acceptance, and the override reason in the ship wrappers changes as in §3.
 
 ## 6. Residual risk stated for the switch
 
-- 60 of 173 cells are `planned` in the projected first run (no plain southbound
+- 68 of 173 cells are `planned` in the projected first run (no plain southbound
   framing in the mux; no local responder for PX09–PX11; raw symbol forwarding
-  not implemented for the `ENS` and `ENH` cells of AD05, AD08 and AD12) and 72 are
+  not implemented for the `ENS` and `ENH` cells of AD05, AD08 and AD12; the
+  FIFO-order cells PX05–PX08 of `ENS` and `ENH` reserved because address
+  priority replaced FIFO order), 33 are executed, and 72 are
   `blocked-infra` (UART-direct). The gate accepts them only through their
   categories; they are not passing evidence.
 - The compatibility cells keep the non-mux direct transports and ebusd-tcp

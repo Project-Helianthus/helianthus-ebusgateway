@@ -30,6 +30,10 @@ SPEC.loader.exec_module(SMOKE)
 DATA = json.loads(RECORDED.read_text(encoding="utf-8"))
 
 GRID_INVARIANTS = ("AD01", "AD02", "AD03", "AD06", "AD10", "PX01", "PX02", "PX03", "PX04", "PX12", "CX01")
+# Invariants whose checks read AdapterMux series beyond the common surfaces.
+ADAPTER_ACTION_INVARIANTS = ("AD04", "AD09")
+PRIORITY_INVARIANTS = ("AD07",)
+FIFO_ORDER_INVARIANTS = ("PX05", "PX06", "PX07", "PX08")
 ROWS = {"ens": "ENS", "enh": "ENH", "udp": "UDP", "tcp": "TCP"}
 SESSION = {"MATRIX_SESSION_ID": "session-a", "MATRIX_CANDIDATE": "candidate-a"}
 
@@ -66,21 +70,31 @@ def render_metrics(rows):
 class Phase:
     """The surfaces at one point of the case window, before rendering."""
 
-    def __init__(self, name, composition, southbound):
+    def __init__(self, name, composition, southbound, signals=None):
         mux = composition == "mux"
         self.status = copy.deepcopy(DATA["status"])
         self.status["transport_class"] = SMOKE.EXPECTED_TRANSPORT_CLASS[(composition, southbound)]
         self.frames = copy.deepcopy(DATA["frames"][name])
         metrics = DATA["metrics"][name]
         self.metrics = copy.deepcopy(metrics["common"] + (metrics["mux"] if mux else []))
+        if mux and signals is not None:
+            self.metrics += copy.deepcopy(DATA["adaptermux_signals"][signals])
         self.vars = copy.deepcopy(DATA["vars"][name])
 
-    def bump(self, metric, labels, amount):
+    def row(self, metric, labels):
         for row in self.metrics:
             if row[0] == metric and row[1] == labels:
-                row[2] += amount
-                return
+                return row
         raise AssertionError("no recorded series " + metric)
+
+    def bump(self, metric, labels, amount):
+        self.row(metric, labels)[2] += amount
+
+    def set(self, metric, labels, value):
+        self.row(metric, labels)[2] = value
+
+    def drop(self, metric):
+        self.metrics = [row for row in self.metrics if row[0] != metric]
 
     def bodies(self):
         observability = {"status": self.status, "frames": self.frames}
@@ -226,20 +240,40 @@ class SmokeTestCase(unittest.TestCase):
         return environ
 
     def run_smoke(self, environ, clock=None):
+        stream = io.StringIO()
         if clock is None:
-            status = SMOKE.run(environ, stream=io.StringIO())
+            status = SMOKE.run(environ, stream=stream)
         else:
             self.stub.on_request = clock.charge_read
             try:
-                status = SMOKE.run(environ, stream=io.StringIO(), clock=clock)
+                status = SMOKE.run(environ, stream=stream, clock=clock)
             finally:
                 self.stub.on_request = None
+        self.output = stream.getvalue()
         evidence_path = pathlib.Path(environ["MATRIX_CASE_DIR"]) / SMOKE.EVIDENCE_FILE
         evidence = json.loads(evidence_path.read_text(encoding="utf-8")) if evidence_path.exists() else None
         return status, evidence
 
     def phases(self, composition, southbound):
         return Phase("baseline", composition, southbound), Phase("flow", composition, southbound)
+
+    def action_phases(self, southbound):
+        """AD04/AD09: before the action, at the discontinuity, after the resumption."""
+        baseline = Phase("baseline", "mux", southbound, signals="baseline")
+        discontinuity = Phase("baseline", "mux", southbound, signals="discontinuity")
+        discontinuity.set(SMOKE.MUX_HELD, {}, 0)
+        resumed = Phase("flow", "mux", southbound, signals="flow")
+        return [baseline, discontinuity, resumed]
+
+    def priority_phases(self, southbound):
+        """AD07: before and after the contended window."""
+        return [Phase("baseline", "mux", southbound, signals="baseline"),
+                Phase("flow", "mux", southbound, signals="flow")]
+
+    def respecified_phases(self, invariant, southbound):
+        if invariant in ADAPTER_ACTION_INVARIANTS:
+            return self.action_phases(southbound)
+        return self.priority_phases(southbound)
 
     def reasons(self, evidence):
         return "\n".join(evidence["reasons"])
@@ -510,6 +544,17 @@ class RefusalTests(SmokeTestCase):
                 with self.subTest(case=case_id(invariant, southbound)):
                     self.assert_refused(self.environ(invariant, "mux", southbound), reason)
 
+    def test_fifo_order_cells_are_refused_under_pl04(self):
+        for invariant in FIFO_ORDER_INVARIANTS:
+            self.assertEqual(SMOKE.RESERVED[invariant], "fifo_order_superseded_by_address_priority")
+            for southbound in ("ens", "enh"):
+                with self.subTest(case=case_id(invariant, southbound)):
+                    self.assert_refused(self.environ(invariant, "mux", southbound),
+                                        invariant + " is not executable: fifo_order_superseded_by_address_priority")
+        for invariant in ADAPTER_ACTION_INVARIANTS + PRIORITY_INVARIANTS:
+            self.assertNotIn(invariant, SMOKE.RESERVED)
+        self.assertNotIn("cell_awaiting_respecification", SMOKE.RESERVED.values())
+
     def test_planned_and_blocked_rows_are_refused(self):
         for southbound, token in (("udp", "UDP"), ("tcp", "TCP"), ("uart-ens", "UARTENS"),
                                   ("uart-enh", "UARTENH"), ("uart-raw", "UARTRAW")):
@@ -549,6 +594,255 @@ class RefusalTests(SmokeTestCase):
                                 text=True, timeout=60, check=False)
         self.assertEqual(result.returncode, SMOKE.EXIT_REFUSED)
         self.assertIn("refused", result.stdout)
+
+
+class AdapterActionTests(SmokeTestCase):
+    """AD04 (adapter reset) and AD09 (host-link disconnect and reconnect)."""
+
+    def run_action(self, invariant, southbound, phases):
+        self.stub.load(phases)
+        return self.run_smoke(self.environ(invariant, "mux", southbound, MATRIX_CELL_CLASS="W"))
+
+    def each_cell(self):
+        for invariant in ADAPTER_ACTION_INVARIANTS:
+            for southbound in ("ens", "enh"):
+                yield invariant, southbound
+
+    def test_discontinuity_seen_by_every_session_with_one_reconnect_and_resumption_passes(self):
+        for invariant, southbound in self.each_cell():
+            with self.subTest(case=case_id(invariant, southbound)):
+                status, evidence = self.run_action(invariant, southbound, self.action_phases(southbound))
+                self.assertEqual(status, SMOKE.EXIT_PASS, evidence["reasons"])
+                measures = evidence["measures"]
+                self.assertEqual(measures["consumer_sessions_observing_discontinuity"], 3)
+                self.assertEqual(measures["consumer_sessions_missing_discontinuity"], 0)
+                self.assertEqual(measures["mux_upstream_reconnects"], 1)
+                self.assertGreater(measures["resumed_active_frames"], 0)
+                self.assertGreater(measures["resumed_mux_transactions_done"], 0)
+                self.assertGreater(measures["resumed_passive_completed_transactions"], 0)
+                self.assertEqual(measures["out_of_step_hold_readings"], 0)
+                self.assertEqual(evidence["discontinuity_reading"], 1)
+                self.assertEqual(evidence["operator_action"], SMOKE.CHECKS[invariant]["operator_action"])
+                self.assertIn("operator action for " + case_id(invariant, southbound), self.output)
+
+    def test_no_discontinuity_fails(self):
+        for invariant, southbound in self.each_cell():
+            with self.subTest(case=case_id(invariant, southbound)):
+                phases = self.action_phases(southbound)
+                for phase in phases[1:]:
+                    phase.metrics = [row for row in phase.metrics if row[0] != SMOKE.MUX_SESSION_DISCONTINUITIES]
+                    phase.metrics += copy.deepcopy([row for row in phases[0].metrics
+                                                    if row[0] == SMOKE.MUX_SESSION_DISCONTINUITIES])
+                status, evidence = self.run_action(invariant, southbound, phases)
+                self.assertEqual(status, SMOKE.EXIT_FAIL)
+                self.assertIn("no consumer session observed a discontinuity", self.reasons(evidence))
+
+    def test_session_that_misses_the_discontinuity_fails(self):
+        for invariant, southbound in self.each_cell():
+            with self.subTest(case=case_id(invariant, southbound)):
+                phases = self.action_phases(southbound)
+                for phase in phases[1:]:
+                    phase.set(SMOKE.MUX_SESSION_DISCONTINUITIES, {"session": "external-a"}, 1)
+                status, evidence = self.run_action(invariant, southbound, phases)
+                self.assertEqual(status, SMOKE.EXIT_FAIL)
+                self.assertIn("consumer_sessions_missing_discontinuity moved by 1", self.reasons(evidence))
+
+    def test_second_reconnect_fails(self):
+        for invariant, southbound in self.each_cell():
+            with self.subTest(case=case_id(invariant, southbound)):
+                phases = self.action_phases(southbound)
+                phases[2].bump(SMOKE.MUX_UPSTREAM_RECONNECTS, {}, 1)
+                status, evidence = self.run_action(invariant, southbound, phases)
+                self.assertEqual(status, SMOKE.EXIT_FAIL)
+                self.assertIn("mux_upstream_reconnects is 2 during the case window; it must be exactly 1",
+                              self.reasons(evidence))
+
+    def test_no_reconnect_fails(self):
+        for invariant, southbound in self.each_cell():
+            with self.subTest(case=case_id(invariant, southbound)):
+                phases = self.action_phases(southbound)
+                for phase in phases[1:]:
+                    phase.set(SMOKE.MUX_UPSTREAM_RECONNECTS, {}, 3)
+                status, evidence = self.run_action(invariant, southbound, phases)
+                self.assertEqual(status, SMOKE.EXIT_FAIL)
+                self.assertIn("mux_upstream_reconnects is 0", self.reasons(evidence))
+
+    def test_no_resumption_after_the_discontinuity_fails(self):
+        for invariant, southbound in self.each_cell():
+            with self.subTest(case=case_id(invariant, southbound)):
+                phases = self.action_phases(southbound)
+                status, evidence = self.run_action(invariant, southbound, phases[:2])
+                self.assertEqual(status, SMOKE.EXIT_FAIL)
+                reasons = self.reasons(evidence)
+                for name in ("resumed_active_frames", "resumed_mux_transactions_done",
+                             "resumed_passive_completed_transactions"):
+                    self.assertIn(name + " did not move", reasons)
+
+    def test_flow_before_the_discontinuity_only_is_not_resumption(self):
+        # Traffic moved before the action, then the discontinuity, then silence.
+        for invariant, southbound in self.each_cell():
+            with self.subTest(case=case_id(invariant, southbound)):
+                baseline = Phase("baseline", "mux", southbound, signals="baseline")
+                flowed = Phase("flow", "mux", southbound, signals="baseline")
+                flowed.set(SMOKE.MUX_HELD, {}, 0)
+                after = Phase("flow", "mux", southbound, signals="flow")
+                after.set(SMOKE.MUX_HELD, {}, 0)
+                status, evidence = self.run_action(invariant, southbound, [baseline, flowed, after])
+                self.assertEqual(status, SMOKE.EXIT_FAIL)
+                self.assertGreater(evidence["measures"]["active_frames"], 0)
+                self.assertIn("resumed_mux_transactions_done did not move", self.reasons(evidence))
+
+    def test_out_of_step_hold_fails(self):
+        for invariant, southbound in self.each_cell():
+            with self.subTest(case=case_id(invariant, southbound)):
+                phases = self.action_phases(southbound)
+                phases[1].set(SMOKE.MUX_HELD, {}, 1)
+                status, evidence = self.run_action(invariant, southbound, phases)
+                self.assertEqual(status, SMOKE.EXIT_FAIL)
+                self.assertIn("out_of_step_hold_readings moved by 1", self.reasons(evidence))
+
+    def test_disconnected_passive_tap_fails(self):
+        for invariant, southbound in self.each_cell():
+            with self.subTest(case=case_id(invariant, southbound)):
+                phases = self.action_phases(southbound)
+                phases[2].status["capability"]["tap_connected"] = False
+                status, evidence = self.run_action(invariant, southbound, phases)
+                self.assertEqual(status, SMOKE.EXIT_FAIL)
+                self.assertIn("passive path unavailable", self.reasons(evidence))
+
+
+class AddressPriorityTests(SmokeTestCase):
+    """AD07: address-priority selection between the gateway and ebusd."""
+
+    def run_priority(self, southbound, phases):
+        self.stub.load(phases)
+        return self.run_smoke(self.environ("AD07", "mux", southbound))
+
+    def test_priority_winner_and_kept_losing_bid_pass(self):
+        for southbound in ("ens", "enh"):
+            with self.subTest(row=southbound):
+                status, evidence = self.run_priority(southbound, self.priority_phases(southbound))
+                self.assertEqual(status, SMOKE.EXIT_PASS, evidence["reasons"])
+                self.assertEqual(evidence["priority"], {"gateway_source": "0x71", "external_initiators": ["0xf7"],
+                                                        "expected_winner": "gateway"})
+                self.assertEqual(evidence["measures"]["contended_selections_won_by_priority"], 6)
+                self.assertEqual(evidence["measures"]["retained_bids_granted"], 6)
+                self.assertNotIn("operator action", self.output)
+
+    def test_selection_against_priority_fails(self):
+        for southbound in ("ens", "enh"):
+            with self.subTest(row=southbound):
+                phases = self.priority_phases(southbound)
+                phases[1].bump(SMOKE.MUX_CONTENDED_SELECTIONS, {"winner": "external"}, 1)
+                status, evidence = self.run_priority(southbound, phases)
+                self.assertEqual(status, SMOKE.EXIT_FAIL)
+                self.assertIn("contended_selections_won_against_priority moved by 1", self.reasons(evidence))
+
+    def test_expected_winner_follows_the_addresses(self):
+        # A gateway source whose low nibble is higher than the external one's
+        # makes the external bid the priority winner; the recorded counts,
+        # where the gateway won, then fail in both directions.
+        phases = self.priority_phases("enh")
+        for phase in phases:
+            phase.status["bus_admission"]["source_selection"]["selected_source"] = 0x7F
+        status, evidence = self.run_priority("enh", phases)
+        self.assertEqual(status, SMOKE.EXIT_FAIL)
+        self.assertEqual(evidence["priority"]["expected_winner"], "external")
+        reasons = self.reasons(evidence)
+        self.assertIn("contended_selections_won_by_priority did not move", reasons)
+        self.assertIn("contended_selections_won_against_priority moved by 6", reasons)
+
+    def test_losing_bid_not_completed_fails(self):
+        for result in ("failed", "withdrawn"):
+            with self.subTest(result=result):
+                phases = self.priority_phases("ens")
+                phases[1].bump(SMOKE.MUX_RETAINED_BIDS, {"result": result}, 1)
+                status, evidence = self.run_priority("ens", phases)
+                self.assertEqual(status, SMOKE.EXIT_FAIL)
+                self.assertIn("retained_bids_not_granted moved by 1", self.reasons(evidence))
+
+    def test_no_losing_bid_completed_fails(self):
+        phases = self.priority_phases("enh")
+        phases[1].set(SMOKE.MUX_RETAINED_BIDS, {"result": "granted"}, 20)
+        status, evidence = self.run_priority("enh", phases)
+        self.assertEqual(status, SMOKE.EXIT_FAIL)
+        self.assertIn("retained_bids_granted did not move", self.reasons(evidence))
+
+    def test_starved_external_session_fails(self):
+        phases = self.priority_phases("enh")
+        phases[1].frames = [item for item in phases[1].frames if item["family"] != "0704"]
+        status, evidence = self.run_priority("enh", phases)
+        self.assertEqual(status, SMOKE.EXIT_FAIL)
+        reasons = self.reasons(evidence)
+        self.assertIn("external_identification_frames did not move", reasons)
+        self.assertIn("the external session's initiator is not one address (none)", reasons)
+
+    def test_starved_gateway_session_fails(self):
+        phases = self.priority_phases("ens")
+        phases[1].frames = [item for item in phases[1].frames if item["scope"] != "active"] + [
+            item for item in phases[0].frames if item["scope"] == "active"]
+        status, evidence = self.run_priority("ens", phases)
+        self.assertEqual(status, SMOKE.EXIT_FAIL)
+        self.assertIn("active_frames did not move", self.reasons(evidence))
+
+    def test_two_external_initiators_cannot_be_judged(self):
+        phases = self.priority_phases("enh")
+        phases[1].frames.append({"scope": "passive", "source": "0x37", "target": "0x15", "family": "0704",
+                                 "frame_type": "initiator_target", "count": 2})
+        status, evidence = self.run_priority("enh", phases)
+        self.assertEqual(status, SMOKE.EXIT_FAIL)
+        self.assertIn("is not one address (0x37, 0xf7)", self.reasons(evidence))
+
+    def test_priority_rule_orders_low_nibble_then_high_nibble(self):
+        cases = (
+            (0x71, 0xF7, "gateway"),   # low nibble 1 before 7
+            (0xF7, 0x71, "external"),
+            (0x31, 0xF1, "gateway"),   # equal low nibble, high nibble 3 before F
+            (0xF1, 0x31, "external"),
+            (0x10, 0x03, "gateway"),   # low nibble decides before the high nibble
+            (0x03, 0x10, "external"),
+        )
+        for gateway, external, winner in cases:
+            with self.subTest(gateway=hex(gateway), external=hex(external)):
+                self.assertEqual(SMOKE.priority_winner(gateway, external), winner)
+
+    def test_mux_absent_fails_as_a_composition_error(self):
+        phases = [Phase("baseline", "direct", "enh"), Phase("flow", "direct", "enh")]
+        for phase in phases:
+            phase.status["transport_class"] = "adapter-direct"
+        status, evidence = self.run_priority("enh", phases)
+        self.assertEqual(status, SMOKE.EXIT_FAIL)
+        self.assertIn("AdapterMux diagnostics are absent", self.reasons(evidence))
+
+
+class MissingSignalTests(SmokeTestCase):
+    def test_each_unpublished_series_refuses_with_its_own_status(self):
+        for invariant in ADAPTER_ACTION_INVARIANTS + PRIORITY_INVARIANTS:
+            for signal in SMOKE.CHECKS[invariant]["signals"]:
+                with self.subTest(invariant=invariant, signal=signal):
+                    self.stub.requests.clear()
+                    phases = self.respecified_phases(invariant, "enh")
+                    for phase in phases:
+                        phase.drop(signal)
+                    self.stub.load(phases)
+                    status, evidence = self.run_smoke(self.environ(invariant, "mux", "enh"))
+                    self.assertEqual(status, SMOKE.EXIT_SIGNAL_MISSING)
+                    self.assertEqual(evidence["result"], "signal_missing")
+                    self.assertEqual(evidence["missing_signals"], [signal])
+                    self.assertIn("the gateway does not publish " + signal, self.reasons(evidence))
+                    self.assertNotIn("operator action", self.output)
+                    self.assertEqual(sorted(path for _, path, _ in self.stub.requests),
+                                     ["/debug/vars", "/metrics", "/portal/api/v1/bus/observability"])
+
+    def test_gateway_without_any_new_series_names_every_missing_one(self):
+        self.stub.load(self.phases("mux", "ens"))
+        status, evidence = self.run_smoke(self.environ("AD04", "mux", "ens"))
+        self.assertEqual(status, SMOKE.EXIT_SIGNAL_MISSING)
+        self.assertEqual(evidence["missing_signals"],
+                         [SMOKE.MUX_SESSION_DISCONTINUITIES, SMOKE.MUX_UPSTREAM_RECONNECTS])
+        self.assertEqual(SMOKE.EXIT_SIGNAL_MISSING, 4)
+        self.assertNotIn(SMOKE.EXIT_SIGNAL_MISSING, (SMOKE.EXIT_PASS, SMOKE.EXIT_FAIL, SMOKE.EXIT_USAGE,
+                                                      SMOKE.EXIT_REFUSED))
 
 
 class MigrationEquivalenceTests(SmokeTestCase):
@@ -696,6 +990,10 @@ class ReadOnlyTests(SmokeTestCase):
         for invariant in GRID_INVARIANTS:
             self.stub.load(self.phases("mux", "enh"))
             self.run_smoke(self.environ(invariant, "mux", "enh"))
+        for invariant in ADAPTER_ACTION_INVARIANTS + PRIORITY_INVARIANTS:
+            self.stub.load(self.respecified_phases(invariant, "enh"))
+            status, _ = self.run_smoke(self.environ(invariant, "mux", "enh"))
+            self.assertEqual(status, SMOKE.EXIT_PASS)
         methods = {(method, path) for method, path, _ in self.stub.requests}
         self.assertEqual(methods, {("GET", "/portal/api/v1/bus/observability"), ("GET", "/metrics"),
                                    ("GET", "/debug/vars"), ("POST", "/graphql"), ("POST", "/mcp")})
@@ -722,7 +1020,8 @@ class ReadOnlyTests(SmokeTestCase):
         self.assertEqual(SMOKE.guard_graphql(SMOKE.GRAPHQL_SEMANTIC_QUERY), SMOKE.GRAPHQL_SEMANTIC_QUERY)
 
     def test_checks_cover_exactly_the_executable_invariants(self):
-        self.assertEqual(sorted(SMOKE.CHECKS), sorted(GRID_INVARIANTS + ("DS01", "ES01")))
+        self.assertEqual(sorted(SMOKE.CHECKS), sorted(GRID_INVARIANTS + ADAPTER_ACTION_INVARIANTS
+                                                      + PRIORITY_INVARIANTS + ("DS01", "ES01")))
         self.assertFalse(set(SMOKE.CHECKS) & set(SMOKE.RESERVED))
 
 

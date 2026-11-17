@@ -84,6 +84,42 @@
       ]
     }
   },
+  "adaptermux_signals": {
+    "about": "Synthetic AdapterMux series that AD04, AD07 and AD09 read in addition to the mux rows above. The gateway does not publish the discontinuity, reconnect, contended-selection and retained-bid series; the tests serve them to show how the checks judge once it does.",
+    "baseline": [
+      ["ebus_adaptermux_session_discontinuities_total", {"session": "gateway"}, 2],
+      ["ebus_adaptermux_session_discontinuities_total", {"session": "passive"}, 2],
+      ["ebus_adaptermux_session_discontinuities_total", {"session": "external-a"}, 1],
+      ["ebus_adaptermux_upstream_reconnects_total", {}, 3],
+      ["ebus_adaptermux_contended_selections_total", {"winner": "gateway"}, 20],
+      ["ebus_adaptermux_contended_selections_total", {"winner": "external"}, 0],
+      ["ebus_adaptermux_retained_bids_total", {"result": "granted"}, 20],
+      ["ebus_adaptermux_retained_bids_total", {"result": "failed"}, 0],
+      ["ebus_adaptermux_retained_bids_total", {"result": "withdrawn"}, 0]
+    ],
+    "discontinuity": [
+      ["ebus_adaptermux_session_discontinuities_total", {"session": "gateway"}, 3],
+      ["ebus_adaptermux_session_discontinuities_total", {"session": "passive"}, 3],
+      ["ebus_adaptermux_session_discontinuities_total", {"session": "external-a"}, 2],
+      ["ebus_adaptermux_upstream_reconnects_total", {}, 4],
+      ["ebus_adaptermux_contended_selections_total", {"winner": "gateway"}, 20],
+      ["ebus_adaptermux_contended_selections_total", {"winner": "external"}, 0],
+      ["ebus_adaptermux_retained_bids_total", {"result": "granted"}, 20],
+      ["ebus_adaptermux_retained_bids_total", {"result": "failed"}, 0],
+      ["ebus_adaptermux_retained_bids_total", {"result": "withdrawn"}, 0]
+    ],
+    "flow": [
+      ["ebus_adaptermux_session_discontinuities_total", {"session": "gateway"}, 3],
+      ["ebus_adaptermux_session_discontinuities_total", {"session": "passive"}, 3],
+      ["ebus_adaptermux_session_discontinuities_total", {"session": "external-a"}, 2],
+      ["ebus_adaptermux_upstream_reconnects_total", {}, 4],
+      ["ebus_adaptermux_contended_selections_total", {"winner": "gateway"}, 26],
+      ["ebus_adaptermux_contended_selections_total", {"winner": "external"}, 0],
+      ["ebus_adaptermux_retained_bids_total", {"result": "granted"}, 26],
+      ["ebus_adaptermux_retained_bids_total", {"result": "failed"}, 0],
+      ["ebus_adaptermux_retained_bids_total", {"result": "withdrawn"}, 0]
+    ]
+  },
   "vars": {
     "baseline": {
       "observe_first_dedup_adjudications_total": {"matched_active_duplicate": 38, "unmatched_third_party": 250}

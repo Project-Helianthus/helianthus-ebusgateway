@@ -465,8 +465,35 @@ func TestHuaweiPVRelationsRefuseFalseJoinAndDanglingEndpoint(t *testing.T) {
 		}
 	}
 	ends := huaweiRelationsEnds(a)
-	if err := huaweiCheckRelation(accepted, ends); err != nil {
+	observers := huaweiObservers(a.snapshot, &semreg.PublicationBatch{}, alpha.handle.Source())
+	if err := huaweiCheckRelation(accepted, ends, observers); err != nil {
 		t.Fatalf("the published gate instance is refused: %v", err)
+	}
+	if accepted.Origin.BindingID == nil || observers[*accepted.Origin.BindingID] != ai.system {
+		t.Fatalf("the published system instance is not originated by the binding that observes the system: %+v", accepted.Origin)
+	}
+	// The other existing native bindings of the asset: the one whose qualified
+	// link observes the inverter (the To end), and one of another source.
+	var inverterBinding semreg.NativeBindingID
+	for id, resource := range observers {
+		if resource == ai.inverter {
+			inverterBinding = id
+		}
+	}
+	if inverterBinding == "" {
+		t.Fatal("no current binding of the asset observes the inverter")
+	}
+	var betaSystemBinding semreg.NativeBindingID
+	for id, resource := range huaweiObservers(b.snapshot, &semreg.PublicationBatch{}, beta.handle.Source()) {
+		if resource == bi.system {
+			betaSystemBinding = id
+		}
+	}
+	if betaSystemBinding == "" {
+		t.Fatal("no current binding of the other label observes its system")
+	}
+	originBy := func(id semreg.NativeBindingID) func(*semreg.RelationInstance) {
+		return func(r *semreg.RelationInstance) { r.Origin.BindingID = &id }
 	}
 	var anyInput semreg.ResourceID
 	for _, input := range ai.inputs {
@@ -540,9 +567,17 @@ func TestHuaweiPVRelationsRefuseFalseJoinAndDanglingEndpoint(t *testing.T) {
 				Rule       string
 			}{huaweiRelationSystemInverter.ID, "index_without_the_gate_rule"})}
 		}), ends},
+		// origin: the asset's existing inverter binding, which observes the To
+		// end, with definition, basis and end kinds left as published.
+		"system originated by the inverter binding": {edit(originBy(inverterBinding)), ends},
+		// origin: an existing binding of the other label, which observes a
+		// resource this relation does not name.
+		"system originated by another label's binding": {edit(originBy(betaSystemBinding)), ends},
+		// origin: a binding the asset does not hold.
+		"system originated by an unheld binding": {edit(originBy("binding:relations-test-unheld")), ends},
 	}
 	for name, test := range falseJoins {
-		if err := huaweiCheckRelation(test.relation, test.ends); !errors.Is(err, errHuaweiFalseJoin) {
+		if err := huaweiCheckRelation(test.relation, test.ends, observers); !errors.Is(err, errHuaweiFalseJoin) {
 			t.Fatalf("%s: got %v, want a false join", name, err)
 		}
 	}
@@ -559,7 +594,7 @@ func TestHuaweiPVRelationsRefuseFalseJoinAndDanglingEndpoint(t *testing.T) {
 		}),
 	}
 	for name, relation := range dangling {
-		if err := huaweiCheckRelation(relation, withEnds(map[semreg.ResourceID]semreg.DefinitionID{loggerID: huaweiKindEquipment})); !errors.Is(err, errHuaweiDanglingEndpoint) {
+		if err := huaweiCheckRelation(relation, withEnds(map[semreg.ResourceID]semreg.DefinitionID{loggerID: huaweiKindEquipment}), observers); !errors.Is(err, errHuaweiDanglingEndpoint) {
 			t.Fatalf("%s: got %v, want a dangling endpoint", name, err)
 		}
 	}
@@ -574,7 +609,7 @@ func TestHuaweiPVRelationsRefuseFalseJoinAndDanglingEndpoint(t *testing.T) {
 			unpublished = append(unpublished, relation)
 		}
 	}
-	_, refused := alpha.checkLoggerRelations(unpublished, loggerID)
+	_, refused := alpha.checkLoggerRelations(unpublished, loggerID, map[semreg.NativeBindingID]semreg.ResourceID{"binding:relations-test": loggerID})
 	committed := alpha.relays(relaysRef, loggerID, "binding:relations-test")
 	alpha.mu.Unlock()
 	if len(relays) != len(committed)+1 || !errors.Is(refused, errHuaweiDanglingEndpoint) {

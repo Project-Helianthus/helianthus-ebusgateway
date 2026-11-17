@@ -873,13 +873,44 @@ func (p *huaweiPVPublication) relations(batch *semreg.PublicationBatch, current 
 	for _, record := range graph.records {
 		ends[record.ResourceID] = record.Kind
 	}
+	observers := huaweiObservers(current, batch, source)
 	for _, relation := range desired {
-		if err := huaweiCheckRelation(relation, ends); err != nil {
+		if err := huaweiCheckRelation(relation, ends, observers); err != nil {
 			return err
 		}
 	}
 	huaweiRelationDiff(batch, current, desired, source)
 	return nil
+}
+
+// huaweiObservers maps each binding of source that the asset holds current
+// once batch applies to the resource its qualified identity link names. The
+// batch's bindings and links replace the asset's; a withdrawn link, a link
+// without a resource and a binding of another source observe nothing.
+func huaweiObservers(current semreg.Snapshot, batch *semreg.PublicationBatch, source semreg.SourceID) map[semreg.NativeBindingID]semreg.ResourceID {
+	bindings := map[semreg.NativeBindingID]semreg.NativeBinding{}
+	for _, binding := range current.Bindings {
+		bindings[binding.BindingID] = binding
+	}
+	for _, binding := range batch.BindingUpserts {
+		bindings[binding.BindingID] = binding
+	}
+	links := map[semreg.NativeBindingID]semreg.IdentityLink{}
+	for _, link := range current.IdentityLinks {
+		links[link.BindingID] = link
+	}
+	for _, link := range batch.IdentityLinkUpserts {
+		links[link.BindingID] = link
+	}
+	out := map[semreg.NativeBindingID]semreg.ResourceID{}
+	for id, link := range links {
+		binding, ok := bindings[id]
+		if !ok || binding.SourceID != source || binding.State != semreg.BindingCurrent || link.State != semreg.LinkQualified || link.Resource == nil {
+			continue
+		}
+		out[id] = *link.Resource
+	}
+	return out
 }
 
 // huaweiRelationDiff adds to batch the records of desired that the asset does
@@ -1215,10 +1246,13 @@ func huaweiGateBasis(definition semreg.DefinitionID) semreg.EvidenceRef {
 // ends must be resources this publication has published, given in ends with
 // their kinds (a dangling endpoint otherwise). The record must then match a
 // gate row in its definition, basis class and end kinds, carry that row's
-// gate basis (its owner, kind and rule scope) and a native origin with a
-// binding (a false join otherwise). An index, a label, a role or an address
-// is never a basis, so a record built from one matches no row.
-func huaweiCheckRelation(relation semreg.RelationInstance, ends map[semreg.ResourceID]semreg.DefinitionID) error {
+// gate basis (its owner, kind and rule scope) and a native origin whose
+// binding observes the From end: observers maps each current binding of this
+// source to the resource its qualified identity link names (a false join
+// otherwise). An index, a label, a role or an address is never a basis, so a
+// record built from one matches no row, and a binding that observes the To
+// end or another resource does not originate the record.
+func huaweiCheckRelation(relation semreg.RelationInstance, ends map[semreg.ResourceID]semreg.DefinitionID, observers map[semreg.NativeBindingID]semreg.ResourceID) error {
 	from, fromOK := ends[relation.From]
 	to, toOK := ends[relation.To]
 	if !fromOK || !toOK {
@@ -1226,6 +1260,9 @@ func huaweiCheckRelation(relation semreg.RelationInstance, ends map[semreg.Resou
 	}
 	if !huaweiGateBasisMatches(relation.Basis, relation.Definition.ID) || relation.Origin.Kind != semreg.OriginNativeObservation || relation.Origin.BindingID == nil {
 		return fmt.Errorf("%w: %s basis", errHuaweiFalseJoin, relation.Definition.ID)
+	}
+	if observed, ok := observers[*relation.Origin.BindingID]; !ok || observed != relation.From {
+		return fmt.Errorf("%w: %s origin does not observe its from end", errHuaweiFalseJoin, relation.Definition.ID)
 	}
 	for _, row := range huaweiGateRelations {
 		ref, ok := row.ref()
@@ -1336,14 +1373,15 @@ func (p *huaweiPVPublication) relays(ref semreg.DefinitionRef, logger semreg.Res
 
 // checkLoggerRelations checks the logger's records against the gate: their
 // only ends are the logger and the inverters whose child batches committed.
-// The caller holds the publication lock.
-func (p *huaweiPVPublication) checkLoggerRelations(relations []semreg.RelationInstance, logger semreg.ResourceID) ([]semreg.RelationInstance, error) {
+// Each origin binding must observe the logger, as observers states. The
+// caller holds the publication lock.
+func (p *huaweiPVPublication) checkLoggerRelations(relations []semreg.RelationInstance, logger semreg.ResourceID, observers map[semreg.NativeBindingID]semreg.ResourceID) ([]semreg.RelationInstance, error) {
 	ends := map[semreg.ResourceID]semreg.DefinitionID{logger: huaweiKindEquipment}
 	for _, inverter := range p.inverters {
 		ends[inverter] = huaweiKindInverter
 	}
 	for _, relation := range relations {
-		if err := huaweiCheckRelation(relation, ends); err != nil {
+		if err := huaweiCheckRelation(relation, ends, observers); err != nil {
 			return nil, err
 		}
 	}
@@ -1448,7 +1486,7 @@ func (p *huaweiPVPublication) publishLogger(cycle huawei.ProviderCycle) error {
 	records := []semreg.RelationInstance{}
 	if ref, ok := huaweiRelaysRef(); ok {
 		p.relaysReason = ""
-		if records, err = p.checkLoggerRelations(p.relays(ref, logger, binding), logger); err != nil {
+		if records, err = p.checkLoggerRelations(p.relays(ref, logger, binding), logger, huaweiObservers(current, &batch, source)); err != nil {
 			return err
 		}
 	} else {

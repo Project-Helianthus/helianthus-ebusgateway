@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"slices"
 	"time"
-
-	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 )
 
 func (p *vaillantSemanticPoller) refreshCircuits(ctx context.Context) {
@@ -399,80 +397,6 @@ func cloneCircuitSnapshot(snapshot *vaillantCircuitSnapshot) *vaillantCircuitSna
 	}
 }
 
-func circuitsEqual(a, b []graphql.CircuitStatus) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		left := a[i]
-		right := b[i]
-		if left.Index != right.Index || left.CircuitType != right.CircuitType || left.HasMixer != right.HasMixer {
-			return false
-		}
-		if !boolPtrEquals(left.State.PumpActive, right.State.PumpActive) {
-			return false
-		}
-		if !floatPtrEquals(left.State.MixerPositionPct, right.State.MixerPositionPct) {
-			return false
-		}
-		if !floatPtrEquals(left.State.FlowTemperatureC, right.State.FlowTemperatureC) {
-			return false
-		}
-		if !floatPtrEquals(left.State.FlowSetpointC, right.State.FlowSetpointC) {
-			return false
-		}
-		if !floatPtrEquals(left.State.CalcFlowTempC, right.State.CalcFlowTempC) {
-			return false
-		}
-		if left.State.CircuitState != right.State.CircuitState {
-			return false
-		}
-		if !floatPtrEquals(left.State.Humidity, right.State.Humidity) {
-			return false
-		}
-		if !floatPtrEquals(left.State.DewPoint, right.State.DewPoint) {
-			return false
-		}
-		if !floatPtrEquals(left.State.PumpHours, right.State.PumpHours) {
-			return false
-		}
-		if !intPtrEquals(left.State.PumpStarts, right.State.PumpStarts) {
-			return false
-		}
-		if !floatPtrEquals(left.Config.HeatingCurve, right.Config.HeatingCurve) {
-			return false
-		}
-		if !floatPtrEquals(left.Config.FlowTempMaxC, right.Config.FlowTempMaxC) {
-			return false
-		}
-		if !floatPtrEquals(left.Config.FlowTempMinC, right.Config.FlowTempMinC) {
-			return false
-		}
-		if !floatPtrEquals(left.Config.SummerLimitC, right.Config.SummerLimitC) {
-			return false
-		}
-		if !intPtrEquals(left.Config.SpecialFunctionMode, right.Config.SpecialFunctionMode) {
-			return false
-		}
-		if left.Config.RoomTempControl != right.Config.RoomTempControl {
-			return false
-		}
-		if !boolPtrEquals(left.Config.CoolingEnabled, right.Config.CoolingEnabled) {
-			return false
-		}
-		if left.ManagingDevice.Role != right.ManagingDevice.Role {
-			return false
-		}
-		if !stringPtrEquals(left.ManagingDevice.DeviceID, right.ManagingDevice.DeviceID) {
-			return false
-		}
-		if !intPtrEquals(left.ManagingDevice.Address, right.ManagingDevice.Address) {
-			return false
-		}
-	}
-	return true
-}
-
 func decodeHeatingCircuitTypeToken(raw *uint16) string {
 	if raw == nil {
 		return ""
@@ -529,10 +453,6 @@ const (
 	circuitManagingDeviceVR71Address = 0x26
 )
 
-func deriveCircuitManagingDevice(system *vaillantSystemSnapshot, fm5Mode vaillantFM5Mode) graphql.ManagingDevice {
-	return circuitManagingDevice(circuitsManagedByFunctionModule(system, fm5Mode))
-}
-
 // circuitsManagedByFunctionModule reports whether the system scheme, the
 // module configuration and the interpreted FM5 mode place the heating
 // circuits under the function module.
@@ -541,20 +461,6 @@ func circuitsManagedByFunctionModule(system *vaillantSystemSnapshot, fm5Mode vai
 		system.SystemScheme != nil && *system.SystemScheme == 1 &&
 		system.ModuleConfigurationVR71 != nil && *system.ModuleConfigurationVR71 == 2 &&
 		fm5Mode == vaillantFM5ModeInterpreted
-}
-
-// circuitManagingDevice returns a detached managing device for one circuit.
-func circuitManagingDevice(managedByFunctionModule bool) graphql.ManagingDevice {
-	if managedByFunctionModule {
-		deviceID := circuitManagingDeviceVR71ID
-		address := circuitManagingDeviceVR71Address
-		return graphql.ManagingDevice{
-			Role:     graphql.ManagingDeviceRoleFunctionModule,
-			DeviceID: &deviceID,
-			Address:  &address,
-		}
-	}
-	return graphql.ManagingDevice{Role: graphql.ManagingDeviceRoleUnknown}
 }
 
 func decodeValvePositionPct(raw *uint16) *float64 {

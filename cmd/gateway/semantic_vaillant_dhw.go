@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway"
-	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 )
 
 func (p *vaillantSemanticPoller) markDHWUpdatedNowLocked() {
@@ -415,34 +414,6 @@ func decodeDhwMode(raw int) string {
 	default:
 		return fmt.Sprintf("UNKNOWN(%d)", raw)
 	}
-}
-
-func dhwEquals(a, b *graphql.DhwStatus) bool {
-	if a == nil && b == nil {
-		return true
-	}
-	if a == nil || b == nil {
-		return false
-	}
-	if a.Config.OperatingMode != b.Config.OperatingMode || a.Config.Preset != b.Config.Preset {
-		return false
-	}
-	if a.State.SpecialFunction != b.State.SpecialFunction {
-		return false
-	}
-	if !floatPtrEquals(a.State.CurrentTempC, b.State.CurrentTempC) {
-		return false
-	}
-	if !floatPtrEquals(a.Config.TargetTempC, b.Config.TargetTempC) {
-		return false
-	}
-	if !floatPtrEquals(a.State.HeatingDemandPct, b.State.HeatingDemandPct) {
-		return false
-	}
-	if a.Config.HolidayStartDate != b.Config.HolidayStartDate || a.Config.HolidayEndDate != b.Config.HolidayEndDate {
-		return false
-	}
-	return true
 }
 
 func deriveDhwModeAndPreset(opMode, specialFunction *uint16) (string, string) {

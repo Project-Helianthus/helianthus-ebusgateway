@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway"
-	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 	"github.com/Project-Helianthus/helianthus-ebusreg/vaillant/productids"
 )
@@ -804,7 +803,7 @@ func (p *vaillantSemanticPoller) findHeatPumpClassAddress() byte {
 // reason clear: there the missing root is a failing read, not a bus without a
 // supported path. It reads the registry only and sends nothing.
 func (p *vaillantSemanticPoller) refreshHeatSourcePathReason() {
-	if p == nil || p.liveProvider() == nil {
+	if !p.publishing() {
 		return
 	}
 	p.mu.Lock()
@@ -815,12 +814,13 @@ func (p *vaillantSemanticPoller) refreshHeatSourcePathReason() {
 	if controller == 0 && boilerAddress == 0 && !everDiscovered && regCap != productids.ControllerPresent {
 		heatPump = p.findHeatPumpClassAddress()
 	}
-	if !p.liveProvider().SetNoSupportedHeatSourcePath(heatPump != 0) {
+	reason, changed := p.publication.setNoSupportedHeatSourcePath(heatPump != 0)
+	if !changed {
 		return
 	}
 	if heatPump != 0 {
-		log.Printf("semantic_startup_reason reason=%s state=set heat_source=0x%02x", graphql.SemanticStartupReasonNoSupportedHeatSourcePath, heatPump)
+		log.Printf("semantic_startup_reason reason=%s state=set heat_source=0x%02x", reason, heatPump)
 		return
 	}
-	log.Printf("semantic_startup_reason reason=%s state=cleared controller=0x%02x boiler=0x%02x", graphql.SemanticStartupReasonNoSupportedHeatSourcePath, controller, boilerAddress)
+	log.Printf("semantic_startup_reason reason=%s state=cleared controller=0x%02x boiler=0x%02x", reason, controller, boilerAddress)
 }

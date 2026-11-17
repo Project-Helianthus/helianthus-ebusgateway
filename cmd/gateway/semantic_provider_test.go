@@ -218,14 +218,14 @@ func (*recordingSemanticWriter) M8CommandRoutingState() (m8sourcestate.CommandRo
 	}}, nil
 }
 
-func (writer *recordingSemanticWriter) SetBoilerConfig(context.Context, string, string) graphql.BoilerConfigMutationResult {
+func (writer *recordingSemanticWriter) SetBoilerConfig(context.Context, string, string) vaillantConfigWriteResult {
 	writer.calls++
-	return graphql.BoilerConfigMutationResult{Success: true}
+	return vaillantConfigWriteResult{Success: true}
 }
 
-func (writer *recordingSemanticWriter) SetSystemConfig(context.Context, string, string) graphql.ConfigMutationResult {
+func (writer *recordingSemanticWriter) SetSystemConfig(context.Context, string, string) vaillantConfigWriteResult {
 	writer.calls++
-	return graphql.ConfigMutationResult{Success: true}
+	return vaillantConfigWriteResult{Success: true}
 }
 
 func (writer *recordingSemanticWriter) SetZoneTimeProgram(context.Context, int, int, []vaillantTimeProgramSlot) (*vaillantTimeProgramWriteResult, error) {
@@ -337,13 +337,11 @@ func (adapter admittedMCPConfigAdapter) M8CommandRoutingState() (m8sourcestate.C
 }
 
 func (adapter admittedMCPConfigAdapter) SetSystemConfig(ctx context.Context, field string, value string) mcp.ConfigSetResult {
-	result := adapter.writer.SetSystemConfig(ctx, field, value)
-	return mcp.ConfigSetResult{Success: result.Success, Error: result.Error}
+	return mcpConfigSetResult(adapter.writer.SetSystemConfig(ctx, field, value))
 }
 
 func (adapter admittedMCPConfigAdapter) SetBoilerConfig(ctx context.Context, field string, value string) mcp.ConfigSetResult {
-	result := adapter.writer.SetBoilerConfig(ctx, field, value)
-	return mcp.ConfigSetResult{Success: result.Success, Error: result.Error}
+	return mcpConfigSetResult(adapter.writer.SetBoilerConfig(ctx, field, value))
 }
 
 type capturingNativeScheduleWriter struct {
@@ -442,5 +440,77 @@ func TestAdmittedScheduleWritersMapSlotsAndResults(t *testing.T) {
 	underlying.result, underlying.err = &vaillantTimeProgramWriteResult{Error: "weekday must be 0-6"}, nil
 	if got, err := graphWriter.SetDhwTimeProgram(context.Background(), 9, nil); err != nil || got.SlotResults != nil || got.Error != "weekday must be 0-6" || underlying.slots != nil {
 		t.Fatalf("rejected write = %#v/%v slots %#v; want nil slot results and nil native slots", got, err, underlying.slots)
+	}
+}
+
+// admittedTestSource returns a source provider that reports source as
+// admitted.
+func admittedTestSource(source byte) admittedSourceProvider {
+	return func() (byte, bool) { return source, true }
+}
+
+// fixedConfigWriter returns the same native configuration write result for
+// every boiler and system write.
+type fixedConfigWriter struct {
+	result vaillantConfigWriteResult
+}
+
+func (writer fixedConfigWriter) SetBoilerConfig(context.Context, string, string) vaillantConfigWriteResult {
+	return writer.result
+}
+
+func (writer fixedConfigWriter) SetSystemConfig(context.Context, string, string) vaillantConfigWriteResult {
+	return writer.result
+}
+
+// TestConfigWriterAdaptersMapNativeResultFields varies each field of the
+// native configuration write result on its own and checks every mapping:
+//   - Success: a mapping that fixes Success, or drops it, fails the cases
+//     where only Success differs;
+//   - Error: a mapping that drops Error, or fills it from elsewhere, fails
+//     the cases where only Error differs.
+//
+// The GraphQL boiler and system results are checked through the admitted
+// GraphQL writer, the MCP result through its mapping and through the MCP
+// adapter over a poller without a bus.
+func TestConfigWriterAdaptersMapNativeResultFields(t *testing.T) {
+	cases := []vaillantConfigWriteResult{
+		{Success: true},
+		{Success: false},
+		{Success: true, Error: "note"},
+		{Success: false, Error: "refused"},
+	}
+	for _, native := range cases {
+		writer := admittedGraphQLSemanticWriter{boiler: fixedConfigWriter{native}, system: fixedConfigWriter{native}, admitted: admittedTestSource(0x71)}
+		boiler := writer.SetBoilerConfig(context.Background(), "field", "1")
+		if boiler.Success != native.Success || boiler.Error != native.Error {
+			t.Fatalf("GraphQL boiler result = %+v; want %+v", boiler, native)
+		}
+		system := writer.SetSystemConfig(context.Background(), "field", "1")
+		if system.Success != native.Success || system.Error != native.Error {
+			t.Fatalf("GraphQL system result = %+v; want %+v", system, native)
+		}
+		mapped := mcpConfigSetResult(native)
+		if mapped.Success != native.Success || mapped.Error != native.Error {
+			t.Fatalf("MCP result = %+v; want %+v", mapped, native)
+		}
+	}
+
+	poller := &vaillantSemanticPoller{}
+	adapter := &mcpConfigWriterAdapter{poller: poller}
+	for _, call := range []struct {
+		name   string
+		native vaillantConfigWriteResult
+		mapped mcp.ConfigSetResult
+	}{
+		{name: "boiler", native: poller.SetBoilerConfig(context.Background(), "unknown_field", "1"), mapped: adapter.SetBoilerConfig(context.Background(), "unknown_field", "1")},
+		{name: "system", native: poller.SetSystemConfig(context.Background(), "unknown_field", "1"), mapped: adapter.SetSystemConfig(context.Background(), "unknown_field", "1")},
+	} {
+		if call.native.Error == "" {
+			t.Fatalf("%s: native refusal carries no error", call.name)
+		}
+		if call.mapped.Success != call.native.Success || call.mapped.Error != call.native.Error {
+			t.Fatalf("%s: MCP adapter result = %+v; want %+v", call.name, call.mapped, call.native)
+		}
 	}
 }

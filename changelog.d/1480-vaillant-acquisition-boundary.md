@@ -1,0 +1,3 @@
+## Return native configuration write results and pin the acquisition boundary
+
+The boiler and system configuration writes of the Vaillant poller return native results, which the admitted GraphQL writer and the MCP configuration writer adapters map to their GraphQL and MCP results with the same field names. The poller reaches its publication owner only through an interface of native values, and a test pins that the acquisition owner imports neither the GraphQL, the MCP nor the Portal package and that the publication files hold no bus access. The locks of both owners are documented on a new architecture page. Published output and write results are unchanged; the gateway binary changes.

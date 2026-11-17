@@ -3,12 +3,10 @@ package main
 import (
 	"context"
 	"expvar"
-	"log"
 	"sync"
 	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway"
-	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 	"github.com/Project-Helianthus/helianthus-ebusreg/vaillant/productids"
@@ -48,22 +46,6 @@ var (
 	defaultFM5EvidenceTTL           = 30 * time.Minute
 )
 
-func startVaillantSemanticPolling(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway, provider *graphql.LiveSemanticProvider, hub *graphql.BroadcastHub, startupBarrier <-chan struct{}) *vaillantSemanticPoller {
-	if gateway == nil || gateway.Bus == nil || gateway.Registry == nil || provider == nil {
-		return nil
-	}
-
-	cacheStore := newSemanticCacheStore(cfg.SemanticCachePath, log.Printf)
-	cacheHydration, cacheLoaded := preloadSemanticCache(provider, cacheStore)
-	poller := newVaillantSemanticPoller(cfg, gateway, provider, hub, cacheStore)
-	poller.startupBarrier = startupBarrier
-	if cacheLoaded {
-		poller.hydrateFromCache(cacheHydration)
-	}
-	poller.Start(ctx)
-	return poller
-}
-
 // sourceAndCompanion returns the initiator and companion currently selected
 // for the poller under its state lock.
 func (p *vaillantSemanticPoller) sourceAndCompanion() (byte, byte) {
@@ -84,6 +66,32 @@ func (p *vaillantSemanticPoller) setSourceAndCompanion(source, companion byte) {
 	p.mu.Unlock()
 }
 
+// vaillantSemanticPoller is the acquisition owner of the Vaillant semantic
+// planes: it reads, refreshes, discovers and writes over the bus, keeps the
+// native snapshots and the native qualification state, and hands native
+// views to its publication owner through vaillantSemanticPublisher. It
+// imports neither the GraphQL, the MCP nor the Portal package; a test pins
+// that boundary.
+//
+// Locks and the state each guards:
+//   - pollMu serializes acquisition passes: every task of the poll
+//     schedule and every direct acquisition caller hold it for the whole
+//     pass, and a source rebind holds it so that a pass in flight never
+//     continues with the successor's source. It guards no field by itself;
+//     it orders the passes that change the snapshots.
+//   - readMu serializes the semantic bus exchanges that take it: the B509
+//     and B524 reads, the B524 register probe, the B509 write and the B555
+//     reads and writes. It is held only around building and sending one
+//     frame with its timeout context, never across a retry pause, a
+//     snapshot change or a publication.
+//   - mu guards the native snapshot and qualification state: every field
+//     declared from mu down to solarCylinders, and source and companion. It
+//     is held for short copies and updates; the views for the publication
+//     owner are built under it and handed over after it is released.
+//   - b524WidthMismatchMu guards b524WidthMismatchLoggedAt only.
+//
+// pollMu is the outermost of these locks. The publication owner's
+// boilerPublishMu, reached through boilerPublishLock, is taken before mu.
 type vaillantSemanticPoller struct {
 	scheduler *ebusgateway.SemanticReadScheduler
 	tasks     *semanticTaskScheduler
@@ -92,10 +100,9 @@ type vaillantSemanticPoller struct {
 	bus    *protocol.Bus
 	shadow *ebusgateway.ShadowCache
 
-	// publication owns the GraphQL provider, the broadcast hub, the cache
-	// persister and the boiler publication lock; nil for a registry-only
-	// poller, whose accessors then return nil collaborators.
-	publication *vaillantSemanticPublication
+	// publication is the publication owner, reached only through native
+	// values; nil for a registry-only poller, which then publishes nothing.
+	publication vaillantSemanticPublisher
 
 	transportConfig ebusgateway.TransportConfig
 	watchObserver   ebusgateway.WatchObserver
@@ -119,7 +126,9 @@ type vaillantSemanticPoller struct {
 	fm5EvidenceTTL           time.Duration
 	circuitFullScanInterval  time.Duration
 
+	// pollMu serializes acquisition passes and source rebinds.
 	pollMu sync.Mutex
+	// readMu serializes one semantic bus exchange at a time.
 	readMu sync.Mutex
 
 	// identityProbedAddresses tracks per-address probe attempts for
@@ -130,6 +139,8 @@ type vaillantSemanticPoller struct {
 	catalog    productids.Catalog
 	catalogErr error
 
+	// mu guards the native snapshot and qualification state below, down to
+	// solarCylinders, and source and companion above.
 	mu                          sync.Mutex
 	controller                  byte
 	boilerAddress               byte

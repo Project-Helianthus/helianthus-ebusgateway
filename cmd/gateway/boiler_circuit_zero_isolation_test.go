@@ -134,12 +134,12 @@ func TestM62CachedHeatingStatusRawWithoutBoilerSourceIsDiscarded(t *testing.T) {
 			}
 
 			poller := m62Poller(0, 1, uint16(cachedRaw))
-			poller.publication = newVaillantSemanticPublication(graphql.NewLiveSemanticProvider(), poller.broadcastHub(), poller.cachePersister())
-			snapshot, ok := preloadSemanticCache(poller.liveProvider(), store)
+			poller.publication = newVaillantSemanticPublication(graphql.NewLiveSemanticProvider(), publishedHub(poller), publishedCache(poller))
+			snapshot, ok := preloadSemanticCache(publishedProvider(poller), store)
 			if !ok {
 				t.Fatal("legacy cache was discarded wholesale")
 			}
-			status := poller.liveProvider().BoilerStatus()
+			status := publishedProvider(poller).BoilerStatus()
 			if status == nil {
 				t.Fatal("cached boiler status missing; want other cached fields restored")
 			}
@@ -253,7 +253,7 @@ func m62AssertSurfaces(t *testing.T, poller *vaillantSemanticPoller, wantBoilerP
 	wantCircuitPump := circuitRaw != 0
 	wantCircuitState := decodeCircuitStateToken(&stateRaw)
 
-	status := poller.liveProvider().BoilerStatus()
+	status := publishedProvider(poller).BoilerStatus()
 	if status == nil {
 		t.Fatal("boiler status not published")
 	}
@@ -261,7 +261,7 @@ func m62AssertSurfaces(t *testing.T, poller *vaillantSemanticPoller, wantBoilerP
 	if got := status.Diagnostics.HeatingStatusRaw; got != nil {
 		t.Errorf("provider boiler heating status = %d; want unset without a boiler-qualified source", *got)
 	}
-	circuits := poller.liveProvider().Circuits()
+	circuits := publishedProvider(poller).Circuits()
 	if len(circuits) != 1 || circuits[0].Index != 0 {
 		t.Fatalf("provider circuits = %+v; want circuit 0", circuits)
 	}
@@ -272,7 +272,7 @@ func m62AssertSurfaces(t *testing.T, poller *vaillantSemanticPoller, wantBoilerP
 
 	// GraphQL: both alias spellings of each field.
 	builder := graphql.NewBuilder(nil, nil)
-	builder.SetSemanticProvider(poller.liveProvider())
+	builder.SetSemanticProvider(publishedProvider(poller))
 	schema, err := graphql.NewQuerySchema(builder)
 	if err != nil {
 		t.Fatalf("NewQuerySchema: %v", err)
@@ -312,7 +312,7 @@ func m62AssertSurfaces(t *testing.T, poller *vaillantSemanticPoller, wantBoilerP
 	}
 
 	// MCP: omitempty pointers, so an unknown boiler field is an absent key.
-	adapter := newMCPSemanticProvider(poller.liveProvider())
+	adapter := newMCPSemanticProvider(publishedProvider(poller))
 	mcpBoiler := m62JSONObject(t, adapter.BoilerStatus())
 	m62AssertJSONBool(t, "MCP boiler state.central_heating_pump_active", m62Object(t, mcpBoiler, "state"), "central_heating_pump_active", false, wantBoilerPump)
 	if diag, ok := mcpBoiler["diagnostics"].(map[string]any); ok {

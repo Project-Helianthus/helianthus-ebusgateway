@@ -1,30 +1,37 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"log"
+	"slices"
 	"sync"
 	"time"
 
+	"github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 )
 
-// vaillantSemanticPublication owns the collaborators through which the
-// Vaillant poller publishes its snapshots: the GraphQL provider, the
-// broadcast hub and the semantic cache persister. It holds no bus access.
+// vaillantSemanticPublication is the publication owner of the Vaillant
+// poller: it holds the GraphQL provider, the broadcast hub and the semantic
+// cache persister, and no bus access. The acquisition owner reaches it only
+// through vaillantSemanticPublisher, whose methods speak native values.
 // Zones, hot water, circuits, radio devices, the boiler status and the system
 // reach it as native views that the poller builds under its snapshot lock,
 // and the regulator capability as the native controller capability; the
 // owner maps them to GraphQL values in vaillant_semantic_publication_views.go.
 // The FM5 verdict, solar and cylinders reach it as a native view that it maps
 // in vaillant_semantic_publication_fm5.go, and it publishes the startup plane
-// defaults and the startup schedule placeholder. It is also the energy ledger of a register acquisition: it derives the
-// provider's energy keys from native channel, usage and window values.
-// Adapter hardware info reaches it as a native value that it maps to the
-// GraphQL form, and the hot water bivalence bound as the native
-// configuration bound that it maps to the GraphQL and MCP forms. Cache
-// persistence and the conversion of a loaded cache into the native
-// hydration value live in vaillant_semantic_publication_cache.go.
+// defaults and the startup schedule placeholder. It is also the energy ledger
+// of a register acquisition: it derives the provider's energy keys from
+// native channel, usage and window values. Adapter hardware info reaches it
+// as a native value that it maps to the GraphQL form, and the hot water
+// bivalence bound as the native configuration bound that it maps to the
+// GraphQL and MCP forms. Cache persistence and the conversion of a loaded
+// cache into the native hydration value live in
+// vaillant_semantic_publication_cache.go; the writer adapters that map the
+// native write results live in vaillant_semantic_publication_writes.go.
 //
 // boilerPublishMu orders GraphQL boiler-status publication against the
 // thermal withdrawal: publishBoilerStatus and the thermal publisher's
@@ -45,58 +52,74 @@ func newVaillantSemanticPublication(provider *graphql.LiveSemanticProvider, hub 
 	return &vaillantSemanticPublication{provider: provider, hub: hub, cache: cache}
 }
 
-// vaillantPublicationNoLock is the publish lock of a poller without a
-// publication owner, such as the registry-only classifier built during the
-// startup scan: it never publishes, so there is nothing to order.
-type vaillantPublicationNoLock struct{}
-
-func (vaillantPublicationNoLock) Lock()   {}
-func (vaillantPublicationNoLock) Unlock() {}
-
-// liveProvider returns the GraphQL provider, or nil when the poller has no
-// publication owner.
-func (p *vaillantSemanticPoller) liveProvider() *graphql.LiveSemanticProvider {
-	if p == nil || p.publication == nil {
+func startVaillantSemanticPolling(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway, provider *graphql.LiveSemanticProvider, hub *graphql.BroadcastHub, startupBarrier <-chan struct{}) *vaillantSemanticPoller {
+	if gateway == nil || gateway.Bus == nil || gateway.Registry == nil || provider == nil {
 		return nil
 	}
-	return p.publication.provider
+
+	cacheStore := newSemanticCacheStore(cfg.SemanticCachePath, log.Printf)
+	cacheHydration, cacheLoaded := preloadSemanticCache(provider, cacheStore)
+	poller := newVaillantSemanticPoller(cfg, gateway, provider, hub, cacheStore)
+	poller.startupBarrier = startupBarrier
+	if cacheLoaded {
+		poller.hydrateFromCache(cacheHydration)
+	}
+	poller.Start(ctx)
+	return poller
 }
 
-// broadcastHub returns the broadcast hub, or nil when the poller has no
-// publication owner.
-func (p *vaillantSemanticPoller) broadcastHub() *graphql.BroadcastHub {
-	if p == nil || p.publication == nil {
+// newVaillantSemanticPoller builds the acquisition owner with a publication
+// owner over provider, hub and cache.
+func newVaillantSemanticPoller(cfg ebusgateway.Config, gateway *ebusgateway.Gateway, provider *graphql.LiveSemanticProvider, hub *graphql.BroadcastHub, cache semanticCachePersister) *vaillantSemanticPoller {
+	return newVaillantSemanticAcquisition(cfg, gateway, newVaillantSemanticPublication(provider, hub, cache))
+}
+
+// publicationOwner returns the poller's publication owner, or nil when the
+// poller has none.
+func publicationOwner(p *vaillantSemanticPoller) *vaillantSemanticPublication {
+	if p == nil {
 		return nil
 	}
-	return p.publication.hub
+	owner, _ := p.publication.(*vaillantSemanticPublication)
+	return owner
 }
 
-// cachePersister returns the semantic cache persister, or nil when the
-// poller has no publication owner.
-func (p *vaillantSemanticPoller) cachePersister() semanticCachePersister {
-	if p == nil || p.publication == nil {
-		return nil
-	}
-	return p.publication.cache
+// live reports whether the owner holds a provider to publish to.
+func (o *vaillantSemanticPublication) live() bool {
+	return o != nil && o.provider != nil
 }
 
-// boilerPublishLock returns the owner's boiler publication lock, or a
-// no-op lock when the poller has no publication owner.
-func (p *vaillantSemanticPoller) boilerPublishLock() sync.Locker {
-	if p == nil || p.publication == nil {
-		return vaillantPublicationNoLock{}
-	}
-	return &p.publication.boilerPublishMu
+// boilerPublishLock returns the owner's boiler publication lock.
+func (o *vaillantSemanticPublication) boilerPublishLock() sync.Locker {
+	return &o.boilerPublishMu
 }
 
-// energyLedger returns the publication owner as the energy ledger of a
-// register acquisition, or nil when the poller has no provider to hold the
-// ledger.
-func (p *vaillantSemanticPoller) energyLedger() vaillantEnergyLedger {
-	if p == nil || p.publication == nil || p.publication.provider == nil {
-		return nil
+// setNoSupportedHeatSourcePath sets or clears the provider's startup reason
+// for a bus without a supported heat source path and returns the reason and
+// whether the provider changed.
+func (o *vaillantSemanticPublication) setNoSupportedHeatSourcePath(active bool) (string, bool) {
+	return graphql.SemanticStartupReasonNoSupportedHeatSourcePath, o.provider.SetNoSupportedHeatSourcePath(active)
+}
+
+// publishedPlanes reports which planes the provider publishes.
+func (o *vaillantSemanticPublication) publishedPlanes() vaillantPublishedPlanes {
+	cylinders := o.provider.Cylinders()
+	return vaillantPublishedPlanes{
+		zones:            o.provider.Zones() != nil,
+		dhw:              o.provider.DHW() != nil,
+		circuits:         o.provider.Circuits() != nil,
+		system:           o.provider.System() != nil,
+		radioDeviceCount: len(o.provider.RadioDevices()),
+		solar:            o.provider.Solar() != nil,
+		cylinders:        cylinders != nil,
+		cylinderCount:    len(cylinders),
+		boilerStatus:     o.provider.BoilerStatus() != nil,
 	}
-	return p.publication
+}
+
+// publishedZoneCount returns the number of zones the provider publishes.
+func (o *vaillantSemanticPublication) publishedZoneCount() int {
+	return len(o.provider.Zones())
 }
 
 // energyReferenceTime returns the provider's energy reference instant.
@@ -126,123 +149,6 @@ func (o *vaillantSemanticPublication) publishEnergyTotals() {
 		return
 	}
 	o.hub.PublishEnergyUpdate(totals)
-}
-
-// publishZones hands the native zone views to the publication owner and
-// persists the semantic cache after a publication.
-func (p *vaillantSemanticPoller) publishZones(source semanticSnapshotSource) {
-	if p.liveProvider() == nil {
-		return
-	}
-
-	p.mu.Lock()
-	views := p.zoneViewsLocked()
-	p.mu.Unlock()
-
-	if p.publication.publishZoneViews(views, source) {
-		p.persistSemanticCache(source)
-	}
-}
-
-// publishDHW applies stale expiry, hands the native hot water view to the
-// publication owner and persists the semantic cache after a publication; an
-// expiry persists the snapshot whatever its source.
-func (p *vaillantSemanticPoller) publishDHW(source semanticSnapshotSource) {
-	if p.liveProvider() == nil {
-		return
-	}
-
-	p.mu.Lock()
-	expired := p.expireDHWIfStaleLocked(source)
-	view := p.dhwViewLocked(expired)
-	p.mu.Unlock()
-
-	if !p.publication.publishDhwView(view, source) {
-		return
-	}
-	if view.snapshot == nil && view.expired {
-		p.persistSemanticSnapshot()
-		return
-	}
-	p.persistSemanticCache(source)
-}
-
-// publishCircuits hands the native circuits view to the publication owner
-// and persists the semantic cache after a publication.
-func (p *vaillantSemanticPoller) publishCircuits(source semanticSnapshotSource) {
-	if p == nil || p.liveProvider() == nil {
-		return
-	}
-
-	p.mu.Lock()
-	view := p.circuitsViewLocked()
-	p.mu.Unlock()
-
-	if p.publication.publishCircuitsView(view, source) {
-		p.persistSemanticCache(source)
-	}
-}
-
-// publishBoilerStatus merges the published thermal flow into the retained
-// boiler snapshot, hands a detached copy to the publication owner and
-// persists the semantic cache after a publication. It holds the owner's
-// boiler publication lock across the merge, the copy and the publication.
-func (p *vaillantSemanticPoller) publishBoilerStatus(source semanticSnapshotSource) {
-	if p == nil || p.liveProvider() == nil {
-		return
-	}
-
-	boilerPublish := p.boilerPublishLock()
-	boilerPublish.Lock()
-	defer boilerPublish.Unlock()
-
-	p.mergePublishedBoilerFlow()
-	p.mu.Lock()
-	snapshot := cloneBoilerSnapshot(p.boiler)
-	p.mu.Unlock()
-
-	if p.publication.publishBoilerStatusView(snapshot, source) {
-		p.persistSemanticCache(source)
-	}
-}
-
-// publishRadioDevices hands the native radio device views to the publication
-// owner and persists the semantic cache after a publication.
-func (p *vaillantSemanticPoller) publishRadioDevices(source semanticSnapshotSource) {
-	if p == nil || p.liveProvider() == nil {
-		return
-	}
-
-	p.mu.Lock()
-	views := p.radioDeviceViewsLocked()
-	p.mu.Unlock()
-
-	if p.publication.publishRadioDeviceViews(views, source) {
-		p.persistSemanticCache(source)
-	}
-}
-
-// publishSystem hands the native system view, with the hot water bivalence
-// bound resolved for the discovered controller, to the publication owner;
-// after a publication it persists the semantic cache and republishes the
-// circuits.
-func (p *vaillantSemanticPoller) publishSystem(source semanticSnapshotSource) {
-	if p == nil || p.liveProvider() == nil {
-		return
-	}
-
-	p.mu.Lock()
-	view := vaillantSystemView{snapshot: cloneSystemSnapshot(p.system)}
-	p.mu.Unlock()
-	if view.snapshot != nil {
-		view.dhwBivalenceBound = p.controllerConfigBound()
-	}
-
-	if !p.publication.publishSystemView(view, source) {
-		return
-	}
-	p.persistSemanticCache(source)
-	p.publishCircuits(source)
 }
 
 // publishStartupPlaneDefaults publishes an empty circuits, solar and
@@ -405,4 +311,231 @@ func (adapter mcpSemanticProviderAdapter) System() *mcp.SystemStatus {
 			ModuleConfigurationVR71: cloneIntPtr(status.Properties.ModuleConfigurationVR71),
 		},
 	}
+}
+
+func circuitsEqual(a, b []graphql.CircuitStatus) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		left := a[i]
+		right := b[i]
+		if left.Index != right.Index || left.CircuitType != right.CircuitType || left.HasMixer != right.HasMixer {
+			return false
+		}
+		if !boolPtrEquals(left.State.PumpActive, right.State.PumpActive) {
+			return false
+		}
+		if !floatPtrEquals(left.State.MixerPositionPct, right.State.MixerPositionPct) {
+			return false
+		}
+		if !floatPtrEquals(left.State.FlowTemperatureC, right.State.FlowTemperatureC) {
+			return false
+		}
+		if !floatPtrEquals(left.State.FlowSetpointC, right.State.FlowSetpointC) {
+			return false
+		}
+		if !floatPtrEquals(left.State.CalcFlowTempC, right.State.CalcFlowTempC) {
+			return false
+		}
+		if left.State.CircuitState != right.State.CircuitState {
+			return false
+		}
+		if !floatPtrEquals(left.State.Humidity, right.State.Humidity) {
+			return false
+		}
+		if !floatPtrEquals(left.State.DewPoint, right.State.DewPoint) {
+			return false
+		}
+		if !floatPtrEquals(left.State.PumpHours, right.State.PumpHours) {
+			return false
+		}
+		if !intPtrEquals(left.State.PumpStarts, right.State.PumpStarts) {
+			return false
+		}
+		if !floatPtrEquals(left.Config.HeatingCurve, right.Config.HeatingCurve) {
+			return false
+		}
+		if !floatPtrEquals(left.Config.FlowTempMaxC, right.Config.FlowTempMaxC) {
+			return false
+		}
+		if !floatPtrEquals(left.Config.FlowTempMinC, right.Config.FlowTempMinC) {
+			return false
+		}
+		if !floatPtrEquals(left.Config.SummerLimitC, right.Config.SummerLimitC) {
+			return false
+		}
+		if !intPtrEquals(left.Config.SpecialFunctionMode, right.Config.SpecialFunctionMode) {
+			return false
+		}
+		if left.Config.RoomTempControl != right.Config.RoomTempControl {
+			return false
+		}
+		if !boolPtrEquals(left.Config.CoolingEnabled, right.Config.CoolingEnabled) {
+			return false
+		}
+		if left.ManagingDevice.Role != right.ManagingDevice.Role {
+			return false
+		}
+		if !stringPtrEquals(left.ManagingDevice.DeviceID, right.ManagingDevice.DeviceID) {
+			return false
+		}
+		if !intPtrEquals(left.ManagingDevice.Address, right.ManagingDevice.Address) {
+			return false
+		}
+	}
+	return true
+}
+
+func deriveCircuitManagingDevice(system *vaillantSystemSnapshot, fm5Mode vaillantFM5Mode) graphql.ManagingDevice {
+	return circuitManagingDevice(circuitsManagedByFunctionModule(system, fm5Mode))
+}
+
+// circuitManagingDevice returns a detached managing device for one circuit.
+func circuitManagingDevice(managedByFunctionModule bool) graphql.ManagingDevice {
+	if managedByFunctionModule {
+		deviceID := circuitManagingDeviceVR71ID
+		address := circuitManagingDeviceVR71Address
+		return graphql.ManagingDevice{
+			Role:     graphql.ManagingDeviceRoleFunctionModule,
+			DeviceID: &deviceID,
+			Address:  &address,
+		}
+	}
+	return graphql.ManagingDevice{Role: graphql.ManagingDeviceRoleUnknown}
+}
+
+func dhwEquals(a, b *graphql.DhwStatus) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	if a.Config.OperatingMode != b.Config.OperatingMode || a.Config.Preset != b.Config.Preset {
+		return false
+	}
+	if a.State.SpecialFunction != b.State.SpecialFunction {
+		return false
+	}
+	if !floatPtrEquals(a.State.CurrentTempC, b.State.CurrentTempC) {
+		return false
+	}
+	if !floatPtrEquals(a.Config.TargetTempC, b.Config.TargetTempC) {
+		return false
+	}
+	if !floatPtrEquals(a.State.HeatingDemandPct, b.State.HeatingDemandPct) {
+		return false
+	}
+	if a.Config.HolidayStartDate != b.Config.HolidayStartDate || a.Config.HolidayEndDate != b.Config.HolidayEndDate {
+		return false
+	}
+	return true
+}
+
+func radioDevicesEqual(a, b []graphql.RadioDevice) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		left := a[i]
+		right := b[i]
+		if left.Group != right.Group || left.Instance != right.Instance || left.SlotMode != right.SlotMode {
+			return false
+		}
+		if !boolPtrEquals(left.DeviceConnected, right.DeviceConnected) {
+			return false
+		}
+		if !intPtrEquals(left.DeviceClassAddress, right.DeviceClassAddress) {
+			return false
+		}
+		if left.DeviceModel != right.DeviceModel {
+			return false
+		}
+		if !stringPtrEquals(left.FirmwareVersion, right.FirmwareVersion) {
+			return false
+		}
+		if !intPtrEquals(left.HardwareIdentifier, right.HardwareIdentifier) {
+			return false
+		}
+		if !intPtrEquals(left.RemoteControlAddress, right.RemoteControlAddress) {
+			return false
+		}
+		if !boolPtrEquals(left.DevicePaired, right.DevicePaired) {
+			return false
+		}
+		if !intPtrEquals(left.ReceptionStrength, right.ReceptionStrength) {
+			return false
+		}
+		if !intPtrEquals(left.ZoneAssignment, right.ZoneAssignment) {
+			return false
+		}
+		if !floatPtrEquals(left.RoomTemperatureC, right.RoomTemperatureC) {
+			return false
+		}
+		if !floatPtrEquals(left.RoomHumidityPct, right.RoomHumidityPct) {
+			return false
+		}
+	}
+	return true
+}
+
+func zoneEquals(a, b graphql.Zone) bool {
+	if a.ID != b.ID || a.Name != b.Name {
+		return false
+	}
+	// State comparison
+	if a.State.HvacAction != b.State.HvacAction || a.State.SpecialFunction != b.State.SpecialFunction {
+		return false
+	}
+	if !floatPtrEquals(a.State.CurrentTempC, b.State.CurrentTempC) {
+		return false
+	}
+	if !floatPtrEquals(a.State.CurrentHumidityPct, b.State.CurrentHumidityPct) {
+		return false
+	}
+	if !floatPtrEquals(a.State.HeatingDemandPct, b.State.HeatingDemandPct) {
+		return false
+	}
+	if !floatPtrEquals(a.State.ValvePositionPct, b.State.ValvePositionPct) {
+		return false
+	}
+	// Config comparison
+	if a.Config.OperatingMode != b.Config.OperatingMode || a.Config.Preset != b.Config.Preset {
+		return false
+	}
+	if !floatPtrEquals(a.Config.TargetTempC, b.Config.TargetTempC) {
+		return false
+	}
+	if !slices.Equal(a.Config.AllowedModes, b.Config.AllowedModes) {
+		return false
+	}
+	if a.Config.CircuitType != b.Config.CircuitType {
+		return false
+	}
+	if !intPtrEquals(a.Config.AssociatedCircuit, b.Config.AssociatedCircuit) {
+		return false
+	}
+	if !intPtrEquals(a.Config.RoomTemperatureZoneMapping, b.Config.RoomTemperatureZoneMapping) {
+		return false
+	}
+	if a.Config.QuickVeto != b.Config.QuickVeto || a.Config.QuickVetoExpiry != b.Config.QuickVetoExpiry {
+		return false
+	}
+	if !floatPtrEquals(a.Config.QuickVetoSetpointC, b.Config.QuickVetoSetpointC) {
+		return false
+	}
+	if !floatPtrEquals(a.Config.QuickVetoDurationH, b.Config.QuickVetoDurationH) {
+		return false
+	}
+	if a.Config.HolidayStartDate != b.Config.HolidayStartDate || a.Config.HolidayEndDate != b.Config.HolidayEndDate {
+		return false
+	}
+	if !floatPtrEquals(a.Config.HolidaySetpointC, b.Config.HolidaySetpointC) {
+		return false
+	}
+	if a.Config.HolidayStartTime != b.Config.HolidayStartTime || a.Config.HolidayEndTime != b.Config.HolidayEndTime {
+		return false
+	}
+	return true
 }

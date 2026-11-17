@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"math"
+
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/m8sourcestate"
 )
 
 // The B555 reads and the time-program writes of the poller use the native
@@ -78,6 +80,18 @@ type vaillantTimeProgramWriteResult struct {
 type vaillantScheduleWriter interface {
 	SetZoneTimeProgram(ctx context.Context, zone int, weekday int, slots []vaillantTimeProgramSlot) (*vaillantTimeProgramWriteResult, error)
 	SetDhwTimeProgram(ctx context.Context, weekday int, slots []vaillantTimeProgramSlot) (*vaillantTimeProgramWriteResult, error)
+}
+
+// M8CommandRoutingState reports the time-program routes that the poller
+// serves as the schedule writer.
+func (p *vaillantSemanticPoller) M8CommandRoutingState() (m8sourcestate.CommandRoutingFragment, error) {
+	if p == nil {
+		return m8sourcestate.CommandRoutingFragment{}, fmt.Errorf("schedule writer unavailable")
+	}
+	return m8sourcestate.CommandRoutingFragment{Routes: []m8sourcestate.CommandRoute{
+		{SemanticPath: "/mcp/ebus_v1_semantic_schedules_set_dhw_time_program", Source: "ebus", Available: true},
+		{SemanticPath: "/mcp/ebus_v1_semantic_schedules_set_zone_time_program", Source: "ebus", Available: true},
+	}}, nil
 }
 
 var b555ErrorDescriptions = map[byte]string{
@@ -308,7 +322,7 @@ func (p *vaillantSemanticPoller) SetDhwTimeProgram(ctx context.Context, weekday 
 // refreshScheduleForProgram rereads one weekday of a program after a write
 // and hands it to the publication owner.
 func (p *vaillantSemanticPoller) refreshScheduleForProgram(ctx context.Context, zone, hc, weekday byte) {
-	if p == nil || p.bus == nil || p.liveProvider() == nil {
+	if p == nil || p.bus == nil || !p.publishing() {
 		return
 	}
 
@@ -443,7 +457,7 @@ type b555ProgramSpec struct {
 // refreshSchedules polls B555 timer schedules and hands the native programs
 // to the publication owner.
 func (p *vaillantSemanticPoller) refreshSchedules(ctx context.Context) {
-	if p == nil || p.bus == nil || p.liveProvider() == nil {
+	if p == nil || p.bus == nil || !p.publishing() {
 		return
 	}
 

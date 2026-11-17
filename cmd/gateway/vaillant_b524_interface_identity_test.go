@@ -66,11 +66,11 @@ func assertB524InterfaceBound(t *testing.T, poller *vaillantSemanticPoller, max 
 		t.Fatalf("discovery bound = %+v; want -20..%g source %s", bound, max, source)
 	}
 	poller.publishSystem(semanticSnapshotSourceLive)
-	published := poller.liveProvider().System().Config.DhwBivalenceBound
+	published := publishedProvider(poller).System().Config.DhwBivalenceBound
 	if published == nil || published.MinC != bound.MinC || published.MaxC != bound.MaxC || published.Source != bound.Source {
 		t.Fatalf("published bound = %+v; want %+v", published, bound)
 	}
-	mcpSystem := (mcpSemanticProviderAdapter{provider: poller.liveProvider()}).System()
+	mcpSystem := (mcpSemanticProviderAdapter{provider: publishedProvider(poller)}).System()
 	if mcpSystem == nil || mcpSystem.Config == nil || mcpSystem.Config.DhwBivalenceBound == nil {
 		t.Fatal("MCP bound absent")
 	}

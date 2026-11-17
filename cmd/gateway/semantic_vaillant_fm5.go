@@ -251,7 +251,7 @@ func decodeFunctionalModuleIdentityTuple(
 }
 
 func (p *vaillantSemanticPoller) refreshFM5Semantic(ctx context.Context) {
-	if p == nil || p.liveProvider() == nil {
+	if !p.publishing() {
 		return
 	}
 

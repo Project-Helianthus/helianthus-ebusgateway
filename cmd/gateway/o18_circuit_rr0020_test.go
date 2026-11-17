@@ -149,7 +149,7 @@ func TestO18RetainedAndIncomingSnapshots(t *testing.T) {
 	// Cache-source publication uses cloneCircuitSnapshot even without a refresh.
 	p := &vaillantSemanticPoller{publication: newVaillantSemanticPublication(graphql.NewLiveSemanticProvider(), nil, nil), circuits: map[byte]*vaillantCircuitSnapshot{1: old}}
 	p.publishCircuits(semanticSnapshotSourceCache)
-	out := p.liveProvider().Circuits()
+	out := publishedProvider(p).Circuits()
 	if len(out) != 1 || out[0].State.CalcFlowTempC != nil || out[0].State.FlowTemperatureC == nil || *out[0].State.FlowTemperatureC != 41.5 || out[0].State.FlowSetpointC == nil || *out[0].State.FlowSetpointC != 46.25 {
 		t.Fatalf("cached publication=%+v", out)
 	}

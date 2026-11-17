@@ -177,12 +177,12 @@ func TestM15SnapshotExcludesMirrorAndCache(t *testing.T) {
 	pub, _, _ := m15Fixture(t)
 	poller := &vaillantSemanticPoller{publication: newVaillantSemanticPublication(graphql.NewLiveSemanticProvider(), nil, nil), boilerAddress: 0x36, boilerThermal: pub, boiler: &vaillantBoilerSnapshot{FlowTemperatureC: m15Float(99)}}
 	poller.publishBoilerStatus(semanticSnapshotSourceLive)
-	if got := poller.liveProvider().BoilerStatus().State.FlowTemperatureC; got == nil || *got != 50 {
+	if got := publishedProvider(poller).BoilerStatus().State.FlowTemperatureC; got == nil || *got != 50 {
 		t.Fatalf("flow=%v error=%v", got, pub.lastError)
 	}
 	pub.binding = nil
 	poller.publishBoilerStatus(semanticSnapshotSourceCache)
-	if poller.liveProvider().BoilerStatus().State.FlowTemperatureC != nil {
+	if publishedProvider(poller).BoilerStatus().State.FlowTemperatureC != nil {
 		t.Fatal("legacy cached flow admitted")
 	}
 }
@@ -317,12 +317,12 @@ func TestM15UnqualifiedFlowOnlyCyclePublishesChangedDHW(t *testing.T) {
 		// No circuit snapshot supplies a fresh circuit-state mirror.
 	}
 	poller.publishBoilerStatus(semanticSnapshotSourceLive)
-	if got := poller.liveProvider().BoilerStatus(); got == nil || got.State.DhwTemperatureC == nil || *got.State.DhwTemperatureC != 40 || got.State.FlowTemperatureC != nil {
+	if got := publishedProvider(poller).BoilerStatus(); got == nil || got.State.DhwTemperatureC == nil || *got.State.DhwTemperatureC != 40 || got.State.FlowTemperatureC != nil {
 		t.Fatalf("initial public boiler status = %+v; want DHW 40 and withheld flow", got)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	updates, err := poller.broadcastHub().SubscribeBoiler(ctx)
+	updates, err := publishedHub(poller).SubscribeBoiler(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -349,7 +349,7 @@ func TestM15UnqualifiedFlowOnlyCyclePublishesChangedDHW(t *testing.T) {
 	if pub.good != nil || pub.scalar(poller.boilerAddress) != nil {
 		t.Fatal("unqualified acquisition supplied a flow fact")
 	}
-	if got := poller.liveProvider().BoilerStatus(); got == nil || got.State.DhwTemperatureC == nil || *got.State.DhwTemperatureC != 47.5 || got.State.FlowTemperatureC != nil {
+	if got := publishedProvider(poller).BoilerStatus(); got == nil || got.State.DhwTemperatureC == nil || *got.State.DhwTemperatureC != 47.5 || got.State.FlowTemperatureC != nil {
 		t.Fatalf("public boiler status = %+v; want changed DHW 47.5 and withheld flow", got)
 	}
 	select {
@@ -385,12 +385,12 @@ func TestM15FreshSystemFlowMirrorPublishesChangedDHWWithFailedB509(t *testing.T)
 		// No circuit snapshot supplies a fresh circuit-state mirror.
 	}
 	poller.publishBoilerStatus(semanticSnapshotSourceLive)
-	if got := poller.liveProvider().BoilerStatus(); got == nil || got.State.DhwTemperatureC == nil || *got.State.DhwTemperatureC != 40 || got.State.FlowTemperatureC != nil {
+	if got := publishedProvider(poller).BoilerStatus(); got == nil || got.State.DhwTemperatureC == nil || *got.State.DhwTemperatureC != 40 || got.State.FlowTemperatureC != nil {
 		t.Fatalf("initial public boiler status = %+v; want DHW 40 and withheld flow", got)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	updates, err := poller.broadcastHub().SubscribeBoiler(ctx)
+	updates, err := publishedHub(poller).SubscribeBoiler(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -424,7 +424,7 @@ func TestM15FreshSystemFlowMirrorPublishesChangedDHWWithFailedB509(t *testing.T)
 	if len(view.Snapshot.Facts) != 0 {
 		t.Fatal("system-flow mirror seeded a SemReg flow fact")
 	}
-	if got := poller.liveProvider().BoilerStatus(); got == nil || got.State.DhwTemperatureC == nil || *got.State.DhwTemperatureC != 47.5 || got.State.FlowTemperatureC != nil {
+	if got := publishedProvider(poller).BoilerStatus(); got == nil || got.State.DhwTemperatureC == nil || *got.State.DhwTemperatureC != 47.5 || got.State.FlowTemperatureC != nil {
 		t.Fatalf("public boiler status = %+v; want changed DHW 47.5 and withheld flow", got)
 	}
 	select {
@@ -535,7 +535,7 @@ func testM15LifecycleClearsLegacyProjection(t *testing.T, control string) {
 	poller := &vaillantSemanticPoller{publication: newVaillantSemanticPublication(graphql.NewLiveSemanticProvider(), graphql.NewBroadcastHub(nil), nil), boilerAddress: 0x36}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	updates, err := poller.broadcastHub().SubscribeBoiler(ctx)
+	updates, err := publishedHub(poller).SubscribeBoiler(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -546,7 +546,7 @@ func testM15LifecycleClearsLegacyProjection(t *testing.T, control string) {
 	original := pub.onControl
 	pub.onControl = func(e semhub.ControlEvent) error { err := original(e); ack <- struct{}{}; return err }
 	poller.publishBoilerStatus(semanticSnapshotSourceLive)
-	if poller.liveProvider().BoilerStatus().State.FlowTemperatureC == nil {
+	if publishedProvider(poller).BoilerStatus().State.FlowTemperatureC == nil {
 		t.Fatal(pub.lastError)
 	}
 	select {
@@ -571,7 +571,7 @@ func testM15LifecycleClearsLegacyProjection(t *testing.T, control string) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("lifecycle reprojection did not settle")
 	}
-	if poller.liveProvider().BoilerStatus().State.FlowTemperatureC != nil {
+	if publishedProvider(poller).BoilerStatus().State.FlowTemperatureC != nil {
 		t.Fatal("retired flow remained on legacy surface")
 	}
 	select {

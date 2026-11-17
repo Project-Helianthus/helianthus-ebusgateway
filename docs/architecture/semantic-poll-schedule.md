@@ -1,18 +1,19 @@
 # Semantic polling schedule ownership
 
 The private `semanticPollSchedule` in
-[the scheduling implementation](../../cmd/gateway/semantic_poll_schedule.go)
+[the scheduling implementation](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/semantic_poll_schedule.go)
 owns startup gating, recurring tick submission and acquisition serialization.
 It receives typed task descriptors containing a key, priority, interval and
 refresh callback. It imports only standard library packages and has no native
 protocol, GraphQL or MCP dependency.
 
-[The poller](../../cmd/gateway/semantic_vaillant.go) binds existing refresh
+[The poller](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/semantic_vaillant.go) binds existing refresh
 methods to descriptors. Its existing entry points delegate directly to the
 schedule owner. Acquisition, native evidence, qualification, partial
 last-known-good state and publication remain in the existing refresh paths.
-This boundary does not complete the acquisition/publication separation tracked
-by [the parent issue](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1480).
+The refresh paths reach the publication owner only through native values, as
+described in
+[the acquisition and publication owners](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/docs/architecture/vaillant-acquisition-publication.md).
 
 ## Submission contract
 
@@ -64,7 +65,7 @@ first generation's startup barrier, the intervals and the queue are unchanged.
 
 ## Evidence boundary
 
-[The scheduling tests](../../cmd/gateway/semantic_poll_schedule_test.go) use
+[The scheduling tests](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/semantic_poll_schedule_test.go) use
 synthetic callbacks and controlled ticks to check startup, cancellation,
 disabled intervals, task identity, callback binding, initial submission order,
 coalescing, overload and serialization. These are proven offline scheduling

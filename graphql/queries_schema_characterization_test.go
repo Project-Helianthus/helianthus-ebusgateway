@@ -20,7 +20,7 @@ const querySchemaIntrospectionGoldenPath = "testdata/query_schema_introspection.
 
 // querySchemaIntrospectionDocument is the one fixed introspection document the
 // golden records. The type reference chain is seven levels deep, enough for
-// the deepest wrapping a field type can carry.
+// the deepest wrapping a field, argument, or input-field type can carry.
 const querySchemaIntrospectionDocument = `query QuerySchemaIntrospection {
   __schema {
     queryType { name }
@@ -229,6 +229,99 @@ func TestQuerySchemaIntrospectionDetectsEveryRecordedChange(t *testing.T) {
 	}
 }
 
+// TestQuerySchemaIntrospectionRejectsTruncatedArgumentAndInputFieldTypes
+// requires argument and input-field type chains to fail closed when they are
+// deeper than the fixed document, the same rule output field types already follow.
+func TestQuerySchemaIntrospectionRejectsTruncatedArgumentAndInputFieldTypes(t *testing.T) {
+	t.Parallel()
+
+	// completeWrappers is the longest wrapper chain whose named leaf the fixed
+	// document still selects. One more wrapper is cut off.
+	completeWrappers := strings.Count(querySchemaIntrospectionDocument, "ofType")
+	if completeWrappers < 1 {
+		t.Fatal("introspection document records no type chain")
+	}
+	withinDocument := func(leaf graphqlgo.Type) graphqlgo.Input {
+		t.Helper()
+		return wrapIntrospectionInput(t, completeWrappers, leaf)
+	}
+	beyondDocument := func(leaf graphqlgo.Type) graphqlgo.Input {
+		t.Helper()
+		return wrapIntrospectionInput(t, completeWrappers+1, leaf)
+	}
+
+	if _, err := canonicalSchemaIntrospection(schemaWithArgumentAndInputField(t, withinDocument(graphqlgo.Int), withinDocument(graphqlgo.Float))); err != nil {
+		t.Fatalf("type chain the document reaches was rejected: %v", err)
+	}
+
+	_, err := canonicalSchemaIntrospection(schemaWithArgumentAndInputField(t, beyondDocument(graphqlgo.Int), graphqlgo.Float))
+	requireTruncatedTypeChain(t, err, "pageSize")
+
+	_, err = canonicalSchemaIntrospection(schemaWithArgumentAndInputField(t, graphqlgo.Int, beyondDocument(graphqlgo.Float)))
+	requireTruncatedTypeChain(t, err, "lowerBound")
+}
+
+func schemaWithArgumentAndInputField(t *testing.T, argType, inputFieldType graphqlgo.Input) graphqlgo.Schema {
+	t.Helper()
+	filter := graphqlgo.NewInputObject(graphqlgo.InputObjectConfig{
+		Name: "ProbeFilter",
+		Fields: graphqlgo.InputObjectConfigFieldMap{
+			"lowerBound": &graphqlgo.InputObjectFieldConfig{Type: inputFieldType},
+		},
+	})
+	probe := graphqlgo.NewObject(graphqlgo.ObjectConfig{
+		Name: "Probe",
+		Fields: graphqlgo.Fields{
+			"reading": &graphqlgo.Field{
+				Type: graphqlgo.Int,
+				Args: graphqlgo.FieldConfigArgument{
+					"pageSize": &graphqlgo.ArgumentConfig{Type: argType},
+					"filter":   &graphqlgo.ArgumentConfig{Type: filter},
+				},
+			},
+		},
+	})
+	schema, err := graphqlgo.NewSchema(graphqlgo.SchemaConfig{
+		Query: graphqlgo.NewObject(graphqlgo.ObjectConfig{
+			Name:   "Query",
+			Fields: graphqlgo.Fields{"probe": &graphqlgo.Field{Type: probe}},
+		}),
+	})
+	if err != nil {
+		t.Fatalf("NewSchema() error = %v", err)
+	}
+	return schema
+}
+
+func wrapIntrospectionInput(t *testing.T, wrappers int, leaf graphqlgo.Type) graphqlgo.Input {
+	t.Helper()
+	current := leaf
+	for i := 0; i < wrappers; i++ {
+		// Non-null cannot wrap non-null, so the chain alternates with list.
+		if i%2 == 0 {
+			current = graphqlgo.NewNonNull(current)
+		} else {
+			current = graphqlgo.NewList(current)
+		}
+	}
+	input, ok := current.(graphqlgo.Input)
+	if !ok {
+		t.Fatalf("wrapped type %T is not an input type", current)
+	}
+	return input
+}
+
+func requireTruncatedTypeChain(t *testing.T, err error, member string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("canonicalSchemaIntrospection recorded a truncated type chain for %s", member)
+	}
+	text := err.Error()
+	if !strings.Contains(text, "deeper than the introspection document") || !strings.Contains(text, member) {
+		t.Fatalf("canonicalSchemaIntrospection() error = %v; want a truncated chain on %s", err, member)
+	}
+}
+
 func TestQuerySchemaKeepsExactRootFieldSet(t *testing.T) {
 	t.Parallel()
 
@@ -287,7 +380,8 @@ func TestQuerySchemaKeepsExactRootFieldSet(t *testing.T) {
 // canonicalSchemaIntrospection executes the fixed introspection document and
 // returns the golden bytes: the document and the response with types, fields,
 // arguments, input fields and enum values sorted by name, indented JSON with a
-// trailing newline.
+// trailing newline. A field, argument, or input-field type chain deeper than
+// the document reaches is an error, so the golden never records a truncated type.
 func canonicalSchemaIntrospection(schema graphqlgo.Schema) ([]byte, error) {
 	result := graphqlgo.Do(graphqlgo.Params{Schema: schema, RequestString: querySchemaIntrospectionDocument})
 	if len(result.Errors) > 0 {
@@ -331,6 +425,25 @@ func canonicalSchemaIntrospection(schema graphqlgo.Schema) ([]byte, error) {
 			}
 			args, _ := fieldNode["args"].([]any)
 			sortIntrospectionByName(args)
+			for _, arg := range args {
+				argNode, ok := arg.(map[string]any)
+				if !ok {
+					return nil, fmt.Errorf("introspection argument entry is not an object")
+				}
+				if err := requireCompleteTypeChain(argNode["type"]); err != nil {
+					return nil, fmt.Errorf("type %v field %v argument %v: %w", typeNode["name"], fieldNode["name"], argNode["name"], err)
+				}
+			}
+		}
+		inputFields, _ := typeNode["inputFields"].([]any)
+		for _, inputField := range inputFields {
+			inputNode, ok := inputField.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("introspection input field entry is not an object")
+			}
+			if err := requireCompleteTypeChain(inputNode["type"]); err != nil {
+				return nil, fmt.Errorf("type %v input field %v: %w", typeNode["name"], inputNode["name"], err)
+			}
 		}
 	}
 

@@ -767,29 +767,27 @@ class AdapterActionTests(SmokeTestCase):
                 self.assertNotIn("out_of_step_holds_raised", self.reasons(evidence))
                 self.assert_records_the_unprovable_hold_and_passes(status, evidence)
 
-    def test_recovery_inside_the_detecting_reading_is_not_resumption(self):
-        # The discontinuity and the first transactions fall in the same
-        # reading. That reading is not a baseline for recovery: nothing
-        # after it moved, so the cell fails.
+    def test_recovery_inside_the_detecting_reading_counts_as_resumption(self):
+        # The discontinuity and the first resumed transactions fall between
+        # the same two readings. Resumption is counted from the reading
+        # before the discontinuity, so the detecting reading's traffic is
+        # the recovery and the cell passes.
         for invariant, southbound in self.each_cell():
             with self.subTest(case=case_id(invariant, southbound)):
                 baseline = Phase("baseline", "mux", southbound, signals="baseline")
                 recovered = Phase("flow", "mux", southbound, signals="discontinuity")
                 status, evidence = self.run_action(invariant, southbound, [baseline, recovered])
-                self.assertEqual(status, SMOKE.EXIT_FAIL)
+                self.assertEqual(status, SMOKE.EXIT_PASS, evidence.get("reasons"))
                 self.assertEqual(evidence["discontinuity_reading"], 1)
                 measures = evidence["measures"]
-                self.assertEqual(measures["resumed_active_frames"], 0)
-                self.assertEqual(measures["resumed_mux_transactions_done"], 0)
-                self.assertEqual(measures["resumed_passive_completed_transactions"], 0)
-                reasons = self.reasons(evidence)
-                for name in SMOKE.RESUMED_MEASURES:
-                    self.assertIn(name + " did not move", reasons)
+                self.assertGreater(measures["resumed_active_frames"], 0)
+                self.assertGreater(measures["resumed_mux_transactions_done"], 0)
+                self.assertGreater(measures["resumed_passive_completed_transactions"], 0)
 
-    def test_traffic_only_in_the_detecting_reading_is_not_resumption(self):
-        # Frames move in the reading that first shows the discontinuity, and
-        # the next reading does not move again. Counting from the reading
-        # before the discontinuity would call that recovery.
+    def test_resumption_is_counted_from_the_reading_before_the_discontinuity(self):
+        # Frames move in the reading that first shows the discontinuity and
+        # not after it. The baseline of the resumed measures is the reading
+        # before the boundary, not the detecting reading.
         for invariant, southbound in self.each_cell():
             with self.subTest(case=case_id(invariant, southbound)):
                 baseline = Phase("baseline", "mux", southbound, signals="baseline")
@@ -798,11 +796,12 @@ class AdapterActionTests(SmokeTestCase):
                 quiet = Phase("flow", "mux", southbound, signals="discontinuity")
                 quiet.set(SMOKE.MUX_HELD, {}, 0)
                 status, evidence = self.run_action(invariant, southbound, [baseline, detecting, quiet])
-                self.assertEqual(status, SMOKE.EXIT_FAIL)
                 self.assertEqual(evidence["discontinuity_reading"], 1)
-                self.assertEqual(evidence["measures"]["resumed_active_frames"], 0)
-                self.assertIn("resumed_active_frames did not move", self.reasons(evidence))
-                self.assertGreater(evidence["measures"]["active_frames"], 0)
+                measures = evidence["measures"]
+                self.assertGreater(measures["active_frames"], 0)
+                self.assertEqual(measures["resumed_active_frames"], measures["active_frames"])
+                self.assertNotIn("resumed_active_frames did not move", self.reasons(evidence))
+                self.assertEqual(status, SMOKE.EXIT_PASS, evidence.get("reasons"))
 
     def test_out_of_step_hold_fails(self):
         for invariant, southbound in self.each_cell():
@@ -882,17 +881,15 @@ class AddressPriorityTests(SmokeTestCase):
         self.assertEqual(status, SMOKE.EXIT_FAIL)
         self.assertIn("retained_bids_granted did not move", self.reasons(evidence))
 
-    def test_starved_external_session_fails_without_the_priority_series(self):
-        # The contended-selection series is absent, so it cannot excuse a
-        # session that sent no identification frames.
+    def test_absent_priority_series_is_signal_missing_even_for_a_starved_session(self):
+        # Without the contended-selection and retained-bid series the
+        # criterion cannot be judged, so the cell never passes or fails on
+        # the rest of the window.
         phases = [Phase("baseline", "mux", "enh"), Phase("flow", "mux", "enh")]
         phases[1].frames = [item for item in phases[1].frames if item["family"] != "0704"]
         status, evidence = self.run_priority("enh", phases)
-        self.assertEqual(status, SMOKE.EXIT_FAIL)
-        self.assertNotIn("missing_signals", evidence)
-        self.assertIn("external_identification_frames did not move", self.reasons(evidence))
-        self.assertIn("not provable: the gateway does not publish " + SMOKE.MUX_CONTENDED_SELECTIONS,
-                      evidence["limits"]["contended_selections_won_by_priority"])
+        self.assertEqual(status, SMOKE.EXIT_SIGNAL_MISSING)
+        self.assertEqual(evidence["missing_signals"], [SMOKE.MUX_CONTENDED_SELECTIONS, SMOKE.MUX_RETAINED_BIDS])
 
     def test_starved_external_session_fails(self):
         phases = self.priority_phases("enh")
@@ -960,11 +957,10 @@ class MissingSignalTests(SmokeTestCase):
                 self.assertEqual(sorted(path for _, path, _ in self.stub.requests),
                                  ["/debug/vars", "/metrics", "/portal/api/v1/bus/observability"])
 
-    def test_each_unpublished_series_is_a_limit_and_the_cell_can_pass(self):
-        # Dropping one series this gateway does not publish records a limit.
-        # The cell still passes when every requirement the other series can
-        # prove holds, including the reconnect count when only the
-        # discontinuity series is absent.
+    def test_each_unpublished_series_the_criterion_reads_is_signal_missing(self):
+        # Dropping one series the pass criterion reads leaves that criterion
+        # unjudged: the cell answers signal_missing before the operator cue,
+        # never pass, and records no limit in its place.
         absent = {
             "AD04": (SMOKE.MUX_SESSION_DISCONTINUITIES, SMOKE.MUX_UPSTREAM_RECONNECTS),
             "AD09": (SMOKE.MUX_SESSION_DISCONTINUITIES, SMOKE.MUX_UPSTREAM_RECONNECTS),
@@ -980,23 +976,26 @@ class MissingSignalTests(SmokeTestCase):
                     if invariant in ADAPTER_ACTION_INVARIANTS:
                         self.operator_channel.write_text(case_id(invariant, "enh") + "\n", encoding="utf-8")
                     status, evidence = self.run_smoke(self.environ(invariant, "mux", "enh", MATRIX_CELL_CLASS="W"))
-                    self.assertEqual(status, SMOKE.EXIT_PASS, evidence.get("reasons"))
-                    self.assertNotIn("missing_signals", evidence)
-                    self.assertNotEqual(status, SMOKE.EXIT_SIGNAL_MISSING)
-                    limit_text = "\n".join(evidence["limits"].values())
-                    self.assertIn("not provable: the gateway does not publish " + signal, limit_text)
-                    unmet = [row["measure"] for row in evidence["requirements"] if not row["met"]]
-                    self.assertEqual(unmet, [])
-                    if signal == SMOKE.MUX_SESSION_DISCONTINUITIES:
-                        names = [row["measure"] for row in evidence["requirements"]]
-                        self.assertIn("mux_upstream_reconnects", names)
-                        self.assertNotIn("resumed_active_frames", names)
-                        self.assertEqual(evidence["measures"]["mux_upstream_reconnects"], 1)
-                    if signal == SMOKE.MUX_UPSTREAM_RECONNECTS:
-                        names = [row["measure"] for row in evidence["requirements"]]
-                        self.assertIn("consumer_sessions_observing_discontinuity", names)
-                        self.assertNotIn("mux_upstream_reconnects", names)
-                        self.assertEqual(evidence["measures"]["consumer_sessions_observing_discontinuity"], 3)
+                    self.assertEqual(status, SMOKE.EXIT_SIGNAL_MISSING, evidence.get("reasons"))
+                    self.assertEqual(evidence["result"], "signal_missing")
+                    self.assertEqual(evidence["missing_signals"], [signal])
+                    self.assertNotIn("limits", evidence)
+                    self.assertNotIn("operator action", self.output)
+
+    def test_a_series_declared_without_a_sample_is_published(self):
+        # A labelled counter has no sample before its first event; its HELP
+        # and TYPE lines still show the gateway publishes it.
+        phases = self.priority_phases("enh")
+        for phase in phases:
+            phase.drop(SMOKE.MUX_RETAINED_BIDS)
+        self.stub.load(phases)
+        declaration = ("# HELP " + SMOKE.MUX_RETAINED_BIDS + " kept bids\n"
+                       "# TYPE " + SMOKE.MUX_RETAINED_BIDS + " counter\n")
+        self.stub.answers["/metrics"] = [declaration + body for body in self.stub.answers["/metrics"]]
+        status, evidence = self.run_smoke(self.environ("AD07", "mux", "enh"))
+        self.assertNotIn("missing_signals", evidence)
+        self.assertEqual(status, SMOKE.EXIT_FAIL)
+        self.assertIn("retained_bids_granted did not move", self.reasons(evidence))
 
     def test_mux_before_its_first_transaction_ending_fails_the_published_flow(self):
         # The endings family is empty until a transaction ends. That is a
@@ -1004,11 +1003,13 @@ class MissingSignalTests(SmokeTestCase):
         # unpublished series.
         for invariant in ADAPTER_ACTION_INVARIANTS + PRIORITY_INVARIANTS:
             with self.subTest(invariant=invariant):
-                phases = [Phase("baseline", "mux", "ens"), Phase("flow", "mux", "ens")]
+                phases = self.respecified_phases(invariant, "ens")
                 for phase in phases:
                     phase.drop(SMOKE.MUX_ENDINGS)
                     phase.set(SMOKE.MUX_HELD, {}, 0)
                 self.stub.load(phases)
+                if invariant in ADAPTER_ACTION_INVARIANTS:
+                    self.operator_channel.write_text(case_id(invariant, "ens") + "\n", encoding="utf-8")
                 status, evidence = self.run_smoke(self.environ(invariant, "mux", "ens"))
                 self.assertEqual(status, SMOKE.EXIT_FAIL)
                 self.assertNotIn("missing_signals", evidence)
@@ -1050,62 +1051,43 @@ class MissingSignalTests(SmokeTestCase):
                 self.assertIn("AdapterMux diagnostics are present", self.reasons(evidence))
                 self.assertEqual(evidence["transport"]["mux_families"], ["ebus_adaptermux_transaction_endings_total"])
 
-    def test_gateway_without_the_unpublished_series_passes_on_provable_flow(self):
+    def test_gateway_without_the_criterion_series_never_passes(self):
         # The binary publishes the hold gauge and the flow counters, not the
-        # discontinuity or reconnect series. The cell passes when the
-        # published flow moved and no reading shows the hold.
-        for invariant in ADAPTER_ACTION_INVARIANTS:
-            with self.subTest(invariant=invariant):
-                phases = [Phase("baseline", "mux", "ens"), Phase("flow", "mux", "ens")]
-                for phase in phases:
-                    phase.set(SMOKE.MUX_HELD, {}, 0)
-                self.stub.load(phases)
-                self.operator_channel.write_text(case_id(invariant, "ens") + "\n", encoding="utf-8")
-                status, evidence = self.run_smoke(self.environ(invariant, "mux", "ens", MATRIX_CELL_CLASS="W"))
-                self.assertEqual(status, SMOKE.EXIT_PASS, evidence.get("reasons"))
-                self.assertNotIn("missing_signals", evidence)
-                limits = evidence["limits"]
-                for name in SMOKE.SESSION_MEASURES + SMOKE.RESUMED_MEASURES:
-                    self.assertIn("not provable: the gateway does not publish "
-                                  + SMOKE.MUX_SESSION_DISCONTINUITIES, limits[name])
-                self.assertIn("not provable: the gateway does not publish "
-                              + SMOKE.MUX_UPSTREAM_RECONNECTS, limits["mux_upstream_reconnects"])
-                names = [row["measure"] for row in evidence["requirements"]]
-                self.assertIn("active_frames", names)
-                self.assertIn("mux_transactions_done", names)
-                self.assertIn("passive_completed_transactions", names)
-                self.assertNotIn("resumed_active_frames", names)
-        self.stub.load([Phase("baseline", "mux", "ens"), Phase("flow", "mux", "ens")])
-        status, evidence = self.run_smoke(self.environ("AD07", "mux", "ens"))
-        self.assertEqual(status, SMOKE.EXIT_PASS, evidence.get("reasons"))
-        self.assertNotIn("missing_signals", evidence)
-        limit_text = "\n".join(evidence["limits"].values())
-        self.assertIn(SMOKE.MUX_CONTENDED_SELECTIONS, limit_text)
-        self.assertIn(SMOKE.MUX_RETAINED_BIDS, limit_text)
-        self.assertNotIn("contended_selections_won_by_priority",
-                         [row["measure"] for row in evidence["requirements"]])
+        # discontinuity, reconnect, contended-selection or retained-bid
+        # series. The operator confirms while the bus already moves. No cell
+        # passes on that flow: each answers signal_missing, which the gate
+        # does not accept as a pass.
+        for invariant in ADAPTER_ACTION_INVARIANTS + PRIORITY_INVARIANTS:
+            for shape in ("flow", "quiet", "held"):
+                with self.subTest(invariant=invariant, shape=shape):
+                    self.stub.requests.clear()
+                    second = "baseline" if shape == "quiet" else "flow"
+                    phases = [Phase("baseline", "mux", "ens"), Phase(second, "mux", "ens")]
+                    for phase in phases:
+                        phase.set(SMOKE.MUX_HELD, {}, 0)
+                    if shape == "held":
+                        phases[1].set(SMOKE.MUX_HELD, {}, 1)
+                    self.stub.load(phases)
+                    self.operator_channel.write_text(case_id(invariant, "ens") + "\n", encoding="utf-8")
+                    status, evidence = self.run_smoke(self.environ(invariant, "mux", "ens", MATRIX_CELL_CLASS="W"))
+                    self.assertEqual(status, SMOKE.EXIT_SIGNAL_MISSING, evidence.get("reasons"))
+                    self.assertEqual(evidence["result"], "signal_missing")
+                    want = ([SMOKE.MUX_SESSION_DISCONTINUITIES, SMOKE.MUX_UPSTREAM_RECONNECTS]
+                            if invariant in ADAPTER_ACTION_INVARIANTS
+                            else [SMOKE.MUX_CONTENDED_SELECTIONS, SMOKE.MUX_RETAINED_BIDS])
+                    self.assertEqual(evidence["missing_signals"], want)
         self.assertEqual(SMOKE.EXIT_SIGNAL_MISSING, 4)
         self.assertNotIn(SMOKE.EXIT_SIGNAL_MISSING, (SMOKE.EXIT_PASS, SMOKE.EXIT_FAIL, SMOKE.EXIT_USAGE,
                                                       SMOKE.EXIT_REFUSED))
 
-    def test_absent_series_still_fails_a_quiet_bus_and_a_visible_hold(self):
-        quiet = [Phase("baseline", "mux", "ens"), Phase("baseline", "mux", "ens")]
-        for phase in quiet:
-            phase.set(SMOKE.MUX_HELD, {}, 0)
-        self.stub.load(quiet)
-        self.operator_channel.write_text("ENS-AD04\n", encoding="utf-8")
-        status, evidence = self.run_smoke(self.environ("AD04", "mux", "ens", MATRIX_CELL_CLASS="W"))
-        self.assertEqual(status, SMOKE.EXIT_FAIL)
-        self.assertIn("active_frames did not move", self.reasons(evidence))
-        self.assertNotIn("missing_signals", evidence)
-        held = [Phase("baseline", "mux", "ens"), Phase("flow", "mux", "ens")]
-        held[1].set(SMOKE.MUX_HELD, {}, 1)
-        self.stub.load(held)
-        self.operator_channel.write_text("ENS-AD09\n", encoding="utf-8")
-        status, evidence = self.run_smoke(self.environ("AD09", "mux", "ens", MATRIX_CELL_CLASS="W"))
-        self.assertEqual(status, SMOKE.EXIT_FAIL)
-        self.assertRegex(self.reasons(evidence), r"out_of_step_hold_readings moved by [1-9][0-9]* during the case window")
-        self.assertGreaterEqual(evidence["measures"]["out_of_step_hold_readings"], 1)
+    def test_only_the_sampled_hold_is_a_limit(self):
+        hold, provable = SMOKE.split_limits({
+            "out_of_step_holds_raised": SMOKE.HOLD_NOT_PROVABLE,
+            "mux_upstream_reconnects": SMOKE.unpublished(SMOKE.MUX_UPSTREAM_RECONNECTS),
+            "contended_selections_won_by_priority": SMOKE.unpublished(SMOKE.MUX_CONTENDED_SELECTIONS),
+        })
+        self.assertEqual(hold, {"out_of_step_holds_raised": SMOKE.HOLD_NOT_PROVABLE})
+        self.assertEqual(sorted(provable), ["contended_selections_won_by_priority", "mux_upstream_reconnects"])
 
 
 class MigrationEquivalenceTests(SmokeTestCase):
@@ -1297,12 +1279,15 @@ class ReadinessTests(SmokeTestCase):
         self.assertEqual(status, SMOKE.EXIT_REFUSED)
         self.assertFalse(ready.exists())
 
-    def test_absent_priority_series_still_signals_readiness(self):
+    def test_absent_priority_series_signals_no_readiness(self):
         ready = self.output_dir / "ready"
         self.stub.load(self.phases("mux", "ens"))
         status, evidence = self.run_smoke(self.environ("AD07", "mux", "ens", MATRIX_SMOKE_READY_FILE=str(ready)))
+        self.assertEqual(status, SMOKE.EXIT_SIGNAL_MISSING, evidence.get("reasons"))
+        self.assertFalse(ready.exists())
+        self.stub.load(self.priority_phases("ens"))
+        status, evidence = self.run_smoke(self.environ("AD07", "mux", "ens", MATRIX_SMOKE_READY_FILE=str(ready)))
         self.assertEqual(status, SMOKE.EXIT_PASS, evidence.get("reasons"))
-        self.assertNotEqual(status, SMOKE.EXIT_SIGNAL_MISSING)
         self.assertTrue(ready.exists())
 
 

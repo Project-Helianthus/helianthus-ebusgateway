@@ -36,13 +36,13 @@ const (
 	// until then, so the contender watches for it that long.
 	muxStartDeadline = 5 * time.Second
 	// bidInFlightAttempts bounds the STARTs a contender sends to get one
-	// bid shown in flight. A STARTED or FAILED that arrives before the
-	// received SYN only makes the contender bid again.
+	// bid shown in flight. A STARTED or FAILED that arrives before that
+	// proof only makes the contender bid again.
 	bidInFlightAttempts = 5
-	// drainWindow is how long the contender reads to discard buffered
-	// frames before a START, so a SYN received earlier is not taken as the
-	// boundary that forwarded the bid.
-	drainWindow = 2 * time.Millisecond
+	// fenceInfoID is the INFO request the contender writes after each START
+	// (adapter version). The mux session answers INFO from its cache, without
+	// adapter traffic, and only after it has queued the START before it.
+	fenceInfoID = 0x00
 	// absorbExpiryWait is how long the session that follows a cancelled
 	// in-flight bid waits for the grant. It outlasts the absorb bound, so
 	// a grant that waits the barrier out still arrives.
@@ -700,17 +700,18 @@ func errorText(err error) string {
 // complete after the stimulus. Every telegram passes ClassifyTelegram before
 // the first byte is written; a refused workload never opens a connection.
 const (
-	// StimulusReplacedBid (PX01): one START, then, once a received SYN shows
-	// that bid was forwarded, a START for a different initiator, so the first
-	// bid is replaced. A STARTED or FAILED that arrives before that SYN makes
-	// the contender bid again; it does not end the stimulus. The workload bids
-	// with the replacement initiator. A STARTED or FAILED naming the replaced
-	// initiator, or one that no outstanding START explains, fails the cell,
-	// during the workload and until the absorb bound after the replacement.
+	// StimulusReplacedBid (PX01): one START, then, once the bid is shown
+	// forwarded to the adapter (awaitBidForwarded), a START for a different
+	// initiator, so the first bid is replaced. A STARTED or FAILED that
+	// arrives before that proof makes the contender bid again; it does not
+	// end the stimulus. The workload bids with the replacement initiator. A
+	// STARTED or FAILED naming the replaced initiator, or one that no
+	// outstanding START explains, fails the cell from the replacement START
+	// on, during the workload and until the absorb bound after it.
 	StimulusReplacedBid = "replaced-bid"
-	// StimulusCancelledBid (PX02): one START, then the session closes once a
-	// received SYN shows that bid was forwarded, so the absorb barrier is
-	// armed. A STARTED or FAILED before that SYN makes the contender bid
+	// StimulusCancelledBid (PX02): one START, then the session closes once
+	// the bid is shown forwarded to the adapter, so the absorb barrier is
+	// armed. A STARTED or FAILED before that proof makes the contender bid
 	// again. The next session bids with a different initiator: a grant handed
 	// out before the barrier absorbed the cancelled bid's result reaches it
 	// as a STARTED or FAILED naming the cancelled initiator, or as one that
@@ -809,6 +810,8 @@ func (runner *Runner) runContenderStimulus(ctx context.Context, invariant string
 
 	switch record.Stimulus {
 	case StimulusReplacedBid:
+		// replaceInFlightBid installs the result watch before it writes the
+		// replacement START.
 		observed, replacedAt, err := replaceInFlightBid(session, source)
 		record.Observed = observed
 		absorbFrom = replacedAt
@@ -842,6 +845,8 @@ func (runner *Runner) runContenderStimulus(ctx context.Context, invariant string
 		// a late STARTED of that bid would be indistinguishable from the
 		// workload's grant.
 		workloadSource = otherInitiator(source)
+	}
+	if record.Stimulus == StimulusCancelledBid {
 		session.conn = &resultWatchConn{Conn: session.conn, initiator: source}
 	}
 	if record.Stimulus == StimulusCancelledBid {
@@ -906,22 +911,72 @@ func otherInitiator(source byte) byte {
 }
 
 // bidForwarded is what the contender saw of an outstanding START.
-// answered is a STARTED or FAILED that arrived before a received SYN showed
-// the bid in flight.
+// answered is a STARTED or FAILED that arrived before the bid was shown
+// forwarded, or together with that proof.
 type bidForwarded struct {
 	answered bool
 	message  transport.ENHMessage
 }
 
-// awaitBidForwarded waits until a received SYN shows the outstanding START
-// was forwarded: the mux selects an idle bid at a SYN and writes it to the
-// adapter there. Silence is not that proof: on a busy bus the bid may still
-// be queued. A STARTED or FAILED before the SYN is returned, not an error.
-func awaitBidForwarded(session *enhContenderSession) (bidForwarded, error) {
+// infoFence follows the answers to the INFO requests the contender writes
+// after its STARTs. The mux answers an INFO with a length frame and that
+// many data frames, or with ERROR_HOST when it has no cached answer; the
+// answers arrive in request order.
+type infoFence struct {
+	// requested counts INFO requests whose answer has not completed.
+	requested int
+	// tail counts the data frames still owed by the answer in progress.
+	tail int
+}
+
+func (fence *infoFence) sent() { fence.requested++ }
+
+// done is true once every requested answer has completed.
+func (fence *infoFence) done() bool { return fence.requested == 0 && fence.tail == 0 }
+
+// consume takes one INFO frame of an answer and reports whether it was one.
+func (fence *infoFence) consume(message transport.ENHMessage) bool {
+	if message.Command != transport.ENHResInfo {
+		return false
+	}
+	if fence.tail > 0 {
+		fence.tail--
+	} else {
+		fence.tail = int(message.Data)
+	}
+	if fence.tail == 0 && fence.requested > 0 {
+		fence.requested--
+	}
+	return true
+}
+
+// consumeErrorHost takes an ERROR_HOST that answers an INFO request.
+func (fence *infoFence) consumeErrorHost() bool {
+	if fence.requested == 0 || fence.tail != 0 {
+		return false
+	}
+	fence.requested--
+	return true
+}
+
+// awaitBidForwarded waits until the outstanding START has been written to
+// the adapter. The mux selects an idle bid at a SYN and writes it to the
+// adapter in the same step of its read loop, but it delivers that SYN to
+// the sessions before the step, so the SYN alone does not prove the bid
+// was sent. The proof has two parts. The INFO request written after the
+// START is answered by the mux session only after it queued the bid, so a
+// SYN delivered after the whole answer is one the bid waited for, and an
+// earlier or buffered SYN does not count. The next symbol the mux delivers
+// after that SYN comes from a later step of the read loop, so the step
+// that selected and wrote the bid has returned. Silence is not proof: on a
+// busy bus the bid may still be queued. A STARTED or FAILED before the
+// proof, or buffered with it, is returned as answered, not as an error.
+func awaitBidForwarded(session *enhContenderSession, fence *infoFence) (bidForwarded, error) {
 	saved := session.timeout
 	defer func() { session.timeout = saved }()
 	deadline := time.Now().Add(saved)
-	queued := fmt.Errorf("%w: START stayed queued: no received SYN showed the bid in flight", errStimulusNotObserved)
+	queued := fmt.Errorf("%w: START stayed queued: no symbol after a SYN showed the bid in flight", errStimulusNotObserved)
+	synAfterFence := false
 	for {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
@@ -930,16 +985,31 @@ func awaitBidForwarded(session *enhContenderSession) (bidForwarded, error) {
 		session.timeout = remaining
 		message, err := session.next()
 		if err != nil {
+			if message.Command == transport.ENHResErrorHost && fence.consumeErrorHost() {
+				continue
+			}
 			var netErr net.Error
 			if errors.As(err, &netErr) && netErr.Timeout() {
 				return bidForwarded{}, queued
 			}
 			return bidForwarded{}, fmt.Errorf("await the bid to go in flight: %w", err)
 		}
+		if fence.consume(message) {
+			continue
+		}
 		switch message.Command {
 		case transport.ENHResReceived:
-			if message.Data == protocol.SymbolSyn {
+			if !fence.done() {
+				continue
+			}
+			if synAfterFence {
+				if result, ok := bufferedResult(session, fence); ok {
+					return bidForwarded{answered: true, message: result}, nil
+				}
 				return bidForwarded{}, nil
+			}
+			if message.Data == protocol.SymbolSyn {
+				synAfterFence = true
 			}
 		case transport.ENHResStarted, transport.ENHResFailed:
 			return bidForwarded{answered: true, message: message}, nil
@@ -949,40 +1019,44 @@ func awaitBidForwarded(session *enhContenderSession) (bidForwarded, error) {
 	}
 }
 
-// drainBuffered discards the frames already received, so a SYN that came
-// before the next START is not taken as the boundary that forwarded it.
-func drainBuffered(session *enhContenderSession) error {
-	saved := session.timeout
-	defer func() { session.timeout = saved }()
-	session.pending = nil
-	session.timeout = drainWindow
-	for {
-		if _, err := session.next(); err != nil {
-			var netErr net.Error
-			if errors.As(err, &netErr) && netErr.Timeout() {
-				return nil
-			}
-			if errors.Is(err, errContenderProtocol) {
-				continue
-			}
-			return err
+// bufferedResult takes the frames already received with the proof that a
+// bid was forwarded and returns a STARTED or FAILED among them. A result
+// that came in the same read as that proof may have been produced before
+// the bid was replaced or abandoned, so it ends the attempt instead.
+func bufferedResult(session *enhContenderSession, fence *infoFence) (transport.ENHMessage, bool) {
+	for len(session.pending) > 0 {
+		message := session.pending[0]
+		session.pending = session.pending[1:]
+		if fence.consume(message) {
+			continue
+		}
+		if message.Command == transport.ENHResErrorHost {
+			fence.consumeErrorHost()
+			continue
+		}
+		if message.Command == transport.ENHResStarted || message.Command == transport.ENHResFailed {
+			return message, true
 		}
 	}
+	return transport.ENHMessage{}, false
 }
 
-// bidUntilInFlight sends START for initiator until a received SYN shows one
-// bid forwarded with its result still outstanding. A bid answered before
-// that SYN does not end the stimulus: a STARTED is released and the
-// contender bids again, a FAILED is followed by another bid.
+// bidUntilInFlight sends START for initiator, followed by the INFO fence,
+// until one bid is shown forwarded with its result still outstanding. A
+// bid answered before that proof does not end the stimulus: a STARTED is
+// released and the contender bids again, a FAILED is followed by another
+// bid.
 func bidUntilInFlight(session *enhContenderSession, initiator byte) error {
+	var fence infoFence
 	for attempt := 0; attempt < bidInFlightAttempts; attempt++ {
-		if err := drainBuffered(session); err != nil {
-			return err
-		}
 		if err := session.send(transport.ENHReqStart, initiator); err != nil {
 			return err
 		}
-		forwarded, err := awaitBidForwarded(session)
+		if err := session.send(transport.ENHReqInfo, fenceInfoID); err != nil {
+			return err
+		}
+		fence.sent()
+		forwarded, err := awaitBidForwarded(session, &fence)
 		if err != nil {
 			return err
 		}
@@ -995,18 +1069,21 @@ func bidUntilInFlight(session *enhContenderSession, initiator byte) error {
 			}
 		}
 	}
-	return fmt.Errorf("%w: each of %d STARTs was answered before a received SYN showed it in flight",
+	return fmt.Errorf("%w: each of %d STARTs was answered before it was shown in flight",
 		errStimulusNotObserved, bidInFlightAttempts)
 }
 
 // replaceInFlightBid leaves one bid in flight and replaces it with a
-// different initiator. The replaced bid's STARTED or FAILED fails the cell.
-// replacedAt is when the replacement START was written.
+// different initiator. The result watch is installed before the
+// replacement START is written, so a STARTED or FAILED naming the replaced
+// initiator fails the cell even when it arrives in the same read as the
+// replacement grant. replacedAt is when the replacement START was written.
 func replaceInFlightBid(session *enhContenderSession, source byte) (string, time.Time, error) {
 	replacement := otherInitiator(source)
 	if err := bidUntilInFlight(session, source); err != nil {
 		return "", time.Time{}, err
 	}
+	session.conn = &resultWatchConn{Conn: session.conn, initiator: source}
 	replacedAt := time.Now()
 	if err := session.send(transport.ENHReqStart, replacement); err != nil {
 		return "", replacedAt, err
@@ -1237,23 +1314,46 @@ func (runner *Runner) nonOwnerSendDuringActive(ctx context.Context, contender *e
 
 // sendWithoutOwnership sends one SYN symbol without owning the bus and
 // expects the mux to refuse it with ERROR_HOST while another session holds
-// the bus.
+// the bus. The refusal must come within one step timeout of the SEND: bus
+// traffic that keeps arriving does not extend the wait.
 func sendWithoutOwnership(session *enhContenderSession) (string, error) {
 	if err := session.send(transport.ENHReqSend, protocol.SymbolSyn); err != nil {
 		return "", err
 	}
+	saved := session.timeout
+	defer func() { session.timeout = saved }()
+	deadline := time.Now().Add(saved)
+	traffic := false
+	unanswered := func() error {
+		why := fmt.Sprintf("no ERROR_HOST within %s of the SEND", saved)
+		if traffic {
+			why += " while bus symbols kept arriving"
+		}
+		return fmt.Errorf("await the refusal of a non-owner SEND: %w: %s", errStimulusNotObserved, why)
+	}
 	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return "", unanswered()
+		}
+		session.timeout = remaining
 		message, err := session.next()
 		if err != nil {
 			if message.Command == transport.ENHResErrorHost {
 				return "non-owner SEND refused with ERROR_HOST during an active transaction", nil
+			}
+			var netErr net.Error
+			if errors.As(err, &netErr) && netErr.Timeout() {
+				return "", unanswered()
 			}
 			return "", fmt.Errorf("await the refusal of a non-owner SEND: %w", err)
 		}
 		switch message.Command {
 		case transport.ENHResReceived:
 			// Bus traffic of other owners keeps arriving; a forwarded SYN
-			// cannot be told apart from it, so only the refusal counts.
+			// cannot be told apart from it, so only the refusal counts, and
+			// the traffic does not extend the wait.
+			traffic = true
 		default:
 			return "", fmt.Errorf("%w: ENH command 0x%X instead of the refusal of a non-owner SEND", errStimulusNotObserved, byte(message.Command))
 		}

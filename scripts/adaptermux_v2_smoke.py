@@ -104,9 +104,10 @@ SIGNAL_MEANING = {
 # reconnects once, gateway transactions and passive reconstruction resume
 # after the discontinuity, and no sampled reading shows an out-of-step hold.
 # A hold raised between readings is recorded as not provable and is not a
-# pass/fail requirement. The hold gauge is the series the check requires;
-# the discontinuity and reconnect series are judged only when published.
-ADAPTER_ACTION_SIGNALS = (MUX_HELD,)
+# pass/fail requirement. The pass criterion reads the hold gauge, the
+# discontinuity series and the reconnect series, so a gateway that does not
+# publish one of them answers signal_missing, never pass.
+ADAPTER_ACTION_SIGNALS = (MUX_HELD, MUX_SESSION_DISCONTINUITIES, MUX_UPSTREAM_RECONNECTS)
 ADAPTER_ACTION_REQUIRES = (
     ("consumer_sessions_observing_discontinuity", GT0),
     ("consumer_sessions_missing_discontinuity", EQ0),
@@ -128,8 +129,9 @@ HOLD_NOT_PROVABLE = ("not provable with a sampled gauge: the gateway publishes t
 # AD07: with no owner and an idle bus, the lowest initiator low nibble wins,
 # then the lowest high nibble (docs/architecture/adapter-arbitration-decision.md);
 # the losing bid is kept and completes at a later boundary; neither session
-# is starved.
-PRIORITY_SIGNALS = ()
+# is starved. The criterion reads the contended-selection and retained-bid
+# series, so a gateway that does not publish them answers signal_missing.
+PRIORITY_SIGNALS = (MUX_CONTENDED_SELECTIONS, MUX_RETAINED_BIDS)
 PRIORITY_REQUIRES = CONTENTION + (
     ("contended_selections_won_by_priority", GT0),
     ("contended_selections_won_against_priority", EQ0),
@@ -538,10 +540,10 @@ def discontinuity_measures(readings):
 
     The consumer sessions are those the mux reports at the first reading. The
     discontinuity reading is the first one in which any of them moved.
-    Resumption is the increase after that reading. Traffic inside the
-    detecting reading, and traffic before it, is not resumption, so a gateway
-    that never moves again after the discontinuity stays at zero. A series
-    the gateway does not publish is not provable and is not read as zero.
+    Resumption is the increase since the reading before that one, so a
+    recovery that falls between the same two readings as the discontinuity
+    counts. A series the gateway does not publish is not read as zero; its
+    measures stay unmeasured and fail the requirement.
     """
     baseline, final = readings[0], readings[-1]
     measures = {
@@ -570,7 +572,7 @@ def discontinuity_measures(readings):
                 measures[name] = None
                 unmeasured[name] = "no consumer session observed a discontinuity during the case window"
         else:
-            reading = readings[boundary]
+            reading = readings[boundary - 1]
             measures["resumed_active_frames"] = frame_delta(reading, final, lambda key: key[0] == "active")
             measures["resumed_mux_transactions_done"] = metric_delta(
                 reading, final, MUX_ENDINGS, [("reason", "transaction_done")])
@@ -701,10 +703,9 @@ def missing_signals(check, sample):
     transport check fails; only a mux that runs but lacks a series is a
     missing signal.
     """
-    published = {name for name, _ in sample["metrics"]}
     if not mux_diagnostics_present(sample):
         return []
-    return [name for name in check.get("signals", ()) if name not in published]
+    return [name for name in check.get("signals", ()) if not series_published(sample, name)]
 
 
 def tracked_counters(sample):
@@ -1086,13 +1087,14 @@ CUE_CASE_LOG_ONLY = "case_log_only"
 def split_limits(unmeasured):
     """Split unmeasured requirements into limits and unproven requirements.
 
-    A reason that starts with "not provable" is a limit of this gateway, not
-    a failed requirement: the hold gauge is one, an unpublished series is
-    another.
+    Only the sampled hold gauge is a limit: whether a hold was raised between
+    two readings is not a pass/fail requirement. Every other unmeasured
+    requirement, an unpublished series included, stays unproven and fails
+    the cell.
     """
     limits, provable = {}, {}
     for name, why in unmeasured.items():
-        if isinstance(why, str) and why.startswith("not provable"):
+        if why == HOLD_NOT_PROVABLE:
             limits[name] = why
         else:
             provable[name] = why
@@ -1102,9 +1104,8 @@ def split_limits(unmeasured):
 def judge_measures(check, readings, own, measures, evidence):
     """Judge the measures of the window and record them in evidence.
 
-    Requirements a limit replaces stay in the report only as limits. When the
-    discontinuity series is not published, the cell requires the same flow
-    over the whole window instead, so a quiet bus still fails.
+    A limit stays in the report only as a limit; it never replaces a
+    requirement of the pass criterion.
     """
     baseline, current = readings[0], readings[-1]
     unmeasured = {}
@@ -1121,8 +1122,6 @@ def judge_measures(check, readings, own, measures, evidence):
     evidence["measures"] = measures
     judged = dict(check)
     judged["requires"] = tuple(item for item in check["requires"] if item[0] not in limits)
-    if "resumed_active_frames" in limits:
-        judged["requires"] = judged["requires"] + FLOW_ACTIVE + (("passive_completed_transactions", GT0),)
     evidence["requirements"], flow_reasons = judge_requirements(judged, measures, provable_unmeasured)
     return flow_reasons
 

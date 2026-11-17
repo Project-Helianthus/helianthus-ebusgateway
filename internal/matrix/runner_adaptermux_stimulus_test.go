@@ -18,9 +18,12 @@ import (
 )
 
 // fakeMuxPeer models the mux ENH listener as an external session sees it.
-// A queued bid is shown in flight by a received SYN at fakeInFlightArm, and
-// its STARTED waits until fakeLateAfter, so a contender can replace or
-// abandon it after that boundary. The late STARTED of a replaced bid is
+// It answers INFO in order after the START before it. A queued bid's
+// selecting SYN is delivered at fakeInFlightArm, before the bid is written
+// to the adapter, as the mux delivers a SYN before its grant step; the bid
+// is forwarded fakeForwardLag later and the next received symbol follows
+// that. Its STARTED waits until fakeLateAfter, so a contender can replace or
+// abandon it once it is forwarded. The late STARTED of a replaced bid is
 // absorbed unless deliverStaleResult. Closing an in-flight bid arms the
 // absorb barrier, which the peer clears after fakeAbsorbBudget as the mux
 // does once it absorbs the cancelled bid's result; with skipAbsorb the next
@@ -59,6 +62,18 @@ type fakeMuxPeer struct {
 	stopMidResponse bool
 	// noClosingSyn never closes an open command with SYN.
 	noClosingSyn bool
+	// synBeforeFence delivers a SYN right after a START, before the INFO
+	// answer, as a SYN the mux handled before it queued the bid.
+	synBeforeFence bool
+	// infoErrorHost answers INFO with ERROR_HOST, as a mux without a cached
+	// adapter answer does.
+	infoErrorHost bool
+	// staleFailedWithGrant sends the replacement grant and a FAILED naming
+	// the replaced initiator in one write, so they arrive in one read.
+	staleFailedWithGrant bool
+	// busChatter keeps delivering bus symbols to a session whose non-owner
+	// SEND it neither refuses nor forwards.
+	busChatter bool
 
 	mu                     sync.Mutex
 	telegrams              [][]byte
@@ -101,12 +116,16 @@ type fakeBid struct {
 	queuedAt       time.Time
 	replaced       bool
 	signalled      bool
+	forwarded      bool
 	prompt         bool
 }
 
 const (
 	// fakeInFlightArm is when a queued bid is shown in flight by a received SYN.
 	fakeInFlightArm = 5 * time.Millisecond
+	// fakeForwardLag is how long after that SYN the bid is written to the
+	// adapter; a contender that acts on the SYN alone acts before it.
+	fakeForwardLag = 5 * time.Millisecond
 	// fakeLateAfter is when that bid's STARTED or FAILED is delivered,
 	// measured from the START. It stays inside the old silence window so a
 	// settle timer would treat the result as arriving before the bid was
@@ -123,8 +142,9 @@ const (
 	fakeMuxIdleSyn         = 300 * time.Millisecond
 )
 
-func (bid *fakeBid) inFlightAt(now time.Time) bool {
-	return bid != nil && !now.Before(bid.queuedAt.Add(fakeInFlightArm))
+// inFlight is true once the bid has been written to the adapter.
+func (bid *fakeBid) inFlight() bool {
+	return bid != nil && bid.forwarded
 }
 
 func (peer *fakeMuxPeer) observed() [][]byte {
@@ -200,7 +220,7 @@ func (peer *fakeMuxPeer) serve(conn net.Conn) {
 		peer.mu.Lock()
 		now := time.Now()
 		if bid := peer.inFlight; bid != nil && bid.conn == conn {
-			if bid.inFlightAt(now) && !bid.replaced {
+			if bid.inFlight() && !bid.replaced {
 				peer.closedInFlight++
 				if peer.skipAbsorb {
 					peer.unabsorbed = bid.initiator
@@ -291,8 +311,30 @@ func (peer *fakeMuxPeer) serve(conn net.Conn) {
 		owner, state, source, wire, lastSend = true, initiatorSend, initiator, nil, time.Now()
 		write(transport.ENHResStarted, initiator)
 	}
-	// signalInFlight tells the contender a received SYN forwarded the bid.
-	// The bid stays outstanding so it can still be replaced or closed.
+	// forward writes the bid to the adapter after its SYN was delivered and
+	// then delivers the next bus symbol. The bid stays outstanding so it can
+	// still be replaced or closed.
+	forward := func(gen int) {
+		if !alive.Load() {
+			return
+		}
+		stateMu.Lock()
+		defer stateMu.Unlock()
+		if !alive.Load() {
+			return
+		}
+		peer.mu.Lock()
+		bid := peer.inFlight
+		if bid == nil || bid.generation != gen || bid.conn != conn || bid.forwarded {
+			peer.mu.Unlock()
+			return
+		}
+		bid.forwarded = true
+		peer.mu.Unlock()
+		write(transport.ENHResReceived, protocol.SymbolSyn)
+	}
+	// signalInFlight delivers the SYN that selects the bid; the bid is
+	// forwarded only after it, as the mux's grant step follows the delivery.
 	signalInFlight := func(gen int) {
 		if !alive.Load() {
 			return
@@ -311,6 +353,7 @@ func (peer *fakeMuxPeer) serve(conn net.Conn) {
 		bid.signalled = true
 		peer.mu.Unlock()
 		write(transport.ENHResReceived, protocol.SymbolSyn)
+		time.AfterFunc(fakeForwardLag, func() { forward(gen) })
 	}
 	// resolve delivers the outstanding bid's result once it is due.
 	var resolve func(gen int)
@@ -352,6 +395,7 @@ func (peer *fakeMuxPeer) serve(conn net.Conn) {
 		if bid.replaced {
 			peer.replacementGranted++
 		}
+		withStaleFailed := bid.replaced && peer.staleFailedWithGrant
 		promptFailed := bid.prompt && peer.promptFailed
 		if !bid.prompt {
 			peer.grantedOnce[conn] = true
@@ -366,6 +410,12 @@ func (peer *fakeMuxPeer) serve(conn net.Conn) {
 			return
 		}
 		owner, state, source, wire, lastSend = true, initiatorSend, initiator, nil, time.Now()
+		if withStaleFailed {
+			started := transport.EncodeENH(transport.ENHResStarted, initiator)
+			failed := transport.EncodeENH(transport.ENHResFailed, bid.staleInitiator)
+			out <- append(started[:], failed[:]...)
+			return
+		}
 		write(transport.ENHResStarted, initiator)
 	}
 	go func() {
@@ -408,6 +458,14 @@ func (peer *fakeMuxPeer) serve(conn net.Conn) {
 			switch message.Command {
 			case transport.ENHReqInit:
 				write(transport.ENHResResetted, message.Data)
+			case transport.ENHReqInfo:
+				if peer.infoErrorHost {
+					write(transport.ENHResErrorHost, 0x00)
+					continue
+				}
+				write(transport.ENHResInfo, 0x02)
+				write(transport.ENHResInfo, 0x01)
+				write(transport.ENHResInfo, 0x02)
 			case transport.ENHReqStart:
 				initiator := message.Data
 				peer.mu.Lock()
@@ -422,7 +480,7 @@ func (peer *fakeMuxPeer) serve(conn net.Conn) {
 				}
 				now := time.Now()
 				if bid := peer.inFlight; bid != nil && bid.conn == conn {
-					if bid.inFlightAt(now) && bid.initiator != initiator {
+					if bid.inFlight() && bid.initiator != initiator {
 						bid.replaced = true
 						bid.staleInitiator = bid.initiator
 						bid.replacement = initiator
@@ -452,9 +510,13 @@ func (peer *fakeMuxPeer) serve(conn net.Conn) {
 					gen := peer.bidGen
 					prompt := (peer.promptResult || peer.promptFailed) && peer.starts == 1
 					peer.inFlight = &fakeBid{initiator: initiator, conn: conn, generation: gen, queuedAt: now, prompt: prompt}
-					forward := !peer.neverForward || peer.starts != 1
+					forwardBid := !peer.neverForward || peer.starts != 1
+					earlySyn := peer.synBeforeFence
 					peer.mu.Unlock()
-					if forward {
+					if earlySyn {
+						write(transport.ENHResReceived, protocol.SymbolSyn)
+					}
+					if forwardBid {
 						if !prompt {
 							time.AfterFunc(fakeInFlightArm, func() { signalInFlight(gen) })
 						}
@@ -486,11 +548,32 @@ func (peer *fakeMuxPeer) serve(conn net.Conn) {
 				peer.mu.Lock()
 				owns := peer.busOwner == conn
 				busy := peer.busOwner != nil && !owns
-				forward := peer.forwardDuringActive
+				forwardSend := peer.forwardDuringActive
+				chatter := peer.busChatter
 				if !owns {
-					if busy && forward {
+					if busy && forwardSend {
 						peer.mu.Unlock()
 						write(transport.ENHResReceived, message.Data)
+						continue
+					}
+					if busy && chatter {
+						peer.mu.Unlock()
+						go func() {
+							ticker := time.NewTicker(20 * time.Millisecond)
+							defer ticker.Stop()
+							for {
+								select {
+								case <-done:
+									return
+								case <-ticker.C:
+								}
+								stateMu.Lock()
+								if alive.Load() {
+									write(transport.ENHResReceived, 0x10)
+								}
+								stateMu.Unlock()
+							}
+						}()
 						continue
 					}
 					if busy {
@@ -622,8 +705,9 @@ func TestEveryExecutablePXCellHasItsOwnStimulus(t *testing.T) {
 func TestContenderStimulusMatchesTheInvariant(t *testing.T) {
 	t.Parallel()
 
-	if fakeInFlightArm >= fakeLateAfter || fakeLateAfter >= 60*time.Millisecond {
-		t.Fatalf("in-flight SYN at %s, late result at %s; the result must follow the SYN and fall inside 60ms", fakeInFlightArm, fakeLateAfter)
+	if fakeInFlightArm+fakeForwardLag >= fakeLateAfter || fakeLateAfter >= 60*time.Millisecond {
+		t.Fatalf("selecting SYN at %s, forwarded %s later, late result at %s; the result must follow the forwarding and fall inside 60ms",
+			fakeInFlightArm, fakeForwardLag, fakeLateAfter)
 	}
 	cases := []struct {
 		invariant string
@@ -740,6 +824,7 @@ func TestContenderStimulusFailsWhenTheMuxDoesNotAnswerAsRequired(t *testing.T) {
 			peer.staleFailed = true
 			peer.staleWinner = 0x10
 		}, want: "no outstanding START explains"},
+		{name: "stale failed with the replacement grant", invariant: "PX01", mutate: func(peer *fakeMuxPeer) { peer.staleFailedWithGrant = true }, want: "stale arbitration result"},
 		{name: "stale after workload", invariant: "PX01", mutate: func(peer *fakeMuxPeer) { peer.deliverStaleAfterWorkload = true }, want: "stale arbitration result"},
 		{name: "no closing syn", invariant: "PX03", mutate: func(peer *fakeMuxPeer) { peer.noClosingSyn = true }, want: "await the closing SYN"},
 		{name: "whole response", invariant: "PX04", want: "target delivered its response"},
@@ -772,8 +857,95 @@ func TestContenderStimulusFailsWhenTheMuxDoesNotAnswerAsRequired(t *testing.T) {
 	}
 }
 
-// A mux that answers the first START before a received SYN shows it in
-// flight does not end the stimulus: the contender bids again and replaces
+// The mux delivers the SYN that selects a bid before it writes the bid to
+// the adapter, and a SYN it handled before it queued the bid can reach the
+// contender after the START. Neither is the proof: PX01 replaces and PX02
+// abandons the bid only after it was forwarded, with the INFO answered with
+// data or with ERROR_HOST.
+func TestStimulusActsOnlyAfterTheBidReachedTheAdapter(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		mutate func(peer *fakeMuxPeer)
+	}{
+		{"selecting SYN before the grant step", nil},
+		{"SYN before the INFO answer", func(peer *fakeMuxPeer) { peer.synBeforeFence = true }},
+		{"INFO answered with ERROR_HOST", func(peer *fakeMuxPeer) { peer.infoErrorHost = true }},
+	}
+	for _, invariant := range []string{"PX01", "PX02"} {
+		for _, tc := range cases {
+			invariant, tc := invariant, tc
+			t.Run(invariant+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+				caseID := "ENH-" + invariant
+				fixture, err := newExecuteFixture(t, []string{caseID}, nil)
+				if err != nil {
+					t.Fatalf("fixture: %v", err)
+				}
+				if tc.mutate != nil {
+					tc.mutate(fixture.enhPeer)
+				}
+				verdicts, err := fixture.runner.Run(context.Background())
+				if err != nil {
+					t.Fatalf("Run error = %v", err)
+				}
+				if verdicts[0].Outcome != caseOutcomePass {
+					t.Fatalf("verdict %+v, client %+v", verdicts[0], clientResultOf(verdicts[0]))
+				}
+				peer := fixture.enhPeer.snapshot()
+				if invariant == "PX01" && (peer.replacedInFlight != 1 || peer.staleDelivered != 0 || peer.replacementGranted != 1) {
+					t.Fatalf("replaced in flight %d, stale delivered %d, replacement granted %d; the bid was replaced before it reached the adapter",
+						peer.replacedInFlight, peer.staleDelivered, peer.replacementGranted)
+				}
+				if invariant == "PX02" && (peer.closedInFlight != 1 || peer.closedQueued != 0 || peer.absorbArmed != 1) {
+					t.Fatalf("closed in flight %d, closed queued %d, absorb armed %d; the session closed before the bid reached the adapter",
+						peer.closedInFlight, peer.closedQueued, peer.absorbArmed)
+				}
+			})
+		}
+	}
+}
+
+// A non-owner SEND that the mux neither refuses nor forwards fails PX12
+// within one client step, while bus symbols keep arriving, and the gateway
+// stop command still runs.
+func TestNonOwnerSendWaitIsBoundedWhileBusTrafficArrives(t *testing.T) {
+	t.Parallel()
+
+	fixture, err := newExecuteFixture(t, []string{"ENH-PX12"}, nil)
+	if err != nil {
+		t.Fatalf("fixture: %v", err)
+	}
+	fixture.enhPeer.busChatter = true
+	started := time.Now()
+	verdicts, err := fixture.runner.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run error = %v", err)
+	}
+	elapsed := time.Since(started)
+	client := clientResultOf(verdicts[0])
+	if verdicts[0].Outcome != caseOutcomeFail || client.Status != actualStatusFailed ||
+		!strings.Contains(client.Error, "await the refusal of a non-owner SEND") ||
+		!strings.Contains(client.Error, "while bus symbols kept arriving") {
+		t.Fatalf("verdict %+v, client %+v; want a failed client naming the missing refusal", verdicts[0], client)
+	}
+	if limit := clientStepTimeout + 3*time.Second; elapsed > limit {
+		t.Fatalf("the case took %s; the refusal wait must end within one client step (%s), not the case timeout", elapsed, clientStepTimeout)
+	}
+	stopped := false
+	for _, command := range verdicts[0].Commands {
+		if command.Name == "gateway-stop" && command.Status == actualStatusPassed {
+			stopped = true
+		}
+	}
+	if !stopped {
+		t.Fatalf("commands %+v; the gateway stop command did not run", verdicts[0].Commands)
+	}
+}
+
+// A mux that answers the first START before it is shown in flight does not
+// end the stimulus: the contender bids again and replaces
 // or abandons the bid that is in flight.
 func TestPromptResultDoesNotEndTheStimulus(t *testing.T) {
 	t.Parallel()

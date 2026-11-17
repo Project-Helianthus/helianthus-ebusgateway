@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -323,6 +324,35 @@ func TestStoreDamagedOrForeignFileFailsClosed(t *testing.T) {
 			t.Fatalf("OpenStore = %T, %v; want ErrStoreDamaged", store, err)
 		}
 	})
+}
+
+// A document larger than the bound a reopen accepts is refused before the file
+// is replaced, so the store that was valid stays valid across a restart.
+func TestStoreRefusesOversizedDocument(t *testing.T) {
+	dir := t.TempDir()
+	store := openFileStoreForTest(t, dir)
+	allocator := newTestAllocator(t, store)
+	mustResolve(t, allocator, kindEquipment, operatorEquipment("unit-a", "label"))
+	before, err := os.ReadFile(filepath.Join(dir, storeFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	homes := make(map[semreg.ResourceID]semreg.AssetID)
+	for i := 0; len(homes) < 120000; i++ {
+		homes[expectedID(fmt.Sprintf("bulk-%d", i))] = "asset:a"
+	}
+	if err := store.write(store.entries, homes); !errors.Is(err, ErrStore) {
+		t.Fatalf("oversized write: err=%v", err)
+	}
+	if after, err := os.ReadFile(filepath.Join(dir, storeFileName)); err != nil || !bytes.Equal(after, before) {
+		t.Fatalf("an oversized write changed the file: %v", err)
+	}
+	if names := dirNames(t, dir); len(names) != 1 {
+		t.Fatalf("an oversized write left %v", names)
+	}
+	if _, err := OpenStore(dir); err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
 }
 
 // A write that fails before the replacement leaves the table and the file as

@@ -175,6 +175,9 @@ func (s *FileStore) write(entries map[AnchorKey]Entry, homes map[semreg.Resource
 	if err != nil {
 		return err
 	}
+	if len(data) > maxStoreFileBytes {
+		return fmt.Errorf("%w: the document would be larger than %d bytes", ErrStore, maxStoreFileBytes)
+	}
 	if err := s.step("create"); err != nil {
 		return err
 	}

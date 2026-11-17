@@ -921,8 +921,8 @@ func controllerlessGraphQL(t *testing.T, provider *graphql.LiveSemanticProvider)
 		solar { collector_temperature_c return_temperature_c pump_active current_yield pump_hours solar_enabled function_mode }
 		energy_totals { gas { dhw { today today_meta { provenance } } } }
 		boiler_status {
-			state { water_pressure_bar flame_active flow_temperature_c dhw_temperature_c dhw_target_temperature_c dhw_temp_desired_c }
-			config { flowset_hc_max_c dhw_operating_mode }
+			state { water_pressure flame_active flow_temperature dhw_temperature_c dhw_target_temperature_c dhw_temperature_setpoint }
+			config { maximum_heating_flow_temperature_setpoint dhw_operating_mode }
 		}
 	}`})
 	if len(result.Errors) != 0 {
@@ -1186,14 +1186,14 @@ func controllerlessExpectBoilerStream(t *testing.T, site *controllerlessSite, ru
 	flowset, _ := decodeDATA2c(controllerlessHeatSourceRegisters[boiler_b509_flowset_hc_max_c])
 	dhwDesired, _ := decodeDATA2c(controllerlessHeatSourceRegisters[boiler_b509_dhw_temp_desired_c])
 	for path, want := range map[string]any{
-		"state.water_pressure_bar":       pressure,
-		"state.flame_active":             false,
-		"state.dhw_temp_desired_c":       dhwDesired,
-		"config.flowset_hc_max_c":        flowset,
-		"state.flow_temperature_c":       nil, // Hypothesis mapping: no qualified binding in production
-		"state.dhw_temperature_c":        nil, // controller DHW mirror
-		"state.dhw_target_temperature_c": nil, // controller DHW mirror
-		"config.dhw_operating_mode":      nil, // controller DHW mirror
+		"state.water_pressure":                             pressure,
+		"state.flame_active":                               false,
+		"state.dhw_temperature_setpoint":                   dhwDesired,
+		"config.maximum_heating_flow_temperature_setpoint": flowset,
+		"state.flow_temperature":                           nil, // Hypothesis mapping: no qualified binding in production
+		"state.dhw_temperature_c":                          nil, // controller DHW mirror
+		"state.dhw_target_temperature_c":                   nil, // controller DHW mirror
+		"config.dhw_operating_mode":                        nil, // controller DHW mirror
 	} {
 		got := controllerlessPath(view, append([]string{"boiler_status"}, strings.Split(path, ".")...)...)
 		if got != want {

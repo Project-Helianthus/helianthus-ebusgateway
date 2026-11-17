@@ -2382,8 +2382,8 @@ func TestServer_ToolsCallBoilerStatus_ReducedShape(t *testing.T) {
 	if !ok {
 		t.Fatalf("boiler state type = %T; want map", data["state"])
 	}
-	if got, _ := state["flow_temperature_c"].(float64); got != flow {
-		t.Fatalf("boiler state.flow_temperature_c = %v; want %v", state["flow_temperature_c"], flow)
+	if got, _ := state["flow_temperature"].(float64); got != flow {
+		t.Fatalf("boiler state.flow_temperature = %v; want %v", state["flow_temperature"], flow)
 	}
 	if got, _ := state["return_temperature_c"].(float64); got != ret {
 		t.Fatalf("boiler state.return_temperature_c = %v; want %v", state["return_temperature_c"], ret)

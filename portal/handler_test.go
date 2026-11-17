@@ -646,8 +646,8 @@ func TestSemanticSnapshotEndpoint(t *testing.T) {
 	}
 	boiler := payload["boiler_status"].(map[string]any)
 	boilerState := boiler["state"].(map[string]any)
-	if boilerState["flow_temperature_c"] != flowTemperature {
-		t.Fatalf("boiler.state.flow_temperature_c=%v; want %v", boilerState["flow_temperature_c"], flowTemperature)
+	if boilerState["flow_temperature"] != flowTemperature {
+		t.Fatalf("boiler.state.flow_temperature=%v; want %v", boilerState["flow_temperature"], flowTemperature)
 	}
 	boilerConfig := boiler["config"].(map[string]any)
 	if boilerConfig["dhw_operating_mode"] != dhwOperatingMode {

@@ -59,7 +59,7 @@ production uses for configuration:
   asset byte-identical.
 - An intent on the grid connection is refused without a send, both through a
   capability of the grid connection that the publisher does not publish and
-  through the meter's read capability that the role reaches. The pack defines
+  through the meter's read capability. The pack defines
   no operation, so no capability of the grid connection can carry one, and the
   kernel refuses with `definition_owner_missing`. The role and the asset stay
   unchanged.

@@ -35,7 +35,7 @@ After any stop, the as-found state is restored first and reported afterwards.
 | E2 | Offline acceptance ([offline acceptance matrix](offline-acceptance-matrix.md), [gateway #1449](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1449)) is closed on that record, graph axis included. | orchestrator |
 | E3 | The matrix tooling is on main and in the candidate: the `adaptermux-v2` suite of the [matrix runner](../../cmd/matrix-runner/README.md), its smoke command, the AD10 comparison and the add-on target commands. No cell awaits re-specification. | orchestrator |
 | E4 | The private site profiles are filled in, the restore steps are written and dry-run, and the as-found snapshot of each site is taken at the start of its part. | orchestrator |
-| E5 | The operator's word for the session at each site names every changing step: add-on installs and restarts, option changes, adapter host-link switches, the class W adapter actions, the compatibility compositions (the proxy listener is gone while they run), the optional native point export switch, and separately each operator-only row of the last table. | operator |
+| E5 | The operator's word for the session at each site names every changing step: add-on installs and restarts, option changes, adapter host-link switches, the class W adapter actions (including `UDP-DS01` and `TCP-DS01`), the compatibility compositions (the proxy listener is gone while they run), the optional native point export switch, and separately each operator-only row of the last table. | operator |
 | E6 | A fix during the session invalidates the affected results as the handoff states; nothing from the earlier candidate is carried forward silently. | orchestrator |
 
 ## Hardware setups
@@ -48,8 +48,9 @@ site runs the setups its adapter offers.
 |---|---|---|---|
 | network, enhanced framing | wired or wireless network | adapter-direct mux on a network endpoint | `ENH` |
 | network, ENS selector | wired or wireless network | adapter-direct mux with the ENS selector | `ENS` |
+| plain UDP | the adapter's plain UDP endpoint | gateway on `udp-plain`, no mux | `UDP-DS01` is executed. Every `UDP-*` grid cell stays planned and is written without execution |
+| plain TCP | the adapter's plain TCP endpoint | gateway on `tcp-plain`, no mux | `TCP-DS01` is executed. Every `TCP-*` grid cell stays planned and is written without execution |
 | USB serial | USB serial device path | not executed: the matrix defines no executable mux row for a serial host link | `UARTENS`, `UARTENH` and `UARTRAW`, written without execution; they stay `blocked-infra` |
-| none | none | none | `UDP`, `TCP` (planned) and the UART rows (`blocked-infra`), written without execution |
 
 `ENS` is ENS over the network and `ENH` is ENH over the network. A serial host
 link stays on `UARTENS`, `UARTENH` and `UARTRAW`. Those rows stay
@@ -58,44 +59,67 @@ make a serial path an executable network row, and a `--hardware-setup` label
 does not either: the operator does not file `ENS` or `ENH` results for a USB
 serial path.
 
+`UDP-DS01` and `TCP-DS01` are executable class W cells of the plain UDP and
+plain TCP setups. They are not planned grid cells, and the operator does not
+add them later by name. Each runs in the per-setup order of its row. The
+operator types the case ID when the runner asks; without that answer the cell
+fails and no command runs. The cell's pass criterion stays a smoke exit of 0,
+which the runner records as outcome `pass`. Leaving either cell out of the
+session report leaves an executable case id absent, so A-02 and B-01 are not
+met.
+
 Each setup has an opaque label passed as `--hardware-setup`; one report holds
 one setup per row. Each site produces one report under its own session label
 and the same candidate label; which report the gate reads is decided by the
-[transport gate policy v2](transport-gate-policy-v2.md). The plain
-compatibility cells `UDP-DS01` and `TCP-DS01` are class W on a live bus with
-other initiators: they run only if the operator adds them, by name, at the
-moment of the action.
+[transport gate policy v2](transport-gate-policy-v2.md). The session report
+is that aggregate, and its case-id set is the full inventory.
 
 ## Per-setup order
 
 Each setup runs in this order. The runner flags, the smoke command and the
 add-on target commands are those of the [matrix runner](../../cmd/matrix-runner/README.md).
+Steps 3, 5 and 6 run on the `ENS` and `ENH` setups, where those cells are
+executable. On the plain UDP setup the only executable cell is `UDP-DS01`,
+and on the plain TCP setup it is `TCP-DS01`, both in step 4. Their grid
+cells, including `AD10`, stay planned and are written in step 8 without
+execution.
+
+The ebusd add-on is the external client on the mux proxy listener. The
+as-found snapshot, the health connection in A-01, the free-initiator check
+in B-01 and the device option in B-02 all mean that add-on: its settings,
+its connection and its `network_device` option. They do not mean the
+gateway, the vendor internet module, the third-party bridge or the VRC
+Explorer.
 
 | Step | What | Notes |
 |---|---|---|
-| 1 | As-found snapshot | add-on options, gateway composition, adapter host link, second client's settings |
+| 1 | As-found snapshot | add-on options, gateway composition, adapter host link, the ebusd add-on's settings, including `network_device` |
 | 2 | Baseline measurement | ten minutes of read-only observation: the gateway's counters, the passive frame list, the startup phase |
-| 3 | Smoke-checked cells | `AD01`, `AD02`, `AD03`, `AD06`, `AD07`, `PX01` to `PX04`, `PX12`, `CX01` with the smoke command; `AD10` waits for step 6 |
-| 4 | Class W cells | `AD04` (adapter reset) and `AD09` (host-link disconnect and reconnect): when the runner names the case and asks for its ID, the operator types it and performs the adapter action inside the case window; without the operator's answer the cell fails and no command runs |
-| 5 | Compatibility compositions | `ENS-DS01` on the ENS setup; `ENH-DS01` and `EBUSD-ES01` on the ENH setup. The add-on is reconfigured to the non-mux composition on the operator's word; the second client has no proxy listener while these cells run. At site A, on the ENH setup only, VB-L3 and VB-L4 are performed in this step after `EBUSD-ES01`, while the ebusd-tcp composition is still the running composition, and before step 6. On that setup they are recorded, or marked Not run for the reason in the B503 section, before the composition is left. They are not deferred to A-10, and that composition is not opened again for them. Other setups do not run them and do not wait for them |
-| 6 | Return to the mux composition | read back the options and the transport class, then `AD10` at once against the paired compatibility records from step 5. No measurement interval is inserted before `AD10`: the comparison includes live on/off and temperature fields, and a multi-minute gap is not part of the step |
-| 7 | Explorer certification run | site A only: `CX01` once more with `--external-client vrc-explorer` through the guarded relay |
-| 8 | Reserved cells | the planned and `blocked-infra` cells of the row are written without execution |
+| 3 | Smoke-checked cells | `AD01`, `AD02`, `AD03`, `AD06`, `AD07`, `PX01` to `PX04`, `PX12`, and `CX01` with the smoke command and the default external client `ebusd`. That `CX01` verdict stays in the session report. Step 7 does not run `CX01` again in that output directory. `AD10` waits for step 6 |
+| 4 | Class W cells | `AD04` (adapter reset) and `AD09` (host-link disconnect and reconnect) on the `ENS` and `ENH` setups, and `UDP-DS01` and `TCP-DS01` on the plain UDP and plain TCP setups. When the runner names the case and asks for its ID, the operator types it. For `AD04` and `AD09` the operator also performs that adapter action inside the case window. `UDP-DS01` and `TCP-DS01` pass only when the smoke command exits 0. Without the operator's answer the cell fails and no command runs |
+| 5 | Compatibility compositions | `ENS-DS01` on the ENS setup; `ENH-DS01` and `EBUSD-ES01` on the ENH setup. `UDP-DS01` and `TCP-DS01` are the class W cells of their own setups in step 4, not cells of this step. The add-on is reconfigured to the non-mux composition on the operator's word; the ebusd add-on has no proxy listener while these cells run. At site A, on the ENH setup only, VB-L3 and VB-L4 are performed in this step after `EBUSD-ES01`, while the ebusd-tcp composition is still the running composition, and before step 6. On that setup they are recorded, or marked Not run for the reason in the B503 section, before the composition is left. They are not deferred to A-10, and that composition is not opened again for them. Other setups do not run them and do not wait for them |
+| 6 | Return to the mux composition | `ENS` and `ENH` only: read back the options and the transport class, then `AD10` at once against the paired compatibility records from step 5. No measurement interval is inserted before `AD10`: the comparison includes live on/off and temperature fields, and a multi-minute gap is not part of the step. On the plain UDP and plain TCP setups `AD10` is planned and is not run |
+| 7 | Explorer certification run | site A only, for the `ENS` and `ENH` setups whose `CX01` cells were smoke-checked in step 3. One `CX01` cell per transport stores the invocation's external client, and selecting that cell again in the session report's output directory replaces its case directory. Step 7 is a separate invocation with `--external-client vrc-explorer` through the guarded relay, written to its own output directory. That invocation does not use the session report's output directory, so the smoke-checked `CX01` verdict from step 3 stays the session report's `CX01` |
+| 8 | Reserved cells | the planned and `blocked-infra` cells of the row are written without execution. This does not include `UDP-DS01` or `TCP-DS01` |
 | 9 | Restore | the as-found snapshot of step 1 is restored and read back; final measurement |
 
-`AD04`, `AD07` and `AD09` end with the smoke command's signal-missing status
-while the gateway does not publish the series their checks read. That recorded
-status satisfies only those three cells, and it is never a pass. Every other
-executable cell still has to pass. Any other non-pass fails the matrix row.
+The runner records every non-zero smoke status as a failed step and stores
+that step as outcome `fail`. Smoke status 4 means a series the check reads
+is missing. `AD04`, `AD07` and `AD09` end with that status while the gateway
+does not publish those series, and the recorded outcome of each stays
+`fail`. That outcome is not a pass, and it does not satisfy A-02 or B-01.
+Those rows are met only when every executable cell in the session report has
+runner outcome `pass`. An executable cell that was not run is absent, and
+an absent executable cell fails the row as well.
 
 ## Site A rows (vendor system controller)
 
 | ID | Precondition | Operation | Pass criterion | Result |
 |---|---|---|---|---|
-| A-01 Candidate install and health | E1 to E5 | install the candidate on the operator's word; read health and the startup phase | health passes; startup phase `LIVE_READY`; the second client is connected; no out-of-step hold reported | Not run |
-| A-02 Matrix, first setup | A-01 | the per-setup order | every executable cell `pass`, except `AD04`, `AD07` and `AD09`, which this row accepts only with their recorded signal-missing status; any other non-pass fails the row; class W cells confirmed by the operator | Not run |
+| A-01 Candidate install and health | E1 to E5 | install the candidate on the operator's word; read health and the startup phase | health passes; startup phase `LIVE_READY`; the ebusd add-on is connected to the mux proxy listener; no out-of-step hold reported | Not run |
+| A-02 Matrix, first setup | A-01 | the per-setup order | every executable cell's runner outcome is `pass`, including `AD04`, `AD07`, `AD09`, `UDP-DS01` and `TCP-DS01`. Smoke status 4 stays outcome `fail` and does not satisfy this row. An executable cell absent from the session report fails the row. Class W confirmation is required and does not by itself pass the cell | Not run |
 | A-03 Matrix, second setup | A-02; the operator switches the adapter host link | the per-setup order | as A-02 | Not run |
-| A-04 Explorer certification | A-02 or A-03 | step 7 | the scan completes with no guard refusal; one `CX01` record with the Explorer as northbound client | Not run |
+| A-04 Explorer certification | A-02 or A-03 | step 7 | the scan completes with no guard refusal. The separate record names `vrc-explorer` as the northbound client. That record is not the session report's `CX01` verdict, which remains the smoke-checked ebusd result from step 3. An Explorer failure does not replace that verdict and is not the `CX01` outcome A-02 reads | Not run |
 | A-05 Identification exchange record (operator) | the gateway has run its startup scan and at least one revalidation cycle | [identification exchange record](#identification-exchange-record) | both exchanges recorded and handed over, complete on the retained request and response bytes; acknowledge and checksum bytes are not required | Not run |
 | A-06 Graph axis, thermal | the family is in the graph in the candidate | [graph-axis checks](#graph-axis-checks), thermal block | every row of that block | Not run |
 | A-07 Native point export | the candidate carries the export | [native point export checks](#native-point-export-checks) | every row | Not run |
@@ -118,8 +142,8 @@ recorded and never adjusted away.
 
 | ID | Precondition | Operation | Pass criterion | Result |
 |---|---|---|---|---|
-| B-01 Matrix, each setup | the reduced sheet's `CL-01` passed | the per-setup order with the heat source as workload target and a free initiator address used by neither the bridge, the second client nor the gateway | as A-02 | Not run |
-| B-02 Second client | its as-found device option read in step 1 | if the option does not name the adapter of the session, the operator decides to connect it for the session only, restored afterwards, or to keep the corrected value | the operator's decision recorded | Not run |
+| B-01 Matrix, each setup | the reduced sheet's `CL-01` passed | the per-setup order with the heat source as workload target and a free initiator address used by neither the bridge, the ebusd add-on nor the gateway | as A-02: every executable cell's runner outcome is `pass`. Smoke status 4 stays `fail`, and an absent `UDP-DS01` or `TCP-DS01` does not satisfy this row | Not run |
+| B-02 ebusd add-on | the ebusd add-on's as-found `network_device` option, read in step 1 | if that option does not name the adapter of the session, the operator decides to connect the ebusd add-on for the session only, restored afterwards, or to keep the as-found value | the operator's decision recorded | Not run |
 | B-03 Bridge variant rows | B-01 running | the bridge variant rows of the reduced sheet | as that section defines | Not run |
 | B-04 Graph axis, reduced block | the family is in the graph in the candidate | [graph-axis checks](#graph-axis-checks), reduced block | every row of that block | Not run |
 | B-05 Native point export | the candidate carries the export | [native point export checks](#native-point-export-checks) | heat-source points only; no controller-class point | Not run |
@@ -147,7 +171,7 @@ in the graph in the candidate, stays **Not run** with that reason.
 | R-03 Nothing stale after a restart | restart the add-on once on the operator's word; read again after `LIVE_READY` | identities and relation instances unchanged; no relation refers to an absent resource; nothing read before the restart is presented as current | Not run |
 | R-04 Memberships | for each published resource | its plane memberships equal the element catalog for its kind; no resource without a membership | Not run |
 | R-05 Energy chain (where the equipment is) | inverter, storage and meter; charging equipment and its circuit | as R-01 for those kinds; a chain whose attribution the contract withholds is absent with its stated reason | Not run |
-| R-06 Visibility is not authority | separate from the one live setpoint write; the operator's word for this one invoke | one invoke names a write on a visible resource that has no admitted operation. It is not a setpoint change, it is not sent from the one-write steps, and it is not a second live setpoint change | the invoke is refused with the documented error and nothing reaches the bus. It is not followed by another write. When A-09 was performed, that admitted operation is the only one accepted. If the refusal is doubtful or anything reaches the bus: stop, hand restore if the controller changed, and send no further write | Not run |
+| R-06 Visibility is not authority | separate from the one live setpoint write; the operator's word for this one invoke | one invoke names a write on a visible resource that has no admitted operation. It is not a setpoint change, it is not sent from the one-write steps, and it is not a second live setpoint change. The invoke is refused with the documented error and nothing reaches the bus. It is not followed by another write. When A-09 was performed, that admitted operation is the only one accepted. If the refusal is doubtful or anything reaches the bus: stop, hand restore if the controller changed, and send no further write | Not run |
 | R-07 Reduced block (site B) | the thermal plane on a bus without a vendor controller | the heat-source resource only; no zone, circuit or controller resource; the bridge is not a semantic resource | Not run |
 
 ## Identification exchange record
@@ -258,11 +282,11 @@ the ebusd-tcp composition for them.
 |---|---|
 | Before each site's part | the word for the session scope (E5) |
 | At the start, after each host-link switch and at the end | a look at the appliance and the controller or the room-control app |
-| Class W cells, once per setup | type the case ID and reset the adapter (`AD04`) or disconnect and reconnect its host link (`AD09`) |
+| Class W cells, once per setup | type the case ID and reset the adapter (`AD04`) or disconnect and reconnect its host link (`AD09`). On the plain UDP and plain TCP setups, type the case ID for `UDP-DS01` or `TCP-DS01`; those cells pass only on a smoke exit of 0 |
 | Compatibility compositions | the word for reconfiguring the add-on and for the proxy listener's absence. At site A, VB-L3 and the word for VB-L4 while the ebusd-tcp composition of step 5 is still running |
 | Site A | read and save the identification exchange record, complete on the retained request and response bytes |
 | Site A | two display values for M-03; the zone and circuit counts for R-01; the word for the one R-06 refusal invoke, which is not a setpoint write |
 | Site A, optional | the one live setpoint change (A-09), including when Home Assistant is its surface (A-08). Not a second change. A doubtful readback or return: hand restore, and no further write |
 | Site A, B503 rows | the word for VB-L2 while the mux composition is running. The word for VB-L4 is given in step 5, not at A-10 |
-| Site B | the decision on the second client's device option (B-02) |
+| Site B | the decision on the ebusd add-on's `network_device` option (B-02) |
 | End of each site | confirm the as-found state, or decide that the candidate stays installed |

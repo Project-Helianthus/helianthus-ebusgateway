@@ -55,7 +55,11 @@ a difference is a finding, not a reason to adjust the expectation.
   passively. Every gateway frame on this profile is a read.
 - Not allowed: any write through GraphQL, MCP, the Portal or Home Assistant;
   any device or configuration change not named by a row; anything that answers
-  or acts as a controller.
+  or acts as a controller. The
+  [bridge variant](#variant-third-party-controller-bridge) permits the
+  already-installed third-party room-control bridge to take the controller's
+  place. That permission does not extend to the gateway, and it does not
+  allow the operator to add a controller.
 - Additional stop condition: the heat source shows a fault, a changed
   operating state or the internet module loses its service while the gateway
   probes. Record the time and stop the affected row.
@@ -106,7 +110,16 @@ the `AD03` cells and leaves their decision open.
 
 On this variant a third-party room-control bridge takes the controller's place
 on the bus: it arbitrates as an initiator, addresses the heat source, and may
-or may not answer identification or the gateway's root probe. The rows
+or may not answer identification or the gateway's root probe. This variant
+overrides the session rule that forbids anything which answers or acts as a
+controller, and only for the bridge that is already installed. That bridge
+may take the controller's place, arbitrate as an initiator and answer
+identification or the gateway's root probe. The operator runs the rows of
+this variant while that bridge stays in place. The gateway still must not
+answer or act as a controller, and the operator does not add another
+controller. The other session prohibitions stay.
+
+The rows
 `CL-01` to `CL-11` above apply with the changed expectations below; the rows
 the session run sheet adds for this site are its
 [site B rows](hardware-session-run-sheet.md#site-b-rows-third-party-controller-bridge).

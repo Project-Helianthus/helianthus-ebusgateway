@@ -232,22 +232,36 @@ type Config struct {
 
         report_path = repo_path / "passive.json"
         report_path.write_text(
-            json.dumps(
-                {
-                    "suite": "passive",
-                    "cases": [
-                        {"case_id": "P01", "passive_mode": "unsupported_or_misconfigured", "outcome": "pass"},
-                        {"case_id": "P02", "passive_mode": "unsupported_or_misconfigured", "outcome": "pass"},
-                        {"case_id": "P03", "passive_mode": "required", "outcome": "pass"},
-                        {"case_id": "P04", "passive_mode": "required", "outcome": "pass"},
-                        {"case_id": "P05", "passive_mode": "required", "outcome": "pass"},
-                        {"case_id": "P06", "passive_mode": "unsupported_or_misconfigured", "outcome": "pass"},
-                    ],
-                }
-            ),
+            json.dumps({"suite": "passive", "cases": self._passive_cases()}),
             encoding="utf-8",
         )
         return repo_path, report_path
+
+    def _passive_cases(self) -> list[dict[str, str]]:
+        return [
+            {"case_id": "P01", "passive_mode": "unsupported_or_misconfigured", "outcome": "pass"},
+            {"case_id": "P02", "passive_mode": "unsupported_or_misconfigured", "outcome": "pass"},
+            {"case_id": "P06", "passive_mode": "unsupported_or_misconfigured", "outcome": "pass"},
+        ]
+
+    def _run_triggered_gate(self, cases: list[dict[str, str]]) -> subprocess.CompletedProcess[str]:
+        repo_path, report_path = self._create_temp_repo(
+            "cmd/gateway/main.go",
+            base_text="package main\n\nfunc main() {\n\tpassiveMode := \"required\"\n\t_ = passiveMode\n}\n",
+            modified_text="package main\n\nfunc main() {\n\tpassiveMode := \"unsupported_or_misconfigured\"\n\t_ = passiveMode\n}\n",
+        )
+        report_path.write_text(
+            json.dumps({"suite": "passive", "cases": cases}),
+            encoding="utf-8",
+        )
+        return subprocess.run(
+            ["bash", "scripts/passive_smoke_gate.sh"],
+            cwd=repo_path,
+            env=self._script_env(PASSIVE_SMOKE_GATE_BASE_REF="HEAD", PASSIVE_SMOKE_REPORT=str(report_path)),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
 
     def test_passive_smoke_gate_triggers_for_real_main_diff(self) -> None:
         repo_path, report_path = self._create_temp_repo(
@@ -265,6 +279,52 @@ type Config struct {
         )
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         self.assertIn("passive smoke gate: PASS", result.stdout)
+        self.assertIn("P01, P02 and P06", result.stdout)
+
+    def test_retired_six_case_form_names_the_new_form(self) -> None:
+        cases = [
+            {"case_id": "P01", "passive_mode": "unsupported_or_misconfigured", "outcome": "pass"},
+            {"case_id": "P02", "passive_mode": "unsupported_or_misconfigured", "outcome": "pass"},
+            {"case_id": "P03", "passive_mode": "required", "outcome": "pass"},
+            {"case_id": "P04", "passive_mode": "required", "outcome": "pass"},
+            {"case_id": "P05", "passive_mode": "required", "outcome": "pass"},
+            {"case_id": "P06", "passive_mode": "unsupported_or_misconfigured", "outcome": "pass"},
+        ]
+        result = self._run_triggered_gate(cases)
+        self.assertNotEqual(result.returncode, 0, msg=result.stdout)
+        self.assertIn("retired six-case form", result.stdout)
+        self.assertIn("P01, P02 and P06", result.stdout)
+
+    def test_each_remaining_case_field_is_required(self) -> None:
+        # case_id: dropping one required id must name that id.
+        # passive_mode: a different mode on that id must name the id and the mode.
+        # outcome: a non-pass outcome on that id must name the id and the outcome.
+        for case_id, passive_mode in (
+            ("P01", "unsupported_or_misconfigured"),
+            ("P02", "unsupported_or_misconfigured"),
+            ("P06", "unsupported_or_misconfigured"),
+        ):
+            missing = [dict(case) for case in self._passive_cases() if case["case_id"] != case_id]
+            missing_result = self._run_triggered_gate(missing)
+            self.assertNotEqual(missing_result.returncode, 0, msg=missing_result.stdout)
+            self.assertIn(f"missing required cases: {case_id}", missing_result.stdout)
+
+            mutated_mode = "required" if passive_mode != "required" else "unsupported_or_misconfigured"
+            wrong_mode = [dict(case) for case in self._passive_cases()]
+            for case in wrong_mode:
+                if case["case_id"] == case_id:
+                    case["passive_mode"] = mutated_mode
+            mode_result = self._run_triggered_gate(wrong_mode)
+            self.assertNotEqual(mode_result.returncode, 0, msg=mode_result.stdout)
+            self.assertIn(f"{case_id} passive_mode='{mutated_mode}'", mode_result.stdout)
+
+            failing = [dict(case) for case in self._passive_cases()]
+            for case in failing:
+                if case["case_id"] == case_id:
+                    case["outcome"] = "fail"
+            fail_result = self._run_triggered_gate(failing)
+            self.assertNotEqual(fail_result.returncode, 0, msg=fail_result.stdout)
+            self.assertIn(f"{case_id} outcome='fail'", fail_result.stdout)
 
     def test_passive_smoke_gate_fails_without_report(self) -> None:
         repo_path, _ = self._create_temp_repo(

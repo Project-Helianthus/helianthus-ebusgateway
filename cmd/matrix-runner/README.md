@@ -7,7 +7,7 @@ one directory per case (`configs/`, `logs/runner.log`, `verdict.json`) and an
 | Suite | Cases | Status |
 |---|---|---|
 | `adaptermux-v2` | 173 cells of the two-axis AdapterMux conformance matrix | the transport gate's report form |
-| `passive` | `P01`–`P06` | unchanged; the passive smoke gate's form |
+| `passive` | `P01`, `P02`, `P06` | the passive smoke gate's form |
 | `full88` (default flag value) | `T01`–`T88` | historical; the gate rejects it |
 
 The transport gate accepts only an `adaptermux-v2` index
@@ -15,6 +15,15 @@ The transport gate accepts only an `adaptermux-v2` index
 `full88` stays the flag's default and stays generable to reproduce historical
 reports; its proxy topologies are retired, and the T01–T08 questions are
 asked by the compatibility cells of `adaptermux-v2`.
+`P03`, `P04` and `P05` are carried by `adaptermux-v2` cells named in section 2
+of the transport gate policy: `P03` by `ENS-AD02` and `ENS-AD03` (no cell with
+an external client on the proxy listener carries the single-client assertion);
+`P04` by `ENS-AD03` under `ENS-CX01` load; `P05` by `ENH-AD03` under `ENH-CX01`
+load. `ENS-CX01` and `ENH-CX01` are the cells with an external client on the
+proxy listener. The passive harness starts the gateway with an instance
+identifier and the add-on's transport, network and address flags for the case,
+and fails the case when the gateway log shows the eBUS driver withheld.
+
 The schema is defined in
 [M7-adaptermux-conformance-matrix.md](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/matrix/M7-adaptermux-conformance-matrix.md).
 

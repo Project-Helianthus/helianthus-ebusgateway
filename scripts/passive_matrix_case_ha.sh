@@ -338,15 +338,100 @@ run_local_ops() {
     "${LOCAL_OPS_SCRIPT}" "$@"
 }
 
+valid_instance_guid() {
+  [[ "$1" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]]
+}
+
+accepted_instance_source() {
+  case "$1" in
+    runtime_state|generated|cli-override|legacy_migrated) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+persist_instance_identity() {
+  local guid="$1"
+  local source="$2"
+  remote_exec "mkdir -p '${remote_case_dir}/state' && printf '%s\n' '${guid}' > '${remote_case_dir}/state/instance-guid' && printf '%s\n' '${source}' > '${remote_case_dir}/state/instance-guid-source'"
+}
+
+resolve_instance_identity() {
+  local guid="" source="" persisted=""
+  if [[ -n "${MATRIX_INSTANCE_GUID:-}" ]]; then
+    guid="$(printf '%s' "${MATRIX_INSTANCE_GUID}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+    source="${MATRIX_INSTANCE_GUID_SOURCE:-runtime_state}"
+    if ! valid_instance_guid "${guid}" || ! accepted_instance_source "${source}"; then
+      echo "passive case ${canonical_case_id}: instance identifier rejected" >&2
+      return 1
+    fi
+    persist_instance_identity "${guid}" "${source}"
+    printf '%s;%s\n' "${guid}" "${source}"
+    return 0
+  fi
+
+  persisted="$(remote_exec "if [ -f '${remote_case_dir}/state/instance-guid' ]; then tr -d '[:space:]' < '${remote_case_dir}/state/instance-guid'; fi" || true)"
+  persisted="$(printf '%s' "${persisted}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+  if [[ -n "${persisted}" ]]; then
+    source="$(remote_exec "if [ -f '${remote_case_dir}/state/instance-guid-source' ]; then tr -d '[:space:]' < '${remote_case_dir}/state/instance-guid-source'; fi" || true)"
+    source="$(printf '%s' "${source}" | tr -d '[:space:]')"
+    if ! valid_instance_guid "${persisted}" || ! accepted_instance_source "${source}"; then
+      echo "passive case ${canonical_case_id}: instance identifier rejected" >&2
+      return 1
+    fi
+    printf '%s;%s\n' "${persisted}" "${source}"
+    return 0
+  fi
+
+  guid="$(remote_exec "if [ -r /proc/sys/kernel/random/uuid ]; then cat /proc/sys/kernel/random/uuid; else python3 -c 'import uuid; print(uuid.uuid4())'; fi" || true)"
+  guid="$(printf '%s' "${guid}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+  source="generated"
+  if ! valid_instance_guid "${guid}"; then
+    echo "passive case ${canonical_case_id}: instance identifier rejected" >&2
+    return 1
+  fi
+  persist_instance_identity "${guid}" "${source}"
+  printf '%s;%s\n' "${guid}" "${source}"
+}
+
+ebus_driver_admitted() {
+  local gateway_log_path="$1"
+  local attempt=0
+  local log_text=""
+  while [[ "${attempt}" -lt 5 ]]; do
+    if log_text="$(remote_exec "cat '${gateway_log_path}'" 2>/dev/null)"; then
+      if printf '%s\n' "${log_text}" | grep -q 'ebus.primary withheld'; then
+        echo "passive case ${canonical_case_id}: eBUS driver withheld" >&2
+        return 1
+      fi
+      if [[ -n "${log_text}" ]]; then
+        return 0
+      fi
+    fi
+    attempt=$((attempt + 1))
+    sleep 0.2
+  done
+  echo "passive case ${canonical_case_id}: eBUS driver withheld" >&2
+  return 1
+}
+
 restart_gateway_with_passive_mode() {
   local gateway_log_path="${1:-${MATRIX_GATEWAY_LOG_PATH:-${remote_case_dir}/logs/gateway.log}}"
   local protocol network address
+  local instance_guid instance_source identity
   local observe_first_flags=""
   local startup_probe_flags=""
   enforce_gw15_proof_flag_state
   IFS=';' read -r protocol network address < <(gateway_connection)
   observe_first_flags="$(build_observe_first_cli_flags)"
   startup_probe_flags="$(build_startup_probe_cli_flags)"
+  if ! identity="$(resolve_instance_identity)"; then
+    return 1
+  fi
+  IFS=';' read -r instance_guid instance_source <<< "${identity}"
+  if ! valid_instance_guid "${instance_guid}" || ! accepted_instance_source "${instance_source}"; then
+    echo "passive case ${canonical_case_id}: instance identifier rejected" >&2
+    return 1
+  fi
 
   remote_exec "mkdir -p '${remote_case_dir}/state' '${remote_case_dir}/logs'"
   remote_exec "if [ -f '${remote_case_dir}/state/gateway.pid' ]; then kill \$(cat '${remote_case_dir}/state/gateway.pid') >/dev/null 2>&1 || true; rm -f '${remote_case_dir}/state/gateway.pid'; fi"
@@ -354,6 +439,8 @@ restart_gateway_with_passive_mode() {
   remote_exec "nohup '${remote_bin}/helianthus-gateway' \
     --transport '${protocol}' --network '${network}' --address '${address}' \
     --source-addr auto \
+    --instance-guid '${instance_guid}' \
+    --instance-guid-source '${instance_source}' \
     --read-timeout 400ms --write-timeout 400ms --dial-timeout 3s \
     --scan-timeout 90s --scan-request-timeout 2s --scan-interval 0s \
     --semantic-discovery-interval 5m --semantic-config-interval 5m --semantic-state-interval 1m --semantic-request-timeout 2s \
@@ -363,6 +450,7 @@ restart_gateway_with_passive_mode() {
     --http-addr ':${gateway_http_port}' --mdns=false --broadcast=true \
     > '${gateway_log_path}' 2>&1 & echo \$! > '${remote_case_dir}/state/gateway.pid'"
   remote_exec "for i in \$(seq 1 60); do kill -0 \$(cat '${remote_case_dir}/state/gateway.pid') || exit 2; ss -ltn '( sport = :${gateway_http_port} )' | grep -q LISTEN && exit 0; sleep 1; done; exit 1"
+  ebus_driver_admitted "${gateway_log_path}"
 }
 
 gateway_graphql_health_check() {
@@ -492,10 +580,16 @@ run_rollback_execute() {
     restart_succeeded="true"
     if gateway_graphql_health_check; then
       gateway_health_check_ok="true"
-      ok="true"
-      reason="ok"
     else
       reason="gateway_health_check_failed"
+    fi
+    if ! ebus_driver_admitted "${rollback_gateway_log_path}"; then
+      ok="false"
+      gateway_health_check_ok="false"
+      reason="ebus_driver_withheld"
+    elif [[ "${gateway_health_check_ok}" == "true" ]]; then
+      ok="true"
+      reason="ok"
     fi
   else
     restart_exit_code=$?
@@ -537,6 +631,7 @@ case "${ACTION}" in
     ;;
   smoke)
     run_local_ops smoke
+    ebus_driver_admitted "${MATRIX_GATEWAY_LOG_PATH:-${remote_case_dir}/logs/gateway.log}"
     MATRIX_CASE_CANONICAL_ID="${canonical_case_id}" \
     MATRIX_CASE_EXEC_ID="${exec_case_id}" \
     MATRIX_CASE_ID="${canonical_case_id}" \

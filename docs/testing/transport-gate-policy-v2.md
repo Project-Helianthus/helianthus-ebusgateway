@@ -53,11 +53,22 @@ hardware waiver is implied either way.
 - The report path variable `TRANSPORT_MATRIX_REPORT`: it keeps its name and
   points at an `adaptermux-v2` index. A `full88` report is rejected by the suite
   check of §4 instead of by a second variable.
-- The passive smoke gate ([scripts/passive_smoke_gate.sh](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/scripts/passive_smoke_gate.sh)),
-  `PASSIVE_SMOKE_REPORT` and its own override (`PASSIVE_SMOKE_GATE_OWNER_OVERRIDE`,
-  `PASSIVE_SMOKE_GATE_OWNER_REASON`). The steer does not re-point them; three of
-  its cases (P03–P05) depend on proxy topologies and need a separate decision
-  ([cell map](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/matrix/M7-adaptermux-conformance-cell-map.md), last section).
+- The passive smoke gate's trigger path list
+  ([scripts/passive_smoke_gate.sh](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/scripts/passive_smoke_gate.sh)),
+  the report variable `PASSIVE_SMOKE_REPORT`, and the override variable names
+  `PASSIVE_SMOKE_GATE_OWNER_OVERRIDE` and `PASSIVE_SMOKE_GATE_OWNER_REASON`.
+
+The passive suite those variables gate is `P01`, `P02` and `P06`. `P03`, `P04`
+and `P05` leave that suite. The
+[cell map](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/matrix/M7-adaptermux-conformance-cell-map.md)
+names the `adaptermux-v2` cells that carry their assertions, and this page
+adopts that mapping:
+
+| Case | Assertion carried out of the passive suite | `adaptermux-v2` cells |
+|---|---|---|
+| `P03` | single client, southbound ENS, passive mode `required` | `ENS-AD02` and `ENS-AD03`. No cell with an external client on the proxy listener carries this assertion: the single-client topology has no external client. `ENS-AD02` checks that the passive path has zero self-echo, and `ENS-AD03` checks that it reconstructs third-party traffic. |
+| `P04` | two clients, southbound ENS, passive mode `required` | `ENS-AD03` under `ENS-CX01` load. `ENS-CX01` is the cell with an external client on the proxy listener. |
+| `P05` | two clients, southbound ENH, passive mode `required` | `ENH-AD03` under `ENH-CX01` load. `ENH-CX01` is the cell with an external client on the proxy listener. |
 
 ## 3. Locations changed at the switch
 
@@ -188,4 +199,4 @@ in the ship wrappers changes as in §3.
   have no counterpart beyond the legs the cell map assigns.
 - The compatibility cells keep the non-mux direct transports and ebusd-tcp
   covered while they remain configurable.
-- The passive suite and its override are outside this policy.
+- The passive suite is `P01`, `P02` and `P06`. The cells that carry `P03`, `P04` and `P05` are named in §2. The passive override stays a separate pair of variables from the transport-gate override.

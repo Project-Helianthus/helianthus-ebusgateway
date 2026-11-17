@@ -63,31 +63,40 @@ type Claim struct {
 
 // Entry is the recorded state of one anchor key. A superseded key is never
 // resolved again; a current key resolves to Resource for an anchor of its
-// class and basis, and refuses an anchor of another class or basis.
+// class and basis, and refuses an anchor of another class or basis. Parent and
+// Slot are those of the anchor the key was recorded under; for a native
+// identity they are not key members, and a supersession must name them.
 type Entry struct {
 	Resource   semreg.ResourceID
 	Class      semreg.AnchorClass
 	Basis      semreg.AnchorBasis
+	Parent     semreg.ResourceID
+	Slot       string
 	Superseded bool
 }
 
 // Supersession is one recorded anchor change of Resource, whose anchor class
 // is Class. Previous and Next are equal when only the basis rises (an operator
-// slot to a native slot at the same parent and slot).
+// slot to a native slot at the same parent and slot). The parents and slots
+// are those of the previous and the next anchor.
 type Supersession struct {
-	Resource      semreg.ResourceID
-	Class         semreg.AnchorClass
-	Previous      AnchorKey
-	PreviousBasis semreg.AnchorBasis
-	Next          AnchorKey
-	NextBasis     semreg.AnchorBasis
+	Resource       semreg.ResourceID
+	Class          semreg.AnchorClass
+	Previous       AnchorKey
+	PreviousBasis  semreg.AnchorBasis
+	PreviousParent semreg.ResourceID
+	PreviousSlot   string
+	Next           AnchorKey
+	NextBasis      semreg.AnchorBasis
+	NextParent     semreg.ResourceID
+	NextSlot       string
 }
 
 // Store is the supersession table and the home asset of each resource.
 // Commit is atomic: it records the previous key as superseded (unless it
 // equals the next) and the next key as current, and refuses a record that
-// contradicts what it holds, including a class or a previous basis other than
-// the previous key's recorded one. RecordHome records asset as the home of
+// contradicts what it holds, including a class, a previous basis, a previous
+// parent or a previous slot other than the previous key's recorded one. RecordHome records asset as the home of
 // resource when none is recorded and returns the recorded home, so every
 // allocator over the store sees one home per resource.
 type Store interface {
@@ -132,16 +141,22 @@ func (s *MemoryStore) Lookup(key AnchorKey) (Entry, bool, error) {
 func (s *MemoryStore) Commit(record Supersession) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if previous, ok := s.entries[record.Previous]; ok && (previous.Superseded || previous.Resource != record.Resource || previous.Class != record.Class || previous.Basis != record.PreviousBasis) {
+	return commitTo(s.entries, record)
+}
+
+// commitTo applies one supersession to entries, or refuses it and leaves
+// entries unchanged.
+func commitTo(entries map[AnchorKey]Entry, record Supersession) error {
+	if previous, ok := entries[record.Previous]; ok && (previous.Superseded || previous.Resource != record.Resource || previous.Class != record.Class || previous.Basis != record.PreviousBasis || previous.Parent != record.PreviousParent || previous.Slot != record.PreviousSlot) {
 		return ErrStoreConflict
 	}
 	if record.Next != record.Previous {
-		if _, ok := s.entries[record.Next]; ok {
+		if _, ok := entries[record.Next]; ok {
 			return ErrStoreConflict
 		}
-		s.entries[record.Previous] = Entry{Resource: record.Resource, Class: record.Class, Basis: record.PreviousBasis, Superseded: true}
+		entries[record.Previous] = Entry{Resource: record.Resource, Class: record.Class, Basis: record.PreviousBasis, Parent: record.PreviousParent, Slot: record.PreviousSlot, Superseded: true}
 	}
-	s.entries[record.Next] = Entry{Resource: record.Resource, Class: record.Class, Basis: record.NextBasis}
+	entries[record.Next] = Entry{Resource: record.Resource, Class: record.Class, Basis: record.NextBasis, Parent: record.NextParent, Slot: record.NextSlot}
 	return nil
 }
 
@@ -225,7 +240,7 @@ func (a *Allocator) Resolve(kind semreg.DefinitionID, anchor Anchor) (semreg.Res
 		}
 		// Record the resolved key in the store, so that every allocator over
 		// the store sees it as held.
-		if err := a.store.Commit(Supersession{Resource: id, Class: anchor.Class, Previous: key, PreviousBasis: anchor.Basis, Next: key, NextBasis: anchor.Basis}); err != nil {
+		if err := a.store.Commit(Supersession{Resource: id, Class: anchor.Class, Previous: key, PreviousBasis: anchor.Basis, PreviousParent: anchor.Parent, PreviousSlot: anchor.Slot, Next: key, NextBasis: anchor.Basis, NextParent: anchor.Parent, NextSlot: anchor.Slot}); err != nil {
 			return "", semreg.ResourceAnchor{}, fmt.Errorf("%w: %w", ErrStore, err)
 		}
 	}
@@ -238,8 +253,8 @@ func (a *Allocator) Resolve(kind semreg.DefinitionID, anchor Anchor) (semreg.Res
 // its anchor becomes next, and returns the supersedes record: the exact
 // previous anchor and the continuity evidence. It refuses a kind change, a
 // class change, a downgrade, any change that is not an allowed upgrade, a
-// previous anchor that is superseded or not current, and a next key already
-// held. The allowed upgrades are an operator slot to a native slot or native
+// previous anchor that is superseded or not current (another class, basis,
+// parent or slot than the recorded ones), and a next key already held. The allowed upgrades are an operator slot to a native slot or native
 // identity, a native slot to a native identity, and a native identity to a
 // revised token of the same scheme and issuer.
 func (a *Allocator) Supersede(previous, next Claim, continuity Continuity) (semreg.ResourceID, semreg.AnchorSupersession, error) {
@@ -291,6 +306,11 @@ func (a *Allocator) Supersede(previous, next Claim, continuity Continuity) (semr
 	if entry.Class != previous.Anchor.Class || entry.Basis != previous.Anchor.Basis {
 		return "", semreg.AnchorSupersession{}, fmt.Errorf("%w: key is held as %s under %s", ErrPreviousAnchor, entry.Class, entry.Basis)
 	}
+	// A native key does not hold its parent and slot, so they are compared
+	// with the recorded ones: the supersedes record names the current anchor.
+	if entry.Parent != previous.Anchor.Parent || entry.Slot != previous.Anchor.Slot {
+		return "", semreg.AnchorSupersession{}, fmt.Errorf("%w: key is held at another parent or slot", ErrPreviousAnchor)
+	}
 	id := entry.Resource
 	if nextKey != previousKey {
 		if _, held, err := a.lookup(nextKey); err != nil {
@@ -302,7 +322,7 @@ func (a *Allocator) Supersede(previous, next Claim, continuity Continuity) (semr
 			return "", semreg.AnchorSupersession{}, ErrKeyHeld
 		}
 	}
-	if err := a.store.Commit(Supersession{Resource: id, Class: next.Anchor.Class, Previous: previousKey, PreviousBasis: previous.Anchor.Basis, Next: nextKey, NextBasis: next.Anchor.Basis}); err != nil {
+	if err := a.store.Commit(Supersession{Resource: id, Class: next.Anchor.Class, Previous: previousKey, PreviousBasis: previous.Anchor.Basis, PreviousParent: previous.Anchor.Parent, PreviousSlot: previous.Anchor.Slot, Next: nextKey, NextBasis: next.Anchor.Basis, NextParent: next.Anchor.Parent, NextSlot: next.Anchor.Slot}); err != nil {
 		return "", semreg.AnchorSupersession{}, fmt.Errorf("%w: %w", ErrStore, err)
 	}
 	delete(a.held, previousKey)

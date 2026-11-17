@@ -51,7 +51,7 @@ The identifier is `resource:` followed by the first 32 hexadecimal characters
 of a sha256 over the domain `helianthus.semgraph.resource/v1`, the kind and
 the anchor key members, each preceded by a zero byte. The same anchor therefore
 yields the same identifier in every incarnation, and a restart needs no stored
-state. Evidence, the source and the incarnation never enter the hash. A parent
+state unless the anchor was superseded (see below). Evidence, the source and the incarnation never enter the hash. A parent
 must be an identifier the allocator returned.
 
 ## Supersession
@@ -70,17 +70,36 @@ Continuity evidence is a binding that observes both anchors, the native
 owner's documented mapping, or, after an operator slot only, an operator
 declaration. The allocator refuses a kind change, a class change, a downgrade,
 any other change, a previous anchor that was never resolved, is superseded or
-is held under another class or basis, and a next key that is already held. A
+is held under another class, basis, parent or slot, and a next key that is
+already held. The parent and slot of a native token are not key members, so the
+table records them with the key and a supersession must name the recorded ones;
+the `supersedes` record therefore always names the current anchor. A
 superseded key is never resolved again. The table records the class and basis
 of each current key: `Resolve` refuses an anchor of another class for that key,
 refuses a lower basis as a downgrade, and refuses a higher basis, which rises
 only through `Supersede`, so every basis change carries continuity evidence and
 a `supersedes` record.
 
-The supersession table sits behind the `Store` interface. `MemoryStore` is the
-in-memory implementation; the durable store is a later change. Keys held by a
-current resource are known to the allocator only for the keys resolved in the
-running incarnation and the recorded supersessions; the kernel's
+The supersession table sits behind the `Store` interface. A derived
+identifier needs no stored state, but a superseded one does: it was derived
+from the previous anchor, so without the table a restart would allocate a new
+identifier for the upgraded anchor. `OpenStore(dir)` therefore keeps the table
+in one file, `semgraph-anchors.json`, in an existing directory, and returns the
+in-memory `MemoryStore` when no directory is given. The file holds, for every
+recorded anchor key, its resource, class, basis, parent, slot and whether it is
+superseded, so the previous anchor of a supersession stays recorded beside the
+current one, and the home asset of each resource. It is a versioned document
+whose format and version are compared exactly; there is no migration. An
+absent file is an empty table and opening never writes. A damaged file is
+refused with `ErrStoreDamaged` and a file of another format or version with
+`ErrStoreForeign`; neither is changed and no store is returned, so nothing is
+allocated over it. Each change is written to a new file that is synced and
+renamed over the old one, and the table changes only after the write
+succeeded; a failure after the rename leaves the store refusing every
+operation with `ErrStoreUncertain` until it is opened again. One store owns the
+file of its directory. No runtime path opens a file store yet; a family slice
+composes it under the runtime state directory. Keys held by a current resource
+are known to the allocator only for the recorded keys; the kernel's
 `duplicate_identity` check over the snapshot stays authoritative.
 
 ## Home asset

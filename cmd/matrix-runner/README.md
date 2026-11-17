@@ -120,15 +120,8 @@ workload, pass criterion and category. A run sets the usual `MATRIX_*`
 variables, plus `MATRIX_SOUTHBOUND_TRANSPORT`, `MATRIX_INVARIANT`,
 `MATRIX_INVARIANT_FAMILY`, `MATRIX_COMPOSITION`, `MATRIX_NORTHBOUND_CLIENT`,
 `MATRIX_HARDWARE_SETUP`, `MATRIX_SESSION_ID`, `MATRIX_CANDIDATE`,
-`MATRIX_CELL_CLASS`, `MATRIX_OUTPUT_DIR`, `MATRIX_AD10_PAIRED_CASES` and
-`MATRIX_SMOKE_READY_FILE`. The smoke command uses them to run the check for
-that invariant.
-
-The smoke command creates the file named by `MATRIX_SMOKE_READY_FILE` once it
-has taken its baseline reading. A cell's client workload starts only after
-that file exists, or after the smoke command has ended without creating it,
-so the client's traffic falls inside the case window and never into the
-baseline.
+`MATRIX_CELL_CLASS`, `MATRIX_OUTPUT_DIR` and `MATRIX_AD10_PAIRED_CASES`. The
+smoke command uses them to run the check for that invariant.
 
 - AD cells and compatibility cells pass when the smoke command exits 0.
 - AD06 also runs the ebusd workload: `state`, `scan ZZ`, and `hex ZZ070400`.
@@ -136,10 +129,12 @@ baseline.
   transactions, so both sessions bid at the same SYN boundaries.
 - AD04 and AD09 are operator adapter actions. The runner names the case and
   asks for its ID; after the smoke command announces the action (on its
-  output, once its first reading is taken) the operator resets the adapter
-  (AD04) or disconnects the adapter's host link and reconnects it (AD09)
-  inside the case window. Set `MATRIX_SMOKE_WINDOW_SEC` long enough for the
-  action and the recovery.
+  output and on the controlling terminal, once its first reading is taken)
+  the operator resets the adapter (AD04) or disconnects the adapter's host
+  link and reconnects it (AD09) inside the case window. The evidence records
+  `operator_cue` as `terminal` or `case_log_only`; a failing cell whose cue
+  reached only the case log says so in its reasons. Set
+  `MATRIX_SMOKE_WINDOW_SEC` long enough for the action and the recovery.
 - PX cells also run the synthetic ENH contender: INIT, then three 07 04
   identification telegrams through START/SEND, with every echoed symbol and
   the response CRC verified.
@@ -189,7 +184,6 @@ Environment:
 | `MATRIX_BUS_OBSERVABILITY_URL`, `MATRIX_METRICS_URL`, `MATRIX_DEBUG_VARS_URL`, `MATRIX_GRAPHQL_URL`, `MATRIX_MCP_URL` | override one surface |
 | `MATRIX_EXTERNAL_WRITE_POLICY` | the external write policy the gateway was started with; required |
 | `MATRIX_SMOKE_WINDOW_SEC`, `MATRIX_SMOKE_POLL_SEC`, `MATRIX_SMOKE_HTTP_TIMEOUT_SEC` | case window (default 60), poll interval (default 3) and per-request timeout (default 10), in seconds |
-| `MATRIX_SMOKE_READY_FILE` | the readiness marker created after the baseline reading; the runner holds the client workload until it exists; set by the runner |
 
 The operator exports the URLs and the write policy before starting the
 runner, which passes its own environment on to the command. Keep the window

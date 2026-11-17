@@ -22,12 +22,6 @@ const (
 
 	contenderTelegramCount = 3
 	clientStepTimeout      = 5 * time.Second
-
-	// smokeReadyFileName is the marker the smoke command creates once its
-	// baseline sample is taken; the client workload starts only after it, so
-	// the traffic the cell judges falls inside the smoke command's window.
-	smokeReadyFileName     = "smoke-ready"
-	smokeReadyPollInterval = 20 * time.Millisecond
 )
 
 // labelPattern bounds the opaque session, candidate and setup labels.
@@ -414,15 +408,10 @@ func (runner *Runner) executeAdapterMuxCase(
 		caseCtx, cancel = context.WithTimeout(ctx, runner.options.CaseTimeout)
 		defer cancel()
 	}
-	readyPath := filepath.Join(caseDir, smokeReadyFileName)
-	if err := os.Remove(readyPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return commands, logFiles, actualStatusFailed, fmt.Sprintf("clear smoke readiness marker: %v", err), ""
-	}
 	env := append(
 		buildCaseEnv(testCase, runner.options.Target, runner.options.Suite, caseDir, configDir, logDir),
 		runner.adapterMuxEnv(testCase)...,
 	)
-	env = append(env, "MATRIX_SMOKE_READY_FILE="+readyPath)
 	appendResult := func(result commandResult) {
 		commands = append(commands, result)
 		logFiles = append(logFiles, filepath.ToSlash(result.LogFile))
@@ -453,24 +442,18 @@ func (runner *Runner) executeAdapterMuxCase(
 	}
 
 	if firstError == "" {
-		var clientResult, smokeResult commandResult
+		var clientResult commandResult
+		var wait sync.WaitGroup
 		hasClient := cell.NorthboundClient != NorthboundNone
-		smokeDone := make(chan commandResult, 1)
-		go func() {
-			smokeDone <- runner.runPlannedCommand(caseCtx, commandLogPath, "smoke", runner.options.SmokeCommand, true, env)
-		}()
 		if hasClient {
-			// The client starts once the smoke command has taken its
-			// baseline (or has ended without one), never before it.
-			finished := false
-			smokeResult, finished = awaitSmokeBaseline(caseCtx, readyPath, smokeDone)
-			clientResult = runner.runClientWorkload(caseCtx, testCase, logDir)
-			if !finished {
-				smokeResult = <-smokeDone
-			}
-		} else {
-			smokeResult = <-smokeDone
+			wait.Add(1)
+			go func() {
+				defer wait.Done()
+				clientResult = runner.runClientWorkload(caseCtx, testCase, logDir)
+			}()
 		}
+		smokeResult := runner.runPlannedCommand(caseCtx, commandLogPath, "smoke", runner.options.SmokeCommand, true, env)
+		wait.Wait()
 		appendResult(smokeResult)
 		if hasClient {
 			appendResult(clientResult)
@@ -585,26 +568,6 @@ func allowlistedRequestTypes() []RequestType {
 
 // runClientWorkload drives the cell's northbound client and records its
 // result in logs/client.json.
-// awaitSmokeBaseline blocks until the smoke command has created its readiness
-// marker, has ended, or the case context is done. It reports the smoke result
-// and true when the command ended first.
-func awaitSmokeBaseline(ctx context.Context, readyPath string, smokeDone <-chan commandResult) (commandResult, bool) {
-	ticker := time.NewTicker(smokeReadyPollInterval)
-	defer ticker.Stop()
-	for {
-		if _, err := os.Stat(readyPath); err == nil {
-			return commandResult{}, false
-		}
-		select {
-		case result := <-smokeDone:
-			return result, true
-		case <-ctx.Done():
-			return commandResult{}, false
-		case <-ticker.C:
-		}
-	}
-}
-
 func (runner *Runner) runClientWorkload(ctx context.Context, testCase TopologyCase, logDir string) commandResult {
 	cell := testCase.AdapterMux
 	recordPath := filepath.Join(logDir, "client.json")

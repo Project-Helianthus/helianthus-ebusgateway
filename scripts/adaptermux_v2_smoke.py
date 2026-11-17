@@ -14,11 +14,6 @@ The adapter-action cells AD04 and AD09 announce the operator action once the
 first reading is taken; the operator then resets the adapter (AD04) or
 disconnects and reconnects its host link (AD09) inside the case window.
 
-Once the first reading is taken (and any operator action announced), the
-command creates the file named by MATRIX_SMOKE_READY_FILE; matrix-runner
-starts the cell's client workload only after it, so the traffic the cell
-judges falls inside the case window rather than in the baseline.
-
 It never sends a mutation, never calls a tool that writes and never invokes a
 bus method. Every run writes one JSON object, smoke_evidence.json, into the
 case directory.
@@ -30,7 +25,6 @@ gateway does not publish a series the invariant needs).
 
 from __future__ import annotations
 
-import functools
 import json
 import os
 import re
@@ -311,20 +305,7 @@ def timing(environ):
         "window": float_setting(environ, "MATRIX_SMOKE_WINDOW_SEC", 60.0),
         "poll": float_setting(environ, "MATRIX_SMOKE_POLL_SEC", 3.0),
         "http_timeout": float_setting(environ, "MATRIX_SMOKE_HTTP_TIMEOUT_SEC", 10.0),
-        "ready_file": env_value(environ, "MATRIX_SMOKE_READY_FILE"),
     }
-
-
-def signal_baseline_taken(path):
-    """Create the readiness marker the runner waits for before the client workload."""
-    if not path:
-        return
-    try:
-        with open(path, "w", encoding="utf-8") as handle:
-            handle.write("baseline taken\n")
-    except OSError as error:
-        raise SurfaceError("the readiness marker MATRIX_SMOKE_READY_FILE could not be created ("
-                           + type(error).__name__ + ")") from error
 
 
 # ---------------------------------------------------------------- reads
@@ -748,10 +729,7 @@ def observe_window(urls, settings, check, clock, announce=None):
     after the window ends may count traffic outside the window, so it is
     discarded and the last sample completed inside the window is judged.
     A check whose series the gateway does not publish stops after the first
-    sample, before any operator action is announced. Only after the first
-    sample (and the announcement) is the readiness marker created, so the
-    client workload the runner holds back until then cannot fall into the
-    baseline.
+    sample, before any operator action is announced.
     """
     full_window = any(rule in (EQ0, EQ1) for _, rule in check["requires"])
     baseline = take_sample(urls, settings)
@@ -760,7 +738,6 @@ def observe_window(urls, settings, check, clock, announce=None):
         raise SignalMissingError(missing)
     if announce is not None:
         announce()
-    signal_baseline_taken(settings.get("ready_file"))
     deadline = clock.monotonic() + settings["window"]
     window = {"samples": 1, "discarded_after_window": 0}
     final = baseline
@@ -946,13 +923,20 @@ def announce_to_operator(text, stream):
 
     The runner captures this command's output in the case log, so the cue is
     also written to the controlling terminal the operator started the run on.
+    Returns where the cue went: "terminal", or "case_log_only" when there is
+    no terminal to write to.
     """
     print(text, file=stream, flush=True)
     try:
         with open(OPERATOR_CHANNEL, "w", encoding="utf-8") as channel:
             channel.write(text + "\n")
     except OSError:
-        pass
+        return CUE_CASE_LOG_ONLY
+    return CUE_TERMINAL
+
+
+CUE_TERMINAL = "terminal"
+CUE_CASE_LOG_ONLY = "case_log_only"
 
 
 def judge(context, check, urls, settings, clock, stream=None):
@@ -960,7 +944,10 @@ def judge(context, check, urls, settings, clock, stream=None):
     announce = None
     if check.get("operator_action"):
         evidence["operator_action"] = check["operator_action"]
-        announce = functools.partial(announce_to_operator, operator_action_text(context, check, settings), stream)
+        cue_text = operator_action_text(context, check, settings)
+
+        def announce():
+            evidence["operator_cue"] = announce_to_operator(cue_text, stream)
     readings, own, window, backwards = observe_window(urls, settings, check, clock, announce)
     baseline, current = readings[0], readings[-1]
     evidence["window"] = dict(window, window_seconds=settings["window"])
@@ -986,6 +973,9 @@ def judge(context, check, urls, settings, clock, stream=None):
     reasons += flow_reasons
     if check.get("semantic") and not reasons:
         reasons += attach_semantic(context, check, urls, settings, evidence)
+    if reasons and evidence.get("operator_cue") == CUE_CASE_LOG_ONLY:
+        reasons.append("the operator cue reached only the case log: " + OPERATOR_CHANNEL
+                       + " could not be opened, so no terminal showed the operator action")
     return evidence, reasons
 
 

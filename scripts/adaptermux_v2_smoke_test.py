@@ -631,6 +631,27 @@ class AdapterActionTests(SmokeTestCase):
                 self.assertIn("operator action for " + case_id(invariant, southbound), self.output)
                 self.assertIn("operator action for " + case_id(invariant, southbound),
                               self.operator_channel.read_text(encoding="utf-8"))
+                self.assertEqual(evidence["operator_cue"], SMOKE.CUE_TERMINAL)
+
+    def test_cue_without_a_terminal_is_recorded_and_named_when_the_cell_fails(self):
+        # Without a controlling terminal the cue reaches only the case log;
+        # a failing cell then says so, so the operator learns why.
+        SMOKE.OPERATOR_CHANNEL = str(self.output_dir / "absent-directory" / "tty")
+        for invariant, southbound in self.each_cell():
+            with self.subTest(case=case_id(invariant, southbound)):
+                status, evidence = self.run_action(invariant, southbound, self.action_phases(southbound)[:2])
+                self.assertEqual(status, SMOKE.EXIT_FAIL)
+                self.assertEqual(evidence["operator_cue"], SMOKE.CUE_CASE_LOG_ONLY)
+                self.assertIn("operator action for " + case_id(invariant, southbound), self.output)
+                self.assertIn("the operator cue reached only the case log", self.reasons(evidence))
+
+    def test_cue_without_a_terminal_does_not_fail_a_passing_cell(self):
+        SMOKE.OPERATOR_CHANNEL = str(self.output_dir / "absent-directory" / "tty")
+        for invariant, southbound in self.each_cell():
+            with self.subTest(case=case_id(invariant, southbound)):
+                status, evidence = self.run_action(invariant, southbound, self.action_phases(southbound))
+                self.assertEqual(status, SMOKE.EXIT_PASS, evidence["reasons"])
+                self.assertEqual(evidence["operator_cue"], SMOKE.CUE_CASE_LOG_ONLY)
 
     def test_no_discontinuity_fails(self):
         for invariant, southbound in self.each_cell():
@@ -736,36 +757,6 @@ class AddressPriorityTests(SmokeTestCase):
                 self.assertEqual(evidence["measures"]["retained_bids_granted"], 6)
                 self.assertNotIn("operator action", self.output)
 
-    def test_readiness_marker_follows_the_baseline_reading(self):
-        # The runner holds the ebusd workload back until this marker exists,
-        # so every contended bid is counted inside the case window.
-        for southbound in ("ens", "enh"):
-            with self.subTest(row=southbound):
-                self.stub.requests.clear()
-                self.stub.load(self.priority_phases(southbound))
-                ready = self.output_dir / ("ready-" + southbound)
-                seen = []
-                self.stub.on_request = lambda: seen.append(ready.exists())
-                try:
-                    status, evidence = self.run_smoke(self.environ("AD07", "mux", southbound,
-                                                                   MATRIX_SMOKE_READY_FILE=str(ready)))
-                finally:
-                    self.stub.on_request = None
-                self.assertEqual(status, SMOKE.EXIT_PASS, evidence["reasons"])
-                self.assertTrue(ready.exists())
-                # The three surfaces of the baseline are read before the
-                # marker exists; every later reading comes after it.
-                self.assertEqual(seen[:3], [False, False, False])
-                self.assertGreater(len(seen), 3)
-                self.assertTrue(all(seen[3:]), seen)
-
-    def test_readiness_marker_that_cannot_be_created_fails(self):
-        self.stub.load(self.priority_phases("enh"))
-        ready = self.output_dir / "absent-directory" / "ready"
-        status, evidence = self.run_smoke(self.environ("AD07", "mux", "enh", MATRIX_SMOKE_READY_FILE=str(ready)))
-        self.assertEqual(status, SMOKE.EXIT_FAIL)
-        self.assertIn("readiness marker MATRIX_SMOKE_READY_FILE could not be created", self.reasons(evidence))
-
     def test_selection_against_priority_fails(self):
         for southbound in ("ens", "enh"):
             with self.subTest(row=southbound):
@@ -863,11 +854,8 @@ class MissingSignalTests(SmokeTestCase):
                     for phase in phases:
                         phase.drop(signal)
                     self.stub.load(phases)
-                    ready = self.output_dir / ("ready-" + invariant + "-" + signal)
-                    status, evidence = self.run_smoke(self.environ(invariant, "mux", "enh",
-                                                                   MATRIX_SMOKE_READY_FILE=str(ready)))
+                    status, evidence = self.run_smoke(self.environ(invariant, "mux", "enh"))
                     self.assertEqual(status, SMOKE.EXIT_SIGNAL_MISSING)
-                    self.assertFalse(ready.exists())
                     self.assertEqual(evidence["result"], "signal_missing")
                     self.assertEqual(evidence["missing_signals"], [signal])
                     self.assertIn("the gateway does not publish " + signal, self.reasons(evidence))

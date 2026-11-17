@@ -258,9 +258,14 @@ func (p *managedModbusMCPProvider) HuaweiInstanceStatus(ctx context.Context, fam
 		out.Qualified = cycle.Gateway.State == huawei.ProviderGatewayIdentified
 		out.Children = huaweiStatusChildren(publication, cycle)
 		// Published assets are enumerated from the publication itself so an
-		// incomplete cycle still reports the retained last-known assets.
+		// incomplete cycle still reports the retained last-known assets. The
+		// logger asset is not one of those child assets; it is listed once
+		// the publication has published it.
 		for _, id := range publication.published {
 			out.PublishedAssetIDs = append(out.PublishedAssetIDs, string(id))
+		}
+		if logger, ok := huaweiPublishedLoggerAsset(publication); ok {
+			out.PublishedAssetIDs = append(out.PublishedAssetIDs, string(logger))
 		}
 		sort.Slice(out.Children, func(i, j int) bool { return out.Children[i].Unit < out.Children[j].Unit })
 		sort.Strings(out.PublishedAssetIDs)

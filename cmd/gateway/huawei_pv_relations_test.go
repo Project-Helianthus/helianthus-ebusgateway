@@ -524,6 +524,22 @@ func TestHuaweiPVRelationsRefuseFalseJoinAndDanglingEndpoint(t *testing.T) {
 		}), withEnds(map[semreg.ResourceID]semreg.DefinitionID{loggerID: huaweiKindEquipment})},
 		// basis: an empty basis list.
 		"system without basis": {edit(func(r *semreg.RelationInstance) { r.Basis = nil }), ends},
+		// basis: a native string index, with the gate definition, end kinds,
+		// basis class and native origin left as published.
+		"system basis from a string index": {edit(func(r *semreg.RelationInstance) {
+			r.Basis = []semreg.EvidenceRef{huaweiEvidence("native.huawei.string_index", "1")}
+		}), ends},
+		// basis: a configured label, with the same gate row otherwise.
+		"system basis from a label": {edit(func(r *semreg.RelationInstance) {
+			r.Basis = []semreg.EvidenceRef{huaweiEvidence("operator.huawei.instance", "alpha")}
+		}), ends},
+		// basis: the gate owner and kind with another rule scope.
+		"system basis of another rule": {edit(func(r *semreg.RelationInstance) {
+			r.Basis = []semreg.EvidenceRef{huaweiEvidence("gate.huawei.pv.relation", struct {
+				Definition semreg.DefinitionID
+				Rule       string
+			}{huaweiRelationSystemInverter.ID, "index_without_the_gate_rule"})}
+		}), ends},
 	}
 	for name, test := range falseJoins {
 		if err := huaweiCheckRelation(test.relation, test.ends); !errors.Is(err, errHuaweiFalseJoin) {
@@ -586,5 +602,158 @@ func TestHuaweiPVRelationsRefuseFalseJoinAndDanglingEndpoint(t *testing.T) {
 		if fromAlpha && toBeta || fromBeta && toAlpha {
 			t.Fatalf("relation %s joins the two labels", relation.Definition.ID)
 		}
+	}
+}
+
+// huaweiRelationsObservedLink is the qualified identity link of a current
+// binding that an observed fact about inverter, or about one of its current
+// inputs, uses. Those facts share the inverter-path binding.
+func huaweiRelationsObservedLink(t *testing.T, g huaweiGraphView, inverter semreg.ResourceID) semreg.IdentityLink {
+	t.Helper()
+	subjects := map[semreg.ResourceID]bool{inverter: true}
+	for _, resource := range g.resources {
+		if resource.State == semreg.ResourceCurrent && resource.Kind == huaweiKindInput && resource.Anchor.Parent != nil && *resource.Anchor.Parent == inverter {
+			subjects[resource.ResourceID] = true
+		}
+	}
+	current := map[semreg.NativeBindingID]bool{}
+	for _, binding := range g.snapshot.Bindings {
+		if binding.State == semreg.BindingCurrent {
+			current[binding.BindingID] = true
+		}
+	}
+	var bindingID semreg.NativeBindingID
+	found := false
+	for _, envelope := range g.snapshot.Facts {
+		if len(envelope.Key.Dimensions) != 1 || envelope.Key.Dimensions[0].Value.Text == nil || !subjects[semreg.ResourceID(*envelope.Key.Dimensions[0].Value.Text)] {
+			continue
+		}
+		for _, candidate := range envelope.Candidates {
+			if candidate.Quality.Assertion != semreg.AssertionObserved || candidate.BindingID == nil || !current[*candidate.BindingID] {
+				continue
+			}
+			bindingID = *candidate.BindingID
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no observed fact on the binding of %s", inverter)
+	}
+	link, ok := huaweiRelationsLinked(g.snapshot, bindingID)
+	if !ok || link.State != semreg.LinkQualified || link.Resource == nil {
+		t.Fatalf("binding %s does not qualify a resource", bindingID)
+	}
+	return link
+}
+
+// TestHuaweiPVRelationsReplacementLeavesRetiredDeclarationPending: a qualified
+// operator declaration that still names the retired inverter is not installed
+// on the replacement binding. The replacement batch commits facts about the
+// new inverter, and the qualified link of that fact binding observes the new
+// inverter. A later declaration of the new inverter is installed.
+func TestHuaweiPVRelationsReplacementLeavesRetiredDeclarationPending(t *testing.T) {
+	hub := newTestSemanticHub(t)
+	publication, cycle, unit := huaweiRelationsFixture(t, hub, "smartlogger", "alpha")
+	source := publication.handle.Source()
+	asset := huaweiAssetID("alpha", "pv", unit)
+	before := huaweiGraphOf(t, hub, asset).check(t, asset, source)
+	var native semreg.EvidenceRef
+	for _, link := range huaweiGraphOf(t, hub, asset).snapshot.IdentityLinks {
+		if link.Resource != nil && *link.Resource == before.inverter && link.State == semreg.LinkQualified {
+			for _, binding := range huaweiGraphOf(t, hub, asset).snapshot.Bindings {
+				if binding.BindingID == link.BindingID {
+					native = binding.NativeResource
+				}
+			}
+		}
+	}
+	if native.Digest == "" {
+		t.Fatal("no binding observes the inverter")
+	}
+	declaration := semreg.EvidenceRef{Owner: semhub.OperatorEvidenceOwner, Kind: "operator.declaration", Digest: semreg.Digest("sha256:" + huaweiHash("operator declaration", string(before.inverter))), Contract: semreg.ContractKernelV1, Access: semreg.EvidenceAccessAuthorized, Redaction: semreg.RedactionMetadataOnly}
+	if err := hub.SetOperatorLinks(asset, source, []semhub.OperatorLink{{Native: native, Resource: before.inverter, Basis: []semreg.EvidenceRef{declaration}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := publication.Publish(huaweiRelationsNext(cycle, nil)); err != nil {
+		t.Fatal(err)
+	}
+	qualified := huaweiGraphOf(t, hub, asset)
+	if link := huaweiRelationsObservedLink(t, qualified, before.inverter); !huaweiDeclaredLink(link) || link.Resource == nil || *link.Resource != before.inverter {
+		t.Fatal("the declaration was not installed on the current inverter")
+	}
+
+	withheld := huaweiRelationsNext(cycle, func(child *huawei.ProviderChildObservation) {
+		if child.UnitID == unit {
+			child.Evidence = huawei.ProviderEvidenceWithheld
+			child.Reason = huawei.ProviderReasonIdentityMismatch
+		}
+	})
+	withheld.Cycle = cycle.Cycle + 2
+	withheld.CompletedAt = cycle.CompletedAt.Add(2 * time.Second)
+	if err := publication.Publish(withheld); err != nil {
+		t.Fatal(err)
+	}
+	readmitted := huaweiRelationsNext(cycle, func(child *huawei.ProviderChildObservation) {
+		for _, original := range cycle.Children {
+			if original.UnitID == child.UnitID {
+				*child = original
+			}
+		}
+	})
+	readmitted.Cycle = withheld.Cycle + 1
+	readmitted.CompletedAt = withheld.CompletedAt.Add(time.Second)
+	if err := publication.Publish(readmitted); err != nil {
+		t.Fatal(err)
+	}
+	graph := huaweiGraphOf(t, hub, asset)
+	after := graph.check(t, asset, source)
+	if after.inverter == before.inverter {
+		t.Fatal("replacement kept the inverter identifier")
+	}
+	if old := graph.resources[before.inverter]; old.State == semreg.ResourceCurrent {
+		t.Fatal("the replaced inverter is still current")
+	}
+	link := huaweiRelationsObservedLink(t, graph, after.inverter)
+	if link.Resource == nil || *link.Resource != after.inverter {
+		t.Fatal("the replacement binding does not observe the new inverter")
+	}
+	if huaweiDeclaredLink(link) || (link.Resource != nil && *link.Resource == before.inverter) {
+		t.Fatal("a declaration naming the retired inverter was installed on the replacement binding")
+	}
+	later := huaweiRelationsNext(readmitted, nil)
+	if err := publication.Publish(later); err != nil {
+		t.Fatal(err)
+	}
+	again := huaweiGraphOf(t, hub, asset)
+	if link := huaweiRelationsObservedLink(t, again, after.inverter); huaweiDeclaredLink(link) || link.Resource == nil || *link.Resource != after.inverter {
+		t.Fatal("a later cycle installed the retired declaration or dropped the new inverter")
+	}
+
+	if err := hub.SetOperatorLinks(asset, source, []semhub.OperatorLink{{Native: native, Resource: after.inverter, Basis: []semreg.EvidenceRef{declaration}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := publication.Publish(huaweiRelationsNext(later, nil)); err != nil {
+		t.Fatal(err)
+	}
+	declared := huaweiGraphOf(t, hub, asset)
+	if link := huaweiRelationsObservedLink(t, declared, after.inverter); !huaweiDeclaredLink(link) || link.Resource == nil || *link.Resource != after.inverter {
+		t.Fatal("a declaration of the new inverter was not installed on its binding")
+	}
+	declared.check(t, asset, source)
+}
+
+// TestHuaweiPVRelationsNamesPublishedLoggerAsset: the logger asset is named
+// once the publication has published it, and an unpublished label is not.
+func TestHuaweiPVRelationsNamesPublishedLoggerAsset(t *testing.T) {
+	hub := newTestSemanticHub(t)
+	publication, _, _ := huaweiRelationsFixture(t, hub, "smartlogger", "alpha")
+	logger, ok := huaweiPublishedLoggerAsset(publication)
+	if !ok || logger != huaweiLoggerAssetID("alpha") {
+		t.Fatalf("published logger = %s, %v", logger, ok)
+	}
+	fresh := newTestSemanticHub(t)
+	bare := &huaweiPVPublication{hub: fresh, label: "alpha", published: map[byte]semreg.AssetID{1: huaweiAssetID("alpha", "pv", 1)}}
+	if id, ok := huaweiPublishedLoggerAsset(bare); ok {
+		t.Fatalf("unpublished logger asset %s reported", id)
 	}
 }

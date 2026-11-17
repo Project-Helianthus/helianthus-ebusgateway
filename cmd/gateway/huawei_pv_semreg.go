@@ -587,8 +587,18 @@ func (p *huaweiPVPublication) publishChild(asset semreg.AssetID, child huawei.Pr
 		}
 	}
 	// The hub's pending operator identity declarations travel in this batch:
-	// each replaces the publisher's own link of the binding it names.
-	batch.IdentityLinkUpserts = huaweiWithOperatorLinks(batch.IdentityLinkUpserts, tx.OperatorLinks(batch.BindingUpserts))
+	// each replaces the publisher's own link of the binding it names. A
+	// declaration that names a resource this binding does not observe, such
+	// as an inverter retired by identity replacement, is not installed. The
+	// hub accepts a batch that carries no operator link and leaves that
+	// declaration pending, so the publisher's own link stays the one that
+	// observes the resource the facts name.
+	observed := map[semreg.NativeBindingID]semreg.ResourceID{}
+	if !withdraw {
+		observed[binding] = graph.inverter
+		observed[systemBinding] = graph.system
+	}
+	batch.IdentityLinkUpserts = huaweiWithOperatorLinks(batch.IdentityLinkUpserts, huaweiApplicableOperatorLinks(tx.OperatorLinks(batch.BindingUpserts), observed))
 	keep := map[semreg.CandidateID]bool{}
 	for _, fact := range batch.FactUpserts {
 		keep[fact.CandidateID] = true
@@ -1086,6 +1096,27 @@ func huaweiLoggerAssetID(label string) semreg.AssetID {
 	return semreg.AssetID("pv-asset-" + huaweiHash("helianthus.modbus.gateway_path.v1", label)[:32])
 }
 
+// huaweiPublishedLoggerAsset is the logger asset when this publication has
+// published it. Publication is the current equipment resource on that asset,
+// which lives outside the child-asset map. The caller holds the publication
+// lock.
+func huaweiPublishedLoggerAsset(p *huaweiPVPublication) (semreg.AssetID, bool) {
+	if p == nil || p.hub == nil || p.label == "" {
+		return "", false
+	}
+	id := huaweiLoggerAssetID(p.label)
+	view, err := p.hub.Inspect(id)
+	if err != nil || !view.Present {
+		return "", false
+	}
+	for _, resource := range view.Snapshot.Resources {
+		if resource.Kind == huaweiKindEquipment && resource.State == semreg.ResourceCurrent {
+			return id, true
+		}
+	}
+	return "", false
+}
+
 // huaweiRelaysRef returns the reference that names the core relays definition
 // in a relation record, and whether the element catalog compiled into the
 // process resolves it as a member. The kernel names a relation definition by
@@ -1131,6 +1162,19 @@ func (row huaweiGateRelation) ref() (semreg.DefinitionRef, bool) {
 	return huaweiRelaysRef()
 }
 
+// huaweiGateBasisMatches reports whether basis carries the gate basis of
+// definition: the owner, kind and rule scope huaweiGateBasis records. A
+// native string index, a configured label or another rule does not.
+func huaweiGateBasisMatches(basis []semreg.EvidenceRef, definition semreg.DefinitionID) bool {
+	gate := huaweiGateBasis(definition)
+	for _, ref := range basis {
+		if ref.Owner == gate.Owner && ref.Kind == gate.Kind && ref.Digest == gate.Digest {
+			return true
+		}
+	}
+	return false
+}
+
 // huaweiGateBasis is the basis reference of a record of the gate row of
 // definition: the definition and the scope of its rule.
 func huaweiGateBasis(definition semreg.DefinitionID) semreg.EvidenceRef {
@@ -1149,17 +1193,17 @@ func huaweiGateBasis(definition semreg.DefinitionID) semreg.EvidenceRef {
 // huaweiCheckRelation refuses a relation record the gate does not state. Both
 // ends must be resources this publication has published, given in ends with
 // their kinds (a dangling endpoint otherwise). The record must then match a
-// gate row in its definition, basis class and end kinds, carry a basis and a
-// native origin with a binding (a false join otherwise). An index, a label, a
-// role or an address is never a basis, so a record built from one matches no
-// row.
+// gate row in its definition, basis class and end kinds, carry that row's
+// gate basis (its owner, kind and rule scope) and a native origin with a
+// binding (a false join otherwise). An index, a label, a role or an address
+// is never a basis, so a record built from one matches no row.
 func huaweiCheckRelation(relation semreg.RelationInstance, ends map[semreg.ResourceID]semreg.DefinitionID) error {
 	from, fromOK := ends[relation.From]
 	to, toOK := ends[relation.To]
 	if !fromOK || !toOK {
 		return fmt.Errorf("%w: %s", errHuaweiDanglingEndpoint, relation.Definition.ID)
 	}
-	if len(relation.Basis) == 0 || relation.Origin.Kind != semreg.OriginNativeObservation || relation.Origin.BindingID == nil {
+	if !huaweiGateBasisMatches(relation.Basis, relation.Definition.ID) || relation.Origin.Kind != semreg.OriginNativeObservation || relation.Origin.BindingID == nil {
 		return fmt.Errorf("%w: %s basis", errHuaweiFalseJoin, relation.Definition.ID)
 	}
 	for _, row := range huaweiGateRelations {
@@ -1201,6 +1245,26 @@ func huaweiDeclaredLink(link semreg.IdentityLink) bool {
 		}
 	}
 	return false
+}
+
+// huaweiApplicableOperatorLinks is the pending operator set to install.
+// A qualified link for a binding this batch observes is installed only when
+// it names that resource. A link that names another resource, including a
+// retired inverter, is not installed, and neither is the rest of the pending
+// set: the hub requires a batch that carries any operator link to carry
+// exactly the pending set, and it accepts a batch that carries none. Links
+// for bindings this batch does not observe, and withdrawals, stay in the set.
+func huaweiApplicableOperatorLinks(pending []semreg.IdentityLink, observed map[semreg.NativeBindingID]semreg.ResourceID) []semreg.IdentityLink {
+	for _, link := range pending {
+		want, ok := observed[link.BindingID]
+		if !ok || link.State == semreg.LinkWithdrawn {
+			continue
+		}
+		if link.Resource == nil || *link.Resource != want {
+			return nil
+		}
+	}
+	return pending
 }
 
 // huaweiWithOperatorLinks replaces the publisher's own link of each binding

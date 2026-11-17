@@ -155,6 +155,18 @@ func h11Assets(label string, cycle huawei.ProviderCycle) []string {
 	return out
 }
 
+// h11WithLogger is the instance-status asset list: the child assets plus the
+// logger asset when a child was published.
+func h11WithLogger(label string, assets []string) []string {
+	out := append([]string{}, assets...)
+	if len(out) == 0 {
+		return out
+	}
+	out = append(out, string(huaweiLoggerAssetID(label)))
+	sort.Strings(out)
+	return out
+}
+
 // h11AssertNoStorageOrMeter proves that nothing outside the PV pack exists:
 // no storage or infrastructure asset, fact or retained observation. An absent
 // value is unknown and is never published as zero.
@@ -506,7 +518,7 @@ func TestH11ComposedHuaweiPathOffline(t *testing.T) {
 	m03Eventually(t, "every running instance published its first cycle", func() bool {
 		for label, assets := range want {
 			got, err := status(label)
-			if err != nil || got.Disposition == string(huawei.ProviderCycleIncomplete) || !reflect.DeepEqual(got.PublishedAssetIDs, append([]string{}, assets...)) {
+			if err != nil || got.Disposition == string(huawei.ProviderCycleIncomplete) || !reflect.DeepEqual(got.PublishedAssetIDs, h11WithLogger(label, assets)) {
 				return false
 			}
 		}
@@ -668,7 +680,7 @@ func TestH11ComposedHuaweiPathOffline(t *testing.T) {
 	}
 	m03Eventually(t, "alpha successor publication", func() bool {
 		got, err := status("alpha")
-		return err == nil && reflect.DeepEqual(got.PublishedAssetIDs, want["alpha"])
+		return err == nil && reflect.DeepEqual(got.PublishedAssetIDs, h11WithLogger("alpha", want["alpha"]))
 	})
 	view, err = hub.Inspect(semreg.AssetID(want["alpha"][0]))
 	if err != nil || len(view.Snapshot.Facts) == 0 || *view.Snapshot.Facts[0].Candidates[0].SourceEpochID == firstEpoch {

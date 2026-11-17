@@ -57,16 +57,23 @@ type circuitTemperatureInput struct {
 type circuitTemperatureCandidate struct {
 	Identity             circuitTemperatureIdentity
 	Role, Withheld, Loss string // Local diagnostics, never reason DefinitionIDs.
-	Attempts, History    []circuitTemperatureObservation
-	LastGood             *circuitTemperatureObservation
-	NativeValue          *float64 // Exact float32 widened to float64; no decimal rounding.
-	Freshness            semreg.Freshness
+	// Target names the accepted placement's field, its circuit resource
+	// dimension and its SI unit for the measured flow role only.
+	Target            *semreg.FieldMetadata
+	Attempts, History []circuitTemperatureObservation
+	LastGood          *circuitTemperatureObservation
+	NativeValue       *float64 // Exact float32 widened to float64; no decimal rounding.
+	Freshness         semreg.Freshness
 }
 
 type circuitTemperatureResult struct {
 	Candidates []circuitTemperatureCandidate
 	Facts      []semreg.FactCandidate // Always empty while the final binding is unresolved.
 }
+
+// circuitTemperatureField is the circuit flow field of the accepted thermal
+// placement; its subject is the thermal circuit.
+const circuitTemperatureField semreg.DefinitionID = "thermal.measurement.circuit_flow_temperature"
 
 func mapCircuitTemperature(inputs []circuitTemperatureInput, evaluation semreg.EvaluationContext) circuitTemperatureResult {
 	out := circuitTemperatureResult{Facts: []semreg.FactCandidate{}}
@@ -77,6 +84,9 @@ func mapCircuitTemperature(inputs []circuitTemperatureInput, evaluation semreg.E
 			c.Role, c.Withheld = "unsupported", "unsupported native selector"
 		case in.Identity.Selector.Register == 8:
 			c.Role = "measured_flow"
+			if field, ok := thermalPlacement(circuitTemperatureField); ok {
+				c.Target = &field
+			}
 		case in.Identity.Selector.Register == 7:
 			c.Role, c.Withheld = "requested_flow", "requested flow is not measured flow or a write capability"
 		case in.Identity.Selector.Register == 0x20:

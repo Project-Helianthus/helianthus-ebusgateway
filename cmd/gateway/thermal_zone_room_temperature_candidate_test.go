@@ -13,7 +13,7 @@ import (
 
 func i31Fixture() zoneRoomCandidateInput {
 	id := zoneRoomIdentity{Asset: "synthetic-zone", Service: "synthetic-service", Source: "synthetic-source", Epoch: "synthetic-epoch", Generation: "1", BindingRevision: "1", AssociationRevision: "1", Binding: "synthetic-binding", Family: "synthetic-family", Profile: "synthetic-profile", ProfileRevision: "r1", DecoderRevision: "r1", MappingRevision: "r1", Selector: zoneRoomSelector{PB: 0xb5, SB: 0x24, Opcode: 2, Group: 3, Instance: 4, Register: 0x0f, Direction: "target_to_initiator", Initiator: "synthetic-initiator", Target: "synthetic-target", ReplySource: "synthetic-target"}}
-	codec := zoneRoomCodec{Qualified: true, Encoding: "f32_le", Unit: "unit.celsius", Width: 4}
+	codec := zoneRoomCodec{Qualified: true, Encoding: "f32_le", Unit: "native.celsius", Width: 4}
 	o := zoneRoomObservation{Identity: id, Present: true, Correlated: true, Value: i31Bytes(20), Codec: codec, ReceivedAt: semreg.TimePoint{UnixNanoseconds: "100", ClockID: "clock.synthetic", UncertaintyNS: "0"}, Receipt: semreg.MonotonicPoint{ClockEpochID: "synthetic-clock", Nanoseconds: "10"}, FreshForNS: "15", RawRequest: []byte{1}, RawReply: []byte{2}, EvidenceStatus: "Unknown", Evidence: []semreg.EvidenceRef{{Owner: "synthetic.owner", Kind: "synthetic.kind", Contract: "v1", Digest: semreg.Digest(fmt.Sprintf("sha256:%x", sha256.Sum256([]byte("synthetic evidence")))), Access: semreg.EvidenceAccessPublic, Redaction: semreg.RedactionNone}}}
 	b := zoneRoomClone(o)
 	b.Identity.Selector.Register = 0x13
@@ -526,5 +526,27 @@ func TestP16SelectorRegisterRoleValidation(t *testing.T) {
 	s.Register = 0x20
 	if zoneRoomSelectorSupported(s) {
 		t.Fatal("unsupported input-slot register admitted")
+	}
+}
+
+// TestThermalZoneRoomTemperaturePlacement: a supported slot names the air
+// temperature field under the zone's resource dimension in kelvin and keeps
+// the native degree Celsius value; an unsupported slot names nothing.
+func TestThermalZoneRoomTemperaturePlacement(t *testing.T) {
+	r := mapZoneRoomTemperatureCandidate(i31Fixture())
+	i31Good(t, r, 20)
+	thermalAssertPlacement(t, r.Target, "thermal.measurement.air_temperature", "thermal.dimension.zone", "unit.kelvin")
+	in := i31Fixture()
+	in.Identity.Selector.Group = 2
+	if r := mapZoneRoomTemperatureCandidate(in); r.Target != nil {
+		t.Fatalf("unsupported slot named %+v", r.Target)
+	}
+	in = i31Fixture()
+	in.Codec.Unit = "unit.kelvin"
+	for i := range in.Observations {
+		in.Observations[i].Codec.Unit = "unit.kelvin"
+	}
+	if r := mapZoneRoomTemperatureCandidate(in); r.Temperature != nil {
+		t.Fatal("a registry unit was accepted as the native codec unit")
 	}
 }

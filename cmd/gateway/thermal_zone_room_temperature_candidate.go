@@ -72,8 +72,15 @@ type zoneRoomCandidateResult struct {
 	Attempts                                []zoneRoomRecord
 	Temperature, SensorBinding, Association *zoneRoomRecord
 	LatestLoss, Freshness, Withheld         string
-	// There is deliberately no SemReg Fact, FactKey, quantity or admission field.
+	// Target names the accepted placement's field, its zone resource dimension
+	// and its SI unit for a supported slot. There is deliberately no SemReg
+	// Fact, FactKey, quantity or admission field.
+	Target *semreg.FieldMetadata
 }
+
+// zoneRoomField is the room temperature field of the accepted thermal
+// placement; its subject is the zone.
+const zoneRoomField semreg.DefinitionID = "thermal.measurement.air_temperature"
 
 func zoneRoomClone(o zoneRoomObservation) zoneRoomObservation {
 	o.RawRequest = append([]byte(nil), o.RawRequest...)
@@ -102,7 +109,7 @@ func zoneRoomDecode(o zoneRoomObservation, codec zoneRoomCodec) (*float64, strin
 	if !o.Correlated {
 		return nil, "uncorrelated reply"
 	}
-	if !codec.Qualified || o.Codec != codec || codec.Width != 4 || codec.Unit != "unit.celsius" || (codec.Encoding != "f32_le" && codec.Encoding != "f32_be") {
+	if !codec.Qualified || o.Codec != codec || codec.Width != 4 || codec.Unit != string(thermalNativeCelsius) || (codec.Encoding != "f32_le" && codec.Encoding != "f32_be") {
 		return nil, "unknown or mismatched qualified codec"
 	}
 	if len(o.Value) != codec.Width {
@@ -147,6 +154,9 @@ func zoneRoomFresh(o zoneRoomObservation, e semreg.EvaluationContext) string {
 // binding. Every prior record is revalidated; caller flags cannot admit history.
 func mapZoneRoomTemperatureCandidate(in zoneRoomCandidateInput) zoneRoomCandidateResult {
 	out := zoneRoomCandidateResult{Withheld: "final FactKey binding and decimal loss policy unresolved", Freshness: "unknown", LatestLoss: "missing observation"}
+	if field, ok := thermalPlacement(zoneRoomField); ok && zoneRoomIdentityKnown(in.Identity) && zoneRoomSelectorSupported(in.Identity.Selector) {
+		out.Target = &field
+	}
 	observations := make([]zoneRoomObservation, 0, len(in.Previous)+len(in.Observations))
 	for _, p := range in.Previous {
 		observations = append(observations, zoneRoomClone(p.Observation))

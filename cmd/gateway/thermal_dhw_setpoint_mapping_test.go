@@ -21,7 +21,7 @@ func thermalDhwTestQuantity(integer int) *semreg.Quantity {
 	for integer != 0 && strings.HasSuffix(coefficient, "0") {
 		coefficient, exponent = strings.TrimSuffix(coefficient, "0"), exponent+1
 	}
-	return &semreg.Quantity{Number: semreg.Decimal{Coefficient: coefficient, Exponent10: exponent}, Unit: "unit.celsius"}
+	return &semreg.Quantity{Number: semreg.Decimal{Coefficient: coefficient, Exponent10: exponent}, Unit: "native.celsius"}
 }
 
 func thermalDhwTestFixture(service string, integer int) (thermalDhwObservation, thermalDhwBinding, semreg.EvaluationContext) {
@@ -100,6 +100,13 @@ func TestThermalDhwSetpointMappingDomains(t *testing.T) {
 			}
 			if !reflect.DeepEqual(source.Observation.Value, observation.Value) || !reflect.DeepEqual(source.Binding.Domain, binding.Domain) {
 				t.Fatal("value clamped or context changed")
+			}
+			// The registry value is the native value + 273.15 kelvin whenever the
+			// pack represents it, independently of the native domain.
+			kelvin, _ := thermalKelvinFromCelsius(observation.Value.Quantity.Number)
+			representable := test.loss != "value outside thermal pack representation"
+			if representable != (source.Value != nil) || (source.Value != nil && *source.Value.Quantity != (semreg.Quantity{Number: kelvin, Unit: "unit.kelvin"})) {
+				t.Fatalf("registry value = %+v", source.Value)
 			}
 			if result.Disposition.ItemID != "thermal.setpoint.dhw_temperature_setpoint" || result.Disposition.Kind != projection.ItemFact || result.Disposition.Outcome != projection.ProjectionWithheld || len(result.Disposition.SourceKeys) != 0 || result.Disposition.Loss[0].Kind != projection.LossIdentity {
 				t.Fatalf("service identity blocker lost: %+v", result.Disposition)
@@ -192,13 +199,14 @@ func TestThermalDhwSetpointMappingIndependentAxes(t *testing.T) {
 		{"missingTargetMax65", func(o *thermalDhwObservation, b *thermalDhwBinding) {
 			o.Value = nil
 			b.Domain.Maximum = thermalDhwTestQuantity(65)
-		}, "requested temperature requires an exact Celsius quantity"},
+		}, "requested temperature requires an exact native Celsius quantity"},
 		{"booleanFalse", func(o *thermalDhwObservation, _ *thermalDhwBinding) {
 			value := false
 			o.Value = &semreg.Value{Kind: semreg.ValueBoolean, Boolean: &value}
-		}, "requested temperature requires an exact Celsius quantity"},
-		{"wrongUnit", func(o *thermalDhwObservation, _ *thermalDhwBinding) { o.Value.Quantity.Unit = "unit.watt" }, "requested temperature requires an exact Celsius quantity"},
-		{"noncanonicalDecimal", func(o *thermalDhwObservation, _ *thermalDhwBinding) { o.Value.Quantity.Number.Coefficient = "50" }, "requested temperature requires an exact Celsius quantity"},
+		}, "requested temperature requires an exact native Celsius quantity"},
+		{"wrongUnit", func(o *thermalDhwObservation, _ *thermalDhwBinding) { o.Value.Quantity.Unit = "unit.watt" }, "requested temperature requires an exact native Celsius quantity"},
+		{"registryUnitAsNative", func(o *thermalDhwObservation, _ *thermalDhwBinding) { o.Value.Quantity.Unit = "unit.kelvin" }, "requested temperature requires an exact native Celsius quantity"},
+		{"noncanonicalDecimal", func(o *thermalDhwObservation, _ *thermalDhwBinding) { o.Value.Quantity.Number.Coefficient = "50" }, "requested temperature requires an exact native Celsius quantity"},
 		{"nativeEvidence", func(o *thermalDhwObservation, _ *thermalDhwBinding) { o.Evidence = nil }, "missing or invalid native observation"},
 		{"rawReply", func(o *thermalDhwObservation, _ *thermalDhwBinding) { o.RawReply = nil }, "missing or invalid native observation"},
 		{"bindingEvidence", func(_ *thermalDhwObservation, b *thermalDhwBinding) { b.Evidence = nil }, "source, service and native domain require independent qualification"},
@@ -395,17 +403,61 @@ func TestThermalDhwSetpointMappingDetached(t *testing.T) {
 	}
 }
 
+// TestThermalDhwSetpointMappingPackIdentityBlocker: the re-keyed pack keys the
+// hot-water setpoint by the hot-water resource dimension alone and in kelvin.
+// Every key field is varied: pack identifier, pack version, field identifier,
+// dimension identifier, a second
+// dimension and the unit are rejected by the pinned pack; the dimension text is
+// caught by the exact key comparison. The disposition stays withheld until
+// graph publication allocates the hot-water resource.
 func TestThermalDhwSetpointMappingPackIdentityBlocker(t *testing.T) {
-	temperature, service := "temperature:dhw_requested", "dhw:alpha"
-	key := semreg.FactKey{PackID: "helianthus.pack.thermal", PackVersion: "1.0.0", FactID: "thermal.setpoint.dhw_temperature_setpoint",
-		Dimensions: []semreg.Dimension{{ID: "thermal.dimension.temperature", Value: semreg.Value{Kind: semreg.ValueText, Text: &temperature}}}}
-	value := &semreg.Value{Kind: semreg.ValueQuantity, Quantity: thermalDhwTestQuantity(50)}
-	if err := thermal.New().ValidateFact(key, value); err != nil {
+	field, ok := thermalPlacement(thermalDhwTarget)
+	if !ok {
+		t.Fatal("hot-water setpoint absent from the pinned pack")
+	}
+	thermalAssertPlacement(t, &field, "thermal.setpoint.dhw_temperature_setpoint", "thermal.dimension.dhw", "unit.kelvin")
+	identity := "temperature:dhw_requested"
+	want := semreg.FactKey{PackID: "helianthus.pack.thermal", PackVersion: "1.0.0", FactID: "thermal.setpoint.dhw_temperature_setpoint",
+		Dimensions: []semreg.Dimension{{ID: "thermal.dimension.dhw", Value: semreg.Value{Kind: semreg.ValueText, Text: &identity}}}}
+	if !reflect.DeepEqual(thermalDhwKey(), want) {
+		t.Fatalf("key = %+v", thermalDhwKey())
+	}
+	value := &semreg.Value{Kind: semreg.ValueQuantity, Quantity: &semreg.Quantity{Number: semreg.Decimal{Coefficient: "32315", Exponent10: -2}, Unit: "unit.kelvin"}}
+	if err := thermal.New().ValidateFact(thermalDhwKey(), value); err != nil {
 		t.Fatalf("representation control: %v", err)
 	}
-	key.Dimensions = append(key.Dimensions, semreg.Dimension{ID: "thermal.dimension.dhw", Value: semreg.Value{Kind: semreg.ValueText, Text: &service}})
-	if thermal.New().ValidateFact(key, value) == nil {
-		t.Fatal("pack changed; source-bound cutover requires review")
+	service := "dhw:alpha"
+	for name, mutate := range map[string]func(*semreg.FactKey, *semreg.Value){
+		"pack_id":      func(k *semreg.FactKey, _ *semreg.Value) { k.PackID = "helianthus.pack.storage" },
+		"pack_version": func(k *semreg.FactKey, _ *semreg.Value) { k.PackVersion = "2.0.0" },
+		"field":        func(k *semreg.FactKey, _ *semreg.Value) { k.FactID = "thermal.setpoint.temperature_setpoint" },
+		"dimension":    func(k *semreg.FactKey, _ *semreg.Value) { k.Dimensions[0].ID = "thermal.dimension.zone" },
+		"second_dimension": func(k *semreg.FactKey, _ *semreg.Value) {
+			k.Dimensions = append(k.Dimensions, semreg.Dimension{ID: "thermal.dimension.system", Value: semreg.Value{Kind: semreg.ValueText, Text: &service}})
+		},
+		"native_unit": func(_ *semreg.FactKey, v *semreg.Value) { v.Quantity.Unit = "native.celsius" },
+	} {
+		key, changed := thermalDhwKey(), *value
+		quantity := *value.Quantity
+		changed.Quantity = &quantity
+		mutate(&key, &changed)
+		if thermal.New().ValidateFact(key, &changed) == nil {
+			t.Fatalf("%s: the pinned pack accepted a changed key or unit", name)
+		}
+	}
+	text := "temperature:other"
+	changed := thermalDhwKey()
+	changed.Dimensions[0].Value.Text = &text
+	if reflect.DeepEqual(changed, want) {
+		t.Fatal("dimension text not part of the key")
+	}
+	observation, binding, evaluation := thermalDhwTestFixture("alpha", 50)
+	result := mapThermalDhwSetpoints([]thermalDhwObservation{observation}, []thermalDhwBinding{binding}, evaluation)
+	if result.Disposition.Outcome != projection.ProjectionWithheld || len(result.Disposition.Loss) != 1 || result.Disposition.Loss[0].Description != "hot-water resource identity is not allocated before graph publication" {
+		t.Fatalf("resource identity blocker lost: %+v", result.Disposition)
+	}
+	if source := thermalDhwTestSource(t, result, observation.Identity); !source.Eligible || source.Value == nil || !reflect.DeepEqual(source.Value, value) {
+		t.Fatalf("eligible source = %+v", source)
 	}
 }
 

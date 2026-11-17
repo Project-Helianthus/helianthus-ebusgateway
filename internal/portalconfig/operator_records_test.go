@@ -177,7 +177,6 @@ func TestOperatorRecordRefusalsCarryAFieldError(t *testing.T) {
 			s.Records[2].Views[1].ResourceID = s.Records[2].Views[0].ResourceID
 		}},
 		{"unknown resource kind", "resource_kind_unknown", "records[0].kind", func(s *OperatorRecordSet) { s.Records[0].Kind = "resource.solar_canopy" }},
-		{"resource kind that is not a catalog member", "resource_kind_unknown", "records[0].kind", func(s *OperatorRecordSet) { s.Records[0].Kind = "resource.thermal_circuit" }},
 		{"component without a parent", "anchor_invalid", "records[0].parent", func(s *OperatorRecordSet) { s.Records[0].Kind = "resource.pv_string" }},
 		{"episode on an operator slot", "anchor_invalid", "records[0].kind", func(s *OperatorRecordSet) {
 			s.Records[0].Kind, s.Records[0].Parent = "resource.charging_session", "resource:portal-opr:connector-1"
@@ -197,6 +196,52 @@ func TestOperatorRecordRefusalsCarryAFieldError(t *testing.T) {
 				t.Fatalf("refusal returned %+v, want the unchanged section", current)
 			}
 			requireNoSection(t, s, root)
+		})
+	}
+}
+
+// dispositionCatalog is the embedded element catalog with the disposition of
+// one resource kind replaced. The pinned catalog lists every resource kind as
+// a member, so a listed kind that is not a member exists only through it.
+type dispositionCatalog struct {
+	semreg.GraphResourceCatalog
+	kind        semreg.DefinitionID
+	disposition semreg.GraphDisposition
+}
+
+func (c dispositionCatalog) ResourceKindMembership(kind semreg.DefinitionID) (semreg.GraphMembership, bool) {
+	membership, ok := c.GraphResourceCatalog.ResourceKindMembership(kind)
+	if ok && kind == c.kind {
+		membership.Disposition = c.disposition
+	}
+	return membership, ok
+}
+
+// A resource kind the catalog lists without the member disposition is
+// refused like an unknown kind. The disposition varies over every non-member
+// value; the member disposition of the same kind is the control, so the test
+// fails when the membership check is dropped from the anchor rule.
+func TestOperatorAnchorRefusesAListedResourceKindThatIsNotAMember(t *testing.T) {
+	catalog, err := operatorCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := oprOneOfEach().Records[0]
+	kind := semreg.DefinitionID(record.Kind)
+	membership, ok := catalog.ResourceKindMembership(kind)
+	if !ok || membership.Disposition != semreg.GraphMember {
+		t.Fatalf("fixture kind %s is not a listed member: %+v, %v", kind, membership, ok)
+	}
+	if err := validateOperatorAnchor(dispositionCatalog{catalog, kind, semreg.GraphMember}, record, "records[0]"); err != nil {
+		t.Fatalf("member kind refused: %v", err)
+	}
+	for _, disposition := range []semreg.GraphDisposition{semreg.GraphUnsupported, semreg.GraphUnknown} {
+		t.Run(string(disposition), func(t *testing.T) {
+			wrapped := dispositionCatalog{catalog, kind, disposition}
+			if _, listed := wrapped.ResourceKindMembership(kind); !listed {
+				t.Fatalf("kind %s is no longer listed", kind)
+			}
+			requireField(t, validateOperatorAnchor(wrapped, record, "records[0]"), "resource_kind_unknown", "records[0].kind")
 		})
 	}
 }

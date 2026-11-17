@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	"math/big"
 	"reflect"
 	"strconv"
 	"sync"
@@ -147,27 +148,110 @@ func boilerThermalValue(o *boilerThermalObservation, b *boilerThermalBinding) (*
 		return nil, false
 	}
 	n := int64(int16(binary.LittleEndian.Uint16(raw)))
-	// n/16 = (n*625)*10^-4, exactly, including valid zero.
-	coefficient, exponent := n*625, int32(-4)
-	if coefficient == 0 {
-		exponent = 0
-	} else {
-		for coefficient%10 == 0 {
-			coefficient /= 10
-			exponent++
-		}
+	// The native value n/16 degree Celsius = (n*625)*10^-4, exactly, including
+	// valid zero. It is converted once, here, to the registry's kelvin.
+	kelvin, ok := thermalKelvinFromCelsius(thermalDecimal(big.NewInt(n*625), -4))
+	if !ok {
+		return nil, false
 	}
-	value := &semreg.Value{Kind: semreg.ValueQuantity, Quantity: &semreg.Quantity{Number: semreg.Decimal{Coefficient: strconv.FormatInt(coefficient, 10), Exponent10: exponent}, Unit: "unit.celsius"}}
+	value := &semreg.Value{Kind: semreg.ValueQuantity, Quantity: &semreg.Quantity{Number: kelvin, Unit: thermalKelvin}}
 	if thermal.New().ValidateFact(boilerThermalKey(), value) != nil {
 		return nil, false
 	}
 	return value, true
 }
 
+// boilerThermalField is the boiler flow field of the accepted thermal
+// placement; its subject is the heat generator.
+const boilerThermalField semreg.DefinitionID = "thermal.measurement.heat_generator_flow_temperature"
+
+// boilerThermalKey keys the boiler flow by the field's one resource dimension.
+// Its value is the native identity text; resource identifiers belong to the
+// graph publication of the thermal family.
 func boilerThermalKey() semreg.FactKey {
-	role := "temperature:boiler_flow"
+	identity := "temperature:boiler_flow"
 	pack := thermal.New().Pack()
-	return semreg.FactKey{PackID: pack.ID, PackVersion: pack.Version, FactID: "thermal.measurement.water_temperature", Dimensions: []semreg.Dimension{{ID: "thermal.dimension.temperature", Value: semreg.Value{Kind: semreg.ValueText, Text: &role}}}}
+	field, _ := thermalPlacement(boilerThermalField)
+	return semreg.FactKey{PackID: pack.ID, PackVersion: pack.Version, FactID: boilerThermalField, Dimensions: []semreg.Dimension{{ID: field.Dimension.ID, Value: semreg.Value{Kind: semreg.ValueText, Text: &identity}}}}
+}
+
+// The registry's thermal units are SI. A mapper converts a native quantity
+// once, at its source boundary; the native value and its unit stay in the
+// native evidence. Native units carry the native prefix: they are evidence
+// vocabulary, never registry units.
+const (
+	thermalKelvin        semreg.DefinitionID = "unit.kelvin"
+	thermalRatio         semreg.DefinitionID = "unit.ratio"
+	thermalNativeCelsius semreg.DefinitionID = "native.celsius"
+)
+
+// thermalPlacement returns the pinned thermal pack's metadata of a field: its
+// definition, its one resource dimension and its canonical unit.
+func thermalPlacement(field semreg.DefinitionID) (semreg.FieldMetadata, bool) {
+	for _, metadata := range thermal.Metadata().Fields {
+		if metadata.Ref.ID == field {
+			return metadata, true
+		}
+	}
+	return semreg.FieldMetadata{}, false
+}
+
+// thermalDecimal normalizes coefficient*10^exponent to the registry's
+// canonical decimal; the caller validates the exponent range.
+func thermalDecimal(coefficient *big.Int, exponent int32) semreg.Decimal {
+	c := new(big.Int).Set(coefficient)
+	if c.Sign() == 0 {
+		return semreg.Decimal{Coefficient: "0"}
+	}
+	ten, remainder := big.NewInt(10), new(big.Int)
+	for {
+		quotient, mod := new(big.Int).QuoRem(c, ten, remainder)
+		if mod.Sign() != 0 {
+			break
+		}
+		c, exponent = quotient, exponent+1
+	}
+	return semreg.Decimal{Coefficient: c.String(), Exponent10: exponent}
+}
+
+// thermalShift returns d + offset*10^offsetExponent, exactly.
+func thermalShift(d semreg.Decimal, offset int64, offsetExponent int32) (semreg.Decimal, bool) {
+	coefficient, ok := new(big.Int).SetString(d.Coefficient, 10)
+	if !ok || d.Validate() != nil {
+		return semreg.Decimal{}, false
+	}
+	exponent := d.Exponent10
+	if offsetExponent < exponent {
+		exponent = offsetExponent
+	}
+	scale := func(value *big.Int, from int32) *big.Int {
+		return new(big.Int).Mul(value, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(from-exponent)), nil))
+	}
+	result := thermalDecimal(new(big.Int).Add(scale(coefficient, d.Exponent10), scale(big.NewInt(offset), offsetExponent)), exponent)
+	return result, result.Validate() == nil
+}
+
+// thermalKelvinFromCelsius converts degree Celsius + 273.15, exactly.
+func thermalKelvinFromCelsius(celsius semreg.Decimal) (semreg.Decimal, bool) {
+	return thermalShift(celsius, 27315, -2)
+}
+
+// thermalCelsiusFromKelvin is the exact inverse; only native compatibility
+// scalars that stay in degree Celsius use it.
+func thermalCelsiusFromKelvin(kelvin semreg.Decimal) (semreg.Decimal, bool) {
+	return thermalShift(kelvin, -27315, -2)
+}
+
+// thermalRatioFromPercent converts percent / 100 to a 0 to 1 ratio, exactly.
+func thermalRatioFromPercent(percent semreg.Decimal) (semreg.Decimal, bool) {
+	if percent.Validate() != nil {
+		return semreg.Decimal{}, false
+	}
+	if percent.Coefficient == "0" {
+		return percent, true
+	}
+	ratio := semreg.Decimal{Coefficient: percent.Coefficient, Exponent10: percent.Exponent10 - 2}
+	return ratio, ratio.Validate() == nil
 }
 
 // Same-epoch monotonic evaluation is conservative: stale observations retain
@@ -259,12 +343,18 @@ func (p *boilerThermalPublisher) scalar(target byte) *float64 {
 	}
 	for _, envelope := range view.Snapshot.Facts {
 		for _, fact := range envelope.Candidates {
-			if fact.CandidateID == p.candidateID() && fact.Value != nil && fact.Value.Quantity != nil && fact.Quality.Availability == semreg.AvailabilityAvailable {
-				n, _ := strconv.ParseFloat(string(fact.Value.Quantity.Number.Coefficient), 64)
-				for exp := fact.Value.Quantity.Number.Exponent10; exp < 0; exp++ {
+			if fact.CandidateID == p.candidateID() && fact.Value != nil && fact.Value.Quantity != nil && fact.Value.Quantity.Unit == thermalKelvin && fact.Quality.Availability == semreg.AvailabilityAvailable {
+				// The legacy native scalar stays in degree Celsius; the admitted
+				// registry value is kelvin.
+				celsius, ok := thermalCelsiusFromKelvin(fact.Value.Quantity.Number)
+				if !ok {
+					return nil
+				}
+				n, _ := strconv.ParseFloat(celsius.Coefficient, 64)
+				for exp := celsius.Exponent10; exp < 0; exp++ {
 					n /= 10
 				}
-				for exp := fact.Value.Quantity.Number.Exponent10; exp > 0; exp-- {
+				for exp := celsius.Exponent10; exp > 0; exp-- {
 					n *= 10
 				}
 				p.legacyProjection.Outcome = projection.ProjectionTransformed

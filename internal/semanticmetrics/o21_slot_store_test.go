@@ -39,7 +39,7 @@ func (p *o21Memory) Commit(_ string, raw []byte) error {
 }
 func o21Fixture(t *testing.T) (*O21SlotStore, *o21Memory, Binding) {
 	t.Helper()
-	_, r := m36Fixture(t, "thermal.measurement.air_temperature", m36Quantity("0", "unit.celsius"))
+	_, r := m36Fixture(t, "thermal.demand.level", m36Quantity("0", "unit.ratio"))
 	p := &o21Memory{}
 	s, err := O21Create(p, "o21-target")
 	if err != nil {
@@ -93,9 +93,9 @@ func TestO21DurabilityRestartAndZero(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshot, _ := m36Fixture(t, "thermal.measurement.air_temperature", m36Quantity("0", "unit.celsius"))
+	snapshot, _ := m36Fixture(t, "thermal.demand.level", m36Quantity("0", "unit.ratio"))
 	view := m36View(t, snapshot)
-	name := "helianthus_thermal_air_temperature{slot=\"0\",unit=\"celsius\"} 0\n"
+	name := "helianthus_thermal_demand_ratio{slot=\"0\"} 0\n"
 	if restarted.Export().Validated || strings.Contains(m36Render(t, view, restarted.Export()), name) {
 		t.Fatal("loaded store trusted")
 	}
@@ -116,7 +116,7 @@ func TestO21Identity(t *testing.T) {
 		"service_instance":  func(b *Binding) { b.ServiceInstance = "service:o21-other" },
 		"dimension_id":      func(b *Binding) { b.Dimensions[0].ID = "thermal.dimension.other" },
 		"dimension_value":   func(b *Binding) { *b.Dimensions[0].Value.Text = "o21-other" },
-		"selected_fields":   func(b *Binding) { b.Fields = []semreg.DefinitionID{"thermal.measurement.water_temperature"} },
+		"selected_fields":   func(b *Binding) { b.Fields = []semreg.DefinitionID{"thermal.measurement.humidity"} },
 	}
 	for name, change := range changes {
 		t.Run(name, func(t *testing.T) {

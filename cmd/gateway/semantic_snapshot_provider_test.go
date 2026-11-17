@@ -150,7 +150,8 @@ func m11Publish(hub *semhub.Hub, handle *semhub.Handle, id semreg.AssetID) error
 	defer tx.Abort()
 	snapshot, _ := tx.Current()
 	candidate := snapshot.Facts[0].Candidates[0]
-	candidate.Value.Quantity.Number = semreg.Decimal{Coefficient: "51"}
+	// The boiler flow is published in kelvin: 324.15 K is 51 degree Celsius.
+	candidate.Value.Quantity.Number = semreg.Decimal{Coefficient: "32415", Exponent10: -2}
 	candidate.Revision = "2"
 	batch := semreg.PublicationBatch{Contract: semreg.ContractKernelV1, BatchID: "batch:synthetic-update", AssetID: id, SourceID: handle.Source(), SourceEpochID: handle.Epoch(), DriverGeneration: handle.GenerationID(), Sequence: tx.NextSequence(), ExpectedSemanticRevision: snapshot.Revisions.Semantic, ObservedAt: snapshot.EvaluatedAt, FactUpserts: []semreg.FactCandidate{candidate},
 		SourceUpserts: []semreg.SourceDescriptor{}, SourceRetirements: []semreg.SourceEpochID{}, BindingUpserts: []semreg.NativeBinding{}, IdentityLinkUpserts: []semreg.IdentityLink{}, FactWithdrawals: []semreg.CandidateID{}, ServiceUpserts: []semreg.ServiceInstance{}, ServiceWithdrawals: []semreg.ServiceInstanceID{}, CapabilityUpserts: []semreg.CapabilityInstance{}, CapabilityWithdrawals: []semreg.CapabilityInstanceID{}, GenerationFences: []semreg.GenerationFence{}}

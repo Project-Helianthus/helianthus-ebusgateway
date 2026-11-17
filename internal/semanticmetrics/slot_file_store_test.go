@@ -183,7 +183,7 @@ func TestSlotFileStoreFaults(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, registry := m36Fixture(t, "thermal.measurement.air_temperature", m36Quantity("0", "unit.celsius"))
+			_, registry := m36Fixture(t, "thermal.measurement.air_temperature", m36Quantity("273.15", "unit.kelvin"))
 			binding := registry.Bindings[0]
 			before := s.Export()
 			var calls []string
@@ -298,7 +298,7 @@ func TestSlotFileStoreIdentity(t *testing.T) {
 		"service_instance":  func(b *Binding) { b.ServiceInstance = "service:other" },
 		"dimension_id":      func(b *Binding) { b.Dimensions[0].ID = "thermal.dimension.other" },
 		"dimension_value":   func(b *Binding) { *b.Dimensions[0].Value.Text = "other" },
-		"selected_fields":   func(b *Binding) { b.Fields = []semreg.DefinitionID{"thermal.measurement.water_temperature"} },
+		"selected_fields":   func(b *Binding) { b.Fields = []semreg.DefinitionID{"thermal.measurement.humidity"} },
 		"retired":           func(b *Binding) { b.Retired = true },
 	}
 	for name, change := range changes {
@@ -308,7 +308,7 @@ func TestSlotFileStoreIdentity(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, r := m36Fixture(t, "thermal.measurement.air_temperature", m36Quantity("0", "unit.celsius"))
+			_, r := m36Fixture(t, "thermal.measurement.air_temperature", m36Quantity("273.15", "unit.kelvin"))
 			b := r.Bindings[0]
 			if _, err = s.Assign("target", b); err != nil {
 				t.Fatal(err)
@@ -524,11 +524,11 @@ func TestSlotFileStoreCapacityAndDetachedExports(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, field := range []string{"thermal.measurement.air_temperature", "infrastructure.ac.voltage"} {
-		unit := "unit.celsius"
+		unit, number := "unit.kelvin", "273.15"
 		if field == "infrastructure.ac.voltage" {
-			unit = "unit.volt"
+			unit, number = "unit.volt", "0"
 		}
-		_, registry := m36Fixture(t, field, m36Quantity("0", unit))
+		_, registry := m36Fixture(t, field, m36Quantity(number, unit))
 		for slot := 0; slot < 16; slot++ {
 			b := o21Clone(registry.Bindings[0])
 			b.Slot = slot

@@ -1234,7 +1234,20 @@
       "production": "Declared support only: empty production registry emits none of these value families.",
       "source": "internal/semanticmetrics/metrics.go",
       "type": "gauge",
-      "constant_unit": "celsius"
+      "constant_unit": "kelvin"
+    },
+    {
+      "enablement": "Field is configured in a validated, non-retired binding and selection passes exact projection, identity, qualification, promotion, validity, freshness and finite conversion checks.",
+      "field": "thermal.measurement.circuit_flow_temperature",
+      "labels": [
+        "slot"
+      ],
+      "name": "helianthus_thermal_circuit_flow_temperature_kelvin",
+      "omission": "HELP, TYPE and value samples omitted unless at least one slot admits a value; zero is a legitimate admitted measurement.",
+      "owner_page": "docs/observability/semantic-prometheus-coverage.md",
+      "production": "Declared support only: empty production registry emits none of these value families.",
+      "source": "internal/semanticmetrics/metrics.go",
+      "type": "gauge"
     },
     {
       "enablement": "Field is configured in a validated, non-retired binding and selection passes exact projection, identity, qualification, promotion, validity, freshness and finite conversion checks.",
@@ -1255,7 +1268,20 @@
       "labels": [
         "slot"
       ],
-      "name": "helianthus_thermal_dhw_setpoint_celsius",
+      "name": "helianthus_thermal_dhw_setpoint_kelvin",
+      "omission": "HELP, TYPE and value samples omitted unless at least one slot admits a value; zero is a legitimate admitted measurement.",
+      "owner_page": "docs/observability/semantic-prometheus-coverage.md",
+      "production": "Declared support only: empty production registry emits none of these value families.",
+      "source": "internal/semanticmetrics/metrics.go",
+      "type": "gauge"
+    },
+    {
+      "enablement": "Field is configured in a validated, non-retired binding and selection passes exact projection, identity, qualification, promotion, validity, freshness and finite conversion checks.",
+      "field": "thermal.measurement.dhw_temperature",
+      "labels": [
+        "slot"
+      ],
+      "name": "helianthus_thermal_dhw_temperature_kelvin",
       "omission": "HELP, TYPE and value samples omitted unless at least one slot admits a value; zero is a legitimate admitted measurement.",
       "owner_page": "docs/observability/semantic-prometheus-coverage.md",
       "production": "Declared support only: empty production registry emits none of these value families.",
@@ -1290,6 +1316,19 @@
     },
     {
       "enablement": "Field is configured in a validated, non-retired binding and selection passes exact projection, identity, qualification, promotion, validity, freshness and finite conversion checks.",
+      "field": "thermal.measurement.heat_generator_flow_temperature",
+      "labels": [
+        "slot"
+      ],
+      "name": "helianthus_thermal_heat_generator_flow_temperature_kelvin",
+      "omission": "HELP, TYPE and value samples omitted unless at least one slot admits a value; zero is a legitimate admitted measurement.",
+      "owner_page": "docs/observability/semantic-prometheus-coverage.md",
+      "production": "Declared support only: empty production registry emits none of these value families.",
+      "source": "internal/semanticmetrics/metrics.go",
+      "type": "gauge"
+    },
+    {
+      "enablement": "Field is configured in a validated, non-retired binding and selection passes exact projection, identity, qualification, promotion, validity, freshness and finite conversion checks.",
       "field": "thermal.status.operation",
       "labels": [
         "slot"
@@ -1303,7 +1342,7 @@
     },
     {
       "enablement": "Field is configured in a validated, non-retired binding and selection passes exact projection, identity, qualification, promotion, validity, freshness and finite conversion checks.",
-      "field": "thermal.measurement.power",
+      "field": "thermal.measurement.thermal_power",
       "labels": [
         "slot"
       ],
@@ -1340,7 +1379,7 @@
       "production": "Declared support only: empty production registry emits none of these value families.",
       "source": "internal/semanticmetrics/metrics.go",
       "type": "gauge",
-      "constant_unit": "celsius"
+      "constant_unit": "kelvin"
     },
     {
       "enablement": "Field is configured in a validated, non-retired binding and selection passes exact projection, identity, qualification, promotion, validity, freshness and finite conversion checks.",
@@ -1349,19 +1388,6 @@
         "slot"
       ],
       "name": "helianthus_thermal_system_mode",
-      "omission": "HELP, TYPE and value samples omitted unless at least one slot admits a value; zero is a legitimate admitted measurement.",
-      "owner_page": "docs/observability/semantic-prometheus-coverage.md",
-      "production": "Declared support only: empty production registry emits none of these value families.",
-      "source": "internal/semanticmetrics/metrics.go",
-      "type": "gauge"
-    },
-    {
-      "enablement": "Field is configured in a validated, non-retired binding and selection passes exact projection, identity, qualification, promotion, validity, freshness and finite conversion checks.",
-      "field": "thermal.measurement.water_temperature",
-      "labels": [
-        "slot"
-      ],
-      "name": "helianthus_thermal_water_temperature_celsius",
       "omission": "HELP, TYPE and value samples omitted unless at least one slot admits a value; zero is a legitimate admitted measurement.",
       "owner_page": "docs/observability/semantic-prometheus-coverage.md",
       "production": "Declared support only: empty production registry emits none of these value families.",

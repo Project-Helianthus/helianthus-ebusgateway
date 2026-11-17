@@ -43,6 +43,9 @@ type Registry struct {
 	Bindings  []Binding
 }
 
+// metric is one exported row. A thermal quantity row exports the registry
+// value unchanged in the pack's SI canonical unit (factor 1); the pack's
+// metadata must name the row's unit as the field's canonical unit.
 type metric struct {
 	field      semreg.DefinitionID
 	name, help string
@@ -53,16 +56,18 @@ type metric struct {
 
 var metrics = []metric{
 	{"thermal.action.state", "helianthus_thermal_action_state", "thermal.action.state (enum: idle=0, heating=1, cooling=2, dhw=3, ventilating=4).", "", 1, []string{"idle", "heating", "cooling", "dhw", "ventilating"}},
-	{"thermal.demand.level", "helianthus_thermal_demand_ratio", "thermal.demand.level (ratio; percent / 100).", "unit.percent", 100, []string{}},
-	{"thermal.measurement.air_temperature", "helianthus_thermal_air_temperature", "thermal.measurement.air_temperature (Celsius; identity).", "unit.celsius", 1, []string{}},
-	{"thermal.measurement.flow_rate", "helianthus_thermal_flow_cubic_meters_per_second", "thermal.measurement.flow_rate (m^3/s; litre/minute / 60,000).", "unit.litre_per_minute", 60000, []string{}},
-	{"thermal.measurement.humidity", "helianthus_thermal_relative_humidity_ratio", "thermal.measurement.humidity (ratio; percent / 100).", "unit.percent", 100, []string{}},
-	{"thermal.measurement.power", "helianthus_thermal_power_watts", "thermal.measurement.power (watts; preserve sign).", "unit.watt", 1, []string{}},
-	{"thermal.measurement.water_temperature", "helianthus_thermal_water_temperature_celsius", "thermal.measurement.water_temperature (Celsius; identity).", "unit.celsius", 1, []string{}},
+	{"thermal.demand.level", "helianthus_thermal_demand_ratio", "thermal.demand.level (ratio 0 to 1; registry value).", "unit.ratio", 1, []string{}},
+	{"thermal.measurement.air_temperature", "helianthus_thermal_air_temperature", "thermal.measurement.air_temperature (kelvin; registry value).", "unit.kelvin", 1, []string{}},
+	{"thermal.measurement.circuit_flow_temperature", "helianthus_thermal_circuit_flow_temperature_kelvin", "thermal.measurement.circuit_flow_temperature (kelvin; registry value).", "unit.kelvin", 1, []string{}},
+	{"thermal.measurement.dhw_temperature", "helianthus_thermal_dhw_temperature_kelvin", "thermal.measurement.dhw_temperature (kelvin; registry value).", "unit.kelvin", 1, []string{}},
+	{"thermal.measurement.flow_rate", "helianthus_thermal_flow_cubic_meters_per_second", "thermal.measurement.flow_rate (m^3/s; registry value).", "unit.cubic_metre_per_second", 1, []string{}},
+	{"thermal.measurement.heat_generator_flow_temperature", "helianthus_thermal_heat_generator_flow_temperature_kelvin", "thermal.measurement.heat_generator_flow_temperature (kelvin; registry value).", "unit.kelvin", 1, []string{}},
+	{"thermal.measurement.humidity", "helianthus_thermal_relative_humidity_ratio", "thermal.measurement.humidity (ratio 0 to 1; registry value).", "unit.ratio", 1, []string{}},
+	{"thermal.measurement.thermal_power", "helianthus_thermal_power_watts", "thermal.measurement.thermal_power (watts; registry value; preserve sign).", "unit.watt", 1, []string{}},
 	{"thermal.mode.system", "helianthus_thermal_system_mode", "thermal.mode.system (enum: off=0, auto=1, heat=2, cool=3).", "", 1, []string{"off", "auto", "heat", "cool"}},
 	{"thermal.mode.zone", "helianthus_thermal_zone_mode", "thermal.mode.zone (enum: off=0, auto=1, comfort=2, eco=3).", "", 1, []string{"off", "auto", "comfort", "eco"}},
-	{"thermal.setpoint.dhw_temperature_setpoint", "helianthus_thermal_dhw_setpoint_celsius", "thermal.setpoint.dhw_temperature_setpoint (Celsius; identity; read-only observation).", "unit.celsius", 1, []string{}},
-	{"thermal.setpoint.temperature_setpoint", "helianthus_thermal_temperature_setpoint", "thermal.setpoint.temperature_setpoint (Celsius; identity; read-only observation).", "unit.celsius", 1, []string{}},
+	{"thermal.setpoint.dhw_temperature_setpoint", "helianthus_thermal_dhw_setpoint_kelvin", "thermal.setpoint.dhw_temperature_setpoint (kelvin; registry value; read-only observation).", "unit.kelvin", 1, []string{}},
+	{"thermal.setpoint.temperature_setpoint", "helianthus_thermal_temperature_setpoint", "thermal.setpoint.temperature_setpoint (kelvin; registry value; read-only observation).", "unit.kelvin", 1, []string{}},
 	{"thermal.status.fault", "helianthus_thermal_fault_present", "thermal.status.fault (boolean: clear=0, present=1).", "", 1, []string{"clear", "present"}},
 	{"thermal.status.operation", "helianthus_thermal_operation_active", "thermal.status.operation (boolean: idle=0, active=1).", "", 1, []string{"idle", "active"}},
 	{"infrastructure.ac.active_power", "helianthus_infrastructure_ac_active_power_watts", "infrastructure.ac.active_power (watts; preserve sign).", "unit.watt", 1, []string{}},
@@ -165,7 +170,7 @@ func Render(view semanticview.View, registry Registry) (string, error) {
 				available = 1
 				unitLabel := ""
 				if m.name == "helianthus_thermal_air_temperature" || m.name == "helianthus_thermal_temperature_setpoint" {
-					unitLabel = ",unit=\"celsius\""
+					unitLabel = ",unit=\"kelvin\""
 				}
 				fmt.Fprintf(&samples, "%s{slot=\"%d\"%s} %s\n", m.name, b.Slot, unitLabel, strconv.FormatFloat(value, 'g', -1, 64))
 			}
@@ -240,6 +245,10 @@ func sample(a semanticview.Asset, b Binding, m metric, metadata *semreg.PackMeta
 		return 0, false
 	}
 	pack := semreg.PackRef{ID: semreg.DefinitionID("helianthus.pack." + b.Domain), Version: "1.0.0"}
+	field := semreg.DefinitionRef{Pack: pack, ID: m.field, Version: pack.Version}
+	if canonical, ok := metadata.CanonicalUnit(field); m.unit != "" && (!ok || canonical.ID != m.unit) {
+		return 0, false
+	}
 
 	serviceOK := false
 	for _, service := range s.Services {
@@ -247,7 +256,7 @@ func sample(a semanticview.Asset, b Binding, m metric, metadata *semreg.PackMeta
 			continue
 		}
 		for _, cap := range s.Capabilities {
-			if cap.ServiceInstance == service.InstanceID && cap.BindingID == b.BindingID && cap.SourceEpochID == b.SourceEpochID && cap.DriverGeneration == b.DriverGeneration && cap.Qualification == semreg.QualificationQualified && cap.Availability == semreg.AvailabilityAvailable && service.Definition.Pack == pack && metadata.ServiceOwnsCapability(service.Definition, cap.Definition) && strings.HasPrefix(string(cap.Definition.ID), b.Domain+".capability.read.") && projectionExact(a, projection.ItemCapability, cap.Definition.ID) {
+			if cap.ServiceInstance == service.InstanceID && cap.BindingID == b.BindingID && cap.SourceEpochID == b.SourceEpochID && cap.DriverGeneration == b.DriverGeneration && cap.Qualification == semreg.QualificationQualified && cap.Availability == semreg.AvailabilityAvailable && service.Definition.Pack == pack && metadata.FieldMatches(field, service.Definition, cap.Definition) && strings.HasPrefix(string(cap.Definition.ID), b.Domain+".capability.read.") && projectionExact(a, projection.ItemCapability, cap.Definition.ID) {
 				serviceOK = true
 			}
 		}

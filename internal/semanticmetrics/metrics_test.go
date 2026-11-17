@@ -136,12 +136,9 @@ func m36Fixture(t *testing.T, field string, value semreg.Value) (semreg.Snapshot
 	c.Value = &value
 	s.Facts[0].Key = key
 	serviceID := semreg.ServiceInstanceID("service:synthetic")
-	// Thermal quantity dimensions are physical quantities, while thermal services
-	// name resource kinds. The explicit configured tuple supplies that association.
-	serviceName := domain + ".service.system"
-	if domain == "infrastructure" {
-		serviceName = domain + ".service." + strings.TrimPrefix(string(f.Dimension.ID), domain+".dimension.")
-	}
+	// Every field's one dimension is its subject's resource dimension, and the
+	// service of that subject keys its facts by the same dimension.
+	serviceName := domain + ".service." + strings.TrimPrefix(string(f.Dimension.ID), domain+".dimension.")
 	capName := strings.Replace(serviceName, ".service.", ".capability.read.", 1)
 	ref := func(id string) semreg.DefinitionRef {
 		return semreg.DefinitionRef{Pack: metadata.Pack, ID: semreg.DefinitionID(id), Version: metadata.Pack.Version}
@@ -152,13 +149,27 @@ func m36Fixture(t *testing.T, field string, value semreg.Value) (semreg.Snapshot
 	r := Registry{Validated: true, Bindings: []Binding{{Domain: domain, Slot: 0, AssetID: s.AssetID, SourceID: binding.SourceID, SourceEpochID: binding.SourceEpochID, BindingID: binding.BindingID, DriverGeneration: binding.DriverGeneration, ServiceInstance: serviceID, Dimensions: key.Dimensions, Fields: []semreg.DefinitionID{f.Ref.ID}}}}
 	return s, r
 }
+
+// m36Decimal reads a plain decimal text into the registry's canonical decimal.
 func m36Decimal(number string) semreg.Decimal {
 	var exponent int32
-	for number != "0" && strings.HasSuffix(number, "0") {
+	if dot := strings.IndexByte(number, '.'); dot >= 0 {
+		exponent = -int32(len(number) - dot - 1)
+		number = number[:dot] + number[dot+1:]
+	}
+	sign := ""
+	if strings.HasPrefix(number, "-") {
+		sign, number = "-", strings.TrimPrefix(number, "-")
+	}
+	number = strings.TrimLeft(number, "0")
+	if number == "" {
+		return semreg.Decimal{Coefficient: "0"}
+	}
+	for strings.HasSuffix(number, "0") {
 		number = strings.TrimSuffix(number, "0")
 		exponent++
 	}
-	return semreg.Decimal{Coefficient: number, Exponent10: exponent}
+	return semreg.Decimal{Coefficient: sign + number, Exponent10: exponent}
 }
 func m36UnadmittedView(t *testing.T, s semreg.Snapshot) semanticview.View {
 	t.Helper()
@@ -186,16 +197,19 @@ func m36Available(text string, b Binding, field semreg.DefinitionID, available i
 
 func TestM36Quantities(t *testing.T) {
 	tests := []struct{ field, name, unit, number, want string }{
-		{"thermal.demand.level", "helianthus_thermal_demand_ratio", "unit.percent", "25", "0.25"},
-		{"thermal.demand.level", "helianthus_thermal_demand_ratio", "unit.percent", "57", "0.57"},
-		{"thermal.measurement.air_temperature", "helianthus_thermal_air_temperature", "unit.celsius", "-12", "-12"},
-		{"thermal.measurement.flow_rate", "helianthus_thermal_flow_cubic_meters_per_second", "unit.litre_per_minute", "60", "0.001"},
-		{"thermal.measurement.flow_rate", "helianthus_thermal_flow_cubic_meters_per_second", "unit.litre_per_minute", "7", "0.00011666666666666667"},
-		{"thermal.measurement.humidity", "helianthus_thermal_relative_humidity_ratio", "unit.percent", "50", "0.5"},
-		{"thermal.measurement.power", "helianthus_thermal_power_watts", "unit.watt", "-12", "-12"},
-		{"thermal.measurement.water_temperature", "helianthus_thermal_water_temperature_celsius", "unit.celsius", "42", "42"},
-		{"thermal.setpoint.dhw_temperature_setpoint", "helianthus_thermal_dhw_setpoint_celsius", "unit.celsius", "55", "55"},
-		{"thermal.setpoint.temperature_setpoint", "helianthus_thermal_temperature_setpoint", "unit.celsius", "20", "20"},
+		// Thermal registry values are SI and are exported unchanged.
+		{"thermal.demand.level", "helianthus_thermal_demand_ratio", "unit.ratio", "0.25", "0.25"},
+		{"thermal.demand.level", "helianthus_thermal_demand_ratio", "unit.ratio", "0.57", "0.57"},
+		{"thermal.measurement.air_temperature", "helianthus_thermal_air_temperature", "unit.kelvin", "261.15", "261.15"},
+		{"thermal.measurement.circuit_flow_temperature", "helianthus_thermal_circuit_flow_temperature_kelvin", "unit.kelvin", "315.15", "315.15"},
+		{"thermal.measurement.dhw_temperature", "helianthus_thermal_dhw_temperature_kelvin", "unit.kelvin", "321.65", "321.65"},
+		{"thermal.measurement.flow_rate", "helianthus_thermal_flow_cubic_meters_per_second", "unit.cubic_metre_per_second", "0.001", "0.001"},
+		{"thermal.measurement.flow_rate", "helianthus_thermal_flow_cubic_meters_per_second", "unit.cubic_metre_per_second", "0.0001167", "0.0001167"},
+		{"thermal.measurement.heat_generator_flow_temperature", "helianthus_thermal_heat_generator_flow_temperature_kelvin", "unit.kelvin", "323.2125", "323.2125"},
+		{"thermal.measurement.humidity", "helianthus_thermal_relative_humidity_ratio", "unit.ratio", "0.5", "0.5"},
+		{"thermal.measurement.thermal_power", "helianthus_thermal_power_watts", "unit.watt", "-12", "-12"},
+		{"thermal.setpoint.dhw_temperature_setpoint", "helianthus_thermal_dhw_setpoint_kelvin", "unit.kelvin", "328.15", "328.15"},
+		{"thermal.setpoint.temperature_setpoint", "helianthus_thermal_temperature_setpoint", "unit.kelvin", "293.15", "293.15"},
 		{"infrastructure.ac.active_power", "helianthus_infrastructure_ac_active_power_watts", "unit.watt", "-12", "-12"},
 		{"infrastructure.ac.apparent_power", "helianthus_infrastructure_ac_apparent_power_volt_amperes", "unit.volt_ampere", "12", "12"},
 		{"infrastructure.ac.current", "helianthus_infrastructure_ac_current_amperes", "unit.ampere", "12", "12"},
@@ -219,7 +233,7 @@ func TestM36Quantities(t *testing.T) {
 			text := m36Render(t, v, r)
 			labels := `slot="0"`
 			if tt.name == "helianthus_thermal_air_temperature" || tt.name == "helianthus_thermal_temperature_setpoint" {
-				labels += `,unit="celsius"`
+				labels += `,unit="kelvin"`
 			}
 			if !strings.Contains(text, fmt.Sprintf("%s{%s} %s\n", tt.name, labels, tt.want)) || !strings.Contains(text, "# TYPE "+tt.name+" gauge\n") || !strings.Contains(text, "# HELP "+tt.name+" "+tt.field+" (") || !m36Available(text, r.Bindings[0], semreg.DefinitionID(tt.field), 1) {
 				t.Fatal(text)
@@ -326,12 +340,12 @@ func TestM36Unavailable(t *testing.T) {
 			}
 		})
 	}
-	s, r := m36Fixture(t, "thermal.measurement.air_temperature", m36Quantity("0", "unit.celsius"))
+	s, r := m36Fixture(t, "thermal.demand.level", m36Quantity("0", "unit.ratio"))
 	withheld := semanticview.View{Assets: []semanticview.Asset{{AssetID: s.AssetID, UnavailableReason: "semantic.read.reason.publication_withheld"}}}
 	if text := m36Render(t, withheld, r); !m36Available(text, r.Bindings[0], r.Bindings[0].Fields[0], 0) {
 		t.Fatal(text)
 	}
-	if text := m36Render(t, m36View(t, s), r); !strings.Contains(text, "helianthus_thermal_air_temperature{slot=\"0\",unit=\"celsius\"} 0\n") {
+	if text := m36Render(t, m36View(t, s), r); !strings.Contains(text, "helianthus_thermal_demand_ratio{slot=\"0\"} 0\n") {
 		t.Fatal("known zero omitted")
 	}
 }
@@ -344,7 +358,10 @@ func TestM36BindingIdentity(t *testing.T) {
 		"dimension_id":    func(b *Binding) { b.Dimensions[0].ID = "infrastructure.dimension.meter" },
 		"dimension_value": func(b *Binding) { value := "other"; b.Dimensions[0].Value.Text = &value },
 		"field":           func(b *Binding) { b.Fields[0] = "infrastructure.ac.current" },
-		"domain":          func(b *Binding) { b.Domain = "thermal"; b.Fields = []semreg.DefinitionID{"thermal.measurement.power"} },
+		"domain": func(b *Binding) {
+			b.Domain = "thermal"
+			b.Fields = []semreg.DefinitionID{"thermal.measurement.thermal_power"}
+		},
 	}
 	for name, change := range changes {
 		t.Run(name, func(t *testing.T) {
@@ -365,10 +382,10 @@ func TestM36BindingIdentity(t *testing.T) {
 }
 
 func TestM36CoherenceAndSiblings(t *testing.T) {
-	s, r := m36Fixture(t, "thermal.measurement.air_temperature", m36Quantity("21", "unit.celsius"))
+	s, r := m36Fixture(t, "thermal.measurement.air_temperature", m36Quantity("294.15", "unit.kelvin"))
 	sibling := s.Facts[0]
 	sibling.Candidates = append([]semreg.FactCandidate(nil), sibling.Candidates...)
-	sibling.Key.FactID = "thermal.measurement.water_temperature"
+	sibling.Key.FactID = "thermal.measurement.humidity"
 	sibling.Candidates[0].CandidateID = "candidate:sibling"
 	sibling.Candidates[0].Key = sibling.Key
 	sibling.Candidates[0].Value = nil
@@ -542,7 +559,7 @@ func TestM36BindingOrder(t *testing.T) {
 	other.Dimensions = append([]semreg.Dimension(nil), other.Dimensions...)
 	dimension := "other"
 	other.Dimensions[0].Value.Text = &dimension
-	_, thermalRegistry := m36Fixture(t, "thermal.measurement.power", m36Quantity("12", "unit.watt"))
+	_, thermalRegistry := m36Fixture(t, "thermal.measurement.thermal_power", m36Quantity("12", "unit.watt"))
 	thermalBinding := thermalRegistry.Bindings[0]
 	thermalBinding.Slot = 2
 	thermalBinding.AssetID = "asset:other"
@@ -718,5 +735,62 @@ func TestM36TwoSourceSelection(t *testing.T) {
 				t.Fatalf("value exported %v want %v:\n%s", exported, tc.available == 1, text)
 			}
 		})
+	}
+}
+
+// TestM36ThermalRowsFollowPackMetadata ties every thermal row to the pinned
+// pack: the row's field is a pack field, a quantity row exports the field's
+// canonical SI unit unchanged and a symbol row has no unit. The thermal rows
+// are exactly the re-keyed fields the gateway maps, and no thermal series name
+// carries a customary unit.
+func TestM36ThermalRowsFollowPackMetadata(t *testing.T) {
+	fields := map[semreg.DefinitionID]semreg.FieldMetadata{}
+	for _, f := range thermal.Metadata().Fields {
+		fields[f.Ref.ID] = f
+	}
+	want := []semreg.DefinitionID{
+		"thermal.action.state", "thermal.demand.level", "thermal.measurement.air_temperature",
+		"thermal.measurement.circuit_flow_temperature", "thermal.measurement.dhw_temperature", "thermal.measurement.flow_rate",
+		"thermal.measurement.heat_generator_flow_temperature", "thermal.measurement.humidity", "thermal.measurement.thermal_power",
+		"thermal.mode.system", "thermal.mode.zone", "thermal.setpoint.dhw_temperature_setpoint",
+		"thermal.setpoint.temperature_setpoint", "thermal.status.fault", "thermal.status.operation",
+	}
+	var got []semreg.DefinitionID
+	for _, m := range metrics {
+		if !strings.HasPrefix(string(m.field), "thermal.") {
+			continue
+		}
+		got = append(got, m.field)
+		f, ok := fields[m.field]
+		if !ok {
+			t.Fatalf("%s is not a field of the pinned thermal pack", m.field)
+		}
+		switch {
+		case m.unit == "" && f.CanonicalUnit != nil:
+			t.Fatalf("%s: symbol row for a quantity field", m.field)
+		case m.unit != "" && (f.CanonicalUnit == nil || f.CanonicalUnit.ID != m.unit || m.factor != 1):
+			t.Fatalf("%s: row unit %s factor %v; the pack's canonical unit is exported unchanged", m.field, m.unit, m.factor)
+		}
+		if strings.Contains(m.name, "celsius") || strings.Contains(m.help, "Celsius") || strings.Contains(m.help, "percent") || strings.Contains(m.help, "litre") {
+			t.Fatalf("%s: customary unit in %s / %s", m.field, m.name, m.help)
+		}
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("thermal rows = %v\nwant %v", got, want)
+	}
+}
+
+// TestM36ThermalServiceMustOwnTheFieldSubject withholds a zone field read
+// through a service whose fact-key dimension is another subject's.
+func TestM36ThermalServiceMustOwnTheFieldSubject(t *testing.T) {
+	s, r := m36Fixture(t, "thermal.measurement.air_temperature", m36Quantity("294.15", "unit.kelvin"))
+	if text := m36Render(t, m36View(t, s), r); !m36Available(text, r.Bindings[0], r.Bindings[0].Fields[0], 1) {
+		t.Fatalf("zone control withheld:\n%s", text)
+	}
+	s.Services[0].Definition.ID = "thermal.service.system"
+	s.Capabilities[0].Definition.ID = "thermal.capability.read.system"
+	text := m36Render(t, m36View(t, s), r)
+	if strings.Contains(text, "helianthus_thermal_air_temperature{slot=") || !m36Available(text, r.Bindings[0], r.Bindings[0].Fields[0], 0) {
+		t.Fatalf("zone field exported through the system service:\n%s", text)
 	}
 }

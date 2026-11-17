@@ -95,8 +95,11 @@ type thermalZoneSetpointHistory struct {
 const thermalZoneSetpointRetainedHistoryLimit = 64
 
 type thermalZoneSetpointSelection struct {
-	Observation      thermalZoneSetpointObservation
-	Key              semreg.FactKey
+	Observation thermalZoneSetpointObservation
+	Key         semreg.FactKey
+	// Value is the registry quantity in kelvin; the native degree Celsius value
+	// stays in Observation.
+	Value            semreg.Value
 	Field            semreg.DefinitionRef
 	SemanticRevision semreg.Uint64
 	MappingEvidence  []semreg.EvidenceRef
@@ -196,8 +199,9 @@ func mapThermalZoneSetpoints(input thermalZoneSetpointInput) (thermalZoneSetpoin
 			context = &mapping
 			reason = thermalZoneSetpointAdmission(in, mapping, observation)
 			if reason == "" {
+				value, _ := thermalZoneSetpointValue(observation.Value)
 				out.Selected = append(out.Selected, thermalZoneSetpointSelection{
-					Observation: observation, Key: mapping.Key, Field: mapping.Field,
+					Observation: observation, Key: mapping.Key, Value: value, Field: mapping.Field,
 					SemanticRevision: mapping.SemanticRevision, MappingEvidence: mapping.Evidence,
 				})
 			}
@@ -260,7 +264,7 @@ func mapThermalZoneSetpoints(input thermalZoneSetpointInput) (thermalZoneSetpoin
 			d.SourceKeys = append(d.SourceKeys, other.SourceKeys...)
 			d.Loss = append(d.Loss, other.Loss...)
 		}
-		if requested.Kind == projection.ItemFact && requested.ItemID == "thermal.setpoint.temperature_setpoint" {
+		if requested.Kind == projection.ItemFact && requested.ItemID == thermalZoneSetpointField {
 			for _, selection := range out.Selected {
 				if d.Outcome == projection.ProjectionWithheld {
 					d.Reason = nil
@@ -276,7 +280,7 @@ func mapThermalZoneSetpoints(input thermalZoneSetpointInput) (thermalZoneSetpoin
 			}
 			reason := context.Definition.ID
 			d.Reason = &reason
-			if requested.Kind == projection.ItemFact && requested.ItemID == "thermal.setpoint.temperature_setpoint" {
+			if requested.Kind == projection.ItemFact && requested.ItemID == thermalZoneSetpointField {
 				d.Loss = append(d.Loss, projection.LossDetail{Kind: projection.LossPolicy, SourceItems: []semreg.DefinitionID{}, Description: "No current independently qualified role-preserving zone setpoint is selected; native role losses remain separate.", Reversible: true})
 			}
 		} else if transformed || len(d.Loss) > 0 {
@@ -326,7 +330,7 @@ func thermalZoneSetpointAdmission(in thermalZoneSetpointInput, m thermalZoneSetp
 			return "inactive_or_unknown_interval"
 		}
 	}
-	if m.Unit != "unit.celsius" || o.Value.Unit != m.Unit || m.Codec != "f32_le" || o.Codec != m.Codec {
+	if m.Unit != thermalNativeCelsius || o.Value.Unit != m.Unit || m.Codec != "f32_le" || o.Codec != m.Codec {
 		return "unit_or_codec"
 	}
 	if !m.BoundsKnown || m.Minimum.Validate() != nil || m.Maximum.Validate() != nil || o.Value.Number.Validate() != nil {
@@ -337,9 +341,9 @@ func thermalZoneSetpointAdmission(in thermalZoneSetpointInput, m thermalZoneSetp
 		return "native_range"
 	}
 	pack := thermal.New()
-	ref := semreg.DefinitionRef{Pack: pack.Pack(), ID: "thermal.setpoint.temperature_setpoint", Version: pack.Pack().Version}
-	value := semreg.Value{Kind: semreg.ValueQuantity, Quantity: &o.Value}
-	if m.Field != ref || m.Key.FactID != ref.ID || pack.ValidateFact(m.Key, &value) != nil {
+	ref := semreg.DefinitionRef{Pack: pack.Pack(), ID: thermalZoneSetpointField, Version: pack.Pack().Version}
+	value, ok := thermalZoneSetpointValue(o.Value)
+	if !ok || m.Field != ref || m.Key.FactID != ref.ID || pack.ValidateFact(m.Key, &value) != nil {
 		return "unrepresentable_key_or_pack_range"
 	}
 	if strings.TrimSpace(*m.Key.Dimensions[0].Value.Text) == "" {
@@ -354,12 +358,26 @@ func thermalZoneSetpointAdmission(in thermalZoneSetpointInput, m thermalZoneSetp
 	// Both declared native endpoints must also lie inside the pack range. A
 	// partially overlapping range is not widened or silently intersected.
 	for _, bound := range []semreg.Decimal{m.Minimum, m.Maximum} {
-		v := semreg.Value{Kind: semreg.ValueQuantity, Quantity: &semreg.Quantity{Number: bound, Unit: m.Unit}}
-		if pack.ValidateFact(m.Key, &v) != nil {
+		v, ok := thermalZoneSetpointValue(semreg.Quantity{Number: bound, Unit: m.Unit})
+		if !ok || pack.ValidateFact(m.Key, &v) != nil {
 			return "incoherent_pack_bounds"
 		}
 	}
 	return ""
+}
+
+// thermalZoneSetpointField is the zone setpoint field of the accepted thermal
+// placement; its one dimension is the zone's resource dimension.
+const thermalZoneSetpointField semreg.DefinitionID = "thermal.setpoint.temperature_setpoint"
+
+// thermalZoneSetpointValue converts a native degree Celsius quantity to the
+// registry's kelvin, exactly, at the source boundary.
+func thermalZoneSetpointValue(native semreg.Quantity) (semreg.Value, bool) {
+	if native.Unit != thermalNativeCelsius {
+		return semreg.Value{}, false
+	}
+	kelvin, ok := thermalKelvinFromCelsius(native.Number)
+	return semreg.Value{Kind: semreg.ValueQuantity, Quantity: &semreg.Quantity{Number: kelvin, Unit: thermalKelvin}}, ok
 }
 
 func thermalZoneSetpointIdentityValid(id thermalZoneSetpointIdentity) bool {

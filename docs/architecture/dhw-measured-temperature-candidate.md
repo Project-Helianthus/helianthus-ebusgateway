@@ -33,21 +33,32 @@ freshness; even a Proven label supplies neither. Synthetic tests qualify no
 controller family or device.
 
 The [Thermal vocabulary](https://github.com/Project-Helianthus/helianthus-semreg/blob/main/semreg/v1/packs/thermal/definitions.go)
-contains `thermal.measurement.water_temperature`, `unit.celsius`, and
-`thermal.service.dhw`. The seam returns a native float64 candidate, exactly
-widened from f32, with local textual losses. It never constructs a SemReg
-quantity, decimal, DefinitionID, FactKey dimension, service, or capability.
-`Facts` is always empty, and `Withheld` always records that the final fact key
-and decimal policy remain unresolved. There is no default TTL or invented
+places the measured hot-water temperature as `thermal.measurement.dhw_temperature`,
+keyed by the hot-water resource dimension `thermal.dimension.dhw`, served by
+`thermal.service.dhw` and expressed in `unit.kelvin`. For the supported
+measurement identity the seam names that field, its resource dimension and its
+canonical unit in `Target`, read from the pinned pack's metadata. It returns a
+native float64 candidate in degree Celsius, exactly widened from f32, with
+local textual losses. It never constructs a SemReg quantity, decimal, FactKey,
+service, or capability: the conversion to kelvin (degree Celsius + 273.15,
+exact) belongs to the source boundary that builds the fact, and the native
+value and unit stay in the evidence. Canonical registry units are SI and
+customary units appear only at display, in a consumer; reading that rule as
+kelvin for every temperature is a working reading the project owner has not
+yet confirmed. `Facts` is always empty, and `Withheld` always records that the
+final fact key and decimal policy remain unresolved. There is no default TTL or invented
 qualification. Unknown binding, codec, bounds, or freshness cannot provide an
 eligible candidate. Rounding is not attempted, including for fractional values.
 
 A qualified measurement requires exactly four bytes, a finite value inside
-both the pack interval [-100, 200] Celsius and caller-supplied qualified bounds,
+both the pack interval of 173.15 to 473.15 kelvin (native -100 to 200 degree
+Celsius) and caller-supplied qualified bounds,
 an exact identity/evidence match, a successful correlated response, and valid
 receipt metadata. Historical native range hints do not supply these bounds.
 Known exact zero, including its native sign, survives. Codec metadata must
-explicitly assert qualification and bind the complete key and evidence.
+explicitly assert qualification and bind the complete key and evidence. The
+temperature codec names its native unit `native.celsius`, as the presence codec
+names `native.uin`; a registry unit is never accepted as a native codec unit.
 The evidence owner, kind, contract, digest, access, and redaction all matter;
 none is discarded in matching or detached diagnostic history.
 

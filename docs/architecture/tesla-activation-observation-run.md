@@ -109,8 +109,21 @@ The command writes nothing until every attempt has finished, so it does not
 report when a source has opened or when its window is active. A preceding
 attempt may also end before its deadline, once it reaches the byte or
 segment limit, so the configured window and pause are not a schedule for
-the next power-up. Use one repeat for a startup, and give the charger power
-after that invocation has started. Do not power the charger again for a
+the next power-up. Starting the invocation does not open the window. Before
+it opens the port, the command resolves and locks its outputs and reads and
+checks any existing evidence file. It then opens the port, applies the
+receive-only settings and flushes both queues, which discards every byte
+received before that flush. None of these steps is reported, so the start of
+the invocation is not a signal to give the charger power. Use one repeat for
+a startup. Before giving the charger power, confirm on the observation host
+that the running `tesla-observe` process itself holds the serial device open,
+for example by listing the processes that have that device open. The
+settings and the flush follow the open directly, without a wait, so wait at
+least one more second after that confirmation. Then give the charger power,
+well before the window deadline, which is counted from the open. If the
+invocation has already exited, it holds no open window for this power-up:
+read its output and do not give the charger power for it. Do not power the
+charger again for a
 later repeat of the same invocation. Record another startup by starting
 another invocation before that power-up. The `-window-bytes` flag default
 remains 64. A sufficient capture count is not established and must be

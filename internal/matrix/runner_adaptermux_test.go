@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -607,6 +608,72 @@ func TestAdapterMuxV2ExecuteDrivesGuardedClients(t *testing.T) {
 	}
 	if index := readV2Index(t, fixture.output); len(index.Cases) != 4 {
 		t.Fatalf("index holds %d cases; want 4", len(index.Cases))
+	}
+}
+
+func TestAdapterMuxV2ClientWorkloadStartsAfterSmokeBaseline(t *testing.T) {
+	t.Parallel()
+
+	// The smoke command is slow to take its baseline; the ebusd workload of
+	// ENH-AD07 must not reach the bus before the readiness marker exists.
+	smoke := `sleep 0.4; test -n "$MATRIX_SMOKE_READY_FILE" && touch "$MATRIX_SMOKE_READY_FILE"; sleep 0.1`
+	fixture, err := newExecuteFixture(t, []string{"ENH-AD07"}, func(options *RunnerOptions) {
+		options.SmokeCommand = smoke
+	})
+	if err != nil {
+		t.Fatalf("fixture: %v", err)
+	}
+	readyPath := filepath.Join(fixture.output, "ENH-AD07", smokeReadyFileName)
+	if err := os.MkdirAll(filepath.Dir(readyPath), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// A marker left by an earlier run must not open the barrier.
+	if err := os.WriteFile(readyPath, nil, 0o644); err != nil {
+		t.Fatalf("stale marker: %v", err)
+	}
+	var dialsBeforeBaseline atomic.Int32
+	dial := fixture.runner.dial
+	fixture.runner.dial = func(ctx context.Context, address string) (net.Conn, error) {
+		if _, err := os.Stat(readyPath); err != nil {
+			dialsBeforeBaseline.Add(1)
+		}
+		return dial(ctx, address)
+	}
+	verdicts, err := fixture.runner.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run error = %v", err)
+	}
+	if len(verdicts) != 1 || verdicts[0].Outcome != caseOutcomePass {
+		t.Fatalf("verdicts = %+v", verdicts)
+	}
+	if got := dialsBeforeBaseline.Load(); got != 0 {
+		t.Fatalf("the client dialed %d time(s) before the smoke baseline", got)
+	}
+	if got := strings.Join(fixture.ebusd.received(), "|"); got != "state|scan 15|hex 15070400" {
+		t.Fatalf("ebusd received %q", got)
+	}
+}
+
+func TestAdapterMuxV2ClientWorkloadRunsWhenSmokeEndsWithoutBaseline(t *testing.T) {
+	t.Parallel()
+
+	// A smoke command that ends without a baseline (a refusal, for example)
+	// still lets the client run, after it.
+	fixture, err := newExecuteFixture(t, []string{"ENH-AD07"}, func(options *RunnerOptions) {
+		options.SmokeCommand = "true"
+	})
+	if err != nil {
+		t.Fatalf("fixture: %v", err)
+	}
+	verdicts, err := fixture.runner.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run error = %v", err)
+	}
+	if len(verdicts) != 1 || verdicts[0].Outcome != caseOutcomePass {
+		t.Fatalf("verdicts = %+v", verdicts)
+	}
+	if got := strings.Join(fixture.ebusd.received(), "|"); got != "state|scan 15|hex 15070400" {
+		t.Fatalf("ebusd received %q", got)
 	}
 }
 

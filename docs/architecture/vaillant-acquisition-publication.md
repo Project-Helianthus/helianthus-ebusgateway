@@ -9,7 +9,7 @@ expvar name.
 ## Acquisition owner
 
 `vaillantSemanticPoller`, declared in
-[`semantic_vaillant.go`](../../cmd/gateway/semantic_vaillant.go), reads,
+[`semantic_vaillant.go`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/semantic_vaillant.go), reads,
 refreshes, discovers and writes over the bus in the `semantic_vaillant_*.go`
 files. It keeps the native zone, hot water, circuit, boiler, system, radio
 device, FM5, solar and cylinder snapshots, the native qualification state and
@@ -19,7 +19,7 @@ native `vaillantConfigWriteResult` and its time-program writers the native
 
 It reaches the publication owner only through `vaillantSemanticPublisher`,
 declared in
-[`semantic_vaillant_publisher.go`](../../cmd/gateway/semantic_vaillant_publisher.go).
+[`semantic_vaillant_publisher.go`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/semantic_vaillant_publisher.go).
 Every method of that interface speaks native values: views and detached
 snapshots built under the snapshot lock, the controller capability, native
 schedule programs and adapter info, the energy register values, and native
@@ -37,14 +37,14 @@ publishes nothing.
 ## Publication owner
 
 `vaillantSemanticPublication`, declared in
-[`vaillant_semantic_publication.go`](../../cmd/gateway/vaillant_semantic_publication.go),
+[`vaillant_semantic_publication.go`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/vaillant_semantic_publication.go),
 holds the GraphQL provider, the broadcast hub and the semantic cache persister,
 and no bus access. It maps the native views in the
 `vaillant_semantic_publication_*.go` files and builds the poller with
 `newVaillantSemanticPoller` and `startVaillantSemanticPolling`.
 
 The writer adapters in
-[`vaillant_semantic_publication_writes.go`](../../cmd/gateway/vaillant_semantic_publication_writes.go)
+[`vaillant_semantic_publication_writes.go`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/vaillant_semantic_publication_writes.go)
 gate the poller's writers behind the admitted source and map the native write
 results to the GraphQL and MCP results with the same field names.
 
@@ -54,7 +54,7 @@ results to the GraphQL and MCP results with the same field names.
 
 ## Guard
 
-[`vaillant_acquisition_ownership_test.go`](../../cmd/gateway/vaillant_acquisition_ownership_test.go)
+[`vaillant_acquisition_ownership_test.go`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/vaillant_acquisition_ownership_test.go)
 parses the non-test sources of the package and fails when:
 
 - a file that declares a `vaillantSemanticPoller` method, or any

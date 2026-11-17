@@ -43,12 +43,12 @@ these views to owner methods in
 which map them to GraphQL values and push them to the provider and hub without
 reading poller state. Each trigger persists the semantic cache after a
 publication. The triggers live in
-[`semantic_vaillant_publisher.go`](../../cmd/gateway/semantic_vaillant_publisher.go)
+[`semantic_vaillant_publisher.go`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/semantic_vaillant_publisher.go)
 and reach the owner only through the native `vaillantSemanticPublisher`
 interface; the committed
 [`relocate_poller_publication_state.py`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/scripts/relocate_poller_publication_state.py)
 rewrote the direct field uses, and its `--check` mode lists any that remain.
-[The acquisition and publication owners](vaillant-acquisition-publication.md)
+[The acquisition and publication owners](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/docs/architecture/vaillant-acquisition-publication.md)
 page describes both owners, their locks and the test that pins the boundary.
 
 ## Retention and provenance

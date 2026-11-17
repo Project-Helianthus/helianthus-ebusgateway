@@ -14,6 +14,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
+	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/packs/thermal"
 )
 
 func m15Fixture(t *testing.T) (*boilerThermalPublisher, *semhub.Handle, *int64) {
@@ -682,5 +683,127 @@ func TestM15SuccessorPublishesAfterBindingChange(t *testing.T) {
 				t.Fatal("successor binding not tracked")
 			}
 		})
+	}
+}
+
+// thermalAssertPlacement checks that target names the pinned thermal pack's
+// field, its one resource dimension and its SI canonical unit.
+func thermalAssertPlacement(t *testing.T, target *semreg.FieldMetadata, field, dimension, unit semreg.DefinitionID) {
+	t.Helper()
+	pack := thermal.New().Pack()
+	if target == nil || target.Ref.ID != field || target.Ref.Pack != pack || target.Dimension.ID != dimension || target.Dimension.Pack != pack || target.CanonicalUnit == nil || target.CanonicalUnit.ID != unit {
+		t.Fatalf("placement = %+v; want %s on %s in %s", target, field, dimension, unit)
+	}
+}
+
+// TestThermalSIConversions pins the exact source-boundary conversions:
+// degree Celsius + 273.15 to kelvin and its inverse, and percent / 100.
+func TestThermalSIConversions(t *testing.T) {
+	d := func(coefficient string, exponent int32) semreg.Decimal {
+		return semreg.Decimal{Coefficient: coefficient, Exponent10: exponent}
+	}
+	for _, tc := range []struct {
+		name            string
+		celsius, kelvin semreg.Decimal
+	}{
+		{"zero", d("0", 0), d("27315", -2)}, {"fifty", d("5", 1), d("32315", -2)},
+		{"fraction", d("625", -4), d("2732125", -4)}, {"negative", d("-1", 2), d("17315", -2)},
+		{"absolute_zero", d("-27315", -2), d("0", 0)}, {"upper", d("2", 2), d("47315", -2)},
+		{"tenth", d("215", -1), d("29465", -2)}, {"hundreds", d("1", 3), d("127315", -2)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			kelvin, ok := thermalKelvinFromCelsius(tc.celsius)
+			if !ok || kelvin != tc.kelvin || kelvin.Validate() != nil {
+				t.Fatalf("kelvin = %+v %v; want %+v", kelvin, ok, tc.kelvin)
+			}
+			celsius, ok := thermalCelsiusFromKelvin(tc.kelvin)
+			if !ok || celsius != tc.celsius {
+				t.Fatalf("celsius = %+v %v; want %+v", celsius, ok, tc.celsius)
+			}
+		})
+	}
+	for _, tc := range []struct{ percent, ratio semreg.Decimal }{
+		{d("0", 0), d("0", 0)}, {d("1", 2), d("1", 0)}, {d("5", 1), d("5", -1)}, {d("125", -1), d("125", -3)}, {d("5", -1), d("5", -3)},
+	} {
+		if ratio, ok := thermalRatioFromPercent(tc.percent); !ok || ratio != tc.ratio {
+			t.Fatalf("ratio of %+v = %+v %v; want %+v", tc.percent, ratio, ok, tc.ratio)
+		}
+	}
+	for _, invalid := range []semreg.Decimal{d("10", 0), d("x", 0), d("0", 1), d("1", -19)} {
+		if _, ok := thermalKelvinFromCelsius(invalid); ok {
+			t.Fatalf("invalid decimal %+v converted", invalid)
+		}
+	}
+	if _, ok := thermalRatioFromPercent(d("1", -17)); ok {
+		t.Fatal("ratio below the decimal range accepted")
+	}
+}
+
+// TestThermalBoilerFlowKeyAndKelvin: the boiler flow names the heat generator
+// flow field under the heat generator's resource dimension and publishes
+// kelvin, while the native compatibility scalar stays degree Celsius. Each key
+// field is varied: pack identifier, pack version, field identifier and
+// dimension identifier are rejected by the pinned pack; the dimension text is
+// caught by the exact key comparison.
+func TestThermalBoilerFlowKeyAndKelvin(t *testing.T) {
+	field, ok := thermalPlacement(boilerThermalField)
+	if !ok {
+		t.Fatal("boiler flow field absent from the pinned pack")
+	}
+	thermalAssertPlacement(t, &field, "thermal.measurement.heat_generator_flow_temperature", "thermal.dimension.heat_generator", "unit.kelvin")
+	identity := "temperature:boiler_flow"
+	want := semreg.FactKey{PackID: "helianthus.pack.thermal", PackVersion: "1.0.0", FactID: "thermal.measurement.heat_generator_flow_temperature", Dimensions: []semreg.Dimension{{ID: "thermal.dimension.heat_generator", Value: semreg.Value{Kind: semreg.ValueText, Text: &identity}}}}
+	if !reflect.DeepEqual(boilerThermalKey(), want) {
+		t.Fatalf("key = %+v", boilerThermalKey())
+	}
+	for _, tc := range []struct {
+		raw     []byte
+		kelvin  semreg.Decimal
+		celsius float64
+	}{
+		{[]byte{0x20, 3}, semreg.Decimal{Coefficient: "32315", Exponent10: -2}, 50},
+		{[]byte{0, 0}, semreg.Decimal{Coefficient: "27315", Exponent10: -2}, 0},
+		{[]byte{1, 0}, semreg.Decimal{Coefficient: "2732125", Exponent10: -4}, 0.0625},
+		{[]byte{0xc0, 0xf9}, semreg.Decimal{Coefficient: "17315", Exponent10: -2}, -100},
+		{[]byte{0x80, 0x0c}, semreg.Decimal{Coefficient: "47315", Exponent10: -2}, 200},
+	} {
+		p, _, _ := m15Fixture(t)
+		p.attempt.Reply = append([]byte{0x0d, 0x18, 0}, tc.raw...)
+		value, ok := boilerThermalValue(p.attempt, p.binding)
+		if !ok || value.Quantity.Unit != "unit.kelvin" || value.Quantity.Number != tc.kelvin {
+			t.Fatalf("value of %x = %+v", tc.raw, value)
+		}
+		if got := p.scalar(p.binding.Identity.Target); got == nil || *got != tc.celsius {
+			t.Fatalf("legacy scalar of %x = %v; want %v degree Celsius", tc.raw, got, tc.celsius)
+		}
+		view, err := p.hub.Inspect(p.binding.Identity.Asset)
+		if err != nil || len(view.Snapshot.Facts) != 1 || !reflect.DeepEqual(view.Snapshot.Facts[0].Candidates[0].Value, value) {
+			t.Fatalf("published value differs: %v %+v", err, view.Snapshot.Facts)
+		}
+		if !reflect.DeepEqual(p.good.Reply, p.attempt.Reply) {
+			t.Fatal("native reply evidence lost")
+		}
+	}
+	value := &semreg.Value{Kind: semreg.ValueQuantity, Quantity: &semreg.Quantity{Number: semreg.Decimal{Coefficient: "32315", Exponent10: -2}, Unit: "unit.kelvin"}}
+	for name, mutate := range map[string]func(*semreg.FactKey){
+		"pack_id":      func(k *semreg.FactKey) { k.PackID = "helianthus.pack.storage" },
+		"pack_version": func(k *semreg.FactKey) { k.PackVersion = "2.0.0" },
+		"field":        func(k *semreg.FactKey) { k.FactID = "thermal.measurement.circuit_flow_temperature" },
+		"dimension":    func(k *semreg.FactKey) { k.Dimensions[0].ID = "thermal.dimension.circuit" },
+	} {
+		key := boilerThermalKey()
+		mutate(&key)
+		if thermal.New().ValidateFact(key, value) == nil {
+			t.Fatalf("%s: the pinned pack accepted a changed key", name)
+		}
+	}
+	text := "temperature:other"
+	changed := boilerThermalKey()
+	changed.Dimensions[0].Value.Text = &text
+	if reflect.DeepEqual(changed, want) {
+		t.Fatal("dimension text not part of the key")
+	}
+	if thermal.New().ValidateFact(boilerThermalKey(), &semreg.Value{Kind: semreg.ValueQuantity, Quantity: &semreg.Quantity{Number: semreg.Decimal{Coefficient: "5", Exponent10: 1}, Unit: "unit.kelvin"}}) == nil {
+		t.Fatal("pack accepted 50 kelvin as a boiler flow")
 	}
 }

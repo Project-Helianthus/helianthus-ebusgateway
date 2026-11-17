@@ -48,16 +48,18 @@ func m38Symbol(field semreg.DefinitionID, token string) semreg.Value {
 // the scrape surface, in exposition order.
 var m38Inventory = []m38Series{
 	{"thermal.action.state", "helianthus_thermal_action_state", m38Symbol("thermal.action.state", "heating"), "1"},
-	{"thermal.demand.level", "helianthus_thermal_demand_ratio", m38Quantity("25", 0, "unit.percent"), "0.25"},
-	{"thermal.measurement.air_temperature", "helianthus_thermal_air_temperature", m38Quantity("21", 0, "unit.celsius"), "21"},
-	{"thermal.measurement.flow_rate", "helianthus_thermal_flow_cubic_meters_per_second", m38Quantity("12", 0, "unit.litre_per_minute"), "0.0002"},
-	{"thermal.measurement.humidity", "helianthus_thermal_relative_humidity_ratio", m38Quantity("4", 1, "unit.percent"), "0.4"},
-	{"thermal.measurement.power", "helianthus_thermal_power_watts", m38Quantity("-15", 2, "unit.watt"), "-1500"},
-	{"thermal.measurement.water_temperature", "helianthus_thermal_water_temperature_celsius", m38Quantity("45", 0, "unit.celsius"), "45"},
+	{"thermal.demand.level", "helianthus_thermal_demand_ratio", m38Quantity("25", -2, "unit.ratio"), "0.25"},
+	{"thermal.measurement.air_temperature", "helianthus_thermal_air_temperature", m38Quantity("29415", -2, "unit.kelvin"), "294.15"},
+	{"thermal.measurement.circuit_flow_temperature", "helianthus_thermal_circuit_flow_temperature_kelvin", m38Quantity("31815", -2, "unit.kelvin"), "318.15"},
+	{"thermal.measurement.dhw_temperature", "helianthus_thermal_dhw_temperature_kelvin", m38Quantity("32115", -2, "unit.kelvin"), "321.15"},
+	{"thermal.measurement.flow_rate", "helianthus_thermal_flow_cubic_meters_per_second", m38Quantity("2", -4, "unit.cubic_metre_per_second"), "0.0002"},
+	{"thermal.measurement.heat_generator_flow_temperature", "helianthus_thermal_heat_generator_flow_temperature_kelvin", m38Quantity("323125", -3, "unit.kelvin"), "323.125"},
+	{"thermal.measurement.humidity", "helianthus_thermal_relative_humidity_ratio", m38Quantity("4", -1, "unit.ratio"), "0.4"},
+	{"thermal.measurement.thermal_power", "helianthus_thermal_power_watts", m38Quantity("-15", 2, "unit.watt"), "-1500"},
 	{"thermal.mode.system", "helianthus_thermal_system_mode", m38Symbol("thermal.mode.system", "heat"), "2"},
 	{"thermal.mode.zone", "helianthus_thermal_zone_mode", m38Symbol("thermal.mode.zone", "eco"), "3"},
-	{"thermal.setpoint.dhw_temperature_setpoint", "helianthus_thermal_dhw_setpoint_celsius", m38Quantity("5", 1, "unit.celsius"), "50"},
-	{"thermal.setpoint.temperature_setpoint", "helianthus_thermal_temperature_setpoint", m38Quantity("215", -1, "unit.celsius"), "21.5"},
+	{"thermal.setpoint.dhw_temperature_setpoint", "helianthus_thermal_dhw_setpoint_kelvin", m38Quantity("32315", -2, "unit.kelvin"), "323.15"},
+	{"thermal.setpoint.temperature_setpoint", "helianthus_thermal_temperature_setpoint", m38Quantity("29465", -2, "unit.kelvin"), "294.65"},
 	{"thermal.status.fault", "helianthus_thermal_fault_present", m38Symbol("thermal.status.fault", "clear"), "0"},
 	{"thermal.status.operation", "helianthus_thermal_operation_active", m38Symbol("thermal.status.operation", "active"), "1"},
 	{"infrastructure.ac.active_power", "helianthus_infrastructure_ac_active_power_watts", m38Quantity("-12", 2, "unit.watt"), "-1200"},
@@ -84,10 +86,10 @@ var m38Inventory = []m38Series{
 const m38AvailabilityName = "helianthus_semantic_field_available"
 
 // m38Slots is the explicit, collision-free slot assignment of the synthetic
-// registry: one binding per pack dimension, including the highest slot.
+// registry: one binding per resource dimension, including the highest slot.
 var m38Slots = map[semreg.DefinitionID]int{
-	"thermal.dimension.system": 0, "thermal.dimension.ratio": 1, "thermal.dimension.temperature": 2,
-	"thermal.dimension.volumetric_flow": 3, "thermal.dimension.power": 4, "thermal.dimension.zone": 5,
+	"thermal.dimension.system": 0, "thermal.dimension.ventilation": 1, "thermal.dimension.zone": 2,
+	"thermal.dimension.circuit": 3, "thermal.dimension.dhw": 4, "thermal.dimension.heat_generator": 5,
 	"infrastructure.dimension.phase": 0, "infrastructure.dimension.grid_connection": 1, "infrastructure.dimension.meter": 2,
 	"infrastructure.dimension.circuit": 3, "infrastructure.dimension.site": 15,
 }
@@ -120,13 +122,10 @@ func (d m38Domain) dimension(t *testing.T, field semreg.DefinitionID) semreg.Def
 	return ""
 }
 
-// serviceKind names the read service of a dimension. Thermal services are
-// resource kinds, so the synthetic thermal fields share the system service.
+// serviceKind names the read service of a dimension: every field's one
+// dimension is its subject's resource dimension, which keys that service.
 func (d m38Domain) serviceKind(dimension semreg.DefinitionID) string {
-	if d.name == "thermal" {
-		return "system"
-	}
-	return strings.TrimPrefix(string(dimension), "infrastructure.dimension.")
+	return strings.TrimPrefix(string(dimension), d.name+".dimension.")
 }
 
 func (d m38Domain) service(dimension semreg.DefinitionID) semreg.ServiceInstanceID {
@@ -517,8 +516,8 @@ func TestM38EachScrapeUsesOneCoherentCapture(t *testing.T) {
 	handler := newGatewayMetricsHandler(f.store, f.metrics(t))
 	domains := m38Domains()
 	update := map[semreg.DefinitionID]m38Series{
-		"thermal.measurement.water_temperature": {"thermal.measurement.water_temperature", "helianthus_thermal_water_temperature_celsius", m38Quantity("47", 0, "unit.celsius"), "47"},
-		"infrastructure.ac.voltage":             {"infrastructure.ac.voltage", "helianthus_infrastructure_ac_voltage_volts", m38Quantity("231", 0, "unit.volt"), "231"},
+		"thermal.measurement.dhw_temperature": {"thermal.measurement.dhw_temperature", "helianthus_thermal_dhw_temperature_kelvin", m38Quantity("32015", -2, "unit.kelvin"), "320.15"},
+		"infrastructure.ac.voltage":           {"infrastructure.ac.voltage", "helianthus_infrastructure_ac_voltage_volts", m38Quantity("231", 0, "unit.volt"), "231"},
 	}
 	published := false
 	// Both assets change right after the scrape captured, before it renders.
@@ -527,7 +526,7 @@ func TestM38EachScrapeUsesOneCoherentCapture(t *testing.T) {
 			return
 		}
 		published = true
-		f.publish(t, domains[0], []m38Series{update["thermal.measurement.water_temperature"]}, int64(500*time.Millisecond))
+		f.publish(t, domains[0], []m38Series{update["thermal.measurement.dhw_temperature"]}, int64(500*time.Millisecond))
 		f.publish(t, domains[1], []m38Series{update["infrastructure.ac.voltage"]}, int64(500*time.Millisecond))
 	}
 	sample := func(entry m38Series, value string) string {
@@ -759,7 +758,7 @@ func TestM38LabelsStayBoundedWithManyHubAssets(t *testing.T) {
 			expected := 1
 			if match[1] == "helianthus_thermal_air_temperature" || match[1] == "helianthus_thermal_temperature_setpoint" {
 				expected = 2
-				if labels["unit"] != "celsius" {
+				if labels["unit"] != "kelvin" {
 					t.Fatalf("nonconstant unit: %q", line)
 				}
 			}
@@ -919,7 +918,7 @@ func TestM38NilStoreComposesWithoutMetricsRoute(t *testing.T) {
 func m38ValueLabels(name string, slot int) string {
 	labels := fmt.Sprintf("slot=%q", strconv.Itoa(slot))
 	if name == "helianthus_thermal_air_temperature" || name == "helianthus_thermal_temperature_setpoint" {
-		labels += `,unit="celsius"`
+		labels += `,unit="kelvin"`
 	}
 	return labels
 }

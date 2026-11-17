@@ -22,7 +22,7 @@ func i34Fixture() (cylinderTemperatureRequest, semreg.MonotonicPoint) {
 		Evidence: semreg.EvidenceRef{Owner: "test.native", Kind: "test.synthetic", Contract: "test.synthetic/v1", Digest: semreg.Digest("sha256:" + hex.EncodeToString(digest[:])), Access: semreg.EvidenceAccessPublic, Redaction: semreg.RedactionNone},
 	}
 	receipt := semreg.MonotonicPoint{ClockEpochID: "clock:synthetic", Nanoseconds: "10"}
-	c := cylinderTemperatureCodec{Identity: id, Qualified: true, BoundsKnown: true, Encoding: "f32-le", Unit: "unit.celsius", Minimum: -20, Maximum: 300}
+	c := cylinderTemperatureCodec{Identity: id, Qualified: true, BoundsKnown: true, Encoding: "f32-le", Unit: "native.celsius", Minimum: -20, Maximum: 300}
 	o := cylinderTemperatureObservation{Identity: id, ValueBytes: []byte{0, 0, 0, 0}, RawRequest: []byte{2, 5, 0, 4}, RawReply: []byte{0, 0, 0, 0}, Correlated: true, Successful: true, PresenceKnown: true, Present: true, EvidenceStatus: "Hypothesis", ReceivedAt: semreg.TimePoint{ClockID: "clock.synthetic", UnixNanoseconds: "10", UncertaintyNS: "0"}, Receipt: receipt, FreshForNS: "20", FM5Revision: "fm5:1"}
 	return cylinderTemperatureRequest{Identity: id, Codec: c, Attempt: &o, FM5: cylinderTemperatureFM5{Interpretation: graphql.Fm5Interpretation{Mode: graphql.Fm5SemanticModeInterpreted, EvidenceRevision: "fm5:1"}, Coherent: true, Receipt: receipt, FreshForNS: "20"}}, semreg.MonotonicPoint{ClockEpochID: "clock:synthetic", Nanoseconds: "20"}
 }

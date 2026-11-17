@@ -62,6 +62,10 @@ type thermalDhwSourceResult struct {
 	Identity    thermalDhwIdentity
 	Observation *thermalDhwObservation
 	Binding     *thermalDhwBinding
+	// Value is the registry quantity in kelvin, set when the native degree
+	// Celsius value converts and the pack represents it; the native value stays
+	// in Observation.
+	Value *semreg.Value
 	// Eligible means source and value checks passed, NOT consumer admission.
 	Eligible bool
 	Loss     []projection.LossDetail
@@ -74,8 +78,9 @@ type thermalDhwMapping struct {
 
 // mapThermalDhwSetpoints is a detached, read-only proposal. It neither updates
 // last-known-good state nor emits withdrawals. Source absence belongs in Sources,
-// not in a second disposition for the shared target definition. The current pack
-// cannot preserve the required DHW service dimension, so even eligible values
+// not in a second disposition for the shared target definition. The field is
+// keyed by the hot-water resource dimension, whose value is native identity
+// text until graph publication allocates the resource, so even eligible values
 // remain withheld. Registration and persistence require a separate cutover.
 func mapThermalDhwSetpoints(observations []thermalDhwObservation, bindings []thermalDhwBinding, evaluation semreg.EvaluationContext) thermalDhwMapping {
 	observations = thermalDhwDetached(observations)
@@ -83,7 +88,7 @@ func mapThermalDhwSetpoints(observations []thermalDhwObservation, bindings []the
 	result := thermalDhwMapping{Sources: []thermalDhwSourceResult{}, Disposition: projection.ProjectionDisposition{
 		Kind: projection.ItemFact, ItemID: thermalDhwTarget, Outcome: projection.ProjectionWithheld,
 		SourceKeys: []semreg.FactKey{}, Loss: []projection.LossDetail{{Kind: projection.LossIdentity,
-			SourceItems: []semreg.DefinitionID{thermalDhwTarget}, Description: "current thermal fact cannot preserve DHW service identity"}},
+			SourceItems: []semreg.DefinitionID{thermalDhwTarget}, Description: "hot-water resource identity is not allocated before graph publication"}},
 	}}
 	seen := make([]bool, len(bindings))
 	validator := thermal.New()
@@ -128,22 +133,22 @@ func mapThermalDhwSetpoints(observations []thermalDhwObservation, bindings []the
 			thermalDhwLoss(&source, projection.LossTime, "original observation is not fresh")
 		}
 		value := observation.Value
-		if value == nil || value.Validate() != nil || value.Kind != semreg.ValueQuantity || value.Quantity == nil || value.Quantity.Unit != "unit.celsius" {
-			thermalDhwLoss(&source, projection.LossUnit, "requested temperature requires an exact Celsius quantity")
+		if value == nil || value.Validate() != nil || value.Kind != semreg.ValueQuantity || value.Quantity == nil || value.Quantity.Unit != thermalNativeCelsius {
+			thermalDhwLoss(&source, projection.LossUnit, "requested temperature requires an exact native Celsius quantity")
 		} else {
 			minimum, maximum := binding.Domain.Minimum, binding.Domain.Maximum
 			if !thermalDhwBound(minimum) || !thermalDhwBound(maximum) || thermalDhwCompare(minimum.Number, maximum.Number) > 0 ||
 				thermalDhwCompare(value.Quantity.Number, minimum.Number) < 0 || thermalDhwCompare(value.Quantity.Number, maximum.Number) > 0 {
 				thermalDhwLoss(&source, projection.LossRange, "value outside or missing qualified native domain")
 			}
-			temperature := "temperature:dhw_requested"
-			pack := validator.Pack()
-			key := semreg.FactKey{PackID: pack.ID, PackVersion: pack.Version, FactID: thermalDhwTarget,
-				Dimensions: []semreg.Dimension{{ID: "thermal.dimension.temperature", Value: semreg.Value{Kind: semreg.ValueText, Text: &temperature}}}}
-			// Validate representation separately, before the known service-identity
-			// blocker. Dropping the service dimension never authorizes projection.
-			if validator.ValidateFact(key, value) != nil {
+			// Convert once, at the source boundary, and validate the registry
+			// representation separately from the resource-identity blocker.
+			kelvin, ok := thermalKelvinFromCelsius(value.Quantity.Number)
+			candidate := &semreg.Value{Kind: semreg.ValueQuantity, Quantity: &semreg.Quantity{Number: kelvin, Unit: thermalKelvin}}
+			if !ok || validator.ValidateFact(thermalDhwKey(), candidate) != nil {
 				thermalDhwLoss(&source, projection.LossRange, "value outside thermal pack representation")
+			} else {
+				source.Value = candidate
 			}
 		}
 		source.Eligible = len(source.Loss) == 0
@@ -163,6 +168,17 @@ func mapThermalDhwSetpoints(observations []thermalDhwObservation, bindings []the
 	})
 	// Repeated observations and mirrors must not alias each other either.
 	return thermalDhwDetached(result)
+}
+
+// thermalDhwKey keys the hot-water setpoint by the field's one resource
+// dimension. Its value is the native identity text; resource identifiers
+// belong to the graph publication of the thermal family.
+func thermalDhwKey() semreg.FactKey {
+	identity := "temperature:dhw_requested"
+	pack := thermal.New().Pack()
+	field, _ := thermalPlacement(thermalDhwTarget)
+	return semreg.FactKey{PackID: pack.ID, PackVersion: pack.Version, FactID: thermalDhwTarget,
+		Dimensions: []semreg.Dimension{{ID: field.Dimension.ID, Value: semreg.Value{Kind: semreg.ValueText, Text: &identity}}}}
 }
 
 func thermalDhwValidIdentity(id thermalDhwIdentity) bool {
@@ -189,7 +205,7 @@ func thermalDhwLoss(source *thermalDhwSourceResult, kind projection.LossKind, de
 }
 
 func thermalDhwBound(bound *semreg.Quantity) bool {
-	return bound != nil && bound.Unit == "unit.celsius" && bound.Number.Validate() == nil
+	return bound != nil && bound.Unit == thermalNativeCelsius && bound.Number.Validate() == nil
 }
 
 func thermalDhwCompare(a, b semreg.Decimal) int {

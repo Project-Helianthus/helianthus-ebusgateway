@@ -75,8 +75,15 @@ type dhwMeasuredCandidate struct {
 	Measurement, Presence dhwMeasuredComponent
 	Celsius               *float64
 	Withheld, Loss        string
-	Facts                 []semreg.FactCandidate
+	// Target names the accepted placement's field, its hot-water resource
+	// dimension and its SI unit for the supported measurement identity.
+	Target *semreg.FieldMetadata
+	Facts  []semreg.FactCandidate
 }
+
+// dhwMeasuredField is the measured hot-water temperature field of the accepted
+// thermal placement; its subject is the domestic hot water.
+const dhwMeasuredField semreg.DefinitionID = "thermal.measurement.dhw_temperature"
 
 // Each request remains a distinct controller source. A boiler mirror must use
 // this same candidate; this function performs no asset/definition arbitration.
@@ -86,6 +93,9 @@ func mapDHWMeasuredTemperature(in dhwMeasuredRequest) dhwMeasuredCandidate {
 	presenceKey := in.Identity
 	presenceKey.Selector.Register = 1
 	out.Presence = dhwMeasuredMapComponent(presenceKey, in.Presence, in.Evaluation)
+	if field, ok := thermalPlacement(dhwMeasuredField); ok && dhwMeasuredKeyValid(in.Identity) && in.Identity.Selector.Register == 5 {
+		out.Target = &field
+	}
 	switch {
 	case !dhwMeasuredKeyValid(in.Identity) || in.Identity.Selector.Register != 5:
 		out.Loss = "unsupported measurement identity"
@@ -145,7 +155,7 @@ func dhwMeasuredValue(key dhwMeasuredIdentity, codec dhwMeasuredCodec, o *dhwMea
 		}
 		return float64(binary.LittleEndian.Uint16(o.Value)), ""
 	}
-	if codec.Codec != "f32-le" || codec.Unit != "unit.celsius" || !codec.BoundsKnown || math.IsNaN(codec.Minimum) || math.IsNaN(codec.Maximum) || math.IsInf(codec.Minimum, 0) || math.IsInf(codec.Maximum, 0) || codec.Minimum > codec.Maximum {
+	if codec.Codec != "f32-le" || codec.Unit != string(thermalNativeCelsius) || !codec.BoundsKnown || math.IsNaN(codec.Minimum) || math.IsNaN(codec.Maximum) || math.IsInf(codec.Minimum, 0) || math.IsInf(codec.Maximum, 0) || codec.Minimum > codec.Maximum {
 		return 0, "temperature codec or bounds unknown"
 	}
 	if len(o.Value) != 4 {

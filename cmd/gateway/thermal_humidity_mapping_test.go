@@ -27,9 +27,9 @@ func TestThermalHumidityMappingPercent(t *testing.T) {
 		validity, coefficient string
 		exponent              int32
 	}{
-		{"zero", 0, "valid", "0", 0}, {"maximum", 100, "valid", "1", 2},
-		{"percent_not_fraction", 50, "valid", "5", 1}, {"fractional_percent", 12.5, "valid", "125", -1},
-		{"below_one_percent", 0.5, "valid", "5", -1},
+		{"zero", 0, "valid", "0", 0}, {"maximum", 100, "valid", "1", 0},
+		{"percent_to_ratio", 50, "valid", "5", -1}, {"fractional_percent", 12.5, "valid", "125", -3},
+		{"below_one_percent", 0.5, "valid", "5", -3},
 		{"negative_zero", math.Copysign(0, -1), "valid", "0", 0},
 		{"negative", -1, "invalid", "", 0}, {"over", 101, "invalid", "", 0},
 		{"nan", math.NaN(), "invalid", "", 0}, {"positive_infinity", math.Inf(1), "invalid", "", 0}, {"negative_infinity", math.Inf(-1), "invalid", "", 0},
@@ -42,7 +42,7 @@ func TestThermalHumidityMappingPercent(t *testing.T) {
 				t.Fatalf("unexpected result: %+v", r)
 			}
 			if tc.validity == "valid" {
-				want := semreg.Value{Kind: semreg.ValueQuantity, Quantity: &semreg.Quantity{Number: semreg.Decimal{Coefficient: tc.coefficient, Exponent10: tc.exponent}, Unit: "unit.percent"}}
+				want := semreg.Value{Kind: semreg.ValueQuantity, Quantity: &semreg.Quantity{Number: semreg.Decimal{Coefficient: tc.coefficient, Exponent10: tc.exponent}, Unit: "unit.ratio"}}
 				if !reflect.DeepEqual(r.Candidate, &want) {
 					t.Fatalf("candidate = %+v, want %+v", r.Candidate, want)
 				}
@@ -84,10 +84,13 @@ func TestThermalHumidityMappingSelectors(t *testing.T) {
 		opcode, group byte
 		register      uint16
 		service       string
+		measured      bool
 	}{
-		{"zone", 2, 3, 0x28, "zone"}, {"circuit", 2, 2, 0x22, "circuit"},
-		{"remote_regulator", 6, 9, 7, "zone"}, {"remote_thermostat", 6, 10, 7, "zone"},
-		{"threshold", 2, 0, 0x0e, ""}, {"wrong_opcode", 2, 9, 7, ""}, {"wrong_group", 6, 3, 7, ""},
+		// The circuit register is a humidity measurement, but its subject is a
+		// zone: no circuit service keys it.
+		{"zone", 2, 3, 0x28, "zone", true}, {"circuit", 2, 2, 0x22, "", true},
+		{"remote_regulator", 6, 9, 7, "zone", true}, {"remote_thermostat", 6, 10, 7, "zone", true},
+		{"threshold", 2, 0, 0x0e, "", false}, {"wrong_opcode", 2, 9, 7, "", false}, {"wrong_group", 6, 3, 7, "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			o := thermalHumidityFixture()
@@ -96,12 +99,17 @@ func TestThermalHumidityMappingSelectors(t *testing.T) {
 			if !reflect.DeepEqual(r.Native, &o) {
 				t.Fatal("native selector/evidence erased")
 			}
-			if tc.service == "" {
-				if r.Field != nil || r.Service != nil || r.Capability != nil || r.Candidate != nil || r.Withheld != "unsupported_native_selector" {
+			switch {
+			case !tc.measured:
+				if r.Field != nil || r.Dimension != nil || r.Service != nil || r.Capability != nil || r.Candidate != nil || r.Withheld != "unsupported_native_selector" {
 					t.Fatal("unsupported selector projected")
 				}
-			} else if r.Field == nil || r.Field.ID != "thermal.measurement.humidity" || r.Service == nil || r.Service.ID != semreg.DefinitionID("thermal.service."+tc.service) || r.Capability.ID != semreg.DefinitionID("thermal.capability.read."+tc.service) || r.Candidate == nil || r.Withheld != "humidity_binding_unresolved" {
+			case r.Field == nil || r.Field.ID != "thermal.measurement.humidity" || r.Dimension == nil || r.Dimension.ID != "thermal.dimension.zone" || r.Candidate == nil || r.Withheld != "humidity_binding_unresolved":
 				t.Fatalf("wrong mapping: %+v", r)
+			case tc.service == "" && (r.Service != nil || r.Capability != nil):
+				t.Fatalf("a service whose subject is not the zone keys humidity: %+v", r)
+			case tc.service != "" && (r.Service == nil || r.Service.ID != semreg.DefinitionID("thermal.service."+tc.service) || r.Capability.ID != semreg.DefinitionID("thermal.capability.read."+tc.service)):
+				t.Fatalf("wrong service: %+v", r)
 			}
 		})
 	}
@@ -149,7 +157,7 @@ func TestThermalHumidityMappingIdentityFence(t *testing.T) {
 			if r[0].Validity != "identity_mismatch" || r[0].Candidate != nil || r[0].RetainedNative != nil || r[0].SourceLoss != "identity_changed" {
 				t.Fatal("changed identity reused native state")
 			}
-			if r[1].Validity != "valid" || !reflect.DeepEqual(r[1].Native, &sibling) || r[1].Candidate.Quantity.Number != (semreg.Decimal{Coefficient: "4", Exponent10: 1}) {
+			if r[1].Validity != "valid" || !reflect.DeepEqual(r[1].Native, &sibling) || r[1].Candidate.Quantity.Number != (semreg.Decimal{Coefficient: "4", Exponent10: -1}) {
 				t.Fatal("sibling changed")
 			}
 			requests[0].Observation = nil
@@ -208,7 +216,7 @@ func TestThermalHumidityMappingNoFallback(t *testing.T) {
 		if missing && (r[0].Candidate != nil || r[0].RetainedNative != nil) {
 			t.Fatal("cross-source fallback")
 		}
-		if r[1].Native.Identity == r[2].Native.Identity || r[1].Service.ID == r[2].Service.ID || r[1].Candidate.Quantity.Number != (semreg.Decimal{Coefficient: "4", Exponent10: 1}) || r[2].Candidate.Quantity.Number != (semreg.Decimal{Coefficient: "4", Exponent10: 1}) {
+		if r[1].Native.Identity == r[2].Native.Identity || r[1].Service == nil || r[2].Service != nil || r[1].Candidate.Quantity.Number != (semreg.Decimal{Coefficient: "4", Exponent10: -1}) || r[2].Candidate.Quantity.Number != (semreg.Decimal{Coefficient: "4", Exponent10: -1}) {
 			t.Fatal("equal scalars aliased sources/services")
 		}
 		baseline := mapThermalHumidity([]thermalHumidityRequest{{Identity: circuit.Identity, Observation: &circuit}})[0]
@@ -243,7 +251,7 @@ func TestThermalHumidityMappingDetached(t *testing.T) {
 	r[0].Candidate.Quantity.Number.Coefficient = "7"
 	r[0].Field.ID = "modified"
 	fresh := mapThermalHumidity([]thermalHumidityRequest{{Identity: original.Identity, Observation: &original}})[0]
-	if fresh.Candidate.Quantity.Number != (semreg.Decimal{Coefficient: "4", Exponent10: 1}) || fresh.Field.ID != "thermal.measurement.humidity" {
+	if fresh.Candidate.Quantity.Number != (semreg.Decimal{Coefficient: "4", Exponent10: -1}) || fresh.Field.ID != "thermal.measurement.humidity" {
 		t.Fatal("output aliases future calls")
 	}
 	missing := mapThermalHumidity([]thermalHumidityRequest{{Identity: original.Identity, Previous: &original}})[0]

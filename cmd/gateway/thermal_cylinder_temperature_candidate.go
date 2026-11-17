@@ -166,7 +166,7 @@ func cylinderTemperatureNative(o cylinderTemperatureObservation, c cylinderTempe
 	if o.ReceivedAt.Validate() != nil || o.Receipt.Validate() != nil {
 		return 0, "invalid original receipt"
 	}
-	if c.Unit != "unit.celsius" {
+	if c.Unit != string(thermalNativeCelsius) {
 		return 0, "native unit unknown"
 	}
 	if !c.BoundsKnown || math.IsNaN(c.Minimum) || math.IsNaN(c.Maximum) || math.IsInf(c.Minimum, 0) || math.IsInf(c.Maximum, 0) || c.Minimum > c.Maximum {

@@ -52,21 +52,30 @@ type thermalHumidityRequest struct {
 }
 
 type thermalHumidityResult struct {
-	Identity                   thermalHumidityIdentity
-	Native, RetainedNative     *thermalHumidityObservation
-	Validity                   string
-	SourceLoss                 string
-	Field, Service, Capability *semreg.DefinitionRef
-	Candidate                  *semreg.Value
+	Identity               thermalHumidityIdentity
+	Native, RetainedNative *thermalHumidityObservation
+	Validity               string
+	SourceLoss             string
+	// Dimension is the field's one resource dimension, the zone's. A service is
+	// named only when its fact-key dimension is that dimension.
+	Field, Dimension, Service, Capability *semreg.DefinitionRef
+	// Candidate is the registry ratio (percent / 100); the native percent and
+	// its unit stay in Native.
+	Candidate *semreg.Value
 	// No complete FactKey or admission is established by the supplied contract.
 	Withheld string
 }
+
+// thermalHumidityField is the humidity field of the accepted thermal
+// placement; its subject is the zone.
+const thermalHumidityField semreg.DefinitionID = "thermal.measurement.humidity"
 
 // mapThermalHumidity maps each source independently. Results are source loss
 // records, never requested-item projection dispositions: an absent remote cannot
 // overwrite a projected circuit or zone. It does not select a legacy fallback.
 func mapThermalHumidity(requests []thermalHumidityRequest) []thermalHumidityResult {
 	metadata := thermal.Metadata()
+	field, placed := thermalPlacement(thermalHumidityField)
 	ref := func(id semreg.DefinitionID) *semreg.DefinitionRef {
 		for _, f := range metadata.Fields {
 			if f.Ref.ID == id {
@@ -138,13 +147,18 @@ func mapThermalHumidity(requests []thermalHumidityRequest) []thermalHumidityResu
 			}
 		}
 		measurement := service != "" || (s.PB == 0xb5 && s.SB == 0x24 && s.OperationType == 0 && s.Direction == "target_to_initiator" && s.Opcode == 6 && (s.Group == 9 || s.Group == 10) && s.Register == 7)
-		if !measurement {
+		if !measurement || !placed {
 			r.Withheld = "unsupported_native_selector"
 		} else {
-			r.Field = ref("thermal.measurement.humidity")
-			if service != "" {
-				r.Service = ref(semreg.DefinitionID("thermal.service." + service))
-				r.Capability = ref(semreg.DefinitionID("thermal.capability.read." + service))
+			r.Field = ref(thermalHumidityField)
+			dimension := field.Dimension
+			r.Dimension = &dimension
+			for _, candidate := range metadata.Services {
+				// A circuit selector names no service: the field's subject is a zone.
+				if service != "" && candidate.Ref.ID == semreg.DefinitionID("thermal.service."+service) && candidate.FactKeyDimension == field.Dimension {
+					r.Service = ref(candidate.Ref.ID)
+					r.Capability = ref(semreg.DefinitionID("thermal.capability.read." + service))
+				}
 			}
 		}
 		if o := request.Observation; o != nil {
@@ -174,9 +188,10 @@ func mapThermalHumidity(requests []thermalHumidityRequest) []thermalHumidityResu
 							exponent++
 						}
 					}
-					number := semreg.Decimal{Coefficient: text, Exponent10: exponent}
-					if number.Validate() == nil {
-						r.Candidate = &semreg.Value{Kind: semreg.ValueQuantity, Quantity: &semreg.Quantity{Number: number, Unit: "unit.percent"}}
+					// Percent / 100 is exact: the exponent moves by two.
+					number, ok := thermalRatioFromPercent(semreg.Decimal{Coefficient: text, Exponent10: exponent})
+					if ok {
+						r.Candidate = &semreg.Value{Kind: semreg.ValueQuantity, Quantity: &semreg.Quantity{Number: number, Unit: thermalRatio}}
 					} else {
 						// Native validity does not imply exact pack representability.
 						r.Withheld = "percent_unrepresentable"

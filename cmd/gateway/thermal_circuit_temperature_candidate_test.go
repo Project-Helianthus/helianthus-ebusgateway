@@ -486,3 +486,25 @@ func TestI33EvidenceStatus(t *testing.T) {
 		})
 	}
 }
+
+// TestThermalCircuitTemperaturePlacement: the measured flow role names the
+// circuit flow field under the circuit's resource dimension in kelvin, keeps
+// the native value and builds no fact; no other register names a field.
+func TestThermalCircuitTemperaturePlacement(t *testing.T) {
+	in, e := i33Fixture()
+	c := i33Map(t, in, e)
+	thermalAssertPlacement(t, c.Target, "thermal.measurement.circuit_flow_temperature", "thermal.dimension.circuit", "unit.kelvin")
+	if c.NativeValue == nil || *c.NativeValue != 40 {
+		t.Fatalf("native value = %v", c.NativeValue)
+	}
+	for _, register := range []uint16{7, 0x20, 9} {
+		in, e := i33Fixture()
+		in.Identity.Selector.Register = register
+		for i := range in.Attempts {
+			in.Attempts[i].Identity.Selector.Register = register
+		}
+		if c := i33Map(t, in, e); c.Target != nil {
+			t.Fatalf("register %#x named %+v", register, c.Target)
+		}
+	}
+}

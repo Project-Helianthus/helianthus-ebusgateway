@@ -54,13 +54,13 @@ func thermalZoneSetpointFixture() thermalZoneSetpointInput {
 		in.Mappings = append(in.Mappings, thermalZoneSetpointMapping{
 			Identity: id, Role: row.role, Approved: true, Qualification: semreg.QualificationQualified,
 			Field:            semreg.DefinitionRef{Pack: pack, ID: "thermal.setpoint.temperature_setpoint", Version: "1.0.0"},
-			Key:              semreg.FactKey{PackID: pack.ID, PackVersion: pack.Version, FactID: "thermal.setpoint.temperature_setpoint", Dimensions: []semreg.Dimension{{ID: "thermal.dimension.temperature", Value: semreg.Value{Kind: semreg.ValueText, Text: &key}}}},
-			SemanticRevision: "7", Unit: "unit.celsius", Codec: "f32_le", BoundsKnown: true,
+			Key:              semreg.FactKey{PackID: pack.ID, PackVersion: pack.Version, FactID: "thermal.setpoint.temperature_setpoint", Dimensions: []semreg.Dimension{{ID: "thermal.dimension.zone", Value: semreg.Value{Kind: semreg.ValueText, Text: &key}}}},
+			SemanticRevision: "7", Unit: "native.celsius", Codec: "f32_le", BoundsKnown: true,
 			Minimum: semreg.Decimal{Coefficient: "0"}, Maximum: semreg.Decimal{Coefficient: "3", Exponent10: 1}, Evidence: []semreg.EvidenceRef{evidence},
 		})
 		in.Observations = append(in.Observations, thermalZoneSetpointObservation{
 			Identity: id, Role: row.role, Present: true,
-			Value: semreg.Quantity{Number: semreg.Decimal{Coefficient: "2", Exponent10: 1}, Unit: "unit.celsius"}, Codec: "f32_le",
+			Value: semreg.Quantity{Number: semreg.Decimal{Coefficient: "2", Exponent10: 1}, Unit: "native.celsius"}, Codec: "f32_le",
 			Validity: semreg.ValidityGood, Qualification: semreg.QualificationQualified, Freshness: semreg.FreshnessFresh,
 			ReceivedAt: semreg.TimePoint{UnixNanoseconds: "100", ClockID: "clock.synthetic", UncertaintyNS: "0"},
 			Receipt:    semreg.MonotonicPoint{ClockEpochID: "clock:synthetic", Nanoseconds: "100"}, FreshForNS: "200",
@@ -118,6 +118,10 @@ func TestThermalZoneSetpointMappingRoles(t *testing.T) {
 	for _, selected := range out.Selected {
 		if selected.Observation.Identity.Selector.Register != expected[selected.Observation.Role] || selected.Key.FactID != "thermal.setpoint.temperature_setpoint" || selected.Observation.Value.Number != (semreg.Decimal{Coefficient: "2", Exponent10: 1}) {
 			t.Fatalf("role/value/selector changed: %+v", selected)
+		}
+		// The registry value is kelvin; the native degree Celsius stays in the observation.
+		if selected.Value.Kind != semreg.ValueQuantity || *selected.Value.Quantity != (semreg.Quantity{Number: semreg.Decimal{Coefficient: "29315", Exponent10: -2}, Unit: "unit.kelvin"}) || selected.Observation.Value.Unit != "native.celsius" {
+			t.Fatalf("selected value = %+v", selected.Value)
 		}
 		if selected.Observation.ReceivedAt.UnixNanoseconds != "100" || selected.Observation.Receipt.Nanoseconds != "100" || out.Evaluation.EvaluateMonotonic.Nanoseconds != "200" {
 			t.Fatal("evaluation rewrote receipt")
@@ -217,7 +221,10 @@ func TestThermalZoneSetpointMappingAdmission(t *testing.T) {
 		{"codec", "unit_or_codec", func(x *thermalZoneSetpointInput) { x.Observations[0].Codec = "unknown" }},
 		{"nonfinite", "invalid_native_bounds_or_value", func(x *thermalZoneSetpointInput) { x.Observations[0].Value.Number.Coefficient = "NaN" }},
 		{"infinity", "invalid_native_bounds_or_value", func(x *thermalZoneSetpointInput) { x.Observations[0].Value.Number.Coefficient = "Inf" }},
-		{"dimension", "unrepresentable_key_or_pack_range", func(x *thermalZoneSetpointInput) { x.Mappings[0].Key.Dimensions[0].ID = "thermal.dimension.zone" }},
+		{"dimension", "unrepresentable_key_or_pack_range", func(x *thermalZoneSetpointInput) { x.Mappings[0].Key.Dimensions[0].ID = "thermal.dimension.dhw" }},
+		{"registry_unit_as_native", "unit_or_codec", func(x *thermalZoneSetpointInput) {
+			x.Mappings[0].Unit, x.Observations[0].Value.Unit = "unit.kelvin", "unit.kelvin"
+		}},
 		{"missing_dimension", "unrepresentable_key_or_pack_range", func(x *thermalZoneSetpointInput) { x.Mappings[0].Key.Dimensions = nil }},
 		{"dimension_value", "unrepresentable_key_or_pack_range", func(x *thermalZoneSetpointInput) { *x.Mappings[0].Key.Dimensions[0].Value.Text = "" }},
 		{"dimension_payload", "unrepresentable_key_or_pack_range", func(x *thermalZoneSetpointInput) { x.Mappings[0].Key.Dimensions[0].Value.Text = nil }},

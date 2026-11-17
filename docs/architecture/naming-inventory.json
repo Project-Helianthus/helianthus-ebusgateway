@@ -3245,11 +3245,11 @@
       "source_occurrence": 0,
       "status": "ready",
       "target": "helianthus_thermal_air_temperature",
-      "unit": "celsius",
+      "unit": "kelvin",
       "unit_label": {
         "constant": true,
         "name": "unit",
-        "value": "celsius"
+        "value": "kelvin"
       },
       "value_class": "gauge"
     },
@@ -3269,11 +3269,11 @@
       "source_occurrence": 0,
       "status": "ready",
       "target": "helianthus_thermal_temperature_setpoint",
-      "unit": "celsius",
+      "unit": "kelvin",
       "unit_label": {
         "constant": true,
         "name": "unit",
-        "value": "celsius"
+        "value": "kelvin"
       },
       "value_class": "gauge"
     },

@@ -19,7 +19,7 @@ func i32Input() dhwMeasuredRequest {
 	}
 	p := key
 	p.Selector.Register = 1
-	return dhwMeasuredRequest{Identity: key, Measurement: input(key, "f32-le", "unit.celsius", []byte{0, 0, 0x34, 0x42}), Presence: input(p, "uin16-le", "native.uin", []byte{1, 0}), Evaluation: semreg.EvaluationContext{EvaluatedAt: semreg.TimePoint{UnixNanoseconds: "20", ClockID: "clock.synthetic", UncertaintyNS: "0"}, EvaluateMonotonic: semreg.MonotonicPoint{ClockEpochID: "clock:synthetic", Nanoseconds: "20"}}}
+	return dhwMeasuredRequest{Identity: key, Measurement: input(key, "f32-le", "native.celsius", []byte{0, 0, 0x34, 0x42}), Presence: input(p, "uin16-le", "native.uin", []byte{1, 0}), Evaluation: semreg.EvaluationContext{EvaluatedAt: semreg.TimePoint{UnixNanoseconds: "20", ClockID: "clock.synthetic", UncertaintyNS: "0"}, EvaluateMonotonic: semreg.MonotonicPoint{ClockEpochID: "clock:synthetic", Nanoseconds: "20"}}}
 }
 
 func i32AssertWithheld(t *testing.T, out dhwMeasuredCandidate) {
@@ -490,5 +490,28 @@ func TestI32ScopeAndMalformedKeys(t *testing.T) {
 		if out.Celsius == nil || *out.Celsius != tc.want {
 			t.Fatal("pack endpoint rejected")
 		}
+	}
+}
+
+// TestThermalDhwMeasuredTemperaturePlacement: the measurement names the
+// hot-water temperature field under the hot-water resource dimension in
+// kelvin, keeps the native degree Celsius value and builds no fact; another
+// register names nothing.
+func TestThermalDhwMeasuredTemperaturePlacement(t *testing.T) {
+	out := mapDHWMeasuredTemperature(i32Input())
+	i32AssertWithheld(t, out)
+	thermalAssertPlacement(t, out.Target, "thermal.measurement.dhw_temperature", "thermal.dimension.dhw", "unit.kelvin")
+	if out.Celsius == nil || *out.Celsius != 45 {
+		t.Fatalf("native value = %v", out.Celsius)
+	}
+	in := i32Input()
+	in.Identity.Selector.Register = 6
+	if out := mapDHWMeasuredTemperature(in); out.Target != nil {
+		t.Fatalf("unsupported register named %+v", out.Target)
+	}
+	in = i32Input()
+	in.Measurement.Codec.Unit = "unit.kelvin"
+	if out := mapDHWMeasuredTemperature(in); out.Celsius != nil {
+		t.Fatal("a registry unit was accepted as the native codec unit")
 	}
 }

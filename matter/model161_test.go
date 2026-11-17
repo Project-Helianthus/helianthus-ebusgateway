@@ -4,8 +4,12 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
+	"sort"
 	"testing"
 
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
@@ -497,6 +501,222 @@ func TestAA03EmptyProjectionCurrentRowMustBeLedgerRow(t *testing.T) {
 			}
 			if raw, err := CanonicalJSON161(r); err == nil || raw != nil {
 				t.Fatalf("accepted %s", name)
+			}
+		})
+	}
+}
+
+// docsSemanticRootEnv names an immutable docs-semantic checkout holding the
+// adopted roster. Without it the test reads the repository-local staged
+// reference; when neither is present the pin cannot be compared here and the
+// public mapping gates remain the authority.
+const docsSemanticRootEnv = "HELIANTHUS_DOCS_SEMANTIC_ROOT"
+
+func stagedDocsSemanticRoot(t *testing.T) string {
+	t.Helper()
+	if root := os.Getenv(docsSemanticRootEnv); root != "" {
+		if info, err := os.Stat(root); err != nil || !info.IsDir() {
+			t.Fatalf("%s does not name a directory: %v", docsSemanticRootEnv, err)
+		}
+		return root
+	}
+	root := filepath.Join("..", ".tmp", "references", "docs-semantic")
+	if info, err := os.Stat(root); err != nil || !info.IsDir() {
+		t.Skipf("docs-semantic roster is not staged; set %s", docsSemanticRootEnv)
+	}
+	return root
+}
+
+type roster161Ref struct {
+	Pack struct {
+		ID      string `json:"id"`
+		Version string `json:"version"`
+	} `json:"pack"`
+	ID string `json:"id"`
+}
+
+type roster161Row struct {
+	Ref         roster161Ref `json:"ref"`
+	Kind        string       `json:"kind"`
+	Disposition string       `json:"disposition"`
+	Reason      string       `json:"reason"`
+	Target      *struct {
+		DeviceTypeID uint32 `json:"device_type_id"`
+		ClusterID    uint32 `json:"cluster_id"`
+		AttributeID  uint32 `json:"attribute_id"`
+	} `json:"target"`
+}
+
+type roster161 struct {
+	Contract        string      `json:"contract"`
+	MappingRevision json.Number `json:"mapping_revision"`
+	Target          struct {
+		Name    string `json:"name"`
+		Version string `json:"version"`
+	} `json:"target"`
+	Pins struct {
+		Packs map[string]string `json:"packs"`
+	} `json:"pins"`
+	Rows []roster161Row `json:"rows"`
+}
+
+// readRoster161 reads the roster at path below root and refuses bytes whose
+// SHA-256 differs from digest before decoding them.
+func readRoster161(root, path, digest string) (roster161, error) {
+	raw, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(path)))
+	if err != nil {
+		return roster161{}, err
+	}
+	if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != digest {
+		return roster161{}, fmt.Errorf("roster digest %s, pinned %s", got, digest)
+	}
+	var roster roster161
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(&roster); err != nil {
+		return roster161{}, err
+	}
+	return roster, nil
+}
+
+// checkRoster161 compares the adopted roster with the 1.6.1 manifest and the
+// shared ledger. Fact, capability and operation rows are the projected kinds and
+// must equal the ledger; service and relation rows are composed by the endpoint
+// work of the Matter binding and are counted but not projected here. Any other
+// row kind is refused.
+func checkRoster161(roster roster161) (map[string]int, error) {
+	manifest := Manifest161()
+	if roster.Contract != Contract || roster.Target.Name != string(TargetID) || roster.Target.Version != string(TargetVersion161) || roster.MappingRevision.String() != string(MappingRevision161) {
+		return nil, errors.New("roster identity differs from the 1.6.1 target")
+	}
+	packs := make(map[string]string, len(roster.Pins.Packs))
+	for name, version := range roster.Pins.Packs {
+		packs["helianthus.pack."+name] = version
+	}
+	if len(packs) != len(manifest.PackVersions) {
+		return nil, errors.New("roster pins another pack set")
+	}
+	for _, pack := range manifest.PackVersions {
+		if packs[string(pack.ID)] != string(pack.Version) {
+			return nil, fmt.Errorf("roster pins %s at %q", pack.ID, packs[string(pack.ID)])
+		}
+	}
+	ignored := map[string]int{}
+	requested := make([]projection.RequestedItem, 0, len(roster.Rows))
+	for _, row := range roster.Rows {
+		if version, ok := packs[row.Ref.Pack.ID]; !ok || version != row.Ref.Pack.Version {
+			return nil, fmt.Errorf("row %s names an unpinned pack", row.Ref.ID)
+		}
+		kind := projection.ItemKind(row.Kind)
+		switch kind {
+		case projection.ItemFact, projection.ItemCapability, projection.ItemOperation:
+			requested = append(requested, projection.RequestedItem{Kind: kind, ItemID: semreg.DefinitionID(row.Ref.ID)})
+			if kind == projection.ItemFact && row.Ref.ID == "evse.ac.current" {
+				if row.Disposition != string(projection.ProjectionTransformed) || row.Target == nil || row.Target.DeviceTypeID != 0x0510 || row.Target.ClusterID != 0x0090 || row.Target.AttributeID != 0x0005 {
+					return nil, errors.New("current row is not the transformed ActiveCurrent mapping")
+				}
+				continue
+			}
+			if row.Disposition != string(projection.ProjectionUnknown) || row.Reason != "matter.unmapped.v1" || row.Target != nil {
+				return nil, fmt.Errorf("row %s is not an unmapped ledger row", row.Ref.ID)
+			}
+		case "service", projection.ItemRelation:
+			ignored[row.Kind]++
+		default:
+			return nil, fmt.Errorf("row %s has unknown kind %q", row.Ref.ID, row.Kind)
+		}
+	}
+	sort.Slice(requested, func(i, j int) bool {
+		if requested[i].Kind != requested[j].Kind {
+			return requested[i].Kind < requested[j].Kind
+		}
+		return requested[i].ItemID < requested[j].ItemID
+	})
+	if want, _ := Ledger(); !reflect.DeepEqual(requested, want) {
+		return nil, errors.New("projected roster rows differ from the ledger")
+	}
+	return ignored, nil
+}
+
+func TestAA03RosterPin(t *testing.T) {
+	root := stagedDocsSemanticRoot(t)
+	roster, err := readRoster161(root, DocsSemanticContractPath161, DocsSemanticContractSHA256161)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ignored, err := checkRoster161(roster)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ignored["service"] == 0 || ignored[string(projection.ItemRelation)] == 0 {
+		t.Fatalf("roster derived from the element catalog lacks service or relation rows: %v", ignored)
+	}
+}
+
+func TestAA03RosterPinRejectsDrift(t *testing.T) {
+	root := stagedDocsSemanticRoot(t)
+	t.Run("path", func(t *testing.T) {
+		if _, err := readRoster161(root, DocsSemanticContractPath, DocsSemanticContractSHA256161); err == nil {
+			t.Fatal("accepted the historical contract under the 1.6.1 digest")
+		}
+		if _, err := readRoster161(root, "api/v1/targets/matter-absent-v1.json", DocsSemanticContractSHA256161); err == nil {
+			t.Fatal("accepted an absent roster")
+		}
+	})
+	t.Run("digest", func(t *testing.T) {
+		other := fmt.Sprintf("%x", sha256.Sum256([]byte("synthetic other roster")))
+		if _, err := readRoster161(root, DocsSemanticContractPath161, other); err == nil {
+			t.Fatal("accepted a roster under another digest")
+		}
+	})
+	firstRow := func(r *roster161, kind string) *roster161Row {
+		for i := range r.Rows {
+			if r.Rows[i].Kind == kind {
+				return &r.Rows[i]
+			}
+		}
+		t.Fatalf("roster has no %s row", kind)
+		return nil
+	}
+	cases := map[string]func(*roster161){
+		"contract":         func(r *roster161) { r.Contract = "other.contract/v1" },
+		"target name":      func(r *roster161) { r.Target.Name = "other.target" },
+		"target version":   func(r *roster161) { r.Target.Version = string(TargetVersion) },
+		"mapping revision": func(r *roster161) { r.MappingRevision = "2" },
+		"pack version":     func(r *roster161) { r.Pins.Packs["storage"] = "9.0.0" },
+		"pack id": func(r *roster161) {
+			r.Pins.Packs["other"] = r.Pins.Packs["thermal"]
+			delete(r.Pins.Packs, "thermal")
+		},
+		"unknown row kind":      func(r *roster161) { firstRow(r, "service").Kind = "dimension" },
+		"service as fact":       func(r *roster161) { firstRow(r, "service").Kind = string(projection.ItemFact) },
+		"dropped projected row": func(r *roster161) { firstRow(r, string(projection.ItemCapability)).Kind = "service" },
+		"relation as operation": func(r *roster161) {
+			firstRow(r, string(projection.ItemRelation)).Kind = string(projection.ItemOperation)
+		},
+		"unmapped row disposed":  func(r *roster161) { firstRow(r, string(projection.ItemOperation)).Disposition = "unsupported" },
+		"unmapped row reason":    func(r *roster161) { firstRow(r, string(projection.ItemOperation)).Reason = "matter.altered.v1" },
+		"row from unpinned pack": func(r *roster161) { firstRow(r, string(projection.ItemRelation)).Ref.Pack.Version = "9.0.0" },
+		"current attribute": func(r *roster161) {
+			for i := range r.Rows {
+				if r.Rows[i].Ref.ID == "evse.ac.current" && r.Rows[i].Target != nil {
+					r.Rows[i].Target.AttributeID++
+				}
+			}
+		},
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			roster, err := readRoster161(root, DocsSemanticContractPath161, DocsSemanticContractSHA256161)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := checkRoster161(roster); err != nil {
+				t.Fatalf("control: %v", err)
+			}
+			mutate(&roster)
+			if _, err := checkRoster161(roster); err == nil {
+				t.Fatalf("accepted %s drift", name)
 			}
 		})
 	}

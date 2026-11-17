@@ -28,6 +28,37 @@ type registerNamesDoc struct {
 	Source      string                  `json:"source"`
 	Rows        []registerNamesRow      `json:"rows"`
 	Unmapped    []registerNamesUnmapped `json:"unmapped_fields"`
+	Fields      []registerNamesField    `json:"field_registers"`
+	Pending     []registerNamesPending  `json:"pending"`
+}
+
+// registerNamesField is one published field of a zone, circuit or hot water
+// object: either the single B524 register it is read from, with the
+// docs-ebus name of that register, or derived.
+type registerNamesField struct {
+	Object        string                `json:"object"`
+	PublishedName string                `json:"published_name"`
+	Opcode        string                `json:"opcode,omitempty"`
+	Group         string                `json:"group,omitempty"`
+	Register      string                `json:"register,omitempty"`
+	DocsEbusName  string                `json:"docs_ebus_name,omitempty"`
+	Derived       *registerNamesDerived `json:"derived,omitempty"`
+}
+
+// registerNamesDerived lists the B524 registers a derived field combines,
+// each written opcode/group/register, and why the field has no single
+// register name. A derived field without registers is fed by no register.
+type registerNamesDerived struct {
+	Registers []string `json:"registers"`
+	Reason    string   `json:"reason"`
+}
+
+// registerNamesPending is a single-register field whose published name still
+// differs from the docs-ebus name of its register.
+type registerNamesPending struct {
+	Object        string `json:"object"`
+	PublishedName string `json:"published_name"`
+	DocsEbusName  string `json:"docs_ebus_name"`
 }
 
 // registerNamesUnmapped is a field of a recorded object that no single
@@ -878,4 +909,401 @@ func TestRegisterNamesCheckersCatchEachMutation(t *testing.T) {
 			t.Errorf("description mutation %q not caught", name)
 		}
 	}
+}
+
+// registerNamesFieldGroups maps each GraphQL object whose fields
+// field_registers records to the B524 group of its plane.
+var registerNamesFieldGroups = map[string]string{
+	"zone_state":     "0x03",
+	"zone_config":    "0x03",
+	"circuit_state":  "0x02",
+	"circuit_config": "0x02",
+	"dhw_state":      "0x01",
+	"dhw_config":     "0x01",
+}
+
+var registerNamesDerivedRegister = regexp.MustCompile(`^0x0[26]/0x[0-9A-F]{2}/0x[0-9A-F]{4}$`)
+
+// registerNamesUnfedReason opens the reason of a derived field that no B524
+// register feeds.
+const registerNamesUnfedReason = "No B524 register feeds it"
+
+// registerNamesFieldErrors checks field_registers and pending: one entry per
+// object and field, a complete identity in the group of the object's plane
+// for a single-register field, registers and a reason for a derived field,
+// agreement with the rows that record the same register, and a pending list
+// equal to the single-register fields whose published name differs from the
+// docs-ebus name.
+func registerNamesFieldErrors(doc registerNamesDoc) []string {
+	var errs []string
+	rows := map[string]registerNamesRow{}
+	for _, row := range doc.Rows {
+		if row.Service == "B524" {
+			rows[row.Group+"/"+row.Register] = row
+		}
+	}
+	seen := map[string]bool{}
+	registers := map[string]string{}
+	objects := map[string]bool{}
+	differences := map[string]bool{}
+	for _, field := range doc.Fields {
+		key := field.Object + "." + field.PublishedName
+		group, known := registerNamesFieldGroups[field.Object]
+		if !known {
+			errs = append(errs, key+": object not recorded")
+		}
+		objects[field.Object] = true
+		if seen[key] {
+			errs = append(errs, "duplicate field "+key)
+		}
+		seen[key] = true
+		if !registerNamesSnake.MatchString(field.PublishedName) {
+			errs = append(errs, fmt.Sprintf("%s: name %q", key, field.PublishedName))
+		}
+		if field.Derived != nil {
+			errs = append(errs, registerNamesDerivedErrors(key, field)...)
+			continue
+		}
+		if field.Opcode != "0x02" || field.Group != group || !registerNamesHexWord.MatchString(field.Register) {
+			errs = append(errs, fmt.Sprintf("%s: identity %s/%s/%s", key, field.Opcode, field.Group, field.Register))
+		}
+		if !registerNamesSnake.MatchString(field.DocsEbusName) {
+			errs = append(errs, fmt.Sprintf("%s: docs-ebus name %q", key, field.DocsEbusName))
+		}
+		id := field.Group + "/" + field.Register
+		if other, ok := registers[id]; ok {
+			errs = append(errs, fmt.Sprintf("%s: register %s already recorded for %s", key, id, other))
+		}
+		registers[id] = key
+		if row, ok := rows[id]; ok && (row.Surfaces["graphql"] != field.Object || row.PublishedName != field.PublishedName || row.DocsEbusName != field.DocsEbusName) {
+			errs = append(errs, fmt.Sprintf("%s: disagrees with the row of register %s", key, id))
+		}
+		if field.PublishedName != field.DocsEbusName {
+			differences[field.Object+"."+field.PublishedName+" -> "+field.DocsEbusName] = true
+		}
+	}
+	for object := range registerNamesFieldGroups {
+		if !objects[object] {
+			errs = append(errs, "object "+object+" has no fields")
+		}
+	}
+	for _, row := range doc.Rows {
+		if _, ok := registerNamesFieldGroups[row.Surfaces["graphql"]]; ok && row.Service == "B524" {
+			if _, recorded := registers[row.Group+"/"+row.Register]; !recorded {
+				errs = append(errs, "row "+registerNamesIdentity(row)+" missing from field_registers")
+			}
+		}
+	}
+	errs = append(errs, registerNamesPendingErrors(doc.Pending, differences)...)
+	sort.Strings(errs)
+	return errs
+}
+
+// registerNamesDerivedErrors checks one derived field: no single-register
+// column, distinct well-formed registers, and a reason that says no register
+// feeds the field exactly when it lists none.
+func registerNamesDerivedErrors(key string, field registerNamesField) []string {
+	var errs []string
+	if field.Opcode != "" || field.Group != "" || field.Register != "" || field.DocsEbusName != "" {
+		errs = append(errs, key+": derived field with a single-register column")
+	}
+	reason := strings.TrimSpace(field.Derived.Reason)
+	if reason == "" || !strings.HasSuffix(reason, ".") {
+		errs = append(errs, fmt.Sprintf("%s: reason %q", key, field.Derived.Reason))
+	}
+	if unfed := strings.HasPrefix(reason, registerNamesUnfedReason); unfed != (len(field.Derived.Registers) == 0) {
+		errs = append(errs, fmt.Sprintf("%s: %d registers, reason %q", key, len(field.Derived.Registers), reason))
+	}
+	if len(field.Derived.Registers) == 1 {
+		errs = append(errs, key+": a derived field combines more than one register")
+	}
+	listed := map[string]bool{}
+	for _, register := range field.Derived.Registers {
+		if !registerNamesDerivedRegister.MatchString(register) {
+			errs = append(errs, fmt.Sprintf("%s: derived register %q", key, register))
+		}
+		if listed[register] {
+			errs = append(errs, key+": derived register "+register+" listed twice")
+		}
+		listed[register] = true
+	}
+	return errs
+}
+
+// registerNamesPendingErrors requires the pending list to equal the computed
+// differences, each written object.published -> docs-ebus name: a field
+// renamed to its docs-ebus name leaves the list, a new difference enters it.
+func registerNamesPendingErrors(pending []registerNamesPending, differences map[string]bool) []string {
+	var errs []string
+	listed := map[string]bool{}
+	for _, entry := range pending {
+		key := entry.Object + "." + entry.PublishedName + " -> " + entry.DocsEbusName
+		if listed[key] {
+			errs = append(errs, "pending lists "+key+" twice")
+		}
+		listed[key] = true
+		if !differences[key] {
+			errs = append(errs, "pending lists "+key+", which is not a difference")
+		}
+	}
+	for key := range differences {
+		if !listed[key] {
+			errs = append(errs, "pending lacks "+key)
+		}
+	}
+	return errs
+}
+
+// registerNamesFieldCoverageErrors requires field_registers to record exactly
+// the fields each recorded object publishes. published maps object name to
+// the field names that object publishes.
+func registerNamesFieldCoverageErrors(doc registerNamesDoc, published map[string]map[string]bool) []string {
+	var errs []string
+	recorded := map[string]map[string]bool{}
+	for _, field := range doc.Fields {
+		if recorded[field.Object] == nil {
+			recorded[field.Object] = map[string]bool{}
+		}
+		recorded[field.Object][field.PublishedName] = true
+	}
+	for object := range registerNamesFieldGroups {
+		fields, ok := published[object]
+		if !ok {
+			errs = append(errs, "object "+object+" not found")
+			continue
+		}
+		for name := range fields {
+			if !recorded[object][name] {
+				errs = append(errs, object+"."+name+" published but not recorded")
+			}
+		}
+		for name := range recorded[object] {
+			if !fields[name] {
+				errs = append(errs, object+"."+name+" recorded but not published")
+			}
+		}
+	}
+	sort.Strings(errs)
+	return errs
+}
+
+func TestRegisterNamesFieldRegistersAreConsistent(t *testing.T) {
+	t.Parallel()
+	doc := loadRegisterNamesDoc(t)
+	if errs := registerNamesFieldErrors(doc); len(errs) > 0 {
+		t.Fatalf("field_registers errors:\n%s", strings.Join(errs, "\n"))
+	}
+}
+
+func TestGraphQLFieldRegistersRecordEveryPublishedField(t *testing.T) {
+	t.Parallel()
+	doc := loadRegisterNamesDoc(t)
+	for _, build := range []struct {
+		name   string
+		schema func() (graphqlgo.Schema, error)
+	}{
+		{"query", func() (graphqlgo.Schema, error) { return NewQuerySchema(NewBuilder(nil, nil)) }},
+		{"full", func() (graphqlgo.Schema, error) {
+			return NewSchema(NewBuilder(nil, nil), mutationTestRegistry{}, &mutationTestInvoker{}, nil)
+		}},
+	} {
+		schema, err := build.schema()
+		if err != nil {
+			t.Fatalf("%s schema: %v", build.name, err)
+		}
+		published := map[string]map[string]bool{}
+		for name := range registerNamesFieldGroups {
+			object, ok := schema.Type(name).(*graphqlgo.Object)
+			if !ok {
+				continue
+			}
+			fields := map[string]bool{}
+			for field := range object.Fields() {
+				fields[field] = true
+			}
+			published[name] = fields
+		}
+		if errs := registerNamesFieldCoverageErrors(doc, published); len(errs) > 0 {
+			t.Fatalf("%s schema:\n%s", build.name, strings.Join(errs, "\n"))
+		}
+	}
+}
+
+// TestRegisterNamesFieldCheckersCatchEachMutation varies every column of a
+// field_registers entry (object, published name, opcode, group, register,
+// docs-ebus name, derived registers and reason), every column of a pending
+// entry (object, published name, docs-ebus name) and the published field set,
+// and requires the checkers to report each change.
+func TestRegisterNamesFieldCheckersCatchEachMutation(t *testing.T) {
+	t.Parallel()
+	base := loadRegisterNamesDoc(t)
+	if len(registerNamesFieldErrors(base)) != 0 {
+		t.Fatal("base fixture must be clean")
+	}
+	clone := func() registerNamesDoc {
+		doc := base
+		doc.Fields = make([]registerNamesField, len(base.Fields))
+		for i, field := range base.Fields {
+			if field.Derived != nil {
+				derived := *field.Derived
+				derived.Registers = append([]string(nil), field.Derived.Registers...)
+				field.Derived = &derived
+			}
+			doc.Fields[i] = field
+		}
+		doc.Pending = append([]registerNamesPending(nil), base.Pending...)
+		return doc
+	}
+	pending, settled, combined, unfed, shared := -1, -1, -1, -1, -1
+	for i, field := range base.Fields {
+		switch {
+		case field.Derived == nil && field.PublishedName != field.DocsEbusName && pending < 0:
+			pending = i
+		case field.Derived == nil && field.PublishedName == field.DocsEbusName:
+			for _, row := range base.Rows {
+				if row.Service == "B524" && row.Group == field.Group && row.Register == field.Register {
+					shared = i
+				}
+			}
+			if shared != i && settled < 0 {
+				settled = i
+			}
+		case field.Derived != nil && len(field.Derived.Registers) > 1 && combined < 0:
+			combined = i
+		case field.Derived != nil && len(field.Derived.Registers) == 0 && unfed < 0:
+			unfed = i
+		}
+	}
+	if pending < 0 || settled < 0 || combined < 0 || unfed < 0 || shared < 0 || len(base.Pending) == 0 {
+		t.Fatal("fixture needs a pending field, a settled field, a field shared with a row, a derived field with registers and one without")
+	}
+	other := func(object string) string {
+		for _, field := range base.Fields {
+			if registerNamesFieldGroups[field.Object] != registerNamesFieldGroups[object] {
+				return field.Object
+			}
+		}
+		return ""
+	}
+	p, s := base.Fields[pending], base.Fields[settled]
+	mutations := map[string]func(*registerNamesDoc){
+		// Single-register identity and names.
+		"object unknown":            func(d *registerNamesDoc) { d.Fields[pending].Object = "other_object" },
+		"object of another plane":   func(d *registerNamesDoc) { d.Fields[pending].Object = other(p.Object) },
+		"published name not snake":  func(d *registerNamesDoc) { d.Fields[pending].PublishedName = "flowTemp" },
+		"settled field diverges":    func(d *registerNamesDoc) { d.Fields[settled].PublishedName = s.PublishedName + "_value" },
+		"opcode":                    func(d *registerNamesDoc) { d.Fields[pending].Opcode = "0x06" },
+		"group":                     func(d *registerNamesDoc) { d.Fields[pending].Group = "0x00" },
+		"register malformed":        func(d *registerNamesDoc) { d.Fields[pending].Register = "0x21" },
+		"register of another field": func(d *registerNamesDoc) { d.Fields[pending].Register = s.Register; d.Fields[pending].Group = s.Group },
+		"docs-ebus name changed":    func(d *registerNamesDoc) { d.Fields[pending].DocsEbusName = "other_name" },
+		"settled docs-ebus name":    func(d *registerNamesDoc) { d.Fields[settled].DocsEbusName = "other_name" },
+		"docs-ebus name missing":    func(d *registerNamesDoc) { d.Fields[pending].DocsEbusName = "" },
+		"field duplicated":          func(d *registerNamesDoc) { d.Fields = append(d.Fields, d.Fields[settled]) },
+		"single field also derived": func(d *registerNamesDoc) { d.Fields[pending].Derived = d.Fields[combined].Derived },
+		"row and field disagree":    func(d *registerNamesDoc) { d.Fields[shared].DocsEbusName = "other_name" },
+		"row register not recorded": func(d *registerNamesDoc) { d.Fields[shared].Register = "0x00FE" },
+		"row object differs":        func(d *registerNamesDoc) { d.Fields[shared].Object = other(base.Fields[shared].Object) },
+		"object without fields":     func(d *registerNamesDoc) { d.Fields = filterFields(d.Fields, p.Object) },
+		"derived with a register":   func(d *registerNamesDoc) { d.Fields[combined].Register = p.Register },
+		"derived with a group":      func(d *registerNamesDoc) { d.Fields[combined].Group = p.Group },
+		"derived with an opcode":    func(d *registerNamesDoc) { d.Fields[combined].Opcode = "0x02" },
+		"derived with a docs name":  func(d *registerNamesDoc) { d.Fields[combined].DocsEbusName = p.DocsEbusName },
+		"derived reason missing":    func(d *registerNamesDoc) { d.Fields[combined].Derived.Reason = " " },
+		"derived registers dropped": func(d *registerNamesDoc) { d.Fields[combined].Derived.Registers = nil },
+		"derived single register": func(d *registerNamesDoc) {
+			d.Fields[combined].Derived.Registers = d.Fields[combined].Derived.Registers[:1]
+		},
+		"derived register opcode": func(d *registerNamesDoc) {
+			d.Fields[combined].Derived.Registers[0] = "0x01" + d.Fields[combined].Derived.Registers[0][4:]
+		},
+		"derived register group":     func(d *registerNamesDoc) { d.Fields[combined].Derived.Registers[0] = "0x02/0x3/0x0012" },
+		"derived register malformed": func(d *registerNamesDoc) { d.Fields[combined].Derived.Registers[0] = "0x02/0x03/0x12" },
+		"derived register twice": func(d *registerNamesDoc) {
+			d.Fields[combined].Derived.Registers[1] = d.Fields[combined].Derived.Registers[0]
+		},
+		"unfed field gains a register": func(d *registerNamesDoc) {
+			d.Fields[unfed].Derived.Registers = []string{"0x02/0x03/0x000F", "0x02/0x03/0x0013"}
+		},
+		"unfed reason replaced": func(d *registerNamesDoc) { d.Fields[unfed].Derived.Reason = "Computed elsewhere." },
+		// Pending entries: each column, removal, addition and duplication.
+		"pending object":         func(d *registerNamesDoc) { d.Pending[0].Object = other(d.Pending[0].Object) },
+		"pending published name": func(d *registerNamesDoc) { d.Pending[0].PublishedName += "_value" },
+		"pending docs-ebus name": func(d *registerNamesDoc) { d.Pending[0].DocsEbusName = "other_name" },
+		"pending entry removed":  func(d *registerNamesDoc) { d.Pending = d.Pending[1:] },
+		"pending entry added": func(d *registerNamesDoc) {
+			d.Pending = append(d.Pending, registerNamesPending{Object: s.Object, PublishedName: s.PublishedName, DocsEbusName: s.DocsEbusName})
+		},
+		"pending entry duplicated": func(d *registerNamesDoc) { d.Pending = append(d.Pending, d.Pending[0]) },
+		"renamed field kept in pending": func(d *registerNamesDoc) {
+			d.Fields[pending].PublishedName = p.DocsEbusName
+		},
+	}
+	for name, mutate := range mutations {
+		doc := clone()
+		mutate(&doc)
+		if len(registerNamesFieldErrors(doc)) == 0 {
+			t.Errorf("field mutation %q not caught", name)
+		}
+	}
+
+	// The renamed field and its pending entry leave together: the record
+	// stays clean.
+	renamed := clone()
+	renamed.Fields[pending].PublishedName = p.DocsEbusName
+	kept := renamed.Pending[:0]
+	for _, entry := range renamed.Pending {
+		if entry.Object != p.Object || entry.PublishedName != p.PublishedName {
+			kept = append(kept, entry)
+		}
+	}
+	renamed.Pending = kept
+	if errs := registerNamesFieldErrors(renamed); len(errs) != 0 {
+		t.Errorf("renamed field with its pending entry removed reported: %v", errs)
+	}
+
+	published := func() map[string]map[string]bool {
+		out := map[string]map[string]bool{}
+		for _, field := range base.Fields {
+			if out[field.Object] == nil {
+				out[field.Object] = map[string]bool{}
+			}
+			out[field.Object][field.PublishedName] = true
+		}
+		return out
+	}
+	if errs := registerNamesFieldCoverageErrors(base, published()); len(errs) != 0 {
+		t.Fatalf("clean published set reported: %v", errs)
+	}
+	coverageMutations := map[string]func(map[string]map[string]bool){
+		"field added":   func(m map[string]map[string]bool) { m[p.Object]["new_field"] = true },
+		"field dropped": func(m map[string]map[string]bool) { delete(m[p.Object], p.PublishedName) },
+		"field renamed": func(m map[string]map[string]bool) {
+			delete(m[p.Object], p.PublishedName)
+			m[p.Object][p.DocsEbusName] = true
+		},
+		"field moved": func(m map[string]map[string]bool) {
+			delete(m[p.Object], p.PublishedName)
+			m[other(p.Object)][p.PublishedName] = true
+		},
+		"object missing": func(m map[string]map[string]bool) { delete(m, s.Object) },
+	}
+	for name, mutate := range coverageMutations {
+		m := published()
+		mutate(m)
+		if len(registerNamesFieldCoverageErrors(base, m)) == 0 {
+			t.Errorf("coverage mutation %q not caught", name)
+		}
+	}
+}
+
+// filterFields returns the fields outside one object.
+func filterFields(fields []registerNamesField, object string) []registerNamesField {
+	var out []registerNamesField
+	for _, field := range fields {
+		if field.Object != object {
+			out = append(out, field)
+		}
+	}
+	return out
 }

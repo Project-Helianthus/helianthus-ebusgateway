@@ -1,0 +1,3 @@
+## Record the register of every published zone, circuit and hot-water field and pin the names still to change
+
+The register behind every published zone, circuit and hot-water field (`zone_state`, `zone_config`, `circuit_state`, `circuit_config`, `dhw_state`, `dhw_config`) is recorded next to its docs-ebus name; a field derived from more than one register, or fed by none, is recorded with the registers it combines and the reason it has no single register name. The fields whose published name still differs from the docs-ebus name of their register are pinned in a pending list of 29 entries that a test keeps exact: a field renamed later leaves the list and a new difference enters it. Test data only; the gateway binary is unchanged.

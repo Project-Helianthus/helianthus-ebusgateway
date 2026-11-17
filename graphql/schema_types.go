@@ -3143,20 +3143,92 @@ func buildSchemaTypes() graphqlSchemaTypes {
 	adapterHardwareInfoType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
 		Name: "adapter_hardware_info",
 		Fields: graphqlgo.Fields{
-			"firmware_version": &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+			"firmware_version": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.String),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					info, ok := params.Source.(*AdapterHardwareInfo)
+					if !ok || info == nil {
+						return nil, nil
+					}
+					return info.FirmwareVersion, nil
+				},
+			},
 
-			"firmware_checksum": &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+			"firmware_checksum": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.String),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					info, ok := params.Source.(*AdapterHardwareInfo)
+					if !ok || info == nil {
+						return nil, nil
+					}
+					return info.FirmwareChecksum, nil
+				},
+			},
 
-			"bootloader_version": &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+			"bootloader_version": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.String),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					info, ok := params.Source.(*AdapterHardwareInfo)
+					if !ok || info == nil {
+						return nil, nil
+					}
+					return info.BootloaderVersion, nil
+				},
+			},
 
-			"bootloader_checksum": &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+			"bootloader_checksum": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.String),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					info, ok := params.Source.(*AdapterHardwareInfo)
+					if !ok || info == nil {
+						return nil, nil
+					}
+					return info.BootloaderChecksum, nil
+				},
+			},
 
-			"hardware_id": &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+			"hardware_id": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.String),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					info, ok := params.Source.(*AdapterHardwareInfo)
+					if !ok || info == nil {
+						return nil, nil
+					}
+					return info.HardwareID, nil
+				},
+			},
 
-			"hardware_config": &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+			"hardware_config": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.String),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					info, ok := params.Source.(*AdapterHardwareInfo)
+					if !ok || info == nil {
+						return nil, nil
+					}
+					return info.HardwareConfig, nil
+				},
+			},
 
-			"features": &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.Int)},
-			"jumpers":  &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.Int)},
+			"features": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.Int),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					info, ok := params.Source.(*AdapterHardwareInfo)
+					if !ok || info == nil {
+						return nil, nil
+					}
+					return int(info.Features), nil
+				},
+			},
+			"jumpers": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.Int),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					info, ok := params.Source.(*AdapterHardwareInfo)
+					if !ok || info == nil {
+						return nil, nil
+					}
+					return int(info.Jumpers), nil
+				},
+			},
 			"jumper_flags": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(graphqlgo.String))),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
@@ -3171,9 +3243,27 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"is_wifi": &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.Boolean)},
+			"is_wifi": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.Boolean),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					info, ok := params.Source.(*AdapterHardwareInfo)
+					if !ok || info == nil {
+						return nil, nil
+					}
+					return info.IsWiFi, nil
+				},
+			},
 
-			"is_ethernet": &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.Boolean)},
+			"is_ethernet": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.Boolean),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					info, ok := params.Source.(*AdapterHardwareInfo)
+					if !ok || info == nil {
+						return nil, nil
+					}
+					return info.IsEthernet, nil
+				},
+			},
 
 			"temperature_c": &graphqlgo.Field{
 				Type: graphqlgo.Float,
@@ -3285,9 +3375,27 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"version_response_len": &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.Int)},
+			"version_response_len": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.Int),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					info, ok := params.Source.(*AdapterHardwareInfo)
+					if !ok || info == nil {
+						return nil, nil
+					}
+					return info.VersionResponseLen, nil
+				},
+			},
 
-			"info_supported": &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.Boolean)},
+			"info_supported": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.Boolean),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					info, ok := params.Source.(*AdapterHardwareInfo)
+					if !ok || info == nil {
+						return nil, nil
+					}
+					return info.InfoSupported, nil
+				},
+			},
 		},
 	})
 

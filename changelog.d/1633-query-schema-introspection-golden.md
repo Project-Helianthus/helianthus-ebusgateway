@@ -1,0 +1,3 @@
+## Publish the query schema introspection golden for consumers
+
+`graphql/testdata/query_schema_introspection.golden.json` records one fixed introspection document together with the response of the GraphQL query schema to it: the query root type and, for every type, its kind, name, fields with their arguments and complete type chain, input fields and enum values, all sorted by name. Consumers can check their documents against this file. The characterization test compares the schema with the golden in place of the former opaque shape digest, and `go test ./graphql -run TestQuerySchema -update` regenerates it byte-identically; a later schema change regenerates the golden in its own pull request. Only tests and test data change, so the gateway binary is unchanged.

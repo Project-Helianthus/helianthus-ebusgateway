@@ -9,10 +9,15 @@ import (
 	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/projection"
 )
 
+// The adopted roster is derived from the element catalog. Besides the fact,
+// capability and operation rows this projection accounts for, it carries
+// service and relation rows; those are composed by the endpoint work of the
+// Matter binding, so the projection does not request them.
 const (
-	TargetVersion161            semreg.VersionLabel = "1.6.1"
-	MappingRevision161          semreg.Uint64       = "1"
-	DocsSemanticContractPath161                     = "api/v1/targets/matter-1.6.1-v1.json"
+	TargetVersion161              semreg.VersionLabel = "1.6.1"
+	MappingRevision161            semreg.Uint64       = "1"
+	DocsSemanticContractPath161                       = "api/v1/targets/matter-1.6.1-v1.json"
+	DocsSemanticContractSHA256161                     = "adb2892ab70a4427c6ee08bae823c077a4c3ce7c8ae2321d79457f5bed041bb9"
 )
 
 // Model161 identifies the inspected model composition, independently of the

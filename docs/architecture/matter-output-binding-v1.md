@@ -18,6 +18,14 @@ The accepted public mapping contract is pinned to
 path `api/v1/targets/matter-1.7-ballot-0.9-v1.json`, SHA-256
 `5ae81d5e0971d25ead08f982fdf31caf47ada4838d0ee6f2b3e719d11a6df39c`.
 
+The adopted 1.6.1 roster, selected with `Project161`, is pinned to the
+`helianthus-docs-semantic` roster derived from the element catalog, path
+`api/v1/targets/matter-1.6.1-v1.json`, SHA-256
+`adb2892ab70a4427c6ee08bae823c077a4c3ce7c8ae2321d79457f5bed041bb9`. Its fact,
+capability and operation rows equal the shared ledger. Its service and relation
+rows are composed by the endpoint work of the Matter binding; this projection
+does not request them, and any other row kind is refused.
+
 The sole positive mapping is observational `evse.ac.current`: qualified,
 promoted, fresh, available amperes convert to integer milliamperes at composed
 Electrical Sensor device type `0x0510`, Electrical Power Measurement cluster

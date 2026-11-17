@@ -637,12 +637,12 @@ func TestSemanticSnapshotEndpoint(t *testing.T) {
 	}
 	dhw := payload["dhw"].(map[string]any)
 	dhwState := dhw["state"].(map[string]any)
-	if dhwState["current_temp_c"] != current {
-		t.Fatalf("dhw.state.current_temp_c=%v; want %v", dhwState["current_temp_c"], current)
+	if dhwState["dhw_temperature"] != current {
+		t.Fatalf("dhw.state.dhw_temperature=%v; want %v", dhwState["dhw_temperature"], current)
 	}
 	dhwConfig := dhw["config"].(map[string]any)
-	if dhwConfig["operating_mode"] != "auto" {
-		t.Fatalf("dhw.config.operating_mode=%v; want auto", dhwConfig["operating_mode"])
+	if dhwConfig["dhw_operating_mode"] != "auto" {
+		t.Fatalf("dhw.config.dhw_operating_mode=%v; want auto", dhwConfig["dhw_operating_mode"])
 	}
 	boiler := payload["boiler_status"].(map[string]any)
 	boilerState := boiler["state"].(map[string]any)
@@ -681,15 +681,15 @@ func TestSemanticSnapshotEndpoint(t *testing.T) {
 		t.Fatalf("circuit.has_mixer=%v; want false", circuit["has_mixer"])
 	}
 	circuitState := circuit["state"].(map[string]any)
-	if circuitState["pump_active"] != pumpActive {
-		t.Fatalf("circuit.state.pump_active=%v; want %v", circuitState["pump_active"], pumpActive)
+	if circuitState["circuit_pump_unknown_8"] != pumpActive {
+		t.Fatalf("circuit.state.circuit_pump_unknown_8=%v; want %v", circuitState["circuit_pump_unknown_8"], pumpActive)
 	}
-	if circuitState["flow_setpoint_c"] != flowSetpoint {
-		t.Fatalf("circuit.state.flow_setpoint_c=%v; want %v", circuitState["flow_setpoint_c"], flowSetpoint)
+	if circuitState["circuit_flow_temperature_setpoint"] != flowSetpoint {
+		t.Fatalf("circuit.state.circuit_flow_temperature_setpoint=%v; want %v", circuitState["circuit_flow_temperature_setpoint"], flowSetpoint)
 	}
 	circuitConfig := circuit["config"].(map[string]any)
-	if circuitConfig["heating_curve"] != heatingCurve {
-		t.Fatalf("circuit.config.heating_curve=%v; want %v", circuitConfig["heating_curve"], heatingCurve)
+	if circuitConfig["circuit_heating_curve_factor"] != heatingCurve {
+		t.Fatalf("circuit.config.circuit_heating_curve_factor=%v; want %v", circuitConfig["circuit_heating_curve_factor"], heatingCurve)
 	}
 	managingDevice := circuit["managing_device"].(map[string]any)
 	if managingDevice["role"] != "FUNCTION_MODULE" {
@@ -743,7 +743,7 @@ func TestSemanticSnapshotEndpoint_PromotedFieldsArePublicAndNilSafe(t *testing.T
 		}
 	}
 	dhw := payload["dhw"].(map[string]any)
-	if dhw["state"].(map[string]any)["current_temp_c"] != zero || dhw["state"].(map[string]any)["overrun_active"] != falseValue || dhw["config"].(map[string]any)["target_temp_c"] != zero || dhw["config"].(map[string]any)["operation_mode_changeable"] != falseValue {
+	if dhw["state"].(map[string]any)["dhw_temperature"] != zero || dhw["state"].(map[string]any)["overrun_active"] != falseValue || dhw["config"].(map[string]any)["dhw_temperature_setpoint"] != zero || dhw["config"].(map[string]any)["operation_mode_changeable"] != falseValue {
 		t.Fatalf("dhw promoted fields=%#v", dhw)
 	}
 	system := payload["system"].(map[string]any)

@@ -19,8 +19,11 @@ import (
 // anchor gained the additive nullable scheme field of the semreg revision that
 // carries the element catalog (issue #1539), and the boiler state,
 // configuration and diagnostics fields that one B509 register feeds took
-// their docs-ebus names, with the unit in the field description (issue #1483).
-var querySchemaShapeSHA256 = fmt.Sprintf("%x", [sha256.Size]byte{127, 162, 110, 88, 86, 25, 71, 82, 127, 145, 206, 5, 108, 190, 84, 21, 253, 13, 55, 147, 249, 41, 37, 232, 148, 220, 215, 228, 117, 93, 202, 58})
+// their docs-ebus names, with the unit in the field description (issue #1483),
+// and the zone, circuit and hot water fields that one B524 register feeds
+// took their docs-ebus names, with the unit in the field description where
+// the previous name carried it (issue #1483).
+var querySchemaShapeSHA256 = fmt.Sprintf("%x", [sha256.Size]byte{33, 114, 98, 248, 52, 222, 207, 244, 231, 140, 172, 154, 214, 128, 229, 26, 32, 153, 56, 182, 7, 159, 87, 149, 39, 74, 86, 215, 143, 95, 246, 193})
 
 func TestQuerySchemaKeepsIntrospectionShape(t *testing.T) {
 	t.Parallel()

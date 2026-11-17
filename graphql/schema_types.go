@@ -83,7 +83,7 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"special_function": &graphqlgo.Field{
+			"zone_special_function_mode": &graphqlgo.Field{
 				Type: graphqlgo.String,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					state, ok := params.Source.(ZoneState)
@@ -111,8 +111,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"valve_position_pct": &graphqlgo.Field{
-				Type: graphqlgo.Float,
+			"zone_valve_position": &graphqlgo.Field{
+				Description: "Zone valve position; unit: percent.",
+				Type:        graphqlgo.Float,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					state, ok := params.Source.(ZoneState)
 					if !ok {
@@ -252,8 +253,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"quick_veto_setpoint": &graphqlgo.Field{
-				Type: graphqlgo.Float,
+			"zone_room_temperature_setpoint_at_quick_veto": &graphqlgo.Field{
+				Description: "Zone room temperature setpoint at quick veto; unit: celsius.",
+				Type:        graphqlgo.Float,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					config, ok := params.Source.(ZoneConfig)
 					if !ok {
@@ -266,8 +268,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"quick_veto_duration": &graphqlgo.Field{
-				Type: graphqlgo.Float,
+			"zone_quick_veto_time": &graphqlgo.Field{
+				Description: "Zone quick veto time; unit: hours.",
+				Type:        graphqlgo.Float,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					config, ok := params.Source.(ZoneConfig)
 					if !ok {
@@ -294,7 +297,7 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"holiday_start_date": &graphqlgo.Field{
+			"zone_holiday_start_date": &graphqlgo.Field{
 				Type: graphqlgo.String,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					config, ok := params.Source.(ZoneConfig)
@@ -308,7 +311,7 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"holiday_end_date": &graphqlgo.Field{
+			"zone_holiday_end_date": &graphqlgo.Field{
 				Type: graphqlgo.String,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					config, ok := params.Source.(ZoneConfig)
@@ -322,8 +325,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"holiday_setpoint": &graphqlgo.Field{
-				Type: graphqlgo.Float,
+			"zone_room_temperature_setpoint_at_holiday": &graphqlgo.Field{
+				Description: "Zone room temperature setpoint at holiday; unit: celsius.",
+				Type:        graphqlgo.Float,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					config, ok := params.Source.(ZoneConfig)
 					if !ok {
@@ -336,7 +340,7 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"holiday_start_time": &graphqlgo.Field{
+			"zone_holiday_start_clock_time": &graphqlgo.Field{
 				Type: graphqlgo.String,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					config, ok := params.Source.(ZoneConfig)
@@ -350,7 +354,7 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"holiday_end_time": &graphqlgo.Field{
+			"zone_holiday_end_clock_time": &graphqlgo.Field{
 				Type: graphqlgo.String,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					config, ok := params.Source.(ZoneConfig)
@@ -620,8 +624,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				}
 				return *state.OverrunActive, nil
 			}},
-			"current_temp_c": &graphqlgo.Field{
-				Type: graphqlgo.Float,
+			"dhw_temperature": &graphqlgo.Field{
+				Description: "DHW temperature; unit: celsius.",
+				Type:        graphqlgo.Float,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					state, ok := params.Source.(DhwState)
 					if !ok {
@@ -634,7 +639,7 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"special_function": &graphqlgo.Field{
+			"dhw_special_function_mode": &graphqlgo.Field{
 				Type: graphqlgo.String,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					state, ok := params.Source.(DhwState)
@@ -674,7 +679,7 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				}
 				return *config.OperationModeChangeable, nil
 			}},
-			"operating_mode": &graphqlgo.Field{
+			"dhw_operating_mode": &graphqlgo.Field{
 				Type: graphqlgo.String,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					config, ok := params.Source.(DhwConfig)
@@ -701,8 +706,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 					return config.Preset, nil
 				},
 			},
-			"target_temp_c": &graphqlgo.Field{
-				Type: graphqlgo.Float,
+			"dhw_temperature_setpoint": &graphqlgo.Field{
+				Description: "DHW temperature setpoint; unit: celsius.",
+				Type:        graphqlgo.Float,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					config, ok := params.Source.(DhwConfig)
 					if !ok {
@@ -715,7 +721,7 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"holiday_start_date": &graphqlgo.Field{
+			"dhw_holiday_start_date": &graphqlgo.Field{
 				Type: graphqlgo.String,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					config, ok := params.Source.(DhwConfig)
@@ -729,7 +735,7 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"holiday_end_date": &graphqlgo.Field{
+			"dhw_holiday_end_date": &graphqlgo.Field{
 				Type: graphqlgo.String,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					config, ok := params.Source.(DhwConfig)
@@ -774,7 +780,7 @@ func buildSchemaTypes() graphqlSchemaTypes {
 	circuitStateType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
 		Name: "circuit_state",
 		Fields: graphqlgo.Fields{
-			"pump_active": &graphqlgo.Field{
+			"circuit_pump_unknown_8": &graphqlgo.Field{
 				Type: graphqlgo.Boolean,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					state, ok := params.Source.(CircuitState)
@@ -785,8 +791,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"mixer_position_pct": &graphqlgo.Field{
-				Type: graphqlgo.Float,
+			"circuit_mixer_position": &graphqlgo.Field{
+				Description: "Circuit mixer position; unit: percent.",
+				Type:        graphqlgo.Float,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					state, ok := params.Source.(CircuitState)
 					if !ok || state.MixerPositionPct == nil {
@@ -796,8 +803,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"flow_temperature_c": &graphqlgo.Field{
-				Type: graphqlgo.Float,
+			"circuit_flow_temperature": &graphqlgo.Field{
+				Description: "Circuit flow temperature; unit: celsius.",
+				Type:        graphqlgo.Float,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					state, ok := params.Source.(CircuitState)
 					if !ok || state.FlowTemperatureC == nil {
@@ -807,8 +815,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"flow_setpoint_c": &graphqlgo.Field{
-				Type: graphqlgo.Float,
+			"circuit_flow_temperature_setpoint": &graphqlgo.Field{
+				Description: "Circuit flow temperature setpoint; unit: celsius.",
+				Type:        graphqlgo.Float,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					state, ok := params.Source.(CircuitState)
 					if !ok || state.FlowSetpointC == nil {
@@ -840,8 +849,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"humidity": &graphqlgo.Field{
-				Type: graphqlgo.Float,
+			"circuit_room_humidity": &graphqlgo.Field{
+				Description: "Circuit room humidity; unit: percent.",
+				Type:        graphqlgo.Float,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					state, ok := params.Source.(CircuitState)
 					if !ok || state.Humidity == nil {
@@ -850,8 +860,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 					return *state.Humidity, nil
 				},
 			},
-			"dew_point": &graphqlgo.Field{
-				Type: graphqlgo.Float,
+			"circuit_dew_point_temperature": &graphqlgo.Field{
+				Description: "Circuit dew point temperature; unit: celsius.",
+				Type:        graphqlgo.Float,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					state, ok := params.Source.(CircuitState)
 					if !ok || state.DewPoint == nil {
@@ -861,8 +872,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"pump_hours": &graphqlgo.Field{
-				Type: graphqlgo.Float,
+			"circuit_pump_operating_time_total": &graphqlgo.Field{
+				Description: "Circuit pump operating time total; unit: hours.",
+				Type:        graphqlgo.Float,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					state, ok := params.Source.(CircuitState)
 					if !ok || state.PumpHours == nil {
@@ -872,7 +884,7 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"pump_starts": &graphqlgo.Field{
+			"circuit_pump_start_count_total": &graphqlgo.Field{
 				Type: graphqlgo.Int,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					state, ok := params.Source.(CircuitState)
@@ -888,7 +900,7 @@ func buildSchemaTypes() graphqlSchemaTypes {
 	circuitConfigType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
 		Name: "circuit_config",
 		Fields: graphqlgo.Fields{
-			"heating_curve": &graphqlgo.Field{
+			"circuit_heating_curve_factor": &graphqlgo.Field{
 				Type: graphqlgo.Float,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					config, ok := params.Source.(CircuitConfig)
@@ -899,8 +911,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"flow_temp_max_c": &graphqlgo.Field{
-				Type: graphqlgo.Float,
+			"heating_circuit_flow_temperature_setpoint_maximum": &graphqlgo.Field{
+				Description: "Heating circuit flow temperature setpoint maximum; unit: celsius.",
+				Type:        graphqlgo.Float,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					config, ok := params.Source.(CircuitConfig)
 					if !ok || config.FlowTempMaxC == nil {
@@ -910,8 +923,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"flow_temp_min_c": &graphqlgo.Field{
-				Type: graphqlgo.Float,
+			"circuit_flow_temperature_setpoint_minimum": &graphqlgo.Field{
+				Description: "Circuit flow temperature setpoint minimum; unit: celsius.",
+				Type:        graphqlgo.Float,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					config, ok := params.Source.(CircuitConfig)
 					if !ok || config.FlowTempMinC == nil {
@@ -921,8 +935,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"summer_limit_c": &graphqlgo.Field{
-				Type: graphqlgo.Float,
+			"heating_circuit_outdoor_temperature_limit_maximum": &graphqlgo.Field{
+				Description: "Heating circuit outdoor temperature limit maximum; unit: celsius.",
+				Type:        graphqlgo.Float,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					config, ok := params.Source.(CircuitConfig)
 					if !ok || config.SummerLimitC == nil {
@@ -944,7 +959,7 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"room_temp_control": &graphqlgo.Field{
+			"circuit_room_temperature_influence_mode": &graphqlgo.Field{
 				Type: graphqlgo.String,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					config, ok := params.Source.(CircuitConfig)
@@ -955,7 +970,7 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"cooling_enabled": &graphqlgo.Field{
+			"circuit_cooling_enabled": &graphqlgo.Field{
 				Type: graphqlgo.Boolean,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					config, ok := params.Source.(CircuitConfig)

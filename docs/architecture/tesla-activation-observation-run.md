@@ -105,8 +105,14 @@ the charger gets power, or that one exchange is missed. Starting the tool
 does not power the charger and does not answer the greeting. Each attempt
 closes its source when the window ends. A later repeat opens a new source
 after any pause and does not observe the exchange from the earlier power-up.
-Use one repeat for each separately sequenced startup, and give the charger
-power only while that window is open. The `-window-bytes` flag default
+The command writes nothing until every attempt has finished, so it does not
+report when a source has opened or when its window is active. A preceding
+attempt may also end before its deadline, once it reaches the byte or
+segment limit, so the configured window and pause are not a schedule for
+the next power-up. Use one repeat for a startup, and give the charger power
+after that invocation has started. Do not power the charger again for a
+later repeat of the same invocation. Record another startup by starting
+another invocation before that power-up. The `-window-bytes` flag default
 remains 64. A sufficient capture count is not established and must be
 measured.
 
@@ -129,13 +135,13 @@ helianthus-gateway tesla-observe \
   single startup. Each repeat is a new window on a freshly opened source.
   The exchange from one power-up is visible only in the window that was
   already open. A later repeat is not another initial session of that
-  power-up. Record another initial session by starting another invocation
-  before a fresh power-up; `-append` continues the labels and stores that
-  invocation's prior-state basis only on the attempts it adds. One
-  invocation records its prior-state basis on every attempt. Use more than
-  one repeat only when the charger receives power again after each new
-  window has opened, not while the source is closed during `-pause`, and
-  that same basis is true for every attempt.
+  power-up, and nothing is printed when that later window opens. Do not
+  coordinate a fresh power-up with a repeated window. Record another
+  initial session by starting another invocation before a fresh power-up;
+  `-append` continues the labels and stores that invocation's prior-state
+  basis only on the attempts it adds. One invocation records its
+  prior-state basis on every attempt, so that basis has to be true for
+  every attempt the invocation records.
 - `-append` adds attempts to an existing evidence file. Labels continue
   (`a01`, `a02`, ...). The rows are rebuilt and the offline controls are
   rerun. Without `-append` an existing file is never overwritten. Evidence and
@@ -273,11 +279,12 @@ Required run order:
    place.
 3. Start `tesla-observe` before the charger gets power, with one repeat for
    that startup, using the same `<serial-device>` and with no other program
-   opening it in between. Give the charger power only after that window is
-   open. The tool sends nothing and does not expect the confirmation. A
-   later repeat opens only after the previous source has closed. Sequence a
-   fresh power-up after that new window opens, or start a separate
-   invocation before the next power-up.
+   opening it in between. Give the charger power after that invocation has
+   started, for that one window. The tool sends nothing and does not expect
+   the confirmation. The command writes nothing until the run finishes, so
+   a later repeat does not show that a new window is open. Do not power the
+   charger again for a later repeat. Start a separate invocation before the
+   next power-up.
 
 ## Building for ARM Linux boards
 

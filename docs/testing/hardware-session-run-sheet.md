@@ -79,11 +79,11 @@ is that aggregate, and its case-id set is the full inventory.
 
 Each setup runs in this order. The runner flags, the smoke command and the
 add-on target commands are those of the [matrix runner](../../cmd/matrix-runner/README.md).
-Steps 3, 5 and 6 run on the `ENS` and `ENH` setups, where those cells are
-executable. On the plain UDP setup the only executable cell is `UDP-DS01`,
-and on the plain TCP setup it is `TCP-DS01`, both in step 4. Their grid
-cells, including `AD10`, stay planned and are written in step 8 without
-execution.
+Steps 3, 5, 6 and 10 run on the `ENS` and `ENH` setups, where those cells
+are executable. Step 9 runs on every setup the site runs. On the plain UDP
+setup the only executable cell is `UDP-DS01`, and on the plain TCP setup it
+is `TCP-DS01`, both in step 4. Their grid cells, including `AD10`, stay
+planned and are written in step 8 without execution.
 
 The ebusd add-on is the external client on the mux proxy listener. The
 as-found snapshot, the health connection in A-01, the free-initiator check
@@ -102,7 +102,9 @@ Explorer.
 | 6 | Return to the mux composition | `ENS` and `ENH` only: read back the options and the transport class, then `AD10` at once against the paired compatibility records from step 5. No measurement interval is inserted before `AD10`: the comparison includes live on/off and temperature fields, and a multi-minute gap is not part of the step. On the plain UDP and plain TCP setups `AD10` is planned and is not run |
 | 7 | Explorer certification run | site A only, for the `ENS` and `ENH` setups whose `CX01` cells were smoke-checked in step 3. One `CX01` cell per transport stores the invocation's external client, and selecting that cell again in the session report's output directory replaces its case directory. Step 7 is a separate invocation with `--external-client vrc-explorer` through the guarded relay, written to its own output directory. That invocation does not use the session report's output directory, so the smoke-checked `CX01` verdict from step 3 stays the session report's `CX01` |
 | 8 | Reserved cells | the planned and `blocked-infra` cells of the row are written without execution. This does not include `UDP-DS01` or `TCP-DS01` |
-| 9 | Restore | after the [last `full88` run](#last-full88-report) of this setup, the as-found snapshot of step 1 is restored and read back; final measurement |
+| 9 | Last `full88` run | the [last `full88` run](#last-full88-report) of this setup, with each composition its cases need set on the operator's word, written to its own output directory. It runs before any restore of this setup; step 11 does not start until it has ended or stopped |
+| 10 | `AD10` proxy-side baseline | `ENS` and `ENH` only, from records: the [proxy-side baseline comparison](#ad10-proxy-side-baseline) of `T13` (`ENS`) or `T14` (`ENH`) from step 9 with the `AD10` record of step 6. No bus action. On the plain UDP and plain TCP setups it is not done, because `UDP-AD10` and `TCP-AD10` stay planned |
+| 11 | Restore | only after steps 9 and 10 of this setup, the as-found snapshot of step 1 is restored and read back; final measurement |
 
 The runner records every non-zero smoke status as a failed step and stores
 that step as outcome `fail`. Smoke status 4 means a series the check reads
@@ -125,9 +127,12 @@ setups: the last `full88` report (`T01` to `T88`) and the first
 `adaptermux-v2` report. Until then the 88-case gate stays in force. A session
 that ends without the `full88` report gives no evidence for the switch.
 
-- The `full88` suite (the runner's default) runs on each setup of the site
-  after step 8 of that setup and before its step 9, so the as-found snapshot
-  of step 1 is restored only after both forms have run on that setup.
+- The `full88` suite (the runner's default) runs on each setup of the site as
+  step 9 of the per-setup order, after step 8 of that setup and before its
+  restore in step 11. The as-found snapshot of step 1 is therefore restored
+  only after both forms have run on that setup, and the setup rows (A-02,
+  A-03, B-01) include this step. A-13 and B-07 read what step 9 wrote; they
+  do not run `full88` again after a restore.
 - Its cases, proxy adjuncts and expected-failure inventory are those of the
   handoff's [transport step](consolidated-candidate-handoff.md#one-operator-session)
   and the [smoke matrix](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/development/smoke-matrix.md#matrix-coverage);
@@ -139,6 +144,33 @@ that ends without the `full88` report gives no evidence for the switch.
   counted in it.
 - The operator's private record names the same session label, candidate label
   and hardware setup labels for both reports.
+
+### `AD10` proxy-side baseline
+
+In this session `T13` (gateway to proxy over ENH, proxy to the adapter over
+ENS) and `T14` (the same, proxy to the adapter over ENH) are the additional
+replaced side of `ENS-AD10` and `ENH-AD10`, as the
+[matrix page](../../matrix/M7-adaptermux-conformance-matrix.md#6-index-completion-ad10-ad11-ad12)
+and the [transport gate policy v2](transport-gate-policy-v2.md#5-the-transition-session)
+state. The runner pairs `AD10` only with `S-DS01` and, on ENH, `EBUSD-ES01`,
+so this comparison is a separate record, made in step 10 of the `ENS` and
+`ENH` setups:
+
+- the record of `T13` (on `ENS`) or `T14` (on `ENH`) from step 9 is compared
+  with the mux record of that setup's `AD10` cell from step 6, with the
+  record design `development/ad10-migration-equivalence.md` of
+  `helianthus-docs-ebus`: presence, types, units, values, lineage and
+  MCP/GraphQL parity as separate decisions; equal values with another
+  lineage are not equivalent;
+- the comparison does not change the runner outcome of the `AD10` cell and is
+  not counted as a cell of either report;
+- when the `T13` or `T14` run did not pass, or holds no record that the
+  record design can compare, the baseline of that setup is recorded as **not
+  done** with that reason. That is a finding of the session; it is not
+  replaced by the `S-DS01` or `EBUSD-ES01` pair;
+- `T15` and `T16` have no executed `AD10` cell in this session, because
+  `UDP-AD10` and `TCP-AD10` stay planned; their baseline is recorded as **not
+  done** with that reason.
 
 ## Site A rows (vendor system controller)
 
@@ -155,7 +187,8 @@ that ends without the `full88` report gives no evidence for the switch.
 | A-09 One live setpoint write (operator, optional) | the operator present at the controller | [one live setpoint write](#one-live-setpoint-write). This is the only optional live setpoint change on the sheet | every step of that section. A doubtful readback or return stops for a hand restore and no further write | Not run |
 | A-10 B503 live re-verification | boiler-class heat source; the operator's word | [B503 rows](#b503-live-re-verification): VB-L1 and VB-L2 while the mux composition is running. VB-L3 and VB-L4 are taken from the ENH step 5 record; A-10 does not open the ebusd-tcp composition | VB-L1 and VB-L2. VB-L3 and VB-L4 are the records made while ebusd-tcp was still the running composition, or Not run with the B503 reason when that setup does not apply | Not run |
 | A-11 Retained rows and consumers | the operator reviews each criterion first | the handoff's retained and consumer rows | as the handoff defines | Not run |
-| A-13 Last `full88` report | A-02 and A-03; on each setup, step 8 done and step 9 not yet started | the [last `full88` report](#last-full88-report) on every setup of A-02 and A-03 | one `full88` report covering every case `T01` to `T88` on the same session, candidate and setups as the `adaptermux-v2` session report, classified by the current transport gate. A missing case or a missing report fails the row | Not run |
+| A-13 Last `full88` report | A-02 and A-03, whose per-setup order ran step 9 on each setup before its restore in step 11 | read the [last `full88` report](#last-full88-report) written in step 9 of every setup of A-02 and A-03; nothing is run again after a restore | one `full88` report covering every case `T01` to `T88` on the same session, candidate and setups as the `adaptermux-v2` session report, classified by the current transport gate. A missing case or a missing report fails the row | Not run |
+| A-14 `AD10` proxy-side baseline | A-02 and A-03, whose per-setup order ran step 10 on the `ENS` and `ENH` setups | read the [proxy-side baseline](#ad10-proxy-side-baseline) records of step 10 | the `T13` comparison with `ENS-AD10` and the `T14` comparison with `ENH-AD10` are recorded and equivalent on every decision. A baseline recorded as not done, or a decision that is not equivalent, fails the row and is a finding. `T15` and `T16` are recorded as not done because `UDP-AD10` and `TCP-AD10` stay planned, and that does not fail the row | Not run |
 | A-12 Restore and exit | all rows done or stopped | restore, final measurement, the operator looks at the appliance and the controller | as found, or the candidate left installed on the operator's word | Not run |
 
 ## Site B rows (third-party controller bridge)
@@ -176,7 +209,8 @@ recorded and never adjusted away.
 | B-03 Bridge variant rows | B-01 running | the bridge variant rows of the reduced sheet | as that section defines | Not run |
 | B-04 Graph axis, reduced block | the family is in the graph in the candidate | [graph-axis checks](#graph-axis-checks), reduced block | every row of that block | Not run |
 | B-05 Native point export | the candidate carries the export | [native point export checks](#native-point-export-checks) | heat-source points only; no controller-class point | Not run |
-| B-07 Last `full88` report | B-01; on each setup, step 8 done and step 9 not yet started | the [last `full88` report](#last-full88-report) on every setup of B-01, with the heat source as workload target | as A-13 | Not run |
+| B-07 Last `full88` report | B-01, whose per-setup order ran step 9 on each setup before its restore in step 11 | read the [last `full88` report](#last-full88-report) written in step 9 of every setup of B-01, run with the heat source as workload target; nothing is run again after a restore | as A-13 | Not run |
+| B-08 `AD10` proxy-side baseline | B-01, whose per-setup order ran step 10 on the `ENS` and `ENH` setups | read the [proxy-side baseline](#ad10-proxy-side-baseline) records of step 10 | as A-14 | Not run |
 | B-06 Restore and exit | all rows done or stopped | restore, final measurement, the operator looks at the appliance and the room-control app | as found, or the candidate left installed on the operator's word | Not run |
 
 Not at site B: A-04 (the Explorer scans a vendor controller), A-05 (the
@@ -313,7 +347,7 @@ the ebusd-tcp composition for them.
 | Before each site's part | the word for the session scope (E5) |
 | At the start, after each host-link switch and at the end | a look at the appliance and the controller or the room-control app |
 | Class W cells, once per setup | type the case ID when the runner asks; this does not start the adapter action. For `AD04` and `AD09`, reset the adapter (`AD04`) or disconnect and reconnect its host link (`AD09`) only after the smoke command announces the action and the case ID is typed again at that cue. When the smoke command ends without that cue, for example with status 4, perform no adapter action. On the plain UDP and plain TCP setups, type the case ID for `UDP-DS01` or `TCP-DS01`; those cells pass only on a smoke exit of 0 |
-| Last `full88` run, each setup | the word for each composition its cases need, before step 9 of that setup |
+| Last `full88` run, each setup | the word for each composition its cases need, in step 9 of that setup, before its restore in step 11 |
 | Compatibility compositions | the word for reconfiguring the add-on and for the proxy listener's absence. At site A, VB-L3 and the word for VB-L4 while the ebusd-tcp composition of step 5 is still running |
 | Site A | read and save the identification exchange record, complete on the retained request and response bytes |
 | Site A | two display values for M-03; the zone and circuit counts for R-01; the word for the one R-06 refusal invoke, which is not a setpoint write |

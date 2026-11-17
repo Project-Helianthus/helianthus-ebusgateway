@@ -1,10 +1,11 @@
 {
   "format": "helianthus-register-derived-names/v1",
-  "description": "B524 register-derived value fields published by the gateway system and circuit planes, each with the published name, the native identity (opcode, group, register) and the docs-ebus name and previous_name of that register. The docs-ebus columns are copied from the docs-ebus fixture protocols/vaillant/fixtures/b524-op02-register-names.csv (B524 opcode 0x02 register name catalog). previous_name is a documentary column only: no surface publishes it. surfaces names the object that publishes the field on each surface (GraphQL type, MCP Go struct, Portal Go struct); an empty value means the surface does not publish the field. previous_published_name, where present, is the spelling the gateway published for the register before it adopted the docs-ebus name; no surface publishes it either. join, where present, records the second register of a field the gateway publishes as the join of two registers: the docs-ebus names of the two registers are the published name with the suffixes _prefix and _suffix. bound, where present, records the field that publishes the active write bound of the value: its published name is the value name with the suffix _bound, with its own previous published name and surfaces. exemption marks the single row whose published name is not yet the docs-ebus name, with the docs-ebus issue that settles it.",
-  "source": "helianthus-docs-ebus protocols/vaillant/fixtures/b524-op02-register-names.csv",
+  "description": "Register-derived value fields published by the gateway system, circuit and boiler planes, each with the published name, the native identity and the docs-ebus name of that register. service names the register family: B524 rows carry the opcode, group and register and the docs-ebus name and previous_name copied from the docs-ebus fixture protocols/vaillant/fixtures/b524-op02-register-names.csv (B524 opcode 0x02 register name catalog); B509 rows carry the operation opcode and the selector (fallback_selector, where present, is the second selector the gateway reads for the same value) and the docs-ebus name and legacy_api_path copied from the docs-ebus fixture protocols/vaillant/fixtures/b509-register-name-correspondence.csv (B509 register name correspondence). previous_name and legacy_api_path are documentary columns only: no surface publishes them. surfaces names the object that publishes the field on each surface (GraphQL type, MCP Go struct, Portal Go struct); an empty value means the surface does not publish the field. previous_published_name, where present, is the spelling the gateway published for the register before it adopted the docs-ebus name; no surface publishes it either. unit, where present, is the unit the GraphQL description of the field states instead of a name suffix; provisional marks a B509 register whose docs-ebus row carries an open question, and the GraphQL description of the field says the name is provisional. join, where present, records the second register of a field the gateway publishes as the join of two registers: the docs-ebus names of the two registers are the published name with the suffixes _prefix and _suffix. bound, where present, records the field that publishes the active write bound of the value: its published name is the value name with the suffix _bound, with its own previous published name and surfaces. exemption marks the single row whose published name is not yet the docs-ebus name, with the docs-ebus issue that settles it. unmapped_fields lists the fields of the recorded objects that no single register feeds; they keep their published name, with the reason.",
+  "source": "helianthus-docs-ebus protocols/vaillant/fixtures/b524-op02-register-names.csv; helianthus-docs-ebus protocols/vaillant/fixtures/b509-register-name-correspondence.csv",
   "rows": [
     {
       "published_name": "water_pressure",
+      "service": "B524",
       "opcode": "0x02",
       "group": "0x00",
       "register": "0x0039",
@@ -14,6 +15,7 @@
     },
     {
       "published_name": "flow_temperature",
+      "service": "B524",
       "opcode": "0x02",
       "group": "0x00",
       "register": "0x004B",
@@ -23,6 +25,7 @@
     },
     {
       "published_name": "outdoor_temperature",
+      "service": "B524",
       "opcode": "0x02",
       "group": "0x00",
       "register": "0x0073",
@@ -32,6 +35,7 @@
     },
     {
       "published_name": "system_off",
+      "service": "B524",
       "opcode": "0x02",
       "group": "0x00",
       "register": "0x0007",
@@ -42,6 +46,7 @@
     },
     {
       "published_name": "outdoor_temperature_daily_average",
+      "service": "B524",
       "opcode": "0x02",
       "group": "0x00",
       "register": "0x0095",
@@ -52,6 +57,7 @@
     },
     {
       "published_name": "maintenance_active",
+      "service": "B524",
       "opcode": "0x02",
       "group": "0x00",
       "register": "0x0096",
@@ -62,6 +68,7 @@
     },
     {
       "published_name": "dhw_cylinder_top_temperature",
+      "service": "B524",
       "opcode": "0x02",
       "group": "0x00",
       "register": "0x009D",
@@ -72,6 +79,7 @@
     },
     {
       "published_name": "dhw_cylinder_bottom_temperature",
+      "service": "B524",
       "opcode": "0x02",
       "group": "0x00",
       "register": "0x009E",
@@ -82,6 +90,7 @@
     },
     {
       "published_name": "adaptive_heating_curve_enabled",
+      "service": "B524",
       "opcode": "0x02",
       "group": "0x00",
       "register": "0x0014",
@@ -91,6 +100,7 @@
     },
     {
       "published_name": "heating_outdoor_bivalence_temperature_limit",
+      "service": "B524",
       "opcode": "0x02",
       "group": "0x00",
       "register": "0x0023",
@@ -100,6 +110,7 @@
     },
     {
       "published_name": "room_humidity_limit_maximum",
+      "service": "B524",
       "opcode": "0x02",
       "group": "0x00",
       "register": "0x000E",
@@ -109,6 +120,7 @@
     },
     {
       "published_name": "maintenance_date",
+      "service": "B524",
       "opcode": "0x02",
       "group": "0x00",
       "register": "0x002C",
@@ -118,6 +130,7 @@
     },
     {
       "published_name": "installer_access_code",
+      "service": "B524",
       "opcode": "0x02",
       "group": "0x00",
       "register": "0x0076",
@@ -127,6 +140,7 @@
     },
     {
       "published_name": "heating_outdoor_alternative_temperature_limit",
+      "service": "B524",
       "opcode": "0x02",
       "group": "0x00",
       "register": "0x0022",
@@ -137,6 +151,7 @@
     },
     {
       "published_name": "dhw_outdoor_bivalence_temperature_limit",
+      "service": "B524",
       "opcode": "0x02",
       "group": "0x00",
       "register": "0x0001",
@@ -148,6 +163,7 @@
     },
     {
       "published_name": "heating_flow_temperature_setpoint_maximum_at_heat_pump_fault",
+      "service": "B524",
       "opcode": "0x02",
       "group": "0x00",
       "register": "0x0026",
@@ -158,6 +174,7 @@
     },
     {
       "published_name": "dhw_flow_temperature_setpoint_maximum",
+      "service": "B524",
       "opcode": "0x02",
       "group": "0x00",
       "register": "0x0046",
@@ -168,6 +185,7 @@
     },
     {
       "published_name": "installer_phone_number",
+      "service": "B524",
       "opcode": "0x02",
       "group": "0x00",
       "register": "0x006F",
@@ -179,6 +197,7 @@
     },
     {
       "published_name": "hydraulic_scheme_code",
+      "service": "B524",
       "opcode": "0x02",
       "group": "0x00",
       "register": "0x0036",
@@ -188,6 +207,7 @@
     },
     {
       "published_name": "functional_module_configuration_code",
+      "service": "B524",
       "opcode": "0x02",
       "group": "0x00",
       "register": "0x002F",
@@ -197,12 +217,423 @@
     },
     {
       "published_name": "circuit_special_function_mode",
+      "service": "B524",
       "opcode": "0x02",
       "group": "0x02",
       "register": "0x001D",
       "docs_ebus_name": "circuit_special_function_mode",
       "previous_name": "circuit_dhw_quick_mode",
       "surfaces": {"graphql": "circuit_config", "mcp": "CircuitConfig", "portal": "SemanticCircuitConfig"}
+    },
+    {
+      "published_name": "flow_temperature",
+      "service": "B509",
+      "opcode": "0x0D",
+      "selector": "0x1800",
+      "docs_ebus_name": "flow_temperature",
+      "legacy_api_path": "state.flowTemperatureC",
+      "previous_published_name": "flow_temperature_c",
+      "unit": "°C",
+      "surfaces": {"graphql": "boiler_state", "mcp": "BoilerState", "portal": "SemanticBoilerState"}
+    },
+    {
+      "published_name": "central_heating_pump_active",
+      "service": "B509",
+      "opcode": "0x0D",
+      "selector": "0x4400",
+      "docs_ebus_name": "central_heating_pump_active",
+      "legacy_api_path": "state.centralHeatingPumpActive",
+      "surfaces": {"graphql": "boiler_state", "mcp": "BoilerState", "portal": "SemanticBoilerState"}
+    },
+    {
+      "published_name": "water_pressure",
+      "service": "B509",
+      "opcode": "0x0D",
+      "selector": "0x0200",
+      "docs_ebus_name": "water_pressure",
+      "legacy_api_path": "state.waterPressureBar",
+      "previous_published_name": "water_pressure_bar",
+      "unit": "bar",
+      "surfaces": {"graphql": "boiler_state", "mcp": "BoilerState", "portal": "SemanticBoilerState"}
+    },
+    {
+      "published_name": "external_pump_active",
+      "service": "B509",
+      "opcode": "0x0D",
+      "selector": "0x3F00",
+      "docs_ebus_name": "external_pump_active",
+      "legacy_api_path": "state.externalPumpActive",
+      "surfaces": {"graphql": "boiler_state", "mcp": "BoilerState", "portal": "SemanticBoilerState"}
+    },
+    {
+      "published_name": "circulation_pump_active",
+      "service": "B509",
+      "opcode": "0x0D",
+      "selector": "0x7B00",
+      "docs_ebus_name": "circulation_pump_active",
+      "legacy_api_path": "state.circulationPumpActive",
+      "surfaces": {"graphql": "boiler_state", "mcp": "BoilerState", "portal": "SemanticBoilerState"}
+    },
+    {
+      "published_name": "gas_valve_active",
+      "service": "B509",
+      "opcode": "0x0D",
+      "selector": "0xBB00",
+      "docs_ebus_name": "gas_valve_active",
+      "legacy_api_path": "state.gasValveActive",
+      "surfaces": {"graphql": "boiler_state", "mcp": "BoilerState", "portal": "SemanticBoilerState"}
+    },
+    {
+      "published_name": "flame_active",
+      "service": "B509",
+      "opcode": "0x0D",
+      "selector": "0x0500",
+      "docs_ebus_name": "flame_active",
+      "legacy_api_path": "state.flameActive",
+      "surfaces": {"graphql": "boiler_state", "mcp": "BoilerState", "portal": "SemanticBoilerState"}
+    },
+    {
+      "published_name": "diverter_valve_position",
+      "service": "B509",
+      "opcode": "0x0D",
+      "selector": "0x5400",
+      "docs_ebus_name": "diverter_valve_position",
+      "legacy_api_path": "state.diverterValvePositionPct",
+      "previous_published_name": "diverter_valve_position_pct",
+      "unit": "%",
+      "provisional": true,
+      "surfaces": {"graphql": "boiler_state", "mcp": "BoilerState", "portal": "SemanticBoilerState"}
+    },
+    {
+      "published_name": "fan_speed",
+      "service": "B509",
+      "opcode": "0x0D",
+      "selector": "0x8300",
+      "docs_ebus_name": "fan_speed",
+      "legacy_api_path": "state.fanSpeedRpm",
+      "previous_published_name": "fan_speed_rpm",
+      "unit": "rpm",
+      "surfaces": {"graphql": "boiler_state", "mcp": "BoilerState", "portal": "SemanticBoilerState"}
+    },
+    {
+      "published_name": "fan_speed_setpoint",
+      "service": "B509",
+      "opcode": "0x0D",
+      "selector": "0x2400",
+      "docs_ebus_name": "fan_speed_setpoint",
+      "legacy_api_path": "state.targetFanSpeedRpm",
+      "previous_published_name": "target_fan_speed_rpm",
+      "unit": "rpm",
+      "surfaces": {"graphql": "boiler_state", "mcp": "BoilerState", "portal": "SemanticBoilerState"}
+    },
+    {
+      "published_name": "flame_ionization_current",
+      "service": "B509",
+      "opcode": "0x0D",
+      "selector": "0xA400",
+      "docs_ebus_name": "flame_ionization_current",
+      "legacy_api_path": "state.ionisationVoltageUa",
+      "previous_published_name": "ionisation_voltage_ua",
+      "unit": "µA",
+      "provisional": true,
+      "surfaces": {"graphql": "boiler_state", "mcp": "BoilerState", "portal": "SemanticBoilerState"}
+    },
+    {
+      "published_name": "dhw_water_flow_rate",
+      "service": "B509",
+      "opcode": "0x0D",
+      "selector": "0x5500",
+      "docs_ebus_name": "dhw_water_flow_rate",
+      "legacy_api_path": "state.dhwWaterFlowLpm",
+      "previous_published_name": "dhw_water_flow_lpm",
+      "unit": "L/min",
+      "surfaces": {"graphql": "boiler_state", "mcp": "BoilerState", "portal": "SemanticBoilerState"}
+    },
+    {
+      "published_name": "dhw_demand_active",
+      "service": "B509",
+      "opcode": "0x0D",
+      "selector": "0x5800",
+      "docs_ebus_name": "dhw_demand_active",
+      "legacy_api_path": "state.dhwDemandActive",
+      "surfaces": {"graphql": "boiler_state", "mcp": "BoilerState", "portal": "SemanticBoilerState"}
+    },
+    {
+      "published_name": "heating_switch_active",
+      "service": "B509",
+      "opcode": "0x0D",
+      "selector": "0xF203",
+      "docs_ebus_name": "heating_switch_active",
+      "legacy_api_path": "state.heatingSwitchActive",
+      "surfaces": {"graphql": "boiler_state", "mcp": "BoilerState", "portal": "SemanticBoilerState"}
+    },
+    {
+      "published_name": "storage_loading_pump_level",
+      "service": "B509",
+      "opcode": "0x0D",
+      "selector": "0x9E00",
+      "docs_ebus_name": "storage_loading_pump_level",
+      "legacy_api_path": "state.storageLoadPumpPct",
+      "previous_published_name": "storage_load_pump_pct",
+      "unit": "%",
+      "surfaces": {"graphql": "boiler_state", "mcp": "BoilerState", "portal": "SemanticBoilerState"}
+    },
+    {
+      "published_name": "modulation_setpoint",
+      "service": "B509",
+      "opcode": "0x0D",
+      "selector": "0x2E00",
+      "docs_ebus_name": "modulation_setpoint",
+      "legacy_api_path": "state.modulationPct",
+      "previous_published_name": "modulation_pct",
+      "unit": "%",
+      "provisional": true,
+      "surfaces": {"graphql": "boiler_state", "mcp": "BoilerState", "portal": "SemanticBoilerState"}
+    },
+    {
+      "published_name": "primary_circuit_flow_rate",
+      "service": "B509",
+      "opcode": "0x0D",
+      "selector": "0xFB00",
+      "docs_ebus_name": "primary_circuit_flow_rate",
+      "legacy_api_path": "state.primaryCircuitFlowLpm",
+      "previous_published_name": "primary_circuit_flow_lpm",
+      "unit": "L/min",
+      "provisional": true,
+      "surfaces": {"graphql": "boiler_state", "mcp": "BoilerState", "portal": "SemanticBoilerState"}
+    },
+    {
+      "published_name": "flow_temperature_setpoint",
+      "service": "B509",
+      "opcode": "0x0D",
+      "selector": "0x3900",
+      "docs_ebus_name": "flow_temperature_setpoint",
+      "legacy_api_path": "state.flowTempDesiredC",
+      "previous_published_name": "flow_temp_desired_c",
+      "unit": "°C",
+      "provisional": true,
+      "surfaces": {"graphql": "boiler_state", "mcp": "BoilerState", "portal": "SemanticBoilerState"}
+    },
+    {
+      "published_name": "dhw_temperature_setpoint",
+      "service": "B509",
+      "opcode": "0x0D",
+      "selector": "0xEA03",
+      "docs_ebus_name": "dhw_temperature_setpoint",
+      "legacy_api_path": "state.dhwTempDesiredC",
+      "previous_published_name": "dhw_temp_desired_c",
+      "unit": "°C",
+      "surfaces": {"graphql": "boiler_state", "mcp": "BoilerState", "portal": "SemanticBoilerState"}
+    },
+    {
+      "published_name": "boiler_state_code",
+      "service": "B509",
+      "opcode": "0x0D",
+      "selector": "0xAB00",
+      "docs_ebus_name": "boiler_state_code",
+      "legacy_api_path": "state.stateNumber",
+      "previous_published_name": "state_number",
+      "provisional": true,
+      "surfaces": {"graphql": "boiler_state", "mcp": "BoilerState", "portal": "SemanticBoilerState"}
+    },
+    {
+      "published_name": "maximum_heating_flow_temperature_setpoint",
+      "service": "B509",
+      "opcode": "0x0D",
+      "selector": "0x0E04",
+      "fallback_selector": "0xA500",
+      "docs_ebus_name": "maximum_heating_flow_temperature_setpoint",
+      "legacy_api_path": "config.flowsetHcMaxC",
+      "previous_published_name": "flowset_hc_max_c",
+      "unit": "°C",
+      "provisional": true,
+      "surfaces": {"graphql": "boiler_config", "mcp": "BoilerConfig", "portal": "SemanticBoilerConfig"}
+    },
+    {
+      "published_name": "maximum_dhw_flow_temperature_setpoint",
+      "service": "B509",
+      "opcode": "0x0D",
+      "selector": "0x0F04",
+      "docs_ebus_name": "maximum_dhw_flow_temperature_setpoint",
+      "legacy_api_path": "config.flowsetHwcMaxC",
+      "previous_published_name": "flowset_hwc_max_c",
+      "unit": "°C",
+      "surfaces": {"graphql": "boiler_config", "mcp": "BoilerConfig", "portal": "SemanticBoilerConfig"}
+    },
+    {
+      "published_name": "heating_partial_load_power",
+      "service": "B509",
+      "opcode": "0x0D",
+      "selector": "0x0704",
+      "docs_ebus_name": "heating_partial_load_power",
+      "legacy_api_path": "config.partloadHcKW",
+      "previous_published_name": "partload_hc_kw",
+      "unit": "kW",
+      "provisional": true,
+      "surfaces": {"graphql": "boiler_config", "mcp": "BoilerConfig", "portal": "SemanticBoilerConfig"}
+    },
+    {
+      "published_name": "dhw_partial_load_power",
+      "service": "B509",
+      "opcode": "0x0D",
+      "selector": "0x0804",
+      "docs_ebus_name": "dhw_partial_load_power",
+      "legacy_api_path": "config.partloadHwcKW",
+      "previous_published_name": "partload_hwc_kw",
+      "unit": "kW",
+      "provisional": true,
+      "surfaces": {"graphql": "boiler_config", "mcp": "BoilerConfig", "portal": "SemanticBoilerConfig"}
+    },
+    {
+      "published_name": "central_heating_pump_mode",
+      "service": "B509",
+      "opcode": "0x0D",
+      "selector": "0x4904",
+      "docs_ebus_name": "central_heating_pump_mode",
+      "legacy_api_path": "config.installerMenuCode",
+      "previous_published_name": "installer_menu_code",
+      "provisional": true,
+      "surfaces": {"graphql": "boiler_config", "mcp": "BoilerConfig", "portal": ""}
+    },
+    {
+      "published_name": "installer_phone_number",
+      "service": "B509",
+      "opcode": "0x0D",
+      "selector": "0x8104",
+      "docs_ebus_name": "installer_phone_number",
+      "legacy_api_path": "config.phoneNumber",
+      "previous_published_name": "phone_number",
+      "surfaces": {"graphql": "boiler_config", "mcp": "BoilerConfig", "portal": ""}
+    },
+    {
+      "published_name": "service_time_remaining",
+      "service": "B509",
+      "opcode": "0x0D",
+      "selector": "0x2004",
+      "docs_ebus_name": "service_time_remaining",
+      "legacy_api_path": "config.hoursTillService",
+      "previous_published_name": "hours_till_service",
+      "unit": "h",
+      "surfaces": {"graphql": "boiler_config", "mcp": "BoilerConfig", "portal": ""}
+    },
+    {
+      "published_name": "central_heating_operating_time",
+      "service": "B509",
+      "opcode": "0x0D",
+      "selector": "0x2800",
+      "docs_ebus_name": "central_heating_operating_time",
+      "legacy_api_path": "diagnostics.centralHeatingHours",
+      "previous_published_name": "central_heating_hours",
+      "unit": "h",
+      "surfaces": {"graphql": "boiler_diagnostics", "mcp": "BoilerDiagnostics", "portal": "SemanticBoilerDiagnostics"}
+    },
+    {
+      "published_name": "dhw_operating_time",
+      "service": "B509",
+      "opcode": "0x0D",
+      "selector": "0x2200",
+      "docs_ebus_name": "dhw_operating_time",
+      "legacy_api_path": "diagnostics.dhwHours",
+      "previous_published_name": "dhw_hours",
+      "unit": "h",
+      "surfaces": {"graphql": "boiler_diagnostics", "mcp": "BoilerDiagnostics", "portal": "SemanticBoilerDiagnostics"}
+    },
+    {
+      "published_name": "central_heating_start_count",
+      "service": "B509",
+      "opcode": "0x0D",
+      "selector": "0x2900",
+      "docs_ebus_name": "central_heating_start_count",
+      "legacy_api_path": "diagnostics.centralHeatingStarts",
+      "previous_published_name": "central_heating_starts",
+      "provisional": true,
+      "surfaces": {"graphql": "boiler_diagnostics", "mcp": "BoilerDiagnostics", "portal": "SemanticBoilerDiagnostics"}
+    },
+    {
+      "published_name": "dhw_start_count",
+      "service": "B509",
+      "opcode": "0x0D",
+      "selector": "0x2300",
+      "docs_ebus_name": "dhw_start_count",
+      "legacy_api_path": "diagnostics.dhwStarts",
+      "previous_published_name": "dhw_starts",
+      "provisional": true,
+      "surfaces": {"graphql": "boiler_diagnostics", "mcp": "BoilerDiagnostics", "portal": "SemanticBoilerDiagnostics"}
+    },
+    {
+      "published_name": "pump_operating_time",
+      "service": "B509",
+      "opcode": "0x0D",
+      "selector": "0x1400",
+      "docs_ebus_name": "pump_operating_time",
+      "legacy_api_path": "diagnostics.pumpHours",
+      "previous_published_name": "pump_hours",
+      "unit": "h",
+      "surfaces": {"graphql": "boiler_diagnostics", "mcp": "BoilerDiagnostics", "portal": "SemanticBoilerDiagnostics"}
+    },
+    {
+      "published_name": "fan_operating_time",
+      "service": "B509",
+      "opcode": "0x0D",
+      "selector": "0x1B00",
+      "docs_ebus_name": "fan_operating_time",
+      "legacy_api_path": "diagnostics.fanHours",
+      "previous_published_name": "fan_hours",
+      "unit": "h",
+      "surfaces": {"graphql": "boiler_diagnostics", "mcp": "BoilerDiagnostics", "portal": "SemanticBoilerDiagnostics"}
+    },
+    {
+      "published_name": "fire_control_deactivation_count",
+      "service": "B509",
+      "opcode": "0x0D",
+      "selector": "0x1F00",
+      "docs_ebus_name": "fire_control_deactivation_count",
+      "legacy_api_path": "diagnostics.deactivationsIFC",
+      "previous_published_name": "deactivations_ifc",
+      "provisional": true,
+      "surfaces": {"graphql": "boiler_diagnostics", "mcp": "BoilerDiagnostics", "portal": "SemanticBoilerDiagnostics"}
+    },
+    {
+      "published_name": "temperature_limiter_deactivation_count",
+      "service": "B509",
+      "opcode": "0x0D",
+      "selector": "0x2000",
+      "docs_ebus_name": "temperature_limiter_deactivation_count",
+      "legacy_api_path": "diagnostics.deactivationsTemplimiter",
+      "previous_published_name": "deactivations_templimiter",
+      "surfaces": {"graphql": "boiler_diagnostics", "mcp": "BoilerDiagnostics", "portal": "SemanticBoilerDiagnostics"}
+    }
+  ],
+  "unmapped_fields": [
+    {
+      "published_name": "return_temperature_c",
+      "surfaces": {"graphql": "boiler_state", "mcp": "BoilerState", "portal": "SemanticBoilerState"},
+      "reason": "no B509 register feeds it: the boiler status keeps it unset, and the register catalog has no row for it"
+    },
+    {
+      "published_name": "dhw_temperature_c",
+      "surfaces": {"graphql": "boiler_state", "mcp": "BoilerState", "portal": "SemanticBoilerState"},
+      "reason": "derived from the hot water plane of the controller, not read from one B509 register"
+    },
+    {
+      "published_name": "dhw_target_temperature_c",
+      "surfaces": {"graphql": "boiler_state", "mcp": "BoilerState", "portal": "SemanticBoilerState"},
+      "reason": "derived from the hot water plane of the controller, not read from one B509 register"
+    },
+    {
+      "published_name": "dhw_operating_mode",
+      "surfaces": {"graphql": "boiler_config", "mcp": "BoilerConfig", "portal": "SemanticBoilerConfig"},
+      "reason": "derived from the hot water plane of the controller, not read from one B509 register"
+    },
+    {
+      "published_name": "heating_status_raw",
+      "surfaces": {"graphql": "boiler_diagnostics", "mcp": "BoilerDiagnostics", "portal": "SemanticBoilerDiagnostics"},
+      "reason": "raw status word with no B509 register row in the register catalog"
+    },
+    {
+      "published_name": "dhw_status_raw",
+      "surfaces": {"graphql": "boiler_diagnostics", "mcp": "BoilerDiagnostics", "portal": "SemanticBoilerDiagnostics"},
+      "reason": "raw status word with no B509 register row in the register catalog"
     }
   ]
 }

@@ -484,7 +484,7 @@ func TestSetBoilerConfigMutation_DelegatesToWriter(t *testing.T) {
 		t.Fatalf("writer calls = %d; want 1", len(writer.calls))
 	}
 	if writer.calls[0].field != "maximum_heating_flow_temperature_setpoint" || writer.calls[0].value != "55" {
-		t.Fatalf("writer call = %#v; want flowset_hc_max_c/55", writer.calls[0])
+		t.Fatalf("writer call = %#v; want maximum_heating_flow_temperature_setpoint/55", writer.calls[0])
 	}
 }
 

@@ -162,53 +162,53 @@ type EnergyTotals struct {
 }
 
 type BoilerState struct {
-	FlowTemperatureC         *float64 `json:"flow_temperature_c,omitempty"`
+	FlowTemperatureC         *float64 `json:"flow_temperature,omitempty"`
 	ReturnTemperatureC       *float64 `json:"return_temperature_c,omitempty"`
 	CentralHeatingPumpActive *bool    `json:"central_heating_pump_active,omitempty"`
-	WaterPressureBar         *float64 `json:"water_pressure_bar,omitempty"`
+	WaterPressureBar         *float64 `json:"water_pressure,omitempty"`
 	ExternalPumpActive       *bool    `json:"external_pump_active,omitempty"`
 	CirculationPumpActive    *bool    `json:"circulation_pump_active,omitempty"`
 	GasValveActive           *bool    `json:"gas_valve_active,omitempty"`
 	FlameActive              *bool    `json:"flame_active,omitempty"`
-	DiverterValvePositionPct *float64 `json:"diverter_valve_position_pct,omitempty"`
-	FanSpeedRpm              *int     `json:"fan_speed_rpm,omitempty"`
-	TargetFanSpeedRpm        *int     `json:"target_fan_speed_rpm,omitempty"`
-	IonisationVoltageUa      *float64 `json:"ionisation_voltage_ua,omitempty"`
-	DhwWaterFlowLpm          *float64 `json:"dhw_water_flow_lpm,omitempty"`
+	DiverterValvePositionPct *float64 `json:"diverter_valve_position,omitempty"`
+	FanSpeedRpm              *int     `json:"fan_speed,omitempty"`
+	TargetFanSpeedRpm        *int     `json:"fan_speed_setpoint,omitempty"`
+	IonisationVoltageUa      *float64 `json:"flame_ionization_current,omitempty"`
+	DhwWaterFlowLpm          *float64 `json:"dhw_water_flow_rate,omitempty"`
 	DhwDemandActive          *bool    `json:"dhw_demand_active,omitempty"`
 	HeatingSwitchActive      *bool    `json:"heating_switch_active,omitempty"`
-	StorageLoadPumpPct       *float64 `json:"storage_load_pump_pct,omitempty"`
-	ModulationPct            *float64 `json:"modulation_pct,omitempty"`
-	PrimaryCircuitFlowLpm    *float64 `json:"primary_circuit_flow_lpm,omitempty"`
-	FlowTempDesiredC         *float64 `json:"flow_temp_desired_c,omitempty"`
-	DhwTempDesiredC          *float64 `json:"dhw_temp_desired_c,omitempty"`
-	StateNumber              *int     `json:"state_number,omitempty"`
+	StorageLoadPumpPct       *float64 `json:"storage_loading_pump_level,omitempty"`
+	ModulationPct            *float64 `json:"modulation_setpoint,omitempty"`
+	PrimaryCircuitFlowLpm    *float64 `json:"primary_circuit_flow_rate,omitempty"`
+	FlowTempDesiredC         *float64 `json:"flow_temperature_setpoint,omitempty"`
+	DhwTempDesiredC          *float64 `json:"dhw_temperature_setpoint,omitempty"`
+	StateNumber              *int     `json:"boiler_state_code,omitempty"`
 	DhwTemperatureC          *float64 `json:"dhw_temperature_c,omitempty"`
 	DhwTargetTemperatureC    *float64 `json:"dhw_target_temperature_c,omitempty"`
 }
 
 type BoilerConfig struct {
 	DhwOperatingMode  *string  `json:"dhw_operating_mode,omitempty"`
-	FlowsetHcMaxC     *float64 `json:"flowset_hc_max_c,omitempty"`
-	FlowsetHwcMaxC    *float64 `json:"flowset_hwc_max_c,omitempty"`
-	PartloadHcKW      *float64 `json:"partload_hc_kw,omitempty"`
-	PartloadHwcKW     *float64 `json:"partload_hwc_kw,omitempty"`
-	InstallerMenuCode *int     `json:"installer_menu_code,omitempty"`
-	PhoneNumber       *string  `json:"phone_number,omitempty"`
-	HoursTillService  *int     `json:"hours_till_service,omitempty"`
+	FlowsetHcMaxC     *float64 `json:"maximum_heating_flow_temperature_setpoint,omitempty"`
+	FlowsetHwcMaxC    *float64 `json:"maximum_dhw_flow_temperature_setpoint,omitempty"`
+	PartloadHcKW      *float64 `json:"heating_partial_load_power,omitempty"`
+	PartloadHwcKW     *float64 `json:"dhw_partial_load_power,omitempty"`
+	InstallerMenuCode *int     `json:"central_heating_pump_mode,omitempty"`
+	PhoneNumber       *string  `json:"installer_phone_number,omitempty"`
+	HoursTillService  *int     `json:"service_time_remaining,omitempty"`
 }
 
 type BoilerDiagnostics struct {
 	HeatingStatusRaw         *int     `json:"heating_status_raw,omitempty"`
 	DhwStatusRaw             *int     `json:"dhw_status_raw,omitempty"`
-	CentralHeatingHours      *float64 `json:"central_heating_hours,omitempty"`
-	DhwHours                 *float64 `json:"dhw_hours,omitempty"`
-	CentralHeatingStarts     *int     `json:"central_heating_starts,omitempty"`
-	DhwStarts                *int     `json:"dhw_starts,omitempty"`
-	PumpHours                *float64 `json:"pump_hours,omitempty"`
-	FanHours                 *float64 `json:"fan_hours,omitempty"`
-	DeactivationsIFC         *int     `json:"deactivations_ifc,omitempty"`
-	DeactivationsTemplimiter *int     `json:"deactivations_templimiter,omitempty"`
+	CentralHeatingHours      *float64 `json:"central_heating_operating_time,omitempty"`
+	DhwHours                 *float64 `json:"dhw_operating_time,omitempty"`
+	CentralHeatingStarts     *int     `json:"central_heating_start_count,omitempty"`
+	DhwStarts                *int     `json:"dhw_start_count,omitempty"`
+	PumpHours                *float64 `json:"pump_operating_time,omitempty"`
+	FanHours                 *float64 `json:"fan_operating_time,omitempty"`
+	DeactivationsIFC         *int     `json:"fire_control_deactivation_count,omitempty"`
+	DeactivationsTemplimiter *int     `json:"temperature_limiter_deactivation_count,omitempty"`
 }
 
 type BoilerStatus struct {

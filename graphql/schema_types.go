@@ -1443,8 +1443,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 	boilerStateType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
 		Name: "boiler_state",
 		Fields: graphqlgo.Fields{
-			"flow_temperature_c": &graphqlgo.Field{
-				Type: graphqlgo.Float,
+			"flow_temperature": &graphqlgo.Field{
+				Type:        graphqlgo.Float,
+				Description: "Boiler flow temperature in °C.",
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					state, ok := params.Source.(BoilerState)
 					if !ok {
@@ -1485,8 +1486,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"water_pressure_bar": &graphqlgo.Field{
-				Type: graphqlgo.Float,
+			"water_pressure": &graphqlgo.Field{
+				Type:        graphqlgo.Float,
+				Description: "Heating water pressure in bar.",
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					state, ok := params.Source.(BoilerState)
 					if !ok || state.WaterPressureBar == nil {
@@ -1540,8 +1542,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"diverter_valve_position_pct": &graphqlgo.Field{
-				Type: graphqlgo.Float,
+			"diverter_valve_position": &graphqlgo.Field{
+				Type:        graphqlgo.Float,
+				Description: "Diverter valve position in %. Provisional name: the register catalog marks an open question for this register; the name may change once it is settled.",
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					state, ok := params.Source.(BoilerState)
 					if !ok || state.DiverterValvePositionPct == nil {
@@ -1551,8 +1554,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"fan_speed_rpm": &graphqlgo.Field{
-				Type: graphqlgo.Int,
+			"fan_speed": &graphqlgo.Field{
+				Type:        graphqlgo.Int,
+				Description: "Current fan speed in rpm.",
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					state, ok := params.Source.(BoilerState)
 					if !ok || state.FanSpeedRpm == nil {
@@ -1562,8 +1566,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"target_fan_speed_rpm": &graphqlgo.Field{
-				Type: graphqlgo.Int,
+			"fan_speed_setpoint": &graphqlgo.Field{
+				Type:        graphqlgo.Int,
+				Description: "Fan speed set point in rpm.",
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					state, ok := params.Source.(BoilerState)
 					if !ok || state.TargetFanSpeedRpm == nil {
@@ -1573,8 +1578,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"ionisation_voltage_ua": &graphqlgo.Field{
-				Type: graphqlgo.Float,
+			"flame_ionization_current": &graphqlgo.Field{
+				Type:        graphqlgo.Float,
+				Description: "Flame ionisation signal in µA. Provisional name: the register catalog marks an open question for this register; the name may change once it is settled.",
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					state, ok := params.Source.(BoilerState)
 					if !ok || state.IonisationVoltageUa == nil {
@@ -1584,8 +1590,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"dhw_water_flow_lpm": &graphqlgo.Field{
-				Type: graphqlgo.Float,
+			"dhw_water_flow_rate": &graphqlgo.Field{
+				Type:        graphqlgo.Float,
+				Description: "Hot water flow rate in L/min.",
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					state, ok := params.Source.(BoilerState)
 					if !ok || state.DhwWaterFlowLpm == nil {
@@ -1617,8 +1624,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"storage_load_pump_pct": &graphqlgo.Field{
-				Type: graphqlgo.Float,
+			"storage_loading_pump_level": &graphqlgo.Field{
+				Type:        graphqlgo.Float,
+				Description: "Storage loading pump level in %.",
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					state, ok := params.Source.(BoilerState)
 					if !ok || state.StorageLoadPumpPct == nil {
@@ -1628,8 +1636,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"modulation_pct": &graphqlgo.Field{
-				Type: graphqlgo.Float,
+			"modulation_setpoint": &graphqlgo.Field{
+				Type:        graphqlgo.Float,
+				Description: "Burner modulation in %. Provisional name: the register catalog marks an open question for this register; the name may change once it is settled.",
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					state, ok := params.Source.(BoilerState)
 					if !ok || state.ModulationPct == nil {
@@ -1639,8 +1648,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"primary_circuit_flow_lpm": &graphqlgo.Field{
-				Type: graphqlgo.Float,
+			"primary_circuit_flow_rate": &graphqlgo.Field{
+				Type:        graphqlgo.Float,
+				Description: "Primary circuit flow rate in L/min. Provisional name: the register catalog marks an open question for this register; the name may change once it is settled.",
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					state, ok := params.Source.(BoilerState)
 					if !ok || state.PrimaryCircuitFlowLpm == nil {
@@ -1650,8 +1660,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"flow_temp_desired_c": &graphqlgo.Field{
-				Type: graphqlgo.Float,
+			"flow_temperature_setpoint": &graphqlgo.Field{
+				Type:        graphqlgo.Float,
+				Description: "Flow temperature set point in °C. Provisional name: the register catalog marks an open question for this register; the name may change once it is settled.",
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					state, ok := params.Source.(BoilerState)
 					if !ok || state.FlowTempDesiredC == nil {
@@ -1661,8 +1672,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"dhw_temp_desired_c": &graphqlgo.Field{
-				Type: graphqlgo.Float,
+			"dhw_temperature_setpoint": &graphqlgo.Field{
+				Type:        graphqlgo.Float,
+				Description: "Hot water temperature set point in °C.",
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					state, ok := params.Source.(BoilerState)
 					if !ok || state.DhwTempDesiredC == nil {
@@ -1672,8 +1684,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"state_number": &graphqlgo.Field{
-				Type: graphqlgo.Int,
+			"boiler_state_code": &graphqlgo.Field{
+				Type:        graphqlgo.Int,
+				Description: "Boiler state code. Provisional name: the register catalog marks an open question for this register; the name may change once it is settled.",
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					state, ok := params.Source.(BoilerState)
 					if !ok || state.StateNumber == nil {
@@ -1721,8 +1734,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"flowset_hc_max_c": &graphqlgo.Field{
-				Type: graphqlgo.Float,
+			"maximum_heating_flow_temperature_setpoint": &graphqlgo.Field{
+				Type:        graphqlgo.Float,
+				Description: "Maximum heating flow temperature set point in °C. Provisional name: the register catalog marks an open question for this register; the name may change once it is settled.",
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					config, ok := params.Source.(BoilerConfig)
 					if !ok || config.FlowsetHcMaxC == nil {
@@ -1732,8 +1746,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"flowset_hwc_max_c": &graphqlgo.Field{
-				Type: graphqlgo.Float,
+			"maximum_dhw_flow_temperature_setpoint": &graphqlgo.Field{
+				Type:        graphqlgo.Float,
+				Description: "Maximum hot water flow temperature set point in °C.",
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					config, ok := params.Source.(BoilerConfig)
 					if !ok || config.FlowsetHwcMaxC == nil {
@@ -1743,8 +1758,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"partload_hc_kw": &graphqlgo.Field{
-				Type: graphqlgo.Float,
+			"heating_partial_load_power": &graphqlgo.Field{
+				Type:        graphqlgo.Float,
+				Description: "Heating partial load in kW. Provisional name: the register catalog marks an open question for this register; the name may change once it is settled.",
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					config, ok := params.Source.(BoilerConfig)
 					if !ok || config.PartloadHcKW == nil {
@@ -1754,8 +1770,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"partload_hwc_kw": &graphqlgo.Field{
-				Type: graphqlgo.Float,
+			"dhw_partial_load_power": &graphqlgo.Field{
+				Type:        graphqlgo.Float,
+				Description: "Hot water partial load in kW. Provisional name: the register catalog marks an open question for this register; the name may change once it is settled.",
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					config, ok := params.Source.(BoilerConfig)
 					if !ok || config.PartloadHwcKW == nil {
@@ -1765,8 +1782,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"installer_menu_code": &graphqlgo.Field{
-				Type: graphqlgo.Int,
+			"central_heating_pump_mode": &graphqlgo.Field{
+				Type:        graphqlgo.Int,
+				Description: "Raw value of the central heating pump mode register. Provisional name: the register catalog marks an open question for this register; the name may change once it is settled.",
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					config, ok := params.Source.(BoilerConfig)
 					if !ok || config.InstallerMenuCode == nil {
@@ -1776,8 +1794,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"phone_number": &graphqlgo.Field{
-				Type: graphqlgo.String,
+			"installer_phone_number": &graphqlgo.Field{
+				Type:        graphqlgo.String,
+				Description: "Installer phone number.",
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					config, ok := params.Source.(BoilerConfig)
 					if !ok || config.PhoneNumber == nil {
@@ -1787,8 +1806,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"hours_till_service": &graphqlgo.Field{
-				Type: graphqlgo.Int,
+			"service_time_remaining": &graphqlgo.Field{
+				Type:        graphqlgo.Int,
+				Description: "Time remaining until the next service in h.",
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					config, ok := params.Source.(BoilerConfig)
 					if !ok || config.HoursTillService == nil {
@@ -1828,8 +1848,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"central_heating_hours": &graphqlgo.Field{
-				Type: graphqlgo.Float,
+			"central_heating_operating_time": &graphqlgo.Field{
+				Type:        graphqlgo.Float,
+				Description: "Central heating operating time in h.",
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					diag, ok := params.Source.(BoilerDiagnostics)
 					if !ok || diag.CentralHeatingHours == nil {
@@ -1839,8 +1860,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"dhw_hours": &graphqlgo.Field{
-				Type: graphqlgo.Float,
+			"dhw_operating_time": &graphqlgo.Field{
+				Type:        graphqlgo.Float,
+				Description: "Hot water operating time in h.",
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					diag, ok := params.Source.(BoilerDiagnostics)
 					if !ok || diag.DhwHours == nil {
@@ -1850,8 +1872,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"central_heating_starts": &graphqlgo.Field{
-				Type: graphqlgo.Int,
+			"central_heating_start_count": &graphqlgo.Field{
+				Type:        graphqlgo.Int,
+				Description: "Central heating start count. Provisional name: the register catalog marks an open question for this register; the name may change once it is settled.",
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					diag, ok := params.Source.(BoilerDiagnostics)
 					if !ok || diag.CentralHeatingStarts == nil {
@@ -1861,8 +1884,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"dhw_starts": &graphqlgo.Field{
-				Type: graphqlgo.Int,
+			"dhw_start_count": &graphqlgo.Field{
+				Type:        graphqlgo.Int,
+				Description: "Hot water start count. Provisional name: the register catalog marks an open question for this register; the name may change once it is settled.",
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					diag, ok := params.Source.(BoilerDiagnostics)
 					if !ok || diag.DhwStarts == nil {
@@ -1872,8 +1896,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"pump_hours": &graphqlgo.Field{
-				Type: graphqlgo.Float,
+			"pump_operating_time": &graphqlgo.Field{
+				Type:        graphqlgo.Float,
+				Description: "Pump operating time in h.",
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					diag, ok := params.Source.(BoilerDiagnostics)
 					if !ok || diag.PumpHours == nil {
@@ -1883,8 +1908,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"fan_hours": &graphqlgo.Field{
-				Type: graphqlgo.Float,
+			"fan_operating_time": &graphqlgo.Field{
+				Type:        graphqlgo.Float,
+				Description: "Fan operating time in h.",
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					diag, ok := params.Source.(BoilerDiagnostics)
 					if !ok || diag.FanHours == nil {
@@ -1894,8 +1920,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"deactivations_ifc": &graphqlgo.Field{
-				Type: graphqlgo.Int,
+			"fire_control_deactivation_count": &graphqlgo.Field{
+				Type:        graphqlgo.Int,
+				Description: "Fire control deactivation count. Provisional name: the register catalog marks an open question for this register; the name may change once it is settled.",
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					diag, ok := params.Source.(BoilerDiagnostics)
 					if !ok || diag.DeactivationsIFC == nil {
@@ -1905,8 +1932,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 				},
 			},
 
-			"deactivations_templimiter": &graphqlgo.Field{
-				Type: graphqlgo.Int,
+			"temperature_limiter_deactivation_count": &graphqlgo.Field{
+				Type:        graphqlgo.Int,
+				Description: "Temperature limiter deactivation count.",
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					diag, ok := params.Source.(BoilerDiagnostics)
 					if !ok || diag.DeactivationsTemplimiter == nil {

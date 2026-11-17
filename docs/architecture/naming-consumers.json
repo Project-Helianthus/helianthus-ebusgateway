@@ -1151,6 +1151,7 @@
       "vrc-explorer/tests/test_issue_323_bundled_installation.py",
       "vrc-explorer/tests/test_system_information_ui.py"
     ],
+    "boiler_state_code": [],
     "bootloader_checksum": [
       "ha-integration/custom_components/helianthus/coordinator.py",
       "tinyebus/firmware/adapterproto/info.go"
@@ -1389,7 +1390,7 @@
       "vrc-explorer/tests/test_html_report_evidence_grade.py",
       "vrc-explorer/tests/test_schema_b524_register_name_correspondence.py"
     ],
-    "central_heating_hours": [
+    "central_heating_operating_time": [
       "ha-integration/custom_components/helianthus/__init__.py",
       "ha-integration/custom_components/helianthus/coordinator.py",
       "ha-integration/custom_components/helianthus/sensor_descriptors.py",
@@ -1406,7 +1407,23 @@
       "ha-integration/tests/test_fan.py",
       "ha-integration/tests/test_radio_device.py"
     ],
-    "central_heating_starts": [
+    "central_heating_pump_mode": [
+      "ha-integration/custom_components/helianthus/__init__.py",
+      "ha-integration/custom_components/helianthus/coordinator.py",
+      "ha-integration/custom_components/helianthus/text.py",
+      "ha-integration/tests/test_coordinator.py",
+      "ha-integration/tests/test_number_dhw_bivalence.py",
+      "ha-integration/tests/test_optional_query_sequences.py",
+      "ha-integration/tests/test_system.py",
+      "ha-integration/tests/test_system_bound_reprobe.py",
+      "vrc-explorer/fixtures/b524-basv0-description-profile-v1.json",
+      "vrc-explorer/fixtures/b524-basv0-register-observations-v1.json",
+      "vrc-explorer/fixtures/b524_shared/protocols/vaillant/fixtures/b524-basv0-description-profile-v1.json",
+      "vrc-explorer/fixtures/b524_shared/protocols/vaillant/fixtures/b524-basv0-register-observations-v1.json",
+      "vrc-explorer/src/helianthus_vrc_explorer/fixtures/b524-basv0-description-profile-v1.json",
+      "vrc-explorer/src/helianthus_vrc_explorer/fixtures/b524-basv0-register-observations-v1.json"
+    ],
+    "central_heating_start_count": [
       "ha-integration/custom_components/helianthus/__init__.py",
       "ha-integration/custom_components/helianthus/coordinator.py",
       "ha-integration/custom_components/helianthus/sensor_descriptors.py",
@@ -3250,18 +3267,6 @@
       "vrc-explorer/tests/test_html_report.py",
       "vrc-explorer/tests/test_scanner_b555.py"
     ],
-    "deactivations_ifc": [
-      "ha-integration/custom_components/helianthus/__init__.py",
-      "ha-integration/custom_components/helianthus/coordinator.py",
-      "ha-integration/custom_components/helianthus/sensor_descriptors.py",
-      "ha-integration/tests/test_sensor.py"
-    ],
-    "deactivations_templimiter": [
-      "ha-integration/custom_components/helianthus/__init__.py",
-      "ha-integration/custom_components/helianthus/coordinator.py",
-      "ha-integration/custom_components/helianthus/sensor_descriptors.py",
-      "ha-integration/tests/test_sensor.py"
-    ],
     "deadline_identity": [
       "modbus/coalescing_late_identity_test.go"
     ],
@@ -3915,7 +3920,7 @@
       "ha-integration/custom_components/helianthus/number.py",
       "ha-integration/tests/test_system.py"
     ],
-    "dhw_hours": [
+    "dhw_operating_time": [
       "ha-integration/custom_components/helianthus/__init__.py",
       "ha-integration/custom_components/helianthus/coordinator.py",
       "ha-integration/custom_components/helianthus/sensor_descriptors.py",
@@ -3934,7 +3939,14 @@
       "ha-integration/tests/test_number_dhw_bivalence.py",
       "ha-integration/tests/test_system_bound_reprobe.py"
     ],
-    "dhw_starts": [
+    "dhw_partial_load_power": [
+      "ha-integration/custom_components/helianthus/__init__.py",
+      "ha-integration/custom_components/helianthus/coordinator.py",
+      "ha-integration/custom_components/helianthus/number.py",
+      "ha-integration/tests/test_entity_icon_gate.py",
+      "ha-integration/tests/test_number.py"
+    ],
+    "dhw_start_count": [
       "ha-integration/custom_components/helianthus/__init__.py",
       "ha-integration/custom_components/helianthus/coordinator.py",
       "ha-integration/custom_components/helianthus/sensor_descriptors.py",
@@ -3945,6 +3957,8 @@
       "ha-integration/custom_components/helianthus/sensor_descriptors.py",
       "ha-integration/tests/test_sensor.py"
     ],
+    "dhw_temperature_setpoint": [],
+    "dhw_water_flow_rate": [],
     "diagnostics": [
       "ha-integration/custom_components/helianthus/admission.py",
       "ha-integration/custom_components/helianthus/coordinator.py",
@@ -4086,7 +4100,7 @@
       "matter-binding/runtime/semantic_feed.py",
       "matter-binding/tests/test_semantic_feed.py"
     ],
-    "diverter_valve_position_pct": [
+    "diverter_valve_position": [
       "ha-integration/custom_components/helianthus/__init__.py",
       "ha-integration/custom_components/helianthus/coordinator.py",
       "ha-integration/custom_components/helianthus/sensor_descriptors.py",
@@ -5788,13 +5802,13 @@
       "ha-addon/tests/test_offline_acceptance_index.py",
       "ha-addon/tests/test_serial_can_options.py"
     ],
-    "fan_hours": [
+    "fan_operating_time": [
       "ha-integration/custom_components/helianthus/__init__.py",
       "ha-integration/custom_components/helianthus/coordinator.py",
       "ha-integration/custom_components/helianthus/sensor_descriptors.py",
       "ha-integration/tests/test_sensor.py"
     ],
-    "fan_speed_rpm": [
+    "fan_speed": [
       "ha-integration/custom_components/helianthus/__init__.py",
       "ha-integration/custom_components/helianthus/coordinator.py",
       "ha-integration/custom_components/helianthus/fan.py",
@@ -5802,6 +5816,7 @@
       "ha-integration/tests/test_entity_icon_gate.py",
       "ha-integration/tests/test_fan.py"
     ],
+    "fan_speed_setpoint": [],
     "features": [
       "ha-integration/custom_components/helianthus/coordinator.py",
       "matter-binding/adoption/reference.go",
@@ -5901,6 +5916,12 @@
       "ha-addon/tests/test_addon_options.py",
       "ha-addon/tests/test_growatt_project_can_options.py",
       "ha-addon/tests/test_modbus_runtime_guard.py"
+    ],
+    "fire_control_deactivation_count": [
+      "ha-integration/custom_components/helianthus/__init__.py",
+      "ha-integration/custom_components/helianthus/coordinator.py",
+      "ha-integration/custom_components/helianthus/sensor_descriptors.py",
+      "ha-integration/tests/test_sensor.py"
     ],
     "firmware": [
       "ha-integration/custom_components/helianthus/coordinator_merge.py",
@@ -6196,6 +6217,14 @@
       "ha-integration/tests/test_entity_icon_gate.py",
       "ha-integration/tests/test_fan.py"
     ],
+    "flame_ionization_current": [
+      "ha-integration/custom_components/helianthus/__init__.py",
+      "ha-integration/custom_components/helianthus/coordinator.py",
+      "ha-integration/custom_components/helianthus/fan.py",
+      "ha-integration/custom_components/helianthus/sensor_descriptors.py",
+      "ha-integration/tests/test_entity_icon_gate.py",
+      "ha-integration/tests/test_fan.py"
+    ],
     "flowSetpointC": [
       "ha-integration/custom_components/helianthus/__init__.py"
     ],
@@ -6233,6 +6262,13 @@
       "ha-integration/custom_components/helianthus/__init__.py",
       "ha-integration/custom_components/helianthus/coordinator.py",
       "ha-integration/custom_components/helianthus/sensor_descriptors.py",
+      "ha-integration/custom_components/helianthus/subscriptions.py",
+      "ha-integration/tests/fixtures/mcp_forward_compat_synthetic.json",
+      "ha-integration/tests/test_circuit.py",
+      "ha-integration/tests/test_coordinator.py",
+      "ha-integration/tests/test_radio_device.py",
+      "ha-integration/tests/test_sensor.py",
+      "ha-integration/tests/test_subscription_payload_routing.py",
       "ha-integration/tests/test_system.py",
       "vrc-explorer/fixtures/b524-basv0-register-observations-v1.json",
       "vrc-explorer/fixtures/b524_shared/protocols/vaillant/fixtures/b524-basv0-register-observations-v1.json",
@@ -6250,20 +6286,7 @@
       "ha-integration/tests/test_sensor.py",
       "ha-integration/tests/test_subscription_payload_routing.py"
     ],
-    "flowset_hc_max_c": [
-      "ha-integration/custom_components/helianthus/__init__.py",
-      "ha-integration/custom_components/helianthus/coordinator.py",
-      "ha-integration/custom_components/helianthus/number.py",
-      "ha-integration/tests/test_entity_icon_gate.py",
-      "ha-integration/tests/test_number.py"
-    ],
-    "flowset_hwc_max_c": [
-      "ha-integration/custom_components/helianthus/__init__.py",
-      "ha-integration/custom_components/helianthus/coordinator.py",
-      "ha-integration/custom_components/helianthus/number.py",
-      "ha-integration/tests/test_entity_icon_gate.py",
-      "ha-integration/tests/test_number.py"
-    ],
+    "flow_temperature_setpoint": [],
     "frame_type": [
       "ebusgo/protocol/corpus_manifest_test.go",
       "ebusgo/protocol/testdata/observer_hook_cases.json",
@@ -7460,6 +7483,13 @@
       "vrc-explorer/src/helianthus_vrc_explorer/fixtures/b524-basv0-description-profile-v1.json",
       "vrc-explorer/src/helianthus_vrc_explorer/fixtures/b524-basv0-register-observations-v1.json"
     ],
+    "heating_partial_load_power": [
+      "ha-integration/custom_components/helianthus/__init__.py",
+      "ha-integration/custom_components/helianthus/coordinator.py",
+      "ha-integration/custom_components/helianthus/number.py",
+      "ha-integration/tests/test_entity_icon_gate.py",
+      "ha-integration/tests/test_number.py"
+    ],
     "heating_status_raw": [
       "ha-integration/custom_components/helianthus/coordinator.py",
       "ha-integration/custom_components/helianthus/subscriptions.py",
@@ -7488,12 +7518,6 @@
       "ha-integration/custom_components/helianthus/climate.py",
       "ha-integration/custom_components/helianthus/coordinator.py",
       "vrc-explorer/src/helianthus_vrc_explorer/scanner/b524_orchestration.py"
-    ],
-    "hours_till_service": [
-      "ha-integration/custom_components/helianthus/__init__.py",
-      "ha-integration/custom_components/helianthus/coordinator.py",
-      "ha-integration/custom_components/helianthus/entry_setup.py",
-      "ha-integration/custom_components/helianthus/sensor.py"
     ],
     "humidity": [
       "ha-integration/custom_components/helianthus/coordinator.py",
@@ -7992,22 +8016,6 @@
       "ha-integration/tests/test_pv_m2m.py"
     ],
     "installer_access_code": [
-      "ha-integration/custom_components/helianthus/__init__.py",
-      "ha-integration/custom_components/helianthus/coordinator.py",
-      "ha-integration/custom_components/helianthus/text.py",
-      "ha-integration/tests/test_coordinator.py",
-      "ha-integration/tests/test_number_dhw_bivalence.py",
-      "ha-integration/tests/test_optional_query_sequences.py",
-      "ha-integration/tests/test_system.py",
-      "ha-integration/tests/test_system_bound_reprobe.py",
-      "vrc-explorer/fixtures/b524-basv0-description-profile-v1.json",
-      "vrc-explorer/fixtures/b524-basv0-register-observations-v1.json",
-      "vrc-explorer/fixtures/b524_shared/protocols/vaillant/fixtures/b524-basv0-description-profile-v1.json",
-      "vrc-explorer/fixtures/b524_shared/protocols/vaillant/fixtures/b524-basv0-register-observations-v1.json",
-      "vrc-explorer/src/helianthus_vrc_explorer/fixtures/b524-basv0-description-profile-v1.json",
-      "vrc-explorer/src/helianthus_vrc_explorer/fixtures/b524-basv0-register-observations-v1.json"
-    ],
-    "installer_menu_code": [
       "ha-integration/custom_components/helianthus/__init__.py",
       "ha-integration/custom_components/helianthus/coordinator.py",
       "ha-integration/custom_components/helianthus/text.py",
@@ -8627,14 +8635,6 @@
       "ebusgo/transport/responder.go",
       "modbus/tcp_coalescing.go",
       "ha-addon/tests/test_runtime_state_wrapper_red.py"
-    ],
-    "ionisation_voltage_ua": [
-      "ha-integration/custom_components/helianthus/__init__.py",
-      "ha-integration/custom_components/helianthus/coordinator.py",
-      "ha-integration/custom_components/helianthus/fan.py",
-      "ha-integration/custom_components/helianthus/sensor_descriptors.py",
-      "ha-integration/tests/test_entity_icon_gate.py",
-      "ha-integration/tests/test_fan.py"
     ],
     "is_ethernet": [
       "ha-integration/custom_components/helianthus/coordinator.py",
@@ -9400,6 +9400,20 @@
       "vrc-explorer/src/helianthus_vrc_explorer/protocol/b555.py",
       "vrc-explorer/src/helianthus_vrc_explorer/scanner/b555.py"
     ],
+    "maximum_dhw_flow_temperature_setpoint": [
+      "ha-integration/custom_components/helianthus/__init__.py",
+      "ha-integration/custom_components/helianthus/coordinator.py",
+      "ha-integration/custom_components/helianthus/number.py",
+      "ha-integration/tests/test_entity_icon_gate.py",
+      "ha-integration/tests/test_number.py"
+    ],
+    "maximum_heating_flow_temperature_setpoint": [
+      "ha-integration/custom_components/helianthus/__init__.py",
+      "ha-integration/custom_components/helianthus/coordinator.py",
+      "ha-integration/custom_components/helianthus/number.py",
+      "ha-integration/tests/test_entity_icon_gate.py",
+      "ha-integration/tests/test_number.py"
+    ],
     "measurements": [
       "ebusgo/protocol/bus.go"
     ],
@@ -10054,7 +10068,7 @@
       "tinyebus/firmware/adapterproto/scan_state.go",
       "tinyebus/firmware/adapterproto/scan_state_test.go"
     ],
-    "modulation_pct": [
+    "modulation_setpoint": [
       "ha-integration/custom_components/helianthus/__init__.py",
       "ha-integration/custom_components/helianthus/coordinator.py",
       "ha-integration/custom_components/helianthus/fan.py",
@@ -11282,20 +11296,6 @@
       "ha-integration/tests/test_water_heater_admission.py",
       "ha-addon/scripts/smoke_addon_checklist.py"
     ],
-    "partload_hc_kw": [
-      "ha-integration/custom_components/helianthus/__init__.py",
-      "ha-integration/custom_components/helianthus/coordinator.py",
-      "ha-integration/custom_components/helianthus/number.py",
-      "ha-integration/tests/test_entity_icon_gate.py",
-      "ha-integration/tests/test_number.py"
-    ],
-    "partload_hwc_kw": [
-      "ha-integration/custom_components/helianthus/__init__.py",
-      "ha-integration/custom_components/helianthus/coordinator.py",
-      "ha-integration/custom_components/helianthus/number.py",
-      "ha-integration/tests/test_entity_icon_gate.py",
-      "ha-integration/tests/test_number.py"
-    ],
     "passive": [
       "ebusgo/cmd/aa29-smoke/aa31_smoke_linux_arm64.go",
       "ebusgo/cmd/aa29-smoke/aa31_smoke_unsupported.go",
@@ -11959,13 +11959,6 @@
       "modbus/tcp_endpoint_read.go",
       "modbus/tcp_endpoint_retry.go"
     ],
-    "phone_number": [
-      "ha-integration/custom_components/helianthus/__init__.py",
-      "ha-integration/custom_components/helianthus/coordinator.py",
-      "ha-integration/custom_components/helianthus/entry_setup.py",
-      "ha-integration/custom_components/helianthus/text.py",
-      "ha-integration/tests/test_system.py"
-    ],
     "physical_request_id": [
       "modbus/tcp_owner.go"
     ],
@@ -12066,6 +12059,7 @@
       "ha-addon/scripts/check_eebus_wrapper.py",
       "ha-addon/tests/test_offline_acceptance_index.py"
     ],
+    "primary_circuit_flow_rate": [],
     "profile": [
       "ha-integration/custom_components/helianthus/binary_sensor.py",
       "ha-integration/custom_components/helianthus/entry_setup.py",
@@ -12529,6 +12523,15 @@
       "ha-integration/tests/test_solar_cylinder.py"
     ],
     "pump_hours": [
+      "ha-integration/custom_components/helianthus/__init__.py",
+      "ha-integration/custom_components/helianthus/coordinator.py",
+      "ha-integration/custom_components/helianthus/sensor_descriptors.py",
+      "ha-integration/custom_components/helianthus/sensor_setup.py",
+      "ha-integration/tests/test_circuit.py",
+      "ha-integration/tests/test_sensor.py",
+      "ha-integration/tests/test_solar_cylinder.py"
+    ],
+    "pump_operating_time": [
       "ha-integration/custom_components/helianthus/__init__.py",
       "ha-integration/custom_components/helianthus/coordinator.py",
       "ha-integration/custom_components/helianthus/sensor_descriptors.py",
@@ -14903,6 +14906,12 @@
       "ha-addon/scripts/eebus_ha_network_proof_checks.py",
       "ha-addon/scripts/fixtures/eebus_ha_network_proof_contract_pass.json"
     ],
+    "service_time_remaining": [
+      "ha-integration/custom_components/helianthus/__init__.py",
+      "ha-integration/custom_components/helianthus/coordinator.py",
+      "ha-integration/custom_components/helianthus/entry_setup.py",
+      "ha-integration/custom_components/helianthus/sensor.py"
+    ],
     "services": [
       "ha-integration/.github/workflows/ha-validation.yml",
       "ha-integration/custom_components/helianthus/__init__.py",
@@ -16278,7 +16287,7 @@
       "ha-addon/tests/test_growatt_project_can_options.py",
       "ha-addon/tests/test_offline_acceptance_index.py"
     ],
-    "storage_load_pump_pct": [
+    "storage_loading_pump_level": [
       "ha-integration/custom_components/helianthus/__init__.py",
       "ha-integration/custom_components/helianthus/coordinator.py",
       "ha-integration/custom_components/helianthus/sensor_descriptors.py",
@@ -16766,6 +16775,12 @@
       "vrc-explorer/tests/test_browse_store.py",
       "vrc-explorer/tests/test_html_report.py",
       "vrc-explorer/tests/test_scanner_b555.py"
+    ],
+    "temperature_limiter_deactivation_count": [
+      "ha-integration/custom_components/helianthus/__init__.py",
+      "ha-integration/custom_components/helianthus/coordinator.py",
+      "ha-integration/custom_components/helianthus/sensor_descriptors.py",
+      "ha-integration/tests/test_sensor.py"
     ],
     "temperature_raw": [
       "vrc-explorer/src/helianthus_vrc_explorer/scanner/b555.py",

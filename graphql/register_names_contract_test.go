@@ -12,9 +12,10 @@ import (
 	graphqlgo "github.com/graphql-go/graphql"
 )
 
-// registerNamesFixturePath is the record of the B524 register-derived fields
-// the system plane publishes, with the docs-ebus name and previous_name of
-// each register. The MCP and Portal contract tests read the same file.
+// registerNamesFixturePath is the record of the B524 and B509
+// register-derived fields the system, circuit and boiler planes publish, with
+// the docs-ebus name of each register. The MCP and Portal contract tests read
+// the same file.
 const registerNamesFixturePath = "testdata/register_derived_names.json"
 
 // registerNamesExemptionIssue is the only docs-ebus issue that may hold a
@@ -22,19 +23,34 @@ const registerNamesFixturePath = "testdata/register_derived_names.json"
 const registerNamesExemptionIssue = "helianthus-docs-ebus#1145"
 
 type registerNamesDoc struct {
-	Format      string             `json:"format"`
-	Description string             `json:"description"`
-	Source      string             `json:"source"`
-	Rows        []registerNamesRow `json:"rows"`
+	Format      string                  `json:"format"`
+	Description string                  `json:"description"`
+	Source      string                  `json:"source"`
+	Rows        []registerNamesRow      `json:"rows"`
+	Unmapped    []registerNamesUnmapped `json:"unmapped_fields"`
+}
+
+// registerNamesUnmapped is a field of a recorded object that no single
+// register feeds; it keeps its published name.
+type registerNamesUnmapped struct {
+	PublishedName string            `json:"published_name"`
+	Surfaces      map[string]string `json:"surfaces"`
+	Reason        string            `json:"reason"`
 }
 
 type registerNamesRow struct {
 	PublishedName         string              `json:"published_name"`
+	Service               string              `json:"service"`
 	Opcode                string              `json:"opcode"`
-	Group                 string              `json:"group"`
-	Register              string              `json:"register"`
+	Group                 string              `json:"group,omitempty"`
+	Register              string              `json:"register,omitempty"`
+	Selector              string              `json:"selector,omitempty"`
+	FallbackSelector      string              `json:"fallback_selector,omitempty"`
 	DocsEbusName          string              `json:"docs_ebus_name"`
-	PreviousName          string              `json:"previous_name"`
+	PreviousName          string              `json:"previous_name,omitempty"`
+	FormerAPIPath         string              `json:"legacy_api_path,omitempty"`
+	Unit                  string              `json:"unit,omitempty"`
+	Provisional           bool                `json:"provisional,omitempty"`
 	PreviousPublishedName string              `json:"previous_published_name,omitempty"`
 	Surfaces              map[string]string   `json:"surfaces"`
 	Join                  *registerNamesJoin  `json:"join,omitempty"`
@@ -58,13 +74,22 @@ type registerNamesBound struct {
 	Surfaces              map[string]string `json:"surfaces"`
 }
 
+// registerNamesIdentity is the native identity of a row: service, opcode and
+// either group and register (B524) or selector (B509).
+func registerNamesIdentity(row registerNamesRow) string {
+	if row.Service == "B509" {
+		return row.Service + "/" + row.Opcode + "/" + row.Selector
+	}
+	return row.Service + "/" + row.Opcode + "/" + row.Group + "/" + row.Register
+}
+
 // registerNamesRetired returns the names of a row that no surface may
 // publish: the docs-ebus previous_name, the gateway's previous published
 // names of the value and of its bound, and the previous_name of a joined
 // register. The exempt row still publishes its previous_name.
 func registerNamesRetired(row registerNamesRow) []string {
 	var names []string
-	if row.Exemption == "" && row.PreviousName != row.DocsEbusName {
+	if row.Exemption == "" && row.PreviousName != "" && row.PreviousName != row.DocsEbusName {
 		names = append(names, row.PreviousName)
 	}
 	if row.PreviousPublishedName != "" {
@@ -94,6 +119,23 @@ func registerNamesPublished(row registerNamesRow, surface string) [][2]string {
 	return out
 }
 
+// registerNamesObjects returns every object of one surface the record names,
+// for its rows and for its unmapped fields.
+func registerNamesObjects(doc registerNamesDoc, surface string) map[string]bool {
+	objects := map[string]bool{}
+	for _, row := range doc.Rows {
+		for _, field := range registerNamesPublished(row, surface) {
+			objects[field[0]] = true
+		}
+	}
+	for _, field := range doc.Unmapped {
+		if object := field.Surfaces[surface]; object != "" {
+			objects[object] = true
+		}
+	}
+	return objects
+}
+
 func loadRegisterNamesDoc(t *testing.T) registerNamesDoc {
 	t.Helper()
 	raw, err := os.ReadFile(registerNamesFixturePath)
@@ -114,6 +156,12 @@ var (
 	registerNamesHexByte  = regexp.MustCompile(`^0x[0-9A-F]{2}$`)
 	registerNamesHexWord  = regexp.MustCompile(`^0x[0-9A-F]{4}$`)
 	registerNamesSurfaces = []string{"graphql", "mcp", "portal"}
+	// registerNamesFormerPath is a documentary B509 API path: the boiler
+	// object and the field the gateway once published.
+	registerNamesFormerPath = regexp.MustCompile(`^(state|config|diagnostics)\.[a-z][A-Za-z]*$`)
+	// registerNamesUnitSuffix is a unit carried in a name; units belong in
+	// the field description.
+	registerNamesUnitSuffix = regexp.MustCompile(`_(c|k|bar|mbar|pct|rpm|ua|lpm|kw|w|s)$`)
 )
 
 // registerNamesFixtureErrors checks the record itself: complete native
@@ -124,25 +172,40 @@ func registerNamesFixtureErrors(doc registerNamesDoc) []string {
 	if doc.Format != "helianthus-register-derived-names/v1" {
 		errs = append(errs, "format "+doc.Format)
 	}
-	if !strings.Contains(doc.Source, "b524-op02-register-names.csv") || !strings.Contains(doc.Description, "b524-op02-register-names.csv") {
-		errs = append(errs, "source page not stated")
+	for _, page := range []string{"b524-op02-register-names.csv", "b509-register-name-correspondence.csv"} {
+		if !strings.Contains(doc.Source, page) || !strings.Contains(doc.Description, page) {
+			errs = append(errs, "source page "+page+" not stated")
+		}
 	}
 	if len(doc.Rows) == 0 {
 		errs = append(errs, "no rows")
 	}
 	identities := map[string]bool{}
 	published := map[string]bool{}
+	formerPaths := map[string]bool{}
 	exemptions := 0
 	for _, row := range doc.Rows {
-		id := row.Opcode + "/" + row.Group + "/" + row.Register
-		if row.Opcode != "0x02" || !registerNamesHexByte.MatchString(row.Group) || !registerNamesHexWord.MatchString(row.Register) {
-			errs = append(errs, "identity "+id)
+		id := registerNamesIdentity(row)
+		var names []string
+		switch row.Service {
+		case "B524":
+			if row.Opcode != "0x02" || !registerNamesHexByte.MatchString(row.Group) || !registerNamesHexWord.MatchString(row.Register) {
+				errs = append(errs, "identity "+id)
+			}
+			if row.Selector != "" || row.FallbackSelector != "" || row.FormerAPIPath != "" || row.Unit != "" || row.Provisional {
+				errs = append(errs, id+": B509 column on a B524 row")
+			}
+			names = []string{row.PublishedName, row.DocsEbusName, row.PreviousName}
+		case "B509":
+			errs = append(errs, registerNamesB509Errors(id, row, identities, formerPaths)...)
+			names = []string{row.PublishedName, row.DocsEbusName}
+		default:
+			errs = append(errs, "service "+id)
 		}
 		if identities[id] {
 			errs = append(errs, "duplicate register "+id)
 		}
 		identities[id] = true
-		names := []string{row.PublishedName, row.DocsEbusName, row.PreviousName}
 		if row.PreviousPublishedName != "" {
 			names = append(names, row.PreviousPublishedName)
 			if row.PreviousPublishedName == row.PublishedName {
@@ -151,7 +214,7 @@ func registerNamesFixtureErrors(doc registerNamesDoc) []string {
 		}
 		if row.Join != nil {
 			names = append(names, row.Join.DocsEbusName, row.Join.PreviousName)
-			joinID := row.Opcode + "/" + row.Group + "/" + row.Join.Register
+			joinID := row.Service + "/" + row.Opcode + "/" + row.Group + "/" + row.Join.Register
 			if !registerNamesHexWord.MatchString(row.Join.Register) {
 				errs = append(errs, "identity "+joinID)
 			}
@@ -209,6 +272,113 @@ func registerNamesFixtureErrors(doc registerNamesDoc) []string {
 	if exemptions > 1 {
 		errs = append(errs, "more than one exemption")
 	}
+	errs = append(errs, registerNamesUnmappedErrors(doc, published)...)
+	sort.Strings(errs)
+	return errs
+}
+
+// registerNamesB509Errors checks the columns of one B509 row: operation
+// opcode, selector and optional fallback selector, no B524 column, a
+// documentary former API path whose object matches the GraphQL object, a published
+// name without a unit suffix and a recorded unit where the previous published
+// name carried one.
+func registerNamesB509Errors(id string, row registerNamesRow, identities, formerPaths map[string]bool) []string {
+	var errs []string
+	if row.Opcode != "0x0D" || !registerNamesHexWord.MatchString(row.Selector) {
+		errs = append(errs, "identity "+id)
+	}
+	if row.FallbackSelector != "" {
+		fallbackID := row.Service + "/" + row.Opcode + "/" + row.FallbackSelector
+		if !registerNamesHexWord.MatchString(row.FallbackSelector) || row.FallbackSelector == row.Selector {
+			errs = append(errs, "fallback identity "+fallbackID)
+		}
+		if identities[fallbackID] {
+			errs = append(errs, "duplicate register "+fallbackID)
+		}
+		identities[fallbackID] = true
+	}
+	if row.Group != "" || row.Register != "" || row.PreviousName != "" || row.Join != nil || row.Bound != nil || row.Exemption != "" {
+		errs = append(errs, id+": B524 column on a B509 row")
+	}
+	if !registerNamesFormerPath.MatchString(row.FormerAPIPath) {
+		errs = append(errs, fmt.Sprintf("%s: former API path %q", id, row.FormerAPIPath))
+	} else if object := "boiler_" + strings.SplitN(row.FormerAPIPath, ".", 2)[0]; row.Surfaces["graphql"] != object {
+		errs = append(errs, fmt.Sprintf("%s: former API path %q outside GraphQL object %q", id, row.FormerAPIPath, row.Surfaces["graphql"]))
+	}
+	if formerPaths[row.FormerAPIPath] {
+		errs = append(errs, "duplicate former API path "+row.FormerAPIPath)
+	}
+	formerPaths[row.FormerAPIPath] = true
+	if registerNamesUnitSuffix.MatchString(row.PublishedName) {
+		errs = append(errs, fmt.Sprintf("%s: unit suffix in %q", id, row.PublishedName))
+	}
+	if registerNamesUnitSuffix.MatchString(row.PreviousPublishedName) && row.Unit == "" {
+		errs = append(errs, fmt.Sprintf("%s: unit of %q not recorded", id, row.PreviousPublishedName))
+	}
+	return errs
+}
+
+// registerNamesUnmappedErrors checks the unmapped fields: snake_case, a
+// reason, all surfaces named, and a name that is neither recorded for a
+// register nor retired.
+func registerNamesUnmappedErrors(doc registerNamesDoc, published map[string]bool) []string {
+	var errs []string
+	retired := map[string]bool{}
+	for _, row := range doc.Rows {
+		for _, name := range registerNamesRetired(row) {
+			retired[name] = true
+		}
+	}
+	seen := map[string]bool{}
+	for _, field := range doc.Unmapped {
+		name := field.PublishedName
+		if !registerNamesSnake.MatchString(name) {
+			errs = append(errs, fmt.Sprintf("unmapped name %q", name))
+		}
+		if strings.TrimSpace(field.Reason) == "" {
+			errs = append(errs, "unmapped "+name+": no reason")
+		}
+		if retired[name] {
+			errs = append(errs, "unmapped "+name+": retired name")
+		}
+		if len(field.Surfaces) != len(registerNamesSurfaces) {
+			errs = append(errs, "unmapped "+name+": surfaces")
+		}
+		for _, surface := range registerNamesSurfaces {
+			object, ok := field.Surfaces[surface]
+			if !ok {
+				errs = append(errs, "unmapped "+name+": surface "+surface+" missing")
+				continue
+			}
+			key := surface + "/" + object + "/" + name
+			if object != "" && (published[key] || seen[key]) {
+				errs = append(errs, "unmapped "+name+": duplicate published name "+key)
+			}
+			seen[key] = true
+		}
+	}
+	return errs
+}
+
+// registerNamesDescriptionErrors checks the GraphQL description of every
+// B509 field: it states the recorded unit and says provisional exactly when
+// the docs-ebus row carries an open question. descriptions maps object name
+// to field name to description.
+func registerNamesDescriptionErrors(doc registerNamesDoc, descriptions map[string]map[string]string) []string {
+	var errs []string
+	for _, row := range doc.Rows {
+		object := row.Surfaces["graphql"]
+		if row.Service != "B509" || object == "" {
+			continue
+		}
+		description := descriptions[object][row.PublishedName]
+		if row.Unit != "" && !strings.Contains(description, " in "+row.Unit+".") {
+			errs = append(errs, fmt.Sprintf("%s.%s: description %q does not state unit %s", object, row.PublishedName, description, row.Unit))
+		}
+		if strings.Contains(description, "Provisional") != row.Provisional {
+			errs = append(errs, fmt.Sprintf("%s.%s: description %q, provisional %v", object, row.PublishedName, description, row.Provisional))
+		}
+	}
 	sort.Strings(errs)
 	return errs
 }
@@ -239,12 +409,7 @@ func registerNamesDocsNameErrors(id string, row registerNamesRow) []string {
 // published maps object name to the field names that object publishes.
 func registerNamesSurfaceErrors(doc registerNamesDoc, surface string, published map[string]map[string]bool) []string {
 	var errs []string
-	objects := map[string]bool{}
-	for _, row := range doc.Rows {
-		for _, field := range registerNamesPublished(row, surface) {
-			objects[field[0]] = true
-		}
-	}
+	objects := registerNamesObjects(doc, surface)
 	for object := range objects {
 		if published[object] == nil {
 			errs = append(errs, surface+": object "+object+" not found")
@@ -253,15 +418,20 @@ func registerNamesSurfaceErrors(doc registerNamesDoc, surface string, published 
 	for _, row := range doc.Rows {
 		for _, field := range registerNamesPublished(row, surface) {
 			if !published[field[0]][field[1]] {
-				errs = append(errs, fmt.Sprintf("%s: %s does not publish %s (register %s/%s)", surface, field[0], field[1], row.Group, row.Register))
+				errs = append(errs, fmt.Sprintf("%s: %s does not publish %s (register %s)", surface, field[0], field[1], registerNamesIdentity(row)))
 			}
 		}
 		for _, retired := range registerNamesRetired(row) {
 			for candidate := range objects {
 				if published[candidate][retired] {
-					errs = append(errs, fmt.Sprintf("%s: %s publishes previous name %s (register %s/%s)", surface, candidate, retired, row.Group, row.Register))
+					errs = append(errs, fmt.Sprintf("%s: %s publishes previous name %s (register %s)", surface, candidate, retired, registerNamesIdentity(row)))
 				}
 			}
+		}
+	}
+	for _, field := range doc.Unmapped {
+		if object := field.Surfaces[surface]; object != "" && !published[object][field.PublishedName] {
+			errs = append(errs, fmt.Sprintf("%s: %s does not publish unmapped field %s", surface, object, field.PublishedName))
 		}
 	}
 	sort.Strings(errs)
@@ -271,24 +441,34 @@ func registerNamesSurfaceErrors(doc registerNamesDoc, surface string, published 
 func graphqlPublishedFields(t *testing.T, schema graphqlgo.Schema, doc registerNamesDoc) map[string]map[string]bool {
 	t.Helper()
 	published := map[string]map[string]bool{}
-	for _, row := range doc.Rows {
-		for _, field := range registerNamesPublished(row, "graphql") {
-			name := field[0]
-			if published[name] != nil {
-				continue
-			}
-			object, ok := schema.Type(name).(*graphqlgo.Object)
-			if !ok {
-				continue
-			}
-			fields := map[string]bool{}
-			for field := range object.Fields() {
-				fields[field] = true
-			}
-			published[name] = fields
+	for name := range registerNamesObjects(doc, "graphql") {
+		object, ok := schema.Type(name).(*graphqlgo.Object)
+		if !ok {
+			continue
 		}
+		fields := map[string]bool{}
+		for field := range object.Fields() {
+			fields[field] = true
+		}
+		published[name] = fields
 	}
 	return published
+}
+
+func graphqlFieldDescriptions(schema graphqlgo.Schema, doc registerNamesDoc) map[string]map[string]string {
+	descriptions := map[string]map[string]string{}
+	for name := range registerNamesObjects(doc, "graphql") {
+		object, ok := schema.Type(name).(*graphqlgo.Object)
+		if !ok {
+			continue
+		}
+		fields := map[string]string{}
+		for field, definition := range object.Fields() {
+			fields[field] = definition.Description
+		}
+		descriptions[name] = fields
+	}
+	return descriptions
 }
 
 func TestRegisterNamesFixtureIsConsistent(t *testing.T) {
@@ -318,12 +498,18 @@ func TestGraphQLPublishesDocsEbusRegisterNames(t *testing.T) {
 		if errs := registerNamesSurfaceErrors(doc, "graphql", graphqlPublishedFields(t, schema, doc)); len(errs) > 0 {
 			t.Fatalf("%s schema:\n%s", build.name, strings.Join(errs, "\n"))
 		}
+		if errs := registerNamesDescriptionErrors(doc, graphqlFieldDescriptions(schema, doc)); len(errs) > 0 {
+			t.Fatalf("%s schema descriptions:\n%s", build.name, strings.Join(errs, "\n"))
+		}
 		for _, row := range doc.Rows {
 			path, ok := map[string]string{
-				"system_state":      "system { state",
-				"system_config":     "system { config",
-				"system_properties": "system { properties",
-				"circuit_config":    "circuits { config",
+				"system_state":       "system { state",
+				"system_config":      "system { config",
+				"system_properties":  "system { properties",
+				"circuit_config":     "circuits { config",
+				"boiler_state":       "boiler_status { state",
+				"boiler_config":      "boiler_status { config",
+				"boiler_diagnostics": "boiler_status { diagnostics",
 			}[row.Surfaces["graphql"]]
 			if !ok {
 				t.Fatalf("no query path for GraphQL object %q", row.Surfaces["graphql"])
@@ -370,10 +556,37 @@ func TestRegisterNamesCheckersCatchEachMutation(t *testing.T) {
 			}
 			doc.Rows[i] = row
 		}
+		doc.Unmapped = make([]registerNamesUnmapped, len(base.Unmapped))
+		for i, field := range base.Unmapped {
+			surfaces := map[string]string{}
+			for k, v := range field.Surfaces {
+				surfaces[k] = v
+			}
+			field.Surfaces = surfaces
+			doc.Unmapped[i] = field
+		}
 		return doc
 	}
 	renamed, exempt, gateway, joined, bounded := -1, -1, -1, -1, -1
+	b509, b509Other, fallback, provisional, plain := -1, -1, -1, -1, -1
 	for i, row := range base.Rows {
+		if row.Service == "B509" {
+			switch {
+			case row.FallbackSelector != "":
+				fallback = i
+			case b509 < 0 && row.Unit != "" && row.PreviousPublishedName != "" && !row.Provisional:
+				b509 = i
+			case b509Other < 0 && row.Unit != "":
+				b509Other = i
+			}
+			if provisional < 0 && row.Provisional && row.Unit != "" {
+				provisional = i
+			}
+			if plain < 0 && !row.Provisional && row.Unit == "" {
+				plain = i
+			}
+			continue
+		}
 		if row.Exemption != "" {
 			exempt = i
 		} else if renamed < 0 && row.PreviousName != row.DocsEbusName {
@@ -391,6 +604,17 @@ func TestRegisterNamesCheckersCatchEachMutation(t *testing.T) {
 	}
 	if renamed < 0 || exempt < 0 || gateway < 0 || joined < 0 || bounded < 0 {
 		t.Fatal("fixture needs a renamed row, the exempt row, a row with a previous published name, a joined row and a row with a bound")
+	}
+	if b509 < 0 || b509Other < 0 || fallback < 0 || provisional < 0 || plain < 0 || len(base.Unmapped) < 2 {
+		t.Fatal("fixture needs two B509 rows with a unit, a B509 row with a fallback selector, a provisional B509 row, a B509 row without unit and two unmapped fields")
+	}
+	otherObject := func(object string) string {
+		for _, row := range base.Rows {
+			if row.Service == "B509" && row.Surfaces["graphql"] != object {
+				return strings.TrimPrefix(row.Surfaces["graphql"], "boiler_")
+			}
+		}
+		return ""
 	}
 
 	fixtureMutations := map[string]func(*registerNamesDoc){
@@ -426,6 +650,63 @@ func TestRegisterNamesCheckersCatchEachMutation(t *testing.T) {
 		"bound previous name not snake":        func(d *registerNamesDoc) { d.Rows[bounded].Bound.PreviousPublishedName = "previousBound" },
 		"bound surface missing":                func(d *registerNamesDoc) { delete(d.Rows[bounded].Bound.Surfaces, "mcp") },
 		"value published under the bound name": func(d *registerNamesDoc) { d.Rows[bounded].PublishedName = d.Rows[bounded].Bound.PublishedName },
+		// B509 identity: service, opcode, selector, fallback selector; every
+		// one caught when changed or duplicated.
+		"B509 service":                    func(d *registerNamesDoc) { d.Rows[b509].Service = "B510" },
+		"B509 row as B524":                func(d *registerNamesDoc) { d.Rows[b509].Service = "B524" },
+		"B524 row as B509":                func(d *registerNamesDoc) { d.Rows[renamed].Service = "B509" },
+		"B509 opcode":                     func(d *registerNamesDoc) { d.Rows[b509].Opcode = "0x02" },
+		"B509 selector":                   func(d *registerNamesDoc) { d.Rows[b509].Selector = "0x18" },
+		"B509 selector duplicated":        func(d *registerNamesDoc) { d.Rows[b509].Selector = d.Rows[b509Other].Selector },
+		"B509 selector is a fallback":     func(d *registerNamesDoc) { d.Rows[b509].Selector = d.Rows[fallback].FallbackSelector },
+		"fallback selector":               func(d *registerNamesDoc) { d.Rows[fallback].FallbackSelector = "0xA5" },
+		"fallback selector is own":        func(d *registerNamesDoc) { d.Rows[fallback].FallbackSelector = d.Rows[fallback].Selector },
+		"fallback selector duplicated":    func(d *registerNamesDoc) { d.Rows[fallback].FallbackSelector = d.Rows[b509].Selector },
+		"B509 row with group":             func(d *registerNamesDoc) { d.Rows[b509].Group = "0x00" },
+		"B509 row with register":          func(d *registerNamesDoc) { d.Rows[b509].Register = "0x0039" },
+		"B509 row with previous_name":     func(d *registerNamesDoc) { d.Rows[b509].PreviousName = d.Rows[b509].PreviousPublishedName },
+		"B509 row with exemption":         func(d *registerNamesDoc) { d.Rows[b509].Exemption = "open" },
+		"B524 row with selector":          func(d *registerNamesDoc) { d.Rows[renamed].Selector = d.Rows[b509].Selector },
+		"B524 row with fallback selector": func(d *registerNamesDoc) { d.Rows[renamed].FallbackSelector = "0xA500" },
+		"B524 row with former API path":   func(d *registerNamesDoc) { d.Rows[renamed].FormerAPIPath = d.Rows[b509].FormerAPIPath },
+		"B524 row with unit":              func(d *registerNamesDoc) { d.Rows[renamed].Unit = "bar" },
+		"B524 row provisional":            func(d *registerNamesDoc) { d.Rows[renamed].Provisional = true },
+		// B509 names: published, docs-ebus, previous published, former API path.
+		"B509 published differs":       func(d *registerNamesDoc) { d.Rows[b509].PublishedName = d.Rows[b509].PreviousPublishedName },
+		"B509 docs-ebus name differs":  func(d *registerNamesDoc) { d.Rows[b509].DocsEbusName = "other_name" },
+		"B509 previous published name": func(d *registerNamesDoc) { d.Rows[b509].PreviousPublishedName = d.Rows[b509].PublishedName },
+		"B509 unit suffix": func(d *registerNamesDoc) {
+			d.Rows[b509].PublishedName += "_c"
+			d.Rows[b509].DocsEbusName = d.Rows[b509].PublishedName
+		},
+		"B509 unit not recorded":        func(d *registerNamesDoc) { d.Rows[b509].Unit = "" },
+		"former API path missing":       func(d *registerNamesDoc) { d.Rows[b509].FormerAPIPath = "" },
+		"former API path without plane": func(d *registerNamesDoc) { d.Rows[b509].FormerAPIPath = "flowTemperatureC" },
+		"former API path other plane": func(d *registerNamesDoc) {
+			path := d.Rows[b509].FormerAPIPath
+			d.Rows[b509].FormerAPIPath = otherObject(d.Rows[b509].Surfaces["graphql"]) + path[strings.Index(path, "."):]
+		},
+		"former API path duplicated": func(d *registerNamesDoc) { d.Rows[b509].FormerAPIPath = d.Rows[b509Other].FormerAPIPath },
+		"B509 published name duplicated": func(d *registerNamesDoc) {
+			d.Rows[b509].Surfaces = d.Rows[b509Other].Surfaces
+			d.Rows[b509].PublishedName = d.Rows[b509Other].PublishedName
+			d.Rows[b509].DocsEbusName = d.Rows[b509Other].DocsEbusName
+		},
+		// Unmapped fields: name, reason, each surface.
+		"unmapped name not snake":  func(d *registerNamesDoc) { d.Unmapped[0].PublishedName = "returnTemperature" },
+		"unmapped name is retired": func(d *registerNamesDoc) { d.Unmapped[0].PublishedName = d.Rows[b509].PreviousPublishedName },
+		"unmapped name is published": func(d *registerNamesDoc) {
+			d.Unmapped[0].Surfaces = d.Rows[b509].Surfaces
+			d.Unmapped[0].PublishedName = d.Rows[b509].PublishedName
+		},
+		"unmapped name duplicated": func(d *registerNamesDoc) { d.Unmapped[1] = d.Unmapped[0] },
+		"unmapped reason missing":  func(d *registerNamesDoc) { d.Unmapped[0].Reason = " " },
+		"unmapped graphql missing": func(d *registerNamesDoc) { delete(d.Unmapped[0].Surfaces, "graphql") },
+		"unmapped mcp missing":     func(d *registerNamesDoc) { delete(d.Unmapped[0].Surfaces, "mcp") },
+		"unmapped portal missing":  func(d *registerNamesDoc) { delete(d.Unmapped[0].Surfaces, "portal") },
+		"source B509 page": func(d *registerNamesDoc) {
+			d.Source = strings.ReplaceAll(d.Source, "b509-register-name-correspondence.csv", "b509.csv")
+		},
 	}
 	for name, mutate := range fixtureMutations {
 		doc := clone()
@@ -444,6 +725,12 @@ func TestRegisterNamesCheckersCatchEachMutation(t *testing.T) {
 				}
 				out[field[0]][field[1]] = true
 			}
+		}
+		for _, field := range base.Unmapped {
+			if out[field.Surfaces["graphql"]] == nil {
+				out[field.Surfaces["graphql"]] = map[string]bool{}
+			}
+			out[field.Surfaces["graphql"]][field.PublishedName] = true
 		}
 		return out
 	}
@@ -509,6 +796,86 @@ func TestRegisterNamesCheckersCatchEachMutation(t *testing.T) {
 		mutate(p)
 		if len(registerNamesSurfaceErrors(base, "graphql", p)) == 0 {
 			t.Errorf("surface mutation %q not caught", name)
+		}
+	}
+
+	// B509 rows and unmapped fields on a surface.
+	b := base.Rows[b509]
+	u := base.Unmapped[0]
+	b509Mutations := map[string]func(map[string]map[string]bool){
+		"B509 field back to previous published name": func(p map[string]map[string]bool) {
+			delete(p[b.Surfaces["graphql"]], b.PublishedName)
+			p[b.Surfaces["graphql"]][b.PreviousPublishedName] = true
+		},
+		"B509 previous published name as alias": func(p map[string]map[string]bool) { p[b.Surfaces["graphql"]][b.PreviousPublishedName] = true },
+		"B509 previous published name in sibling": func(p map[string]map[string]bool) {
+			p[base.Rows[renamed].Surfaces["graphql"]][b.PreviousPublishedName] = true
+		},
+		"B509 field dropped":     func(p map[string]map[string]bool) { delete(p[b.Surfaces["graphql"]], b.PublishedName) },
+		"unmapped field dropped": func(p map[string]map[string]bool) { delete(p[u.Surfaces["graphql"]], u.PublishedName) },
+		"unmapped field renamed": func(p map[string]map[string]bool) {
+			delete(p[u.Surfaces["graphql"]], u.PublishedName)
+			p[u.Surfaces["graphql"]][strings.TrimSuffix(u.PublishedName, "_c")] = true
+		},
+		"unmapped object missing": func(p map[string]map[string]bool) { delete(p, u.Surfaces["graphql"]) },
+	}
+	for name, mutate := range b509Mutations {
+		p := published()
+		mutate(p)
+		if len(registerNamesSurfaceErrors(base, "graphql", p)) == 0 {
+			t.Errorf("B509 surface mutation %q not caught", name)
+		}
+	}
+
+	// GraphQL descriptions: unit and provisional marker.
+	descriptions := func() map[string]map[string]string {
+		out := map[string]map[string]string{}
+		for _, row := range base.Rows {
+			object := row.Surfaces["graphql"]
+			if row.Service != "B509" || object == "" {
+				continue
+			}
+			if out[object] == nil {
+				out[object] = map[string]string{}
+			}
+			text := "Value"
+			if row.Unit != "" {
+				text += " in " + row.Unit + "."
+			}
+			if row.Provisional {
+				text += " Provisional name."
+			}
+			out[object][row.PublishedName] = text
+		}
+		return out
+	}
+	if errs := registerNamesDescriptionErrors(base, descriptions()); len(errs) != 0 {
+		t.Fatalf("clean descriptions reported: %v", errs)
+	}
+	pr, pl := base.Rows[provisional], base.Rows[plain]
+	descriptionMutations := map[string]func(*registerNamesDoc, map[string]map[string]string){
+		"unit dropped from description": func(_ *registerNamesDoc, d map[string]map[string]string) {
+			d[b.Surfaces["graphql"]][b.PublishedName] = "Value."
+		},
+		"recorded unit changed": func(doc *registerNamesDoc, _ map[string]map[string]string) { doc.Rows[b509].Unit = "m" + b.Unit },
+		"provisional marker dropped": func(_ *registerNamesDoc, d map[string]map[string]string) {
+			d[pr.Surfaces["graphql"]][pr.PublishedName] = "Value in " + pr.Unit + "."
+		},
+		"provisional marker on a settled name": func(_ *registerNamesDoc, d map[string]map[string]string) {
+			d[pl.Surfaces["graphql"]][pl.PublishedName] = "Value. Provisional name."
+		},
+		"provisional flag dropped": func(doc *registerNamesDoc, _ map[string]map[string]string) { doc.Rows[provisional].Provisional = false },
+		"provisional flag added":   func(doc *registerNamesDoc, _ map[string]map[string]string) { doc.Rows[plain].Provisional = true },
+		"description missing": func(_ *registerNamesDoc, d map[string]map[string]string) {
+			delete(d[pr.Surfaces["graphql"]], pr.PublishedName)
+		},
+	}
+	for name, mutate := range descriptionMutations {
+		doc := clone()
+		d := descriptions()
+		mutate(&doc, d)
+		if len(registerNamesDescriptionErrors(doc, d)) == 0 {
+			t.Errorf("description mutation %q not caught", name)
 		}
 	}
 }

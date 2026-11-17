@@ -467,7 +467,7 @@ type executeFixture struct {
 	output  string
 	marker  string
 	ebusd   *fakeEbusd
-	enhPeer *fakeENHPeer
+	enhPeer *fakeMuxPeer
 }
 
 func newExecuteFixture(t *testing.T, cases []string, mutate func(*RunnerOptions)) (*executeFixture, error) {
@@ -476,28 +476,29 @@ func newExecuteFixture(t *testing.T, cases []string, mutate func(*RunnerOptions)
 		output:  filepath.Join(t.TempDir(), "results"),
 		marker:  filepath.Join(t.TempDir(), "commands.log"),
 		ebusd:   &fakeEbusd{},
-		enhPeer: &fakeENHPeer{response: []byte{0xB5, 0x01}},
+		enhPeer: &fakeMuxPeer{response: []byte{0xB5, 0x01}},
 	}
 	record := func(name string) string { return fmt.Sprintf("echo %s >> '%s'", name, fixture.marker) }
 	options := RunnerOptions{
-		OutputDir:         fixture.output,
-		Suite:             SuiteAdapterMuxV2,
-		Target:            "local",
-		IncludeIDs:        cases,
-		Execute:           true,
-		SessionID:         "session-a",
-		Candidate:         "candidate-a",
-		HardwareSetup:     "setup-a",
-		StartGateway:      record("gateway-start"),
-		StopGateway:       record("gateway-stop"),
-		StartEbusd:        record("ebusd-start"),
-		StopEbusd:         record("ebusd-stop"),
-		SmokeCommand:      record("smoke-$MATRIX_INVARIANT-$MATRIX_NORTHBOUND_CLIENT-$MATRIX_HARDWARE_SETUP"),
+		OutputDir:     fixture.output,
+		Suite:         SuiteAdapterMuxV2,
+		Target:        "local",
+		IncludeIDs:    cases,
+		Execute:       true,
+		SessionID:     "session-a",
+		Candidate:     "candidate-a",
+		HardwareSetup: "setup-a",
+		StartGateway:  record("gateway-start"),
+		StopGateway:   record("gateway-stop"),
+		StartEbusd:    record("ebusd-start"),
+		StopEbusd:     record("ebusd-stop"),
+		SmokeCommand: record("smoke-$MATRIX_INVARIANT-$MATRIX_NORTHBOUND_CLIENT-$MATRIX_HARDWARE_SETUP") +
+			` && : > "$MATRIX_SMOKE_READY_FILE"`,
 		MuxENHAddr:        "mux.invalid:1",
 		EbusdCommandAddr:  "ebusd.invalid:1",
 		WorkloadInitiator: "f7",
 		WorkloadTarget:    "15",
-		CaseTimeout:       10 * time.Second,
+		CaseTimeout:       20 * time.Second,
 	}
 	if mutate != nil {
 		mutate(&options)

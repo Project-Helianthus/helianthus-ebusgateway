@@ -19,6 +19,56 @@ MATTER_FEED_CLASSIFIER = REPO_ROOT / "scripts" / "matter_feed_transport_classifi
 MATTER_FEED_API_PATCH = SCRIPT_DIR / "testdata" / "matter_feed_api_composition.patch"
 
 
+def declared_adaptermux_v2_cells() -> list[tuple[str, str, str, str, str]]:
+    """Read the inventory the gate declares (a Go test pins it to internal/matrix)."""
+    text = TRANSPORT_GATE_SCRIPT.read_text(encoding="utf-8")
+    block = text.split("# BEGIN adaptermux-v2 inventory declaration", 1)[1]
+    block = block.split("# END adaptermux-v2 inventory declaration", 1)[0]
+    table = block.split('CELLS = """', 1)[1].split('"""', 1)[0]
+    return [tuple(line.split()) for line in table.strip().splitlines()]
+
+
+ADAPTERMUX_V2_CATEGORY_RESULTS = {
+    "BI-02": ("blocked-infra", "uart_direct_hardware_absent"),
+    "PL-01": ("planned", "mux_southbound_plain_not_implemented"),
+    "PL-02": ("planned", "mux_local_responder_not_implemented"),
+    "PL-03": ("planned", "mux_raw_symbol_forwarding_not_implemented"),
+    "PL-04": ("planned", "fifo_order_superseded_by_address_priority"),
+}
+XF01_REASON = "southbound plain tcp under dual-client load reports no signal (carried from proxy dual-client)"
+
+
+def adaptermux_v2_index() -> dict:
+    """A synthetic aggregate index that satisfies section 4 of the policy page."""
+    cases = []
+    for case_id, row, southbound, invariant, category in declared_adaptermux_v2_cells():
+        case = {
+            "case_id": case_id, "suite": "adaptermux-v2", "southbound_transport": southbound,
+            "invariant": invariant, "session_id": "session-a", "candidate": "candidate-a",
+            "target": "ha-addon", "hardware_setup": "setup-" + row.lower(), "outcome": "pass",
+            "expected": "pass", "expectation": "", "infra_reason": "", "planned_reason": "",
+        }
+        if category != "-":
+            outcome, reason = ADAPTERMUX_V2_CATEGORY_RESULTS[category]
+            case["outcome"] = outcome
+            case["infra_reason" if outcome == "blocked-infra" else "planned_reason"] = reason
+            if category == "BI-02":
+                case["hardware_setup"] = ""
+        if case_id == "TCP-CX01":
+            case["expected"] = "fail"
+            case["expectation"] = XF01_REASON
+        cases.append(case)
+    return {
+        "generated_at": "synthetic", "target": "ha-addon", "suite": "adaptermux-v2",
+        "matrix_inventory_version": "2", "session_id": "session-a", "candidate": "candidate-a",
+        "cases": cases,
+    }
+
+
+def retired_full88_report() -> dict:
+    return {"cases": [{"case_id": f"T{i:02d}", "outcome": "pass"} for i in range(1, 89)]}
+
+
 class NoMatterProfileCacheTests(unittest.TestCase):
     def test_configured_cache_does_not_require_export(self) -> None:
         spec = importlib.util.spec_from_file_location(
@@ -247,7 +297,7 @@ type Config struct {
 
         report_path = repo_path / "report.json"
         report_path.write_text(
-            json.dumps({"cases": [{"case_id": f"T{i:02d}", "outcome": "pass"} for i in range(1, 89)]}),
+            json.dumps(adaptermux_v2_index()),
             encoding="utf-8",
         )
         return repo_path, report_path
@@ -571,7 +621,7 @@ type Config struct {
             text=True, capture_output=True, check=False,
         )
         self.assertEqual(result.returncode, 0, msg=result.stderr)
-        self.assertIn("transport gate: PASS (pass=88", result.stdout)
+        self.assertIn("transport gate: PASS (suite=adaptermux-v2, matrix_inventory_version=2, total=173;", result.stdout)
         self.assertIn("Modbus RTU production conformance", result.stdout)
 
     def test_config_change_fails_closed_when_modbus_rtu_conformance_fails(self) -> None:
@@ -780,7 +830,7 @@ type Config struct {
                         if outcome == "pass":
                             self.assertIn("transport gate: PASS", result.stdout)
                         else:
-                            self.assertIn("T01", result.stdout)
+                            self.assertIn("ENS-AD01", result.stdout)
 
     def test_modbus_rtu_gate_skips_unrelated_go_mod_change(self) -> None:
         base_text = "module test\n\ngo 1.22\n\nrequire example.com/other v1.0.0\n"
@@ -820,7 +870,7 @@ type Config struct {
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("xpass", result.stdout)
-        self.assertIn("T01", result.stdout)
+        self.assertIn("ENS-AD01", result.stdout)
 
     def test_transport_gate_fails_for_runtime_control_flow_main_diff(self) -> None:
         repo_path, _ = self._create_temp_repo(
@@ -1112,6 +1162,206 @@ type Config struct {
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("TRANSPORT_MATRIX_REPORT is required", result.stdout)
+
+
+class AdapterMuxV2ReportFormTests(unittest.TestCase):
+    """The report check of section 4 of docs/testing/transport-gate-policy-v2.md."""
+
+    _script_env = TransportGateTests._script_env
+    _create_temp_repo = TransportGateTests._create_temp_repo
+
+    def _gate(self, report, changed_file: str = "internal/matrix/runner.go", **extra: str):
+        repo_path, report_path = self._create_temp_repo(changed_file)
+        if report is not None:
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            extra.setdefault("TRANSPORT_MATRIX_REPORT", str(report_path))
+        return subprocess.run(
+            ["bash", "scripts/transport_gate.sh"], cwd=repo_path,
+            env=self._script_env(TRANSPORT_GATE_BASE_REF="HEAD", **extra),
+            text=True, capture_output=True, check=False,
+        )
+
+    def _rejected(self, report, *fragments: str) -> None:
+        result = self._gate(report)
+        self.assertNotEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        self.assertNotIn("transport gate: PASS", result.stdout)
+        for fragment in fragments:
+            self.assertIn(fragment, result.stdout)
+
+    @staticmethod
+    def _case(report: dict, case_id: str) -> dict:
+        return next(case for case in report["cases"] if case["case_id"] == case_id)
+
+    def test_declared_inventory_has_the_matrix_shape(self) -> None:
+        cells = declared_adaptermux_v2_cells()
+        self.assertEqual(len(cells), 173)
+        self.assertEqual(len({cell[0] for cell in cells}), 173)
+        categories = [cell[4] for cell in cells]
+        self.assertEqual(categories.count("-"), 33)
+        self.assertEqual(categories.count("BI-02"), 72)
+        self.assertEqual(sum(categories.count(c) for c in ("PL-01", "PL-02", "PL-03", "PL-04")), 68)
+        self.assertNotIn("RS", categories)
+
+    def test_aggregate_index_satisfying_section_4_passes(self) -> None:
+        result = self._gate(adaptermux_v2_index())
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        self.assertIn(
+            "transport gate: PASS (suite=adaptermux-v2, matrix_inventory_version=2, total=173; "
+            "blocked-infra=72, pass=33, planned=68; by transport: ENS: pass=15, planned=10; ENH: pass=16, planned=10; ", result.stdout)
+        self.assertIn("UARTRAW: blocked-infra=24)", result.stdout)
+
+    def test_retired_88_case_report_is_rejected_naming_the_new_form(self) -> None:
+        for report in (retired_full88_report(), dict(retired_full88_report(), suite="full88")):
+            with self.subTest(suite=report.get("suite")):
+                self._rejected(report, "must be an adaptermux-v2 index", "the retired 88-case full88 form",
+                               "matrix-runner --suite adaptermux-v2")
+
+    def test_other_suite_is_rejected(self) -> None:
+        for suite in ("passive", "adaptermux-v1", "ADAPTERMUX-V2"):
+            with self.subTest(suite=suite):
+                self._rejected(dict(adaptermux_v2_index(), suite=suite), "must be an adaptermux-v2 index")
+
+    def test_wrong_inventory_version_is_rejected(self) -> None:
+        for version in ("1", "3", 2, None):
+            with self.subTest(version=version):
+                self._rejected(dict(adaptermux_v2_index(), matrix_inventory_version=version),
+                               "matrix_inventory_version", "the gate declares '2'")
+
+    def test_cell_in_a_category_the_gate_does_not_accept_is_rejected(self) -> None:
+        report = adaptermux_v2_index()
+        case = self._case(report, "ENS-AD04")
+        case.update(outcome="planned", planned_reason="cell_awaiting_respecification", hardware_setup="setup-ens")
+        self._rejected(report, "ENS-AD04: planned outside PL-01..PL-04 (reason cell_awaiting_respecification)")
+
+    def test_reserved_cell_with_another_outcome_or_reason_is_rejected(self) -> None:
+        for case_id, change in (
+            ("ENS-PX05", {"outcome": "pass", "planned_reason": ""}),
+            ("ENH-PX09", {"planned_reason": "mux_raw_symbol_forwarding_not_implemented"}),
+            ("UDP-AD01", {"outcome": "blocked-infra", "planned_reason": "", "infra_reason": "adapter_no_signal"}),
+            ("UARTENS-AD01", {"infra_reason": "adapter_no_signal"}),
+            ("UARTENH-PX01", {"outcome": "planned", "infra_reason": "",
+                              "planned_reason": "uart_direct_hardware_absent"}),
+        ):
+            with self.subTest(case=case_id):
+                report = adaptermux_v2_index()
+                self._case(report, case_id).update(change)
+                self._rejected(report, case_id + ": reserved cell of")
+
+    def test_missing_hardware_setup_is_rejected(self) -> None:
+        for case_id in ("ENS-AD01", "ENH-PX12", "EBUSD-ES01", "UDP-DS01"):
+            with self.subTest(case=case_id):
+                report = adaptermux_v2_index()
+                self._case(report, case_id)["hardware_setup"] = ""
+                self._rejected(report, case_id + ": executable cell without a hardware setup")
+
+    def test_two_hardware_setups_within_one_transport_are_rejected(self) -> None:
+        # EBUSD-ES01 runs on the ENH setup.
+        for case_id in ("ENH-AD02", "EBUSD-ES01", "TCP-PX01"):
+            with self.subTest(case=case_id):
+                report = adaptermux_v2_index()
+                self._case(report, case_id)["hardware_setup"] = "setup-other"
+                self._rejected(report, "second hardware setup for transport")
+
+    def test_unexpected_failure_and_xpass_are_rejected(self) -> None:
+        for outcome, fragment in (("fail", "ENS-AD01: unexpected failure"), ("xpass", "ENS-AD01: unexpected xpass")):
+            with self.subTest(outcome=outcome):
+                report = adaptermux_v2_index()
+                self._case(report, "ENS-AD01")["outcome"] = outcome
+                self._rejected(report, fragment)
+
+    def test_xfail_outside_xf01_is_rejected(self) -> None:
+        report = adaptermux_v2_index()
+        self._case(report, "ENH-CX01").update(outcome="xfail", expectation=XF01_REASON)
+        self._rejected(report, "ENH-CX01: xfail outside the expected-failure inventory")
+
+    def test_expected_status_must_follow_the_expected_failure_inventory(self) -> None:
+        for case_id, expected in (("TCP-CX01", "pass"), ("ENS-CX01", "fail")):
+            with self.subTest(case=case_id):
+                report = adaptermux_v2_index()
+                self._case(report, case_id)["expected"] = expected
+                self._rejected(report, case_id + ": expected")
+
+    def test_adapter_no_signal_is_accepted_only_on_an_executable_cell(self) -> None:
+        report = adaptermux_v2_index()
+        self._case(report, "ENH-AD06").update(outcome="blocked-infra", infra_reason="adapter_no_signal")
+        result = self._gate(report)
+        self.assertEqual(result.returncode, 0, msg=result.stdout)
+        self.assertIn("blocked-infra=73", result.stdout)
+        for reason in ("uart_direct_hardware_absent", "", "timeout"):
+            with self.subTest(reason=reason):
+                report = adaptermux_v2_index()
+                self._case(report, "ENH-AD06").update(outcome="blocked-infra", infra_reason=reason)
+                self._rejected(report, "ENH-AD06: blocked-infra with unaccepted reason")
+
+    def test_planned_executable_cell_is_rejected(self) -> None:
+        report = adaptermux_v2_index()
+        self._case(report, "ENS-DS01").update(outcome="planned", planned_reason="mux_southbound_plain_not_implemented")
+        self._rejected(report, "ENS-DS01: planned outside PL-01..PL-04")
+
+    def test_case_set_must_equal_the_inventory(self) -> None:
+        missing = adaptermux_v2_index()
+        missing["cases"] = [case for case in missing["cases"] if case["case_id"] != "ENH-AD10"]
+        duplicate = adaptermux_v2_index()
+        duplicate["cases"].append(dict(self._case(duplicate, "ENS-AD01")))
+        unknown = adaptermux_v2_index()
+        unknown["cases"].append(dict(self._case(unknown, "ENS-AD01"), case_id="ENS-AD11"))
+        for name, report, fragment in (
+            ("missing", missing, "missing 1 declared case(s): ENH-AD10"),
+            ("duplicate", duplicate, "duplicate case ENS-AD01"),
+            ("unknown", unknown, "unknown case 'ENS-AD11'"),
+        ):
+            with self.subTest(name=name):
+                self._rejected(report, "does not carry the declared inventory of 173 cells exactly", fragment)
+
+    def test_case_identity_must_equal_the_report_identity(self) -> None:
+        for key in ("session_id", "candidate", "target"):
+            with self.subTest(key=key):
+                report = adaptermux_v2_index()
+                self._case(report, "ENH-AD03")[key] = "other"
+                self._rejected(report, "ENH-AD03: " + key + " 'other' differs")
+            with self.subTest(report_level=key):
+                self._rejected(dict(adaptermux_v2_index(), **{key: ""}), "report has no " + key)
+
+    def test_transport_and_invariant_must_follow_the_case_id(self) -> None:
+        for change in ({"southbound_transport": "enh"}, {"invariant": "AD02"}):
+            with self.subTest(change=change):
+                report = adaptermux_v2_index()
+                self._case(report, "ENS-AD01").update(change)
+                self._rejected(report, "ENS-AD01: carries")
+
+    def test_adapter_direct_change_reports_its_ad_cells(self) -> None:
+        result = self._gate(adaptermux_v2_index(), changed_file="internal/adaptermux/mux.go")
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        self.assertIn("the 77 AD cells of the report are present and accepted", result.stdout)
+        self.assertNotIn("HELIANTHUS_AD_GATE_SKIP", result.stdout)
+        report = adaptermux_v2_index()
+        self._case(report, "ENH-AD09")["outcome"] = "fail"
+        repo_path, report_path = self._create_temp_repo("internal/adaptermux/mux.go")
+        report_path.write_text(json.dumps(report), encoding="utf-8")
+        failed = subprocess.run(
+            ["bash", "scripts/transport_gate.sh"], cwd=repo_path,
+            env=self._script_env(TRANSPORT_GATE_BASE_REF="HEAD", TRANSPORT_MATRIX_REPORT=str(report_path)),
+            text=True, capture_output=True, check=False,
+        )
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn("ENH-AD09: unexpected failure", failed.stdout)
+
+    def test_owner_override_still_covers_the_report_check(self) -> None:
+        for changed_file in ("internal/matrix/runner.go", "internal/adaptermux/mux.go"):
+            for report in (None, retired_full88_report()):
+                with self.subTest(changed_file=changed_file, report=report is not None):
+                    result = self._gate(
+                        report, changed_file,
+                        TRANSPORT_GATE_OWNER_OVERRIDE="OVERRIDE_TRANSPORT_GATE_BY_OWNER",
+                        TRANSPORT_GATE_OWNER_REASON="test scope and residual risk",
+                    )
+                    self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+                    self.assertIn("owner override active (test scope and residual risk)", result.stdout)
+                    self.assertNotIn("TRANSPORT_MATRIX_REPORT is required", result.stdout)
+                    self.assertNotIn("transport gate: PASS (suite=", result.stdout)
+        result = self._gate(None, TRANSPORT_GATE_OWNER_OVERRIDE="OVERRIDE_TRANSPORT_GATE_BY_OWNER")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("override requires TRANSPORT_GATE_OWNER_REASON", result.stdout)
 
 
 if __name__ == "__main__":

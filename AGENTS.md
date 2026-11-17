@@ -136,9 +136,12 @@ Public eBUS and B524 contracts are documented at:
 - Architecture, public API, protocol, semantic behavior, state-machine, or
   reverse-engineering changes require the corresponding public docs gate.
 - eBUS transport, topology, or protocol-code changes require the applicable
-  T01..T88 result with no unexpected fail or xpass unless the operator records
-  a scope-specific override. Modbus RTU production-composition changes require
-  the declared offline Modbus RTU transport gate: gateway composition fixtures
+  AdapterMux conformance matrix (`adaptermux-v2`) result, accepted by the rules
+  of `docs/testing/transport-gate-policy-v2.md`, with no unexpected fail or
+  xpass unless the operator records a scope-specific override. The 88-case
+  `full88` form is historical and the gate rejects it. Modbus RTU
+  production-composition changes require the declared offline Modbus RTU
+  transport gate: gateway composition fixtures
   plus the pinned `helianthus-modbus` `RTUProductionEndpoint` conformance
   tests. Both gates fail closed on an unexpected test failure.
 - A transport-gate override requires both
@@ -148,7 +151,7 @@ Public eBUS and B524 contracts are documented at:
   and never creates standing or permanent merge authorization; every use remains
   bound to its recorded scope and current merge gates.
   The override covers only the physical requirements (the eBUS
-  `TRANSPORT_MATRIX_REPORT` T01..T88 check and the AD01..AD12 block). It never
+  `TRANSPORT_MATRIX_REPORT` `adaptermux-v2` check, AD cells included). It never
   skips the offline Modbus RTU gate: when that gate is triggered it still runs
   under the override, and its failure still fails the gate.
 - Prefer deterministic fixtures, replay, mocks, and local integration tests.

@@ -6,12 +6,15 @@ one directory per case (`configs/`, `logs/runner.log`, `verdict.json`) and an
 
 | Suite | Cases | Status |
 |---|---|---|
-| `full88` (default) | `T01`–`T88` | unchanged; still the gate's report form |
-| `passive` | `P01`–`P06` | unchanged |
-| `adaptermux-v2` | 173 cells of the two-axis AdapterMux conformance matrix | new; not yet the gate's form |
+| `adaptermux-v2` | 173 cells of the two-axis AdapterMux conformance matrix | the transport gate's report form |
+| `passive` | `P01`–`P06` | unchanged; the passive smoke gate's form |
+| `full88` (default flag value) | `T01`–`T88` | historical; the gate rejects it |
 
-`full88` stays the default. Switching the gate to `adaptermux-v2` is a separate
-change ([transport-gate-policy-v2.md](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/docs/testing/transport-gate-policy-v2.md)).
+The transport gate accepts only an `adaptermux-v2` index
+([transport-gate-policy-v2.md](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/docs/testing/transport-gate-policy-v2.md)).
+`full88` stays the flag's default and stays generable to reproduce historical
+reports; its proxy topologies are retired, and the T01–T08 questions are
+asked by the compatibility cells of `adaptermux-v2`.
 The schema is defined in
 [M7-adaptermux-conformance-matrix.md](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/matrix/M7-adaptermux-conformance-matrix.md).
 
@@ -136,9 +139,37 @@ smoke command uses them to run the check for that invariant.
   again, at that moment, for the case ID typed on the terminal; without it
   (skipped, or no terminal) the cell fails and says so in its reasons. Set
   `MATRIX_SMOKE_WINDOW_SEC` long enough for the action and the recovery.
-- PX cells also run the synthetic ENH contender: INIT, then three 07 04
+- PX cells also run the synthetic ENH contender on the mux ENH listener. It
+  drives the stimulus of the cell's own invariant, then three 07 04
   identification telegrams through START/SEND, with every echoed symbol and
-  the response CRC verified.
+  the response CRC verified; the telegrams must complete after the stimulus.
+  `logs/client.json` records the stimulus and what the contender observed.
+
+  | Invariant | Stimulus | The contender requires |
+  |---|---|---|
+  | PX01 | one START and an INFO request, then, once the bid is shown forwarded (see below), a START for a different initiator so the first bid is replaced | a STARTED or FAILED before that proof, or buffered with it, makes the contender bid again, it does not end the stimulus; silence is not proof the bid was forwarded; the replacement is granted once; the workload bids with the replacement initiator; a STARTED or FAILED naming the replaced initiator, or one that no outstanding START explains, fails the cell from the replacement START on, including one that arrives together with the replacement grant, during the workload and until the absorb bound after the replacement |
+  | PX02 | one START and an INFO request, then the session closes once the bid is shown forwarded (see below), leaving it for the absorb barrier | a STARTED or FAILED before that proof, or buffered with it, makes the contender bid again; silence is not proof the bid was forwarded; the next session bids with a different initiator and its telegrams complete; a grant handed out before the barrier absorbed the cancelled bid's result reaches that session as a STARTED or FAILED naming the cancelled initiator, or as one that no outstanding START explains, and fails the cell until the absorb bound after the close |
+  | PX03 | the contender wins the bus, sends the command up to its length byte and stops before the CRC, so no command ACK can come | the bus closes the telegram with SYN; the contender bids again at once |
+  | PX04 | the contender wins the bus and completes its command; a controlled target stops mid-response and SYN arrives while response bytes are still missing | the next bid is granted from that state; a target that delivers its whole response fails the cell |
+  | PX12 | another session has won the bus and sent a command byte; this session sends one SYN without owning the bus | the mux answers `ERROR_HOST` during that transaction, within one client step (5 s) of the SEND even while bus symbols keep arriving |
+
+  The absorb bound is the mux's default START deadline of 5 s: a result of
+  a replaced or cancelled bid can still arrive until then, so PX01 and PX02
+  watch for it that long. The mux selects an idle bid at a received SYN and
+  writes it to the adapter in the same step, but it delivers that SYN to the
+  sessions before the step, so the SYN alone is not proof. The contender
+  writes an INFO request after each START: the mux session answers it only
+  after it queued the bid, so a SYN delivered after the whole answer is one
+  the bid waited for, and the next symbol the mux delivers after that SYN
+  comes after the step that forwarded the bid. Silence is not proof. The replacement initiator, also used by the PX02 workload, is the
+  first of F1, F3, F7, 71, 31, 13, 17, 10, 30, 70 and FF that differs from
+  `--workload-initiator`; choose a setup where no device uses it.
+
+  PX04 needs a controlled target that stops after the response length byte.
+  A target that delivers the whole response fails the cell, because the
+  contender would then be in the response-ACK phase. Every stimulus sends
+  only symbols of an allowlisted identification telegram, or a SYN, so no
+  request other than 07 04 can reach a device.
 - CX01 runs the client chosen with `--external-client`. With `ebusd`, it is
   the ebusd workload. With `vrc-explorer`, it is a read-only scan whose only
   endpoint is the guarded ebusd command relay.
@@ -147,6 +178,14 @@ smoke command uses them to run the check for that invariant.
 
 A client's result is written to `logs/client.json`. The cell passes only when
 the smoke command and the client workload both pass.
+
+The client starts only after the smoke command has taken its baseline
+reading. The runner sets `MATRIX_SMOKE_READY_FILE` to `logs/smoke.ready` in
+the case directory and starts the client once that file exists, so the
+client's first frames fall inside the measured window. If the smoke command
+ends without creating it (a refusal, a missing signal, a surface that does
+not answer), the client is not started and the cell fails with
+`client not started`.
 
 ### Smoke command
 
@@ -185,6 +224,7 @@ Environment:
 | `MATRIX_BUS_OBSERVABILITY_URL`, `MATRIX_METRICS_URL`, `MATRIX_DEBUG_VARS_URL`, `MATRIX_GRAPHQL_URL`, `MATRIX_MCP_URL` | override one surface |
 | `MATRIX_EXTERNAL_WRITE_POLICY` | the external write policy the gateway was started with; required |
 | `MATRIX_SMOKE_WINDOW_SEC`, `MATRIX_SMOKE_POLL_SEC`, `MATRIX_SMOKE_HTTP_TIMEOUT_SEC` | case window (default 60), poll interval (default 3) and per-request timeout (default 10), in seconds |
+| `MATRIX_SMOKE_READY_FILE` | created once the first reading is taken; set by the runner, which starts the client workload only then |
 
 The operator exports the URLs and the write policy before starting the
 runner, which passes its own environment on to the command. Keep the window
@@ -196,7 +236,10 @@ Every cell checks:
   cell: `adapter-direct-ens` or `adapter-direct` for mux cells on ENS or ENH,
   `ens`, `enh`, `udp-plain` or `tcp-plain` for `*-DS01`, and `ebusd-tcp` for
   `EBUSD-ES01`. Mux cells also need the AdapterMux diagnostics in the
-  Prometheus text, and the compatibility cells need them to be absent.
+  Prometheus text, and the compatibility cells need them to be absent. Any
+  `ebus_adaptermux_` family shows a running mux, whether it carries a sample
+  or only its `HELP` and `TYPE` lines: an idle mux has no transaction ending
+  yet. The evidence lists the families seen.
 - **Write guard.** `MATRIX_EXTERNAL_WRITE_POLICY` is one of the gateway's
   policies, the gateway reports the same policy, and `configs/workload.json`
   carries exactly the read-only client allowlist.
@@ -213,7 +256,7 @@ another source.
 | AD01 | active frames > 0 and mux `transaction_done` endings > 0 |
 | AD02 | active frames > 0, passive frames > 0, passive copies matched to the gateway's own transactions > 0, and self-echo frames (own passive frames not matched) = 0; passive tap connected |
 | AD03 | third-party passive frames > 0 and completed passive transactions > 0; passive tap connected |
-| AD04, AD09 | the consumer sessions the mux reports at the first reading each observe the discontinuity (their discontinuity count moves by at least 1) and at least one does; upstream reconnects = 1; after the first reading that shows the discontinuity, active frames > 0, mux `transaction_done` endings > 0 and completed passive transactions > 0; no reading after the first shows the out-of-step hold; passive tap connected |
+| AD04, AD09 | the consumer sessions the mux reports at the first reading each observe the discontinuity (their discontinuity count moves by at least 1) and at least one does; upstream reconnects = 1; since the reading before the one that first shows the discontinuity, active frames > 0, mux `transaction_done` endings > 0 and completed passive transactions > 0. No reading after the first shows the out-of-step hold; whether a hold was raised between readings is recorded as not provable with a sampled gauge and is not a pass/fail requirement (see below); passive tap connected |
 | AD06 | AD01, plus external identification frames > 0 |
 | AD07 | AD06; contended selections won by the side with initiator priority > 0 and won by the other side = 0, where the gateway's source and the single external initiator seen in the window are ordered by the lowest low nibble, then the lowest high nibble; losing bids kept and later granted > 0, and losing bids that ended any other way = 0 |
 | AD10 | AD01, plus the semantic record and the comparison below |
@@ -224,12 +267,31 @@ another source.
 | CX01 | AD06, plus no escape-pair verification failure |
 | DS01, ES01 | active frames > 0, plus the semantic record |
 
+AD04 and AD09 measure the resumption from the reading before the one that
+first shows the discontinuity. The discontinuity and the first resumed
+transactions can fall between the same two readings, so the reading that
+detects the discontinuity can already hold the recovery, and it counts. The
+active frames, the mux `transaction_done` endings and the completed passive
+transactions each have to move since that earlier reading.
+
+The gateway publishes the out-of-step hold only as the instantaneous gauge
+`ebus_adaptermux_active_arbitration_held`. A hold raised and cleared between
+two readings leaves no trace in it, so "no hold was raised" is not provable
+with a sampled gauge. The report records that limit and AD04 and AD09 pass
+when every provable requirement holds. A hold that a reading does show still
+fails the cell. This stays until the gateway exports a latched signal such
+as a counter of hold transitions.
+
 The semantic record covers the `system` plane's state fields. For each field
 it holds presence, JSON type, unit, value and lineage (plane, path and MCP
 contract). The contract is the `meta.contract` object of the MCP answer, with
 its name, major and minor version; an absent or malformed one fails the cell.
 It also lists the fields where the GraphQL value differs from the MCP value,
-and any such difference fails the cell.
+and any such difference fails the cell. GraphQL is read before and after the
+MCP read, and the values are compared only when both GraphQL readings agree,
+so a value that arrives between two requests is not reported as drift; the
+pair is tried up to three times, and a state that changes around every MCP
+read fails the cell.
 
 AD10 reads `verdict.json` and `smoke_evidence.json` of every case in
 `MATRIX_AD10_PAIRED_CASES` from the same output directory. A paired case
@@ -266,10 +328,15 @@ first reading, before any operator action is announced. The runner records
 every non-zero status as a failed smoke step, so a refused cell or a cell
 with a missing signal never passes.
 
-AD04, AD07 and AD09 read AdapterMux series besides the ones above. The
+AD04, AD07 and AD09 also read AdapterMux series besides the ones above. The
 gateway publishes the out-of-step hold gauge
-`ebus_adaptermux_active_arbitration_held`; it does not publish the others
-yet, so these checks end with status 4 on today's gateway:
+`ebus_adaptermux_active_arbitration_held`. It does not publish the others.
+The pass criterion of each cell reads the series below, so a cell whose
+series is absent ends with status 4 (`signal_missing`) after its first
+reading and never passes; no other requirement stands in for the series.
+Until the gateway publishes them, AD04, AD07 and AD09 do not produce a pass.
+A series counts as published when the gateway renders a sample of it or its
+HELP or TYPE line:
 
 | Series | Meaning | Read by |
 |---|---|---|
@@ -316,9 +383,10 @@ The command `state` is the only line sent to ebusd.
 The commands read only `MATRIX_*` variables: `MATRIX_GATEWAY_BASE_URL` (or
 the surface overrides `MATRIX_HEALTH_URL`, `MATRIX_BUS_OBSERVABILITY_URL`,
 `MATRIX_METRICS_URL` and `MATRIX_DEBUG_VARS_URL`), `MATRIX_EBUSD_COMMAND_ADDR`
-(the runner does not derive it from `--ebusd-command-addr`: export it in the
-runner's environment with the same host:port, which the commands inherit; an
-ebusd cell without it ends with usage status 2),
+(the runner hands the value of `--ebusd-command-addr` to every cell command
+as `MATRIX_EBUSD_COMMAND_ADDR`; a value exported in the runner's environment
+that differs from the option stops the runner at start; an ebusd cell without
+an address ends with usage status 2),
 the cell variables set by the runner, and `MATRIX_ADDON_WAIT_SEC`,
 `MATRIX_ADDON_POLL_SEC` and `MATRIX_ADDON_HTTP_TIMEOUT_SEC` (default 60, 2
 and 10 seconds). The start commands poll until the state holds or the wait

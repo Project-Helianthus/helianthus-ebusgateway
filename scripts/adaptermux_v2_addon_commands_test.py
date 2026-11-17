@@ -621,12 +621,16 @@ class SafetyTest(unittest.TestCase):
 
 
 class ReadmeContractTest(unittest.TestCase):
-    def test_readme_says_ebusd_address_is_exported_not_derived(self):
+    def test_readme_says_the_runner_hands_the_ebusd_address_to_the_commands(self):
         readme = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "cmd", "matrix-runner", "README.md")
         with open(readme, encoding="utf-8") as handle:
             text = " ".join(handle.read().split())
-        self.assertIn("does not derive it from `--ebusd-command-addr`", text)
-        self.assertIn("export it in the runner's environment", text)
+        self.assertIn("the runner hands the value of `--ebusd-command-addr` to every cell command as "
+                      "`MATRIX_EBUSD_COMMAND_ADDR`", text)
+        self.assertIn("a value exported in the runner's environment that differs from the option stops the "
+                      "runner at start", text)
+        self.assertNotIn("does not derive it from `--ebusd-command-addr`", text)
+        self.assertNotIn("export it in the runner's environment", text)
 
 
 if __name__ == "__main__":

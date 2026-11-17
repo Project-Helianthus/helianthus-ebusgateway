@@ -31,17 +31,21 @@ const (
 	smokeReadyFileEnv = "MATRIX_SMOKE_READY_FILE"
 	smokeReadyFile    = "smoke.ready"
 	smokeReadyPoll    = 20 * time.Millisecond
-	// staleResultWindow is how long a contender listens after its last
-	// transaction for a STARTED or FAILED that no bid of its own explains.
-	staleResultWindow = 300 * time.Millisecond
-	// bidInFlightSettle is how long a contender waits after START before it
-	// replaces that bid or closes the session. On an idle bus the mux has
-	// forwarded the bid by then, and a prompt STARTED arrives later, so the
-	// bid is in flight with its result still outstanding.
-	bidInFlightSettle = 60 * time.Millisecond
+	// muxStartDeadline is the absorb bound: the mux default START deadline.
+	// A replaced or cancelled bid's STARTED or FAILED can still arrive
+	// until then, so the contender watches for it that long.
+	muxStartDeadline = 5 * time.Second
+	// bidInFlightAttempts bounds the STARTs a contender sends to get one
+	// bid shown in flight. A STARTED or FAILED that arrives before the
+	// received SYN only makes the contender bid again.
+	bidInFlightAttempts = 5
+	// drainWindow is how long the contender reads to discard buffered
+	// frames before a START, so a SYN received earlier is not taken as the
+	// boundary that forwarded the bid.
+	drainWindow = 2 * time.Millisecond
 	// absorbExpiryWait is how long the session that follows a cancelled
-	// in-flight bid waits for the absorb barrier to expire. The barrier's
-	// bound is the mux START deadline.
+	// in-flight bid waits for the grant. It outlasts the absorb bound, so
+	// a grant that waits the barrier out still arrives.
 	absorbExpiryWait = 8 * time.Second
 )
 
@@ -696,15 +700,22 @@ func errorText(err error) string {
 // complete after the stimulus. Every telegram passes ClassifyTelegram before
 // the first byte is written; a refused workload never opens a connection.
 const (
-	// StimulusReplacedBid (PX01): one START, then, once that bid is in flight,
-	// a START for a different initiator. The first bid is replaced. The mux
-	// absorbs its late STARTED or FAILED: that result does not reach the
-	// contender. The cell fails when it does.
+	// StimulusReplacedBid (PX01): one START, then, once a received SYN shows
+	// that bid was forwarded, a START for a different initiator, so the first
+	// bid is replaced. A STARTED or FAILED that arrives before that SYN makes
+	// the contender bid again; it does not end the stimulus. The workload bids
+	// with the replacement initiator. A STARTED or FAILED naming the replaced
+	// initiator, or one that no outstanding START explains, fails the cell,
+	// during the workload and until the absorb bound after the replacement.
 	StimulusReplacedBid = "replaced-bid"
-	// StimulusCancelledBid (PX02): one START, then the session closes only
-	// after that bid is in flight, so the absorb barrier is armed. The next
-	// session's workload completes once the barrier expires, and does not
-	// complete while the barrier stays up.
+	// StimulusCancelledBid (PX02): one START, then the session closes once a
+	// received SYN shows that bid was forwarded, so the absorb barrier is
+	// armed. A STARTED or FAILED before that SYN makes the contender bid
+	// again. The next session bids with a different initiator: a grant handed
+	// out before the barrier absorbed the cancelled bid's result reaches it
+	// as a STARTED or FAILED naming the cancelled initiator, or as one that
+	// no outstanding START explains, and fails the cell until the absorb
+	// bound after the close.
 	StimulusCancelledBid = "cancelled-bid"
 	// StimulusCommandWithoutCRC (PX03): the contender wins the bus, sends the
 	// command up to its length byte and stops before the CRC, so no command
@@ -773,18 +784,19 @@ func (runner *Runner) runContenderStimulus(ctx context.Context, invariant string
 		record.Workload.RequestTypes = append(record.Workload.RequestTypes, requestType)
 	}
 
+	// absorbFrom is when the replaced or cancelled bid left the contender;
+	// its result can still arrive until the absorb bound after it.
+	var absorbFrom time.Time
 	if record.Stimulus == StimulusCancelledBid {
 		first, err := runner.openContenderSession(ctx)
 		if err != nil {
 			return fail(err)
 		}
-		sendErr := first.send(transport.ENHReqStart, source)
-		if sendErr == nil {
-			sendErr = waitUntilBidInFlight(first)
-		}
+		bidErr := bidUntilInFlight(first, source)
+		absorbFrom = time.Now()
 		_ = first.conn.Close()
-		if sendErr != nil {
-			return fail(fmt.Errorf("cancelled bid: %w", sendErr))
+		if bidErr != nil {
+			return fail(fmt.Errorf("cancelled bid: %w", bidErr))
 		}
 		record.Observed = "in-flight bid left for the absorb barrier"
 	}
@@ -797,8 +809,9 @@ func (runner *Runner) runContenderStimulus(ctx context.Context, invariant string
 
 	switch record.Stimulus {
 	case StimulusReplacedBid:
-		observed, err := replaceInFlightBid(session, source)
+		observed, replacedAt, err := replaceInFlightBid(session, source)
 		record.Observed = observed
+		absorbFrom = replacedAt
 		if err != nil {
 			return fail(err)
 		}
@@ -822,24 +835,40 @@ func (runner *Runner) runContenderStimulus(ctx context.Context, invariant string
 		}
 	}
 
+	workloadSource := source
+	watchAbsorb := record.Stimulus == StimulusReplacedBid || record.Stimulus == StimulusCancelledBid
+	if watchAbsorb {
+		// The workload must not reuse the initiator of the bid left behind:
+		// a late STARTED of that bid would be indistinguishable from the
+		// workload's grant.
+		workloadSource = otherInitiator(source)
+		session.conn = &resultWatchConn{Conn: session.conn, initiator: source}
+	}
 	if record.Stimulus == StimulusCancelledBid {
-		// The absorb barrier holds the next grant until it expires.
+		// The absorb barrier holds the next grant until the cancelled bid's
+		// result is absorbed, at the latest until the absorb bound.
 		session.timeout = absorbExpiryWait
 	}
 	for _, telegram := range telegrams {
-		failed, err := session.transact(source, telegram, 5)
+		failed, err := session.transact(workloadSource, telegram, 5)
 		record.Workload.ArbitrationFailed += failed
 		if err != nil {
 			return fail(err)
 		}
 		record.Workload.Completed++
 	}
-	if record.Stimulus == StimulusReplacedBid {
-		if stray, err := strayArbitrationResult(session, staleResultWindow); err != nil {
-			return fail(err)
-		} else if stray != "" {
-			record.Observed = stray
-			return fail(fmt.Errorf("%w: %s", errStimulusNotObserved, stray))
+	if watchAbsorb {
+		// Keep watching until the absorb bound: a result of the bid left
+		// behind that arrives after the workload still fails the cell.
+		if remaining := time.Until(absorbFrom.Add(muxStartDeadline)); remaining > 0 {
+			stray, err := strayArbitrationResult(session, remaining)
+			if err != nil {
+				return fail(err)
+			}
+			if stray != "" {
+				record.Observed = stray
+				return fail(fmt.Errorf("%w: %s", errStimulusNotObserved, stray))
+			}
 		}
 	}
 	return record, nil
@@ -876,72 +905,190 @@ func otherInitiator(source byte) byte {
 	return 0xFF
 }
 
-// waitUntilBidInFlight waits until the outstanding START is old enough to
-// have been forwarded and returns if a STARTED or FAILED arrives first.
-func waitUntilBidInFlight(session *enhContenderSession) error {
+// bidForwarded is what the contender saw of an outstanding START.
+// answered is a STARTED or FAILED that arrived before a received SYN showed
+// the bid in flight.
+type bidForwarded struct {
+	answered bool
+	message  transport.ENHMessage
+}
+
+// awaitBidForwarded waits until a received SYN shows the outstanding START
+// was forwarded: the mux selects an idle bid at a SYN and writes it to the
+// adapter there. Silence is not that proof: on a busy bus the bid may still
+// be queued. A STARTED or FAILED before the SYN is returned, not an error.
+func awaitBidForwarded(session *enhContenderSession) (bidForwarded, error) {
 	saved := session.timeout
 	defer func() { session.timeout = saved }()
-	deadline := time.Now().Add(bidInFlightSettle)
+	deadline := time.Now().Add(saved)
+	queued := fmt.Errorf("%w: START stayed queued: no received SYN showed the bid in flight", errStimulusNotObserved)
 	for {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
-			return nil
+			return bidForwarded{}, queued
 		}
 		session.timeout = remaining
 		message, err := session.next()
 		if err != nil {
 			var netErr net.Error
 			if errors.As(err, &netErr) && netErr.Timeout() {
-				return nil
+				return bidForwarded{}, queued
 			}
-			return fmt.Errorf("await the bid to go in flight: %w", err)
+			return bidForwarded{}, fmt.Errorf("await the bid to go in flight: %w", err)
 		}
 		switch message.Command {
+		case transport.ENHResReceived:
+			if message.Data == protocol.SymbolSyn {
+				return bidForwarded{}, nil
+			}
 		case transport.ENHResStarted, transport.ENHResFailed:
-			return fmt.Errorf("%w: bid answered before it was in flight", errStimulusNotObserved)
+			return bidForwarded{answered: true, message: message}, nil
+		case transport.ENHResResetted:
+			return bidForwarded{}, fmt.Errorf("%w: RESETTED while the bid was outstanding", errContenderProtocol)
 		}
 	}
 }
 
+// drainBuffered discards the frames already received, so a SYN that came
+// before the next START is not taken as the boundary that forwarded it.
+func drainBuffered(session *enhContenderSession) error {
+	saved := session.timeout
+	defer func() { session.timeout = saved }()
+	session.pending = nil
+	session.timeout = drainWindow
+	for {
+		if _, err := session.next(); err != nil {
+			var netErr net.Error
+			if errors.As(err, &netErr) && netErr.Timeout() {
+				return nil
+			}
+			if errors.Is(err, errContenderProtocol) {
+				continue
+			}
+			return err
+		}
+	}
+}
+
+// bidUntilInFlight sends START for initiator until a received SYN shows one
+// bid forwarded with its result still outstanding. A bid answered before
+// that SYN does not end the stimulus: a STARTED is released and the
+// contender bids again, a FAILED is followed by another bid.
+func bidUntilInFlight(session *enhContenderSession, initiator byte) error {
+	for attempt := 0; attempt < bidInFlightAttempts; attempt++ {
+		if err := drainBuffered(session); err != nil {
+			return err
+		}
+		if err := session.send(transport.ENHReqStart, initiator); err != nil {
+			return err
+		}
+		forwarded, err := awaitBidForwarded(session)
+		if err != nil {
+			return err
+		}
+		if !forwarded.answered {
+			return nil
+		}
+		if forwarded.message.Command == transport.ENHResStarted {
+			if err := session.send(transport.ENHReqStart, protocol.SymbolSyn); err != nil {
+				return err
+			}
+		}
+	}
+	return fmt.Errorf("%w: each of %d STARTs was answered before a received SYN showed it in flight",
+		errStimulusNotObserved, bidInFlightAttempts)
+}
+
 // replaceInFlightBid leaves one bid in flight and replaces it with a
 // different initiator. The replaced bid's STARTED or FAILED fails the cell.
-func replaceInFlightBid(session *enhContenderSession, source byte) (string, error) {
+// replacedAt is when the replacement START was written.
+func replaceInFlightBid(session *enhContenderSession, source byte) (string, time.Time, error) {
 	replacement := otherInitiator(source)
-	if err := session.send(transport.ENHReqStart, source); err != nil {
-		return "", err
+	if err := bidUntilInFlight(session, source); err != nil {
+		return "", time.Time{}, err
 	}
-	if err := waitUntilBidInFlight(session); err != nil {
-		return "", err
-	}
+	replacedAt := time.Now()
 	if err := session.send(transport.ENHReqStart, replacement); err != nil {
-		return "", err
+		return "", replacedAt, err
 	}
 	message, err := session.await(func(message transport.ENHMessage) (bool, error) {
 		switch message.Command {
 		case transport.ENHResStarted, transport.ENHResFailed:
 			return true, nil
 		case transport.ENHResResetted:
-			return false, fmt.Errorf("%w: RESETTED during replacement", errContenderProtocol)
+			return false, fmt.Errorf("%w: RESETTED while the replacement was outstanding", errContenderProtocol)
 		default:
 			return false, nil
 		}
 	})
 	if err != nil {
-		return "", fmt.Errorf("await the replacement grant: %w", err)
+		return "", replacedAt, fmt.Errorf("await the replacement grant: %w", err)
 	}
 	if message.Command == transport.ENHResFailed || message.Data == source {
-		return "", fmt.Errorf("%w: stale arbitration result 0x%X (0x%02X) of the replaced bid",
+		return "", replacedAt, fmt.Errorf("%w: stale arbitration result 0x%X (0x%02X) of the replaced bid",
 			errStimulusNotObserved, byte(message.Command), message.Data)
 	}
 	if message.Command != transport.ENHResStarted || message.Data != replacement {
-		return "", fmt.Errorf("%w: replacement grant 0x%X (0x%02X), want STARTED 0x%02X",
+		return "", replacedAt, fmt.Errorf("%w: replacement grant 0x%X (0x%02X), want STARTED 0x%02X",
 			errStimulusNotObserved, byte(message.Command), message.Data, replacement)
 	}
 	// Release the replacement grant so the identification workload can bid.
 	if err := session.send(transport.ENHReqStart, protocol.SymbolSyn); err != nil {
-		return "", err
+		return "", replacedAt, err
 	}
-	return "replaced bid absorbed and its late result did not arrive", nil
+	return "replaced bid absorbed and its late result did not arrive", replacedAt, nil
+}
+
+// resultWatchConn fails the read that carries a STARTED or FAILED naming
+// initiator, the bid left behind, or one that no outstanding START of this
+// connection explains. Such a frame is not passed on, so it cannot be taken
+// as the grant of a later bid. Every START other than a SYN cancel written
+// through the connection is outstanding until its result is read.
+type resultWatchConn struct {
+	net.Conn
+	initiator   byte
+	outstanding int
+	readParser  transport.ENHParser
+	writeParser transport.ENHParser
+	failed      error
+}
+
+func (conn *resultWatchConn) Write(p []byte) (int, error) {
+	messages, _ := conn.writeParser.Parse(append([]byte(nil), p...))
+	for _, message := range messages {
+		if message.Command == transport.ENHReqStart && message.Data != protocol.SymbolSyn {
+			conn.outstanding++
+		}
+	}
+	return conn.Conn.Write(p)
+}
+
+func (conn *resultWatchConn) Read(p []byte) (int, error) {
+	if conn.failed != nil {
+		return 0, conn.failed
+	}
+	n, err := conn.Conn.Read(p)
+	if n > 0 {
+		messages, _ := conn.readParser.Parse(append([]byte(nil), p[:n]...))
+		for _, message := range messages {
+			if message.Command != transport.ENHResStarted && message.Command != transport.ENHResFailed {
+				continue
+			}
+			switch {
+			case message.Data == conn.initiator:
+				conn.failed = fmt.Errorf("%w: stale arbitration result 0x%X (0x%02X) of the bid left behind",
+					errStimulusNotObserved, byte(message.Command), message.Data)
+			case conn.outstanding == 0:
+				conn.failed = fmt.Errorf("%w: stale arbitration result 0x%X (0x%02X) that no outstanding START explains",
+					errStimulusNotObserved, byte(message.Command), message.Data)
+			default:
+				conn.outstanding--
+				continue
+			}
+			return 0, conn.failed
+		}
+	}
+	return n, err
 }
 
 // leaveTelegramOpen wins the bus, sends the command up to its length byte
@@ -1117,10 +1264,14 @@ func sendWithoutOwnership(session *enhContenderSession) (string, error) {
 // that no bid of the session explains.
 func strayArbitrationResult(session *enhContenderSession, window time.Duration) (string, error) {
 	saved := session.timeout
-	session.timeout = window
 	defer func() { session.timeout = saved }()
 	deadline := time.Now().Add(window)
-	for time.Now().Before(deadline) {
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return "", nil
+		}
+		session.timeout = remaining
 		message, err := session.next()
 		if err != nil {
 			var netErr net.Error
@@ -1131,10 +1282,9 @@ func strayArbitrationResult(session *enhContenderSession, window time.Duration) 
 		}
 		switch message.Command {
 		case transport.ENHResStarted, transport.ENHResFailed:
-			return fmt.Sprintf("stale arbitration result 0x%X (0x%02X) after the replaced bid", byte(message.Command), message.Data), nil
+			return fmt.Sprintf("stale arbitration result 0x%X (0x%02X) after the workload", byte(message.Command), message.Data), nil
 		}
 	}
-	return "", nil
 }
 
 func (runner *Runner) runEbusdClient(ctx context.Context) (EbusdWorkloadResult, error) {

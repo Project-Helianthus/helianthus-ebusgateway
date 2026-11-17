@@ -498,7 +498,7 @@ func newExecuteFixture(t *testing.T, cases []string, mutate func(*RunnerOptions)
 		EbusdCommandAddr:  "ebusd.invalid:1",
 		WorkloadInitiator: "f7",
 		WorkloadTarget:    "15",
-		CaseTimeout:       10 * time.Second,
+		CaseTimeout:       20 * time.Second,
 	}
 	if mutate != nil {
 		mutate(&options)

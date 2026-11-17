@@ -147,11 +147,20 @@ smoke command uses them to run the check for that invariant.
 
   | Invariant | Stimulus | The contender requires |
   |---|---|---|
-  | PX01 | one START, then, once that bid is in flight, a START for a different initiator so the first bid is replaced | the replacement is granted once and the replaced bid's STARTED or FAILED does not arrive; a delivered result of the replaced bid fails the cell |
-  | PX02 | one START, then the session closes only after that bid is in flight, leaving it for the absorb barrier | the next session's telegrams complete after the barrier expires, and do not complete while the barrier stays up |
+  | PX01 | one START, then, once a received SYN shows that bid was forwarded, a START for a different initiator so the first bid is replaced | a STARTED or FAILED before that SYN makes the contender bid again, it does not end the stimulus; silence is not proof the bid was forwarded; the replacement is granted once; the workload bids with the replacement initiator; a STARTED or FAILED naming the replaced initiator, or one that no outstanding START explains, fails the cell, during the workload and until the absorb bound after the replacement |
+  | PX02 | one START, then the session closes once a received SYN shows that bid was forwarded, leaving it for the absorb barrier | a STARTED or FAILED before that SYN makes the contender bid again; silence is not proof the bid was forwarded; the next session bids with a different initiator and its telegrams complete; a grant handed out before the barrier absorbed the cancelled bid's result reaches that session as a STARTED or FAILED naming the cancelled initiator, or as one that no outstanding START explains, and fails the cell until the absorb bound after the close |
   | PX03 | the contender wins the bus, sends the command up to its length byte and stops before the CRC, so no command ACK can come | the bus closes the telegram with SYN; the contender bids again at once |
   | PX04 | the contender wins the bus and completes its command; a controlled target stops mid-response and SYN arrives while response bytes are still missing | the next bid is granted from that state; a target that delivers its whole response fails the cell |
   | PX12 | another session has won the bus and sent a command byte; this session sends one SYN without owning the bus | the mux answers `ERROR_HOST` during that transaction |
+
+  The absorb bound is the mux's default START deadline of 5 s: a result of
+  a replaced or cancelled bid can still arrive until then, so PX01 and PX02
+  watch for it that long. The mux selects an idle bid at a received SYN,
+  which is why that SYN, and not a quiet interval, marks the bid in flight;
+  frames received before a START are discarded so an earlier SYN does not
+  count. The replacement initiator, also used by the PX02 workload, is the
+  first of F1, F3, F7, 71, 31, 13, 17, 10, 30, 70 and FF that differs from
+  `--workload-initiator`; choose a setup where no device uses it.
 
   PX04 needs a controlled target that stops after the response length byte.
   A target that delivers the whole response fails the cell, because the
@@ -244,9 +253,9 @@ another source.
 | AD01 | active frames > 0 and mux `transaction_done` endings > 0 |
 | AD02 | active frames > 0, passive frames > 0, passive copies matched to the gateway's own transactions > 0, and self-echo frames (own passive frames not matched) = 0; passive tap connected |
 | AD03 | third-party passive frames > 0 and completed passive transactions > 0; passive tap connected |
-| AD04, AD09 | the consumer sessions the mux reports at the first reading each observe the discontinuity (their discontinuity count moves by at least 1) and at least one does; upstream reconnects = 1; from the last reading before the first one that shows the discontinuity, active frames > 0, mux `transaction_done` endings > 0 and completed passive transactions > 0; no reading after the first shows the out-of-step hold; whether a hold was raised between readings is recorded as not provable with a sampled gauge and is not a pass/fail requirement (see below); passive tap connected |
+| AD04, AD09 | when the gateway publishes the discontinuity and reconnect series: the consumer sessions the mux reports at the first reading each observe the discontinuity (their discontinuity count moves by at least 1) and at least one does; upstream reconnects = 1; after the reading that first shows the discontinuity, active frames > 0, mux `transaction_done` endings > 0 and completed passive transactions > 0 (traffic inside that reading does not count). When those series are absent they are recorded as not provable and the cell instead requires that whole-window flow. No reading after the first shows the out-of-step hold; whether a hold was raised between readings is recorded as not provable with a sampled gauge and is not a pass/fail requirement (see below); passive tap connected |
 | AD06 | AD01, plus external identification frames > 0 |
-| AD07 | AD06; contended selections won by the side with initiator priority > 0 and won by the other side = 0, where the gateway's source and the single external initiator seen in the window are ordered by the lowest low nibble, then the lowest high nibble; losing bids kept and later granted > 0, and losing bids that ended any other way = 0 |
+| AD07 | AD06; when the gateway publishes them, contended selections won by the side with initiator priority > 0 and won by the other side = 0, where the gateway's source and the single external initiator seen in the window are ordered by the lowest low nibble, then the lowest high nibble; losing bids kept and later granted > 0, and losing bids that ended any other way = 0. When those series are absent they are recorded as not provable and are not pass/fail requirements |
 | AD10 | AD01, plus the semantic record and the comparison below |
 | PX01, PX02 | AD06, plus no `max_ownership` ending |
 | PX03 | AD06, plus no `syn_timeout` ending |
@@ -255,12 +264,13 @@ another source.
 | CX01 | AD06, plus no escape-pair verification failure |
 | DS01, ES01 | active frames > 0, plus the semantic record |
 
-AD04 and AD09 measure the resumption from the last reading before the
-discontinuity is seen: when the discontinuity and the first resumed
-transactions fall between the same two readings, the reading that shows the
-discontinuity already holds the recovery. Traffic between that earlier
-reading and the discontinuity counts too, so the poll interval bounds how
-precisely the resumption is attributed.
+AD04 and AD09 measure the resumption only after the discontinuity is
+observed. Increases in the reading that first shows the discontinuity, and
+traffic before that reading, are not resumption. A later reading has to move
+the active frames, the mux `transaction_done` endings and the completed
+passive transactions. When the gateway does not publish the discontinuity
+series, those measures are not provable and the cell instead requires the
+same flow over the whole window, so a bus that stays quiet still fails.
 
 The gateway publishes the out-of-step hold only as the instantaneous gauge
 `ebus_adaptermux_active_arbitration_held`. A hold raised and cleared between
@@ -316,10 +326,15 @@ first reading, before any operator action is announced. The runner records
 every non-zero status as a failed smoke step, so a refused cell or a cell
 with a missing signal never passes.
 
-AD04, AD07 and AD09 read AdapterMux series besides the ones above. The
+AD04, AD07 and AD09 also read AdapterMux series besides the ones above. The
 gateway publishes the out-of-step hold gauge
-`ebus_adaptermux_active_arbitration_held`; it does not publish the others
-yet, so these checks end with status 4 on today's gateway:
+`ebus_adaptermux_active_arbitration_held`. It does not publish the others.
+An absent series below is not provable: the cell records it as a limit and
+does not fail, and does not end with status 4, solely because it is absent.
+The cell passes when every requirement the published series can prove holds.
+A hold that a reading shows still fails AD04 and AD09. Status 4 remains the
+result when a series the check still requires, such as the hold gauge, is
+absent:
 
 | Series | Meaning | Read by |
 |---|---|---|

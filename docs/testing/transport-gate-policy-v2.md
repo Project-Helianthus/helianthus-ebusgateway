@@ -1,9 +1,7 @@
 # Transport gate policy v2 (AdapterMux conformance matrix)
 
 Status: applied. This page is deliverable (d) of
-[#1378](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1378),
-and the switch condition of §1 is the owner's decision recorded on
-[#1544](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1544).
+[#1378](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1378).
 The transport gate checks the AdapterMux conformance matrix
 ([M7-adaptermux-conformance-matrix.md](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/matrix/M7-adaptermux-conformance-matrix.md)):
 `TRANSPORT_MATRIX_REPORT` points at an `adaptermux-v2` index, checked by the
@@ -16,7 +14,12 @@ session's `adaptermux-v2` report exists.
 
 ## 1. When this policy takes force
 
-The policy is in force. The switch did not wait for a run of the old form:
+The policy is in force.
+[#1544](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1544)
+states the switch condition in its correction criterion: the switch does
+not wait for a run of the old form, the keepers of T01–T08 are the cells the
+cell map already assigns, and the old form's report check is replaced at the
+switch. The reasons:
 
 1. The 88-case form cannot run again. Eighty of its cases (T09–T88) are proxy
    topologies that the steer on #1378 retired; the external proxy is not part
@@ -96,7 +99,7 @@ new fields are those proposed in §7 of the matrix page.
 | `session_id` | one opaque value for the whole report |
 | `candidate` | opaque association label; no source coordinates, addresses or serials |
 | `cases[].case_id` | the set equals the declared inventory exactly (173 cells today); no duplicates, no extras |
-| `cases[].session_id`, `cases[].candidate`, `cases[].target` | each equals the report-level value (`target` for `session_id`, `candidate`); a case carrying another value fails the gate |
+| `cases[].session_id`, `cases[].candidate`, `cases[].target` | each equals the report-level field of the same name; a case carrying another value fails the gate |
 | `cases[].southbound_transport`, `cases[].invariant` | consistent with the case ID (`ENH-AD01` → `enh`, `AD01`) |
 | `cases[].hardware_setup` | non-empty on every executable cell; every cell of one transport that carries a setup carries the same value; `EBUSD-ES01` carries the ENH value |
 | `cases[].expected` | `fail` for the cells of the expected-failure inventory (XF-01), `pass` for every other cell |

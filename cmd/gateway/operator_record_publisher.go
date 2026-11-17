@@ -89,17 +89,31 @@ type operatorRelation struct {
 	To         semreg.ResourceID
 }
 
+// operatorIdentityLink is one configured identity link. The provider keeps it
+// with the asset's records and does not publish it: only the binding's source
+// can publish an identity link.
+type operatorIdentityLink struct {
+	Native     semreg.EvidenceRef
+	Resource   semreg.ResourceID
+	BasisClass string
+}
+
 // operatorRecords is the complete desired operator-record set of one asset.
 type operatorRecords struct {
 	Resources []operatorResource
 	Relations []operatorRelation
+	Links     []operatorIdentityLink
 }
 
 // operatorAssetRecords is the configured record set of one asset.
+// ConfigurationOnly is set when the home holds a resource that only
+// configuration knows. A relation or an identity link does not make its home
+// configuration-only.
 type operatorAssetRecords struct {
-	Asset   semreg.AssetID
-	Records operatorRecords
-	Audit   operatorAudit
+	Asset             semreg.AssetID
+	Records           operatorRecords
+	Audit             operatorAudit
+	ConfigurationOnly bool
 }
 
 // operatorDesiredResource and operatorDesiredRelation are one desired
@@ -149,6 +163,36 @@ type operatorRecordPublisher struct {
 	desired map[semreg.AssetID]*operatorAssetState
 	pending map[semreg.AssetID]operatorAssetRecords
 	failed  map[semreg.AssetID]error
+}
+
+// operatorPublishers keeps the one provider of each hub. Startup composition
+// and the portal runtime share it, so a source admitted by the first
+// publication is the source the later runtime uses.
+var operatorPublishers sync.Map
+
+// operatorPublisherFor returns the provider already retained for the hub, or
+// retains a new one. The new provider admits its source only when it first
+// publishes.
+func operatorPublisherFor(hub *semhub.Hub) (*operatorRecordPublisher, error) {
+	if hub == nil {
+		return nil, errors.New("operator records: no semantic publication hub")
+	}
+	if value, ok := operatorPublishers.Load(hub); ok {
+		if publisher, _ := value.(*operatorRecordPublisher); publisher != nil {
+			return publisher, nil
+		}
+	}
+	publisher, err := newOperatorRecordPublisher(hub, operatorRecordOptions{})
+	if err != nil {
+		return nil, err
+	}
+	actual, loaded := operatorPublishers.LoadOrStore(hub, publisher)
+	if loaded {
+		if publisher, _ := actual.(*operatorRecordPublisher); publisher != nil {
+			return publisher, nil
+		}
+	}
+	return publisher, nil
 }
 
 // newOperatorRecordPublisher returns the provider. It admits its source only

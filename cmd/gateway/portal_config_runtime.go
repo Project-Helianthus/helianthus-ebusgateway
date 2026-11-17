@@ -389,7 +389,7 @@ func (r *gatewayPortalConfigRuntime) bindOperatorRecords(hub *semhub.Hub) {
 		r.mu.Unlock()
 		return
 	}
-	publisher, err := newOperatorRecordPublisher(hub, operatorRecordOptions{})
+	publisher, err := operatorPublisherFor(hub)
 	if err != nil {
 		r.mu.Unlock()
 		log.Printf("portal configuration: operator records not published: %v", err)
@@ -575,8 +575,10 @@ func (r *gatewayPortalConfigRuntime) operatorRecordStates(set portalconfig.Opera
 // portalOperatorAssetRecords groups the section's records by home asset, in
 // bytewise asset order: an anchor and each view of a pairing become an
 // operator-slot resource of the catalog class of their kind, a relation a
-// configured relation instance. Each home carries the audit digest of the
-// records declared for it.
+// configured relation instance, and an identity link a link the provider
+// does not publish. An anchor or a pairing view marks its home
+// configuration-only. Each home carries the audit digest of the records
+// declared for it.
 func portalOperatorAssetRecords(set portalconfig.OperatorRecordSet) []operatorAssetRecords {
 	byHome := map[semreg.AssetID]*operatorAssetRecords{}
 	declared := map[semreg.AssetID][]portalconfig.OperatorRecord{}
@@ -596,6 +598,7 @@ func portalOperatorAssetRecords(set portalconfig.OperatorRecordSet) []operatorAs
 		switch record.Form {
 		case portalconfig.OperatorFormAnchor:
 			target := home(record.Home, record)
+			target.ConfigurationOnly = true
 			target.Records.Resources = append(target.Records.Resources, resource(record.ResourceID, record))
 		case portalconfig.OperatorFormRelation:
 			if record.Definition == nil {
@@ -606,8 +609,15 @@ func portalOperatorAssetRecords(set portalconfig.OperatorRecordSet) []operatorAs
 		case portalconfig.OperatorFormPairing:
 			for _, view := range record.Views {
 				target := home(view.Home, record)
+				target.ConfigurationOnly = true
 				target.Records.Resources = append(target.Records.Resources, resource(view.ResourceID, record))
 			}
+		case portalconfig.OperatorFormIdentityLink:
+			if record.Native == nil {
+				continue
+			}
+			target := home(record.Home, record)
+			target.Records.Links = append(target.Records.Links, operatorIdentityLink{Native: *record.Native, Resource: semreg.ResourceID(record.ResourceID), BasisClass: record.BasisClass})
 		}
 	}
 	out := make([]operatorAssetRecords, 0, len(byHome))

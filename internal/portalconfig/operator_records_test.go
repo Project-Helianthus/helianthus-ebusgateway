@@ -2,6 +2,8 @@ package portalconfig
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -408,4 +410,199 @@ func TestOperatorRecordReplaceFailureKeepsTheAcceptedSection(t *testing.T) {
 	s.fault = nil
 	_, e = s.OperatorRecords()
 	requireCode(t, e, "persistence_failed")
+}
+
+func oprIdentityDigest(label string) string {
+	sum := sha256.Sum256([]byte("portal-opr-identity\x00" + label))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func oprIdentityNative() map[string]any {
+	return map[string]any{
+		"owner":     "helianthus.gateway.oprtest",
+		"kind":      "oprtest.native",
+		"digest":    oprIdentityDigest("native"),
+		"contract":  string(semreg.ContractKernelV1),
+		"access":    string(semreg.EvidenceAccessAuthorized),
+		"redaction": string(semreg.RedactionMetadataOnly),
+	}
+}
+
+func oprIdentityRecord() map[string]any {
+	return map[string]any{
+		"form":        OperatorFormIdentityLink,
+		"home":        oprInverter,
+		"native":      oprIdentityNative(),
+		"resource_id": "resource:portal-opr:inverter-1",
+		"basis_class": string(semreg.RelationConfiguration),
+	}
+}
+
+func oprIdentityLink(home, resource, label string) OperatorRecord {
+	native := semreg.EvidenceRef{
+		Owner:     "helianthus.gateway.oprtest",
+		Kind:      "oprtest.native",
+		Digest:    semreg.Digest(oprIdentityDigest(label)),
+		Contract:  semreg.ContractKernelV1,
+		Access:    semreg.EvidenceAccessAuthorized,
+		Redaction: semreg.RedactionMetadataOnly,
+	}
+	return OperatorRecord{
+		Form:       OperatorFormIdentityLink,
+		Home:       home,
+		Native:     &native,
+		ResourceID: resource,
+		BasisClass: string(semreg.RelationConfiguration),
+	}
+}
+
+func oprIdentitySection(t *testing.T, records ...map[string]any) []byte {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{
+		"format":   OperatorRecordsFormat,
+		"revision": "0",
+		"records":  records,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+// The identity-link form is one record of the existing section. It names the
+// home asset, the native resource and the configuration basis class.
+func TestOperatorRecordIdentityLinkFormIsAccepted(t *testing.T) {
+	s, root := openTest(t)
+	set, e := DecodeOperatorRecords(oprIdentitySection(t, oprIdentityRecord()))
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = ValidateOperatorRecords(set); e != nil {
+		t.Fatal(e)
+	}
+	record := set.Records[0]
+	if len(set.Records) != 1 || record.Form != OperatorFormIdentityLink || record.Homes()[0] != oprInverter || record.Native == nil || record.ResourceID != "resource:portal-opr:inverter-1" || record.BasisClass != string(semreg.RelationConfiguration) {
+		t.Fatalf("decoded %+v, want one identity link homed in the inverter asset", set.Records)
+	}
+	saved, e := s.ReplaceOperatorRecords(set)
+	if e != nil || saved.Revision != "1" || !reflect.DeepEqual(saved.Records, set.Records) {
+		t.Fatalf("saved %+v %v", saved, e)
+	}
+	if read, e := s.OperatorRecords(); e != nil || !reflect.DeepEqual(read, saved) {
+		t.Fatalf("read %+v %v", read, e)
+	}
+	if _, e := os.Lstat(filepath.Join(root, OperatorRecordsFile)); e != nil {
+		t.Fatal(e)
+	}
+}
+
+// An identity link is refused the same way as the other forms: a bad home,
+// resource or native resource is invalid_record, and a basis class other than
+// configuration is basis_class_not_admitted. The closed shape still rejects a
+// missing or extra member.
+func TestOperatorRecordIdentityLinkRefusals(t *testing.T) {
+	valid := oprIdentitySection(t, oprIdentityRecord())
+	native := oprIdentityNative()
+	delete(native, "digest")
+	missingNative, e := json.Marshal(map[string]any{"format": OperatorRecordsFormat, "revision": "0", "records": []any{map[string]any{
+		"form": OperatorFormIdentityLink, "home": oprInverter, "native": native, "resource_id": "resource:portal-opr:inverter-1", "basis_class": string(semreg.RelationConfiguration),
+	}}})
+	if e != nil {
+		t.Fatal(e)
+	}
+	extraNative := oprIdentityNative()
+	extraNative["note"] = "extra"
+	extraNativeBody, e := json.Marshal(map[string]any{"format": OperatorRecordsFormat, "revision": "0", "records": []any{map[string]any{
+		"form": OperatorFormIdentityLink, "home": oprInverter, "native": extraNative, "resource_id": "resource:portal-opr:inverter-1", "basis_class": string(semreg.RelationConfiguration),
+	}}})
+	if e != nil {
+		t.Fatal(e)
+	}
+	for _, c := range []struct {
+		name, body, code, field string
+		validate                bool
+	}{
+		{"bad home", strings.Replace(string(valid), `"home":"`+oprInverter+`"`, `"home":"bad home"`, 1), "invalid_record", "records[0].home", true},
+		{"bad resource", strings.Replace(string(valid), `"resource_id":"resource:portal-opr:inverter-1"`, `"resource_id":"bad resource"`, 1), "invalid_record", "records[0].resource_id", true},
+		{"bad native digest", strings.Replace(string(valid), oprIdentityDigest("native"), "sha256:not-a-digest", 1), "invalid_record", "records[0].native", true},
+		{"missing native member", string(missingNative), "invalid_record", "records[0].native", false},
+		{"extra native member", string(extraNativeBody), "invalid_record", "records[0].native", false},
+		{"extra record member", strings.Replace(string(valid), `"basis_class"`, `"slot":"array-south","basis_class"`, 1), "invalid_record", "records[0]", false},
+		{"basis class not configuration", strings.Replace(string(valid), `"basis_class":"`+string(semreg.RelationConfiguration)+`"`, `"basis_class":"gate_rule"`, 1), "basis_class_not_admitted", "records[0].basis_class", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			set, e := DecodeOperatorRecords([]byte(c.body))
+			if !c.validate {
+				requireField(t, e, c.code, c.field)
+				return
+			}
+			if e != nil {
+				t.Fatal(e)
+			}
+			requireField(t, ValidateOperatorRecords(set), c.code, c.field)
+		})
+	}
+}
+
+// The identity-link key is the home plus every member of the native resource:
+// owner, kind, digest, contract, access and redaction. resource_id is not part
+// of the key. basis_class cannot vary, because only configuration is admitted.
+//
+//   - home: dropping home from the key refuses two links that differ only there
+//   - owner: dropping owner from the key refuses two links that differ only there
+//   - kind: dropping kind from the key refuses two links that differ only there
+//   - digest: dropping digest from the key refuses two links that differ only there
+//   - contract: dropping contract from the key refuses two links that differ only there
+//   - access: dropping access from the key refuses two links that differ only there
+//   - redaction: dropping redaction from the key refuses two links that differ only there
+//   - resource_id: adding resource_id to the key accepts two links that differ only there
+func TestOperatorRecordIdentityLinkDuplicateKeysVaryEveryField(t *testing.T) {
+	base := oprIdentityLink(oprInverter, "resource:portal-opr:inverter-1", "native")
+	for _, c := range []struct {
+		name      string
+		copy      OperatorRecord
+		duplicate string
+	}{
+		{"unchanged", base, "records[1].native"},
+		{"home", oprIdentityLink(oprHome, base.ResourceID, "native"), ""},
+		{"owner", func() OperatorRecord {
+			r := oprIdentityLink(oprInverter, base.ResourceID, "native")
+			r.Native.Owner = "helianthus.gateway.oprtest.other"
+			return r
+		}(), ""},
+		{"kind", func() OperatorRecord {
+			r := oprIdentityLink(oprInverter, base.ResourceID, "native")
+			r.Native.Kind = "oprtest.native.other"
+			return r
+		}(), ""},
+		{"digest", oprIdentityLink(oprInverter, base.ResourceID, "other"), ""},
+		{"contract", func() OperatorRecord {
+			r := oprIdentityLink(oprInverter, base.ResourceID, "native")
+			r.Native.Contract = "helianthus.gateway.oprtest/v1"
+			return r
+		}(), ""},
+		{"access", func() OperatorRecord {
+			r := oprIdentityLink(oprInverter, base.ResourceID, "native")
+			r.Native.Access = semreg.EvidenceAccessPublic
+			return r
+		}(), ""},
+		{"redaction", func() OperatorRecord {
+			r := oprIdentityLink(oprInverter, base.ResourceID, "native")
+			r.Native.Redaction = semreg.RedactionNone
+			return r
+		}(), ""},
+		{"resource identifier stays a duplicate", oprIdentityLink(oprInverter, "resource:portal-opr:inverter-2", "native"), "records[1].native"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			set := OperatorRecordSet{Format: OperatorRecordsFormat, Revision: "0", Records: []OperatorRecord{base, c.copy}}
+			e := ValidateOperatorRecords(set)
+			if c.duplicate == "" {
+				if e != nil {
+					t.Fatalf("distinct identity links refused: %v", e)
+				}
+				return
+			}
+			requireField(t, e, "duplicate_key", c.duplicate)
+		})
+	}
 }

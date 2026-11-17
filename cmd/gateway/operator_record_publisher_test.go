@@ -3,7 +3,10 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -510,8 +513,8 @@ func TestOperatorRecordPublisherComposesAnEmptyRecordSet(t *testing.T) {
 	if err := composeOperatorRecords(hub, ebusgateway.Config{}); err != nil {
 		t.Fatal(err)
 	}
-	if records := configuredOperatorRecords(ebusgateway.Config{}); len(records) != 0 {
-		t.Fatalf("configured operator records=%+v, want none", records)
+	if records, err := configuredOperatorRecords(ebusgateway.Config{}); err != nil || len(records) != 0 {
+		t.Fatalf("configured operator records=%+v %v, want none", records, err)
 	}
 	if _, ok := hub.Source(operatorRecordSource); ok {
 		t.Fatal("an empty record set admitted the configuration source")
@@ -626,6 +629,152 @@ func TestOperatorRecordPublisherReportsEveryDeferredRefusalOfOneRetry(t *testing
 	}
 	if refusals := operatorRecordRefusals(f.publisher.Retry()); len(refusals) != 0 {
 		t.Fatalf("a retry with nothing pending returned %v", refusals)
+	}
+}
+
+func oprWriteSection(t *testing.T, root string, body string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(root, "portal-config-operator-records.json"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func oprCompositionDigest(label string) string {
+	sum := sha256.Sum256([]byte("opr-composition-identity\x00" + label))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// A configuration that holds one operator record yields that record. An empty
+// section yields an empty set.
+func TestOperatorRecordCompositionLoadsAConfiguredRecord(t *testing.T) {
+	root := t.TempDir()
+	records, err := configuredOperatorRecords(ebusgateway.Config{PortalConfigRoot: root})
+	if err != nil || len(records) != 0 {
+		t.Fatalf("missing section=%+v %v, want none", records, err)
+	}
+	oprWriteSection(t, root, `{"format":"helianthus.portal-config.operator-records/v1","revision":"0","records":[]}`)
+	records, err = configuredOperatorRecords(ebusgateway.Config{PortalConfigRoot: root})
+	if err != nil || len(records) != 0 {
+		t.Fatalf("empty section=%+v %v, want none", records, err)
+	}
+	oprWriteSection(t, root, `{"format":"helianthus.portal-config.operator-records/v1","revision":"1","records":[{"form":"anchor","home":"asset:opr-configuration","resource_id":"resource:opr:array-1","kind":"resource.pv_array","slot":"array-south"}]}`)
+	records, err = configuredOperatorRecords(ebusgateway.Config{PortalConfigRoot: root})
+	if err != nil || len(records) != 1 || records[0].Asset != oprHomeAsset || len(records[0].Records.Resources) != 1 || !records[0].ConfigurationOnly || len(records[0].Records.Links) != 0 {
+		t.Fatalf("configured operator records=%+v %v, want the one configured anchor", records, err)
+	}
+}
+
+// An identity link is returned with the configured set and is not a
+// configuration-only home. Composition does not declare that home and does
+// not admit the provider, because the provider does not publish the link.
+func TestOperatorRecordCompositionLoadsAnIdentityLink(t *testing.T) {
+	root := t.TempDir()
+	body, err := json.Marshal(map[string]any{
+		"format":   "helianthus.portal-config.operator-records/v1",
+		"revision": "1",
+		"records": []any{map[string]any{
+			"form": "identity_link",
+			"home": string(oprDriverAsset),
+			"native": map[string]any{
+				"owner":     "helianthus.gateway.oprtest",
+				"kind":      "oprtest.native",
+				"digest":    oprCompositionDigest("native"),
+				"contract":  string(semreg.ContractKernelV1),
+				"access":    string(semreg.EvidenceAccessAuthorized),
+				"redaction": string(semreg.RedactionMetadataOnly),
+			},
+			"resource_id": string(oprInverter),
+			"basis_class": string(semreg.RelationConfiguration),
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oprWriteSection(t, root, string(body))
+	records, err := configuredOperatorRecords(ebusgateway.Config{PortalConfigRoot: root})
+	if err != nil || len(records) != 1 || records[0].ConfigurationOnly || len(records[0].Records.Links) != 1 || len(records[0].Records.Resources) != 0 {
+		t.Fatalf("configured identity link=%+v %v", records, err)
+	}
+	link := records[0].Records.Links[0]
+	if records[0].Asset != oprDriverAsset || link.Resource != oprInverter || link.BasisClass != string(semreg.RelationConfiguration) || link.Native.Owner != "helianthus.gateway.oprtest" || string(link.Native.Digest) != oprCompositionDigest("native") {
+		t.Fatalf("identity link=%+v, want the configured native resource", link)
+	}
+	hub, err := semhub.New(semhub.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := composeOperatorRecords(hub, ebusgateway.Config{PortalConfigRoot: root}); err != nil {
+		t.Fatal(err)
+	}
+	state, err := hub.GraphState()
+	if err != nil || len(state.Assets) != 0 {
+		t.Fatalf("an identity link declared %+v (%v)", state.Assets, err)
+	}
+	if _, ok := hub.Source(operatorRecordSource); ok {
+		t.Fatal("an identity link admitted the configuration source")
+	}
+}
+
+// A section that does not decode fails closed and admits nothing.
+func TestOperatorRecordCompositionRejectsASectionThatDoesNotDecode(t *testing.T) {
+	root := t.TempDir()
+	oprWriteSection(t, root, `{`)
+	records, err := configuredOperatorRecords(ebusgateway.Config{PortalConfigRoot: root})
+	if err == nil || len(records) != 0 {
+		t.Fatalf("configured=%+v err=%v, want a refusal and no records", records, err)
+	}
+	hub, hubErr := semhub.New(semhub.Options{})
+	if hubErr != nil {
+		t.Fatal(hubErr)
+	}
+	before, err := hub.GraphState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := composeOperatorRecords(hub, ebusgateway.Config{PortalConfigRoot: root}); err == nil {
+		t.Fatal("composition accepted a section that does not decode")
+	}
+	after, err := hub.GraphState()
+	if err != nil || !reflect.DeepEqual(after, before) {
+		t.Fatalf("a refused section changed the declared assets: %+v %v", after, err)
+	}
+	if _, ok := hub.Source(operatorRecordSource); ok {
+		t.Fatal("a refused section admitted the configuration source")
+	}
+}
+
+// A configuration-only home is declared for the configuration provider. A home
+// a driver already owns stays that driver's asset. A pairing view is
+// configuration-only too.
+func TestOperatorRecordCompositionDeclaresAConfigurationOnlyHome(t *testing.T) {
+	root := t.TempDir()
+	oprWriteSection(t, root, `{"format":"helianthus.portal-config.operator-records/v1","revision":"1","records":[{"form":"anchor","home":"asset:opr-configuration","resource_id":"resource:opr:array-1","kind":"resource.pv_array","slot":"array-south"},{"form":"anchor","home":"asset:opr-inverter","resource_id":"resource:opr:array-2","kind":"resource.pv_array","slot":"array-north"},{"form":"pairing","kind":"resource.pv_system","slot":"system-main","views":[{"home":"asset:opr-pair-a","resource_id":"resource:opr:system-a"},{"home":"asset:opr-pair-b","resource_id":"resource:opr:system-b"}]}]}`)
+	hub, err := semhub.New(semhub.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hub.Declare(semhub.AssetSpec{AssetID: oprDriverAsset, SourceID: oprDriverSource, Driver: oprDriver, Validators: []semreg.PackValidator{pv.New()}, Graph: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := composeOperatorRecords(hub, ebusgateway.Config{PortalConfigRoot: root}); err != nil {
+		t.Fatal(err)
+	}
+	state, err := hub.GraphState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := map[semreg.AssetID]string{}
+	for _, asset := range state.Assets {
+		found[asset.Asset] = asset.Driver
+	}
+	if found[oprHomeAsset] != operatorRecordDriver {
+		t.Fatalf("configuration-only home driver=%q, want %s", found[oprHomeAsset], operatorRecordDriver)
+	}
+	if found[semreg.AssetID("asset:opr-pair-a")] != operatorRecordDriver || found[semreg.AssetID("asset:opr-pair-b")] != operatorRecordDriver {
+		t.Fatalf("pairing homes=%v, want both declared for %s", found, operatorRecordDriver)
+	}
+	if found[oprDriverAsset] != oprDriver {
+		t.Fatalf("driver home driver=%q, want %s", found[oprDriverAsset], oprDriver)
 	}
 }
 

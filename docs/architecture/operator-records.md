@@ -13,10 +13,11 @@ the operator-record section of the Portal configuration (see
 [Portal configuration](portal-config-sharing.md), section "Operator-record
 section"), which the Portal configuration runtime feeds to the provider. The
 preflight also wires the provider through `composeOperatorRecords` in
-`cmd/gateway/operator_record_composition.go`, but the host configuration
-declares no operator record. With nothing configured, the provider admits no
-source, declares no asset and publishes nothing, so the published output of
-an installation without an accepted section is unchanged.
+`cmd/gateway/operator_record_composition.go` and loads the configured record
+set. An empty section still admits no source, declares no asset and publishes
+nothing, so the published output of an installation without an accepted
+section is unchanged. A configuration-only home in that set is declared in
+the provider's name. A home a driver already owns is left to that driver.
 
 ## Who publishes it
 
@@ -38,8 +39,9 @@ batch sequence.
   asset is graph-enforced. It holds no binding and no fact, and its resources
   are anchored by an `operator_slot`.
 - **An operator identity declaration in the form of an identity link** names
-  the driver's binding. Only the binding's source can publish it, so it stays
-  in the driver's own batch. The provider does not publish it.
+  the home asset, the native resource and the configuration basis class. The
+  section records it as `identity_link`. Only the binding's source can publish
+  it, so it stays in the driver's own batch. The provider does not publish it.
 
 ## Records and revisions
 
@@ -148,17 +150,20 @@ carry the pending links leaves them pending. The declaration appears only
 after the driver's next batch that carries them, so it waits while the driver
 is fenced or stopped. The acceptance test covers this limit too.
 
-No family publisher carries the pending links yet, and the operator-record
-section has no identity-link form. Until a family adopts `Tx.OperatorLinks`,
-an operator identity declaration is never published.
+No family publisher carries the pending links yet. Until a family adopts
+`Tx.OperatorLinks`, an operator identity declaration is never published.
 
-The same holds for the declarations the records need on the owner's side. No
-family composition names the provider as a contributor or declares a
-configuration-only home yet, and the startup composition has no configured
-record set. The acceptance test makes those declarations itself, as an owner
-would, so it proves the path from the document to the cut once the owner has
-declared them. A Portal replacement publishes nothing for an asset whose
-owner has not.
+The section records an identity link: the home asset, the native resource and
+the configuration basis class. Startup loads the configured record set. An
+empty section still admits nothing.
+
+No family composition names the provider as a contributor or declares a
+configuration-only home yet. Startup declares a configuration-only home for
+the configuration provider, and it does not declare a contributor for a home
+a driver already owns. The acceptance test makes the owner-side declarations
+itself, as an owner would, so it proves the path from the document to the cut
+once the owner has declared them. A Portal replacement publishes nothing for
+an asset whose owner has not.
 
 ## Ownership
 

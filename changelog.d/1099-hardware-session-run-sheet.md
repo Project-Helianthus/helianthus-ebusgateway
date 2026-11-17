@@ -1,0 +1,3 @@
+## Publish the run sheet of the consolidated hardware session
+
+The run sheet of the consolidated hardware session is published in the `adaptermux-v2` form: entry conditions, the hardware setups by transport row, the per-setup order of the cells with the operator's adapter actions and the compatibility compositions, and the graph-axis, identification exchange, native point export and optional live setpoint-write checks, with the B503 live re-verification rows. The reduced run sheet points its transport and adapter rows to that order and gains the variant of a site whose controller-class initiator is a third-party bridge. Documentation only; the gateway binary is unchanged.

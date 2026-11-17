@@ -863,6 +863,34 @@ class MissingSignalTests(SmokeTestCase):
                     self.assertEqual(sorted(path for _, path, _ in self.stub.requests),
                                      ["/debug/vars", "/metrics", "/portal/api/v1/bus/observability"])
 
+    def test_mux_before_its_first_transaction_ending_still_refuses_missing_series(self):
+        # The endings family is empty until a transaction ends; the always
+        # rendered mux series still show that the mux runs.
+        expected = {
+            "AD04": [SMOKE.MUX_SESSION_DISCONTINUITIES, SMOKE.MUX_UPSTREAM_RECONNECTS],
+            "AD09": [SMOKE.MUX_SESSION_DISCONTINUITIES, SMOKE.MUX_UPSTREAM_RECONNECTS],
+            "AD07": [SMOKE.MUX_CONTENDED_SELECTIONS, SMOKE.MUX_RETAINED_BIDS],
+        }
+        for invariant in ADAPTER_ACTION_INVARIANTS + PRIORITY_INVARIANTS:
+            with self.subTest(invariant=invariant):
+                phases = [Phase("baseline", "mux", "ens"), Phase("flow", "mux", "ens")]
+                for phase in phases:
+                    phase.drop(SMOKE.MUX_ENDINGS)
+                self.stub.load(phases)
+                status, evidence = self.run_smoke(self.environ(invariant, "mux", "ens"))
+                self.assertEqual(status, SMOKE.EXIT_SIGNAL_MISSING)
+                self.assertEqual(evidence["missing_signals"], expected[invariant])
+                self.assertNotIn("operator action", self.output)
+
+    def test_mux_presence_needs_no_transaction_ending(self):
+        sample = {"metrics": {(SMOKE.MUX_HELD, ()): 0.0, (SMOKE.MUX_FOREIGN, ()): 0.0}}
+        self.assertTrue(SMOKE.mux_diagnostics_present(sample))
+        self.assertFalse(SMOKE.mux_diagnostics_present({"metrics": {(SMOKE.PASSIVE_COMPLETED, ()): 1.0}}))
+        context = {"southbound_transport": "ens"}
+        evidence, reasons = SMOKE.check_transport(context, dict(sample, observability={}), {"composition": "mux"})
+        self.assertTrue(evidence["mux_diagnostics"])
+        self.assertNotIn("AdapterMux diagnostics are absent", "\n".join(reasons))
+
     def test_gateway_without_any_new_series_names_every_missing_one(self):
         self.stub.load(self.phases("mux", "ens"))
         status, evidence = self.run_smoke(self.environ("AD04", "mux", "ens"))

@@ -588,6 +588,18 @@ def priority_measures(baseline, current, own):
     return measures, unmeasured, evidence
 
 
+# Families the gateway renders whenever the AdapterMux diagnostics provider
+# runs. The transaction-endings family is not one of them alone: it carries a
+# sample only per ending reason already seen, so it is empty before the first
+# ending, while these scalar series are always written.
+MUX_PRESENCE_FAMILIES = (MUX_HELD, MUX_FOREIGN, MUX_ESCAPE, MUX_ENDINGS)
+
+
+def mux_diagnostics_present(sample):
+    published = {name for name, _ in sample["metrics"]}
+    return any(name in published for name in MUX_PRESENCE_FAMILIES)
+
+
 def missing_signals(check, sample):
     """Series the check needs that the gateway does not publish.
 
@@ -596,7 +608,7 @@ def missing_signals(check, sample):
     missing signal.
     """
     published = {name for name, _ in sample["metrics"]}
-    if MUX_ENDINGS not in published:
+    if not mux_diagnostics_present(sample):
         return []
     return [name for name in check.get("signals", ()) if name not in published]
 
@@ -630,7 +642,7 @@ def check_transport(context, sample, check):
     reasons = []
     if reported != expected:
         reasons.append("gateway reports transport class " + str(reported) + ", the cell needs " + expected)
-    mux_present = any(name == MUX_ENDINGS for name, _ in sample["metrics"])
+    mux_present = mux_diagnostics_present(sample)
     if check["composition"] == "mux" and not mux_present:
         reasons.append("AdapterMux diagnostics are absent: the gateway does not run the mux")
     if check["composition"] != "mux" and mux_present:

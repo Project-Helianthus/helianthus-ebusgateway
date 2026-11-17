@@ -9,9 +9,11 @@ type semanticFamily string
 const (
 	// semanticFamilyEVSE is the EVSE asset of the configured charger.
 	semanticFamilyEVSE semanticFamily = "evse"
-	// semanticFamilyPV is every PV asset: the SunSpec PV class and the
-	// logger-attached PV class.
+	// semanticFamilyPV is the SunSpec PV class.
 	semanticFamilyPV semanticFamily = "pv"
+	// semanticFamilyLoggerPV is the PV class of inverters read behind a
+	// logger or a dongle: one asset per admitted inverter child.
+	semanticFamilyLoggerPV semanticFamily = "pv.logger"
 	// semanticFamilyStorage is the configured battery storage asset.
 	semanticFamilyStorage semanticFamily = "storage"
 	// semanticFamilyThermal is the eBUS boiler asset.
@@ -30,10 +32,12 @@ type semanticFamilyGraphEntry struct {
 // what it may publish: its declarations then build their kernels with the
 // element catalog, and every pack they register must be covered by it. A
 // family that is off is reported not enforced, so its assets stay ungraphed.
-// Every family is off until its publishers migrate.
+// A family is switched on when its publishers publish resources; every other
+// family stays off until its publishers migrate.
 var semanticFamilyGraphTable = [...]semanticFamilyGraphEntry{
 	{family: semanticFamilyEVSE, graph: false},
 	{family: semanticFamilyPV, graph: false},
+	{family: semanticFamilyLoggerPV, graph: true},
 	{family: semanticFamilyStorage, graph: false},
 	{family: semanticFamilyThermal, graph: false},
 }

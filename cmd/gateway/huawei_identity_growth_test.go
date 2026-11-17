@@ -338,7 +338,9 @@ type growthScenario struct {
 	grows growthCounts
 }
 
-var growthIncarnation = growthCounts{Bindings: 1, Links: 1}
+// growthIncarnation is one binding and one link for each observed path of the
+// child: its inverter and its PV system.
+var growthIncarnation = growthCounts{Bindings: huaweiIncarnationBindings, Links: huaweiIncarnationBindings}
 
 // readmit offers the victim again. Like the loss cycles that do not need the
 // sibling, it carries the victim alone in an incomplete listing: the sibling
@@ -450,8 +452,8 @@ func growthRestarts(t *testing.T, cycle huawei.ProviderCycle, restarts int) grow
 			epoch = pubs[n-1].handle.Epoch()
 			return len(pubs[n-1].published) == len(assets)
 		})
-		// Every epoch adds one descriptor and one binding to each asset, and
-		// only the publishing epoch's link is reported.
+		// Every epoch adds one descriptor and one binding per observed path to
+		// each asset, and only the publishing epoch's link is reported.
 		mu.Lock()
 		publication := pubs[n-1]
 		mu.Unlock()
@@ -459,7 +461,7 @@ func growthRestarts(t *testing.T, cycle huawei.ProviderCycle, restarts int) grow
 		children := huaweiStatusChildren(publication, publication.latest)
 		publication.mu.Unlock()
 		for _, child := range children {
-			if child.SourceDescriptors != n || child.BindingIncarnations != n || child.IdentityLinkState != mcp.HuaweiIdentityLinkQualified {
+			if child.SourceDescriptors != n || child.BindingIncarnations != n*huaweiIncarnationBindings || child.IdentityLinkState != mcp.HuaweiIdentityLinkQualified {
 				t.Fatalf("status after START %d: %+v", n, children)
 			}
 		}
@@ -495,6 +497,16 @@ type growthProbeResult struct {
 	state              semreg.LinkState
 	revision           semreg.Uint64
 	factsBefore, facts int
+}
+
+// huaweiResourceKind is the kind of a resource the snapshot holds.
+func huaweiResourceKind(snapshot semreg.Snapshot, id semreg.ResourceID) semreg.DefinitionID {
+	for _, resource := range snapshot.Resources {
+		if resource.ResourceID == id {
+			return resource.Kind
+		}
+	}
+	return ""
 }
 
 func growthAccepted(err error) string {
@@ -548,18 +560,26 @@ func growthProbe(t *testing.T, r *growthRig) growthProbeResult {
 	if view, err := r.hub.Inspect(asset); err == nil {
 		res.factsBefore = len(view.Snapshot.Facts)
 	}
-	var binding semreg.NativeBindingID
+	// The incarnation observes the child through two paths; both links move
+	// together, and binding names the inverter path's link for the pins.
+	var binding, systemBinding semreg.NativeBindingID
+	demoted := map[semreg.NativeBindingID]bool{}
 	res.demote = r.apply(asset, func(current semreg.Snapshot, batch *semreg.PublicationBatch) error {
 		for _, link := range current.IdentityLinks {
 			if link.State == semreg.LinkQualified {
-				binding = link.BindingID
+				demoted[link.BindingID] = true
+				if link.Resource != nil && huaweiResourceKind(current, *link.Resource) == huaweiKindSystem {
+					systemBinding = link.BindingID
+				} else {
+					binding = link.BindingID
+				}
 				link.State, link.Revision = semreg.LinkCandidate, huaweiNext(link.Revision)
 				batch.IdentityLinkUpserts = append(batch.IdentityLinkUpserts, link)
 			}
 		}
 		for _, envelope := range current.Facts {
 			for _, candidate := range envelope.Candidates {
-				if candidate.BindingID != nil && *candidate.BindingID == binding {
+				if candidate.BindingID != nil && demoted[*candidate.BindingID] {
 					batch.FactWithdrawals = append(batch.FactWithdrawals, candidate.CandidateID)
 				}
 			}
@@ -573,7 +593,7 @@ func growthProbe(t *testing.T, r *growthRig) growthProbeResult {
 		return func(current semreg.Snapshot, batch *semreg.PublicationBatch) error {
 			evidence := huaweiEvidence("native.huawei.provider.observation", r.cycle.Cycle)
 			for _, link := range current.IdentityLinks {
-				if link.BindingID == binding {
+				if demoted[link.BindingID] {
 					link.State, link.Revision, link.Basis = semreg.LinkQualified, huaweiNext(link.Revision), []semreg.EvidenceRef{evidence}
 					batch.IdentityLinkUpserts = append(batch.IdentityLinkUpserts, link)
 				}
@@ -581,8 +601,11 @@ func growthProbe(t *testing.T, r *growthRig) growthProbeResult {
 			if !facts {
 				return nil
 			}
-			var err error
-			batch.FactUpserts, err = r.pub.facts(asset, binding, r.victim, r.cycle, evidence, current)
+			graph, err := r.pub.graph(asset, r.victim, binding, r.pub.handle.Epoch(), false)
+			if err != nil {
+				return err
+			}
+			batch.FactUpserts, err = r.pub.facts(graph, binding, systemBinding, r.victim, r.cycle, evidence, current)
 			return err
 		}
 	}
@@ -631,9 +654,11 @@ func TestHuaweiIdentityGrowthMeasurement(t *testing.T) {
 			}
 			t.Run(fixture+"/operator restarts", func(t *testing.T) {
 				t.Parallel()
-				// Every restart is a new epoch: one descriptor, one cursor, one
-				// binding and one link more, the previous epoch's binding retired.
-				restart := growthCounts{Sources: 1, Bindings: 1, Links: 1, Cursors: 1, RetiredBindings: 1, RetiredLinks: 1}
+				// Every restart is a new epoch: one descriptor and one cursor more,
+				// and one binding and one link more per observed path, the
+				// previous epoch's bindings retired.
+				paths := huaweiIncarnationBindings
+				restart := growthCounts{Sources: 1, Bindings: paths, Links: paths, Cursors: 1, RetiredBindings: paths, RetiredLinks: paths}
 				m := growthRestarts(t, cycle, 32)
 				growthPin(t, "operator restarts", m, restart, restart)
 				row := growthRowOf("operator restarts", fixture, growthOperator, m)
@@ -793,15 +818,18 @@ func TestHuaweiIdentityGrowthStatusReportsHeadroom(t *testing.T) {
 	alphaVictim, alphaSibling := string(r.assets[0]), string(r.assets[1])
 	betaVictim := string(huaweiAssetID("beta", "pv", victim))
 	qualified, withdrawn := mcp.HuaweiIdentityLinkQualified, mcp.HuaweiIdentityLinkWithdrawn
-	check("first admission", r.pub, map[byte]want{victim: {alphaVictim, qualified, 1, 1}, sibling: {alphaSibling, qualified, 1, 1}})
-	check("first admission of the second instance", beta, map[byte]want{victim: {betaVictim, qualified, 1, 1}})
+	// The count is of native bindings: one per observed path of each
+	// incarnation.
+	one, two := huaweiIncarnationBindings, 2*huaweiIncarnationBindings
+	check("first admission", r.pub, map[byte]want{victim: {alphaVictim, qualified, one, 1}, sibling: {alphaSibling, qualified, one, 1}})
+	check("first admission of the second instance", beta, map[byte]want{victim: {betaVictim, qualified, one, 1}})
 
 	r.must(r.publish(huawei.ProviderCycleIncomplete, growthAs(r.victim, huawei.ProviderEvidenceWithheld, huawei.ProviderReasonIdentityMismatch), r.sibling))
-	check("identity mismatch", r.pub, map[byte]want{victim: {"", withdrawn, 1, 1}, sibling: {alphaSibling, qualified, 1, 1}})
+	check("identity mismatch", r.pub, map[byte]want{victim: {"", withdrawn, one, 1}, sibling: {alphaSibling, qualified, one, 1}})
 
 	r.must(r.publish(huawei.ProviderCycleIncomplete, r.victim, r.sibling))
-	check("re-admission", r.pub, map[byte]want{victim: {alphaVictim, qualified, 2, 1}, sibling: {alphaSibling, qualified, 1, 1}})
-	check("second instance after the re-admission", beta, map[byte]want{victim: {betaVictim, qualified, 1, 1}})
+	check("re-admission", r.pub, map[byte]want{victim: {alphaVictim, qualified, two, 1}, sibling: {alphaSibling, qualified, one, 1}})
+	check("second instance after the re-admission", beta, map[byte]want{victim: {betaVictim, qualified, one, 1}})
 }
 
 // The reported link belongs to a binding the publishing source, epoch and

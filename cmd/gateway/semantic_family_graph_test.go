@@ -9,11 +9,14 @@ import (
 	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/graph"
 )
 
-// The table names every composed family once, in bytewise order, and every
-// entry is off in this slice. The accessor returns each entry's value and
-// answers off for a family the table does not list.
-func TestSemanticFamilyGraphTableNamesEveryComposedFamilyOff(t *testing.T) {
-	want := []semanticFamily{semanticFamilyEVSE, semanticFamilyPV, semanticFamilyStorage, semanticFamilyThermal}
+// The table names every composed family once, in bytewise order. Only the
+// logger-attached PV family, whose publisher publishes resources, is on; the
+// SunSpec PV class keeps its own entry off until its publisher migrates. The
+// accessor returns each entry's value and answers off for a family the table
+// does not list.
+func TestSemanticFamilyGraphTableSwitchesOnOnlyMigratedFamilies(t *testing.T) {
+	want := []semanticFamily{semanticFamilyEVSE, semanticFamilyPV, semanticFamilyLoggerPV, semanticFamilyStorage, semanticFamilyThermal}
+	on := map[semanticFamily]bool{semanticFamilyLoggerPV: true}
 	if len(semanticFamilyGraphTable) != len(want) {
 		t.Fatalf("table lists %d families, want %d", len(semanticFamilyGraphTable), len(want))
 	}
@@ -21,8 +24,11 @@ func TestSemanticFamilyGraphTableNamesEveryComposedFamilyOff(t *testing.T) {
 		if entry.family != want[index] {
 			t.Fatalf("entry %d=%q want %q", index, entry.family, want[index])
 		}
-		if entry.graph {
-			t.Fatalf("family %q is switched on before its publishers migrate", entry.family)
+		if index > 0 && string(semanticFamilyGraphTable[index-1].family) >= string(entry.family) {
+			t.Fatalf("entry %d=%q is not in bytewise order", index, entry.family)
+		}
+		if entry.graph != on[entry.family] {
+			t.Fatalf("family %q graph=%v, want %v", entry.family, entry.graph, on[entry.family])
 		}
 		if semanticFamilyGraph(entry.family) != entry.graph {
 			t.Fatalf("accessor for %q differs from the table", entry.family)
@@ -69,8 +75,9 @@ func requireFamilyGraph(t *testing.T, hub *semhub.Hub, family semanticFamily, dr
 }
 
 // Every composed family's declaration path builds the kernel the table names:
-// storage and EVSE through the preflight, both PV classes through their class
-// declaration and thermal through its publisher's declaration.
+// storage and EVSE through the preflight, the SunSpec PV class and the
+// logger-attached PV class through their class declarations and thermal
+// through its publisher's declaration.
 func TestSemanticFamilyGraphMatchesEveryComposedDeclaration(t *testing.T) {
 	t.Run("storage and evse", func(t *testing.T) {
 		hub, err := preflightSemanticHub(ebusgateway.Config{ModbusTCPConfig: ebusgateway.ModbusTCPConfig{GrowattBMSRS485: growattProductionConfig(), TeslaGen3HSC: teslaRetainedConfig()}})
@@ -100,7 +107,7 @@ func TestSemanticFamilyGraphMatchesEveryComposedDeclaration(t *testing.T) {
 		if _, err := publication.class.Declare("asset:synthetic-logger-child", publication.handle.Source()); err != nil {
 			t.Fatal(err)
 		}
-		requireFamilyGraph(t, hub, semanticFamilyPV, "pv.synthetic")
+		requireFamilyGraph(t, hub, semanticFamilyLoggerPV, "pv.synthetic")
 	})
 	t.Run("thermal", func(t *testing.T) {
 		publisher, _, _ := m15Fixture(t)
@@ -126,12 +133,15 @@ func setSemanticFamilyGraph(t *testing.T, family semanticFamily, value bool) {
 }
 
 // A table entry reaches its family's declarations: switching it on makes the
-// storage and EVSE specs ask for enforcement and makes the logger-attached PV
-// class declare enforced assets; the other families are unaffected.
+// storage and EVSE specs ask for enforcement and makes the SunSpec PV class
+// declare enforced assets, and switching the logger-attached PV entry off
+// makes its class declare assets that are not enforced. Each family reads its
+// own entry only.
 func TestSemanticFamilyGraphEntryReachesDeclarations(t *testing.T) {
 	setSemanticFamilyGraph(t, semanticFamilyStorage, true)
 	setSemanticFamilyGraph(t, semanticFamilyEVSE, true)
 	setSemanticFamilyGraph(t, semanticFamilyPV, true)
+	setSemanticFamilyGraph(t, semanticFamilyLoggerPV, false)
 	if !growattStorageAssetSpec("asset:synthetic-storage", "source:synthetic-storage").Graph {
 		t.Fatal("storage spec ignores the table")
 	}
@@ -146,11 +156,11 @@ func TestSemanticFamilyGraphEntryReachesDeclarations(t *testing.T) {
 	if _, err := publication.class.Declare("asset:synthetic-logger-child", publication.handle.Source()); err != nil {
 		t.Fatal(err)
 	}
-	requireFamilyGraph(t, hub, semanticFamilyPV, "pv.synthetic")
+	requireFamilyGraph(t, hub, semanticFamilyLoggerPV, "pv.synthetic")
 	state, _ := hub.GraphState()
 	for _, asset := range state.Assets {
-		if asset.Driver == "pv.synthetic" && asset.Enforcement != semhub.GraphEnforced {
-			t.Fatalf("asset %q not enforced", asset.Asset)
+		if asset.Driver == "pv.synthetic" && asset.Enforcement != semhub.GraphNotEnforced {
+			t.Fatalf("asset %q enforced although its entry is off", asset.Asset)
 		}
 	}
 	pvHub := newTestSemanticHub(t)
@@ -162,4 +172,10 @@ func TestSemanticFamilyGraphEntryReachesDeclarations(t *testing.T) {
 		t.Fatal(err)
 	}
 	requireFamilyGraph(t, pvHub, semanticFamilyPV, "pv_sunspec")
+	state, _ = pvHub.GraphState()
+	for _, asset := range state.Assets {
+		if asset.Driver == "pv_sunspec" && asset.Enforcement != semhub.GraphEnforced {
+			t.Fatalf("SunSpec asset %q not enforced although its entry is on", asset.Asset)
+		}
+	}
 }

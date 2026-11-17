@@ -2,9 +2,10 @@
 """Offline execution coverage; public docs, Python and Go commands are doubles.
 
 These tests prove the shell orchestration of the Huawei PV gate: it fetches the
-pinned public docs-semantic commit itself, refuses the older identity form
-before any Go build, fails closed on module selection and preserves the focused
-Go test outcome. They do not qualify the remote documentation.
+pinned public docs-semantic commit itself, refuses every identity form other
+than the resource-based one before any Go build, fails closed on module
+selection and preserves the focused Go test outcome. They do not qualify the
+remote documentation.
 """
 
 import json
@@ -22,12 +23,36 @@ GATE = ROOT / "scripts" / "huawei_pv_semreg_gate.sh"
 MODULE = "github.com/Project-Helianthus/helianthus-semreg"
 FOCUSED_GO_TEST = ["go", "test", "-race", "./cmd/gateway", "./internal/modbusadapter", "./mcp",
                    "-run", "^TestH10", "-count=1", "-timeout=120s"]
-FINALIZED_CONTRACT = {"identity": {
-    "asset_id": {"source": "gateway_derived_semantic_asset_id",
-                 "derivation": {"domain": "helianthus.modbus.asset.v1",
-                                "field_encoding": "utf8_each_followed_by_nul"}},
-    "source_id": {"source": "gateway_managed_instance_source_id"},
-}}
+ALLOCATED = "gateway_allocated_resource_id"
+FINALIZED_CONTRACT = {
+    "identity": {
+        "asset_id": {"source": "gateway_allocated_asset_id"},
+        "source_id": {"source": "gateway_managed_instance_source_id"},
+        "binding_id": {"stable_inputs": ["asset_id", "source_id", "profile_id"]},
+        "resources": {
+            "system": {"dimension": "pv.dimension.system", "source": ALLOCATED},
+            "inverter": {"dimension": "pv.dimension.inverter", "source": ALLOCATED},
+            "inputs": {"dimension": "pv.dimension.input", "source": ALLOCATED},
+            "phases": {"dimension": "pv.dimension.phase", "source": "not_allocated_synthetic"},
+        },
+    },
+    "graph": {
+        "resources": [
+            {"kind": "resource.pv_system", "anchor_class": "function", "anchor_basis": "operator_slot",
+             "anchor_source": "operator_label", "parent_kind": None},
+            {"kind": "resource.inverter", "anchor_class": "equipment", "anchor_basis": "operator_slot",
+             "anchor_source": "operator_label", "parent_kind": None},
+            {"kind": "resource.dc_input", "anchor_class": "component", "anchor_basis": "native_slot",
+             "anchor_source": "native_position", "parent_kind": "resource.inverter"},
+        ],
+        "relations": [
+            {"definition": "pv.relation.system_inverter", "basis_class": "gate_rule",
+             "from_kind": "resource.pv_system", "to_kind": "resource.inverter"},
+            {"definition": "pv.relation.inverter_input", "basis_class": "gate_rule",
+             "from_kind": "resource.inverter", "to_kind": "resource.dc_input"},
+        ],
+    },
+}
 
 # Each double records its arguments. Unexpected commands fail instead of
 # accidentally falling through to the host's network or Go environment. The
@@ -142,21 +167,59 @@ class HuaweiPVSemregGateTests(unittest.TestCase):
         self.assertIn("no arguments", result.stderr)
         self.assertEqual(calls, [])
 
-    def test_old_asset_identity_refused_before_vectors_and_go(self):
+    def refused(self, mutate, message):
         contract = json.loads(json.dumps(FINALIZED_CONTRACT))
-        contract["identity"]["asset_id"]["source"] = "old_identity"
+        mutate(contract)
         result, calls = self.run_gate(contract=contract)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Huawei identity companion required", result.stderr)
+        self.assertIn(message, result.stderr)
         self.assertEqual([call[0] for call in calls], ["git"] * 5 + ["python3"])
 
-    def test_derivation_drift_refused_before_vectors_and_go(self):
-        contract = json.loads(json.dumps(FINALIZED_CONTRACT))
-        contract["identity"]["asset_id"]["derivation"]["domain"] = "other.domain"
-        result, calls = self.run_gate(contract=contract)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Huawei asset derivation contract differs", result.stderr)
-        self.assertFalse(any(call[0] == "go" for call in calls))
+    def test_older_identity_forms_refused_before_vectors_and_go(self):
+        # The derived-asset form this gate pinned before and any other source
+        # of the asset or the source identifier are refused.
+        for field, value in (("asset_id", "gateway_derived_semantic_asset_id"),
+                             ("asset_id", "old_identity"),
+                             ("source_id", "configured_source_id")):
+            with self.subTest(field=field, value=value):
+                self.refused(lambda c: c["identity"][field].update(source=value),
+                             "Huawei resource identity companion required")
+
+    def test_binding_input_drift_refused_before_vectors_and_go(self):
+        self.refused(lambda c: c["identity"]["binding_id"].update(stable_inputs=["asset_id", "source_id"]),
+                     "Huawei binding inputs differ")
+
+    def test_resource_identity_drift_refused_before_vectors_and_go(self):
+        # Every role the gateway keys facts by, its dimension and its
+        # allocation are checked; a phase is never allocated.
+        mutations = []
+        for role in ("system", "inverter", "inputs"):
+            mutations.append((role, "dimension", "pv.dimension.array"))
+            mutations.append((role, "source", "asset_text"))
+        mutations.append(("phases", "source", ALLOCATED))
+        for role, field, value in mutations:
+            with self.subTest(role=role, field=field):
+                self.refused(lambda c: c["identity"]["resources"][role].update({field: value}),
+                             "Huawei resource identity companion required")
+
+    def test_anchor_drift_refused_before_vectors_and_go(self):
+        # Each member of each anchor the gateway publishes is varied.
+        for index in range(3):
+            for field, value in (("kind", "resource.equipment"), ("anchor_class", "episode"),
+                                 ("anchor_basis", "native_identity"), ("anchor_source", "routed_unit"),
+                                 ("parent_kind", "resource.pv_system")):
+                with self.subTest(index=index, field=field):
+                    self.refused(lambda c: c["graph"]["resources"][index].update({field: value}),
+                                 "Huawei resource anchors differ")
+
+    def test_relation_drift_refused_before_vectors_and_go(self):
+        # Each member of each relation the gateway publishes is varied.
+        for index in range(2):
+            for field, value in (("definition", "relation.relays"), ("basis_class", "configuration"),
+                                 ("from_kind", "resource.equipment"), ("to_kind", "resource.phase")):
+                with self.subTest(index=index, field=field):
+                    self.refused(lambda c: c["graph"]["relations"][index].update({field: value}),
+                                 "Huawei resource relations differ")
 
     def test_vector_failure_stops_before_module_selection(self):
         result, calls = self.run_gate(GATE_TEST_DOCS_STATUS="17")

@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semgraph"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	"github.com/Project-Helianthus/helianthus-modbusreg/huawei"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
@@ -66,6 +68,11 @@ type huaweiPVPublication struct {
 	// refused names, per routed unit, why the publication refused a child the
 	// provider admitted; a later successful admission clears the entry.
 	refused map[byte]string
+	// resources is the process's resource allocator.
+	resources *semanticResourceAllocator
+	// replaced marks a child the native owner withheld because another unit
+	// answered at it; its next admission is a new inverter.
+	replaced map[byte]bool
 	// predecessor is the epoch this publication succeeded, the only earlier
 	// generation whose retained observations an asset keeps.
 	predecessor semreg.SourceEpochID
@@ -254,11 +261,16 @@ func huaweiAssetSourceCapacity(snapshot semreg.Snapshot, source semreg.SourceID)
 	return nil
 }
 
+// huaweiIncarnationBindings is the number of bindings, and of identity links,
+// one incarnation adds: the inverter path and the system path.
+const huaweiIncarnationBindings = 2
+
 // huaweiBindingCapacity refuses a new binding incarnation on an asset that
-// holds the kernel's binding or identity-link bound. Both bounds are per asset
-// and shared by every contributor, so every record counts, whatever its source.
+// cannot hold its bindings and identity links within the kernel's bounds.
+// Both bounds are per asset and shared by every contributor, so every record
+// counts, whatever its source.
 func huaweiBindingCapacity(current semreg.Snapshot) error {
-	if len(current.Bindings) >= huaweiMaxAssetBindings || len(current.IdentityLinks) >= huaweiMaxAssetIdentityLinks {
+	if len(current.Bindings)+huaweiIncarnationBindings > huaweiMaxAssetBindings || len(current.IdentityLinks)+huaweiIncarnationBindings > huaweiMaxAssetIdentityLinks {
 		return errHuaweiBindingCapacityExhausted
 	}
 	return nil
@@ -271,7 +283,11 @@ func newHuaweiPVPublication(hub *semhub.Hub, driver, source, label string, previ
 	if err := huaweiSourceCapacity(hub, semreg.SourceID(source)); err != nil {
 		return nil, err
 	}
-	class, err := hub.DeclareClass(semhub.ClassSpec{Name: "huawei_pv", Driver: driver, Validators: func() []semreg.PackValidator { return []semreg.PackValidator{pv.New()} }, OnControl: func(semhub.ControlEvent) error { return nil }, Graph: semanticFamilyGraph(semanticFamilyPV)})
+	class, err := hub.DeclareClass(semhub.ClassSpec{Name: "huawei_pv", Driver: driver, Validators: func() []semreg.PackValidator { return []semreg.PackValidator{pv.New()} }, OnControl: func(semhub.ControlEvent) error { return nil }, Graph: semanticFamilyGraph(semanticFamilyLoggerPV)})
+	if err != nil {
+		return nil, err
+	}
+	resources, err := semanticResourceAllocatorFor(hub)
 	if err != nil {
 		return nil, err
 	}
@@ -289,7 +305,7 @@ func newHuaweiPVPublication(hub *semhub.Hub, driver, source, label string, previ
 	if err != nil {
 		return nil, err
 	}
-	publication := &huaweiPVPublication{hub: hub, class: class, handle: handle, label: label, active: active, origin: time.Now(), published: map[byte]semreg.AssetID{}, incarnations: map[byte]uint64{}, refused: map[byte]string{}}
+	publication := &huaweiPVPublication{hub: hub, class: class, handle: handle, label: label, active: active, origin: time.Now(), published: map[byte]semreg.AssetID{}, incarnations: map[byte]uint64{}, refused: map[byte]string{}, resources: resources, replaced: map[byte]bool{}}
 	if previous != nil {
 		publication.predecessor = previous.Epoch()
 	}
@@ -356,6 +372,9 @@ func (p *huaweiPVPublication) Publish(cycle huawei.ProviderCycle) error {
 		admitted := child.Evidence != huawei.ProviderEvidenceWithheld && child.Reading.ProfileID() == child.ProfileID && child.Reading.UnitID() == child.UnitID && child.IdentifiedGeneration == cycle.Generation && child.Catalog != nil && child.Catalog.Outcome() == huawei.SUN2000CatalogSelected
 		admitted = admitted && (cycle.Path == huawei.ProviderPathSmartLogger && child.ProfileID == huawei.SUN2000M3MonitoringProfileID || cycle.Path == huawei.ProviderPathSDongle && child.ProfileID == huawei.SUN2000M1MonitoringProfileID)
 		if !admitted {
+			if child.Reason == huawei.ProviderReasonIdentityMismatch && p.incarnations[child.UnitID] > 0 {
+				p.replaced[child.UnitID] = true
+			}
 			if id, ok := p.published[child.UnitID]; ok {
 				if err := p.publishChild(id, child, cycle, true); err != nil {
 					failures = append(failures, err)
@@ -445,7 +464,14 @@ func (p *huaweiPVPublication) publishChild(asset semreg.AssetID, child huawei.Pr
 	}
 	// Identity withdrawal is terminal for a binding. Re-admission gets a new
 	// native-binding incarnation while retaining the configured asset identity.
+	// The binding of the inverter path observes the inverter and its inputs;
+	// the binding of the system path observes the PV system the gate gives the
+	// child, whose lifetime energy it carries.
 	binding, err := semhub.NativeBindingID("huawei_pv", asset, source, child.ProfileID+":"+strconv.FormatUint(incarnation, 10), epoch, p.handle.Generation())
+	if err != nil && !withdraw {
+		return err
+	}
+	systemBinding, err := semhub.NativeBindingID("huawei_pv", asset, source, child.ProfileID+":"+strconv.FormatUint(incarnation, 10)+":"+huaweiSystemPath, epoch, p.handle.Generation())
 	if err != nil && !withdraw {
 		return err
 	}
@@ -456,44 +482,66 @@ func (p *huaweiPVPublication) publishChild(asset semreg.AssetID, child huawei.Pr
 	}
 	var retainedIDs []semreg.CandidateID
 	var capacity []huaweiRetainedWithdrawal
+	var graph huaweiPVGraph
+	replaced := false
 	if !withdraw {
 		if !growattStorageHasSourceEpoch(current, source, epoch) {
 			batch.SourceUpserts = append(batch.SourceUpserts, semreg.SourceDescriptor{SourceID: source, SourceEpochID: epoch, ProtocolID: "modbus_tcp", ProfileID: "huawei.readonly.pv", ProfileVersion: "1", RegistryEvidence: huaweiEvidence("registry.huawei.mapping", "huawei-sun2000-pv-v1"), StartedAt: growattWall(p.origin), State: semreg.SourceCurrent, Revision: "1"})
 		}
-		hasBinding := false
-		for _, old := range current.Bindings {
-			if old.BindingID == binding {
-				if old.DriverGeneration != generation || old.SourceEpochID != epoch || old.State != semreg.BindingCurrent {
-					return errors.New("huawei binding incarnation unavailable")
+		replaced = p.replaced[child.UnitID]
+		graph, err = p.graph(asset, child, binding, epoch, replaced)
+		if err != nil {
+			return err
+		}
+		paths := []struct {
+			id       semreg.NativeBindingID
+			path     string
+			resource semreg.ResourceID
+		}{{binding, huaweiInverterPath, graph.inverter}, {systemBinding, huaweiSystemPath, graph.system}}
+		for _, path := range paths {
+			hasBinding := false
+			for _, old := range current.Bindings {
+				if old.BindingID == path.id {
+					if old.DriverGeneration != generation || old.SourceEpochID != epoch || old.State != semreg.BindingCurrent {
+						return errors.New("huawei binding incarnation unavailable")
+					}
+					hasBinding = true
 				}
-				hasBinding = true
+			}
+			if !hasBinding {
+				// A new incarnation must fit the kernel's bounds; refuse before any
+				// batch is applied so the asset and the siblings are left untouched.
+				if len(batch.BindingUpserts) == 0 {
+					if err := huaweiBindingCapacity(current); err != nil {
+						p.refused[child.UnitID] = huaweiRefusalBindingCapacity
+						return fmt.Errorf("unit %d: %w", child.UnitID, err)
+					}
+				}
+				batch.BindingUpserts = append(batch.BindingUpserts, semreg.NativeBinding{BindingID: path.id, AssetID: asset, SourceID: source, SourceEpochID: epoch, DriverGeneration: generation, NativeResource: huaweiEvidence("native.huawei.binding", struct {
+					Asset   semreg.AssetID
+					Source  semreg.SourceID
+					Profile string
+					Path    string
+				}{asset, source, child.ProfileID, path.path}), State: semreg.BindingCurrent, Revision: "1"})
+			}
+			linkRevision := semreg.Uint64("1")
+			updateLink := true
+			for _, old := range current.IdentityLinks {
+				if old.BindingID == path.id {
+					linkRevision = huaweiNext(old.Revision)
+					updateLink = old.State != semreg.LinkQualified || old.Resource == nil || *old.Resource != path.resource
+				}
+			}
+			if updateLink {
+				resource := path.resource
+				batch.IdentityLinkUpserts = append(batch.IdentityLinkUpserts, semreg.IdentityLink{AssetID: asset, BindingID: path.id, State: semreg.LinkQualified, Basis: []semreg.EvidenceRef{evidence}, Revision: linkRevision, Resource: &resource})
 			}
 		}
-		if !hasBinding {
-			// A new incarnation must fit the kernel's bounds; refuse before any
-			// batch is applied so the asset and the siblings are left untouched.
-			if err := huaweiBindingCapacity(current); err != nil {
-				p.refused[child.UnitID] = huaweiRefusalBindingCapacity
-				return fmt.Errorf("unit %d: %w", child.UnitID, err)
-			}
-			batch.BindingUpserts = append(batch.BindingUpserts, semreg.NativeBinding{BindingID: binding, AssetID: asset, SourceID: source, SourceEpochID: epoch, DriverGeneration: generation, NativeResource: huaweiEvidence("native.huawei.binding", struct {
-				Asset   semreg.AssetID
-				Source  semreg.SourceID
-				Profile string
-			}{asset, source, child.ProfileID}), State: semreg.BindingCurrent, Revision: "1"})
-		}
-		linkRevision := semreg.Uint64("1")
-		updateLink := true
-		for _, old := range current.IdentityLinks {
-			if old.BindingID == binding {
-				linkRevision = huaweiNext(old.Revision)
-				updateLink = old.State != semreg.LinkQualified
-			}
-		}
-		if updateLink {
-			batch.IdentityLinkUpserts = append(batch.IdentityLinkUpserts, semreg.IdentityLink{AssetID: asset, BindingID: binding, State: semreg.LinkQualified, Basis: []semreg.EvidenceRef{evidence}, Revision: linkRevision})
-		}
-		batch.FactUpserts, err = p.facts(asset, binding, child, cycle, evidence, current)
+		sort.Slice(batch.BindingUpserts, func(i, j int) bool { return batch.BindingUpserts[i].BindingID < batch.BindingUpserts[j].BindingID })
+		sort.Slice(batch.IdentityLinkUpserts, func(i, j int) bool {
+			return batch.IdentityLinkUpserts[i].BindingID < batch.IdentityLinkUpserts[j].BindingID
+		})
+		batch.FactUpserts, err = p.facts(graph, binding, systemBinding, child, cycle, evidence, current)
 		if err != nil {
 			return err
 		}
@@ -502,6 +550,17 @@ func (p *huaweiPVPublication) publishChild(asset semreg.AssetID, child huawei.Pr
 			return err
 		}
 		batch.FactWithdrawals = append(batch.FactWithdrawals, retainedIDs...)
+		if replaced {
+			// A changed unit fences every earlier reading of this source on the
+			// asset: none of them is about the unit now at the child.
+			for _, envelope := range current.Facts {
+				for _, old := range envelope.Candidates {
+					if semregCandidateOfSource(current, old, source) {
+						batch.FactWithdrawals = append(batch.FactWithdrawals, old.CandidateID)
+					}
+				}
+			}
+		}
 	}
 	if withdraw {
 		for _, old := range current.IdentityLinks {
@@ -523,8 +582,12 @@ func (p *huaweiPVPublication) publishChild(asset semreg.AssetID, child huawei.Pr
 			}
 		}
 	}
+	batch.FactWithdrawals = huaweiUniqueCandidates(batch.FactWithdrawals, keep)
+	p.relations(&batch, current, graph, binding, systemBinding, withdraw)
+	if !withdraw {
+		batch.ResourceUpserts = huaweiResourceUpserts(current, graph, batch)
+	}
 	sort.Slice(batch.FactUpserts, func(i, j int) bool { return batch.FactUpserts[i].CandidateID < batch.FactUpserts[j].CandidateID })
-	sort.Slice(batch.FactWithdrawals, func(i, j int) bool { return batch.FactWithdrawals[i] < batch.FactWithdrawals[j] })
 	batch.BatchDigest, err = batch.ComputedDigest()
 	if err != nil {
 		return err
@@ -539,12 +602,273 @@ func (p *huaweiPVPublication) publishChild(asset semreg.AssetID, child huawei.Pr
 	if err == nil && !withdraw {
 		p.incarnations[child.UnitID] = incarnation
 		delete(p.refused, child.UnitID)
+		delete(p.replaced, child.UnitID)
+		p.resources.keepSlotOrdinal(huaweiKindInverter, huaweiChildSlot(p.label, child.UnitID), graph.ordinal)
 		p.capacity = append(p.capacity, capacity...)
 	}
 	return err
 }
 
-func (p *huaweiPVPublication) facts(asset semreg.AssetID, binding semreg.NativeBindingID, child huawei.ProviderChildObservation, cycle huawei.ProviderCycle, evidence semreg.EvidenceRef, current semreg.Snapshot) ([]semreg.FactCandidate, error) {
+// The resource kinds, relation definitions and binding paths of the
+// logger-attached PV family under its re-based gate.
+const (
+	huaweiKindSystem   semreg.DefinitionID = "resource.pv_system"
+	huaweiKindInverter semreg.DefinitionID = "resource.inverter"
+	huaweiKindInput    semreg.DefinitionID = "resource.dc_input"
+	huaweiInverterPath                     = "inverter"
+	huaweiSystemPath                       = "pv_system"
+)
+
+var (
+	huaweiRelationSystemInverter = semreg.DefinitionRef{Pack: semreg.PackRef{ID: huaweiPVPack, Version: "1.0.0"}, ID: "pv.relation.system_inverter", Version: "1.0.0"}
+	huaweiRelationInverterInput  = semreg.DefinitionRef{Pack: semreg.PackRef{ID: huaweiPVPack, Version: "1.0.0"}, ID: "pv.relation.inverter_input", Version: "1.0.0"}
+)
+
+// huaweiPVGraph is the resource graph of one admitted child: the PV system
+// the gate gives it, its inverter and the DC input at each published native
+// string index. records holds every resource the child's home asset carries.
+type huaweiPVGraph struct {
+	system, inverter semreg.ResourceID
+	ordinal          uint64
+	inputs           map[uint16]semreg.ResourceID
+	records          []semreg.Resource
+}
+
+// huaweiChildSlot is the operator slot base of a child: the configured
+// instance label and the child entry the operator configured for it.
+func huaweiChildSlot(label string, unit byte) string {
+	return label + "/" + strconv.Itoa(int(unit))
+}
+
+// huaweiInputs lists the native string indexes whose voltage and current pair
+// shows a present input. A zero pair is native evidence, not membership.
+func huaweiInputs(child huawei.ProviderChildObservation) []uint16 {
+	keyPrefix := "huawei.sun2000.m3."
+	if child.ProfileID == huawei.SUN2000M1MonitoringProfileID {
+		keyPrefix = "huawei.sun2000.m1."
+	}
+	seen := map[uint16]bool{}
+	var out []uint16
+	for _, native := range child.Reading.Facts() {
+		index := uint16(native.Index)
+		if native.Index <= 0 || seen[index] {
+			continue
+		}
+		voltage, vok := child.Reading.Fact(keyPrefix+"pv_string_voltage", native.Index)
+		current, cok := child.Reading.Fact(keyPrefix+"pv_string_current", native.Index)
+		if !vok || !cok || voltage.Value.Coefficient == 0 && current.Value.Coefficient == 0 {
+			continue
+		}
+		seen[index] = true
+		out = append(out, index)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+// graph allocates the child's resources. The system and the inverter are
+// anchored on operator slots: the family has no listed identification scheme
+// and its admitted read plans read no child token. A replaced unit moves the
+// inverter slot to its next ordinal, so the inverter and its inputs get new
+// identifiers while the system keeps its own.
+func (p *huaweiPVPublication) graph(asset semreg.AssetID, child huawei.ProviderChildObservation, binding semreg.NativeBindingID, epoch semreg.SourceEpochID, replaced bool) (huaweiPVGraph, error) {
+	base := huaweiChildSlot(p.label, child.UnitID)
+	ordinal, err := p.resources.slotOrdinal(huaweiKindInverter, semreg.AnchorEquipment, base, replaced)
+	if err != nil {
+		return huaweiPVGraph{}, err
+	}
+	out := huaweiPVGraph{ordinal: ordinal, inputs: map[uint16]semreg.ResourceID{}}
+	operator := func(kind semreg.DefinitionID, class semreg.AnchorClass, slot string) (semreg.ResourceID, error) {
+		anchor := semgraph.Anchor{Class: class, Basis: semreg.AnchorOperatorSlot, Source: semgraph.SourceOperatorLabel, Slot: slot, Evidence: []semreg.EvidenceRef{huaweiEvidence("operator.huawei.child_slot", slot)}}
+		id, record, err := p.resources.resolve(kind, anchor, asset)
+		if err != nil {
+			return "", err
+		}
+		out.records = append(out.records, semreg.Resource{ResourceID: id, Kind: kind, Anchor: record, State: semreg.ResourceCurrent, Origin: semreg.OriginRef{OriginID: semreg.OriginID("origin:huawei-pv-operator:" + huaweiHash(string(kind), slot)[:32]), Kind: semreg.OriginOperator, Evidence: []semreg.EvidenceRef{huaweiEvidence("operator.huawei.instance", p.label)}}, Revision: "1"})
+		return id, nil
+	}
+	if out.system, err = operator(huaweiKindSystem, semreg.AnchorFunction, base); err != nil {
+		return huaweiPVGraph{}, err
+	}
+	if out.inverter, err = operator(huaweiKindInverter, semreg.AnchorEquipment, semanticOrdinalSlot(base, ordinal)); err != nil {
+		return huaweiPVGraph{}, err
+	}
+	source := p.handle.Source()
+	for _, index := range huaweiInputs(child) {
+		slot := strconv.Itoa(int(index))
+		anchor := semgraph.Anchor{Class: semreg.AnchorComponent, Basis: semreg.AnchorNativeSlot, Source: semgraph.SourceNativePosition, Parent: out.inverter, Slot: slot, Evidence: []semreg.EvidenceRef{huaweiEvidence("native.huawei.string_index", slot)}}
+		id, record, err := p.resources.resolve(huaweiKindInput, anchor, asset)
+		if err != nil {
+			return huaweiPVGraph{}, err
+		}
+		bindingID := binding
+		out.inputs[index] = id
+		out.records = append(out.records, semreg.Resource{ResourceID: id, Kind: huaweiKindInput, Anchor: record, State: semreg.ResourceCurrent, Origin: semreg.OriginRef{OriginID: semreg.OriginID("origin:huawei-pv-input:" + huaweiHash(string(id), string(binding))[:32]), Kind: semreg.OriginNativeObservation, SourceID: &source, SourceEpochID: &epoch, BindingID: &bindingID, Evidence: []semreg.EvidenceRef{huaweiEvidence("native.huawei.string_index", slot)}}, Revision: "1"})
+	}
+	return out, nil
+}
+
+// huaweiResourceUpserts returns the resource records the batch must carry: a
+// resource the asset does not hold, one it holds withdrawn, and the
+// retirement of a replaced inverter and its inputs once nothing that stays in
+// the asset names them. A current record is never rewritten.
+func huaweiResourceUpserts(current semreg.Snapshot, graph huaweiPVGraph, batch semreg.PublicationBatch) []semreg.Resource {
+	held := map[semreg.ResourceID]semreg.Resource{}
+	for _, resource := range current.Resources {
+		held[resource.ResourceID] = resource
+	}
+	out := []semreg.Resource{}
+	desired := map[semreg.ResourceID]bool{}
+	for _, record := range graph.records {
+		desired[record.ResourceID] = true
+		old, ok := held[record.ResourceID]
+		if ok && old.State == semreg.ResourceCurrent {
+			continue
+		}
+		if ok {
+			record.Anchor, record.Revision = old.Anchor, huaweiNext(old.Revision)
+		}
+		out = append(out, record)
+	}
+	named := huaweiNamedResources(current, batch)
+	for _, old := range current.Resources {
+		if old.State != semreg.ResourceCurrent || desired[old.ResourceID] || named[old.ResourceID] {
+			continue
+		}
+		replacedInverter := old.Kind == huaweiKindInverter
+		replacedInput := old.Kind == huaweiKindInput && old.Anchor.Parent != nil && *old.Anchor.Parent != graph.inverter
+		if !replacedInverter && !replacedInput {
+			continue
+		}
+		old.State, old.Revision = semreg.ResourceRetired, huaweiNext(old.Revision)
+		out = append(out, old)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ResourceID < out[j].ResourceID })
+	return out
+}
+
+// huaweiNamedResources is every resource a fact or a relation that stays in
+// the asset after batch names.
+func huaweiNamedResources(current semreg.Snapshot, batch semreg.PublicationBatch) map[semreg.ResourceID]bool {
+	named := map[semreg.ResourceID]bool{}
+	withdrawn := map[semreg.CandidateID]bool{}
+	for _, id := range batch.FactWithdrawals {
+		withdrawn[id] = true
+	}
+	name := func(key semreg.FactKey) {
+		for _, dimension := range key.Dimensions {
+			if dimension.Value.Text != nil {
+				named[semreg.ResourceID(*dimension.Value.Text)] = true
+			}
+		}
+	}
+	for _, envelope := range current.Facts {
+		for _, candidate := range envelope.Candidates {
+			if !withdrawn[candidate.CandidateID] {
+				name(candidate.Key)
+			}
+		}
+	}
+	for _, fact := range batch.FactUpserts {
+		name(fact.Key)
+	}
+	ended := map[string]bool{}
+	for _, key := range batch.RelationWithdrawals {
+		ended[huaweiRelationKey(key)] = true
+	}
+	for _, relation := range current.Relations {
+		if !ended[huaweiRelationKey(semreg.RelationKey{Definition: relation.Definition, From: relation.From, To: relation.To})] {
+			named[relation.From], named[relation.To] = true, true
+		}
+	}
+	for _, relation := range batch.RelationUpserts {
+		named[relation.From], named[relation.To] = true, true
+	}
+	return named
+}
+
+// relations adds the gate's relation records to batch: the system groups the
+// child's inverter, and the inverter contains each published input. Each
+// record's origin is the binding of the path that observes its starting end.
+// A record of this source that the child no longer supports is withdrawn, and
+// a withdrawn child withdraws them all.
+func (p *huaweiPVPublication) relations(batch *semreg.PublicationBatch, current semreg.Snapshot, graph huaweiPVGraph, binding, systemBinding semreg.NativeBindingID, withdraw bool) {
+	source, epoch := p.handle.Source(), p.handle.Epoch()
+	desired := map[string]semreg.RelationInstance{}
+	add := func(definition semreg.DefinitionRef, from, to semreg.ResourceID, origin semreg.NativeBindingID) {
+		bindingID := origin
+		basis := huaweiEvidence("gate.huawei.pv.relation", struct {
+			Definition semreg.DefinitionID
+			Rule       string
+		}{definition.ID, "re-based PV gate"})
+		relation := semreg.RelationInstance{Definition: definition, From: from, To: to, State: semreg.LinkQualified, BasisClass: semreg.RelationGateRule, Basis: []semreg.EvidenceRef{basis}, Origin: semreg.OriginRef{OriginID: semreg.OriginID("origin:huawei-pv-relation:" + huaweiHash(string(definition.ID), string(from), string(to), string(origin))[:32]), Kind: semreg.OriginNativeObservation, SourceID: &source, SourceEpochID: &epoch, BindingID: &bindingID, Evidence: []semreg.EvidenceRef{basis}}, Revision: "1"}
+		desired[huaweiRelationKey(semreg.RelationKey{Definition: definition, From: from, To: to})] = relation
+	}
+	if !withdraw {
+		add(huaweiRelationSystemInverter, graph.system, graph.inverter, systemBinding)
+		for _, input := range graph.inputs {
+			add(huaweiRelationInverterInput, graph.inverter, input, binding)
+		}
+	}
+	for _, old := range current.Relations {
+		key := huaweiRelationKey(semreg.RelationKey{Definition: old.Definition, From: old.From, To: old.To})
+		if next, ok := desired[key]; ok {
+			if reflect.DeepEqual(next.Origin, old.Origin) && reflect.DeepEqual(next.Basis, old.Basis) && old.State == next.State {
+				delete(desired, key)
+			} else {
+				next.Revision = huaweiNext(old.Revision)
+				desired[key] = next
+			}
+			continue
+		}
+		if old.Origin.BindingID != nil && huaweiBindingOfSource(current, *old.Origin.BindingID, source) {
+			batch.RelationWithdrawals = append(batch.RelationWithdrawals, semreg.RelationKey{Definition: old.Definition, From: old.From, To: old.To})
+		}
+	}
+	for _, relation := range desired {
+		batch.RelationUpserts = append(batch.RelationUpserts, relation)
+	}
+	sort.Slice(batch.RelationUpserts, func(i, j int) bool {
+		return huaweiRelationKey(semreg.RelationKey{Definition: batch.RelationUpserts[i].Definition, From: batch.RelationUpserts[i].From, To: batch.RelationUpserts[i].To}) < huaweiRelationKey(semreg.RelationKey{Definition: batch.RelationUpserts[j].Definition, From: batch.RelationUpserts[j].From, To: batch.RelationUpserts[j].To})
+	})
+	sort.Slice(batch.RelationWithdrawals, func(i, j int) bool {
+		return huaweiRelationKey(batch.RelationWithdrawals[i]) < huaweiRelationKey(batch.RelationWithdrawals[j])
+	})
+}
+
+// huaweiRelationKey orders relation keys as the kernel does: the canonical
+// definition bytes, then the two endpoints.
+func huaweiRelationKey(key semreg.RelationKey) string {
+	definition, _ := semreg.CanonicalJSON(key.Definition)
+	return string(definition) + "\x00" + string(key.From) + "\x00" + string(key.To)
+}
+
+func huaweiBindingOfSource(snapshot semreg.Snapshot, id semreg.NativeBindingID, source semreg.SourceID) bool {
+	for _, binding := range snapshot.Bindings {
+		if binding.BindingID == id {
+			return binding.SourceID == source && binding.State == semreg.BindingCurrent
+		}
+	}
+	return false
+}
+
+// huaweiUniqueCandidates sorts withdrawals, removes duplicates and drops a
+// candidate the batch upserts.
+func huaweiUniqueCandidates(ids []semreg.CandidateID, upserted map[semreg.CandidateID]bool) []semreg.CandidateID {
+	seen := map[semreg.CandidateID]bool{}
+	out := []semreg.CandidateID{}
+	for _, id := range ids {
+		if seen[id] || upserted[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+func (p *huaweiPVPublication) facts(graph huaweiPVGraph, binding, systemBinding semreg.NativeBindingID, child huawei.ProviderChildObservation, cycle huawei.ProviderCycle, evidence semreg.EvidenceRef, current semreg.Snapshot) ([]semreg.FactCandidate, error) {
 	out := []semreg.FactCandidate{}
 	registry, err := semreg.NewRegistry(pv.New())
 	if err != nil {
@@ -591,13 +915,19 @@ func (p *huaweiPVPublication) facts(asset semreg.AssetID, binding semreg.NativeB
 		if number.Coefficient == "0" {
 			number.Exponent10 = 0
 		}
-		// Zero pairs do not prove input membership. Keep them as native evidence.
-		if native.Index > 0 {
-			voltage, vok := child.Reading.Fact(keyPrefix+"pv_string_voltage", native.Index)
-			current, cok := child.Reading.Fact(keyPrefix+"pv_string_current", native.Index)
-			if !vok || !cok || voltage.Value.Coefficient == 0 && current.Value.Coefficient == 0 {
+		// The resource dimension value is the identifier of the fact's subject.
+		// Zero pairs do not prove input membership: such an input has no
+		// resource, and its words stay native evidence.
+		subject, factBinding := graph.inverter, binding
+		switch dimension {
+		case "pv.dimension.input":
+			input, ok := graph.inputs[uint16(native.Index)]
+			if native.Index <= 0 || !ok {
 				continue
 			}
+			subject = input
+		case "pv.dimension.system":
+			subject, factBinding = graph.system, systemBinding
 		}
 		var receipt time.Time
 		groupStale := native.Retained
@@ -618,17 +948,14 @@ func (p *huaweiPVPublication) facts(asset semreg.AssetID, binding semreg.NativeB
 		if receipt.IsZero() || receipt.After(cycle.CompletedAt) {
 			return nil, errors.New("huawei native receipt lineage missing")
 		}
-		dimensionValue := strings.TrimPrefix(dimension, "pv.dimension.") + ":" + strings.TrimPrefix(string(asset), "pv-asset-")
-		if native.Index > 0 {
-			dimensionValue = fmt.Sprintf("input:%d", native.Index)
-		}
+		dimensionValue := string(subject)
 		key := semreg.FactKey{PackID: huaweiPVPack, PackVersion: "1.0.0", FactID: id, Dimensions: []semreg.Dimension{{ID: semreg.DefinitionID(dimension), Value: semreg.Value{Kind: semreg.ValueText, Text: &dimensionValue}}}}
 		value := semreg.Value{Kind: semreg.ValueQuantity, Quantity: &semreg.Quantity{Number: number, Unit: semreg.DefinitionID(unit)}}
 		if id == "pv.status.operating" {
 			value = semreg.Value{Kind: semreg.ValueSymbol, Symbol: &semreg.Symbol{Namespace: id, Token: "generating", Known: true}}
 		}
 		epoch, source, generation := p.handle.Epoch(), p.handle.Source(), p.handle.GenerationID()
-		hash := huaweiHash(string(asset), string(binding), string(epoch), string(generation), string(id), dimensionValue)
+		hash := huaweiHash(string(factBinding), string(epoch), string(generation), string(id), dimensionValue)
 		revision := semreg.Uint64("1")
 		candidateID := semreg.CandidateID("candidate:huawei-pv:" + hash[:32])
 		for _, envelope := range current.Facts {
@@ -645,7 +972,8 @@ func (p *huaweiPVPublication) facts(asset semreg.AssetID, binding semreg.NativeB
 			quality.Freshness = semreg.FreshnessStale
 			quality.Reasons = append(quality.Reasons, "native.huawei.child_stale")
 		}
-		fact := semreg.FactCandidate{CandidateID: candidateID, Key: key, Value: &value, Quality: quality, Times: semreg.Times{ReceivedAt: growattWall(receipt), ReceiptMonotonic: p.point(receipt), EvaluatedAt: growattWall(cycle.CompletedAt), EvaluateMonotonic: p.point(cycle.CompletedAt)}, FreshnessPolicy: semreg.FreshnessPolicy{PolicyID: "pv.telemetry.fast.v1", Version: "1.0.0", FreshForNS: "60000000000", RetainForNS: "300000000000", MaxWallUncertaintyNS: "0"}, BindingID: &binding, SourceEpochID: &epoch, DriverGeneration: &generation, Origin: semreg.OriginRef{OriginID: semreg.OriginID("origin:huawei-pv:" + hash[:32]), Kind: semreg.OriginNativeObservation, SourceID: &source, SourceEpochID: &epoch, BindingID: &binding, Evidence: []semreg.EvidenceRef{evidence}}, Evidence: []semreg.EvidenceRef{huaweiEvidence("native.huawei.grade", native.Grade), evidence}, Revision: revision}
+		bindingID := factBinding
+		fact := semreg.FactCandidate{CandidateID: candidateID, Key: key, Value: &value, Quality: quality, Times: semreg.Times{ReceivedAt: growattWall(receipt), ReceiptMonotonic: p.point(receipt), EvaluatedAt: growattWall(cycle.CompletedAt), EvaluateMonotonic: p.point(cycle.CompletedAt)}, FreshnessPolicy: semreg.FreshnessPolicy{PolicyID: "pv.telemetry.fast.v1", Version: "1.0.0", FreshForNS: "60000000000", RetainForNS: "300000000000", MaxWallUncertaintyNS: "0"}, BindingID: &bindingID, SourceEpochID: &epoch, DriverGeneration: &generation, Origin: semreg.OriginRef{OriginID: semreg.OriginID("origin:huawei-pv:" + hash[:32]), Kind: semreg.OriginNativeObservation, SourceID: &source, SourceEpochID: &epoch, BindingID: &bindingID, Evidence: []semreg.EvidenceRef{evidence}}, Evidence: []semreg.EvidenceRef{huaweiEvidence("native.huawei.grade", native.Grade), evidence}, Revision: revision}
 		if err := registry.ValidateFactCandidate(fact); err != nil {
 			continue
 		} // Out-of-pack values are withheld, never clamped.

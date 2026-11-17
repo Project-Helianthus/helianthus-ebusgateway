@@ -426,7 +426,9 @@ func TestForeignSourceGrowattSoftStartWithdrawsOnlyOwnOperatingCandidates(t *tes
 //     identity links;
 //   - the source of the descriptors filling the bound: counting only own
 //     descriptors;
-//   - one record fewer than the bound: refusing below the bound;
+//   - exactly the room of one incarnation (a binding and a link per observed
+//     path) below the bounds: refusing below the bound;
+//   - one record less than that room: making room for one record only;
 //   - an asset that holds no descriptor of the source: counting an asset the
 //     source does not publish on.
 func TestForeignSourceHuaweiCapacityCountsEveryContributor(t *testing.T) {
@@ -452,7 +454,9 @@ func TestForeignSourceHuaweiCapacityCountsEveryContributor(t *testing.T) {
 	}{
 		{name: "foreign bindings fill the binding bound", bindings: huaweiMaxAssetBindings - 1, exhausted: true},
 		{name: "foreign identity links fill the link bound", bindings: 1, link: huaweiMaxAssetIdentityLinks - 1, exhausted: true},
-		{name: "one binding and one link below the bounds", bindings: huaweiMaxAssetBindings - 2, link: huaweiMaxAssetIdentityLinks - 2},
+		{name: "room for one incarnation below the bounds", bindings: huaweiMaxAssetBindings - 1 - huaweiIncarnationBindings, link: huaweiMaxAssetIdentityLinks - 1 - huaweiIncarnationBindings},
+		{name: "foreign bindings leave room for one binding only", bindings: huaweiMaxAssetBindings - huaweiIncarnationBindings, link: 1, exhausted: true},
+		{name: "foreign identity links leave room for one link only", bindings: 1, link: huaweiMaxAssetIdentityLinks - huaweiIncarnationBindings, exhausted: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := huaweiBindingCapacity(topology(tc.bindings, tc.link))

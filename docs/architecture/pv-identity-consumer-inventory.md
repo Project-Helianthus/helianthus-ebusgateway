@@ -86,3 +86,49 @@ stability. Gateway/semantic owners must specify the intended observable contract
 this inventory does not choose one. HA release documentation and public semantic
 identity documentation need owner review with the eventual migration. No native
 protocol documentation or qualification meaning is changed by this read-only slice.
+
+## Logger-attached PV children as resources
+
+Added for [issue #1539](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1539).
+It records what the resource publication of the logger-attached PV family
+changes for the consumers traced above. It is evidence for consumer owners, not
+a migration decision.
+
+**What changes (Proven, gateway).** Each admitted inverter child behind a
+SmartLogger or an S-Dongle keeps its home asset and now publishes, in that
+asset, its PV system (a function on an operator slot), its inverter (equipment
+on an operator slot) and a DC input component at each native string index whose
+voltage and current pair shows a present input. The gateway allocates every
+resource identifier, and the value of every fact's resource dimension is the
+identifier of the fact's subject: the inverter for the power and status facts,
+the DC input for the string voltage and current, and the PV system for the
+lifetime energy counter. The system groups the child's inverter and the
+inverter contains each published input, both by the gate's rule. No phase is
+allocated, because no admitted profile reads a per-phase word. A dimension
+value is no longer built from the asset identifier or from the string index.
+
+**Identity events (Proven, gateway tests).** A driver restart into a new source
+epoch and a changed endpoint address keep every identifier. When the native
+owner withholds a child because another unit answered at it and later admits it
+again, the inverter and its inputs get new identifiers, the replaced inverter
+and inputs are retired once nothing in the asset names them, and the PV system
+keeps its identifier. The anchor table is kept beside the runtime state file
+when the composition opens it there, so a replacement also survives a process
+restart; with the in-memory table it survives driver restarts within one
+process only.
+
+**Consumers.**
+
+| Consumer | Effect | Evidence class |
+| --- | --- | --- |
+| Semantic MCP read and GraphQL `semanticSnapshot` of a logger child | Fact keys carry resource identifiers; the snapshot carries resources, relations and identity links that name a resource. | Proven |
+| MCP and Portal characterization goldens | Unchanged: they are produced by the SunSpec PV, storage and EVSE families, whose publishers are not part of this change. | Proven |
+| Prometheus semantic target | Unchanged text: a graphed snapshot's label is derived from the subject resource's kind and, for a phase, its slot, and a snapshot without resources is read as before; the logger family does not feed this target. | Proven |
+| Home Assistant entity identifiers built from logger-child dimension values | Change with this publication; the integration follows in its own change. | Hypothesis until the integration's source is traced |
+| Portal instance contribution | Unchanged: it carries native instance diagnostics and asset identifiers only; the published assets render through the generic semantic surfaces. | Proven |
+| Matter feed conversion and binding endpoints | The inspected feed conversion names no logger-family source; whether a downstream binding reads these assets is not traced. | Unknown |
+
+**Not yet published.** The logger or dongle itself as generic equipment and its
+relay of each child, explicit absence for a withheld child, and the SunSpec PV
+family's resources follow in later changes; the SunSpec PV class keeps its own
+graph table entry off until then.

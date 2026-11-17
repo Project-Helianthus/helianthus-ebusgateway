@@ -456,6 +456,13 @@ func TestH10MappingValuesAndWithheldFacts(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			// Each fact is keyed by the identifier of its subject resource; the
+			// map is keyed by the subject's kind and, for an input, its native
+			// position.
+			resources := map[semreg.ResourceID]semreg.Resource{}
+			for _, resource := range view.Snapshot.Resources {
+				resources[resource.ResourceID] = resource
+			}
 			quantities := map[semreg.DefinitionID]map[string]semreg.Decimal{}
 			for _, envelope := range view.Snapshot.Facts {
 				for _, candidate := range envelope.Candidates {
@@ -465,25 +472,31 @@ func TestH10MappingValuesAndWithheldFacts(t *testing.T) {
 					if quantities[envelope.Key.FactID] == nil {
 						quantities[envelope.Key.FactID] = map[string]semreg.Decimal{}
 					}
-					dimension := *envelope.Key.Dimensions[0].Value.Text
-					quantities[envelope.Key.FactID][dimension] = candidate.Value.Quantity.Number
+					subject, ok := resources[semreg.ResourceID(*envelope.Key.Dimensions[0].Value.Text)]
+					if !ok {
+						t.Fatalf("fact %s names no resource", envelope.Key.FactID)
+					}
+					role := string(subject.Kind)
+					if subject.Anchor.Slot != nil && subject.Kind == "resource.dc_input" {
+						role += ":" + *subject.Anchor.Slot
+					}
+					quantities[envelope.Key.FactID][role] = candidate.Value.Quantity.Number
 				}
 			}
-			suffix := string(asset)[len("pv-asset-"):]
 			wantVoltage := semreg.Decimal{Coefficient: "6128", Exponent10: -1}
 			wantEnergy := semreg.Decimal{Coefficient: "42", Exponent10: 3}
 			if name == "sdongle" {
 				wantVoltage = semreg.Decimal{Coefficient: "655"}
 				wantEnergy = semreg.Decimal{Coefficient: "15", Exponent10: 3}
 			}
-			if got := quantities["pv.dc.voltage"]["input:1"]; got != wantVoltage {
+			if got := quantities["pv.dc.voltage"]["resource.dc_input:1"]; got != wantVoltage {
 				t.Fatalf("voltage=%+v", got)
 			}
-			if got := quantities["pv.energy.generated"]["system:"+suffix]; got != wantEnergy {
+			if got := quantities["pv.energy.generated"]["resource.pv_system"]; got != wantEnergy {
 				t.Fatalf("counter=%+v", got)
 			}
 			if name == "sdongle" {
-				if got := quantities["pv.ac.aggregate_active_power"]["inverter:"+suffix]; got != (semreg.Decimal{Coefficient: "466"}) {
+				if got := quantities["pv.ac.aggregate_active_power"]["resource.inverter"]; got != (semreg.Decimal{Coefficient: "466"}) {
 					t.Fatalf("power conversion=%+v", got)
 				}
 			} else if len(quantities["pv.ac.aggregate_active_power"]) != 0 {
@@ -537,6 +550,9 @@ func TestH10LostChildIdentityWithdrawsOnlyThatChild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// One incarnation observes the child through two paths, the inverter and
+	// the PV system, and loses both links together.
+	lostBindings := map[semreg.NativeBindingID]bool{}
 	var lostBinding semreg.NativeBindingID
 	for _, link := range view.Snapshot.IdentityLinks {
 		if link.State == semreg.LinkQualified {
@@ -544,10 +560,11 @@ func TestH10LostChildIdentityWithdrawsOnlyThatChild(t *testing.T) {
 		}
 		if link.State == semreg.LinkWithdrawn {
 			lostBinding = link.BindingID
+			lostBindings[link.BindingID] = true
 		}
 	}
-	if lostBinding == "" {
-		t.Fatal("lost identity link not withdrawn")
+	if len(lostBindings) != huaweiIncarnationBindings {
+		t.Fatalf("%d lost identity links withdrawn, want %d", len(lostBindings), huaweiIncarnationBindings)
 	}
 	// The pinned kernel lets a publisher withdraw only links and facts: the
 	// incarnation's binding stays current, unqualified and without candidates.
@@ -557,7 +574,7 @@ func TestH10LostChildIdentityWithdrawsOnlyThatChild(t *testing.T) {
 	}
 	for _, envelope := range view.Snapshot.Facts {
 		for _, candidate := range envelope.Candidates {
-			if candidate.BindingID != nil && *candidate.BindingID == lostBinding {
+			if candidate.BindingID != nil && lostBindings[*candidate.BindingID] {
 				t.Fatal("withdrawn incarnation still carries a candidate")
 			}
 		}
@@ -601,13 +618,16 @@ func TestH10LostChildIdentityWithdrawsOnlyThatChild(t *testing.T) {
 		if link.State == semreg.LinkQualified {
 			qualified++
 			successor = link.BindingID
+			if lostBindings[link.BindingID] {
+				t.Fatal("re-admission requalified a lost binding")
+			}
 		}
-		if link.BindingID == lostBinding && link.State != semreg.LinkWithdrawn {
+		if lostBindings[link.BindingID] && link.State != semreg.LinkWithdrawn {
 			t.Fatalf("old incarnation link requalified: %s", link.State)
 		}
 	}
-	if qualified != 1 || successor == lostBinding {
-		t.Fatalf("re-admission must qualify exactly one new incarnation (qualified %d)", qualified)
+	if qualified != huaweiIncarnationBindings {
+		t.Fatalf("re-admission must qualify exactly one new incarnation of both paths (qualified %d)", qualified)
 	}
 	if !huaweiCurrentBinding(view.Snapshot, lostBinding, epoch, generation) || !huaweiCurrentBinding(view.Snapshot, successor, epoch, generation) {
 		t.Fatal("old and new incarnations must both stay current bindings")
@@ -953,11 +973,11 @@ func TestH10NonFamilyWithholdingReportsUnavailable(t *testing.T) {
 }
 
 // Every re-admission of a child whose identity was lost adds a binding
-// incarnation and an identity link, and the pinned kernel bounds an asset at
-// 128 of each. A re-admission beyond the bound is refused before any batch is
-// applied: the child stays unpublished with the refusal in the instance
-// status while its sibling keeps publishing. The 127 loss and re-admission
-// cycles run in the full race suite rather than the time-bounded H10 mapping
+// incarnation with a binding and an identity link for each observed path, and
+// the pinned kernel bounds an asset at 128 of each. A re-admission beyond the
+// bound is refused before any batch is applied: the child stays unpublished
+// with the refusal in the instance status while its sibling keeps publishing.
+// The 63 loss and re-admission cycles run in the full race suite rather than the time-bounded H10 mapping
 // run; the middle cycles carry the victim alone as incomplete enumerations so
 // the sibling stays published without being republished every cycle.
 func TestHuaweiRepeatedReadmissionRefusesBeyondBindingCapacity(t *testing.T) {
@@ -997,7 +1017,8 @@ func TestHuaweiRepeatedReadmissionRefusesBeyondBindingCapacity(t *testing.T) {
 		return publication.Publish(cycle)
 	}
 	asset := huaweiAssetID("alpha", "pv", victim)
-	for incarnation := 2; incarnation <= huaweiMaxAssetBindings; incarnation++ {
+	// Each incarnation adds one binding and one link per observed path.
+	for incarnation := 2; incarnation <= huaweiMaxAssetBindings/huaweiIncarnationBindings; incarnation++ {
 		if err := advance(true, false); err != nil {
 			t.Fatalf("withdrawal before incarnation %d: %v", incarnation, err)
 		}

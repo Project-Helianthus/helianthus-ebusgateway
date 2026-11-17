@@ -90,10 +90,11 @@ func writeSemanticMetrics(w *prometheusWriter, domains []SemanticMetricsDomain, 
 		}
 		emit("helianthus_semantic_projection_available", 1, labelMap("domain", d.Name))
 		facts := factIndex(d.Snapshot)
+		resources := semanticResourceIndex(d.Snapshot)
 		evaluated := evaluatedIndex(d.Evaluation)
 		dispositions := append([]projection.ProjectionDisposition(nil), d.Projection.Dispositions...)
 		sort.Slice(dispositions, func(i, j int) bool { return dispositions[i].ItemID < dispositions[j].ItemID })
-		connectorSlots := semanticEVSEConnectorSlots(d.Name, dispositions, facts, evaluated, d.Owner)
+		connectorSlots := semanticEVSEConnectorSlots(d.Name, dispositions, facts, evaluated, resources, d.Owner)
 		for _, disposition := range dispositions {
 			outcome := string(disposition.Outcome)
 			if !validOutcome(outcome) || !validSemanticItem(d.Name, string(disposition.ItemID)) {
@@ -112,7 +113,7 @@ func writeSemanticMetrics(w *prometheusWriter, domains []SemanticMetricsDomain, 
 				continue
 			}
 			for _, key := range disposition.SourceKeys {
-				if renderSemanticFact(emit, d.Name, string(disposition.ItemID), key, facts, evaluated, connectorSlots, d.Owner, now) {
+				if renderSemanticFact(emit, d.Name, string(disposition.ItemID), key, facts, evaluated, resources, connectorSlots, d.Owner, now) {
 					overflow++
 				}
 			}
@@ -132,6 +133,59 @@ func factIndex(snapshot semreg.Snapshot) map[string]semreg.FactEnvelope {
 	}
 	return out
 }
+
+// semanticResourceIndex indexes the resources of a snapshot that carries
+// graph records. It is nil for a snapshot without them: the dimension values
+// of such a snapshot are its publisher's own text.
+func semanticResourceIndex(snapshot semreg.Snapshot) map[semreg.ResourceID]semreg.Resource {
+	if len(snapshot.Resources) == 0 {
+		return nil
+	}
+	out := make(map[semreg.ResourceID]semreg.Resource, len(snapshot.Resources))
+	for _, resource := range snapshot.Resources {
+		out[resource.ResourceID] = resource
+	}
+	return out
+}
+
+// semanticPVDimensionText is the text the PV metrics compare and label. In a
+// snapshot with resources the dimension value is the identifier of the fact's
+// subject, and the text is derived from that resource's kind and, for a
+// phase, its anchor slot; the identifier itself is never exported. A value
+// that names no current resource has no text. A snapshot without resources
+// is not yet in the graph: its publisher's role text is read as before, and
+// only the role before the first colon of an inverter or system value is
+// kept.
+func semanticPVDimensionText(dimension semreg.Dimension, resources map[semreg.ResourceID]semreg.Resource) (string, bool) {
+	if dimension.Value.Kind != semreg.ValueText || dimension.Value.Text == nil || *dimension.Value.Text == "" {
+		return "", false
+	}
+	if resources == nil {
+		value := *dimension.Value.Text
+		for _, role := range []string{"inverter", "system"} {
+			if value == role || strings.HasPrefix(value, role+":") {
+				return role, true
+			}
+		}
+		return value, true
+	}
+	resource, ok := resources[semreg.ResourceID(*dimension.Value.Text)]
+	if !ok || resource.State != semreg.ResourceCurrent {
+		return "", false
+	}
+	switch resource.Kind {
+	case "resource.inverter":
+		return "inverter", true
+	case "resource.pv_system":
+		return "system", true
+	case "resource.phase":
+		if resource.Anchor.Slot != nil && *resource.Anchor.Slot != "" {
+			return "phase:" + *resource.Anchor.Slot, true
+		}
+	}
+	return "", false
+}
+
 func evaluatedIndex(view semreg.EvaluationView) map[semreg.CandidateID]semreg.EvaluatedFact {
 	out := make(map[semreg.CandidateID]semreg.EvaluatedFact, len(view.Facts))
 	for _, f := range view.Facts {
@@ -195,7 +249,7 @@ func semanticEnvelopeFor(targetKey string, envelopes map[string]semreg.FactEnvel
 	return envelope, found, invalidCandidate
 }
 
-func renderSemanticFact(emit func(string, float64, map[string]string) bool, domain, item string, key semreg.FactKey, envelopes map[string]semreg.FactEnvelope, evaluated map[semreg.CandidateID]semreg.EvaluatedFact, connectorSlots map[string]string, owner semreg.SourceID, now time.Time) bool {
+func renderSemanticFact(emit func(string, float64, map[string]string) bool, domain, item string, key semreg.FactKey, envelopes map[string]semreg.FactEnvelope, evaluated map[semreg.CandidateID]semreg.EvaluatedFact, resources map[semreg.ResourceID]semreg.Resource, connectorSlots map[string]string, owner semreg.SourceID, now time.Time) bool {
 	targetKey, targetOK := semanticFactKey(key)
 	schema, schemaOK := semanticFactSchemaFor(domain, item)
 	if !targetOK || !schemaOK {
@@ -212,7 +266,7 @@ func renderSemanticFact(emit func(string, float64, map[string]string) bool, doma
 	if !presented {
 		// Several candidates and none selected: only the conflict state is
 		// observable; no candidate's state, age or value stands for the key.
-		dimension, connector, dimensionsOK := semanticDimensions(domain, item, key, connectorSlots)
+		dimension, connector, dimensionsOK := semanticDimensions(domain, item, key, resources, connectorSlots)
 		if !dimensionsOK {
 			return true
 		}
@@ -226,10 +280,10 @@ func renderSemanticFact(emit func(string, float64, map[string]string) bool, doma
 	if !validSemanticState(candidate.Quality.Qualification, candidate.Quality.Promotion, candidate.Quality.Validity, e.EffectiveAvailability, e.Freshness) {
 		return true
 	}
-	if !schema.matches(key, candidate.Value) {
+	if !schema.matches(key, candidate.Value, resources) {
 		return true
 	}
-	dimension, connector, dimensionsOK := semanticDimensions(domain, item, key, connectorSlots)
+	dimension, connector, dimensionsOK := semanticDimensions(domain, item, key, resources, connectorSlots)
 	if !dimensionsOK {
 		return true
 	}
@@ -266,7 +320,7 @@ func semanticFactLabels(domain string, key semreg.FactKey, dimension, connector 
 	return labels
 }
 
-func semanticDimensions(domain, item string, key semreg.FactKey, connectorSlots map[string]string) (string, string, bool) {
+func semanticDimensions(domain, item string, key semreg.FactKey, resources map[semreg.ResourceID]semreg.Resource, connectorSlots map[string]string) (string, string, bool) {
 	if len(key.Dimensions) != 1 {
 		return "", "", false
 	}
@@ -295,20 +349,20 @@ func semanticDimensions(domain, item string, key semreg.FactKey, connectorSlots 
 	if dimension.ID != "pv.dimension.phase" && dimension.ID != "pv.dimension.inverter" && dimension.ID != "pv.dimension.system" {
 		return "", "", false
 	}
-	if dimension.Value.Kind != semreg.ValueText || dimension.Value.Text == nil {
+	value, ok := semanticPVDimensionText(dimension, resources)
+	if !ok {
 		return "", "", false
 	}
-	value := *dimension.Value.Text
-	switch {
-	case value == "phase:L1":
+	switch value {
+	case "phase:L1":
 		return "phase_l1", "", true
-	case value == "phase:L2":
+	case "phase:L2":
 		return "phase_l2", "", true
-	case value == "phase:L3":
+	case "phase:L3":
 		return "phase_l3", "", true
-	case value == "inverter" || strings.HasPrefix(value, "inverter:"):
+	case "inverter":
 		return "inverter", "", true
-	case value == "system" || strings.HasPrefix(value, "system:"):
+	case "system":
 		return "system", "", true
 	}
 	return "", "", false
@@ -321,7 +375,7 @@ const semanticEVSEConnectorBudget = 8
 // exact or transformed allocated-current disposition and can actually emit a
 // value receives a slot. Raw identifiers are used only to order that detached
 // renderable set; they are never emitted as labels.
-func semanticEVSEConnectorSlots(domain string, dispositions []projection.ProjectionDisposition, envelopes map[string]semreg.FactEnvelope, evaluated map[semreg.CandidateID]semreg.EvaluatedFact, owner semreg.SourceID) map[string]string {
+func semanticEVSEConnectorSlots(domain string, dispositions []projection.ProjectionDisposition, envelopes map[string]semreg.FactEnvelope, evaluated map[semreg.CandidateID]semreg.EvaluatedFact, resources map[semreg.ResourceID]semreg.Resource, owner semreg.SourceID) map[string]string {
 	if domain != "evse" {
 		return nil
 	}
@@ -352,7 +406,7 @@ func semanticEVSEConnectorSlots(domain string, dispositions []projection.Project
 					continue
 				}
 				evaluation, ok := evaluated[candidate.CandidateID]
-				if !ok || !validSemanticState(candidate.Quality.Qualification, candidate.Quality.Promotion, candidate.Quality.Validity, evaluation.EffectiveAvailability, evaluation.Freshness) || candidate.Quality.Qualification != semreg.QualificationQualified || candidate.Quality.Promotion != semreg.PromotionPromoted || candidate.Quality.Validity != semreg.ValidityGood || evaluation.EffectiveAvailability != semreg.AvailabilityAvailable || evaluation.Freshness != semreg.FreshnessFresh || !schema.matches(key, candidate.Value) {
+				if !ok || !validSemanticState(candidate.Quality.Qualification, candidate.Quality.Promotion, candidate.Quality.Validity, evaluation.EffectiveAvailability, evaluation.Freshness) || candidate.Quality.Qualification != semreg.QualificationQualified || candidate.Quality.Promotion != semreg.PromotionPromoted || candidate.Quality.Validity != semreg.ValidityGood || evaluation.EffectiveAvailability != semreg.AvailabilityAvailable || evaluation.Freshness != semreg.FreshnessFresh || !schema.matches(key, candidate.Value, resources) {
 					continue
 				}
 				renderable[targetKey] = struct{}{}
@@ -401,11 +455,10 @@ func validSemanticItem(domain, item string) bool {
 // independent allowlists cannot accidentally compose a different metric.
 type semanticFactSchema struct {
 	domain, item, pack, version, fact, dimensionID, dimensionValue, unit string
-	dimensionSuffix                                                      bool
 	symbols                                                              map[string]bool
 }
 
-func (s semanticFactSchema) matches(key semreg.FactKey, value *semreg.Value) bool {
+func (s semanticFactSchema) matches(key semreg.FactKey, value *semreg.Value, resources map[semreg.ResourceID]semreg.Resource) bool {
 	if string(key.PackID) != s.pack || string(key.PackVersion) != s.version || string(key.FactID) != s.fact || len(key.Dimensions) != 1 || value == nil {
 		return false
 	}
@@ -413,8 +466,10 @@ func (s semanticFactSchema) matches(key semreg.FactKey, value *semreg.Value) boo
 	if string(dimension.ID) != s.dimensionID || dimension.Value.Kind != semreg.ValueText || dimension.Value.Text == nil || *dimension.Value.Text == "" {
 		return false
 	}
-	if s.dimensionValue != "" && *dimension.Value.Text != s.dimensionValue && (!s.dimensionSuffix || !strings.HasPrefix(*dimension.Value.Text, s.dimensionValue+":")) {
-		return false
+	if s.dimensionValue != "" {
+		if text, ok := semanticPVDimensionText(dimension, resources); !ok || text != s.dimensionValue {
+			return false
+		}
 	}
 	if s.symbols != nil {
 		return value.Kind == semreg.ValueSymbol && value.Symbol != nil && value.Symbol.Known && string(value.Symbol.Namespace) == s.fact && s.symbols[string(value.Symbol.Token)]
@@ -427,7 +482,7 @@ func semanticFactSchemaFor(domain, item string) (semanticFactSchema, bool) {
 	const storagePack, storageVersion = "helianthus.pack.storage", "1.1.0"
 	const evsePack, evseVersion = "helianthus.pack.evse", "1.0.0"
 	pv := func(item, fact, dimension, value, unit string) semanticFactSchema {
-		return semanticFactSchema{domain: "pv", item: item, pack: pvPack, version: pvVersion, fact: fact, dimensionID: dimension, dimensionValue: value, dimensionSuffix: value == "inverter" || value == "system", unit: unit}
+		return semanticFactSchema{domain: "pv", item: item, pack: pvPack, version: pvVersion, fact: fact, dimensionID: dimension, dimensionValue: value, unit: unit}
 	}
 	storage := func(item, unit string) semanticFactSchema {
 		return semanticFactSchema{domain: "storage", item: item, pack: storagePack, version: storageVersion, fact: item, dimensionID: "storage.dimension.pack", unit: unit}
@@ -455,7 +510,7 @@ func semanticFactSchemaFor(domain, item string) (semanticFactSchema, bool) {
 		case "projection.gateway.pv.inverter.temperature.cabinet":
 			return pv(item, "pv.temperature.inverter", "pv.dimension.inverter", "inverter", "unit.celsius"), true
 		case "projection.gateway.pv.inverter.operating_state":
-			return semanticFactSchema{domain: "pv", item: item, pack: pvPack, version: pvVersion, fact: "pv.status.operating", dimensionID: "pv.dimension.inverter", dimensionValue: "inverter", dimensionSuffix: true, symbols: map[string]bool{"generating": true}}, true
+			return semanticFactSchema{domain: "pv", item: item, pack: pvPack, version: pvVersion, fact: "pv.status.operating", dimensionID: "pv.dimension.inverter", dimensionValue: "inverter", symbols: map[string]bool{"generating": true}}, true
 		}
 	}
 	if domain == "storage" {

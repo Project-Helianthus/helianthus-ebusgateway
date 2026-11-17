@@ -263,7 +263,7 @@ func TestSemanticPrometheusEVSEConnectorSlotsIgnoreUnrenderableCandidates(t *tes
 }
 
 func semanticMetricsFixture(domain string, available bool, freshness semreg.Freshness, availability semreg.Availability, validity semreg.Validity, conflicts int) SemanticMetricsDomain {
-	dimensionID, dimensionValue, factID := semreg.DefinitionID("pv.dimension.inverter"), "inverter:asset:private", semreg.DefinitionID("pv.ac.aggregate_active_power")
+	dimensionID, dimensionValue, factID := semreg.DefinitionID("pv.dimension.inverter"), "resource:asset:private:inverter", semreg.DefinitionID("pv.ac.aggregate_active_power")
 	unit := semreg.DefinitionID("unit.watt")
 	if domain == "storage" {
 		dimensionID, dimensionValue, factID, unit = "storage.dimension.pack", "storage:asset:private", "storage.pack.voltage", "unit.volt"
@@ -283,6 +283,11 @@ func semanticMetricsFixture(domain string, available bool, freshness semreg.Fres
 		envelope.Conflicts = append(envelope.Conflicts, semreg.Conflict{ConflictID: "conflict:test", Kind: semreg.ConflictValue, Candidates: []semreg.CandidateID{candidate.CandidateID}, State: semreg.ConflictOpen})
 	}
 	snapshot := semreg.Snapshot{SnapshotID: "snapshot:test", Facts: []semreg.FactEnvelope{envelope}}
+	if domain == "pv" {
+		// The PV fixture is graphed: its dimension value is the identifier of
+		// the fact's subject resource.
+		snapshot.Resources = []semreg.Resource{semanticResourceFixture(semreg.ResourceID(dimensionValue), "resource.inverter", "")}
+	}
 	evaluation := semreg.EvaluationView{SnapshotID: snapshot.SnapshotID, Facts: []semreg.EvaluatedFact{{CandidateID: candidate.CandidateID, Freshness: freshness, EffectiveAvailability: availability}}, EvaluationDigest: semreg.Digest("sha256:" + strings.Repeat("0", 64))}
 	item := semreg.DefinitionID("storage.pack.voltage")
 	if domain == "pv" {
@@ -293,6 +298,85 @@ func semanticMetricsFixture(domain string, available bool, freshness semreg.Fres
 	}
 	report := projection.ProjectionReport{SnapshotID: snapshot.SnapshotID, Dispositions: []projection.ProjectionDisposition{{ItemID: item, Outcome: projection.ProjectionExact, SourceKeys: []semreg.FactKey{key}}}}
 	return SemanticMetricsDomain{Name: domain, Snapshot: snapshot, Evaluation: evaluation, Projection: report, Available: available}
+}
+
+// semanticResourceFixture is one current resource; a phase carries its slot.
+func semanticResourceFixture(id semreg.ResourceID, kind semreg.DefinitionID, slot string) semreg.Resource {
+	resource := semreg.Resource{ResourceID: id, Kind: kind, Anchor: semreg.ResourceAnchor{Class: semreg.AnchorEquipment, Basis: semreg.AnchorOperatorSlot}, State: semreg.ResourceCurrent, Revision: "1"}
+	if slot != "" {
+		resource.Anchor.Class, resource.Anchor.Basis, resource.Anchor.Slot = semreg.AnchorComponent, semreg.AnchorNativeSlot, &slot
+	}
+	return resource
+}
+
+// semanticPVFixtureAs rekeys the PV fixture's one fact as fact, dimension and
+// value under item.
+func semanticPVFixtureAs(domain *SemanticMetricsDomain, item, fact, dimension, value string, unit semreg.DefinitionID) {
+	key := domain.Snapshot.Facts[0].Key
+	key.FactID, key.Dimensions = semreg.DefinitionID(fact), []semreg.Dimension{{ID: semreg.DefinitionID(dimension), Value: semreg.Value{Kind: semreg.ValueText, Text: &value}}}
+	domain.Snapshot.Facts[0].Key = key
+	domain.Snapshot.Facts[0].Candidates[0].Key = key
+	domain.Snapshot.Facts[0].Candidates[0].Value.Quantity.Unit = unit
+	domain.Projection.Dispositions[0].ItemID = semreg.DefinitionID(item)
+	domain.Projection.Dispositions[0].SourceKeys[0] = key
+}
+
+// TestSemanticPrometheusPVLabelsFollowResourceKindAndSlot: in a graphed
+// snapshot the dimension label is derived from the subject resource's kind
+// and, for a phase, its slot, and the identifier never leaves the renderer. A
+// value naming no current resource, or one of another kind, renders no fact,
+// and role text is not read in a graphed snapshot. A snapshot without
+// resources keeps today's reading of its publisher's role text.
+func TestSemanticPrometheusPVLabelsFollowResourceKindAndSlot(t *testing.T) {
+	type rendered struct {
+		label string
+		ok    bool
+	}
+	for _, tc := range []struct {
+		name, item, fact, dimension, value string
+		unit                               semreg.DefinitionID
+		resources                          []semreg.Resource
+		want                               rendered
+	}{
+		{"inverter", "projection.gateway.pv.inverter.ac.power.active", "pv.ac.aggregate_active_power", "pv.dimension.inverter", "resource:test-inverter", "unit.watt", []semreg.Resource{semanticResourceFixture("resource:test-inverter", "resource.inverter", "")}, rendered{"inverter", true}},
+		{"system", "projection.gateway.pv.inverter.ac.energy_lifetime", "pv.energy.generated", "pv.dimension.system", "resource:test-system", "unit.kilowatt_hour", []semreg.Resource{semanticResourceFixture("resource:test-system", "resource.pv_system", "")}, rendered{"system", true}},
+		{"phase slot", "projection.gateway.pv.inverter.ac.current.phase_b", "pv.ac.current", "pv.dimension.phase", "resource:test-phase", "unit.ampere", []semreg.Resource{semanticResourceFixture("resource:test-phase", "resource.phase", "L2")}, rendered{"phase_l2", true}},
+		{"phase of another slot", "projection.gateway.pv.inverter.ac.current.phase_b", "pv.ac.current", "pv.dimension.phase", "resource:test-phase", "unit.ampere", []semreg.Resource{semanticResourceFixture("resource:test-phase", "resource.phase", "L3")}, rendered{}},
+		{"names no resource", "projection.gateway.pv.inverter.ac.power.active", "pv.ac.aggregate_active_power", "pv.dimension.inverter", "resource:test-missing", "unit.watt", []semreg.Resource{semanticResourceFixture("resource:test-inverter", "resource.inverter", "")}, rendered{}},
+		{"resource of another kind", "projection.gateway.pv.inverter.ac.power.active", "pv.ac.aggregate_active_power", "pv.dimension.inverter", "resource:test-input", "unit.watt", []semreg.Resource{semanticResourceFixture("resource:test-input", "resource.dc_input", "1")}, rendered{}},
+		{"ungraphed literal text", "projection.gateway.pv.inverter.ac.power.active", "pv.ac.aggregate_active_power", "pv.dimension.inverter", "inverter", "unit.watt", nil, rendered{"inverter", true}},
+		{"ungraphed role text", "projection.gateway.pv.inverter.ac.power.active", "pv.ac.aggregate_active_power", "pv.dimension.inverter", "inverter:asset:private", "unit.watt", nil, rendered{"inverter", true}},
+		{"ungraphed role of another dimension", "projection.gateway.pv.inverter.ac.power.active", "pv.ac.aggregate_active_power", "pv.dimension.inverter", "system:asset:private", "unit.watt", nil, rendered{}},
+		{"graphed role text", "projection.gateway.pv.inverter.ac.power.active", "pv.ac.aggregate_active_power", "pv.dimension.inverter", "inverter:asset:private", "unit.watt", []semreg.Resource{semanticResourceFixture("resource:test-inverter", "resource.inverter", "")}, rendered{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			domain := semanticMetricsFixture("pv", true, semreg.FreshnessFresh, semreg.AvailabilityAvailable, semreg.ValidityGood, 0)
+			semanticPVFixtureAs(&domain, tc.item, tc.fact, tc.dimension, tc.value, tc.unit)
+			domain.Snapshot.Resources = tc.resources
+			var out bytes.Buffer
+			writeSemanticMetrics(newPrometheusWriter(&out), []SemanticMetricsDomain{domain}, time.Unix(101, 0))
+			metrics := out.String()
+			if strings.Contains(metrics, "resource:test") || strings.Contains(metrics, "asset:private") {
+				t.Fatalf("an identifier leaked into a label:\n%s", metrics)
+			}
+			want := `helianthus_semantic_fact_value{dimension="` + tc.want.label + `",domain="pv",fact_id="` + tc.fact + `",pack="helianthus.pack.pv",unit="` + string(tc.unit) + `"} 42`
+			if tc.want.ok != strings.Contains(metrics, want) {
+				t.Fatalf("rendered=%v, want %v (%s):\n%s", !tc.want.ok, tc.want.ok, want, metrics)
+			}
+			if !tc.want.ok && (strings.Contains(metrics, "\nhelianthus_semantic_fact_value{") || !strings.Contains(metrics, "helianthus_semantic_render_overflow 1")) {
+				t.Fatalf("an unresolved subject was rendered or not counted:\n%s", metrics)
+			}
+		})
+	}
+	t.Run("withdrawn resource", func(t *testing.T) {
+		domain := semanticMetricsFixture("pv", true, semreg.FreshnessFresh, semreg.AvailabilityAvailable, semreg.ValidityGood, 0)
+		domain.Snapshot.Resources[0].State = semreg.ResourceWithdrawn
+		var out bytes.Buffer
+		writeSemanticMetrics(newPrometheusWriter(&out), []SemanticMetricsDomain{domain}, time.Unix(101, 0))
+		if strings.Contains(out.String(), "helianthus_semantic_fact_value{") {
+			t.Fatalf("a fact about a withdrawn resource was rendered:\n%s", out.String())
+		}
+	})
 }
 
 func addEVSEAllocatedFixture(domain *SemanticMetricsDomain, connector string, candidateID semreg.CandidateID) {

@@ -72,12 +72,12 @@ different namespace, and this page never joins them by number.
 | AD01 | Active path sends/receives transactions | gateway session | arbitration handshake and echo verification per §2 |
 | AD02 | Passive path zero self-echo | passive | self-echo identification when echo is `RECEIVED` (ENH) versus raw bus echo (plain) |
 | AD03 | Passive path reconstructs third-party traffic | passive | logical view built from raw symbols with escape provenance |
-| AD04 | RESETTED propagates to all consumers | all | plain and RAW rows have no `RESETTED`; the cell asserts the mux's discontinuity boundary for that southbound |
+| AD04 | RESETTED propagates to all consumers | all | plain and RAW rows have no `RESETTED`; the cell asserts the mux's discontinuity boundary for that southbound; operator adapter reset (procedure below) |
 | AD05 | ebusd connects, receives broadcasts | external | raw symbols delivered unchanged to the external session |
 | AD06 | ebusd sends START/SEND successfully | external | on plain rows the mux produces the `STARTED`/`FAILED` result from its own arbitration |
-| AD07 | Gateway and ebusd compete fairly at SYN | gateway + external | owner arbitration between the gateway session and the external class |
+| AD07 | Gateway and ebusd compete fairly at SYN | gateway + external | address-priority selection between the gateway session and the external session at a SYN boundary (procedure below) |
 | AD08 | Per-session echo suppression | external | which session receives which echo, per raw symbol |
-| AD09 | Adapter disconnect triggers reconnection recovery | all | connection loss versus datagram silence |
+| AD09 | Adapter disconnect triggers reconnection recovery | all | connection loss versus datagram silence; operator host-link disconnect and reconnect (procedure below) |
 | AD10 | Migration preserves semantics | semantic surfaces (MCP, GraphQL) | equivalence pair per transport (§6) |
 | AD12 | No 0xA9/0xAA escape corruption | all | the wire-symbol contract (§6) |
 | PX01 | stale `STARTED` absorb succeeds when matching result arrives in absorb window | external | adapter-side `STARTED` exists only on ENH-framed rows |
@@ -99,16 +99,23 @@ PX statements are quoted from `profiles/proxy-wire-semantics/px-cases.md` in
 proxy's own code (`scripts/run_proxy_semantics_matrix.py`). In the matrix they
 become cells of the mux, with these scope notes:
 
-- PX05–PX08 apply within the external class. Between the gateway session and
-  the external class, the mux's owner arbitration model (fairness ratio,
-  external FIFO) governs, and AD07 asserts it.
+- PX05–PX08 assert FIFO registration order between external contenders
+  ("not initiator priority"). Address priority replaced FIFO order
+  ([adapter-arbitration-decision.md](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/docs/architecture/adapter-arbitration-decision.md)):
+  the lowest initiator low nibble wins, then the lowest high nibble, then the
+  lowest session identity, so these statements cannot hold. The cells stay in
+  the inventory and are reserved under PL-04 (`planned`,
+  `fifo_order_superseded_by_address_priority`) until the external-order
+  statements are re-specified for address priority; they are not executed.
+  Between the gateway session and an external session, AD07 asserts the
+  address-priority selection.
 - PX09–PX11 need a local emulated target with a responder window. The proxy had
   one (its emulation target registry); the mux has none. Registered responder
   ownership in the mux is
   [#991](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/991),
   which is deferred, so these cells are planned (PL-02). They wait for the
   design in
-  [registered target-address subscribers](../docs/architecture/adaptermux-responder-subscribers.md).
+  [registered target-address subscribers](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/docs/architecture/adaptermux-responder-subscribers.md).
 - The proxy's outcome policy carries over: `xpass` is never accepted.
 - The external contender in PX cells may be a synthetic ENH client from the
   test harness; that is software, not additional hardware.
@@ -121,6 +128,45 @@ attributable to the mux and no starvation of either side. The verdict records
 which client was used (`northbound_client`). The Explorer certification run
 contributes CX01 records with `northbound_client = vrc-explorer`; it does not
 add cells.
+
+### Procedures of AD04, AD07 and AD09
+
+**AD04 — adapter reset (class W).** The runner names the case and asks the
+operator to type its case ID; without that answer no command runs. The
+gateway runs through the mux on the row's southbound with its active
+identification and read transactions, and the passive consumer is attached.
+The smoke command takes its first reading and announces the action; the
+operator then resets the adapter inside the case window. The cell passes when
+every consumer session observes the discontinuity, the mux reconnects once,
+gateway transactions and passive reconstruction resume within the cell
+window, and no out-of-step hold is raised.
+
+**AD09 — host-link disconnect (class W).** As AD04, except that the operator
+disconnects the adapter's host link and reconnects it inside the case window.
+The pass criterion is the same.
+
+**AD07 — address-priority selection (class Q).** The gateway session and an
+external ebusd session run through the mux on the same southbound: the
+gateway runs its active identification and read transactions while the
+guarded ebusd command workload (`state`, an identification scan of the
+workload target, 07 04 as a hex telegram) bids at the same SYN boundaries.
+Selection follows
+[adapter-arbitration-decision.md](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/docs/architecture/adapter-arbitration-decision.md):
+an owner or a busy bus prevents selection and keeps every pending bid;
+otherwise the lowest initiator low nibble wins, then the lowest high nibble,
+then the lowest session identity, and equal priority keeps the first bid;
+eligible losers keep their bids for a later boundary. The cell passes when
+concurrent bids at one boundary are decided by initiator priority, the losing
+bid is kept and completes at a later boundary, neither session is starved
+over the cell window, and every guarded ebusd command answers without `ERR`.
+The quoted assertion's "fairly" means this selection; a waiting external bid
+has no age limit and there is no fairness rotation.
+
+The smoke checks of these three cells also read AdapterMux series that the
+gateway does not publish yet
+([cmd/matrix-runner/README.md](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/matrix-runner/README.md), smoke
+command). Until it does, each check ends with its own status and names the
+missing series, and the cell does not pass.
 
 ## 4. Compatibility block
 
@@ -152,9 +198,10 @@ through one of these):
 | PL-01 | `planned` | every `UDP-*` and `TCP-*` grid cell | `mux_southbound_plain_not_implemented` | the mux accepts only `enh`/`ens` upstream; no open ticket implements plain southbound framing |
 | PL-02 | `planned` | every `*-PX09`, `*-PX10`, `*-PX11` cell | `mux_local_responder_not_implemented` | #991 (deferred) |
 | PL-03 | `planned` | `ENS-AD05`, `ENH-AD05`, `ENS-AD08`, `ENH-AD08`, `ENS-AD12`, `ENH-AD12` | `mux_raw_symbol_forwarding_not_implemented` | the raw-symbol contract is settled but not implemented: ENH/ENS decoding still collapses escape pairs before the mux sees them, so raw-pair delivery to an external session (AD05), per-symbol echo of raw symbols (AD08) and the wire-symbol assertions (AD12) cannot hold ([mux-raw-symbol-continuity.md](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/docs/architecture/mux-raw-symbol-continuity.md)); the cells leave PL-03 when the raw-forwarding slice of #1003 lands and the inventory version is bumped |
+| PL-04 | `planned` | `ENS-PX05`, `ENH-PX05`, `ENS-PX06`, `ENH-PX06`, `ENS-PX07`, `ENH-PX07`, `ENS-PX08`, `ENH-PX08` | `fifo_order_superseded_by_address_priority` | address priority replaced FIFO order ([adapter-arbitration-decision.md](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/docs/architecture/adapter-arbitration-decision.md)), so the FIFO registration-order statements of PX05–PX08 cannot hold; the cells stay in the inventory and leave PL-04 when they are re-specified for address priority and the inventory version is bumped |
 
 Precedence for the reported reason when categories overlap: BI-02, then PL-01,
-then PL-02, then PL-03. Old expected-failure reasons that are not carried (T07/T08, and
+then PL-02, then PL-03, then PL-04. Old expected-failure reasons that are not carried (T07/T08, and
 ebusd → proxy over plain UDP) are listed in the cell map.
 
 Projected verdict mix for the first hardware run if the candidate code keeps
@@ -162,13 +209,15 @@ today's mux scope (no plain southbound, no local responder):
 
 | Cells | Count | Expected verdict |
 |---|---|---|
-| `ENS`, `ENH` × (AD01–AD04, AD06, AD07, AD09, AD10, PX01–PX08, PX12, CX01) | 36 | executed; `pass` expected |
+| `ENS`, `ENH` × (AD01–AD03, AD06, AD10, PX01–PX04, PX12, CX01) | 22 | executed; `pass` expected |
+| `ENS`, `ENH` × (AD04, AD07, AD09) | 6 | executed; no `pass` until the gateway publishes the series their smoke checks read (§3, procedures) |
+| `ENS`, `ENH` × PX05–PX08 | 8 | `planned` (PL-04) |
 | `ENS`, `ENH` × (AD05, AD08, AD12) | 6 | `planned` (PL-03) |
 | `ENS`, `ENH` × PX09–PX11 | 6 | `planned` (PL-02) |
 | `UDP`, `TCP` × all 24 | 48 | `planned` (PL-01) |
 | UART rows × all 24 | 72 | `blocked-infra` (BI-02) |
 | compatibility block | 5 | executed; `pass` expected |
-| **total** | **173** | 41 executed, 60 planned, 72 blocked-infra |
+| **total** | **173** | 33 executed, 68 planned, 72 blocked-infra |
 
 ## 6. Index completion (AD10, AD11, AD12)
 
@@ -280,7 +329,7 @@ Proposal for the implementation ticket:
   `--start-ebusd`/`--stop-ebusd` remain for the external client.
 - **Reserved cells** UART cells are written with outcome `blocked-infra` and
   `infra_reason = uart_direct_hardware_absent` without executing commands;
-  PL-01, PL-02 and PL-03 cells are written with outcome `planned` and their
+  PL-01, PL-02, PL-03 and PL-04 cells are written with outcome `planned` and their
   `planned_reason`, without executing commands (PL-03 cells included: they never
   run against the missing raw forwarding, and they stay in the 173-cell inventory). This is new: today `planned` comes only from a dry run.
 - **Default expected failures** move from `defaultExpectedFailure` to an

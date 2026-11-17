@@ -137,8 +137,13 @@ func TestAdapterMuxV2CategoryPrecedence(t *testing.T) {
 		{"ENS-PX11", "PL-02"},
 		{"ENH-AD12", "PL-03"},
 		{"ENS-AD05", "PL-03"},
-		{"ENH-PX05", "RS"},
-		{"ENS-AD04", "RS"},
+		{"UARTENH-PX06", "BI-02"}, // BI-02 over PL-04
+		{"UDP-PX07", "PL-01"},     // PL-01 over PL-04
+		{"ENH-PX05", "PL-04"},
+		{"ENS-PX08", "PL-04"},
+		{"ENS-AD04", ""},
+		{"ENH-AD07", ""},
+		{"ENS-AD09", ""},
 		{"ENH-AD01", ""},
 		{"ENS-CX01", ""},
 	}
@@ -153,9 +158,10 @@ func TestAdapterMuxV2CategoryPrecedence(t *testing.T) {
 		}
 	}
 
-	// No inventory cell carries both PL-02 and PL-03 or re-specification
-	// flags, so the lower part of the order is checked on a synthetic spec.
-	all := InvariantSpec{localResponder: true, rawForwarding: true, respec: true}
+	// No inventory cell carries more than one of the PL-02, PL-03, PL-04 and
+	// re-specification flags, so the lower part of the order is checked on a
+	// synthetic spec.
+	all := InvariantSpec{localResponder: true, rawForwarding: true, fifoOrderSuperseded: true, respec: true}
 	order := []struct {
 		row  adapterMuxRow
 		spec InvariantSpec
@@ -164,7 +170,8 @@ func TestAdapterMuxV2CategoryPrecedence(t *testing.T) {
 		{adapterMuxRow{uart: true, plain: true}, all, CategoryBI02},
 		{adapterMuxRow{plain: true}, all, CategoryPL01},
 		{adapterMuxRow{}, all, CategoryPL02},
-		{adapterMuxRow{}, InvariantSpec{rawForwarding: true, respec: true}, CategoryPL03},
+		{adapterMuxRow{}, InvariantSpec{rawForwarding: true, fifoOrderSuperseded: true, respec: true}, CategoryPL03},
+		{adapterMuxRow{}, InvariantSpec{fifoOrderSuperseded: true, respec: true}, CategoryPL04},
 		{adapterMuxRow{}, InvariantSpec{respec: true}, CategoryRespec},
 	}
 	for index, tc := range order {
@@ -186,10 +193,10 @@ func TestAdapterMuxV2CategoryCountsAndReasons(t *testing.T) {
 		"PL-01": "mux_southbound_plain_not_implemented",
 		"PL-02": "mux_local_responder_not_implemented",
 		"PL-03": "mux_raw_symbol_forwarding_not_implemented",
-		"RS":    "cell_awaiting_respecification",
+		"PL-04": "fifo_order_superseded_by_address_priority",
 	}
 	counts := map[string]int{}
-	executable := make([]string, 0, 32)
+	executable := make([]string, 0, 33)
 	for _, testCase := range GenerateAdapterMuxV2Cases("") {
 		cell := testCase.AdapterMux
 		if cell.Reserved == nil {
@@ -203,25 +210,148 @@ func TestAdapterMuxV2CategoryCountsAndReasons(t *testing.T) {
 		if cell.Reserved.Reason != reasons[cell.Reserved.ID] {
 			t.Fatalf("%s reason = %q", testCase.ID, cell.Reserved.Reason)
 		}
-		if cell.Reserved.GateAccepts != (cell.Reserved.ID != "RS") {
-			t.Fatalf("%s gate acceptance = %v", testCase.ID, cell.Reserved.GateAccepts)
+		if !cell.Reserved.GateAccepts {
+			t.Fatalf("%s carries %s, which the gate does not accept", testCase.ID, cell.Reserved.ID)
 		}
 	}
-	want := map[string]int{"BI-02": 72, "PL-01": 48, "PL-02": 6, "PL-03": 6, "RS": 14}
+	want := map[string]int{"BI-02": 72, "PL-01": 48, "PL-02": 6, "PL-03": 6, "PL-04": 8}
+	total := 0
 	for id, count := range want {
 		if counts[id] != count {
 			t.Fatalf("%s count = %d; want %d", id, counts[id], count)
 		}
+		total += count
+	}
+	if total != len(GenerateAdapterMuxV2Cases(""))-len(executable) || counts[CategoryRespec.ID] != 0 {
+		t.Fatalf("category counts = %v; want exactly %v and no %s cell", counts, want, CategoryRespec.ID)
+	}
+	if len(executable) != 33 {
+		t.Fatalf("executable cells = %d; want 33", len(executable))
 	}
 	wantExecutable := []string{}
 	for _, row := range []string{"ENS", "ENH"} {
-		for _, invariant := range []string{"AD01", "AD02", "AD03", "AD06", "AD10", "PX01", "PX02", "PX03", "PX04", "PX12", "CX01"} {
+		for _, invariant := range []string{"AD01", "AD02", "AD03", "AD04", "AD06", "AD07", "AD09", "AD10", "PX01", "PX02", "PX03", "PX04", "PX12", "CX01"} {
 			wantExecutable = append(wantExecutable, row+"-"+invariant)
 		}
 	}
 	wantExecutable = append(wantExecutable, wantCompat...)
 	if strings.Join(executable, ",") != strings.Join(wantExecutable, ",") {
 		t.Fatalf("executable cells = %v; want %v", executable, wantExecutable)
+	}
+}
+
+func TestAdapterMuxV2InventoryVersionFollowsTheChangedCategories(t *testing.T) {
+	t.Parallel()
+
+	if AdapterMuxV2InventoryVersion != "2" {
+		t.Fatalf("inventory version = %q; want 2 (cells changed category and workload)", AdapterMuxV2InventoryVersion)
+	}
+}
+
+func TestAdapterMuxV2CategoryDefinitions(t *testing.T) {
+	t.Parallel()
+
+	want := []struct {
+		got  ReservedCategory
+		want ReservedCategory
+	}{
+		{CategoryPL04, ReservedCategory{ID: "PL-04", Outcome: "planned", Reason: "fifo_order_superseded_by_address_priority", GateAccepts: true}},
+		// A future re-specification still uses RS; it stays outside the gate.
+		{CategoryRespec, ReservedCategory{ID: "RS", Outcome: "planned", Reason: "cell_awaiting_respecification", GateAccepts: false}},
+	}
+	for _, tc := range want {
+		if tc.got != tc.want {
+			t.Fatalf("category = %+v; want %+v", tc.got, tc.want)
+		}
+	}
+}
+
+// PL-04 holds exactly the FIFO-order cells of the executable rows: the row
+// and the invariant of the cell key are both varied over the whole inventory.
+func TestAdapterMuxV2FIFOOrderCellsAreReservedUnderPL04(t *testing.T) {
+	t.Parallel()
+
+	fifo := map[string]bool{"PX05": true, "PX06": true, "PX07": true, "PX08": true}
+	executableRow := map[string]bool{"ENS": true, "ENH": true}
+	for _, testCase := range GenerateAdapterMuxV2Cases("") {
+		cell := testCase.AdapterMux
+		inPL04 := cell.Reserved != nil && cell.Reserved.ID == CategoryPL04.ID
+		want := cell.Composition == CompositionMux && executableRow[cell.Row] && fifo[cell.Invariant]
+		if inPL04 != want {
+			t.Fatalf("%s in PL-04 = %v; want %v", testCase.ID, inPL04, want)
+		}
+		if !inPL04 {
+			continue
+		}
+		if *cell.Reserved != CategoryPL04 || cell.Workload != "" || cell.PassCriterion != "" || testCase.UsesEbusd {
+			t.Fatalf("%s = %+v; a PL-04 cell runs nothing", testCase.ID, *cell)
+		}
+		if cell.Class != CellClassQuery || cell.NorthboundClient != NorthboundSyntheticENH {
+			t.Fatalf("%s class/client = %s/%s", testCase.ID, cell.Class, cell.NorthboundClient)
+		}
+	}
+}
+
+func TestAdapterMuxV2RespecifiedCellsCarryProcedures(t *testing.T) {
+	t.Parallel()
+
+	byID := adapterMuxCaseMap(t)
+	adapterAction := []string{
+		"every consumer session observes the discontinuity",
+		"the mux reconnects once",
+		"gateway transactions and passive reconstruction resume within the cell window",
+		"no out-of-step hold is raised",
+	}
+	want := map[string]struct {
+		class      CellClass
+		northbound string
+		usesEbusd  bool
+		workload   []string
+		criterion  []string
+	}{
+		"AD04": {CellClassAdapterAction, NorthboundNone, false,
+			[]string{"the runner names the case", "the operator resets the adapter"}, adapterAction},
+		"AD09": {CellClassAdapterAction, NorthboundNone, false,
+			[]string{"the runner names the case", "the operator disconnects the adapter's host link and reconnects it"}, adapterAction},
+		"AD07": {CellClassQuery, NorthboundEbusd, true,
+			[]string{"gateway session", "external ebusd session", externalWorkloadEbusd},
+			[]string{
+				"decided by initiator priority",
+				"lowest initiator low nibble, then the lowest high nibble, then the lowest session identity",
+				"equal priority keeps the first bid",
+				"the losing bid is kept and completes at a later boundary",
+				"neither session is starved over the cell window",
+			}},
+	}
+	for _, row := range []string{"ENS", "ENH"} {
+		for invariant, spec := range want {
+			testCase := byID[row+"-"+invariant]
+			cell := testCase.AdapterMux
+			if !cell.Executable() || cell.Workload == "" || cell.PassCriterion == "" {
+				t.Fatalf("%s must be executable with a workload and a pass criterion: %+v", testCase.ID, *cell)
+			}
+			if cell.Class != spec.class || cell.NorthboundClient != spec.northbound || testCase.UsesEbusd != spec.usesEbusd {
+				t.Fatalf("%s class/client/ebusd = %s/%s/%v", testCase.ID, cell.Class, cell.NorthboundClient, testCase.UsesEbusd)
+			}
+			if !strings.HasPrefix(cell.PassCriterion, smokeCriterion+"; ") {
+				t.Fatalf("%s pass criterion does not start with the smoke criterion: %q", testCase.ID, cell.PassCriterion)
+			}
+			for _, phrase := range spec.workload {
+				if !strings.Contains(cell.Workload, phrase) {
+					t.Fatalf("%s workload %q lacks %q", testCase.ID, cell.Workload, phrase)
+				}
+			}
+			for _, phrase := range spec.criterion {
+				if !strings.Contains(cell.PassCriterion, phrase) {
+					t.Fatalf("%s pass criterion %q lacks %q", testCase.ID, cell.PassCriterion, phrase)
+				}
+			}
+		}
+	}
+	for _, retired := range []string{"fairness", "fair share", "FIFO"} {
+		if text := byID["ENS-AD07"].AdapterMux.Workload + byID["ENS-AD07"].AdapterMux.PassCriterion; strings.Contains(text, retired) {
+			t.Fatalf("AD07 still describes the replaced model (%q): %q", retired, text)
+		}
 	}
 }
 

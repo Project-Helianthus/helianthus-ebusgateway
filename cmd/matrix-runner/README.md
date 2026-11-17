@@ -11,9 +11,9 @@ one directory per case (`configs/`, `logs/runner.log`, `verdict.json`) and an
 | `adaptermux-v2` | 173 cells of the two-axis AdapterMux conformance matrix | new; not yet the gate's form |
 
 `full88` stays the default. Switching the gate to `adaptermux-v2` is a separate
-change ([transport-gate-policy-v2.md](../../docs/testing/transport-gate-policy-v2.md)).
+change ([transport-gate-policy-v2.md](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/docs/testing/transport-gate-policy-v2.md)).
 The schema is defined in
-[M7-adaptermux-conformance-matrix.md](../../matrix/M7-adaptermux-conformance-matrix.md).
+[M7-adaptermux-conformance-matrix.md](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/matrix/M7-adaptermux-conformance-matrix.md).
 
 Without `--execute` every suite is a dry run: nothing is executed, and each
 log lists the commands a real run would execute.
@@ -26,7 +26,7 @@ Case IDs are `<TRANSPORT>-<INVARIANT>`. Transports in axis-1 order are `ENS`,
 `ENH`, `UDP`, `TCP`, `UARTENS`, `UARTENH` and `UARTRAW`. Each transport has
 AD01–AD10, AD12, PX01–PX12 and CX01. The compatibility cells come last:
 `ENS-DS01`, `ENH-DS01`, `UDP-DS01`, `TCP-DS01` and `EBUSD-ES01`.
-`matrix_inventory_version` is `1`. Adding, removing or renaming a cell, or
+`matrix_inventory_version` is `2`. Adding, removing or renaming a cell, or
 changing a cell's assertion, category or workload, bumps it.
 
 Reserved cells are written without executing any command. When a cell matches
@@ -38,19 +38,19 @@ more than one category, the first matching row below wins:
 | PL-01 | `planned` (`planned_reason`) | `mux_southbound_plain_not_implemented` | every `UDP-*`, `TCP-*` grid cell |
 | PL-02 | `planned` | `mux_local_responder_not_implemented` | `*-PX09`, `*-PX10`, `*-PX11` |
 | PL-03 | `planned` | `mux_raw_symbol_forwarding_not_implemented` | `ENS`/`ENH` × AD05, AD08, AD12 |
-| RS | `planned` | `cell_awaiting_respecification` | `ENS`/`ENH` × AD04, AD07, AD09, PX05–PX08 |
+| PL-04 | `planned` | `fifo_order_superseded_by_address_priority` | `ENS`/`ENH` × PX05–PX08 |
 
-RS is not a category the gate accepts. Its cells wait for the
-re-specification on
-[#1378](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1378)
-(the arbitration model changed and the adapter-side procedures are not written
-yet), so a report that contains them does not pass. Re-specifying a cell moves
-it out of RS and bumps the inventory version.
+PL-04 holds the cells that assert FIFO registration order between external
+contenders: address priority replaced FIFO order
+([adapter-arbitration-decision.md](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/docs/architecture/adapter-arbitration-decision.md)),
+so they stay reserved until they are re-specified for address priority. The
+category RS (`cell_awaiting_respecification`, not accepted by the gate) stays
+defined for a future re-specification, and no cell carries it.
 
 The expected-failure inventory is fixed: XF-01 on `TCP-CX01` only.
 `--expected-failures` and `--expected-failures-file` are rejected for this
-suite. The 27 executable cells are `ENS`/`ENH` × AD01, AD02, AD03, AD06, AD10,
-PX01–PX04, PX12, CX01, plus the five compatibility cells.
+suite. The 33 executable cells are `ENS`/`ENH` × AD01, AD02, AD03, AD04, AD06,
+AD07, AD09, AD10, PX01–PX04, PX12, CX01, plus the five compatibility cells.
 
 ### Flags
 
@@ -125,6 +125,17 @@ smoke command uses them to run the check for that invariant.
 
 - AD cells and compatibility cells pass when the smoke command exits 0.
 - AD06 also runs the ebusd workload: `state`, `scan ZZ`, and `hex ZZ070400`.
+- AD07 runs the same ebusd workload while the gateway runs its own
+  transactions, so both sessions bid at the same SYN boundaries.
+- AD04 and AD09 are operator adapter actions. The runner names the case and
+  asks for its ID; after the smoke command announces the action (on its
+  output and on the controlling terminal, once its first reading is taken)
+  the operator resets the adapter (AD04) or disconnects the adapter's host
+  link and reconnects it (AD09) inside the case window. The evidence records
+  `operator_cue` as `terminal` or `case_log_only`. The smoke command asks
+  again, at that moment, for the case ID typed on the terminal; without it
+  (skipped, or no terminal) the cell fails and says so in its reasons. Set
+  `MATRIX_SMOKE_WINDOW_SEC` long enough for the action and the recovery.
 - PX cells also run the synthetic ENH contender: INIT, then three 07 04
   identification telegrams through START/SEND, with every echoed symbol and
   the response CRC verified.
@@ -202,7 +213,9 @@ another source.
 | AD01 | active frames > 0 and mux `transaction_done` endings > 0 |
 | AD02 | active frames > 0, passive frames > 0, passive copies matched to the gateway's own transactions > 0, and self-echo frames (own passive frames not matched) = 0; passive tap connected |
 | AD03 | third-party passive frames > 0 and completed passive transactions > 0; passive tap connected |
+| AD04, AD09 | the consumer sessions the mux reports at the first reading each observe the discontinuity (their discontinuity count moves by at least 1) and at least one does; upstream reconnects = 1; after the first reading that shows the discontinuity, active frames > 0, mux `transaction_done` endings > 0 and completed passive transactions > 0; no reading after the first shows the out-of-step hold; passive tap connected |
 | AD06 | AD01, plus external identification frames > 0 |
+| AD07 | AD06; contended selections won by the side with initiator priority > 0 and won by the other side = 0, where the gateway's source and the single external initiator seen in the window are ordered by the lowest low nibble, then the lowest high nibble; losing bids kept and later granted > 0, and losing bids that ended any other way = 0 |
 | AD10 | AD01, plus the semantic record and the comparison below |
 | PX01, PX02 | AD06, plus no `max_ownership` ending |
 | PX03 | AD06, plus no `syn_timeout` ending |
@@ -245,10 +258,25 @@ Exit statuses:
 | 0 | pass |
 | 1 | fail: a requirement is not met, a surface did not answer, or an AD10 pair is missing or not equivalent |
 | 2 | usage error: the case context or a setting is missing or invalid |
-| 3 | refused: the invariant cannot be judged (a reserved or planned cell, a retired or unknown invariant, a row or composition that does not match the cell) |
+| 3 | refused: the invariant cannot be judged (a reserved or planned cell, PL-04 included, a retired or unknown invariant, a row or composition that does not match the cell) |
+| 4 | signal missing: the gateway runs the mux but does not publish a series the invariant needs; the reasons and `missing_signals` name it |
 
-A refusal does not contact the gateway. The runner records every non-zero
-status as a failed smoke step, so a refused cell never passes.
+A refusal does not contact the gateway. A missing signal is found on the
+first reading, before any operator action is announced. The runner records
+every non-zero status as a failed smoke step, so a refused cell or a cell
+with a missing signal never passes.
+
+AD04, AD07 and AD09 read AdapterMux series besides the ones above. The
+gateway publishes the out-of-step hold gauge
+`ebus_adaptermux_active_arbitration_held`; it does not publish the others
+yet, so these checks end with status 4 on today's gateway:
+
+| Series | Meaning | Read by |
+|---|---|---|
+| `ebus_adaptermux_session_discontinuities_total{session}` | discontinuity boundaries delivered to each consumer session of the mux | AD04, AD09 |
+| `ebus_adaptermux_upstream_reconnects_total` | completed upstream reconnects of the mux | AD04, AD09 |
+| `ebus_adaptermux_contended_selections_total{winner}` | SYN boundaries at which a gateway bid and an external bid competed, by winner (`gateway` or `external`) | AD07 |
+| `ebus_adaptermux_retained_bids_total{result}` | losing bids kept for a later boundary, by how they ended (`granted` or another ending) | AD07 |
 
 `scripts/adaptermux_v2_smoke_test.py` tests every check offline against the
 synthetic responses in `scripts/testdata/adaptermux_v2_smoke/`, served by a
@@ -330,8 +358,9 @@ targets, initiator targets, and every other request are refused.
 No flag overrides the guard. An owner override of the transport gate never
 authorizes live writes.
 
-Class W cells are adapter-side actions: `UDP-DS01` and `TCP-DS01` today, and
-AD04, AD09 and the plain rows once they leave their categories. Immediately
+Class W cells are adapter-side actions: `UDP-DS01`, `TCP-DS01` and the AD04
+and AD09 cells of the `ENS` and `ENH` rows today, and the plain rows once they
+leave PL-01. Immediately
 before such a cell's first command, the runner asks the operator to type the
 case ID. Without that answer the cell fails and no command runs. An
 `--execute` run with a W cell selected is rejected at start unless a

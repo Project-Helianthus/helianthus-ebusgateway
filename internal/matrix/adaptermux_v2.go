@@ -14,7 +14,9 @@ const (
 
 	// AdapterMuxV2InventoryVersion changes whenever a cell is added, removed
 	// or renamed, or a cell's assertion, category or workload changes.
-	AdapterMuxV2InventoryVersion = "1"
+	// Version 2: AD04, AD07 and AD09 carry written procedures and the
+	// FIFO-order cells PX05–PX08 moved to PL-04.
+	AdapterMuxV2InventoryVersion = "2"
 )
 
 const (
@@ -75,11 +77,17 @@ var (
 	CategoryPL01 = ReservedCategory{ID: "PL-01", Outcome: caseOutcomePlanned, Reason: "mux_southbound_plain_not_implemented", GateAccepts: true}
 	CategoryPL02 = ReservedCategory{ID: "PL-02", Outcome: caseOutcomePlanned, Reason: "mux_local_responder_not_implemented", GateAccepts: true}
 	CategoryPL03 = ReservedCategory{ID: "PL-03", Outcome: caseOutcomePlanned, Reason: "mux_raw_symbol_forwarding_not_implemented", GateAccepts: true}
+	// CategoryPL04 holds the cells that assert FIFO registration order
+	// between external contenders. Address priority replaced FIFO order
+	// (docs/architecture/adapter-arbitration-decision.md), so those
+	// statements cannot hold; the cells stay in the inventory, reserved,
+	// until they are re-specified for address priority.
+	CategoryPL04 = ReservedCategory{ID: "PL-04", Outcome: caseOutcomePlanned, Reason: "fifo_order_superseded_by_address_priority", GateAccepts: true}
 	// CategoryRespec holds cells whose assertion or procedure is being
-	// re-specified on #1378 (arbitration replaced by #1410; adapter-side
-	// procedures not yet written). It is deliberately not a gate category:
-	// a report carrying it cannot pass the gate until the cell is
-	// re-specified and the inventory version is bumped.
+	// re-specified. No cell carries it today; a future re-specification
+	// uses it. It is deliberately not a gate category: a report carrying it
+	// cannot pass the gate until the cell is re-specified and the inventory
+	// version is bumped.
 	CategoryRespec = ReservedCategory{ID: "RS", Outcome: caseOutcomePlanned, Reason: "cell_awaiting_respecification", GateAccepts: false}
 )
 
@@ -142,7 +150,9 @@ type InvariantSpec struct {
 	localResponder bool
 	// rawForwarding marks the cells that wait for raw-symbol forwarding (PL-03).
 	rawForwarding bool
-	// respec marks the cells awaiting re-specification.
+	// fifoOrderSuperseded marks the FIFO-order cells PX05–PX08 (PL-04).
+	fifoOrderSuperseded bool
+	// respec marks the cells awaiting re-specification (none today).
 	respec bool
 }
 
@@ -150,6 +160,11 @@ const (
 	smokeCriterion        = "the smoke command exits 0 with MATRIX_INVARIANT set to this invariant"
 	externalWorkloadEbusd = "guarded ebusd command workload: state, identification scan of the workload target, 07 04 identification as a hex telegram"
 	syntheticWorkload     = "guarded synthetic ENH contender: INIT, then identification telegrams (07 04) to the workload target, each through START/SEND with per-symbol echo verification"
+
+	adapterActionCriterion = smokeCriterion + "; every consumer session observes the discontinuity, the mux reconnects once, " +
+		"gateway transactions and passive reconstruction resume within the cell window, and no out-of-step hold is raised"
+	adapterActionConsumers = " inside the case window, while the gateway session and the passive consumer run through the mux; " +
+		"the gateway keeps its active identification and read transactions"
 )
 
 // adapterMuxInvariants is axis 2 in matrix order: AD01–AD10, AD12, PX01–PX12, CX01.
@@ -166,20 +181,31 @@ var adapterMuxInvariants = []InvariantSpec{
 		Assertion:     "Passive path reconstructs third-party traffic",
 		Workload:      "passive consumer of the mux stream; listens only",
 		PassCriterion: smokeCriterion + "; third-party frames are reconstructed"},
-	{ID: "AD04", Family: FamilyAD, Class: CellClassAdapterAction, Northbound: NorthboundNone, respec: true,
-		Assertion: "RESETTED propagates to all consumers"},
+	{ID: "AD04", Family: FamilyAD, Class: CellClassAdapterAction, Northbound: NorthboundNone,
+		Assertion:     "RESETTED propagates to all consumers",
+		Workload:      "operator adapter action: the runner names the case, then the operator resets the adapter" + adapterActionConsumers,
+		PassCriterion: adapterActionCriterion},
 	{ID: "AD05", Family: FamilyAD, Class: CellClassPassive, Northbound: NorthboundEbusd, rawForwarding: true,
 		Assertion: "ebusd connects, receives broadcasts"},
 	{ID: "AD06", Family: FamilyAD, Class: CellClassQuery, Northbound: NorthboundEbusd,
 		Assertion:     "ebusd sends START/SEND successfully",
 		Workload:      externalWorkloadEbusd,
 		PassCriterion: smokeCriterion + "; every guarded ebusd command answers without ERR"},
-	{ID: "AD07", Family: FamilyAD, Class: CellClassQuery, Northbound: NorthboundEbusd, respec: true,
-		Assertion: "Gateway and ebusd compete fairly at SYN"},
+	{ID: "AD07", Family: FamilyAD, Class: CellClassQuery, Northbound: NorthboundEbusd,
+		Assertion: "Gateway and ebusd compete fairly at SYN",
+		Workload: "address-priority selection between the gateway session and an external ebusd session; the gateway runs its active identification " +
+			"and read transactions, the external session runs the " + externalWorkloadEbusd + "; both sessions bid at the same SYN boundaries",
+		PassCriterion: smokeCriterion + "; with no owner and an idle bus, concurrent bids at one boundary are decided by initiator priority " +
+			"(lowest initiator low nibble, then the lowest high nibble, then the lowest session identity; equal priority keeps the first bid), " +
+			"the losing bid is kept and completes at a later boundary, neither session is starved over the cell window, " +
+			"and every guarded ebusd command answers without ERR"},
 	{ID: "AD08", Family: FamilyAD, Class: CellClassQuery, Northbound: NorthboundEbusd, rawForwarding: true,
 		Assertion: "Per-session echo suppression"},
-	{ID: "AD09", Family: FamilyAD, Class: CellClassAdapterAction, Northbound: NorthboundNone, respec: true,
-		Assertion: "Adapter disconnect triggers reconnection recovery"},
+	{ID: "AD09", Family: FamilyAD, Class: CellClassAdapterAction, Northbound: NorthboundNone,
+		Assertion: "Adapter disconnect triggers reconnection recovery",
+		Workload: "operator adapter action: the runner names the case, then the operator disconnects the adapter's host link and reconnects it" +
+			adapterActionConsumers,
+		PassCriterion: adapterActionCriterion},
 	{ID: "AD10", Family: FamilyAD, Class: CellClassQuery, Northbound: NorthboundNone,
 		Assertion:     "Migration preserves semantics",
 		Workload:      "AD01 workload on the mux, compared with the replaced compositions named in MATRIX_AD10_PAIRED_CASES of the same output directory",
@@ -202,13 +228,13 @@ var adapterMuxInvariants = []InvariantSpec{
 		Assertion:     "SYN while waiting for target response bytes reopens arbitration immediately",
 		Workload:      syntheticWorkload,
 		PassCriterion: smokeCriterion + "; every contender telegram completes with verified echoes"},
-	{ID: "PX05", Family: FamilyPX, Class: CellClassQuery, Northbound: NorthboundSyntheticENH, respec: true,
+	{ID: "PX05", Family: FamilyPX, Class: CellClassQuery, Northbound: NorthboundSyntheticENH, fifoOrderSuperseded: true,
 		Assertion: "same-boundary competition is resolved by FIFO registration order, not initiator priority"},
-	{ID: "PX06", Family: FamilyPX, Class: CellClassQuery, Northbound: NorthboundSyntheticENH, respec: true,
+	{ID: "PX06", Family: FamilyPX, Class: CellClassQuery, Northbound: NorthboundSyntheticENH, fifoOrderSuperseded: true,
 		Assertion: "queued higher initiator keeps its FIFO turn when a lower initiator arrives before the next round closes"},
-	{ID: "PX07", Family: FamilyPX, Class: CellClassQuery, Northbound: NorthboundSyntheticENH, respec: true,
+	{ID: "PX07", Family: FamilyPX, Class: CellClassQuery, Northbound: NorthboundSyntheticENH, fifoOrderSuperseded: true,
 		Assertion: "requeue-after-timeout receives a new FIFO position and cannot steal priority from an older contender"},
-	{ID: "PX08", Family: FamilyPX, Class: CellClassQuery, Northbound: NorthboundSyntheticENH, respec: true,
+	{ID: "PX08", Family: FamilyPX, Class: CellClassQuery, Northbound: NorthboundSyntheticENH, fifoOrderSuperseded: true,
 		Assertion: "equal-initiator FIFO ordering is preserved"},
 	{ID: "PX09", Family: FamilyPX, Class: CellClassNotExecuted, Northbound: NorthboundNone, localResponder: true,
 		Assertion: "local target observes request only from echoed RECEIVED path, never from owner SEND intent"},
@@ -270,7 +296,7 @@ func (cell AdapterMuxCell) Executable() bool {
 }
 
 // reservedCategoryFor applies the category precedence BI-02, PL-01, PL-02,
-// PL-03, then re-specification.
+// PL-03, PL-04, then re-specification.
 func reservedCategoryFor(row adapterMuxRow, spec InvariantSpec) *ReservedCategory {
 	var category ReservedCategory
 	switch {
@@ -282,6 +308,8 @@ func reservedCategoryFor(row adapterMuxRow, spec InvariantSpec) *ReservedCategor
 		category = CategoryPL02
 	case spec.rawForwarding:
 		category = CategoryPL03
+	case spec.fifoOrderSuperseded:
+		category = CategoryPL04
 	case spec.respec:
 		category = CategoryRespec
 	default:

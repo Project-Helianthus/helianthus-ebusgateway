@@ -1053,6 +1053,99 @@ func TestOperatorRecordIdentityLinkInAMixedHomeStaysPending(t *testing.T) {
 	}
 }
 
+// A home that combines a resource or a relation with an identity link whose
+// native binding is not yet observed refuses the whole set before anything is
+// submitted. The new records do not reach the graph, and a replacement does
+// not withdraw records that were already published. The home waits.
+func TestOperatorRecordUnobservedLinkRefusesTheWholeSetBeforePublish(t *testing.T) {
+	f := newOprFixture(t)
+	audit := oprAudit("mixed-unobserved")
+	relation := oprInverterArray(oprArray)
+	unobserved := operatorIdentityLink{Native: oprEvidence("oprtest.native-unobserved"), Resource: oprInverter, BasisClass: string(semreg.RelationConfiguration)}
+	err := f.publisher.Set(oprDriverAsset, operatorRecords{Relations: []operatorRelation{relation}, Links: []operatorIdentityLink{unobserved}}, audit)
+	var refusal *operatorRecordRefusal
+	if !errors.As(err, &refusal) || refusal.Reason != operatorReasonNativeUnobserved || !operatorRecordDeferred(err) {
+		t.Fatalf("mixed set=%v, want a deferred %s", err, operatorReasonNativeUnobserved)
+	}
+	if _, ok := oprRelationIn(f.snapshot(t, oprDriverAsset), relation); ok {
+		t.Fatal("an unobserved identity link published the relation of the same set")
+	}
+	if desired := f.publisher.Desired(oprDriverAsset); len(desired.Relations) != 0 || len(desired.Resources) != 0 {
+		t.Fatalf("desired=%+v, want the refused set left unset", desired)
+	}
+	if links := oprPendingLinks(t, f); len(links) != 0 {
+		t.Fatalf("pending links=%+v, want none declared", links)
+	}
+
+	if err := f.publisher.Set(oprDriverAsset, operatorRecords{Relations: []operatorRelation{relation}}, audit); err != nil {
+		t.Fatalf("publish the prior relation: %v", err)
+	}
+	replacement := oprInverterArray(oprArraySecond)
+	err = f.publisher.Set(oprDriverAsset, operatorRecords{Relations: []operatorRelation{replacement}, Links: []operatorIdentityLink{unobserved}}, audit)
+	if !errors.As(err, &refusal) || refusal.Reason != operatorReasonNativeUnobserved {
+		t.Fatalf("replacement=%v, want a deferred %s", err, operatorReasonNativeUnobserved)
+	}
+	snapshot := f.snapshot(t, oprDriverAsset)
+	if _, ok := oprRelationIn(snapshot, relation); !ok {
+		t.Fatal("the unobserved link withdrew the prior relation")
+	}
+	if _, ok := oprRelationIn(snapshot, replacement); ok {
+		t.Fatal("the unobserved link published the replacement relation")
+	}
+	if desired := f.publisher.Desired(oprDriverAsset); len(desired.Relations) != 1 || desired.Relations[0].Record.To != oprArray {
+		t.Fatalf("desired=%+v, want the prior relation kept", desired.Relations)
+	}
+	if links := oprPendingLinks(t, f); len(links) != 0 {
+		t.Fatalf("pending links after the refused replacement=%+v, want none", links)
+	}
+
+	resource := oprArrayResource(oprArray, "array-1")
+	if err := f.publisher.Set(oprHomeAsset, operatorRecords{Resources: []operatorResource{resource}}, audit); err != nil {
+		t.Fatalf("publish the prior resource: %v", err)
+	}
+	err = f.publisher.Set(oprHomeAsset, operatorRecords{Links: []operatorIdentityLink{unobserved}}, audit)
+	if !errors.As(err, &refusal) || refusal.Reason != operatorReasonNativeUnobserved {
+		t.Fatalf("resource withdrawal=%v, want a deferred %s", err, operatorReasonNativeUnobserved)
+	}
+	held, ok := oprResourceIn(f.snapshot(t, oprHomeAsset), oprArray)
+	if !ok || held.State != semreg.ResourceCurrent {
+		t.Fatalf("resource=%+v present=%v, want the prior resource still current", held, ok)
+	}
+	if desired := f.publisher.Desired(oprHomeAsset); len(desired.Resources) != 1 || desired.Resources[0].Record.ID != oprArray {
+		t.Fatalf("desired resources=%+v, want the prior resource kept", desired.Resources)
+	}
+}
+
+// The portal reports every record of a mixed home as waiting when its
+// identity link is unobserved, and it does not publish the home's relation
+// while that wait stands.
+func TestOperatorRecordMixedHomeWaitsWithoutPublishingAnUnobservedLink(t *testing.T) {
+	f := newOprFixture(t)
+	native := oprEvidence("oprtest.native-unobserved")
+	set := portalconfig.OperatorRecordSet{
+		Format: portalconfig.OperatorRecordsFormat, Revision: "1",
+		Records: []portalconfig.OperatorRecord{
+			opr27Relation(oprDriverAsset, "pv.relation.inverter_array", oprInverter, oprArray),
+			{Form: portalconfig.OperatorFormIdentityLink, Home: string(oprDriverAsset), ResourceID: string(oprInverter), BasisClass: string(semreg.RelationConfiguration), Native: &native},
+		},
+	}
+	operators := &portalOperatorRecords{publisher: f.publisher, desired: map[semreg.AssetID]operatorAssetRecords{}, outcomes: map[semreg.AssetID]portalOperatorOutcome{}}
+	operators.apply(set)
+	if _, ok := oprRelationIn(f.snapshot(t, oprDriverAsset), oprInverterArray(oprArray)); ok {
+		t.Fatal("a waiting home published its relation")
+	}
+	runtime := &gatewayPortalConfigRuntime{operators: operators}
+	states := runtime.operatorRecordStates(set)
+	if len(states) != 2 {
+		t.Fatalf("states=%+v, want both records of the home", states)
+	}
+	for _, state := range states {
+		if state.Status != portalconfig.OperatorRecordWaiting || state.Reason != portalOperatorNativeUnobserved {
+			t.Fatalf("state=%+v, want waiting %s", state, portalOperatorNativeUnobserved)
+		}
+	}
+}
+
 func oprRelationSection(revision string, to semreg.ResourceID) portalconfig.OperatorRecordSet {
 	return portalconfig.OperatorRecordSet{
 		Format:   portalconfig.OperatorRecordsFormat,

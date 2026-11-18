@@ -43,9 +43,9 @@ const (
 	// twice.
 	operatorReasonDuplicate semreg.DefinitionID = "operator.record.duplicate"
 	// operatorReasonNativeUnobserved defers an identity link whose native
-	// resource no binding of the asset observes yet: the hub keeps a link
-	// pending for the binding's source, and that source is not known before
-	// the binding is published.
+	// resource no binding of the asset observes yet. The rest of that asset's
+	// set is not submitted. The hub keeps a link pending for the binding's
+	// source, and that source is not known before the binding is published.
 	operatorReasonNativeUnobserved semreg.DefinitionID = "operator.record.native_unobserved"
 )
 
@@ -462,39 +462,54 @@ func (p *operatorRecordPublisher) Set(id semreg.AssetID, records operatorRecords
 	return err
 }
 
-// setLocked is Set without the publisher lock: it publishes the resources and
-// relations, then declares the identity links to the hub. p.mu must be held.
+// setLocked is Set without the publisher lock. It resolves the identity links
+// before it publishes the resources and relations, then declares the links.
+// A link that does not resolve refuses the whole set before anything is
+// submitted, so a replacement cannot withdraw records that were already
+// published. p.mu must be held.
 func (p *operatorRecordPublisher) setLocked(id semreg.AssetID, records operatorRecords, audit operatorAudit) error {
+	plan, err := p.prepareLinksLocked(id, records.Links, audit)
+	if err != nil {
+		return err
+	}
 	if err := p.publishLocked(id, records, audit); err != nil {
 		return err
 	}
-	return p.declareLinksLocked(id, records.Links, audit)
+	return p.applyLinksLocked(id, plan)
 }
 
-// declareLinksLocked declares the configured identity links of one asset to
-// the hub, for the source whose binding observes each native resource, and
-// withdraws the declarations no longer configured. Nothing is published: the
-// binding's source carries the links in its next transaction. A link whose
-// native resource no binding of the asset observes yet is deferred with
-// operatorReasonNativeUnobserved and nothing of the set is declared. p.mu
-// must be held.
-func (p *operatorRecordPublisher) declareLinksLocked(id semreg.AssetID, links []operatorIdentityLink, audit operatorAudit) error {
+// operatorLinkPlan is the identity-link declarations of one asset after they
+// have resolved. apply is false when the asset has no links to declare and
+// none held, so the caller submits nothing for links.
+type operatorLinkPlan struct {
+	next    map[semreg.SourceID][]semhub.OperatorLink
+	changed []semreg.SourceID
+	apply   bool
+}
+
+// prepareLinksLocked resolves the configured identity links of one asset to
+// the sources whose bindings observe each native resource. It does not
+// declare them. A link whose native resource no binding observes yet is
+// deferred with operatorReasonNativeUnobserved, and a duplicate native
+// resource or a missing audit digest is refused. Either result is returned
+// before the rest of the set is submitted. p.mu must be held.
+func (p *operatorRecordPublisher) prepareLinksLocked(id semreg.AssetID, links []operatorIdentityLink, audit operatorAudit) (operatorLinkPlan, error) {
 	held := p.links[id]
 	if len(links) == 0 && len(held) == 0 {
-		return nil
+		return operatorLinkPlan{}, nil
 	}
 	if len(links) > 0 && audit.evidence().Validate() != nil {
-		return &operatorRecordRefusal{Asset: id, Reason: operatorReasonAuditMissing}
+		return operatorLinkPlan{}, &operatorRecordRefusal{Asset: id, Reason: operatorReasonAuditMissing}
 	}
 	view, err := p.hub.Inspect(id)
 	if err != nil {
-		return err
+		return operatorLinkPlan{}, err
 	}
 	next := make(map[semreg.SourceID][]semhub.OperatorLink)
 	seen := make(map[semreg.EvidenceRef]bool, len(links))
 	for _, link := range links {
 		if seen[link.Native] {
-			return &operatorRecordRefusal{Asset: id, Resource: link.Resource, Reason: operatorReasonDuplicate}
+			return operatorLinkPlan{}, &operatorRecordRefusal{Asset: id, Resource: link.Resource, Reason: operatorReasonDuplicate}
 		}
 		seen[link.Native] = true
 		sources := map[semreg.SourceID]bool{}
@@ -504,7 +519,7 @@ func (p *operatorRecordPublisher) declareLinksLocked(id semreg.AssetID, links []
 			}
 		}
 		if len(sources) == 0 {
-			return &operatorRecordRefusal{Asset: id, Resource: link.Resource, Reason: operatorReasonNativeUnobserved}
+			return operatorLinkPlan{}, &operatorRecordRefusal{Asset: id, Resource: link.Resource, Reason: operatorReasonNativeUnobserved}
 		}
 		for src := range sources {
 			next[src] = append(next[src], semhub.OperatorLink{Native: link.Native, Resource: link.Resource, Basis: []semreg.EvidenceRef{audit.evidence()}})
@@ -522,8 +537,18 @@ func (p *operatorRecordPublisher) declareLinksLocked(id semreg.AssetID, links []
 		}
 	}
 	sort.Slice(changed, func(i, j int) bool { return changed[i] < changed[j] })
-	for _, src := range changed {
-		if err := p.hub.SetOperatorLinks(id, src, next[src]); err != nil {
+	return operatorLinkPlan{next: next, changed: changed, apply: true}, nil
+}
+
+// applyLinksLocked declares a resolved link plan to the hub and withdraws the
+// declarations no longer configured. Nothing is published: the binding's
+// source carries the links in its next transaction. p.mu must be held.
+func (p *operatorRecordPublisher) applyLinksLocked(id semreg.AssetID, plan operatorLinkPlan) error {
+	if !plan.apply {
+		return nil
+	}
+	for _, src := range plan.changed {
+		if err := p.hub.SetOperatorLinks(id, src, plan.next[src]); err != nil {
 			return err
 		}
 		if p.links == nil {
@@ -532,10 +557,10 @@ func (p *operatorRecordPublisher) declareLinksLocked(id semreg.AssetID, links []
 		if p.links[id] == nil {
 			p.links[id] = make(map[semreg.SourceID][]semhub.OperatorLink)
 		}
-		if len(next[src]) == 0 {
+		if len(plan.next[src]) == 0 {
 			delete(p.links[id], src)
 		} else {
-			p.links[id][src] = next[src]
+			p.links[id][src] = plan.next[src]
 		}
 	}
 	if len(p.links[id]) == 0 {

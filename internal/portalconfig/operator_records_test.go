@@ -606,3 +606,59 @@ func TestOperatorRecordIdentityLinkDuplicateKeysVaryEveryField(t *testing.T) {
 		})
 	}
 }
+
+// The public Portal configuration contract documents the identity-link form
+// and says startup loads the configured record set. Clients construct the
+// form from that page.
+func TestOperatorRecordPortalContractDocumentsTheIdentityLinkAndStartupLoad(t *testing.T) {
+	data, err := os.ReadFile("../../docs/architecture/portal-config-sharing.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if strings.Contains(text, "composes no operator record") {
+		t.Fatal("the portal contract still says startup composes no operator record")
+	}
+	if !strings.Contains(text, "Startup loads the configured record set") {
+		t.Fatal("the portal contract does not say startup loads the configured record set")
+	}
+	if !strings.Contains(text, "`identity_link`") || !strings.Contains(text, "`native_unobserved`") || !strings.Contains(text, "`identity_link_pending`") {
+		t.Fatal("the portal contract omits the identity-link form or its waiting reasons")
+	}
+	const fence = "```json"
+	start := strings.Index(text, fence)
+	for start >= 0 {
+		bodyStart := start + len(fence)
+		end := strings.Index(text[bodyStart:], "```")
+		if end < 0 {
+			break
+		}
+		body := strings.TrimSpace(text[bodyStart : bodyStart+end])
+		if strings.Contains(body, OperatorRecordsFormat) {
+			set, e := DecodeOperatorRecords([]byte(body))
+			if e != nil {
+				t.Fatal(e)
+			}
+			if e = ValidateOperatorRecords(set); e != nil {
+				t.Fatal(e)
+			}
+			var link OperatorRecord
+			found := false
+			for _, record := range set.Records {
+				if record.Form == OperatorFormIdentityLink {
+					link, found = record, true
+				}
+			}
+			if !found || link.Home == "" || link.ResourceID == "" || link.BasisClass != string(semreg.RelationConfiguration) || link.Native == nil || link.Native.Validate() != nil {
+				t.Fatalf("documented identity link=%+v", link)
+			}
+			return
+		}
+		next := strings.Index(text[bodyStart+end:], fence)
+		if next < 0 {
+			break
+		}
+		start = bodyStart + end + next
+	}
+	t.Fatal("the portal contract has no operator-record section example")
+}

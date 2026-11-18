@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -9,12 +11,19 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/promotioncapture"
 )
 
-// The compatibility overlay stays empty until the shared SemReg consumer
-// admits a documented mapping. Refresh only supplies native observations.
+// eebusPromotedSemanticProvider keeps the overlay of eeBUS heating values that
+// GraphQL and Portal compose under the eBUS values. Each refresh reads the
+// values through the inbound reader. In the managed start path the shell
+// provider serves the overlay of the worker of the running generation. The
+// overlay names no native runtime type: the remote binding of the last cycle is
+// kept in the inbound reader's own result.
 type eebusPromotedSemanticProvider struct {
 	adapter   *eebusRuntimeAdapter
+	refreshMu sync.Mutex
 	mu        sync.RWMutex
 	overlay   graphql.PromotedSemanticOverlay
+	values    map[string]promotioncapture.TypedValue
+	last      eebusInboundRead
 	startOnce sync.Once
 	cancel    context.CancelFunc
 	done      chan struct{}
@@ -49,6 +58,9 @@ func wireEEBusPromotedSemanticGraphQL(ctx context.Context, builder *graphql.Buil
 func (p *eebusPromotedSemanticProvider) Overlay() graphql.PromotedSemanticOverlay {
 	if p == nil {
 		return graphql.PromotedSemanticOverlay{}
+	}
+	if p.adapter != nil && p.adapter.managed != nil {
+		return p.adapter.managed.eebusPromotedOverlay()
 	}
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -96,13 +108,67 @@ func (p *eebusPromotedSemanticProvider) Close(ctx context.Context) error {
 	}
 }
 
-// Refresh delegates to the adapter publication boundary without native feature
-// reads or direct semantic promotion.
+// Refresh offers the native snapshot to the SemReg publication boundary and
+// fills the overlay from the values the inbound reader returns for the same
+// snapshot. A cycle whose runtime is not ready, or whose remote binding changes,
+// replaces the overlay with an empty one. A value whose admitted read fails
+// keeps its last-known value while the remote binding stays the same.
 func (p *eebusPromotedSemanticProvider) Refresh(ctx context.Context) {
 	if p == nil || p.adapter == nil || ctx.Err() != nil {
 		return
 	}
-	_, _ = p.adapter.refreshSemregSnapshot(ctx)
+	runtime := p.adapter.runtime
+	if runtime == nil {
+		return
+	}
+	p.refreshMu.Lock()
+	defer p.refreshMu.Unlock()
+	slotGeneration, isSlot := eebusPromotedSlotGeneration(runtime)
+	snapshot, _ := p.adapter.refreshSemregSnapshot(ctx)
+	if ctx.Err() != nil {
+		return
+	}
+	read, err := readEEBusInboundValues(ctx, runtime, snapshot)
+	if ctx.Err() != nil {
+		return
+	}
+	if err == nil && isSlot {
+		if generation, _ := eebusPromotedSlotGeneration(runtime); generation != slotGeneration {
+			err = errEEBusInboundBindingChanged
+		}
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if err != nil {
+		p.overlay, p.values, p.last = graphql.PromotedSemanticOverlay{}, nil, eebusInboundRead{}
+		return
+	}
+	values := make(map[string]promotioncapture.TypedValue, len(read.Values))
+	for _, value := range read.Values {
+		values[value.SemanticPath] = value.Value
+	}
+	if read.Binding == p.last.Binding {
+		for _, path := range read.Unread {
+			if last, ok := p.values[path]; ok {
+				values[path] = last
+			}
+		}
+	}
+	overlay := graphql.PromotedSemanticOverlay{}
+	for path, value := range values {
+		applyPromotedValue(&overlay, path, value)
+	}
+	p.overlay, p.values, p.last = overlay, values, eebusInboundRead{Binding: read.Binding}
+}
+
+func eebusPromotedSlotGeneration(runtime any) (uint64, bool) {
+	slot, ok := runtime.(*eebusRuntimeSlot)
+	if !ok || slot == nil {
+		return 0, false
+	}
+	slot.operationMu.Lock()
+	defer slot.operationMu.Unlock()
+	return slot.publicationGeneration, true
 }
 
 func applyPromotedValue(overlay *graphql.PromotedSemanticOverlay, path string, value promotioncapture.TypedValue) {
@@ -143,13 +209,6 @@ func applyPromotedValue(overlay *graphql.PromotedSemanticOverlay, path string, v
 		v := *value.Boolean
 		return &v
 	}
-	zone := func(id string) graphql.PromotedZoneOverlay {
-		if overlay.Zones == nil {
-			overlay.Zones = map[string]graphql.PromotedZoneOverlay{}
-		}
-		return overlay.Zones[id]
-	}
-	putZone := func(id string, v graphql.PromotedZoneOverlay) { overlay.Zones[id] = v }
 	switch path {
 	case "/dhw/temperature_c":
 		overlay.DHW.CurrentTempC = floatValue()
@@ -167,47 +226,53 @@ func applyPromotedValue(overlay *graphql.PromotedSemanticOverlay, path string, v
 		overlay.System.GatewayBrand = stringValue()
 	case "/system/gateway_vendor":
 		overlay.System.GatewayVendor = stringValue()
-	case "/zones/zone_1/room_temperature_c":
-		v := zone("zone-1")
-		v.CurrentTempC = floatValue()
-		putZone("zone-1", v)
-	case "/zones/zone_1/target_temperature_c":
-		v := zone("zone-1")
-		v.TargetTempC = floatValue()
-		putZone("zone-1", v)
-	case "/zones/zone_1/operating_mode":
-		v := zone("zone-1")
-		v.OperatingMode = stringValue()
-		putZone("zone-1", v)
-	case "/zones/zone_1/operation_mode_changeable":
-		v := zone("zone-1")
-		v.OperationModeChangeable = boolValue()
-		putZone("zone-1", v)
-	case "/zones/zone_1/name":
-		v := zone("zone-1")
-		label := "Zone 1"
-		v.SourceLabel = &label
-		putZone("zone-1", v)
-	case "/zones/zone_2/room_temperature_c":
-		v := zone("zone-2")
-		v.CurrentTempC = floatValue()
-		putZone("zone-2", v)
-	case "/zones/zone_2/target_temperature_c":
-		v := zone("zone-2")
-		v.TargetTempC = floatValue()
-		putZone("zone-2", v)
-	case "/zones/zone_2/operating_mode":
-		v := zone("zone-2")
-		v.OperatingMode = stringValue()
-		putZone("zone-2", v)
-	case "/zones/zone_2/operation_mode_changeable":
-		v := zone("zone-2")
-		v.OperationModeChangeable = boolValue()
-		putZone("zone-2", v)
-	case "/zones/zone_2/name":
-		v := zone("zone-2")
-		label := "Zone 2"
-		v.SourceLabel = &label
-		putZone("zone-2", v)
+	default:
+		number, field, ok := promotedZonePath(path)
+		if !ok {
+			return
+		}
+		id := "zone-" + number
+		if overlay.Zones == nil {
+			overlay.Zones = map[string]graphql.PromotedZoneOverlay{}
+		}
+		zone := overlay.Zones[id]
+		switch field {
+		case "room_temperature_c":
+			zone.CurrentTempC = floatValue()
+		case "target_temperature_c":
+			zone.TargetTempC = floatValue()
+		case "operating_mode":
+			zone.OperatingMode = stringValue()
+		case "operation_mode_changeable":
+			zone.OperationModeChangeable = boolValue()
+		case "name":
+			// The native zone name is a household label; the overlay publishes
+			// only the generic zone label.
+			label := "Zone " + number
+			zone.SourceLabel = &label
+		}
+		overlay.Zones[id] = zone
 	}
+}
+
+// promotedZonePath splits "/zones/zone_<n>/<field>" into the canonical
+// positive zone number and a known field.
+func promotedZonePath(path string) (string, string, bool) {
+	rest, ok := strings.CutPrefix(path, "/zones/zone_")
+	if !ok {
+		return "", "", false
+	}
+	number, field, ok := strings.Cut(rest, "/")
+	if !ok {
+		return "", "", false
+	}
+	value, err := strconv.ParseUint(number, 10, 32)
+	if err != nil || value == 0 || strconv.FormatUint(value, 10) != number {
+		return "", "", false
+	}
+	switch field {
+	case "room_temperature_c", "target_temperature_c", "operating_mode", "operation_mode_changeable", "name":
+		return number, field, true
+	}
+	return "", "", false
 }

@@ -13,6 +13,7 @@ import (
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/drivermanager"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimecontrol"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mdns"
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
@@ -572,5 +573,47 @@ func withManagedSidecarRunState(t *testing.T, cfg *ebusgateway.Config) {
 			}
 			return true
 		})
+	}
+}
+
+// In the managed start path GraphQL reads the overlay of the worker of the
+// running eeBUS generation, and an empty overlay while no generation runs.
+func TestEEBusRuntimeAdapterManagedOverlayFollowsRunningGeneration(t *testing.T) {
+	runtime := newEEBusInboundTestRuntime(t)
+	native := newEEBusManagedDriver(m05Options(t, func(eebusruntime.Config) (eebusruntime.Runtime, error) { return runtime, nil }))
+	sidecar := &managedSidecarRuntime{Runtime: native}
+	manager, err := drivermanager.New(drivermanager.Config{Drivers: []drivermanager.DriverConfig{{
+		ID: string(managedEEBusID), Enabled: true, Runtime: sidecar,
+		Capabilities: []drivermanager.Capability{drivermanager.CapabilityRead},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = manager.Shutdown(ctx)
+	}()
+	entry := &managedSidecar{descriptor: runtimecontrol.Descriptor{DriverID: managedEEBusID, Sources: []runtimecontrol.SourceID{"synthetic-eebus-source"}}, runtime: sidecar, manager: manager}
+	bindings := &managedSidecarBindings{sidecars: &managedSidecars{entries: []*managedSidecar{entry}}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	composed := wireEEBusPromotedSemanticGraphQL(ctx, graphql.NewBuilder(nil, nil), eebusInboundTestBase(), &eebusRuntimeAdapter{managed: bindings})
+	if !eebusInboundEmpty(composed) {
+		t.Fatal("overlay published before a generation runs")
+	}
+	key := runtimecontrol.LifecycleCorrelation{DriverID: managedEEBusID, SourceID: "synthetic-eebus-source", Epoch: "synthetic-initial", Generation: 1, Sequence: 1}
+	if err := entry.Start(ctx, key); err != nil {
+		t.Fatal(err)
+	}
+	eebusInboundWait(t, "the managed generation's first inbound cycle", func() bool { return eebusInboundFilled(composed) })
+	assertEEBusInboundGraphQL(t, composed)
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stopCancel()
+	if outcome := entry.Stop(stopCtx, key); !outcome.NativeClosed {
+		t.Fatalf("generation stop outcome = %+v", outcome)
+	}
+	if !eebusInboundEmpty(composed) {
+		t.Fatal("stopped generation's overlay is still published")
 	}
 }

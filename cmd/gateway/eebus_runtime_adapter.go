@@ -12,6 +12,7 @@ import (
 	"time"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/drivermanager"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/eebusadmin"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/eebuscommand"
@@ -797,6 +798,27 @@ func (b *managedSidecarBindings) eebus(ctx context.Context, call func(*eebusRunt
 		}
 		return driver.WithGeneration(driver.Generation(), call)
 	})
+}
+
+// eebusPromotedOverlay returns the overlay of the worker that the lease of the
+// running eeBUS generation started. It is empty while no generation runs,
+// while the lease is withdrawn, and when the lease changes during the read.
+func (b *managedSidecarBindings) eebusPromotedOverlay() (out graphql.PromotedSemanticOverlay) {
+	entry := b.entry(managedEEBusID)
+	if entry == nil || entry.runtime == nil {
+		return out
+	}
+	lease := entry.runtime.active.Load()
+	if lease == nil || lease.worker == nil {
+		return out
+	}
+	_ = entry.with(context.Background(), func(drivermanager.Runtime) error {
+		if entry.runtime.active.Load() == lease {
+			out = lease.worker.Overlay()
+		}
+		return nil
+	})
+	return out
 }
 
 func (b *managedSidecarBindings) eebusSnapshot() (out eebusruntime.SnapshotV1, err error) {

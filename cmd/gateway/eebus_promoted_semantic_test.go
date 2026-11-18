@@ -33,6 +33,34 @@ func TestApplyPromotedValue_MapsEveryPromotedRegistryPath(t *testing.T) {
 	assertPromotedRegistryOverlay(t, overlay)
 }
 
+// Every zone path maps to its zone; a zone number that is not a canonical
+// positive integer and an unknown field are ignored.
+func TestApplyPromotedValue_MapsAnyZoneNumber(t *testing.T) {
+	overlay := graphql.PromotedSemanticOverlay{}
+	for _, number := range []string{"1", "3", "12"} {
+		prefix := "/zones/zone_" + number + "/"
+		applyPromotedValue(&overlay, prefix+"room_temperature_c", promotioncapture.NumericValue(promotioncapture.Decimal{Number: 215, Scale: -1}))
+		applyPromotedValue(&overlay, prefix+"target_temperature_c", promotioncapture.NumericValue(promotioncapture.Decimal{Number: 22, Scale: 0}))
+		applyPromotedValue(&overlay, prefix+"operating_mode", promotioncapture.EnumValue("off"))
+		applyPromotedValue(&overlay, prefix+"operation_mode_changeable", promotioncapture.BooleanValue(false))
+		applyPromotedValue(&overlay, prefix+"name", promotioncapture.StringValue("private household label"))
+	}
+	for _, path := range []string{"/zones/zone_0/name", "/zones/zone_03/name", "/zones/zone_-1/name", "/zones/zone_x/name", "/zones/zone_4/unknown", "/zones/zone_5/name/extra", "/zones/zone_/name"} {
+		applyPromotedValue(&overlay, path, promotioncapture.StringValue("ignored"))
+	}
+	if len(overlay.Zones) != 3 {
+		t.Fatalf("zones = %#v", overlay.Zones)
+	}
+	for _, number := range []string{"1", "3", "12"} {
+		zone, ok := overlay.Zones["zone-"+number]
+		if !ok || zone.CurrentTempC == nil || *zone.CurrentTempC != 21.5 || zone.TargetTempC == nil || *zone.TargetTempC != 22 ||
+			zone.OperatingMode == nil || *zone.OperatingMode != "off" || zone.OperationModeChangeable == nil || *zone.OperationModeChangeable ||
+			zone.SourceLabel == nil || *zone.SourceLabel != "Zone "+number {
+			t.Fatalf("zone-%s = %#v", number, zone)
+		}
+	}
+}
+
 func TestApplyPromotedValue_DecimalScaleIsNumberTimesTenToScale(t *testing.T) {
 	overlay := graphql.PromotedSemanticOverlay{}
 	applyPromotedValue(&overlay, "/dhw/temperature_c", promotioncapture.NumericValue(promotioncapture.Decimal{Number: 205, Scale: -1}))

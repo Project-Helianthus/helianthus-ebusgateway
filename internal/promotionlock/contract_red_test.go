@@ -1087,3 +1087,35 @@ func readPathOrTree(root, relative string) ([]byte, error) {
 	})
 	return combined.Bytes(), err
 }
+
+// The source check is the gate Build applies to the declared profile; the
+// default run pins it directly, without the process-private captured inputs.
+func TestIssue1694SourceCheckAdmitsOnlyTheDeclaredProfile(t *testing.T) {
+	declared := capturedInputsWithSyntheticSources(t)
+	if _, err := validateCapturedSources(declared); err == nil || err.Error() != "captured.status" {
+		t.Fatalf("validateCapturedSources(declared) error = %v; want the profile admitted and captured.status from the synthetic sources", err)
+	}
+	if _, err := Build(declared); err == nil || err.Error() != "captured.status" {
+		t.Fatalf("Build(declared) error = %v; want the profile admitted and captured.status from the synthetic sources", err)
+	}
+
+	for _, profile := range []string{syntheticProfileV1, "CAPTURED_RUNTIME_ZERO_PROMOTION", "CAPTURED_RUNTIME_PROMOTION", ""} {
+		other := capturedInputsWithSyntheticSources(t)
+		other.Profile = profile
+		if _, err := validateCapturedSources(other); err == nil || err.Error() != "captured.input" {
+			t.Fatalf("validateCapturedSources(profile %q) error = %v; want captured.input", profile, err)
+		}
+	}
+
+	withDossier := capturedInputsWithSyntheticSources(t)
+	withDossier.Dossier = contractArtifact(t, "docs/platform/fixtures/leaf-promotion-dossier/v1/positive/dossier.json")
+	if _, err := validateCapturedSources(withDossier); err == nil || err.Error() != "captured.input" {
+		t.Fatalf("validateCapturedSources(declared with dossier) error = %v; want captured.input", err)
+	}
+
+	incomplete := capturedInputsWithSyntheticSources(t)
+	incomplete.M8Report = nil
+	if _, err := validateCapturedSources(incomplete); err == nil || err.Error() != "captured.input" {
+		t.Fatalf("validateCapturedSources(declared without M8 report) error = %v; want captured.input", err)
+	}
+}

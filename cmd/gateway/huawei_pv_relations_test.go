@@ -777,6 +777,61 @@ func TestHuaweiPVRelationsReplacementLeavesRetiredDeclarationPending(t *testing.
 	declared.check(t, asset, source)
 }
 
+// TestHuaweiPVRelationsLoggerRejectsDeclarationOfAnotherResource: a pending
+// operator declaration for the logger's binding that names another resource
+// is not installed, so the binding keeps observing the logger. A later
+// declaration that names the logger is installed.
+func TestHuaweiPVRelationsLoggerRejectsDeclarationOfAnotherResource(t *testing.T) {
+	hub := newTestSemanticHub(t)
+	publication, cycle, unit := huaweiRelationsFixture(t, hub, "smartlogger", "alpha")
+	source := publication.handle.Source()
+	loggerAsset := huaweiLoggerAssetID("alpha")
+	g := huaweiRelationsLogger(t, hub, "alpha", source)
+	logger := g.one(t, "resource.equipment").ResourceID
+	var native semreg.EvidenceRef
+	for _, link := range g.snapshot.IdentityLinks {
+		if link.Resource != nil && *link.Resource == logger && link.State == semreg.LinkQualified {
+			for _, binding := range g.snapshot.Bindings {
+				if binding.BindingID == link.BindingID {
+					native = binding.NativeResource
+				}
+			}
+		}
+	}
+	if native.Digest == "" {
+		t.Fatal("no binding observes the logger")
+	}
+	stale := huaweiGraphOf(t, hub, huaweiAssetID("alpha", "pv", unit)).check(t, huaweiAssetID("alpha", "pv", unit), source).inverter
+	declaration := semreg.EvidenceRef{Owner: semhub.OperatorEvidenceOwner, Kind: "operator.declaration", Digest: semreg.Digest("sha256:" + huaweiHash("operator declaration", string(stale))), Contract: semreg.ContractKernelV1, Access: semreg.EvidenceAccessAuthorized, Redaction: semreg.RedactionMetadataOnly}
+	if err := hub.SetOperatorLinks(loggerAsset, source, []semhub.OperatorLink{{Native: native, Resource: stale, Basis: []semreg.EvidenceRef{declaration}}}); err != nil {
+		t.Fatal(err)
+	}
+	next := huaweiRelationsNext(cycle, nil)
+	if err := publication.Publish(next); err != nil {
+		t.Fatal(err)
+	}
+	after := huaweiRelationsLogger(t, hub, "alpha", source)
+	for _, link := range after.snapshot.IdentityLinks {
+		if huaweiDeclaredLink(link) || (link.Resource != nil && *link.Resource != logger) {
+			t.Fatalf("logger binding link %+v does not observe the logger", link)
+		}
+	}
+
+	if err := hub.SetOperatorLinks(loggerAsset, source, []semhub.OperatorLink{{Native: native, Resource: logger, Basis: []semreg.EvidenceRef{declaration}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := publication.Publish(huaweiRelationsNext(next, nil)); err != nil {
+		t.Fatal(err)
+	}
+	declared := false
+	for _, link := range huaweiRelationsLogger(t, hub, "alpha", source).snapshot.IdentityLinks {
+		declared = declared || huaweiDeclaredLink(link) && link.Resource != nil && *link.Resource == logger
+	}
+	if !declared {
+		t.Fatal("a declaration naming the logger was not installed on its binding")
+	}
+}
+
 // TestHuaweiPVRelationsNamesPublishedLoggerAsset: the logger asset is named
 // once the publication has published it, and an unpublished label is not.
 func TestHuaweiPVRelationsNamesPublishedLoggerAsset(t *testing.T) {

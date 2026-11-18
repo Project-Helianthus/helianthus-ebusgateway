@@ -1467,7 +1467,10 @@ func (p *huaweiPVPublication) publishLogger(cycle huawei.ProviderCycle) error {
 	if link.BindingID != "" {
 		batch.IdentityLinkUpserts = append(batch.IdentityLinkUpserts, link)
 	}
-	batch.IdentityLinkUpserts = huaweiWithOperatorLinks(batch.IdentityLinkUpserts, tx.OperatorLinks(batch.BindingUpserts))
+	// A pending declaration for the logger's binding is installed only when it
+	// names the logger; otherwise the pending set stays with the hub and the
+	// publisher's own link keeps observing the logger.
+	batch.IdentityLinkUpserts = huaweiWithOperatorLinks(batch.IdentityLinkUpserts, huaweiApplicableOperatorLinks(tx.OperatorLinks(batch.BindingUpserts), map[semreg.NativeBindingID]semreg.ResourceID{binding: logger}))
 	resource := semreg.Resource{ResourceID: logger, Kind: huaweiKindEquipment, Anchor: record, State: semreg.ResourceCurrent, Origin: semreg.OriginRef{OriginID: semreg.OriginID("origin:huawei-pv-operator:" + huaweiHash(string(huaweiKindEquipment), p.label)[:32]), Kind: semreg.OriginOperator, Evidence: []semreg.EvidenceRef{operator}}, Revision: "1"}
 	listed := false
 	for _, old := range current.Resources {

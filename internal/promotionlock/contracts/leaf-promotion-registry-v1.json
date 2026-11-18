@@ -47,7 +47,7 @@
       "live_promotion_claim": false,
       "persist_private_assessment": false
     },
-    "CAPTURED_RUNTIME_ZERO_PROMOTION": {
+    "DECLARED_FROM_SPECIFICATION": {
       "live_promotion_claim": false,
       "persist_private_assessment": false
     }
@@ -86,7 +86,7 @@
   ],
   "terminal_decision": "WITHHELD",
   "terminal_visibility": "RAW_DEBUG_ONLY",
-  "promoted_visibility": "LOCKED_NOT_EXPOSED",
+  "promoted_visibility": "PUBLISHED",
   "inheritance_policy": {
     "family": false,
     "device": false,
@@ -115,18 +115,8 @@
     "ROLLBACK_FAILED"
   ],
   "required_perturbation_cycles": 3,
-  "zero_promotion_consumer_gate": "BLOCKED_ZERO_PROMOTED_LEAVES",
-  "current_evidence_policy": "OFF_LAN_OR_SYNTHETIC_CANNOT_PROMOTE",
-  "captured_zero_promotion_reason_precedence": [
-    "SOURCE_STATUS_WITHHELD",
-    "SOURCE_STATUS_RAW_ONLY",
-    "EXACT_EBUS_IDENTITY_MISSING",
-    "EXACT_EBUS_IDENTITY_INELIGIBLE",
-    "EXACT_EEBUS_PATH_MISSING",
-    "COMPARATOR_NOT_MATCHED",
-    "CAPTURED_EVIDENCE_INELIGIBLE",
-    "COEXISTENCE_PROOF_MISSING"
-  ],
+  "declared_consumer_gate": "READY_FOR_M9",
+  "current_evidence_policy": "SPECIFICATION_DECLARES_SUPPORT_CAPTURE_RECORDS_VERIFICATION_LEVEL",
   "validation_precedence": [
     "json.syntax",
     "schema.dossier",
@@ -142,7 +132,7 @@
     "state.terminal",
     "evidence.ineligible",
     "hash.replay",
-    "consumer.block",
+    "consumer.gate",
     "hash.dossier"
   ],
   "captured_validation_precedence": [
@@ -157,8 +147,8 @@
     "captured.schema",
     "assessment.ordering",
     "assessment.derivation",
-    "promotion.forbidden",
-    "consumer.block",
+    "promotion.declared",
+    "consumer.gate",
     "redaction.public",
     "captured.result",
     "hash.result"

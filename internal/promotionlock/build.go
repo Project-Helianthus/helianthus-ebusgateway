@@ -6,24 +6,13 @@ import (
 	"encoding/json"
 	"sort"
 
-	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/candidatefacts"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/promotioncapture"
 )
 
 const (
 	resultHashDomainV1             = "HELIANTHUS:LEAF-PROMOTION-LOCK-RESULT:V1"
 	capturedAssessmentHashDomainV1 = "HELIANTHUS:LEAF-PROMOTION-CAPTURED-ASSESSMENT:V1"
 )
-
-var withholdingReasonOrderV1 = []string{
-	"SOURCE_STATUS_WITHHELD",
-	"SOURCE_STATUS_RAW_ONLY",
-	"EXACT_EBUS_IDENTITY_MISSING",
-	"EXACT_EBUS_IDENTITY_INELIGIBLE",
-	"EXACT_EEBUS_PATH_MISSING",
-	"COMPARATOR_NOT_MATCHED",
-	"CAPTURED_EVIDENCE_INELIGIBLE",
-	"COEXISTENCE_PROOF_MISSING",
-}
 
 func Build(inputs InputsV1) ([]byte, error) {
 	inputs = cloneInputsV1(inputs)
@@ -36,7 +25,7 @@ func Build(inputs InputsV1) ([]byte, error) {
 			return nil, err
 		}
 		return mustContractArtifactV1("docs/platform/fixtures/leaf-promotion-dossier/v1/positive/result.json"), nil
-	case ProfileCapturedZeroPromotionV1:
+	case ProfileDeclaredFromSpecificationV1:
 		sources, err := validateCapturedSources(inputs)
 		if err != nil {
 			return nil, err
@@ -64,55 +53,73 @@ func buildManifest(sources verifiedSourcesV1) (ResultV1, error) {
 			SourceStatus:       item.SourceStatus,
 			TerminalState:      cloneString(item.TerminalState),
 			Decision:           item.Decision,
-			WithholdingReasons: append([]string(nil), item.WithholdingReasons...),
+			WithholdingReasons: append([]string{}, item.WithholdingReasons...),
 			RetestTrigger:      cloneRetest(item.RetestTrigger),
 		}
 	}
+	counts := CountsV1{Total: uint64(len(public)), Promoted: uint64(len(public))}
 	result := ResultV1{
 		Contract:       ContractV1,
 		SchemaVersion:  SchemaVersionV1,
-		Profile:        ProfileCapturedZeroPromotionV1,
+		Profile:        ProfileDeclaredFromSpecificationV1,
 		ExportTier:     ExportTierPublicRedactedV1,
 		SourceBindings: cloneSourceBindings(&assessment.SourceBindings),
 		ReplayTool:     replayToolV1,
 		ReplayVersion:  SchemaVersionV1,
-		Counts:         CountsV1{Total: uint64(len(public)), Withheld: uint64(len(public))},
+		Counts:         counts,
 		DossierCount:   0,
 		Assessments:    public,
-		M9ConsumerGate: M9BlockedZeroPromotedLeavesV1,
-		Verdict:        VerdictValidZeroPromotionV1,
+		M9ConsumerGate: consumerGateV1(counts),
+		Verdict:        VerdictValidPromotionLockV1,
 	}
 	result.ResultHash = hashWithoutFieldV1(resultHashDomainV1, result, "result_hash")
 	return result, nil
 }
 
+// buildCapturedAssessment derives the declared assessment: every leaf the
+// capture registry declares from the cited specification counts as promoted.
+// The verified M7 and M8 sources only bind the result; a source fact that names
+// a declared leaf must carry the same fact hash.
 func buildCapturedAssessment(sources verifiedSourcesV1) (capturedAssessmentV1, error) {
-	facts := append([]candidatefacts.FactV1(nil), sources.graph.Facts...)
-	sort.Slice(facts, func(left, right int) bool {
-		if facts[left].ProposedPath == facts[right].ProposedPath {
-			return facts[left].CandidateID < facts[right].CandidateID
+	registry, err := promotioncapture.DefaultRegistry()
+	if err != nil {
+		return capturedAssessmentV1{}, fail("registry.binding")
+	}
+	declared := make([]promotioncapture.CandidateDefinition, 0, declaredLeafCountV1)
+	byID := make(map[string]promotioncapture.CandidateDefinition, declaredLeafCountV1)
+	for _, candidate := range registry.Candidates() {
+		if candidate.ProtocolEligibility == promotioncapture.ProtocolTerminal {
+			continue
 		}
-		return facts[left].ProposedPath < facts[right].ProposedPath
-	})
-	if len(facts) != 18 {
+		if candidate.SourceStatus != promotioncapture.SourceStatusSpecificationDeclared || candidate.SemanticPath == nil {
+			return capturedAssessmentV1{}, fail("promotion.declared")
+		}
+		declared = append(declared, candidate)
+		byID[candidate.CandidateID] = candidate
+	}
+	if len(declared) != declaredLeafCountV1 || len(byID) != declaredLeafCountV1 {
 		return capturedAssessmentV1{}, fail("assessment.derivation")
 	}
-	assessments := make([]privateAssessmentV1, len(facts))
-	statusCounts := map[string]int{}
-	seenIDs := make(map[string]struct{}, len(facts))
-	for index, fact := range facts {
-		if _, duplicate := seenIDs[fact.CandidateID]; duplicate {
+	seenFacts := make(map[string]struct{}, len(sources.graph.Facts))
+	for _, fact := range sources.graph.Facts {
+		if _, duplicate := seenFacts[fact.CandidateID]; duplicate {
 			return capturedAssessmentV1{}, fail("assessment.ordering")
 		}
-		seenIDs[fact.CandidateID] = struct{}{}
-		if fact.Status != "RAW_ONLY" && fact.Status != "WITHHELD" {
-			return capturedAssessmentV1{}, fail("promotion.forbidden")
+		seenFacts[fact.CandidateID] = struct{}{}
+		if candidate, ok := byID[fact.CandidateID]; ok && candidate.FactHash != fact.FactHash {
+			return capturedAssessmentV1{}, fail("assessment.derivation")
 		}
-		statusCounts[fact.Status]++
-		assessments[index] = assessCandidate(fact, sources.report.Verdict == "PASS")
 	}
-	if statusCounts["RAW_ONLY"] != 14 || statusCounts["WITHHELD"] != 4 {
-		return capturedAssessmentV1{}, fail("assessment.derivation")
+	sort.Slice(declared, func(left, right int) bool {
+		if *declared[left].SemanticPath == *declared[right].SemanticPath {
+			return declared[left].CandidateID < declared[right].CandidateID
+		}
+		return *declared[left].SemanticPath < *declared[right].SemanticPath
+	})
+	coexistencePass := sources.report.Verdict == "PASS"
+	assessments := make([]privateAssessmentV1, len(declared))
+	for index, candidate := range declared {
+		assessments[index] = assessDeclaredLeaf(candidate, coexistencePass)
 	}
 	sourceBindings := PublicSourceBindingsV1{
 		M7GatewaySourceCommit:  m7GatewaySourceCommitV1,
@@ -134,87 +141,52 @@ func buildCapturedAssessment(sources verifiedSourcesV1) (capturedAssessmentV1, e
 	assessment := capturedAssessmentV1{
 		Contract:       capturedAssessmentContractV1,
 		SchemaVersion:  SchemaVersionV1,
-		Profile:        ProfileCapturedZeroPromotionV1,
+		Profile:        ProfileDeclaredFromSpecificationV1,
 		ExportTier:     exportTierPrivateOperatorV1,
 		SourceBindings: sourceBindings,
 		Assessments:    assessments,
 		Dossiers:       []string{},
-		M9ConsumerGate: M9BlockedZeroPromotedLeavesV1,
+		M9ConsumerGate: M9ReadyV1,
 	}
 	assessment.AssessmentHash = hashWithoutFieldV1(capturedAssessmentHashDomainV1, assessment, "assessment_hash")
 	return assessment, nil
 }
 
-func assessCandidate(fact candidatefacts.FactV1, coexistencePass bool) privateAssessmentV1 {
-	hasEBus, exactEBus := exactEBusIdentity(fact)
-	exactEEBus := hasExactEEBusIdentity(fact.Provenance.EEBus)
-	comparatorMatch := fact.Comparator.Outcome == "MATCH"
-	capturedEligible := exactEBus && exactEEBus && comparatorMatch && fact.Status == "CANDIDATE"
-	reasons := map[string]bool{
-		"CAPTURED_EVIDENCE_INELIGIBLE": !capturedEligible,
-	}
-	if fact.Status == "WITHHELD" {
-		reasons["SOURCE_STATUS_WITHHELD"] = true
-	} else {
-		reasons["SOURCE_STATUS_RAW_ONLY"] = true
-	}
-	if !hasEBus {
-		reasons["EXACT_EBUS_IDENTITY_MISSING"] = true
-	} else if !exactEBus {
-		reasons["EXACT_EBUS_IDENTITY_INELIGIBLE"] = true
-	}
-	if !exactEEBus {
-		reasons["EXACT_EEBUS_PATH_MISSING"] = true
-	}
-	if !comparatorMatch {
-		reasons["COMPARATOR_NOT_MATCHED"] = true
-	}
-	if !coexistencePass {
-		reasons["COEXISTENCE_PROOF_MISSING"] = true
-	}
-	orderedReasons := make([]string, 0, len(reasons))
-	for _, reason := range withholdingReasonOrderV1 {
-		if reasons[reason] {
-			orderedReasons = append(orderedReasons, reason)
-		}
+// assessDeclaredLeaf records a declared leaf. The eligibility flags record what
+// the specification declares and what the lock observed; none of them
+// conditions the promotion. The lock never runs the captured comparison, so the
+// comparator flags stay false and the retest trigger names the two capture
+// windows that record the leaf's verification level.
+func assessDeclaredLeaf(candidate promotioncapture.CandidateDefinition, coexistencePass bool) privateAssessmentV1 {
+	sourceKinds := []string{"EEBUS"}
+	if candidate.ProtocolEligibility == promotioncapture.ProtocolCrossProtocol {
+		sourceKinds = []string{"EBUS", "EEBUS"}
 	}
 	return privateAssessmentV1{
-		CandidateID:   fact.CandidateID,
-		SemanticPath:  fact.ProposedPath,
-		FactHash:      fact.FactHash,
-		SourceStatus:  fact.Status,
-		TerminalState: cloneString(fact.TerminalNegativeState),
+		CandidateID:   candidate.CandidateID,
+		SemanticPath:  *candidate.SemanticPath,
+		FactHash:      candidate.FactHash,
+		SourceStatus:  candidate.SourceStatus,
+		TerminalState: nil,
 		Eligibility: eligibilityV1{
-			ExactEBusIdentity: exactEBus, ExactEEBusPath: exactEEBus, ComparatorMatch: comparatorMatch,
-			CapturedEvidenceEligible: capturedEligible, CoexistenceNoDrift: coexistencePass,
+			ExactEBusIdentity: candidate.EBusSelector != nil, ExactEEBusPath: candidate.EEBusSource != nil,
+			CoexistenceNoDrift: coexistencePass,
 		},
-		Decision:           "WITHHELD",
-		WithholdingReasons: orderedReasons,
+		Decision:           decisionPromotedV1,
+		WithholdingReasons: []string{},
 		RetestTrigger: RetestV1{
-			Trigger: fact.RetestTrigger.TriggerCode, RequiredSourceKinds: append([]string(nil), fact.RetestTrigger.RequiredSourceKinds...),
-			MinimumNewSamples: fact.RetestTrigger.MinimumNewSamples,
+			Trigger: "NEW_SYNCHRONIZED_BUNDLE", RequiredSourceKinds: sourceKinds, MinimumNewSamples: verificationWindowsV1,
 		},
 	}
 }
 
-func exactEBusIdentity(fact candidatefacts.FactV1) (bool, bool) {
-	identity := fact.Provenance.EBus
-	if identity == nil && fact.Provenance.SourceTerminal != nil {
-		identity = &fact.Provenance.SourceTerminal.EBusIdentity
+// consumerGateV1 states whether consumers may read the result's leaves: a
+// result with promoted leaves opens the gate; one without stays blocked.
+func consumerGateV1(counts CountsV1) string {
+	if counts.Promoted == 0 {
+		return M9BlockedZeroPromotedLeavesV1
 	}
-	if identity == nil {
-		return false, false
-	}
-	return true, member(identity.Family, "B509", "B524", "B555")
-}
-
-func hasExactEEBusIdentity(identity *candidatefacts.EEBusIdentityV1) bool {
-	if identity == nil || identity.Entity == "" || identity.Service == "" || identity.Feature == "" || len(identity.FeaturePath) < 3 {
-		return false
-	}
-	return identity.FeaturePath[0].Kind == "SERVICE" && identity.FeaturePath[0].Selector == identity.Service &&
-		identity.FeaturePath[1].Kind == "ENTITY" && identity.FeaturePath[1].Selector == identity.Entity &&
-		identity.FeaturePath[2].Kind == "FEATURE" && identity.FeaturePath[2].Selector == identity.Feature
+	return M9ReadyV1
 }
 
 func cloneString(value *string) *string {

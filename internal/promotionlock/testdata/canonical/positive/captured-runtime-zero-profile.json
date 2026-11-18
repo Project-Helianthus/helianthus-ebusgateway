@@ -1,6 +1,6 @@
 {
   "contract": "helianthus.platform.leaf-promotion-captured-profile-fixture.v1",
-  "profile": "CAPTURED_RUNTIME_ZERO_PROMOTION",
+  "profile": "DECLARED_FROM_SPECIFICATION",
   "persisted_live_result": false,
   "m7_gateway_source_commit": "8bcba2107d10b149f984ac9546ea6427a9cda8a1",
   "m7_docs_source_commit": "35d2eba256a77b6575a2b45c07e73f054ff74ced",
@@ -9,6 +9,6 @@
   "m7_status_projection_id": "dcfpsv1:sha256:856cc167c33cad57c6b761fb82fe1e8872966bcc813a0f64c6b54b7b2dd7cfa8",
   "m7_status_projection_hash": "sha256:856cc167c33cad57c6b761fb82fe1e8872966bcc813a0f64c6b54b7b2dd7cfa8",
   "fact_count": 18,
-  "expected_counts": {"total": 18, "promoted": 0, "withheld": 18},
-  "m9_consumer_gate": "BLOCKED_ZERO_PROMOTED_LEAVES"
+  "expected_counts": {"total": 18, "promoted": 18, "withheld": 0},
+  "m9_consumer_gate": "READY_FOR_M9"
 }

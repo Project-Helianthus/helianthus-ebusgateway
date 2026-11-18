@@ -21,7 +21,7 @@
     "contract": {"const": "helianthus.platform.leaf-promotion-lock-result.v1"},
     "schema_version": {"const": 1},
     "profile": {
-      "enum": ["SYNTHETIC_CONFORMANCE", "CAPTURED_RUNTIME_ZERO_PROMOTION"]
+      "enum": ["SYNTHETIC_CONFORMANCE", "DECLARED_FROM_SPECIFICATION"]
     },
     "export_tier": {"const": "PUBLIC_REDACTED"},
     "dossier_id": {"$ref": "#/$defs/TokenV1"},
@@ -71,16 +71,16 @@
     },
     {
       "if": {
-        "properties": {"profile": {"const": "CAPTURED_RUNTIME_ZERO_PROMOTION"}}
+        "properties": {"profile": {"const": "DECLARED_FROM_SPECIFICATION"}}
       },
       "then": {
         "required": ["source_bindings", "assessments"],
         "properties": {
           "dossier_count": {"const": 0},
-          "m9_consumer_gate": {"const": "BLOCKED_ZERO_PROMOTED_LEAVES"},
-          "verdict": {"const": "VALID_ZERO_PROMOTION"},
+          "m9_consumer_gate": {"const": "READY_FOR_M9"},
+          "verdict": {"const": "VALID_PROMOTION_LOCK"},
           "counts": {
-            "properties": {"promoted": {"const": 0}}
+            "properties": {"total": {"const": 18}, "promoted": {"const": 18}, "withheld": {"const": 0}}
           }
         },
         "not": {
@@ -162,7 +162,7 @@
         },
         "decision": {"enum": ["PROMOTED", "WITHHELD"]},
         "terminal_state": {"$ref": "#/$defs/NullableTerminalV1"},
-        "visibility": {"enum": ["RAW_DEBUG_ONLY", "LOCKED_NOT_EXPOSED"]}
+        "visibility": {"enum": ["RAW_DEBUG_ONLY", "PUBLISHED"]}
       }
     },
     "PublicSourceBindingsV1": {
@@ -241,26 +241,12 @@
       "properties": {
         "candidate_id": {"$ref": "#/$defs/CandidateIdV1"},
         "fact_hash": {"$ref": "#/$defs/DigestV1"},
-        "source_status": {"enum": ["RAW_ONLY", "WITHHELD"]},
-        "terminal_state": {"$ref": "#/$defs/NullableTerminalV1"},
-        "decision": {"const": "WITHHELD"},
+        "source_status": {"const": "SPECIFICATION_DECLARED_PUBLISHED"},
+        "terminal_state": {"type": "null"},
+        "decision": {"const": "PROMOTED"},
         "withholding_reasons": {
           "type": "array",
-          "minItems": 1,
-          "maxItems": 8,
-          "uniqueItems": true,
-          "items": {
-            "enum": [
-              "SOURCE_STATUS_RAW_ONLY",
-              "SOURCE_STATUS_WITHHELD",
-              "EXACT_EBUS_IDENTITY_MISSING",
-              "EXACT_EBUS_IDENTITY_INELIGIBLE",
-              "EXACT_EEBUS_PATH_MISSING",
-              "COMPARATOR_NOT_MATCHED",
-              "CAPTURED_EVIDENCE_INELIGIBLE",
-              "COEXISTENCE_PROOF_MISSING"
-            ]
-          }
+          "maxItems": 0
         },
         "retest_trigger": {"$ref": "#/$defs/RetestV1"}
       }

@@ -1,6 +1,7 @@
 package promotioncapture
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -9,7 +10,7 @@ import (
 )
 
 func TestIssue790RegistryClosesTwentyTwoRecordsAndEighteenLeaves(t *testing.T) {
-	if RegistrySHA256 != "sha256:00ceefc05439e9aec5830b640661cdc6be2b503f9365eed437e3dbffdf6d0678" {
+	if RegistrySHA256 != fmt.Sprintf("sha256:%x", sha256.Sum256(EmbeddedRegistryBytes())) {
 		t.Fatalf("RegistrySHA256 = %q", RegistrySHA256)
 	}
 	if DocsContractCommit != "c4cea33a3f6262e31801cad35d663e08317de4dd" {
@@ -178,32 +179,101 @@ func TestIssue790EEBusIdentityContainsOnlySourceProfileAndNativeSelector(t *test
 	}
 }
 
-func TestIssue790AllEighteenValidLeavesRemainLockedNotExposed(t *testing.T) {
-	registry := mustRegistry(t)
-	pre := assemblyCheckpoint(t, registry, PhasePreRestart, false)
-	post := assemblyCheckpoint(t, registry, PhasePostRestart, false)
-	campaign, err := AssembleCampaign(registry, assemblyManifest(pre.CampaignID), pre, post)
-	if err != nil {
-		t.Fatalf("AssembleCampaign: %v", err)
+func TestIssue1694EighteenLeavesAreDeclaredFromSpecification(t *testing.T) {
+	var document map[string]any
+	if err := json.Unmarshal(EmbeddedRegistryBytes(), &document); err != nil {
+		t.Fatalf("Unmarshal registry: %v", err)
 	}
-	realLeaves := 0
-	retired := 0
-	for _, candidate := range campaign.Candidates {
-		if candidate.RetirementState != nil {
+	if document["positive_visibility"] != "PUBLISHED" || document["withheld_visibility"] != "RAW_DEBUG_ONLY" ||
+		document["required_windows"] != float64(2) {
+		t.Fatalf("visibility contract = positive %v, withheld %v, windows %v",
+			document["positive_visibility"], document["withheld_visibility"], document["required_windows"])
+	}
+	if got, want := document["verification_levels"], []any{"VERIFIED_BY_CAPTURE", "CAPTURE_MISMATCH", "NOT_RUN"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("verification_levels = %#v, want %#v", got, want)
+	}
+
+	registry := mustRegistry(t)
+	declared, retired := 0, 0
+	for _, candidate := range registry.Candidates() {
+		if candidate.ProtocolEligibility == ProtocolTerminal {
 			retired++
-			if candidate.Decision != DecisionWithheld || len(candidate.Assessments) != 0 {
-				t.Fatalf("retired candidate entered promotion denominator: %+v", candidate)
+			if candidate.SourceStatus != "WITHHELD" || candidate.TerminalState == nil ||
+				candidate.RetirementState == nil || *candidate.RetirementState != RetirementTerminalNotALeaf {
+				t.Fatalf("retired candidate changed: %+v", candidate)
 			}
 			continue
 		}
-		realLeaves++
-		if candidate.Decision != DecisionPromoted || candidate.Visibility != VisibilityLockedNotExposed ||
-			candidate.TerminalState != nil || candidate.DossierHash == nil || len(candidate.Assessments) != 2 {
-			t.Fatalf("valid real leaf is not locked: %+v", candidate)
+		declared++
+		if candidate.SourceStatus != "SPECIFICATION_DECLARED_PUBLISHED" {
+			t.Fatalf("%s source status = %q, want SPECIFICATION_DECLARED_PUBLISHED", candidate.CandidateID, candidate.SourceStatus)
 		}
 	}
-	if len(campaign.Candidates) != 22 || realLeaves != 18 || retired != 4 {
-		t.Fatalf("records=%d real=%d retired=%d", len(campaign.Candidates), realLeaves, retired)
+	if declared != 18 || retired != 4 {
+		t.Fatalf("declared=%d retired=%d, want 18 and 4", declared, retired)
+	}
+}
+
+func TestIssue1694CaptureRecordsVerificationLevelWithoutLockingExposure(t *testing.T) {
+	registry := mustRegistry(t)
+	type recorded struct {
+		level   string
+		finding any
+	}
+	for _, withFailures := range []bool{false, true} {
+		want := map[string]recorded{}
+		for _, candidate := range registry.Candidates() {
+			if candidate.ProtocolEligibility != ProtocolTerminal {
+				want[candidate.CandidateID] = recorded{level: "VERIFIED_BY_CAPTURE"}
+			}
+		}
+		if withFailures {
+			want["m7-candidate-0005"] = recorded{level: "NOT_RUN", finding: "STALE"}
+			want["m7-candidate-0006"] = recorded{level: "NOT_RUN", finding: "MISSING"}
+			want["m7-candidate-0007"] = recorded{level: "NOT_RUN", finding: "MISSING"}
+			want["m7-candidate-0018"] = recorded{level: "CAPTURE_MISMATCH", finding: "MISMATCH"}
+		}
+		pre := assemblyCheckpoint(t, registry, PhasePreRestart, withFailures)
+		post := assemblyCheckpoint(t, registry, PhasePostRestart, withFailures)
+		campaign, err := AssembleCampaign(registry, assemblyManifest(pre.CampaignID), pre, post)
+		if err != nil {
+			t.Fatalf("AssembleCampaign(withFailures=%t): %v", withFailures, err)
+		}
+		raw, err := CanonicalJSON(campaign)
+		if err != nil {
+			t.Fatalf("CanonicalJSON: %v", err)
+		}
+		var document struct {
+			Candidates []map[string]any `json:"candidates"`
+		}
+		if err := json.Unmarshal(raw, &document); err != nil {
+			t.Fatalf("Unmarshal campaign: %v", err)
+		}
+		published := 0
+		for _, candidate := range document.Candidates {
+			id, _ := candidate["candidate_id"].(string)
+			expected, eligible := want[id]
+			assessments, _ := candidate["assessments"].([]any)
+			if !eligible {
+				if candidate["decision"] != "WITHHELD" || candidate["visibility"] != "RAW_DEBUG_ONLY" ||
+					candidate["verification_level"] != "NOT_RUN" || candidate["dossier_hash"] != nil ||
+					candidate["terminal_state"] == nil || len(assessments) != 0 {
+					t.Fatalf("retired candidate %s = %#v", id, candidate)
+				}
+				continue
+			}
+			published++
+			if candidate["decision"] != "PROMOTED" || candidate["visibility"] != "PUBLISHED" ||
+				candidate["verification_level"] != expected.level || candidate["terminal_state"] != expected.finding ||
+				candidate["dossier_hash"] == nil || len(assessments) != 2 {
+				t.Fatalf("withFailures=%t leaf %s = decision %v visibility %v level %v finding %v dossier %v assessments %d; want PROMOTED PUBLISHED %s %v",
+					withFailures, id, candidate["decision"], candidate["visibility"], candidate["verification_level"],
+					candidate["terminal_state"], candidate["dossier_hash"], len(assessments), expected.level, expected.finding)
+			}
+		}
+		if published != 18 || len(document.Candidates) != 22 {
+			t.Fatalf("withFailures=%t published leaves = %d, want 18", withFailures, published)
+		}
 	}
 }
 

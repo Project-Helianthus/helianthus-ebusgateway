@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/promotioncapture"
 )
 
 const (
@@ -51,7 +53,7 @@ func Verify(raw []byte, inputs InputsV1) error {
 	if err := validateResultShape(result, inputs.Profile); err != nil {
 		return err
 	}
-	if result.Profile == ProfileCapturedZeroPromotionV1 {
+	if result.Profile == ProfileDeclaredFromSpecificationV1 {
 		if assessmentsOutOfOrder(result.Assessments, expected.Assessments) {
 			return fail("assessment.ordering")
 		}
@@ -59,14 +61,14 @@ func Verify(raw []byte, inputs InputsV1) error {
 			!reflect.DeepEqual(result.SourceBindings, expected.SourceBindings) {
 			return fail("assessment.derivation")
 		}
-		if result.DossierCount != 0 || result.Counts.Promoted != 0 || result.Counts.Withheld != result.Counts.Total {
-			return fail("promotion.forbidden")
+		if err := validateDeclaredCountsV1(result); err != nil {
+			return err
 		}
 	}
-	if result.M9ConsumerGate != M9BlockedZeroPromotedLeavesV1 {
-		return fail("consumer.block")
+	if result.M9ConsumerGate != consumerGateV1(result.Counts) {
+		return fail("consumer.gate")
 	}
-	if result.Profile == ProfileCapturedZeroPromotionV1 && leaksPrivateIdentityV1(raw) {
+	if result.Profile == ProfileDeclaredFromSpecificationV1 && leaksPrivateIdentityV1(raw) {
 		return fail("redaction.public")
 	}
 	gotView := result
@@ -78,6 +80,17 @@ func Verify(raw []byte, inputs InputsV1) error {
 	}
 	if result.ResultHash != hashObjectWithoutFieldV1(resultHashDomainV1, resultObject, "result_hash") {
 		return fail("hash.result")
+	}
+	return nil
+}
+
+// validateDeclaredCountsV1 requires the declared profile to count every
+// declared leaf as promoted, withhold none and fabricate no dossier.
+func validateDeclaredCountsV1(result ResultV1) error {
+	if result.DossierCount != 0 || result.Counts.Total != declaredLeafCountV1 ||
+		result.Counts.Promoted != result.Counts.Total || result.Counts.Withheld != 0 ||
+		result.Verdict != VerdictValidPromotionLockV1 {
+		return fail("promotion.declared")
 	}
 	return nil
 }
@@ -148,7 +161,7 @@ func validateExactResultDocumentV1(object map[string]any) error {
 	switch profile {
 	case ProfileSyntheticConformanceV1:
 		topLevel = append(append([]string(nil), common...), "dossier_id", "dossier_hash", "leaves")
-	case ProfileCapturedZeroPromotionV1:
+	case ProfileDeclaredFromSpecificationV1:
 		topLevel = append(append([]string(nil), common...), "source_bindings", "assessments")
 	default:
 		return fail("captured.result")
@@ -340,7 +353,7 @@ func validateResultShape(result ResultV1, inputProfile string) error {
 		result.ReplayVersion != SchemaVersionV1 || !digestPatternV1.MatchString(result.ResultHash) ||
 		result.Counts.Total < 1 || result.Counts.Total > 64 || result.Counts.Promoted > result.Counts.Total ||
 		result.Counts.Withheld > result.Counts.Total || result.Counts.Promoted+result.Counts.Withheld != result.Counts.Total ||
-		result.DossierCount > 64 || !member(result.Verdict, VerdictValidZeroPromotionV1, "VALID_PROMOTION_LOCK") {
+		result.DossierCount > 64 || !member(result.Verdict, VerdictValidZeroPromotionV1, VerdictValidPromotionLockV1) {
 		return fail("captured.result")
 	}
 	switch result.Profile {
@@ -351,11 +364,11 @@ func validateResultShape(result ResultV1, inputProfile string) error {
 		}
 		for _, leaf := range result.Leaves {
 			if !validToken(leaf.LeafID) || !validPath(leaf.SemanticPath) || !member(leaf.Decision, "PROMOTED", "WITHHELD") ||
-				!member(leaf.Visibility, "RAW_DEBUG_ONLY", "LOCKED_NOT_EXPOSED") || !validTerminal(leaf.TerminalState) {
+				!member(leaf.Visibility, "RAW_DEBUG_ONLY", "PUBLISHED") || !validTerminal(leaf.TerminalState) {
 				return fail("captured.result")
 			}
 		}
-	case ProfileCapturedZeroPromotionV1:
+	case ProfileDeclaredFromSpecificationV1:
 		if result.DossierID != "" || result.DossierHash != "" || result.SourceBindings == nil || result.Leaves != nil ||
 			len(result.Assessments) < 1 || len(result.Assessments) > 64 {
 			return fail("captured.result")
@@ -365,9 +378,9 @@ func validateResultShape(result ResultV1, inputProfile string) error {
 		}
 		for _, assessment := range result.Assessments {
 			if !candidateIDPatternV1.MatchString(assessment.CandidateID) || !digestPatternV1.MatchString(assessment.FactHash) ||
-				!member(assessment.SourceStatus, "RAW_ONLY", "WITHHELD") || !validTerminal(assessment.TerminalState) ||
-				assessment.Decision != "WITHHELD" || !validReasons(assessment.WithholdingReasons) ||
-				!validRetest(assessment.RetestTrigger) {
+				assessment.SourceStatus != promotioncapture.SourceStatusSpecificationDeclared || assessment.TerminalState != nil ||
+				assessment.Decision != decisionPromotedV1 || assessment.WithholdingReasons == nil ||
+				len(assessment.WithholdingReasons) != 0 || !validRetest(assessment.RetestTrigger) {
 				return fail("captured.result")
 			}
 		}
@@ -409,25 +422,6 @@ func assessmentsOutOfOrder(got, want []PublicAssessmentV1) bool {
 	sort.Strings(gotIDs)
 	sort.Strings(wantIDs)
 	return reflect.DeepEqual(gotIDs, wantIDs)
-}
-
-func validReasons(reasons []string) bool {
-	if len(reasons) < 1 || len(reasons) > 8 || !uniqueStrings(reasons) {
-		return false
-	}
-	positions := make(map[string]int, len(withholdingReasonOrderV1))
-	for index, reason := range withholdingReasonOrderV1 {
-		positions[reason] = index
-	}
-	last := -1
-	for _, reason := range reasons {
-		position, ok := positions[reason]
-		if !ok || position <= last {
-			return false
-		}
-		last = position
-	}
-	return true
 }
 
 func validRetest(retest RetestV1) bool {

@@ -8,12 +8,19 @@ import (
 )
 
 const (
-	RegistrySHA256       = "sha256:00ceefc05439e9aec5830b640661cdc6be2b503f9365eed437e3dbffdf6d0678"
+	RegistrySHA256       = "sha256:5cdb3c1f8d5dc17acc6bdacda4003e5d0782d687cc81f290894e48aa19d7986a"
 	DocsContractCommit   = "c4cea33a3f6262e31801cad35d663e08317de4dd"
 	DocsEEBusCommit      = "ed5354421ddf0a2005f496e3fd65675990032b5e"
 	CheckpointContractV1 = "helianthus.platform.leaf-promotion-window-checkpoint.v1"
 
 	RetirementTerminalNotALeaf = "RETIRED_TERMINAL_NOT_A_LEAF"
+
+	// SourceStatusSpecificationDeclared marks a leaf whose support is declared
+	// from the cited specification and published. A device capture never
+	// conditions it; the capture outcome is recorded as a VerificationLevel.
+	SourceStatusSpecificationDeclared = "SPECIFICATION_DECLARED_PUBLISHED"
+	// SourceStatusWithheld marks a retired candidate that is not a leaf.
+	SourceStatusWithheld = "WITHHELD"
 )
 
 var (
@@ -416,8 +423,24 @@ const (
 type Visibility string
 
 const (
-	VisibilityLockedNotExposed Visibility = "LOCKED_NOT_EXPOSED"
-	VisibilityRawDebugOnly     Visibility = "RAW_DEBUG_ONLY"
+	VisibilityPublished    Visibility = "PUBLISHED"
+	VisibilityRawDebugOnly Visibility = "RAW_DEBUG_ONLY"
+)
+
+// VerificationLevel records the outcome of the captured two-window comparison
+// for a declared leaf. It is a recorded level and never withdraws publication.
+type VerificationLevel string
+
+const (
+	// VerificationByCapture: both windows matched (or stayed natively valid).
+	VerificationByCapture VerificationLevel = "VERIFIED_BY_CAPTURE"
+	// VerificationCaptureMismatch: a window compared admissible values and
+	// they differed (MISMATCH, CONFLICT or NATIVE_DRIFT); recorded as a
+	// finding.
+	VerificationCaptureMismatch VerificationLevel = "CAPTURE_MISMATCH"
+	// VerificationNotRun: no comparison completed on admissible samples, or
+	// the candidate is retired and is never compared.
+	VerificationNotRun VerificationLevel = "NOT_RUN"
 )
 
 type CampaignProvenance struct {
@@ -459,20 +482,21 @@ type CampaignAssemblyManifest struct {
 }
 
 type CampaignCandidate struct {
-	CandidateID     string          `json:"candidate_id"`
-	FactHash        string          `json:"fact_hash"`
-	SourceStatus    string          `json:"source_status"`
-	RetirementState *string         `json:"retirement_state"`
-	SemanticPath    *string         `json:"semantic_path"`
-	ValidationMode  *ValidationMode `json:"validation_mode"`
-	ComparatorClass ComparatorClass `json:"comparator_class"`
-	EBusIdentity    *EBusIdentity   `json:"ebus_identity"`
-	EEBusIdentity   *EEBusIdentity  `json:"eebus_identity"`
-	Assessments     []Assessment    `json:"assessments"`
-	Decision        Decision        `json:"decision"`
-	TerminalState   *Outcome        `json:"terminal_state"`
-	Visibility      Visibility      `json:"visibility"`
-	DossierHash     *string         `json:"dossier_hash"`
+	CandidateID       string            `json:"candidate_id"`
+	FactHash          string            `json:"fact_hash"`
+	SourceStatus      string            `json:"source_status"`
+	RetirementState   *string           `json:"retirement_state"`
+	SemanticPath      *string           `json:"semantic_path"`
+	ValidationMode    *ValidationMode   `json:"validation_mode"`
+	ComparatorClass   ComparatorClass   `json:"comparator_class"`
+	EBusIdentity      *EBusIdentity     `json:"ebus_identity"`
+	EEBusIdentity     *EEBusIdentity    `json:"eebus_identity"`
+	Assessments       []Assessment      `json:"assessments"`
+	Decision          Decision          `json:"decision"`
+	TerminalState     *Outcome          `json:"terminal_state"`
+	Visibility        Visibility        `json:"visibility"`
+	VerificationLevel VerificationLevel `json:"verification_level"`
+	DossierHash       *string           `json:"dossier_hash"`
 }
 
 type Campaign struct {

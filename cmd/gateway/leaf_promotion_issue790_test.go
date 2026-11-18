@@ -130,6 +130,33 @@ func TestIssue790CaptureSelectsB555OnlyWhenB524IsUnavailable(t *testing.T) {
 	}
 }
 
+func TestIssue1694CaptureSamplesExactlyTheDeclaredLeaves(t *testing.T) {
+	registry, err := promotioncapture.DefaultRegistry()
+	if err != nil {
+		t.Fatalf("DefaultRegistry: %v", err)
+	}
+	sampled, retired := 0, 0
+	for _, candidate := range registry.Candidates() {
+		// Same selection as leafPromotionCaptureRuntime.capture.
+		if candidate.ProtocolEligibility != promotioncapture.ProtocolCrossProtocol &&
+			candidate.ProtocolEligibility != promotioncapture.ProtocolEEBusNative {
+			retired++
+			if candidate.SourceStatus != promotioncapture.SourceStatusWithheld {
+				t.Fatalf("retired candidate %s status = %q", candidate.CandidateID, candidate.SourceStatus)
+			}
+			continue
+		}
+		sampled++
+		if candidate.SourceStatus != promotioncapture.SourceStatusSpecificationDeclared {
+			t.Fatalf("sampled candidate %s status = %q, want %q",
+				candidate.CandidateID, candidate.SourceStatus, promotioncapture.SourceStatusSpecificationDeclared)
+		}
+	}
+	if sampled != 18 || retired != 4 {
+		t.Fatalf("sampled=%d retired=%d, want 18 and 4", sampled, retired)
+	}
+}
+
 type issue790B524Reader struct{}
 
 func (issue790B524Reader) ReadB524(context.Context, promotioncapture.EBusSelector) ([]byte, time.Time, bool) {

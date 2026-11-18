@@ -286,6 +286,10 @@ func (m *Mux) armGatewayLeadWait(lead, suffix byte) *gatewayLeadWait {
 // A retired pair can never be acknowledged by a symbol observed after it.
 func (m *Mux) retireGatewayLeadWait(err error) {
 	m.arb.fenceLifecycle()
+	// The fence invalidates a hold bound before this boundary, including a
+	// bid already inside RequestStart. Dropping here discards the parked
+	// answer before a late return can deliver it.
+	m.dropAllInfoHolds()
 	if w := m.gatewayLeadWait.Swap(nil); w != nil {
 		w.result <- gatewayLeadOutcome{err: err}
 	}

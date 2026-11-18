@@ -50,6 +50,11 @@ type arbitrator struct {
 	// currentInitiator is the eBUS source address of the current
 	// owner's START request.
 	currentInitiator byte
+
+	// onExternalBidDropped is called, without mu, after an external bid
+	// leaves pendingExternal without a grant. Nil when no session is
+	// attached. The callback must not call back into the arbitrator.
+	onExternalBidDropped func(*startRequest)
 }
 
 // startRequest represents a pending START arbitration request.
@@ -66,6 +71,11 @@ type startRequest struct {
 	// checks this flag before publishing STARTED and retires a cancelled
 	// wire win at the next SYN.
 	cancelled atomic.Bool
+
+	// infoSession is the external session whose INFO answer is held for
+	// this bid. Set when the hold is bound, so a later drop can reach the
+	// session after it has left the session map.
+	infoSession atomic.Pointer[session]
 }
 
 // startResult is the outcome of a START arbitration request.
@@ -156,6 +166,17 @@ func (a *arbitrator) markInFlightCancelled(req *startRequest) bool {
 // with the SYN-cancel-before-tryGrant window; fixed for symmetry with
 // every other cancellation path in the arbitrator.
 func (a *arbitrator) cancelStart(sessionID uint64) bool {
+	cancelled, dropped := a.cancelStartLocked(sessionID)
+	if dropped != nil {
+		a.notifyExternalBidDropped(dropped)
+	}
+	return cancelled
+}
+
+// cancelStartLocked cancels one queued bid and reports the external request
+// that left pendingExternal, or nil for a gateway bid or a miss. Caller must
+// not hold mu.
+func (a *arbitrator) cancelStartLocked(sessionID uint64) (bool, *startRequest) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -164,15 +185,15 @@ func (a *arbitrator) cancelStart(sessionID uint64) bool {
 			a.pendingGateway.cancelled.Store(true)
 			a.pendingGateway.notify <- startResult{granted: false, cancelled: true, initiator: a.pendingGateway.initiator}
 			a.pendingGateway = nil
-			return true
+			return true, nil
 		}
 		if old := a.deferredGatewayLoser; old != nil {
 			a.deferredGatewayLoser = nil
 			old.cancelled.Store(true)
 			old.notify <- startResult{granted: false, cancelled: true, initiator: old.initiator}
-			return true
+			return true, nil
 		}
-		return false
+		return false, nil
 	}
 
 	for i, req := range a.pendingExternal {
@@ -180,10 +201,30 @@ func (a *arbitrator) cancelStart(sessionID uint64) bool {
 			req.cancelled.Store(true)
 			req.notify <- startResult{granted: false, cancelled: true, initiator: req.initiator}
 			a.pendingExternal = append(a.pendingExternal[:i], a.pendingExternal[i+1:]...)
-			return true
+			return true, req
 		}
 	}
-	return false
+	return false, nil
+}
+
+// setExternalBidDropped installs the callback for a queued external bid that
+// leaves without a grant. Safe to replace with the same function.
+func (a *arbitrator) setExternalBidDropped(fn func(*startRequest)) {
+	a.mu.Lock()
+	a.onExternalBidDropped = fn
+	a.mu.Unlock()
+}
+
+func (a *arbitrator) notifyExternalBidDropped(req *startRequest) {
+	if req == nil {
+		return
+	}
+	a.mu.Lock()
+	hook := a.onExternalBidDropped
+	a.mu.Unlock()
+	if hook != nil {
+		hook(req)
+	}
 }
 
 // tryGrant selects one bidder at an idle SYN and resolves every other bid.
@@ -445,6 +486,16 @@ func (a *arbitrator) hasExternalPending() bool {
 // the comment makes the precedence explicit so future "consistency"
 // edits don't regress reset delivery.
 func (a *arbitrator) failAllPending(err error) {
+	dropped := a.failAllPendingLocked(err)
+	for _, req := range dropped {
+		a.notifyExternalBidDropped(req)
+	}
+}
+
+// failAllPendingLocked fails every queued bid and returns the external
+// requests that left pendingExternal. The drop callback runs after mu is
+// released. Caller must not hold mu.
+func (a *arbitrator) failAllPendingLocked(err error) []*startRequest {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -457,10 +508,12 @@ func (a *arbitrator) failAllPending(err error) {
 		a.deferredGatewayLoser = nil
 	}
 
-	for _, req := range a.pendingExternal {
+	dropped := append([]*startRequest(nil), a.pendingExternal...)
+	for _, req := range dropped {
 		req.notify <- startResult{granted: false, initiator: req.initiator, err: err}
 	}
 	a.pendingExternal = a.pendingExternal[:0]
+	return dropped
 }
 
 // removeSession removes all pending requests and releases ownership

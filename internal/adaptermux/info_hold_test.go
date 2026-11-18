@@ -1,6 +1,8 @@
 package adaptermux
 
 import (
+	"bytes"
+	"errors"
 	"net"
 	"testing"
 	"time"
@@ -313,4 +315,147 @@ func infoOrHost(msgs []transport.ENHMessage) bool {
 		}
 	}
 	return false
+}
+
+// TestInfoHoldClearedWhenTheQueuedBidFailsBeforeGrant is the lifecycle gap:
+// a bid that leaves the queue without a grant, or a RequestStart that returns
+// after an adapter reset, must not keep the parked answer.
+//
+// Fields, and the production mutation each row catches:
+//   - queued failure: failAllPending removes the bid and leaves the hold.
+//     The next INFO stays parked and this row sees no answer.
+//   - rebind: the next START keeps the pre-failure bytes. The parked answer
+//     still contains them, and the following grant delivers them.
+//   - in-flight reset: RequestStart is blocked for a bid the snapshot
+//     included, then the adapter resets. Releasing on that return delivers
+//     the pre-reset answer.
+func TestInfoHoldClearedWhenTheQueuedBidFailsBeforeGrant(t *testing.T) {
+	t.Parallel()
+
+	t.Run("queued bid failed before a grant", func(t *testing.T) {
+		t.Parallel()
+		mux, client, id, cleanup := newInfoHoldFixture(t)
+		defer cleanup()
+		queueInfoBid(t, mux, client, id, 0x31)
+		mux.arb.failAllPending(errors.New("adaptermux: adapter disconnected"))
+		if infoStillParked(mux, id) {
+			t.Fatal("the hold survived a queued bid failed before a grant")
+		}
+		if mux.arb.externalBid(id) != nil {
+			t.Fatal("the failed bid stayed queued")
+		}
+		writeENH(client, transport.ENHReqInfo, byte(transport.AdapterInfoVersion))
+		msgs := readEnhUntil(t, client, time.Second)
+		if got, ok := infoPayload(msgs); !ok || string(got) != "\x11\x22" {
+			t.Fatalf("INFO answer %x (ok %v); the answer stayed parked after the queued bid failed", got, ok)
+		}
+	})
+
+	t.Run("next bid does not keep the failed answer", func(t *testing.T) {
+		t.Parallel()
+		mux, client, id, cleanup := newInfoHoldFixture(t)
+		defer cleanup()
+		queueInfoBid(t, mux, client, id, 0x31)
+		mux.arb.failAllPending(errors.New("adaptermux: adapter disconnected"))
+		setCachedVersion(mux, []byte{0x33, 0x44})
+		writeENH(client, transport.ENHReqStart, 0x31)
+		waitExternalBid(t, mux, id)
+		writeENH(client, transport.ENHReqInfo, byte(transport.AdapterInfoVersion))
+		waitParkedPayload(t, mux, id, []byte{0x02, 0x33, 0x44})
+		mux.tryGrantAndStartForBids(nil)
+		msgs := readEnhUntil(t, client, time.Second)
+		if got, ok := infoPayload(msgs); !ok || string(got) != "\x33\x44" {
+			t.Fatalf("INFO answer %x (ok %v); the grant delivered the pre-failure answer", got, ok)
+		}
+	})
+
+	t.Run("request start returns after reset", func(t *testing.T) {
+		t.Parallel()
+		mux, client, id, cleanup := newInfoHoldFixture(t)
+		defer cleanup()
+		queueInfoBid(t, mux, client, id, 0x31)
+		gate, entered := armGatedStart(t, mux)
+		defer func() {
+			select {
+			case <-gate:
+			default:
+				close(gate)
+			}
+		}()
+		snapshot := mux.arb.snapshotBids()
+		done := make(chan struct{})
+		go func() {
+			mux.tryGrantAndStartForBids(snapshot)
+			close(done)
+		}()
+		select {
+		case <-entered:
+		case <-time.After(2 * time.Second):
+			t.Fatal("RequestStart was not entered")
+		}
+		mux.handleReset()
+		select {
+		case <-gate:
+		default:
+			close(gate)
+		}
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("RequestStart did not return after reset")
+		}
+		if infoStillParked(mux, id) {
+			t.Fatal("the hold survived RequestStart returning after reset")
+		}
+		if msgs := readEnhUntil(t, client, time.Second); infoOrHost(msgs) {
+			t.Fatalf("session saw %v from the pre-reset answer", msgs)
+		}
+		setCachedVersion(mux, []byte{0x33, 0x44})
+		writeENH(client, transport.ENHReqInfo, byte(transport.AdapterInfoVersion))
+		msgs := readEnhUntil(t, client, time.Second)
+		if got, ok := infoPayload(msgs); !ok || string(got) != "\x33\x44" {
+			t.Fatalf("INFO answer %x (ok %v); an INFO after reset stayed parked", got, ok)
+		}
+	})
+}
+
+func setCachedVersion(mux *Mux, payload []byte) {
+	mux.infoCacheMu.Lock()
+	mux.infoCache[transport.AdapterInfoVersion] = append([]byte(nil), payload...)
+	mux.infoCacheMu.Unlock()
+}
+
+func parkedInfoPayload(mux *Mux, id uint64) []byte {
+	mux.sessionsMu.Lock()
+	sess := mux.sessions[id]
+	mux.sessionsMu.Unlock()
+	if sess == nil {
+		return nil
+	}
+	sess.infoHold.Lock()
+	defer sess.infoHold.Unlock()
+	out := make([]byte, 0, len(sess.parkedInfo))
+	for _, frame := range sess.parkedInfo {
+		if frame.kind == sessionFrameInfo {
+			out = append(out, frame.payload)
+		}
+	}
+	return out
+}
+
+func waitParkedPayload(t *testing.T, mux *Mux, id uint64, want []byte) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	var got []byte
+	for time.Now().Before(deadline) {
+		got = parkedInfoPayload(mux, id)
+		if bytes.Contains(got, []byte{0x11, 0x22}) {
+			t.Fatalf("parked INFO %x still contains the pre-failure answer", got)
+		}
+		if bytes.Equal(got, want) {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("parked INFO %x; want %x", got, want)
 }

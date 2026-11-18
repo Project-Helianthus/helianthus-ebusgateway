@@ -73,6 +73,7 @@ type Config struct {
             "PASSIVE_SMOKE_GATE_OWNER_OVERRIDE",
             "PASSIVE_SMOKE_GATE_OWNER_REASON",
             "PASSIVE_SMOKE_REPORT",
+            "PASSIVE_REQUIRED_CELL_DIR",
             "TRANSPORT_MATRIX_REPORT",
         ):
             env.pop(key, None)
@@ -244,6 +245,46 @@ type Config struct {
             {"case_id": "P06", "passive_mode": "unsupported_or_misconfigured", "outcome": "pass"},
         ]
 
+    def _required_cells(self) -> dict[str, bool]:
+        return {
+            "ENS-AD02": False,
+            "ENS-AD03": False,
+            "ENS-CX01": True,
+            "ENH-CX01": True,
+        }
+
+    def _write_required_evidence(self, root: pathlib.Path, mutate=None) -> None:
+        for case_id, second_client in self._required_cells().items():
+            evidence = {
+                "result": "pass",
+                "passive_required": {
+                    "mode": "required",
+                    "passed": True,
+                    "second_client": second_client,
+                    "devices": 2,
+                },
+            }
+            verdict = {"case_id": case_id, "outcome": "pass", "suite": "adaptermux-v2"}
+            if mutate is not None:
+                mutate(case_id, evidence, verdict)
+            case_dir = root / case_id
+            case_dir.mkdir(parents=True, exist_ok=True)
+            (case_dir / "smoke_evidence.json").write_text(json.dumps(evidence), encoding="utf-8")
+            (case_dir / "verdict.json").write_text(json.dumps(verdict), encoding="utf-8")
+
+    def _run_gate(self, repo_path: pathlib.Path, report_path: pathlib.Path, evidence_dir: pathlib.Path | None):
+        env = {"PASSIVE_SMOKE_GATE_BASE_REF": "HEAD", "PASSIVE_SMOKE_REPORT": str(report_path)}
+        if evidence_dir is not None:
+            env["PASSIVE_REQUIRED_CELL_DIR"] = str(evidence_dir)
+        return subprocess.run(
+            ["bash", "scripts/passive_smoke_gate.sh"],
+            cwd=repo_path,
+            env=self._script_env(**env),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
     def _run_triggered_gate(self, cases: list[dict[str, str]]) -> subprocess.CompletedProcess[str]:
         repo_path, report_path = self._create_temp_repo(
             "cmd/gateway/main.go",
@@ -269,17 +310,57 @@ type Config struct {
             base_text="package main\n\nfunc main() {\n\tpassiveMode := \"required\"\n\t_ = passiveMode\n}\n",
             modified_text="package main\n\nfunc main() {\n\tpassiveMode := \"unsupported_or_misconfigured\"\n\t_ = passiveMode\n}\n",
         )
-        result = subprocess.run(
-            ["bash", "scripts/passive_smoke_gate.sh"],
-            cwd=repo_path,
-            env=self._script_env(PASSIVE_SMOKE_GATE_BASE_REF="HEAD", PASSIVE_SMOKE_REPORT=str(report_path)),
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        evidence_dir = repo_path / "required-cells"
+        self._write_required_evidence(evidence_dir)
+        result = self._run_gate(repo_path, report_path, evidence_dir)
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
         self.assertIn("passive smoke gate: PASS", result.stdout)
         self.assertIn("P01, P02 and P06", result.stdout)
+        self.assertIn("ENS-AD02", result.stdout)
+        self.assertIn("ENH-CX01", result.stdout)
+
+    def test_reduced_report_without_required_discovery_evidence_is_rejected(self) -> None:
+        repo_path, report_path = self._create_temp_repo(
+            "cmd/gateway/main.go",
+            base_text="package main\n\nfunc main() {\n\tpassiveMode := \"required\"\n\t_ = passiveMode\n}\n",
+            modified_text="package main\n\nfunc main() {\n\tpassiveMode := \"unsupported_or_misconfigured\"\n\t_ = passiveMode\n}\n",
+        )
+        missing = self._run_gate(repo_path, report_path, None)
+        self.assertNotEqual(missing.returncode, 0, msg=missing.stdout)
+        self.assertIn("required passive discovery evidence is missing", missing.stdout)
+        self.assertIn("ENS-AD02", missing.stdout)
+        self.assertIn("ENS-CX01", missing.stdout)
+
+        evidence_dir = repo_path / "required-cells"
+
+        def fail_second_client(case_id, evidence, verdict):
+            if case_id == "ENS-CX01":
+                verdict["outcome"] = "fail"
+
+        self._write_required_evidence(evidence_dir, fail_second_client)
+        client_failed = self._run_gate(repo_path, report_path, evidence_dir)
+        self.assertNotEqual(client_failed.returncode, 0, msg=client_failed.stdout)
+        self.assertIn("ENS-CX01 did not pass", client_failed.stdout)
+
+        def empty_devices(case_id, evidence, verdict):
+            if case_id == "ENS-AD03":
+                evidence["passive_required"]["devices"] = 0
+                evidence["passive_required"]["passed"] = True
+
+        self._write_required_evidence(evidence_dir, empty_devices)
+        empty = self._run_gate(repo_path, report_path, evidence_dir)
+        self.assertNotEqual(empty.returncode, 0, msg=empty.stdout)
+        self.assertIn("ENS-AD03 required passive discovery did not pass", empty.stdout)
+
+        def wrong_client_flag(case_id, evidence, verdict):
+            if case_id == "ENS-AD02":
+                evidence["passive_required"]["second_client"] = True
+
+        self._write_required_evidence(evidence_dir, wrong_client_flag)
+        flagged = self._run_gate(repo_path, report_path, evidence_dir)
+        self.assertNotEqual(flagged.returncode, 0, msg=flagged.stdout)
+        self.assertIn("ENS-AD02 second client flag is True", flagged.stdout)
+        self.assertIn("want False", flagged.stdout)
 
     def test_retired_six_case_form_names_the_new_form(self) -> None:
         cases = [

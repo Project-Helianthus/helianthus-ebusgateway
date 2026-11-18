@@ -234,21 +234,25 @@ T01–T88: the UART rows are new and reserved, and PX01–PX12 was a separate
 adjunct of the proxy repository whose cases move into the mux's arbitration
 (see the matrix document).
 
-## Adjacent passive suite (outside the 88; not decided here)
+## Adjacent passive suite (outside the 88)
 
-The passive smoke suite P01–P06 (`GeneratePassiveSmokeCases`, checked by
-[scripts/passive_smoke_gate.sh](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/scripts/passive_smoke_gate.sh)) is not part
-of T01–T88 and the steer does not re-point it. Three of its cases depend on the
-same proxy topologies:
+The passive smoke suite is `P01`, `P02` and `P06`
+([scripts/passive_smoke_gate.sh](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/scripts/passive_smoke_gate.sh)).
+It is not part of T01–T88. `P03`, `P04` and `P05` depended on proxy topologies
+and leave that suite. The cells below execute their required-passive
+assertions. The passive gate accepts the three-case report only when those
+cells' smoke evidence shows required passive discovery passed. The transport
+gate policy records the same mapping.
 
-| Case | Topology | Proxy-dependent | Candidate keeper, for a separate decision |
+| Case | Assertion | Proxy-dependent | Cells that execute it |
 |---|---|---|---|
 | P01, P02 | direct adapter ENS, ENH; `unsupported_or_misconfigured` | no | unchanged |
-| P03 | proxy single-client ENS/ENS; `required` | yes | `ENS-AD03` with `ENS-AD02` |
-| P04 | proxy dual-client ENS; `required` | yes | `ENS-AD03` under `ENS-CX01` load |
-| P05 | proxy dual-client ENH; `required` | yes | `ENH-AD03` under `ENH-CX01` load |
+| P03 | single client, southbound ENS, passive mode `required` | yes | `ENS-AD02` and `ENS-AD03` judge required passive discovery with no external client |
+| P04 | two clients, southbound ENS, passive mode `required` | yes | `ENS-CX01` judges required passive discovery while its external client runs in the cell window |
+| P05 | two clients, southbound ENH, passive mode `required` | yes | `ENH-CX01` judges required passive discovery while its external client runs in the cell window |
 | P06 | via ebusd-tcp ENS; `unsupported_or_misconfigured` | no | unchanged |
 
-Until that decision, the passive gate and its own owner override
-(`PASSIVE_SMOKE_GATE_OWNER_OVERRIDE`, `PASSIVE_SMOKE_GATE_OWNER_REASON`) are
-untouched by this plan.
+`ENS-CX01` and `ENH-CX01` are the cells with an external client on the proxy
+listener. They are not a later load on `ENS-AD03` or `ENH-AD03`. The passive
+gate keeps its own owner override (`PASSIVE_SMOKE_GATE_OWNER_OVERRIDE`,
+`PASSIVE_SMOKE_GATE_OWNER_REASON`).

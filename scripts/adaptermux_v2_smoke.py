@@ -5,7 +5,11 @@ matrix-runner runs this command once per executable cell with the case context
 in MATRIX_* variables. It judges the invariant named by MATRIX_INVARIANT from
 the gateway's own read surfaces: the bus observability snapshot, the
 Prometheus text (AdapterMux diagnostics included), the expvar counters and,
-for the semantic record, one GraphQL query and one MCP read tool. It proves
+for the semantic record, one GraphQL query and one MCP read tool. AD02, AD03
+and CX01 also read the devices list and the passive capability gauges, and
+fail when required passive discovery did not succeed. CX01 judges that state
+at the end of its window, while its external client runs; AD02 and AD03 have
+no external client. It proves
 eBUS data flow on the selected southbound transport during the case window:
 counters are read once at the start and again until the invariant's flow
 requirements hold or the window ends. Once the first reading is taken it
@@ -89,6 +93,10 @@ MUX_UPSTREAM_RECONNECTS = "ebus_adaptermux_upstream_reconnects_total"
 MUX_CONTENDED_SELECTIONS = "ebus_adaptermux_contended_selections_total"
 MUX_RETAINED_BIDS = "ebus_adaptermux_retained_bids_total"
 PASSIVE_COMPLETED = "ebus_passive_completed_transactions_total"
+PASSIVE_TAP_CONNECTED = "ebus_passive_tap_connected"
+PASSIVE_WARMUP_STATE = "ebus_passive_warmup_state"
+PASSIVE_PROBE_OUTCOMES = "ebus_passive_capability_probe_outcomes_total"
+DEVICES_QUERY = "{ devices { address deviceId } }"
 WRITE_POLICY_STATE = "external_write_policy_state"
 DEDUP_ADJUDICATIONS = "observe_first_dedup_adjudications_total"
 
@@ -145,9 +153,11 @@ PRIORITY_REQUIRES = CONTENTION + (
 CHECKS = {
     "AD01": {"composition": "mux", "rows": ("ens", "enh"), "requires": FLOW_ACTIVE},
     "AD02": {"composition": "mux", "rows": ("ens", "enh"), "passive_tap": True,
+             "passive_required": True,
              "requires": (("active_frames", GT0), ("passive_frames", GT0),
                           ("dedup_matched_active", GT0), ("self_echo_frames", EQ0))},
     "AD03": {"composition": "mux", "rows": ("ens", "enh"), "passive_tap": True,
+             "passive_required": True,
              "requires": (("passive_third_party_frames", GT0),
                           ("passive_completed_transactions", GT0))},
     "AD04": {"composition": "mux", "rows": ("ens", "enh"), "passive_tap": True,
@@ -173,7 +183,7 @@ CHECKS = {
              "requires": CONTENTION + (("mux_endings_active_read_timeout", EQ0),)},
     "PX12": {"composition": "mux", "rows": ("ens", "enh"),
              "requires": CONTENTION + (("mux_foreign_initiator_releases", EQ0),)},
-    "CX01": {"composition": "mux", "rows": ("ens", "enh"),
+    "CX01": {"composition": "mux", "rows": ("ens", "enh"), "passive_required": True,
              "requires": CONTENTION + (("mux_escape_pair_verify_failures", EQ0),)},
     "DS01": {"composition": "direct", "rows": ("ens", "enh", "udp", "tcp"),
              "requires": (("active_frames", GT0),), "semantic": True},
@@ -781,6 +791,71 @@ def check_passive_tap(sample):
     return ["passive path unavailable: passive_available or tap_connected is false"]
 
 
+def metric_exact(sample, name, labels):
+    """Return one sample, or None when the gateway did not publish it."""
+    key = (name, tuple(sorted(labels.items())))
+    metrics = sample.get("metrics") or {}
+    if key not in metrics:
+        return None
+    return metrics[key]
+
+
+def graphql_devices(urls, settings):
+    """Return the devices list from a read-only query."""
+    payload = {"query": guard_graphql(DEVICES_QUERY)}
+    answer = read_json(http_post_json(urls["graphql"], payload, settings["http_timeout"]), "GraphQL")
+    if answer.get("errors"):
+        raise SurfaceError("GraphQL answered errors")
+    devices = (answer.get("data") or {}).get("devices")
+    if devices is None:
+        return []
+    if not isinstance(devices, list):
+        raise SurfaceError("devices payload is not a list")
+    return devices
+
+
+def check_passive_required(sample, urls, settings, second_client):
+    """Judge required passive discovery on the final reading of the window.
+
+    The same conditions the passive checker requires when passive mode is
+    required: a non-empty devices list, the tap connected, warmup available,
+    at least one confirmed probe and no timed-out probe. A missing series is
+    a failure, not a zero. second_client is true only for CX01, whose external
+    client runs during this window.
+    """
+    record = {"mode": "required", "second_client": bool(second_client), "passed": False}
+    reasons = []
+    timed_out = metric_exact(sample, PASSIVE_PROBE_OUTCOMES, {"outcome": "timed_out"})
+    connected = metric_exact(sample, PASSIVE_TAP_CONNECTED, {})
+    available = metric_exact(sample, PASSIVE_WARMUP_STATE, {"state": "available"})
+    confirmed = metric_exact(sample, PASSIVE_PROBE_OUTCOMES, {"outcome": "confirmed"})
+    record["probe_timed_out"] = timed_out
+    record["tap_connected"] = connected
+    record["warmup_available"] = available
+    record["probe_confirmed"] = confirmed
+    if timed_out is None:
+        reasons.append("required passive discovery: missing timed_out passive probe metric")
+    elif timed_out != 0:
+        reasons.append("required passive discovery: timed_out passive probe outcome = %s; want 0" % timed_out)
+    if connected != 1:
+        reasons.append("required passive discovery: passive tap connected = %s; want 1" % connected)
+    if available != 1:
+        reasons.append("required passive discovery: passive warmup available = %s; want 1" % available)
+    if confirmed is None or confirmed < 1:
+        reasons.append("required passive discovery: passive confirmed outcome = %s; want >= 1" % confirmed)
+    try:
+        devices = graphql_devices(urls, settings)
+    except SurfaceError as error:
+        record["devices"] = None
+        reasons.append("required passive discovery: " + str(error))
+    else:
+        record["devices"] = len(devices)
+        if len(devices) == 0:
+            reasons.append("required passive discovery: devices list is empty")
+    record["passed"] = not reasons
+    return record, reasons
+
+
 # ---------------------------------------------------------------- judgement
 
 
@@ -1146,6 +1221,13 @@ def judge(context, check, urls, settings, clock, stream=None):
     reasons += guard_reasons
     if check.get("passive_tap"):
         reasons += check_passive_tap(current)
+    if check.get("passive_required"):
+        # CX01 is the cell whose external client runs in this window. AD02 and
+        # AD03 listen with no external client, so they are the single-client case.
+        required, required_reasons = check_passive_required(
+            current, urls, settings, second_client=context.get("invariant") == "CX01")
+        evidence["passive_required"] = required
+        reasons += required_reasons
     if backwards:
         reasons.append("counters moved backwards during the case window: " + ", ".join(backwards))
     measures = compute_measures(baseline, current, own)

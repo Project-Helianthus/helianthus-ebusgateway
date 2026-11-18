@@ -442,6 +442,7 @@ fi
 
 python3 - "${report_path}" <<'PY'
 import json
+import os
 import sys
 
 path = sys.argv[1]
@@ -508,5 +509,68 @@ if len(cases) != len(expected):
     print(f"passive smoke gate: expected {len(expected)} cases, got {len(cases)}.")
     raise SystemExit(1)
 
-print("passive smoke gate: PASS (P01, P02 and P06, all pass).")
+# P03 is single-client required discovery on the mux. P04 and P05 are the
+# same discovery while the external client of CX01 runs in that cell's window.
+# A three-case report passes only when those cells actually passed.
+REQUIRED_DISCOVERY = (
+    ("ENS-AD02", False),
+    ("ENS-AD03", False),
+    ("ENS-CX01", True),
+    ("ENH-CX01", True),
+)
+
+
+def load_json_object(path):
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            value = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(value, dict):
+        return None
+    return value
+
+
+evidence_dir = os.environ.get("PASSIVE_REQUIRED_CELL_DIR", "").strip()
+if not evidence_dir or not os.path.isdir(evidence_dir):
+    print(
+        "passive smoke gate: required passive discovery evidence is missing. "
+        "ENS-AD02, ENS-AD03, ENS-CX01 and ENH-CX01 must show required passive discovery passed."
+    )
+    raise SystemExit(1)
+
+for case_id, second_client in REQUIRED_DISCOVERY:
+    case_dir = os.path.join(evidence_dir, case_id)
+    evidence = load_json_object(os.path.join(case_dir, "smoke_evidence.json"))
+    verdict = load_json_object(os.path.join(case_dir, "verdict.json"))
+    if evidence is None or verdict is None:
+        print(f"passive smoke gate: {case_id} required passive discovery evidence is missing.")
+        raise SystemExit(1)
+    if verdict.get("case_id") != case_id or verdict.get("outcome") != "pass" or verdict.get("suite") != "adaptermux-v2":
+        print(f"passive smoke gate: {case_id} did not pass in the adaptermux-v2 report.")
+        raise SystemExit(1)
+    required = evidence.get("passive_required")
+    devices = required.get("devices") if isinstance(required, dict) else None
+    discovery_passed = (
+        evidence.get("result") == "pass"
+        and isinstance(required, dict)
+        and required.get("mode") == "required"
+        and required.get("passed") is True
+        and type(devices) is int
+        and devices >= 1
+    )
+    if not discovery_passed:
+        print(f"passive smoke gate: {case_id} required passive discovery did not pass.")
+        raise SystemExit(1)
+    if required.get("second_client") is not second_client:
+        print(
+            f"passive smoke gate: {case_id} second client flag is {required.get('second_client')!r}; "
+            f"want {second_client}."
+        )
+        raise SystemExit(1)
+
+print(
+    "passive smoke gate: PASS (P01, P02 and P06, all pass; "
+    "required passive discovery passed on ENS-AD02, ENS-AD03, ENS-CX01 and ENH-CX01)."
+)
 PY

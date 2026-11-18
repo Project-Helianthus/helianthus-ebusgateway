@@ -15,12 +15,14 @@ The transport gate accepts only an `adaptermux-v2` index
 `full88` stays the flag's default and stays generable to reproduce historical
 reports; its proxy topologies are retired, and the T01–T08 questions are
 asked by the compatibility cells of `adaptermux-v2`.
-`P03`, `P04` and `P05` are carried by `adaptermux-v2` cells named in section 2
-of the transport gate policy: `P03` by `ENS-AD02` and `ENS-AD03` (no cell with
-an external client on the proxy listener carries the single-client assertion);
-`P04` by `ENS-AD03` under `ENS-CX01` load; `P05` by `ENH-AD03` under `ENH-CX01`
-load. `ENS-CX01` and `ENH-CX01` are the cells with an external client on the
-proxy listener. The passive harness starts the gateway with an instance
+`P03`, `P04` and `P05` are executed by `adaptermux-v2` cells named in section 2
+of the transport gate policy. `ENS-AD02` and `ENS-AD03` judge required passive
+discovery with no external client. `ENS-CX01` and `ENH-CX01` judge that
+discovery at the end of their own windows, while their external clients run.
+Those CX01 cells are the cells with an external client on the proxy listener;
+they are not a later load on AD03. The passive gate accepts `P01`, `P02` and
+`P06` only when the smoke evidence of `ENS-AD02`, `ENS-AD03`, `ENS-CX01` and
+`ENH-CX01` shows that discovery passed. The passive harness starts the gateway with an instance
 identifier and the add-on's transport, network and address flags for the case,
 and fails the case when the gateway log shows the eBUS driver withheld.
 
@@ -263,8 +265,8 @@ another source.
 | Invariant | Requires |
 |---|---|
 | AD01 | active frames > 0 and mux `transaction_done` endings > 0 |
-| AD02 | active frames > 0, passive frames > 0, passive copies matched to the gateway's own transactions > 0, and self-echo frames (own passive frames not matched) = 0; passive tap connected |
-| AD03 | third-party passive frames > 0 and completed passive transactions > 0; passive tap connected |
+| AD02 | active frames > 0, passive frames > 0, passive copies matched to the gateway's own transactions > 0, and self-echo frames (own passive frames not matched) = 0; passive tap connected; required passive discovery with no external client |
+| AD03 | third-party passive frames > 0 and completed passive transactions > 0; passive tap connected; required passive discovery with no external client |
 | AD04, AD09 | the consumer sessions the mux reports at the first reading each observe the discontinuity (their discontinuity count moves by at least 1) and at least one does; upstream reconnects = 1; since the reading before the one that first shows the discontinuity, active frames > 0, mux `transaction_done` endings > 0 and completed passive transactions > 0. No reading after the first shows the out-of-step hold; whether a hold was raised between readings is recorded as not provable with a sampled gauge and is not a pass/fail requirement (see below); passive tap connected |
 | AD06 | AD01, plus external identification frames > 0 |
 | AD07 | AD06; contended selections won by the side with initiator priority > 0 and won by the other side = 0, where the gateway's source and the single external initiator seen in the window are ordered by the lowest low nibble, then the lowest high nibble; losing bids kept and later granted > 0, and losing bids that ended any other way = 0 |
@@ -273,8 +275,17 @@ another source.
 | PX03 | AD06, plus no `syn_timeout` ending |
 | PX04 | AD06, plus no `active_read_timeout` ending |
 | PX12 | AD06, plus no foreign-initiator release of a gateway ownership |
-| CX01 | AD06, plus no escape-pair verification failure |
+| CX01 | AD06, plus no escape-pair verification failure; required passive discovery while the external client runs |
 | DS01, ES01 | active frames > 0, plus the semantic record |
+
+Required passive discovery, judged on the final reading of AD02, AD03 and CX01,
+is the passive mode `required` check: the devices list is non-empty, the
+passive tap gauge is connected, warmup is available, at least one capability
+probe was confirmed and none timed out. A missing series fails the cell. AD02
+and AD03 have no external client. CX01 keeps its window open until the end,
+and the runner starts the external client after the baseline reading, so the
+final reading is taken while that client runs. The CX01 verdict passes only
+when the smoke command and that client workload both pass.
 
 AD04 and AD09 measure the resumption from the reading before the one that
 first shows the discontinuity. The discontinuity and the first resumed
@@ -319,7 +330,8 @@ Every run writes one JSON object, `smoke_evidence.json`, into the case
 directory. It holds the cell, the result, the reasons, the window (readings
 judged and readings discarded after the window), the
 measures with each requirement and whether it was met, the transport and
-write-guard evidence, and, where taken, the semantic record and the AD10
+write-guard evidence, and, where taken, the required passive discovery record,
+the semantic record and the AD10
 decisions. It holds no URL and no time.
 
 Exit statuses:

@@ -106,6 +106,9 @@ func TestMSP06EEBusRuntimeCouplingIsConfinedToApprovedSeams(t *testing.T) {
 		// Issue #784 adds the owner-only raw SHIP/SPINE acquisition seam for
 		// private leaf-promotion evidence. It does not project into consumers.
 		"cmd/gateway/leaf_promotion_live_source.go": false,
+		// Issue #1692 adds the owner-side read of the inbound eeBUS heating
+		// values. It is not a consumer projection.
+		"cmd/gateway/eebus_inbound_values.go": false,
 		// Issue #1312 moves native observation/publication into the existing
 		// runtime adapter. The semantic overlay is no longer an approved
 		// native runtime importer; the scan below rejects coupling there.

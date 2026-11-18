@@ -67,7 +67,7 @@ func TestInfoAnswerWaitsForTheIncludingGrant(t *testing.T) {
 		defer cleanup()
 		before := map[*startRequest]chan startResult{}
 		queueInfoBid(t, mux, client, id, 0x31)
-		mux.tryGrantAndStartForBids(before)
+		mux.grantAtSYN(before)
 		if starts := mux.upstream.(*p3MockTransport).getStartRequests(); len(starts) != 0 {
 			t.Fatalf("RequestStart calls %v; the excluded bid was handed to the adapter", starts)
 		}
@@ -91,7 +91,7 @@ func TestInfoAnswerWaitsForTheIncludingGrant(t *testing.T) {
 		snapshot := mux.arb.snapshotBids()
 		done := make(chan struct{})
 		go func() {
-			mux.tryGrantAndStartForBids(snapshot)
+			mux.grantAtSYN(snapshot)
 			close(done)
 		}()
 		select {
@@ -142,7 +142,7 @@ func TestInfoAnswerWaitsForTheIncludingGrant(t *testing.T) {
 		gate, entered := armGatedStart(t, mux)
 		done := make(chan struct{})
 		go func() {
-			mux.tryGrantAndStartForBids(snapshot)
+			mux.grantAtSYN(snapshot)
 			close(done)
 		}()
 		select {
@@ -362,7 +362,7 @@ func TestInfoHoldClearedWhenTheQueuedBidFailsBeforeGrant(t *testing.T) {
 		waitExternalBid(t, mux, id)
 		writeENH(client, transport.ENHReqInfo, byte(transport.AdapterInfoVersion))
 		waitParkedPayload(t, mux, id, []byte{0x02, 0x33, 0x44})
-		mux.tryGrantAndStartForBids(nil)
+		mux.grantAtSYN(nil)
 		msgs := readEnhUntil(t, client, time.Second)
 		if got, ok := infoPayload(msgs); !ok || string(got) != "\x33\x44" {
 			t.Fatalf("INFO answer %x (ok %v); the grant delivered the pre-failure answer", got, ok)
@@ -385,7 +385,7 @@ func TestInfoHoldClearedWhenTheQueuedBidFailsBeforeGrant(t *testing.T) {
 		snapshot := mux.arb.snapshotBids()
 		done := make(chan struct{})
 		go func() {
-			mux.tryGrantAndStartForBids(snapshot)
+			mux.grantAtSYN(snapshot)
 			close(done)
 		}()
 		select {
@@ -458,4 +458,89 @@ func waitParkedPayload(t *testing.T, mux *Mux, id uint64, want []byte) {
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatalf("parked INFO %x; want %x", got, want)
+}
+
+// refusedStartTransport refuses every non-blocking START write.
+type refusedStartTransport struct {
+	*p3MockTransport
+	err error
+}
+
+func (f *refusedStartTransport) RequestStart(initiator byte) error {
+	f.mu.Lock()
+	f.startRequests = append(f.startRequests, initiator)
+	f.mu.Unlock()
+	return f.err
+}
+
+// refusedBlockingStartTransport offers only the blocking START and refuses it.
+type refusedBlockingStartTransport struct {
+	transport.RawTransport
+	err error
+}
+
+func (f *refusedBlockingStartTransport) StartArbitration(byte) error {
+	return f.err
+}
+
+// TestInfoAnswerFollowsTheFailedStart checks that a START write that
+// returns an error is not shown as a bid in flight: the held INFO answer
+// reaches the client only after the FAILED for that bid.
+//
+// Fields, and the production mutation each row catches:
+//   - non-blocking START error: releasing the answer when RequestStart
+//     returns, whatever its error, puts the answer before FAILED.
+//   - blocking START error: releasing the answer when StartArbitration
+//     returns an error puts the answer before FAILED.
+//   - answer kept: never releasing the answer of a failed bid leaves the
+//     client without the INFO it asked for.
+func TestInfoAnswerFollowsTheFailedStart(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		upstream func(*p3MockTransport) transport.RawTransport
+	}{
+		{"non-blocking START error", func(base *p3MockTransport) transport.RawTransport {
+			return &refusedStartTransport{p3MockTransport: base, err: errors.New("adaptermux: start write refused")}
+		}},
+		{"blocking START error", func(base *p3MockTransport) transport.RawTransport {
+			return &refusedBlockingStartTransport{RawTransport: base, err: errors.New("adaptermux: start write refused")}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			mux, client, id, cleanup := newInfoHoldFixture(t)
+			defer cleanup()
+			queueInfoBid(t, mux, client, id, 0x31)
+			mux.connMu.Lock()
+			base := mux.upstream.(*p3MockTransport)
+			mux.upstream = tc.upstream(base)
+			mux.connMu.Unlock()
+			mux.grantAtSYN(mux.arb.snapshotBids())
+			msgs := readEnhUntil(t, client, time.Second)
+			failed, info := -1, -1
+			for i, msg := range msgs {
+				if msg.Command == transport.ENHResFailed && failed < 0 {
+					failed = i
+				}
+				if (msg.Command == transport.ENHResInfo || msg.Command == transport.ENHResErrorHost) && info < 0 {
+					info = i
+				}
+			}
+			if failed < 0 {
+				t.Fatalf("session saw %v; want FAILED for the refused START", msgs)
+			}
+			if info >= 0 && info < failed {
+				t.Fatalf("session saw %v; the INFO answer preceded FAILED, so the refused bid looked in flight", msgs)
+			}
+			if got, ok := infoPayload(msgs[failed:]); !ok || string(got) != "\x11\x22" {
+				t.Fatalf("INFO answer %x (ok %v) after FAILED; the failed bid kept the answer parked", got, ok)
+			}
+			if infoStillParked(mux, id) {
+				t.Fatal("the hold remained after the failed START was answered")
+			}
+		})
+	}
 }

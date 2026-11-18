@@ -188,6 +188,9 @@ type session struct {
 	heldReq    *startRequest
 	heldEpoch  uint64
 	parkedInfo []sessionFrame
+	// boundReq is the bid the last START of this session bound, read by
+	// handleStart so the answer can follow that bid's result.
+	boundReq *startRequest
 
 	// writeMu serializes one frame write. Removal flushes a held answer
 	// only when the writer is not already inside a write.
@@ -664,7 +667,9 @@ func (s *session) handleStart(initiator byte) {
 	s.mux.logger.Printf("adaptermux: session %d START 0x%02X requested (RequestStart(0x%02X) sent for session %d)", s.id, initiator, initiator, s.id)
 	s.sawHandshake.Store(true) // F-7 diagnostic: legitimate ENH client
 	// Submit this session's bid to the next idle SYN window.
+	s.takeBoundReq()
 	ch := s.mux.requestStartForSession(s.id, initiator)
+	bid := s.takeBoundReq()
 
 	// Wait for arbitration result in a tracked goroutine.
 	s.wg.Add(1)
@@ -695,6 +700,8 @@ func (s *session) handleStart(initiator byte) {
 			} else if result.cancelled {
 				// AM55 fix: client-initiated SYN cancel — the client
 				// already knows it cancelled, don't deliver spurious FAILED.
+				// A same-address re-bid keeps this request, so its held
+				// answer stays with that re-bid.
 				return
 			} else if result.err != nil && isResetOrDisconnectError(result.err) {
 				// Reset/disconnect caused the START failure — deliver
@@ -704,6 +711,10 @@ func (s *session) handleStart(initiator byte) {
 			} else if !result.failedQueued {
 				s.deliverFailed(result.initiator)
 			}
+			// A START that never reached the adapter keeps its INFO
+			// answer parked until here, so the answer follows the result
+			// and cannot show that bid in flight.
+			s.releaseInfoHold(bid)
 		case <-s.done:
 			return
 		case <-s.mux.ctx.Done():
@@ -806,12 +817,22 @@ func (s *session) bindInfoHold(req *startRequest) {
 	}
 	req.infoSession.Store(s)
 	s.infoHold.Lock()
+	s.boundReq = req
 	s.heldReq = req
 	s.heldEpoch = s.mux.arb.lifecycleEpoch.Load()
 	s.infoHold.Unlock()
 	if s.mux.arb.externalBid(s.id) != req {
 		s.releaseInfoHold(req)
 	}
+}
+
+// takeBoundReq returns the bid the last START bound, and clears it.
+func (s *session) takeBoundReq() *startRequest {
+	s.infoHold.Lock()
+	defer s.infoHold.Unlock()
+	req := s.boundReq
+	s.boundReq = nil
+	return req
 }
 
 // releaseAnyInfoHold delivers whatever answer this session is holding.
@@ -921,17 +942,43 @@ func (s *session) flushInfoHoldOnRemoval() {
 	s.deliverInfoFrames(frames)
 }
 
-// releaseHandedInfoHold delivers the answer of the bid the grant step handed
-// to the transport, and the answers of the external bids that lost.
-func (m *Mux) releaseHandedInfoHold() {
+// releaseHandedInfoHold delivers the answers of the external bids that lost
+// the selection: their FAILED is already queued. The handed bid's answer is
+// delivered only when its START reached the adapter. A failed START keeps
+// it parked until the session has queued that bid's result, and a pending
+// RequestStart outcome is resolved by releaseAcceptedInfoHold.
+func (m *Mux) releaseHandedInfoHold(outcome grantReturn) {
 	req, losers := m.arb.takeHandedGrant()
-	if req != nil {
-		releaseBoundInfoHold(req)
-	}
 	for _, loser := range losers {
 		if loser != req {
 			releaseBoundInfoHold(loser)
 		}
+	}
+	if req == nil {
+		return
+	}
+	switch outcome {
+	case grantReturnAccepted:
+		releaseBoundInfoHold(req)
+	case grantReturnPending:
+		m.arb.noteReturnedGrant(req)
+	}
+}
+
+// releaseAcceptedInfoHold runs after the grant step has returned. It
+// delivers the answer of the bid whose RequestStart returned when that bid
+// is still the START awaiting the adapter's answer. A failed write has
+// already withdrawn that START, so its answer waits for the result.
+func (m *Mux) releaseAcceptedInfoHold() {
+	req := m.arb.takeReturnedGrant()
+	if req == nil {
+		return
+	}
+	m.stateMu.Lock()
+	accepted := m.pendingStart != nil && m.pendingStart.req == req && !m.pendingStart.responseReceived
+	m.stateMu.Unlock()
+	if accepted {
+		releaseBoundInfoHold(req)
 	}
 }
 

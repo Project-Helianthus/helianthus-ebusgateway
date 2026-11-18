@@ -74,16 +74,37 @@ type arbitrator struct {
 
 	// onGrantSettled delivers the INFO answers for the bid handed to the
 	// transport and for the external bids that lost that selection. It
-	// runs without mu, and only after the transport call has returned.
-	// The callback must not call back into the arbitrator.
-	onGrantSettled func()
+	// runs without mu, and only after the transport call has returned; its
+	// argument is what that return shows of the START write. The callback
+	// must not call back into the arbitrator.
+	onGrantSettled func(grantReturn)
 
 	// handed is the bid the latest selection passed toward the transport.
 	// handedLosers are the external bids that selection rejected. Both are
 	// guarded by mu and cleared when the transport call returns.
 	handed       *startRequest
 	handedLosers []*startRequest
+
+	// returned is the bid whose RequestStart has returned while the grant
+	// step had not yet shown whether the write failed. Guarded by mu; the
+	// grant's caller takes it once the grant step has returned.
+	returned *startRequest
 }
+
+// grantReturn is what the return of the START transport call shows.
+type grantReturn uint8
+
+const (
+	// grantReturnFailed: the START did not reach the adapter (the call
+	// failed, the transport cannot arbitrate, or the mux is closing).
+	grantReturnFailed grantReturn = iota
+	// grantReturnAccepted: the blocking call returned without error.
+	grantReturnAccepted
+	// grantReturnPending: RequestStart returned, and the grant step
+	// records a failure only after this point. The outcome is read once
+	// the grant step has returned.
+	grantReturnPending
+)
 
 // startRequest represents a pending START arbitration request.
 type startRequest struct {
@@ -246,7 +267,7 @@ func (a *arbitrator) cancelStartLocked(sessionID uint64) (bool, *startRequest) {
 // setInfoHoldHooks installs the callbacks that bind, deliver, and discard
 // a session's held INFO answer. Safe to replace with the same functions.
 // Each callback runs without mu and must not call back into the arbitrator.
-func (a *arbitrator) setInfoHoldHooks(queued func(*startRequest), settled func(), released func(*startRequest), dropped func(*startRequest)) {
+func (a *arbitrator) setInfoHoldHooks(queued func(*startRequest), settled func(grantReturn), released func(*startRequest), dropped func(*startRequest)) {
 	a.mu.Lock()
 	a.onExternalBidQueued = queued
 	a.onGrantSettled = settled
@@ -391,7 +412,8 @@ func (a *arbitrator) selectBidsAtSYN(busIdle bool, bids map[*startRequest]chan s
 // takeDeferredGatewayLoser removes req from deferred tracking. It reports true
 // when the caller now owns sending req's one result. The grant step calls
 // this after the transport call returns; that return delivers the held INFO
-// answers for the handed bid and the external losers.
+// answers of the external losers, and of the handed bid only when the
+// START reached the adapter.
 func (a *arbitrator) takeDeferredGatewayLoser(req *startRequest) bool {
 	a.mu.Lock()
 	owned := req != nil && a.deferredGatewayLoser == req
@@ -401,9 +423,27 @@ func (a *arbitrator) takeDeferredGatewayLoser(req *startRequest) bool {
 	hook := a.onGrantSettled
 	a.mu.Unlock()
 	if hook != nil && stackHasGrantReturn() {
-		hook()
+		hook(grantReturnOf(settleCaller()))
 	}
 	return owned
+}
+
+// noteReturnedGrant records req as handed to RequestStart, which returned
+// before the grant step showed whether the write failed.
+func (a *arbitrator) noteReturnedGrant(req *startRequest) {
+	a.mu.Lock()
+	a.returned = req
+	a.mu.Unlock()
+}
+
+// takeReturnedGrant returns the bid recorded by noteReturnedGrant and clears
+// it. A second call is empty.
+func (a *arbitrator) takeReturnedGrant() *startRequest {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	req := a.returned
+	a.returned = nil
+	return req
 }
 
 // noteHandedGrant records the bid a selection is about to hand to the
@@ -643,6 +683,44 @@ func stackHasGrantReturn() bool {
 		"(*Mux).startBlockingGrant",
 		"(*Mux).failBlockingStart",
 	)
+}
+
+// grantReturnOf classifies the grant step that settled a selection by the
+// function that called settleLocalLosses. The blocking call reaches it
+// without error only from runBlockingStart. RequestStart reaches it from
+// requestGrantStart on success and on failure, and the failure is recorded
+// after this call, so its outcome stays pending. Every other caller settles
+// a START that did not reach the adapter.
+func grantReturnOf(caller string) grantReturn {
+	switch {
+	case strings.HasSuffix(caller, "(*Mux).runBlockingStart"):
+		return grantReturnAccepted
+	case strings.HasSuffix(caller, "(*Mux).requestGrantStart"):
+		return grantReturnPending
+	default:
+		return grantReturnFailed
+	}
+}
+
+// settleCaller returns the function that called settleLocalLosses on this
+// stack, or "" when settleLocalLosses is not on it.
+func settleCaller() string {
+	var pcs [32]uintptr
+	n := runtime.Callers(2, pcs[:])
+	frames := runtime.CallersFrames(pcs[:n])
+	found := false
+	for {
+		frame, more := frames.Next()
+		if found {
+			return frame.Function
+		}
+		if strings.HasSuffix(frame.Function, "(*Mux).settleLocalLosses") {
+			found = true
+		}
+		if !more {
+			return ""
+		}
+	}
 }
 
 func stackHasAny(suffixes ...string) bool {

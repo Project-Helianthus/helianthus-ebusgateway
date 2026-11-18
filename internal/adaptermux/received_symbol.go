@@ -272,8 +272,15 @@ func (m *Mux) applyReceivedWireSYN(rs *receivedSymbol, syn receivedWireSYN) {
 		m.deliverSYNToSessions(rs.now)
 	}
 	if syn.shouldTryGrant {
-		m.tryGrantAndStartForBids(rs.bids)
+		m.grantAtSYN(rs.bids)
 	}
+}
+
+// grantAtSYN runs the grant step for the bids admitted before the SYN, then
+// delivers the held INFO answer of a bid whose RequestStart was accepted.
+func (m *Mux) grantAtSYN(bids map[*startRequest]chan startResult) {
+	m.tryGrantAndStartForBids(bids)
+	m.releaseAcceptedInfoHold()
 }
 
 // foreignInitiatorRelease is how a foreign initiator byte ends the gateway's

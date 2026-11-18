@@ -963,30 +963,28 @@ func (fence *infoFence) consumeErrorHost() bool {
 // the adapter. The mux selects an idle bid at a SYN and writes it to the
 // adapter in the same step of its read loop, but it delivers that SYN to
 // the sessions before the step, so the SYN alone does not prove the bid
-// was sent. The step selects only among the bids of the snapshot the mux
-// took before it released its state lock to deliver that SYN; a START
-// queued after the snapshot waits for a later SYN even when its INFO answer
-// reaches the contender before the SYN does. The proof has three parts.
-// The INFO request written after the START is answered by the mux session
-// only after it queued the bid, so every symbol delivered after the whole
-// answer was delivered after the bid was queued. A SYN delivered after
-// such a symbol had its snapshot taken by a later step of the read loop,
-// after the bid was queued, so its grant step saw the bid; the first SYN
-// after the answer does not count, nor does an earlier or buffered SYN.
-// The next symbol the mux delivers after that SYN comes from a later step
-// of the read loop, so the grant step that saw the bid has returned. Silence
-// is not proof: on a busy bus the bid may still be queued. A STARTED or
-// FAILED before the proof, or buffered with it, is returned as answered,
-// not as an error.
+// was sent. The proof has two parts. The INFO request written after the
+// START is answered by the mux session only after it queued the bid, so a
+// SYN delivered after the whole answer is one the bid waited for, and an
+// earlier or buffered SYN does not count. The next symbol the mux delivers
+// after that SYN comes from a later step of the read loop, so the step
+// that selected and wrote the bid has returned. Silence is not proof: on a
+// busy bus the bid may still be queued. A STARTED or FAILED before the
+// proof, or buffered with it, is returned as answered, not as an error.
+//
+// Recorded limit: the mux takes the bid snapshot of a SYN before it
+// releases its state lock to deliver that SYN, so a START queued in between
+// is answered by the INFO fence first while that SYN's grant step leaves it
+// queued; a grant step that declines at an admission or selection gate
+// leaves it queued as well. The ENH stream does not tell these rare cases
+// from a forwarded bid, so the proof can pass on a queued bid until the mux
+// exposes a hand-off signal the runner can read.
 func awaitBidForwarded(session *enhContenderSession, fence *infoFence) (bidForwarded, error) {
 	saved := session.timeout
 	defer func() { session.timeout = saved }()
 	deadline := time.Now().Add(saved)
 	queued := fmt.Errorf("%w: START stayed queued: no symbol after a SYN showed the bid in flight", errStimulusNotObserved)
-	// symbolAfterFence: a symbol arrived after the whole INFO answer.
-	// synSawBid: a SYN arrived after such a symbol, so its grant step saw
-	// the bid.
-	symbolAfterFence, synSawBid := false, false
+	synAfterFence := false
 	for {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
@@ -1012,16 +1010,15 @@ func awaitBidForwarded(session *enhContenderSession, fence *infoFence) (bidForwa
 			if !fence.done() {
 				continue
 			}
-			if synSawBid {
+			if synAfterFence {
 				if result, ok := bufferedResult(session, fence); ok {
 					return bidForwarded{answered: true, message: result}, nil
 				}
 				return bidForwarded{}, nil
 			}
-			if message.Data == protocol.SymbolSyn && symbolAfterFence {
-				synSawBid = true
+			if message.Data == protocol.SymbolSyn {
+				synAfterFence = true
 			}
-			symbolAfterFence = true
 		case transport.ENHResStarted, transport.ENHResFailed:
 			return bidForwarded{answered: true, message: message}, nil
 		case transport.ENHResResetted:

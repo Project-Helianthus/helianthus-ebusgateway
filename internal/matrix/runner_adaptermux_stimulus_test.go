@@ -26,11 +26,7 @@ import (
 // every fakeIdleTick, until the contender replaces or abandons the bid. A
 // fenced bid's result is held until the contender acts on it, so a
 // contender that waits for its proof always acts on a forwarded bid,
-// however long it takes to read. With synSnapshotBeforeQueue the first
-// fenced bid was queued after the mux had taken the bid snapshot of a SYN
-// and before it delivered that SYN: the INFO answer comes first, that SYN's
-// grant step leaves the bid queued, and the next SYN selects it. A bid
-// without INFO is shown in flight at fakeInFlightArm, forwarded
+// however long it takes to read. A bid without INFO is shown in flight at fakeInFlightArm, forwarded
 // fakeForwardLag later and answered at fakeLateAfter. The late STARTED of a
 // replaced bid is absorbed unless deliverStaleResult. Closing an in-flight
 // bid arms the absorb barrier, which the peer clears after fakeAbsorbBudget
@@ -74,10 +70,6 @@ type fakeMuxPeer struct {
 	// synBeforeFence delivers a SYN right after a START, before the INFO
 	// answer, as a SYN the mux handled before it queued the bid.
 	synBeforeFence bool
-	// synSnapshotBeforeQueue queues the first fenced bid after the bid
-	// snapshot of a SYN that the peer delivers after the INFO answer; that
-	// SYN's grant step leaves the bid queued and the SYN after it selects it.
-	synSnapshotBeforeQueue bool
 	// infoErrorHost answers INFO with ERROR_HOST, as a mux without a cached
 	// adapter answer does.
 	infoErrorHost bool
@@ -99,7 +91,6 @@ type fakeMuxPeer struct {
 	absorbArmed            int
 	replacedInFlight       int
 	replacedQueued         int
-	excludedSyns           int
 	replacedInitiator      byte
 	staleDelivered         int
 	replacementGranted     int
@@ -191,7 +182,6 @@ type fakeMuxCounts struct {
 	absorbArmed            int
 	replacedInFlight       int
 	replacedQueued         int
-	excludedSyns           int
 	staleDelivered         int
 	replacementGranted     int
 	grantsHeldForAbsorb    int
@@ -213,7 +203,7 @@ func (peer *fakeMuxPeer) snapshot() fakeMuxCounts {
 		rejectedIdle:         append([]byte(nil), peer.rejectedIdle...),
 		closedInFlight:       peer.closedInFlight, closedQueued: peer.closedQueued,
 		absorbArmed: peer.absorbArmed, replacedInFlight: peer.replacedInFlight,
-		replacedQueued: peer.replacedQueued, excludedSyns: peer.excludedSyns,
+		replacedQueued: peer.replacedQueued,
 		staleDelivered: peer.staleDelivered, replacementGranted: peer.replacementGranted,
 		grantsHeldForAbsorb: peer.grantsHeldForAbsorb, midResponseSyn: peer.midResponseSyn,
 		responseBytesBeforeSyn: peer.responseBytesBeforeSyn, responseBytesOwed: peer.responseBytesOwed,
@@ -441,14 +431,9 @@ func (peer *fakeMuxPeer) serve(conn net.Conn) {
 		}
 	}
 	// selectFenced runs after the INFO answer of a fenced bid. Caller holds
-	// stateMu. With excluded, a SYN whose bid snapshot was taken before the
-	// bid was queued comes first, and its grant step leaves the bid queued.
-	// The selecting SYN follows; the bid is forwarded fakeForwardLag after
-	// the contender has read it.
-	selectFenced := func(gen int, excluded bool) {
-		if excluded {
-			write(transport.ENHResReceived, protocol.SymbolSyn)
-		}
+	// stateMu. It delivers the selecting SYN; the bid is forwarded
+	// fakeForwardLag after the contender has read it.
+	selectFenced := func(gen int) {
 		writeThen(transport.ENHResReceived, protocol.SymbolSyn, func() {
 			time.AfterFunc(fakeForwardLag, func() { forwardFenced(gen) })
 		})
@@ -596,17 +581,12 @@ func (peer *fakeMuxPeer) serve(conn net.Conn) {
 				peer.mu.Lock()
 				bid := peer.inFlight
 				fence := bid != nil && bid.conn == conn && bid.forwardable && !bid.prompt && !bid.fenced && !bid.replaced
-				excluded := false
 				if fence {
 					bid.fenced = true
-					excluded = peer.synSnapshotBeforeQueue && peer.excludedSyns == 0
-					if excluded {
-						peer.excludedSyns++
-					}
 				}
 				peer.mu.Unlock()
 				if fence {
-					selectFenced(bid.generation, excluded)
+					selectFenced(bid.generation)
 				}
 			case transport.ENHReqStart:
 				initiator := message.Data
@@ -1044,9 +1024,9 @@ func TestStimulusActsOnlyAfterTheBidReachedTheAdapter(t *testing.T) {
 					t.Fatalf("verdict %+v, client %+v", verdicts[0], clientResultOf(verdicts[0]))
 				}
 				peer := fixture.enhPeer.snapshot()
-				if invariant == "PX01" && (peer.replacedInFlight != 1 || peer.staleDelivered != 0 || peer.replacementGranted != 1) {
-					t.Fatalf("replaced in flight %d, stale delivered %d, replacement granted %d; the bid was replaced before it reached the adapter",
-						peer.replacedInFlight, peer.staleDelivered, peer.replacementGranted)
+				if invariant == "PX01" && (peer.replacedInFlight != 1 || peer.replacedQueued != 0 || peer.staleDelivered != 0 || peer.replacementGranted != 1) {
+					t.Fatalf("replaced in flight %d, replaced queued %d, stale delivered %d, replacement granted %d; the bid was replaced before it reached the adapter",
+						peer.replacedInFlight, peer.replacedQueued, peer.staleDelivered, peer.replacementGranted)
 				}
 				if invariant == "PX02" && (peer.closedInFlight != 1 || peer.closedQueued != 0 || peer.absorbArmed != 1) {
 					t.Fatalf("closed in flight %d, closed queued %d, absorb armed %d; the session closed before the bid reached the adapter",

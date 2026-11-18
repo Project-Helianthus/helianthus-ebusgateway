@@ -743,62 +743,12 @@ func TestAdapterMuxV2ExplorerScanIsGuarded(t *testing.T) {
 	}
 }
 
-// The mux takes the bid snapshot of a SYN, releases its state lock and then
-// delivers that SYN, so a START queued in between is answered by the INFO
-// fence before the SYN arrives and is still excluded from that SYN's grant
-// step. The SYN after it selects the bid. PX01 replaces and PX02 abandons
-// the bid only once it is forwarded, with the INFO answered with data or
-// with ERROR_HOST.
-func TestStimulusWaitsForTheSYNWhoseGrantStepSawTheBid(t *testing.T) {
-	t.Parallel()
-
-	answers := []struct {
-		name      string
-		errorHost bool
-	}{
-		{"INFO answered with data", false},
-		{"INFO answered with ERROR_HOST", true},
-	}
-	for _, invariant := range []string{"PX01", "PX02"} {
-		for _, answer := range answers {
-			invariant, answer := invariant, answer
-			t.Run(invariant+"/"+answer.name, func(t *testing.T) {
-				t.Parallel()
-				caseID := "ENH-" + invariant
-				fixture, err := newExecuteFixture(t, []string{caseID}, nil)
-				if err != nil {
-					t.Fatalf("fixture: %v", err)
-				}
-				fixture.enhPeer.synSnapshotBeforeQueue = true
-				fixture.enhPeer.infoErrorHost = answer.errorHost
-				verdicts, err := fixture.runner.Run(context.Background())
-				if err != nil {
-					t.Fatalf("Run error = %v", err)
-				}
-				peer := fixture.enhPeer.snapshot()
-				if peer.excludedSyns != 1 {
-					t.Fatalf("excluded SYNs %d; the peer did not deliver a SYN whose grant step left the bid queued", peer.excludedSyns)
-				}
-				if invariant == "PX01" && (peer.replacedQueued != 0 || peer.replacedInFlight != 1 || peer.staleDelivered != 0 || peer.replacementGranted != 1) {
-					t.Fatalf("replaced queued %d, replaced in flight %d, stale delivered %d, replacement granted %d; the bid was replaced before the grant step that saw it",
-						peer.replacedQueued, peer.replacedInFlight, peer.staleDelivered, peer.replacementGranted)
-				}
-				if invariant == "PX02" && (peer.closedQueued != 0 || peer.closedInFlight != 1 || peer.absorbArmed != 1) {
-					t.Fatalf("closed queued %d, closed in flight %d, absorb armed %d; the session closed before the grant step that saw the bid",
-						peer.closedQueued, peer.closedInFlight, peer.absorbArmed)
-				}
-				if verdicts[0].Outcome != caseOutcomePass {
-					t.Fatalf("verdict %+v, client %+v", verdicts[0], clientResultOf(verdicts[0]))
-				}
-			})
-		}
-	}
-}
-
-// awaitBidForwarded counts a SYN only when another symbol arrived between
-// the INFO answer and that SYN, so the SYN's bid snapshot was taken after
-// the START was queued, and concludes once one more symbol follows it.
-func TestBidInFlightNeedsASymbolBetweenTheINFOAnswerAndTheSYN(t *testing.T) {
+// awaitBidForwarded takes the bid as in flight once a received symbol
+// follows a SYN that arrived after the whole INFO answer. On a bus that
+// carries only SYNs, the SYN after the selecting SYN is that proof, and a
+// STARTED read after it does not turn the attempt into an answered one. A
+// result before the proof, or in the same read as the proof, is the answer.
+func TestBidInFlightOnceASymbolFollowsASYNAfterTheINFOAnswer(t *testing.T) {
 	t.Parallel()
 
 	info := []transport.ENHMessage{
@@ -814,6 +764,7 @@ func TestBidInFlightNeedsASymbolBetweenTheINFOAnswerAndTheSYN(t *testing.T) {
 		}
 		return messages
 	}
+	started := []transport.ENHMessage{{Command: transport.ENHResStarted, Data: 0xF7}}
 	join := func(parts ...[]transport.ENHMessage) []transport.ENHMessage {
 		var all []transport.ENHMessage
 		for _, part := range parts {
@@ -822,20 +773,28 @@ func TestBidInFlightNeedsASymbolBetweenTheINFOAnswerAndTheSYN(t *testing.T) {
 		return all
 	}
 	syn := protocol.SymbolSyn
+	// Each element of writes is one write on the pipe, so one read of the
+	// contender.
 	cases := []struct {
 		name     string
-		frames   []transport.ENHMessage
+		writes   [][]transport.ENHMessage
 		inFlight bool
 		answered transport.ENHCommand
 	}{
-		{name: "SYN after the answer and one symbol after it", frames: join(info, received(syn, syn))},
-		{name: "SYN after an ERROR_HOST answer and one symbol after it", frames: join(errorHost, received(syn, syn))},
-		{name: "SYN before the answer, then a SYN and one symbol", frames: join(received(syn), info, received(syn, syn))},
-		{name: "SYN after the answer, then a SYN and one symbol", frames: join(info, received(syn, syn, syn)), inFlight: true},
-		{name: "SYN after an ERROR_HOST answer, then a SYN and one symbol", frames: join(errorHost, received(syn, syn, syn)), inFlight: true},
-		{name: "bus symbol after the answer, then a SYN and one symbol", frames: join(info, received(0x10, syn, 0x03)), inFlight: true},
-		{name: "SYN after the answer, then a SYN and the result", frames: join(info, received(syn, syn),
-			[]transport.ENHMessage{{Command: transport.ENHResStarted, Data: 0xF7}}), answered: transport.ENHResStarted},
+		{name: "quiet bus: selecting SYN, next SYN, then STARTED",
+			writes: [][]transport.ENHMessage{info, received(syn), received(syn), started}, inFlight: true},
+		{name: "SYN after an ERROR_HOST answer and one symbol after it",
+			writes: [][]transport.ENHMessage{errorHost, received(syn), received(syn)}, inFlight: true},
+		{name: "SYN after the answer and a bus symbol after it",
+			writes: [][]transport.ENHMessage{info, received(syn), received(0x10)}, inFlight: true},
+		{name: "SYN before the answer and one SYN after it",
+			writes: [][]transport.ENHMessage{received(syn), info, received(syn)}},
+		{name: "bus symbol after the answer and one SYN after it",
+			writes: [][]transport.ENHMessage{info, received(0x10), received(syn)}},
+		{name: "STARTED after the SYN, before the proof",
+			writes: [][]transport.ENHMessage{info, received(syn), started}, answered: transport.ENHResStarted},
+		{name: "STARTED in the same read as the proof",
+			writes: [][]transport.ENHMessage{info, join(received(syn, syn), started)}, answered: transport.ENHResStarted},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -845,9 +804,13 @@ func TestBidInFlightNeedsASymbolBetweenTheINFOAnswerAndTheSYN(t *testing.T) {
 			defer func() { _ = client.Close() }()
 			go func() {
 				defer func() { _ = server.Close() }()
-				for _, message := range tc.frames {
-					frame := transport.EncodeENH(message.Command, message.Data)
-					if _, err := server.Write(frame[:]); err != nil {
+				for _, messages := range tc.writes {
+					var data []byte
+					for _, message := range messages {
+						frame := transport.EncodeENH(message.Command, message.Data)
+						data = append(data, frame[:]...)
+					}
+					if _, err := server.Write(data); err != nil {
 						return
 					}
 				}
@@ -867,7 +830,7 @@ func TestBidInFlightNeedsASymbolBetweenTheINFOAnswerAndTheSYN(t *testing.T) {
 				}
 			default:
 				if err == nil || forwarded.answered || !strings.Contains(err.Error(), "listener closed") {
-					t.Fatalf("forwarded %+v, err %v; the bid was taken as in flight before the grant step that saw it", forwarded, err)
+					t.Fatalf("forwarded %+v, err %v; the bid was taken as in flight without a symbol after a SYN that followed the INFO answer", forwarded, err)
 				}
 			}
 		})

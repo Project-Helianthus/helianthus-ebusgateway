@@ -1,0 +1,3 @@
+## Remove the frozen-mapping refusal of the eeBUS output skeleton and keep its operation relay
+
+`internal/eebusoutput` no longer projects an always-empty target document under a placeholder target identity and no longer refuses proven mapping rows: the eeBUS output binding lives in the eeBUS registry. The package keeps only the relay, which hands a peer request to the semantic operation route and returns its result and error unchanged. The design page `docs/architecture/eebus-output-binding-design.md` now describes that boundary: the gateway hands the binding lens results with values from the graph read service and relays peer writes to the semantic operation route. No MCP tool, GraphQL field or namespace changes.

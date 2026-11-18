@@ -460,23 +460,31 @@ if not isinstance(cases, list):
 expected = {
     "P01": "unsupported_or_misconfigured",
     "P02": "unsupported_or_misconfigured",
-    "P03": "required",
-    "P04": "required",
-    "P05": "required",
     "P06": "unsupported_or_misconfigured",
 }
 
-if len(cases) != len(expected):
-    print(f"passive smoke gate: expected {len(expected)} cases, got {len(cases)}.")
+def case_id_of(case):
+    if isinstance(case, dict):
+        return str(case.get("case_id", "")).strip()
+    return ""
+
+ids = [case_id_of(case) for case in cases]
+id_set = set(ids)
+retired_ids = {"P03", "P04", "P05"}
+if retired_ids.intersection(id_set) or id_set == {"P01", "P02", "P03", "P04", "P05", "P06"}:
+    print(
+        "passive smoke gate: the retired six-case form is not accepted. "
+        "The passive suite is P01, P02 and P06."
+    )
     raise SystemExit(1)
 
 seen = set()
 unexpected = []
 for case in cases:
-    case_id = str(case.get("case_id", "")).strip()
+    case_id = case_id_of(case)
     if case_id not in expected:
-      unexpected.append(case_id or "?")
-      continue
+        unexpected.append(case_id or "?")
+        continue
     seen.add(case_id)
     passive_mode = str(case.get("passive_mode", "")).strip()
     if passive_mode != expected[case_id]:
@@ -496,6 +504,9 @@ if unexpected:
 if missing:
     print(f"passive smoke gate: missing required cases: {','.join(missing)}")
     raise SystemExit(1)
+if len(cases) != len(expected):
+    print(f"passive smoke gate: expected {len(expected)} cases, got {len(cases)}.")
+    raise SystemExit(1)
 
-print("passive smoke gate: PASS (6 passive cases, all pass).")
+print("passive smoke gate: PASS (P01, P02 and P06, all pass).")
 PY

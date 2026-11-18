@@ -234,21 +234,23 @@ T01–T88: the UART rows are new and reserved, and PX01–PX12 was a separate
 adjunct of the proxy repository whose cases move into the mux's arbitration
 (see the matrix document).
 
-## Adjacent passive suite (outside the 88; not decided here)
+## Adjacent passive suite (outside the 88)
 
-The passive smoke suite P01–P06 (`GeneratePassiveSmokeCases`, checked by
-[scripts/passive_smoke_gate.sh](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/scripts/passive_smoke_gate.sh)) is not part
-of T01–T88 and the steer does not re-point it. Three of its cases depend on the
-same proxy topologies:
+The passive smoke suite is `P01`, `P02` and `P06`
+([scripts/passive_smoke_gate.sh](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/scripts/passive_smoke_gate.sh)).
+It is not part of T01–T88. `P03`, `P04` and `P05` depended on proxy topologies
+and leave that suite. The cells below carry part of their assertions with their
+own checks, unchanged; the last column names the part no cell carries. The
+transport gate policy records the same mapping.
 
-| Case | Topology | Proxy-dependent | Candidate keeper, for a separate decision |
-|---|---|---|---|
-| P01, P02 | direct adapter ENS, ENH; `unsupported_or_misconfigured` | no | unchanged |
-| P03 | proxy single-client ENS/ENS; `required` | yes | `ENS-AD03` with `ENS-AD02` |
-| P04 | proxy dual-client ENS; `required` | yes | `ENS-AD03` under `ENS-CX01` load |
-| P05 | proxy dual-client ENH; `required` | yes | `ENH-AD03` under `ENH-CX01` load |
-| P06 | via ebusd-tcp ENS; `unsupported_or_misconfigured` | no | unchanged |
+| Case | Topology | Proxy-dependent | Cells that carry part of it | Part no cell carries |
+|---|---|---|---|---|
+| P01, P02 | direct adapter ENS, ENH; `unsupported_or_misconfigured` | no | unchanged | — |
+| P03 | proxy single-client ENS/ENS; `required` | yes | `ENS-AD02` and `ENS-AD03`: passive tap connected, zero self-echo, third-party traffic reconstructed | the `required` discovery check (devices list, warmup, capability probes) |
+| P04 | proxy dual-client ENS; `required` | yes | `ENS-CX01`: the external client on the proxy listener, no escape-pair verification failure | the passive path and the `required` discovery check while an external client runs |
+| P05 | proxy dual-client ENH; `required` | yes | `ENH-CX01`, as `ENS-CX01` | as P04, southbound ENH |
+| P06 | via ebusd-tcp ENS; `unsupported_or_misconfigured` | no | unchanged | — |
 
-Until that decision, the passive gate and its own owner override
-(`PASSIVE_SMOKE_GATE_OWNER_OVERRIDE`, `PASSIVE_SMOKE_GATE_OWNER_REASON`) are
-untouched by this plan.
+Each cell runs in its own window; `ENS-CX01` and `ENH-CX01` are not a load on
+`ENS-AD03` or `ENH-AD03`. The passive gate keeps its own owner override
+(`PASSIVE_SMOKE_GATE_OWNER_OVERRIDE`, `PASSIVE_SMOKE_GATE_OWNER_REASON`).

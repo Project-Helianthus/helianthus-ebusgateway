@@ -70,37 +70,61 @@ func TestGeneratePassiveSmokeCases(t *testing.T) {
 	t.Parallel()
 
 	cases := GeneratePassiveSmokeCases()
-	if len(cases) != 6 {
-		t.Fatalf("len(cases) = %d; want 6", len(cases))
+	if len(cases) != 3 {
+		t.Fatalf("len(cases) = %d; want 3", len(cases))
 	}
 
-	want := []struct {
-		id          string
-		kind        TopologyKind
-		transport   Transport
-		passiveMode string
-	}{
-		{id: "P01", kind: TopologyDirectAdapter, transport: TransportENS, passiveMode: "unsupported_or_misconfigured"},
-		{id: "P02", kind: TopologyDirectAdapter, transport: TransportENH, passiveMode: "unsupported_or_misconfigured"},
-		{id: "P03", kind: TopologyProxySingle, transport: TransportENS, passiveMode: "required"},
-		{id: "P04", kind: TopologyProxyDual, transport: TransportENS, passiveMode: "required"},
-		{id: "P05", kind: TopologyProxyDual, transport: TransportENH, passiveMode: "required"},
-		{id: "P06", kind: TopologyViaEbusdTCP, transport: TransportEbusdTCP, passiveMode: "unsupported_or_misconfigured"},
+	want := []TopologyCase{
+		{
+			ID:               "P01",
+			Kind:             TopologyDirectAdapter,
+			GatewayTransport: TransportENS,
+			PassiveMode:      "unsupported_or_misconfigured",
+		},
+		{
+			ID:               "P02",
+			Kind:             TopologyDirectAdapter,
+			GatewayTransport: TransportENH,
+			PassiveMode:      "unsupported_or_misconfigured",
+		},
+		{
+			ID:               "P06",
+			Kind:             TopologyViaEbusdTCP,
+			GatewayTransport: TransportEbusdTCP,
+			EbusdTransport:   TransportENS,
+			UsesEbusd:        true,
+			PassiveMode:      "unsupported_or_misconfigured",
+		},
 	}
 
 	for index, expected := range want {
 		candidate := cases[index]
-		if candidate.ID != expected.id {
-			t.Fatalf("cases[%d].ID = %q; want %q", index, candidate.ID, expected.id)
+		if candidate.ID != expected.ID {
+			t.Fatalf("cases[%d].ID = %q; want %q", index, candidate.ID, expected.ID)
 		}
-		if candidate.Kind != expected.kind {
-			t.Fatalf("cases[%d].Kind = %q; want %q", index, candidate.Kind, expected.kind)
+		if candidate.Kind != expected.Kind {
+			t.Fatalf("cases[%d].Kind = %q; want %q", index, candidate.Kind, expected.Kind)
 		}
-		if candidate.GatewayTransport != expected.transport {
-			t.Fatalf("cases[%d].GatewayTransport = %q; want %q", index, candidate.GatewayTransport, expected.transport)
+		if candidate.GatewayTransport != expected.GatewayTransport {
+			t.Fatalf("cases[%d].GatewayTransport = %q; want %q", index, candidate.GatewayTransport, expected.GatewayTransport)
 		}
-		if candidate.PassiveMode != expected.passiveMode {
-			t.Fatalf("cases[%d].PassiveMode = %q; want %q", index, candidate.PassiveMode, expected.passiveMode)
+		if candidate.ProxyTransport != expected.ProxyTransport {
+			t.Fatalf("cases[%d].ProxyTransport = %q; want %q", index, candidate.ProxyTransport, expected.ProxyTransport)
+		}
+		if candidate.EbusdTransport != expected.EbusdTransport {
+			t.Fatalf("cases[%d].EbusdTransport = %q; want %q", index, candidate.EbusdTransport, expected.EbusdTransport)
+		}
+		if candidate.UsesProxy != expected.UsesProxy {
+			t.Fatalf("cases[%d].UsesProxy = %v; want %v", index, candidate.UsesProxy, expected.UsesProxy)
+		}
+		if candidate.UsesEbusd != expected.UsesEbusd {
+			t.Fatalf("cases[%d].UsesEbusd = %v; want %v", index, candidate.UsesEbusd, expected.UsesEbusd)
+		}
+		if candidate.EbusdViaProxy != expected.EbusdViaProxy {
+			t.Fatalf("cases[%d].EbusdViaProxy = %v; want %v", index, candidate.EbusdViaProxy, expected.EbusdViaProxy)
+		}
+		if candidate.PassiveMode != expected.PassiveMode {
+			t.Fatalf("cases[%d].PassiveMode = %q; want %q", index, candidate.PassiveMode, expected.PassiveMode)
 		}
 	}
 }
@@ -120,8 +144,11 @@ func TestCasesForSuite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CasesForSuite(passive) error = %v", err)
 	}
-	if len(passive) != 6 {
-		t.Fatalf("len(passive) = %d; want 6", len(passive))
+	if len(passive) != 3 {
+		t.Fatalf("len(passive) = %d; want 3", len(passive))
+	}
+	if passive[0].ID != "P01" || passive[1].ID != "P02" || passive[2].ID != "P06" {
+		t.Fatalf("passive ids = %q %q %q; want P01 P02 P06", passive[0].ID, passive[1].ID, passive[2].ID)
 	}
 
 	if _, err := CasesForSuite("unknown"); err == nil {

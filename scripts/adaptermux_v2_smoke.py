@@ -18,12 +18,16 @@ identifier at that moment; without it the cell fails. The operator then resets t
 disconnects and reconnects its host link (AD09) inside the case window. A hold
 that a reading shows fails the cell. A hold raised and cleared between
 readings is not provable with a sampled gauge: the report records that limit
-and the cell passes when every provable requirement holds. Resumption counts
-only after the reading that shows the discontinuity. The discontinuity,
-reconnect, contended-selection and retained-bid series are not published by
-this gateway: each absent series is recorded as not provable, and the cell
-passes when every requirement the published series can prove holds. A bus
-that stays quiet still fails.
+and the cell passes when every provable requirement holds. Resumption is
+measured from the reading before the one that first shows the discontinuity,
+so a recovery that falls between the same two readings as the discontinuity
+counts. The pass criteria of AD04 and AD09 read the discontinuity and
+reconnect series, and the pass criterion of AD07 reads the contended-selection
+and retained-bid series. This gateway does not publish them: a cell whose
+series is absent ends with signal_missing (status 4) after its first reading,
+before any operator action is announced and before the readiness file is
+created, and never passes; no other requirement stands in for the series. A
+bus that stays quiet still fails.
 
 It never sends a mutation, never calls a tool that writes and never invokes a
 bus method. Every run writes one JSON object, smoke_evidence.json, into the
@@ -81,9 +85,9 @@ MUX_ENDINGS = "ebus_adaptermux_transaction_endings_total"
 MUX_FOREIGN = "ebus_adaptermux_foreign_initiator_releases_total"
 MUX_ESCAPE = "ebus_adaptermux_escape_pair_verify_failures_total"
 MUX_HELD = "ebus_adaptermux_active_arbitration_held"
-# Series AD04, AD07 and AD09 would read that this gateway does not publish.
-# An absent one is not provable: the cell records the limit and does not
-# fail, and does not exit with a missing signal, solely because it is absent.
+# Series AD04, AD07 and AD09 read that this gateway does not publish. The
+# pass criterion of each of those cells reads them, so an absent one ends the
+# cell with signal_missing after its first reading.
 MUX_SESSION_DISCONTINUITIES = "ebus_adaptermux_session_discontinuities_total"
 MUX_UPSTREAM_RECONNECTS = "ebus_adaptermux_upstream_reconnects_total"
 MUX_CONTENDED_SELECTIONS = "ebus_adaptermux_contended_selections_total"

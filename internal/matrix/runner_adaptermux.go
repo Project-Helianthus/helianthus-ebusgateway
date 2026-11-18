@@ -971,6 +971,14 @@ func (fence *infoFence) consumeErrorHost() bool {
 // that selected and wrote the bid has returned. Silence is not proof: on a
 // busy bus the bid may still be queued. A STARTED or FAILED before the
 // proof, or buffered with it, is returned as answered, not as an error.
+//
+// Recorded limit: the mux takes the bid snapshot of a SYN before it
+// releases its state lock to deliver that SYN, so a START queued in between
+// is answered by the INFO fence first while that SYN's grant step leaves it
+// queued; a grant step that declines at an admission or selection gate
+// leaves it queued as well. The ENH stream does not tell these rare cases
+// from a forwarded bid, so the proof can pass on a queued bid until the mux
+// exposes a hand-off signal the runner can read.
 func awaitBidForwarded(session *enhContenderSession, fence *infoFence) (bidForwarded, error) {
 	saved := session.timeout
 	defer func() { session.timeout = saved }()

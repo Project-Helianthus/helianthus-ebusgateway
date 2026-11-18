@@ -13,6 +13,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
+	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
 )
 
 // fakeExplorerEnv turns the test binary into a fake VRC Explorer: it parses
@@ -737,5 +740,99 @@ func TestAdapterMuxV2ExplorerScanIsGuarded(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.FromSlash(record.Record.LogFile)); err != nil {
 		t.Fatalf("explorer log: %v", err)
+	}
+}
+
+// awaitBidForwarded takes the bid as in flight once a received symbol
+// follows a SYN that arrived after the whole INFO answer. On a bus that
+// carries only SYNs, the SYN after the selecting SYN is that proof, and a
+// STARTED read after it does not turn the attempt into an answered one. A
+// result before the proof, or in the same read as the proof, is the answer.
+func TestBidInFlightOnceASymbolFollowsASYNAfterTheINFOAnswer(t *testing.T) {
+	t.Parallel()
+
+	info := []transport.ENHMessage{
+		{Command: transport.ENHResInfo, Data: 0x02},
+		{Command: transport.ENHResInfo, Data: 0x01},
+		{Command: transport.ENHResInfo, Data: 0x02},
+	}
+	errorHost := []transport.ENHMessage{{Command: transport.ENHResErrorHost}}
+	received := func(symbols ...byte) []transport.ENHMessage {
+		messages := make([]transport.ENHMessage, 0, len(symbols))
+		for _, symbol := range symbols {
+			messages = append(messages, transport.ENHMessage{Command: transport.ENHResReceived, Data: symbol})
+		}
+		return messages
+	}
+	started := []transport.ENHMessage{{Command: transport.ENHResStarted, Data: 0xF7}}
+	join := func(parts ...[]transport.ENHMessage) []transport.ENHMessage {
+		var all []transport.ENHMessage
+		for _, part := range parts {
+			all = append(all, part...)
+		}
+		return all
+	}
+	syn := protocol.SymbolSyn
+	// Each element of writes is one write on the pipe, so one read of the
+	// contender.
+	cases := []struct {
+		name     string
+		writes   [][]transport.ENHMessage
+		inFlight bool
+		answered transport.ENHCommand
+	}{
+		{name: "quiet bus: selecting SYN, next SYN, then STARTED",
+			writes: [][]transport.ENHMessage{info, received(syn), received(syn), started}, inFlight: true},
+		{name: "SYN after an ERROR_HOST answer and one symbol after it",
+			writes: [][]transport.ENHMessage{errorHost, received(syn), received(syn)}, inFlight: true},
+		{name: "SYN after the answer and a bus symbol after it",
+			writes: [][]transport.ENHMessage{info, received(syn), received(0x10)}, inFlight: true},
+		{name: "SYN before the answer and one SYN after it",
+			writes: [][]transport.ENHMessage{received(syn), info, received(syn)}},
+		{name: "bus symbol after the answer and one SYN after it",
+			writes: [][]transport.ENHMessage{info, received(0x10), received(syn)}},
+		{name: "STARTED after the SYN, before the proof",
+			writes: [][]transport.ENHMessage{info, received(syn), started}, answered: transport.ENHResStarted},
+		{name: "STARTED in the same read as the proof",
+			writes: [][]transport.ENHMessage{info, join(received(syn, syn), started)}, answered: transport.ENHResStarted},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			client, server := net.Pipe()
+			defer func() { _ = client.Close() }()
+			go func() {
+				defer func() { _ = server.Close() }()
+				for _, messages := range tc.writes {
+					var data []byte
+					for _, message := range messages {
+						frame := transport.EncodeENH(message.Command, message.Data)
+						data = append(data, frame[:]...)
+					}
+					if _, err := server.Write(data); err != nil {
+						return
+					}
+				}
+			}()
+			session := &enhContenderSession{ctx: context.Background(), conn: client, timeout: 5 * time.Second}
+			var fence infoFence
+			fence.sent()
+			forwarded, err := awaitBidForwarded(session, &fence)
+			switch {
+			case tc.answered != 0:
+				if err != nil || !forwarded.answered || forwarded.message.Command != tc.answered {
+					t.Fatalf("forwarded %+v, err %v; want the result 0x%X as the answer", forwarded, err, byte(tc.answered))
+				}
+			case tc.inFlight:
+				if err != nil || forwarded.answered {
+					t.Fatalf("forwarded %+v, err %v; want the bid in flight", forwarded, err)
+				}
+			default:
+				if err == nil || forwarded.answered || !strings.Contains(err.Error(), "listener closed") {
+					t.Fatalf("forwarded %+v, err %v; the bid was taken as in flight without a symbol after a SYN that followed the INFO answer", forwarded, err)
+				}
+			}
+		})
 	}
 }

@@ -2,6 +2,7 @@ package teslaobserve
 
 import (
 	"context"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -82,10 +83,70 @@ func TestTeslaObservePassiveBaselineIsUnreadyAndScriptedExchangeIsReady(t *testi
 		passive.State != string(tesla.Gen3ReadLifecycleUnavailable) {
 		t.Fatalf("passive baseline replay = %+v", passive)
 	}
-	scripted := replayLifecycle(context.Background(), scriptedActivation{}, observation.Endpoint, nil)
+	fresh := newHookHarness(t, segmentsAt(syntheticFragments, syntheticOffsets, 5))
+	freshObservation := fresh.observe(t)
+	scripted := replayLifecycle(context.Background(), scriptedActivation{observationReport{endpoint: fresh.endpoint, observation: freshObservation}}, freshObservation.Endpoint, nil)
 	if !scripted.Ready || scripted.FramesSent != 0 || scripted.AcquireRefused ||
 		scripted.State != string(tesla.Gen3ReadLifecycleReady) {
 		t.Fatalf("scripted exchange replay = %+v", scripted)
+	}
+}
+
+// On the scripted pass, where the unvaried baseline reaches readiness, each
+// negative control must be refused by the property it names rather than by
+// the passive driver's unconditional refusal.
+func TestTeslaObserveNegativeControlsAreRefusedByTheirVariation(t *testing.T) {
+	cause := map[string]string{
+		"missing_sequence":          "incomplete: deadline",
+		"partial_sequence":          "incomplete: deadline",
+		"reordered_segments":        "unexpected activation report",
+		"wrong_direction":           "non-receive segment",
+		"leading_unrelated_byte":    "unexpected activation report",
+		"segment_exhaustion":        "incomplete: segment_bound",
+		"late_return_at_deadline":   "incomplete: deadline",
+		"canceled_before_commit":    "context canceled",
+		"prior_generation":          ErrNotCurrent.Error(),
+		"close_before_commit":       ErrClosed.Error(),
+		"expired_activation_window": "deadline exceeded",
+		"reused_observation":        ErrNotCurrent.Error(),
+	}
+	scripted := func(report observationReport) tesla.HSCActivationDriver { return scriptedActivation{report} }
+	for index, control := range controlCases() {
+		replay, _, ok := replayControl(context.Background(), uint64(index+1), control, scripted)
+		if !ok {
+			t.Fatalf("%s: no observation", control.name)
+		}
+		if control.row == ControlRowPositive {
+			if !replay.Ready || replay.FramesSent != 0 {
+				t.Fatalf("%s: scripted pass = %+v", control.name, replay)
+			}
+			continue
+		}
+		want, ok := cause[control.name]
+		if !ok {
+			t.Fatalf("unexpected control %s", control.name)
+		}
+		if replay.Ready || !replay.AcquireRefused || replay.FramesSent != 0 ||
+			!strings.Contains(replay.Error, want) || strings.Contains(replay.Error, errPassiveNoHostEcho.Error()) {
+			t.Fatalf("%s: scripted pass = %+v, want cause %q", control.name, replay, want)
+		}
+	}
+}
+
+// A negative control whose variation is removed reaches readiness on the
+// scripted pass and no longer passes, so a pass depends on the variation.
+func TestTeslaObserveControlWithoutItsVariationFails(t *testing.T) {
+	baseline := segmentsAt(syntheticFragments, syntheticOffsets, 5)
+	for index, control := range controlCases() {
+		if control.row == ControlRowPositive {
+			continue
+		}
+		control.script, control.termination = baseline, TerminationCaptured
+		control.mutate, control.before, control.lifecycleNow, control.reuse = nil, nil, nil, false
+		result := runControl(context.Background(), uint64(index+1), control)
+		if result.Pass || !result.Ready || result.FramesSent != 0 {
+			t.Fatalf("%s without its variation = %+v", control.name, result)
+		}
 	}
 }
 

@@ -76,17 +76,27 @@ never calls an acquisition on a ready lifecycle. The replay result is stored
 beside the attempt, not in the ordered evidence rows, and is labeled an
 offline comparison that is not activation evidence. The run transmits nothing.
 
-Every run also executes thirteen synthetic offline controls. The positive
-control is a scripted exchange: the responder greeting, the host echo of that
-greeting, and the confirmation are synthetic input through the same lifecycle
-and the same control endpoint. That exchange can reach offline readiness and
-sends no frames. Every observation-derived control, including the former
-fragmented baseline, expects the lifecycle not ready. The negative controls
-are: missing, partial, reordered, wrong direction, leading unrelated byte,
-segment exhaustion, late return, cancellation before commit, prior
-generation, close before commit, expired activation window and a reused
-observation. Each keeps its own termination expectation. Every control ends
-with zero frames sent.
+Every run also executes thirteen synthetic offline controls. Each control
+observes its synthetic input twice, on two fresh endpoint instances, because
+an observation can be used once, and applies its variation to both. The
+first observation goes through the passive driver that every attempt uses.
+Every control, including the former fragmented baseline, expects the
+lifecycle not ready on that pass. The second observation goes through a
+scripted exchange, used only by the controls, through the same lifecycle and
+the same control endpoint. The scripted exchange makes the same label,
+instance, generation, termination, receive-only segment and currentness
+checks. It then splits the synthetic window at the greeting length into the
+responder greeting and the confirmation, and places a scripted host echo of
+that greeting between them. The echo is synthetic input, not a write. That
+pass decides the control's readiness. The positive control, the unvaried
+fragmented baseline, reaches offline readiness on it. Each negative control
+must stay not ready on it, so its rejection is caused by the property it
+names and not by the passive refusal. The negative controls are: missing,
+partial, reordered, wrong direction, leading unrelated byte, segment
+exhaustion, late return, cancellation before commit, prior generation, close
+before commit, expired activation window and a reused observation. Each
+keeps its own termination expectation. Every control ends with zero frames
+sent. No attempt is replayed through the scripted exchange.
 
 ## Worksheet rows
 
@@ -97,7 +107,7 @@ row wording:
 | --- | --- |
 | Preconditions and observation bounds (nine rows) | Tool facts (method, bounds, NO_SEND allowlist with zero frames sent) are graded Proven; serial format at the device, family version, prior state, other initiators and authorization stay Unknown or Hypothesis from the operator's per-attempt record |
 | Ordered native evidence | One row per observed segment, plus overflow and empty-window rows. Bytes, completeness, offsets and gaps come from the observation; direction is receive with sender Unknown; framing is Unknown |
-| Independent repeats and negative controls (seven rows) | Initial, recovery and idle rows summarize attempts of that case and stay Unknown pending review; the two offline rows are Proven only when every control and the positive control pass; visibility and contradiction rows list incomplete and differing windows |
+| Independent repeats and negative controls (seven rows) | Initial, recovery and idle rows summarize attempts of that case and stay Unknown pending review; the two offline rows are Proven only when every control passes both passes and the positive control reaches readiness on the scripted pass; visibility and contradiction rows list incomplete and differing windows |
 | Review disposition (five rows) | Always Unknown; the run never fills review fields |
 
 ## Running an observation

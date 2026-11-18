@@ -57,49 +57,67 @@ type observationReport struct {
 	endpoint    *Endpoint
 	observation Observation
 	// before runs immediately before the currentness check; controls use it
-	// to place a fence, close or cancellation ahead of the commit.
+	// to place a fence, close, cancellation or expiry ahead of the commit.
 	before func()
 }
 
-func (report observationReport) DriveTeslaHSCActivation(ctx context.Context, request tesla.HSCActivationRequest) (tesla.HSCActivationReport, error) {
+// admit makes every check the passive driver makes: label, epoch,
+// termination, receive-only segments and currentness under the endpoint
+// mutex. It consumes the observation.
+func (report observationReport) admit(ctx context.Context, request tesla.HSCActivationRequest) error {
 	if request.Endpoint != report.observation.Endpoint || request.Epoch == 0 {
-		return tesla.HSCActivationReport{}, ErrNotCurrent
+		return ErrNotCurrent
 	}
 	if report.observation.Termination != TerminationCaptured {
-		return tesla.HSCActivationReport{}, errors.New("tesla activation observation is incomplete: " + string(report.observation.Termination))
+		return errors.New("tesla activation observation is incomplete: " + string(report.observation.Termination))
 	}
 	for _, segment := range report.observation.Segments {
 		if segment.Direction != DirectionReceive {
-			return tesla.HSCActivationReport{}, errors.New("tesla activation observation has a non-receive segment")
+			return errors.New("tesla activation observation has a non-receive segment")
 		}
 	}
 	if report.before != nil {
 		report.before()
 	}
-	err := report.endpoint.WithCurrent(ctx, report.observation, func() error { return nil })
-	if err != nil {
-		return tesla.HSCActivationReport{}, err
-	}
-	return tesla.HSCActivationReport{}, errors.New("passive observation has no host echo")
+	return report.endpoint.WithCurrent(ctx, report.observation, func() error { return nil })
 }
 
-// scriptedActivation is synthetic input for the positive offline control:
-// the responder greeting, the host echo of that greeting, and the
-// confirmation. The echo is not a write. The owned endpoint is not used,
-// so the control endpoint's exchange method is not called.
-type scriptedActivation struct{}
+func (report observationReport) DriveTeslaHSCActivation(ctx context.Context, request tesla.HSCActivationRequest) (tesla.HSCActivationReport, error) {
+	if err := report.admit(ctx, request); err != nil {
+		return tesla.HSCActivationReport{}, err
+	}
+	return tesla.HSCActivationReport{}, errPassiveNoHostEcho
+}
 
-func (scriptedActivation) DriveTeslaHSCActivation(ctx context.Context, request tesla.HSCActivationRequest) (tesla.HSCActivationReport, error) {
-	if ctx == nil || ctx.Err() != nil || request.Endpoint == "" || request.Epoch == 0 || request.Owned == nil {
+var errPassiveNoHostEcho = errors.New("passive observation has no host echo")
+
+// scriptedActivation is synthetic input for the offline controls only; an
+// attempt is never replayed through it. After the same admission as the
+// passive driver, the synthetic window is split at the greeting length into
+// the responder greeting and the responder confirmation, and a scripted host
+// echo of the received greeting is placed between them. The echo is input,
+// not a write: the owned endpoint is not used, so the control endpoint's
+// exchange method is not called. The unvaried synthetic baseline reaches
+// readiness here, so a control that stays not ready on this path is rejected
+// by the property it varies.
+type scriptedActivation struct{ observationReport }
+
+func (script scriptedActivation) DriveTeslaHSCActivation(ctx context.Context, request tesla.HSCActivationRequest) (tesla.HSCActivationReport, error) {
+	if request.Owned == nil {
 		return tesla.HSCActivationReport{}, ErrNotCurrent
 	}
-	greeting := tesla.HSCActivationGreeting()
+	if err := script.admit(ctx, request); err != nil {
+		return tesla.HSCActivationReport{}, err
+	}
+	window := script.observation.Window()
+	split := min(len(tesla.HSCActivationGreeting()), len(window))
+	greeting := append([]byte(nil), window[:split]...)
 	return tesla.HSCActivationReport{
-		ClockEpoch: syntheticClockEpoch,
+		ClockEpoch: script.observation.ClockEpoch,
 		Events: []tesla.HSCActivationEvent{
 			{Kind: tesla.HSCActivationEventGreeting, Bytes: greeting, LastByteOffset: time.Millisecond},
-			{Kind: tesla.HSCActivationEventEcho, Bytes: tesla.HSCActivationGreeting(), LastByteOffset: 2 * time.Millisecond, Turnaround: time.Millisecond, WriteDuration: time.Millisecond},
-			{Kind: tesla.HSCActivationEventConfirmation, Bytes: tesla.HSCActivationConfirmation(), LastByteOffset: 3 * time.Millisecond},
+			{Kind: tesla.HSCActivationEventEcho, Bytes: append([]byte(nil), greeting...), LastByteOffset: 2 * time.Millisecond, Turnaround: time.Millisecond, WriteDuration: time.Millisecond},
+			{Kind: tesla.HSCActivationEventConfirmation, Bytes: append([]byte(nil), window[split:]...), LastByteOffset: 3 * time.Millisecond},
 		},
 	}, nil
 }

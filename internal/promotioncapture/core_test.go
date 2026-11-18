@@ -1,9 +1,12 @@
 package promotioncapture
 
 import (
+	"bytes"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -20,8 +23,12 @@ func TestEmbeddedRegistryIsPinnedAndClosed(t *testing.T) {
 	if digest != RegistrySHA256 {
 		t.Fatalf("embedded registry digest = %s, want %s", digest, RegistrySHA256)
 	}
-	if RegistrySHA256 != "sha256:00ceefc05439e9aec5830b640661cdc6be2b503f9365eed437e3dbffdf6d0678" {
-		t.Fatalf("unexpected pinned digest %q", RegistrySHA256)
+	onDisk, err := os.ReadFile(registryPath)
+	if err != nil {
+		t.Fatalf("read registry source: %v", err)
+	}
+	if fileDigest := fmt.Sprintf("sha256:%x", sha256.Sum256(onDisk)); fileDigest != RegistrySHA256 {
+		t.Fatalf("registry source digest = %s, pinned %s", fileDigest, RegistrySHA256)
 	}
 
 	registry := mustRegistry(t)
@@ -591,5 +598,47 @@ func TestCandidateCopiesDoNotAliasNestedRegistryData(t *testing.T) {
 	first.MappingProfile.Pairs[0].Normalized = []byte(`"changed"`)
 	if reflect.DeepEqual(first.MappingProfile.Pairs, second.MappingProfile.Pairs) {
 		t.Fatal("Candidate returned nested mutable registry storage")
+	}
+}
+
+func TestIssue1694RegistryRejectsUndeclaredLeafStatusAndLockedVisibility(t *testing.T) {
+	decode := func(t *testing.T) registryDocument {
+		t.Helper()
+		decoder := json.NewDecoder(bytes.NewReader(EmbeddedRegistryBytes()))
+		decoder.DisallowUnknownFields()
+		var document registryDocument
+		if err := decoder.Decode(&document); err != nil {
+			t.Fatalf("decode registry: %v", err)
+		}
+		return document
+	}
+	if err := validateRegistryDocument(decode(t)); err != nil {
+		t.Fatalf("embedded registry rejected: %v", err)
+	}
+	cases := map[string]func(*registryDocument){
+		"cross-protocol leaf raw only": func(document *registryDocument) { document.CandidateCatalog[4].SourceStatus = "RAW_ONLY" },
+		"native leaf withheld":         func(document *registryDocument) { document.CandidateCatalog[18].SourceStatus = SourceStatusWithheld },
+		"retired candidate declared": func(document *registryDocument) {
+			document.CandidateCatalog[0].SourceStatus = SourceStatusSpecificationDeclared
+		},
+		"positive visibility locked": func(document *registryDocument) { document.PositiveVisibility = "LOCKED_NOT_EXPOSED" },
+		"withheld visibility published": func(document *registryDocument) {
+			document.WithheldVisibility = VisibilityPublished
+		},
+		"verification level missing": func(document *registryDocument) {
+			document.VerificationLevels = document.VerificationLevels[:2]
+		},
+		"verification level reordered": func(document *registryDocument) {
+			document.VerificationLevels[0], document.VerificationLevels[2] = document.VerificationLevels[2], document.VerificationLevels[0]
+		},
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			document := decode(t)
+			mutate(&document)
+			if err := validateRegistryDocument(document); err == nil {
+				t.Fatal("mutated registry accepted")
+			}
+		})
 	}
 }

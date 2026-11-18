@@ -17,22 +17,23 @@ import (
 	"testing"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/candidatefacts"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/promotioncapture"
 )
 
 const (
 	syntheticProfileV1 = "SYNTHETIC_CONFORMANCE"
-	capturedProfileV1  = "CAPTURED_RUNTIME_ZERO_PROMOTION"
+	declaredProfileV1  = "DECLARED_FROM_SPECIFICATION"
 	resultContractV1   = "helianthus.platform.leaf-promotion-lock-result.v1"
 )
 
-var executableArtifactsV1 = map[string]string{
-	"docs/platform/schemas/leaf-promotion-dossier-v1.schema.json":                                  "ee206ea23d595169d7dec2dd305250a1fd7320a630f89b3b9826b5098e3e1f74",
-	"docs/platform/schemas/leaf-promotion-captured-assessment-v1.schema.json":                      "dc2ef02d81d5791ed363f1b18b87874400ab195fcc5463217bef3d165ca19731",
-	"docs/platform/schemas/leaf-promotion-lock-result-v1.schema.json":                              "f0da41bc87618bebc2a44b2192e7c7f3b41f75e94108d87e92122a16f5e19a54",
-	"docs/platform/schemas/leaf-promotion-registry-v1.json":                                        "ad33736c00aa2c3ecaac981606d25c064088c80cb72ca5389b83c5d9df40f6a3",
-	"docs/platform/fixtures/leaf-promotion-dossier/v1/positive/dossier.json":                       "1f97fc824b88cd7a950488dd27a6cd26ffa7977a3355d3009de3759535ffb6c0",
-	"docs/platform/fixtures/leaf-promotion-dossier/v1/positive/result.json":                        "a8175dd33822a3174d74c9fae9541a3af4ba6a7a9cc0572ab6796e0e9d979d0c",
-	"docs/platform/fixtures/leaf-promotion-dossier/v1/positive/captured-runtime-zero-profile.json": "9b3f2643cb46e45b9b7c890f1ecca27b29942cd91419afb96b30c82912f68cc7",
+var executableArtifactsV1 = []string{
+	"docs/platform/schemas/leaf-promotion-dossier-v1.schema.json",
+	"docs/platform/schemas/leaf-promotion-captured-assessment-v1.schema.json",
+	"docs/platform/schemas/leaf-promotion-lock-result-v1.schema.json",
+	"docs/platform/schemas/leaf-promotion-registry-v1.json",
+	"docs/platform/fixtures/leaf-promotion-dossier/v1/positive/dossier.json",
+	"docs/platform/fixtures/leaf-promotion-dossier/v1/positive/result.json",
+	"docs/platform/fixtures/leaf-promotion-dossier/v1/positive/captured-runtime-zero-profile.json",
 }
 
 func readTestFile(t *testing.T, parts ...string) []byte {
@@ -104,7 +105,7 @@ func syntheticInputs(t *testing.T) InputsV1 {
 func capturedInputsWithSyntheticSources(t *testing.T) InputsV1 {
 	t.Helper()
 	inputs := syntheticInputs(t)
-	setInputString(t, &inputs, "Profile", capturedProfileV1)
+	setInputString(t, &inputs, "Profile", declaredProfileV1)
 	setInputBytes(t, &inputs, "Dossier", nil)
 	setInputBytes(t, &inputs, "M7Graph", readTestFile(t, "..", "candidatefacts", "testdata", "canonical", "positive", "graph.json"))
 	setInputBytes(t, &inputs, "M7Replay", readTestFile(t, "..", "candidatefacts", "testdata", "canonical", "positive", "replay-result.json"))
@@ -150,11 +151,15 @@ func TestMSP085EmbedsExactExecutableArtifacts(t *testing.T) {
 	if canonicalDocsCommitV1 != "bc3f4f949634bfcbe660984e13a97b11bd135eaf" {
 		t.Fatalf("canonical docs commit = %s", canonicalDocsCommitV1)
 	}
-	for path, want := range executableArtifactsV1 {
+	if len(artifactSHA256V1) != len(executableArtifactsV1) || len(embeddedPathV1) != len(executableArtifactsV1) {
+		t.Fatalf("pinned artifacts = %d, embedded paths = %d; want %d", len(artifactSHA256V1), len(embeddedPathV1), len(executableArtifactsV1))
+	}
+	for _, path := range executableArtifactsV1 {
 		raw := contractArtifact(t, path)
-		digest := sha256.Sum256(raw)
-		if got := hex.EncodeToString(digest[:]); got != want {
-			t.Fatalf("%s SHA-256 = %s; want %s", path, got, want)
+		onDisk := readTestFile(t, filepath.FromSlash(embeddedPathV1[path]))
+		digest := sha256.Sum256(onDisk)
+		if got := hex.EncodeToString(digest[:]); got != artifactSHA256V1[path] || !bytes.Equal(raw, onDisk) {
+			t.Fatalf("%s source SHA-256 = %s; pinned %s", path, got, artifactSHA256V1[path])
 		}
 		raw[0] ^= 0xff
 		fresh := contractArtifact(t, path)
@@ -164,56 +169,106 @@ func TestMSP085EmbedsExactExecutableArtifacts(t *testing.T) {
 	}
 }
 
-func TestMSP085CandidateFactsEEBusPathOrderIsPreserved(t *testing.T) {
-	bundle := readTestFile(t, "..", "candidatefacts", "testdata", "canonical", "source", "m625-bundle.json")
-	sourceReplay := readTestFile(t, "..", "candidatefacts", "testdata", "canonical", "source", "m625-source-replay.json")
-	graphRaw, _, err := candidatefacts.BuildRawFirstV1(bundle, sourceReplay)
+func TestMSP085DeclaredAssessmentRecordsSpecificationIdentity(t *testing.T) {
+	registry, err := promotioncapture.DefaultRegistry()
 	if err != nil {
-		t.Fatalf("candidatefacts.BuildRawFirstV1: %v", err)
-	}
-	var candidateGraph candidatefacts.GraphV1
-	if err := json.Unmarshal(graphRaw, &candidateGraph); err != nil {
 		t.Fatal(err)
 	}
-	var validIdentity *candidatefacts.EEBusIdentityV1
-	for index := range candidateGraph.Facts {
-		if candidateGraph.Facts[index].Provenance.EEBus != nil {
-			identity := *candidateGraph.Facts[index].Provenance.EEBus
-			identity.FeaturePath = append([]candidatefacts.EEBusPathSegmentV1(nil), identity.FeaturePath...)
-			validIdentity = &identity
-			break
-		}
-	}
-	if validIdentity == nil {
-		t.Fatal("candidatefacts build produced no valid EEBus path")
-	}
-
 	sources, _ := capturedAssessmentSources(t)
-	var candidateID string
-	for index := range sources.graph.Facts {
-		if sources.graph.Facts[index].Status == "RAW_ONLY" {
-			sources.graph.Facts[index].Provenance.EEBus = validIdentity
-			candidateID = sources.graph.Facts[index].CandidateID
-			break
-		}
-	}
 	assessment, err := buildCapturedAssessment(sources)
 	if err != nil {
 		t.Fatalf("buildCapturedAssessment: %v", err)
 	}
+	crossProtocol := 0
 	for _, item := range assessment.Assessments {
-		if item.CandidateID != candidateID {
-			continue
+		candidate, ok := registry.Candidate(item.CandidateID)
+		if !ok || candidate.SemanticPath == nil || item.SemanticPath != *candidate.SemanticPath {
+			t.Fatalf("assessment %s does not mirror the capture registry", item.CandidateID)
 		}
-		if !item.Eligibility.ExactEEBusPath {
-			t.Fatal("candidatefacts-valid path was not preserved as exact_eebus_path")
+		wantKinds := []string{"EEBUS"}
+		if candidate.ProtocolEligibility == promotioncapture.ProtocolCrossProtocol {
+			crossProtocol++
+			wantKinds = []string{"EBUS", "EEBUS"}
 		}
-		if member("EXACT_EEBUS_PATH_MISSING", item.WithholdingReasons...) {
-			t.Fatalf("candidatefacts-valid path gained EXACT_EEBUS_PATH_MISSING: %v", item.WithholdingReasons)
+		want := eligibilityV1{
+			ExactEBusIdentity: candidate.EBusSelector != nil, ExactEEBusPath: true, CoexistenceNoDrift: true,
 		}
-		return
+		if item.Eligibility != want || item.RetestTrigger.Trigger != "NEW_SYNCHRONIZED_BUNDLE" ||
+			!reflect.DeepEqual(item.RetestTrigger.RequiredSourceKinds, wantKinds) || item.RetestTrigger.MinimumNewSamples != 2 {
+			t.Fatalf("assessment %s = %#v", item.CandidateID, item)
+		}
 	}
-	t.Fatalf("assessment for %s not found", candidateID)
+	if crossProtocol != 11 {
+		t.Fatalf("cross-protocol declared leaves = %d, want 11", crossProtocol)
+	}
+
+	sources.report.Verdict = "FAIL"
+	recorded, err := buildCapturedAssessment(sources)
+	if err != nil {
+		t.Fatalf("a recorded coexistence finding withdrew the declared leaves: %v", err)
+	}
+	for _, item := range recorded.Assessments {
+		if item.Decision != "PROMOTED" || item.Eligibility.CoexistenceNoDrift {
+			t.Fatalf("coexistence finding was not recorded as a level: %#v", item)
+		}
+	}
+}
+
+func TestMSP085DeclaredAssessmentBindsSourceFactHashesAndOrdering(t *testing.T) {
+	sources, _ := capturedAssessmentSources(t)
+	index := -1
+	for position, fact := range sources.graph.Facts {
+		if fact.CandidateID == "m7-candidate-0010" {
+			index = position
+		}
+	}
+	if index < 0 {
+		t.Fatal("source fact m7-candidate-0010 missing")
+	}
+	mismatched, _ := capturedAssessmentSources(t)
+	mismatched.graph.Facts[index].FactHash = "sha256:" + strings.Repeat("0", 64)
+	if _, err := buildCapturedAssessment(mismatched); err == nil || err.Error() != "assessment.derivation" {
+		t.Fatalf("fact hash substitution error = %v; want assessment.derivation", err)
+	}
+	duplicated, _ := capturedAssessmentSources(t)
+	duplicated.graph.Facts = append(duplicated.graph.Facts, duplicated.graph.Facts[index])
+	if _, err := buildCapturedAssessment(duplicated); err == nil || err.Error() != "assessment.ordering" {
+		t.Fatalf("duplicate source fact error = %v; want assessment.ordering", err)
+	}
+	retired, _ := capturedAssessmentSources(t)
+	retired.graph.Facts[0].FactHash = "sha256:" + strings.Repeat("0", 64)
+	if _, err := buildCapturedAssessment(retired); err != nil {
+		t.Fatalf("retired source fact conditioned the declared leaves: %v", err)
+	}
+}
+
+func TestMSP085DeclaredCountsAndConsumerGateAreClosed(t *testing.T) {
+	sources, _ := capturedAssessmentSources(t)
+	result, err := buildManifest(sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateDeclaredCountsV1(result); err != nil {
+		t.Fatalf("declared counts rejected: %v", err)
+	}
+	if consumerGateV1(result.Counts) != M9ReadyV1 || consumerGateV1(CountsV1{Total: 4, Withheld: 4}) != M9BlockedZeroPromotedLeavesV1 {
+		t.Fatal("consumer gate does not follow the promoted count")
+	}
+	for name, mutate := range map[string]func(*ResultV1){
+		"total":    func(value *ResultV1) { value.Counts.Total, value.Counts.Promoted = 17, 17 },
+		"promoted": func(value *ResultV1) { value.Counts.Promoted, value.Counts.Withheld = 17, 1 },
+		"withheld": func(value *ResultV1) { value.Counts.Withheld = 1 },
+		"dossiers": func(value *ResultV1) { value.DossierCount = 1 },
+		"verdict":  func(value *ResultV1) { value.Verdict = VerdictValidZeroPromotionV1 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := result
+			mutate(&changed)
+			if err := validateDeclaredCountsV1(changed); err == nil || err.Error() != "promotion.declared" {
+				t.Fatalf("validateDeclaredCountsV1 error = %v; want promotion.declared", err)
+			}
+		})
+	}
 }
 
 func TestMSP085CapturedProfileBuildVerifyEndToEnd(t *testing.T) {
@@ -228,7 +283,7 @@ func TestMSP085CapturedProfileBuildVerifyEndToEnd(t *testing.T) {
 		t.Fatalf("candidatefacts.BuildRawFirstV1: %v", err)
 	}
 	inputs := InputsV1{
-		Profile:                capturedProfileV1,
+		Profile:                declaredProfileV1,
 		Registry:               contractArtifact(t, "docs/platform/schemas/leaf-promotion-registry-v1.json"),
 		M7Graph:                graph,
 		M7Replay:               replay,
@@ -370,58 +425,32 @@ func TestMSP085CapturedProfileRejectsSyntheticAsLive(t *testing.T) {
 	}
 }
 
-func TestMSP085CapturedResultDerivesAllEighteenPublicAssessments(t *testing.T) {
-	sources, status := capturedAssessmentSources(t)
+func TestMSP085DeclaredResultDerivesAllEighteenPublicAssessments(t *testing.T) {
+	sources, _ := capturedAssessmentSources(t)
 	result, err := buildManifest(sources)
 	if err != nil {
-		t.Fatalf("build captured result: %v", err)
+		t.Fatalf("build declared result: %v", err)
 	}
-	raw, err := json.Marshal(result)
-	if err != nil {
-		t.Fatal(err)
-	}
-	value := decodeObject(t, raw)
-	if value["contract"] != resultContractV1 || value["profile"] != capturedProfileV1 ||
-		value["export_tier"] != "PUBLIC_REDACTED" || value["verdict"] != "VALID_ZERO_PROMOTION" ||
-		value["m9_consumer_gate"] != "BLOCKED_ZERO_PROMOTED_LEAVES" {
-		t.Fatalf("unexpected captured closure: %#v", value)
-	}
-	counts, ok := value["counts"].(map[string]any)
-	if !ok || intField(t, counts, "total") != 18 || intField(t, counts, "promoted") != 0 ||
-		intField(t, counts, "withheld") != 18 || intField(t, value, "dossier_count") != 0 {
-		t.Fatalf("captured counts = %#v, dossier_count = %#v", value["counts"], value["dossier_count"])
+	value := decodeObject(t, mustJSON(t, result))
+	if value["contract"] != resultContractV1 || value["profile"] != declaredProfileV1 || value["export_tier"] != "PUBLIC_REDACTED" {
+		t.Fatalf("unexpected declared closure: %#v", value)
 	}
 	assessments, ok := value["assessments"].([]any)
 	if !ok || len(assessments) != 18 {
 		t.Fatalf("assessments = %T/%d; want 18", value["assessments"], len(assessments))
 	}
-	statusByID := make(map[string]m7PublicStatusFactV1, len(status.Facts))
-	for _, fact := range status.Facts {
-		statusByID[fact.CandidateID] = fact
-	}
-	statusCounts := map[string]int{}
 	for _, rawAssessment := range assessments {
 		assessment := rawAssessment.(map[string]any)
-		candidateID := assessment["candidate_id"].(string)
-		public := statusByID[candidateID]
-		if assessment["fact_hash"] != public.FactHash || assessment["source_status"] != public.Status ||
-			assessment["terminal_state"] != pointerValue(public.TerminalState) || assessment["decision"] != "WITHHELD" {
-			t.Fatalf("assessment %s does not match M7 public status: %#v", candidateID, assessment)
-		}
-		statusCounts[public.Status]++
 		wantKeys := []string{"candidate_id", "decision", "fact_hash", "retest_trigger", "source_status", "terminal_state", "withholding_reasons"}
 		if got := sortedMapKeys(assessment); !reflect.DeepEqual(got, wantKeys) {
 			t.Fatalf("public assessment keys = %v; want %v", got, wantKeys)
 		}
 	}
-	if statusCounts["RAW_ONLY"] != 14 || statusCounts["WITHHELD"] != 4 {
-		t.Fatalf("source statuses = %#v", statusCounts)
-	}
 	if _, exists := value["dossier_id"]; exists {
-		t.Fatal("captured zero-promotion result fabricated a dossier")
+		t.Fatal("declared result fabricated a dossier")
 	}
 	if _, exists := value["leaves"]; exists {
-		t.Fatal("captured result reused the synthetic leaf surface")
+		t.Fatal("declared result reused the synthetic leaf surface")
 	}
 }
 
@@ -444,9 +473,13 @@ func TestMSP085CapturedPublicResultRedactsPrivateIdentity(t *testing.T) {
 			t.Fatalf("public result leaks %q", forbidden)
 		}
 	}
-	for index := 1; index <= 18; index++ {
-		if strings.Contains(lower, fmt.Sprintf("/private/candidate_%04d", index)) {
-			t.Fatalf("public result leaks private semantic path %d", index)
+	registry, err := promotioncapture.DefaultRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range registry.Candidates() {
+		if candidate.SemanticPath != nil && strings.Contains(lower, strings.ToLower(*candidate.SemanticPath)) {
+			t.Fatalf("public result leaks semantic path of %s", candidate.CandidateID)
 		}
 	}
 	if !leaksPrivateIdentityV1([]byte(`{"candidate_ref":"private"}`)) {
@@ -454,7 +487,7 @@ func TestMSP085CapturedPublicResultRedactsPrivateIdentity(t *testing.T) {
 	}
 }
 
-func TestMSP085PrivateAssessmentIsDeterministicAndNeverPromotionEligible(t *testing.T) {
+func TestMSP085PrivateAssessmentIsDeterministicAndPromotesDeclaredLeaves(t *testing.T) {
 	sources, _ := capturedAssessmentSources(t)
 	first, err := buildCapturedAssessment(sources)
 	if err != nil {
@@ -465,45 +498,19 @@ func TestMSP085PrivateAssessmentIsDeterministicAndNeverPromotionEligible(t *test
 		t.Fatalf("private assessment is nondeterministic: %v", err)
 	}
 	if first.Contract != capturedAssessmentContractV1 || first.ExportTier != exportTierPrivateOperatorV1 ||
-		first.Profile != capturedProfileV1 || len(first.Assessments) != 18 || len(first.Dossiers) != 0 ||
-		first.M9ConsumerGate != M9BlockedZeroPromotedLeavesV1 ||
+		first.Profile != declaredProfileV1 || len(first.Assessments) != 18 || len(first.Dossiers) != 0 ||
+		first.M9ConsumerGate != M9ReadyV1 ||
 		first.AssessmentHash != hashWithoutFieldV1(capturedAssessmentHashDomainV1, first, "assessment_hash") {
 		t.Fatalf("invalid private assessment closure: %#v", first)
 	}
-	for _, assessment := range first.Assessments {
-		wantSourceReason := "SOURCE_STATUS_RAW_ONLY"
-		if assessment.SourceStatus == "WITHHELD" {
-			wantSourceReason = "SOURCE_STATUS_WITHHELD"
+	for index, assessment := range first.Assessments {
+		if assessment.Decision != "PROMOTED" || assessment.SourceStatus != promotioncapture.SourceStatusSpecificationDeclared ||
+			assessment.TerminalState != nil || assessment.WithholdingReasons == nil || len(assessment.WithholdingReasons) != 0 {
+			t.Fatalf("declared leaf was not promoted: %#v", assessment)
 		}
-		wantReasons := []string{
-			wantSourceReason,
-			"EXACT_EBUS_IDENTITY_MISSING",
-			"EXACT_EEBUS_PATH_MISSING",
-			"COMPARATOR_NOT_MATCHED",
-			"CAPTURED_EVIDENCE_INELIGIBLE",
+		if index > 0 && first.Assessments[index-1].SemanticPath >= assessment.SemanticPath {
+			t.Fatalf("private assessments are not in semantic-path order at %d", index)
 		}
-		if !reflect.DeepEqual(assessment.WithholdingReasons, wantReasons) || assessment.Decision != "WITHHELD" ||
-			assessment.Eligibility.CapturedEvidenceEligible {
-			t.Fatalf("assessment escaped zero-promotion precedence: %#v", assessment)
-		}
-	}
-
-	fact := sources.graph.Facts[4]
-	fact.Provenance.EBus = &candidatefacts.EBusIdentityV1{Family: "B524"}
-	fact.Provenance.EEBus = &candidatefacts.EEBusIdentityV1{
-		Entity: "private-entity", Service: "private-service", Feature: "private-feature",
-		FeaturePath: []candidatefacts.EEBusPathSegmentV1{
-			{Kind: "SERVICE", Selector: "private-service"},
-			{Kind: "ENTITY", Selector: "private-entity"},
-			{Kind: "FEATURE", Selector: "private-feature"},
-		},
-	}
-	fact.Comparator.Outcome = "MATCH"
-	assessment := assessCandidate(fact, true)
-	if !assessment.Eligibility.ExactEBusIdentity || !assessment.Eligibility.ExactEEBusPath ||
-		!assessment.Eligibility.ComparatorMatch || assessment.Eligibility.CapturedEvidenceEligible ||
-		!reflect.DeepEqual(assessment.WithholdingReasons, []string{"SOURCE_STATUS_RAW_ONLY", "CAPTURED_EVIDENCE_INELIGIBLE"}) {
-		t.Fatalf("RAW_ONLY fact became promotion eligible: %#v", assessment)
 	}
 }
 
@@ -514,10 +521,12 @@ func TestMSP085ProfilesRejectCrossBoundaryAndRegistrySubstitution(t *testing.T) 
 		t.Fatalf("synthetic profile accepted captured input: %v", err)
 	}
 
-	unknown := syntheticInputs(t)
-	unknown.Profile = "CAPTURED_RUNTIME_PROMOTION"
-	if _, err := Build(unknown); err == nil || err.Error() != "captured.input" {
-		t.Fatalf("unknown profile error = %v", err)
+	for _, profile := range []string{"CAPTURED_RUNTIME_PROMOTION", "CAPTURED_RUNTIME_ZERO_PROMOTION"} {
+		unknown := syntheticInputs(t)
+		unknown.Profile = profile
+		if _, err := Build(unknown); err == nil || err.Error() != "captured.input" {
+			t.Fatalf("unknown profile %s error = %v", profile, err)
+		}
 	}
 
 	tampered := capturedInputsWithSyntheticSources(t)
@@ -564,7 +573,7 @@ func TestMSP085ResultValidationIsClosedAndPrecedenceStable(t *testing.T) {
 			raw, _ := json.Marshal(value)
 			return raw
 		}},
-		{"m9_open", "consumer.block", func() []byte {
+		{"m9_open", "consumer.gate", func() []byte {
 			value := decodeObject(t, valid)
 			value["m9_consumer_gate"] = "READY_FOR_M9"
 			raw, _ := json.Marshal(value)
@@ -720,7 +729,7 @@ func TestMSP085CapturedJSONRequiresExactNestedShapesAndForbidsFieldsByPresence(t
 			}
 			decoded, err := decodeResultV1(mutated)
 			if err == nil {
-				err = validateResultShape(decoded, capturedProfileV1)
+				err = validateResultShape(decoded, declaredProfileV1)
 			}
 			if err == nil || err.Error() != "captured.result" {
 				t.Fatalf("captured shape error = %v; want captured.result", err)
@@ -833,10 +842,11 @@ func TestMSP085ProductionPackageHasNoProceduralAuthority(t *testing.T) {
 	}
 }
 
-func TestMSP085DependencyClosureRemainsCandidateFactsAndCoexistenceOnly(t *testing.T) {
+func TestMSP085DependencyClosureRemainsCandidateFactsCoexistenceAndPromotionCapture(t *testing.T) {
 	allowedInternal := map[string]bool{
-		"github.com/Project-Helianthus/helianthus-ebusgateway/internal/candidatefacts": true,
-		"github.com/Project-Helianthus/helianthus-ebusgateway/internal/coexistence":    true,
+		"github.com/Project-Helianthus/helianthus-ebusgateway/internal/candidatefacts":   true,
+		"github.com/Project-Helianthus/helianthus-ebusgateway/internal/coexistence":      true,
+		"github.com/Project-Helianthus/helianthus-ebusgateway/internal/promotioncapture": true,
 	}
 	files, err := filepath.Glob("*.go")
 	if err != nil {
@@ -870,9 +880,87 @@ func TestMSP085DoesNotLeakIntoStableConsumerSurfaces(t *testing.T) {
 			t.Fatal(err)
 		}
 		if bytes.Contains(raw, []byte(resultContractV1)) || bytes.Contains(raw, []byte("internal/promotionlock")) ||
-			bytes.Contains(raw, []byte(capturedProfileV1)) {
+			bytes.Contains(raw, []byte(declaredProfileV1)) {
 			t.Fatalf("promotion lock leaked into stable surface %s", path)
 		}
+	}
+}
+
+func TestIssue1694DeclaredProfileCountsEighteenPromotedLeaves(t *testing.T) {
+	registry, err := promotioncapture.DefaultRegistry()
+	if err != nil {
+		t.Fatalf("promotioncapture.DefaultRegistry: %v", err)
+	}
+	declaredHashes := map[string]string{}
+	for _, candidate := range registry.Candidates() {
+		if candidate.ProtocolEligibility != promotioncapture.ProtocolTerminal {
+			declaredHashes[candidate.CandidateID] = candidate.FactHash
+		}
+	}
+	if len(declaredHashes) != 18 {
+		t.Fatalf("declared leaves in capture registry = %d, want 18", len(declaredHashes))
+	}
+
+	sources, _ := capturedAssessmentSources(t)
+	result, err := buildManifest(sources)
+	if err != nil {
+		t.Fatalf("buildManifest: %v", err)
+	}
+	raw := mustJSON(t, result)
+	value := decodeObject(t, raw)
+	if value["profile"] != "DECLARED_FROM_SPECIFICATION" || value["m9_consumer_gate"] != "READY_FOR_M9" ||
+		value["verdict"] != "VALID_PROMOTION_LOCK" || intField(t, value, "dossier_count") != 0 {
+		t.Fatalf("declared closure = profile %v gate %v verdict %v dossiers %v",
+			value["profile"], value["m9_consumer_gate"], value["verdict"], value["dossier_count"])
+	}
+	counts := value["counts"].(map[string]any)
+	if intField(t, counts, "total") != 18 || intField(t, counts, "promoted") != 18 || intField(t, counts, "withheld") != 0 {
+		t.Fatalf("declared counts = %#v", counts)
+	}
+	assessments, _ := value["assessments"].([]any)
+	seen := map[string]bool{}
+	for _, rawAssessment := range assessments {
+		assessment := rawAssessment.(map[string]any)
+		id := assessment["candidate_id"].(string)
+		reasons, _ := assessment["withholding_reasons"].([]any)
+		if assessment["decision"] != "PROMOTED" || assessment["source_status"] != "SPECIFICATION_DECLARED_PUBLISHED" ||
+			assessment["terminal_state"] != nil || reasons == nil || len(reasons) != 0 ||
+			assessment["fact_hash"] != declaredHashes[id] || seen[id] {
+			t.Fatalf("declared assessment %s = %#v", id, assessment)
+		}
+		seen[id] = true
+	}
+	if len(seen) != len(declaredHashes) {
+		t.Fatalf("declared assessments = %d, want %d", len(seen), len(declaredHashes))
+	}
+	decoded, err := decodeResultV1(raw)
+	if err != nil {
+		t.Fatalf("decodeResultV1: %v", err)
+	}
+	if err := validateResultShape(decoded, "DECLARED_FROM_SPECIFICATION"); err != nil {
+		t.Fatalf("validateResultShape(declared): %v", err)
+	}
+
+	lockRegistry := decodeObject(t, contractArtifact(t, "docs/platform/schemas/leaf-promotion-registry-v1.json"))
+	profiles := lockRegistry["profiles"].(map[string]any)
+	if _, ok := profiles["DECLARED_FROM_SPECIFICATION"]; !ok || len(profiles) != 2 {
+		t.Fatalf("lock registry profiles = %#v", profiles)
+	}
+	if lockRegistry["promoted_visibility"] != "PUBLISHED" || lockRegistry["declared_consumer_gate"] != "READY_FOR_M9" ||
+		lockRegistry["zero_promotion_consumer_gate"] != nil ||
+		lockRegistry["current_evidence_policy"] != "SPECIFICATION_DECLARES_SUPPORT_CAPTURE_RECORDS_VERIFICATION_LEVEL" {
+		t.Fatalf("lock registry declared policy = visibility %v gate %v policy %v",
+			lockRegistry["promoted_visibility"], lockRegistry["declared_consumer_gate"], lockRegistry["current_evidence_policy"])
+	}
+	fixture := decodeObject(t, contractArtifact(t, "docs/platform/fixtures/leaf-promotion-dossier/v1/positive/captured-runtime-zero-profile.json"))
+	expected := fixture["expected_counts"].(map[string]any)
+	if fixture["profile"] != "DECLARED_FROM_SPECIFICATION" || fixture["m9_consumer_gate"] != "READY_FOR_M9" ||
+		intField(t, expected, "total") != 18 || intField(t, expected, "promoted") != 18 || intField(t, expected, "withheld") != 0 {
+		t.Fatalf("declared profile fixture = %#v", fixture)
+	}
+	if fixture["profile"] != value["profile"] || fixture["m9_consumer_gate"] != value["m9_consumer_gate"] ||
+		!reflect.DeepEqual(expected, counts) {
+		t.Fatalf("declared profile fixture %#v differs from the built result counts %#v", fixture, counts)
 	}
 }
 
@@ -936,13 +1024,6 @@ func capturedAssessmentSources(t *testing.T) (verifiedSourcesV1, m7PublicStatusV
 		},
 	}
 	return sources, status
-}
-
-func pointerValue(value *string) any {
-	if value == nil {
-		return nil
-	}
-	return *value
 }
 
 func sortedMapKeys(values map[string]any) []string {

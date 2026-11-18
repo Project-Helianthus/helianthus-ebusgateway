@@ -45,8 +45,9 @@ type registryDocument struct {
 	WindowPhases          []WindowPhase         `json:"window_phases"`
 	ComparatorClasses     []ComparatorClass     `json:"comparator_classes"`
 	TerminalStates        []Outcome             `json:"terminal_states"`
-	PositiveVisibility    string                `json:"positive_visibility"`
-	WithheldVisibility    string                `json:"withheld_visibility"`
+	PositiveVisibility    Visibility            `json:"positive_visibility"`
+	WithheldVisibility    Visibility            `json:"withheld_visibility"`
+	VerificationLevels    []VerificationLevel   `json:"verification_levels"`
 	NumericMatchRule      string                `json:"numeric_match_rule"`
 	NativeMatchRule       string                `json:"native_match_rule"`
 	RequiredWindows       int                   `json:"required_windows"`
@@ -125,11 +126,13 @@ func validateRegistryDocument(document registryDocument) error {
 		document.DocsEEBusSourceCommit != DocsEEBusCommit || document.RequiredWindows != 2 ||
 		document.NumericMatchRule != "ABS_DELTA_LE_DECLARED_SPINE_STEP_INCLUSIVE" ||
 		document.NativeMatchRule != "EXACT_TYPED_PRE_POST_STABILITY" ||
+		document.PositiveVisibility != VisibilityPublished || document.WithheldVisibility != VisibilityRawDebugOnly ||
 		document.CaptureLimits.MaxSkewNS <= 0 || document.CaptureLimits.MaxAgeNS <= 0 {
 		return fmt.Errorf("registry binding: header mismatch")
 	}
 	if !equalWindowPhases(document.WindowPhases, []WindowPhase{PhasePreRestart, PhasePostRestart}) ||
 		!equalComparatorClasses(document.ComparatorClasses, []ComparatorClass{ComparatorNone, ComparatorNumeric, ComparatorEnum, ComparatorBoolean, ComparatorString}) ||
+		!equalVerificationLevels(document.VerificationLevels, []VerificationLevel{VerificationByCapture, VerificationCaptureMismatch, VerificationNotRun}) ||
 		len(document.CandidateCatalog) != 22 {
 		return fmt.Errorf("registry binding: closed catalog metadata mismatch")
 	}
@@ -156,7 +159,7 @@ func validateRegistryDocument(document registryDocument) error {
 func validateCandidateDefinition(candidate CandidateDefinition) error {
 	switch candidate.ProtocolEligibility {
 	case ProtocolTerminal:
-		if candidate.ComparatorClass != ComparatorNone || candidate.TerminalState == nil || candidate.RetirementState == nil ||
+		if candidate.SourceStatus != SourceStatusWithheld || candidate.ComparatorClass != ComparatorNone || candidate.TerminalState == nil || candidate.RetirementState == nil ||
 			*candidate.RetirementState != RetirementTerminalNotALeaf || candidate.ValidationMode != nil ||
 			candidate.EBusSelector != nil || candidate.EBusFallback != nil || candidate.EEBusSource != nil ||
 			candidate.Conversion != nil || candidate.MappingProfile != nil || candidate.SemanticPath != nil {
@@ -187,6 +190,9 @@ func validateCandidateDefinition(candidate CandidateDefinition) error {
 		}
 	default:
 		return fmt.Errorf("unknown protocol eligibility %q", candidate.ProtocolEligibility)
+	}
+	if candidate.SourceStatus != SourceStatusSpecificationDeclared {
+		return fmt.Errorf("leaf source status %q is not declared from the specification", candidate.SourceStatus)
 	}
 
 	source := candidate.EEBusSource
@@ -252,6 +258,18 @@ func cloneCandidate(candidate CandidateDefinition) CandidateDefinition {
 }
 
 func equalWindowPhases(left, right []WindowPhase) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func equalVerificationLevels(left, right []VerificationLevel) bool {
 	if len(left) != len(right) {
 		return false
 	}

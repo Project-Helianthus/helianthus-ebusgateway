@@ -5,18 +5,29 @@ const (
 	capturedAssessmentContractV1 = "helianthus.platform.leaf-promotion-captured-assessment.v1"
 	SchemaVersionV1              = uint64(1)
 
-	ProfileSyntheticConformanceV1  = "SYNTHETIC_CONFORMANCE"
-	ProfileCapturedZeroPromotionV1 = "CAPTURED_RUNTIME_ZERO_PROMOTION"
-	ExportTierPublicRedactedV1     = "PUBLIC_REDACTED"
-	exportTierPrivateOperatorV1    = "PRIVATE_OPERATOR"
-	M9BlockedZeroPromotedLeavesV1  = "BLOCKED_ZERO_PROMOTED_LEAVES"
-	VerdictValidZeroPromotionV1    = "VALID_ZERO_PROMOTION"
-	replayToolV1                   = "leaf-promotion-replay"
+	ProfileSyntheticConformanceV1      = "SYNTHETIC_CONFORMANCE"
+	ProfileDeclaredFromSpecificationV1 = "DECLARED_FROM_SPECIFICATION"
+	ExportTierPublicRedactedV1         = "PUBLIC_REDACTED"
+	exportTierPrivateOperatorV1        = "PRIVATE_OPERATOR"
+	M9BlockedZeroPromotedLeavesV1      = "BLOCKED_ZERO_PROMOTED_LEAVES"
+	M9ReadyV1                          = "READY_FOR_M9"
+	VerdictValidZeroPromotionV1        = "VALID_ZERO_PROMOTION"
+	VerdictValidPromotionLockV1        = "VALID_PROMOTION_LOCK"
+	replayToolV1                       = "leaf-promotion-replay"
+
+	decisionPromotedV1 = "PROMOTED"
+	// declaredLeafCountV1 is the number of leaves the capture registry declares
+	// from the cited specifications; every one counts as promoted.
+	declaredLeafCountV1 = 18
+	// verificationWindowsV1 is the number of capture windows that re-run the
+	// recorded verification of a declared leaf.
+	verificationWindowsV1 = 2
 )
 
-// InputsV1 is the closed V1 boundary for synthetic conformance or captured
-// runtime zero-promotion derivation. Captured inputs mirror coexistence.InputsV1
-// and add the exact generated M8 report.
+// InputsV1 is the closed V1 boundary for synthetic conformance or the declared
+// profile. Declared inputs mirror coexistence.InputsV1 and add the exact
+// generated M8 report; they bind the result to its source artifacts and never
+// condition a declared leaf.
 type InputsV1 struct {
 	Profile  string
 	Registry []byte

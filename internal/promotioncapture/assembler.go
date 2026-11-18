@@ -294,7 +294,7 @@ func assembleCandidate(
 		SemanticPath: cloneStringPointer(definition.SemanticPath), ValidationMode: cloneValidationModePointer(definition.ValidationMode),
 		ComparatorClass: definition.ComparatorClass, EBusIdentity: cloneJSONPointer(pre.EBusIdentity),
 		EEBusIdentity: cloneJSONPointer(pre.EEBusIdentity), Assessments: []Assessment{},
-		Decision: DecisionWithheld, Visibility: VisibilityRawDebugOnly,
+		Decision: DecisionWithheld, Visibility: VisibilityRawDebugOnly, VerificationLevel: VerificationNotRun,
 	}
 	if fixed, ok := definition.FixedOutcome(); ok {
 		terminal := fixed
@@ -304,47 +304,56 @@ func assembleCandidate(
 	if pre.Evaluation.Assessment == nil || post.Evaluation.Assessment == nil {
 		return CampaignCandidate{}, fmt.Errorf("%w: eligible assessment missing", ErrInvalidEvidence)
 	}
+	level, finding, err := recordedVerification(definition.ProtocolEligibility, pre.Evaluation.Outcome, post.Evaluation.Outcome)
+	if err != nil {
+		return CampaignCandidate{}, err
+	}
+	// The leaf is declared from the cited specification and published; the
+	// captured comparison only records its verification level and finding.
 	candidate.Assessments = []Assessment{
 		cloneValue(*pre.Evaluation.Assessment),
 		cloneValue(*post.Evaluation.Assessment),
 	}
-	if definition.ProtocolEligibility == ProtocolEEBusNative {
-		if pre.Evaluation.Outcome == OutcomeNativeValid && post.Evaluation.Outcome == OutcomeNativeValid {
-			candidate.Decision = DecisionPromoted
-			candidate.Visibility = VisibilityLockedNotExposed
-			digest, err := digestWithoutField(DossierDomain, candidate, "dossier_hash")
-			if err != nil {
-				return CampaignCandidate{}, err
-			}
-			candidate.DossierHash = &digest
-			return candidate, nil
-		}
-		if pre.Evaluation.Outcome != OutcomeNativeDrift && pre.Evaluation.Outcome != OutcomeNativeValid ||
-			post.Evaluation.Outcome != OutcomeNativeDrift {
-			return CampaignCandidate{}, fmt.Errorf("%w: invalid native outcomes", ErrInvalidEvidence)
-		}
-		terminal := OutcomeNativeDrift
-		candidate.TerminalState = &terminal
-		return candidate, nil
-	}
-	for _, outcome := range []Outcome{pre.Evaluation.Outcome, post.Evaluation.Outcome} {
-		if outcome != OutcomeMatch {
-			if outcome == OutcomeNotEvaluated || outcome == OutcomeNotComparable {
-				return CampaignCandidate{}, fmt.Errorf("%w: invalid eligible terminal outcome %s", ErrInvalidEvidence, outcome)
-			}
-			terminal := outcome
-			candidate.TerminalState = &terminal
-			return candidate, nil
-		}
-	}
 	candidate.Decision = DecisionPromoted
-	candidate.Visibility = VisibilityLockedNotExposed
+	candidate.Visibility = VisibilityPublished
+	candidate.VerificationLevel = level
+	candidate.TerminalState = finding
 	digest, err := digestWithoutField(DossierDomain, candidate, "dossier_hash")
 	if err != nil {
 		return CampaignCandidate{}, err
 	}
 	candidate.DossierHash = &digest
 	return candidate, nil
+}
+
+// recordedVerification maps the two window outcomes of a declared leaf to its
+// verification level and, when the comparison did not verify, the first
+// non-positive outcome as the recorded finding.
+func recordedVerification(eligibility ProtocolEligibility, pre, post Outcome) (VerificationLevel, *Outcome, error) {
+	if eligibility == ProtocolEEBusNative {
+		if pre == OutcomeNativeValid && post == OutcomeNativeValid {
+			return VerificationByCapture, nil, nil
+		}
+		if pre != OutcomeNativeDrift && pre != OutcomeNativeValid || post != OutcomeNativeDrift {
+			return "", nil, fmt.Errorf("%w: invalid native outcomes", ErrInvalidEvidence)
+		}
+		finding := OutcomeNativeDrift
+		return VerificationCaptureMismatch, &finding, nil
+	}
+	for _, outcome := range []Outcome{pre, post} {
+		if outcome == OutcomeMatch {
+			continue
+		}
+		if outcome == OutcomeNotEvaluated || outcome == OutcomeNotComparable {
+			return "", nil, fmt.Errorf("%w: invalid eligible terminal outcome %s", ErrInvalidEvidence, outcome)
+		}
+		finding := outcome
+		if outcome == OutcomeMismatch {
+			return VerificationCaptureMismatch, &finding, nil
+		}
+		return VerificationNotRun, &finding, nil
+	}
+	return VerificationByCapture, nil, nil
 }
 
 func cloneValidationModePointer(value *ValidationMode) *ValidationMode {

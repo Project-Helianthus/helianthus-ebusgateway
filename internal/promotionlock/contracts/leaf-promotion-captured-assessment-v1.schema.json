@@ -20,7 +20,7 @@
       "const": "helianthus.platform.leaf-promotion-captured-assessment.v1"
     },
     "schema_version": {"const": 1},
-    "profile": {"const": "CAPTURED_RUNTIME_ZERO_PROMOTION"},
+    "profile": {"const": "DECLARED_FROM_SPECIFICATION"},
     "export_tier": {"const": "PRIVATE_OPERATOR"},
     "source_bindings": {"$ref": "#/$defs/SourceBindingsV1"},
     "assessments": {
@@ -33,7 +33,7 @@
       "type": "array",
       "maxItems": 0
     },
-    "m9_consumer_gate": {"const": "BLOCKED_ZERO_PROMOTED_LEAVES"},
+    "m9_consumer_gate": {"const": "READY_FOR_M9"},
     "assessment_hash": {"$ref": "#/$defs/DigestV1"}
   },
   "$defs": {
@@ -187,27 +187,13 @@
           "pattern": "^/[a-z0-9_]+(?:/[a-z0-9_]+)*$"
         },
         "fact_hash": {"$ref": "#/$defs/DigestV1"},
-        "source_status": {"enum": ["RAW_ONLY", "WITHHELD"]},
-        "terminal_state": {"$ref": "#/$defs/NullableTerminalV1"},
+        "source_status": {"const": "SPECIFICATION_DECLARED_PUBLISHED"},
+        "terminal_state": {"type": "null"},
         "eligibility": {"$ref": "#/$defs/EligibilityV1"},
-        "decision": {"const": "WITHHELD"},
+        "decision": {"const": "PROMOTED"},
         "withholding_reasons": {
           "type": "array",
-          "minItems": 1,
-          "maxItems": 8,
-          "uniqueItems": true,
-          "items": {
-            "enum": [
-              "SOURCE_STATUS_RAW_ONLY",
-              "SOURCE_STATUS_WITHHELD",
-              "EXACT_EBUS_IDENTITY_MISSING",
-              "EXACT_EEBUS_IDENTITY_INELIGIBLE",
-              "EXACT_EEBUS_PATH_MISSING",
-              "COMPARATOR_NOT_MATCHED",
-              "CAPTURED_EVIDENCE_INELIGIBLE",
-              "COEXISTENCE_PROOF_MISSING"
-            ]
-          }
+          "maxItems": 0
         },
         "retest_trigger": {"$ref": "#/$defs/RetestV1"}
       }

@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestAssembleCampaignPromotesOnlyTwoWindowMatches(t *testing.T) {
+func TestAssembleCampaignPublishesDeclaredLeavesAndRecordsVerification(t *testing.T) {
 	registry := mustRegistry(t)
 	pre := assemblyCheckpoint(t, registry, PhasePreRestart, true)
 	post := assemblyCheckpoint(t, registry, PhasePostRestart, true)
@@ -32,80 +32,80 @@ func TestAssembleCampaignPromotesOnlyTwoWindowMatches(t *testing.T) {
 		t.Fatal("campaign assembly is not deterministic")
 	}
 
-	wantPromoted := []string{
-		"m7-candidate-0008",
-		"m7-candidate-0009",
-		"m7-candidate-0010",
-		"m7-candidate-0011",
-		"m7-candidate-0012",
-		"m7-candidate-0013",
-		"m7-candidate-0014",
-		"m7-candidate-0015",
-		"m7-candidate-0016",
-		"m7-candidate-0017",
-		"m7-candidate-0019",
-		"m7-candidate-0020",
-		"m7-candidate-0021",
-		"m7-candidate-0022",
+	wantFindings := map[string]struct {
+		level   VerificationLevel
+		finding Outcome
+	}{
+		"m7-candidate-0005": {VerificationNotRun, OutcomeStale},
+		"m7-candidate-0006": {VerificationNotRun, OutcomeMissing},
+		"m7-candidate-0007": {VerificationNotRun, OutcomeMissing},
+		"m7-candidate-0018": {VerificationCaptureMismatch, OutcomeMismatch},
 	}
-	var promoted []string
+	var published []string
 	for _, candidate := range first.Candidates {
-		if candidate.Decision == DecisionPromoted {
-			promoted = append(promoted, candidate.CandidateID)
-			if candidate.DossierHash == nil || candidate.Visibility != VisibilityLockedNotExposed ||
-				candidate.TerminalState != nil || len(candidate.Assessments) != 2 {
-				t.Fatalf("promoted candidate malformed: %+v", candidate)
+		if candidate.RetirementState != nil {
+			if candidate.Decision != DecisionWithheld || candidate.Visibility != VisibilityRawDebugOnly ||
+				candidate.VerificationLevel != VerificationNotRun || candidate.DossierHash != nil {
+				t.Fatalf("retired candidate malformed: %+v", candidate)
 			}
 			continue
 		}
-		if candidate.DossierHash != nil || candidate.Visibility != VisibilityRawDebugOnly {
-			t.Fatalf("withheld candidate malformed: %+v", candidate)
+		published = append(published, candidate.CandidateID)
+		if candidate.Decision != DecisionPromoted || candidate.Visibility != VisibilityPublished ||
+			candidate.SourceStatus != SourceStatusSpecificationDeclared || candidate.DossierHash == nil ||
+			len(candidate.Assessments) != 2 {
+			t.Fatalf("declared leaf malformed: %+v", candidate)
+		}
+		want, recordedFinding := wantFindings[candidate.CandidateID]
+		if !recordedFinding {
+			if candidate.VerificationLevel != VerificationByCapture || candidate.TerminalState != nil {
+				t.Fatalf("%s level = %s finding = %v, want VERIFIED_BY_CAPTURE", candidate.CandidateID, candidate.VerificationLevel, candidate.TerminalState)
+			}
+		} else if candidate.VerificationLevel != want.level || candidate.TerminalState == nil || *candidate.TerminalState != want.finding {
+			t.Fatalf("%s level = %s finding = %v, want %s %s", candidate.CandidateID, candidate.VerificationLevel, candidate.TerminalState, want.level, want.finding)
+		}
+		dossierHash, err := digestWithoutField(DossierDomain, candidate, "dossier_hash")
+		if err != nil || *candidate.DossierHash != dossierHash {
+			t.Fatalf("%s dossier hash = %s, want %s (%v)", candidate.CandidateID, *candidate.DossierHash, dossierHash, err)
 		}
 	}
-	if !reflect.DeepEqual(promoted, wantPromoted) {
-		t.Fatalf("promoted = %v, want %v", promoted, wantPromoted)
+	if len(published) != 18 {
+		t.Fatalf("published = %v, want the 18 declared leaves", published)
 	}
-	for candidateID, terminal := range map[string]Outcome{
-		"m7-candidate-0005": OutcomeStale,
-		"m7-candidate-0006": OutcomeMissing,
-		"m7-candidate-0007": OutcomeMissing,
-		"m7-candidate-0018": OutcomeMismatch,
-	} {
-		candidate := campaignCandidate(t, first, candidateID)
-		if candidate.TerminalState == nil || *candidate.TerminalState != terminal {
-			t.Fatalf("%s terminal = %v, want %s", candidateID, candidate.TerminalState, terminal)
-		}
+
+	replayBindings, err := objectWithoutField(first.SourceBindings, "replay_hash")
+	if err != nil {
+		t.Fatalf("objectWithoutField: %v", err)
 	}
-	if first.CampaignHash != "sha256:084c3278ec8dae07baa3a5f5848dbcb9f92e31444730406fce271c2bd4422ba2" {
-		t.Fatalf("campaign hash = %s", first.CampaignHash)
+	replayHash, err := CanonicalDigest(ReplayDomain, map[string]any{
+		"source_bindings": replayBindings, "windows": first.Windows, "candidates": first.Candidates,
+	})
+	if err != nil || first.SourceBindings.ReplayHash != replayHash {
+		t.Fatalf("replay hash = %s, want %s (%v)", first.SourceBindings.ReplayHash, replayHash, err)
 	}
-	if first.SourceBindings.ReplayHash != "sha256:f4c3aebfd457d5dbcbcad70cdc0d03e9d8025c97239660f85a4530dea307a756" {
-		t.Fatalf("replay hash = %s", first.SourceBindings.ReplayHash)
+	campaignHash, err := digestWithoutField(CampaignDomain, first, "campaign_hash")
+	if err != nil || first.CampaignHash != campaignHash {
+		t.Fatalf("campaign hash = %s, want %s (%v)", first.CampaignHash, campaignHash, err)
 	}
-	wantDossiers := map[string]string{
-		"m7-candidate-0008": "sha256:60ae47f983fba5bc87df650dc1298e59a53caf26a5a9dfbb79903e05f4b98195",
-		"m7-candidate-0009": "sha256:9455d79766fcb5c5f0ecdc2d6b7e0cd1f1a2b9c14e2503def1dd0fb881d4bd64",
-		"m7-candidate-0010": "sha256:46e4fe683d8ec4e1c630089be7c0e0031778ef0bfc10cb64e9c71be3adefb91a",
-		"m7-candidate-0011": "sha256:35f199012777b88a54bab3a51d2c27e85545c2525189ec698cac827c4724058f",
-		"m7-candidate-0012": "sha256:d229e594511ed36d1be3ba44f7d530640ef4bfdbce1d3aba49ba252da76f83c3",
-		"m7-candidate-0013": "sha256:b51a9fd3096e6121fb6b63bb042ca658caa1acee168f1df616f5a52a8809d455",
-		"m7-candidate-0014": "sha256:306ed77f2db67b9b59372902c3fc33eb6be1467b46597cd8f685973eae44bcaf",
-		"m7-candidate-0015": "sha256:23d8a739d045ed51e6195de22a60c22e41f816303cbec1ef22ca239c8a17477a",
-		"m7-candidate-0016": "sha256:dc76344ab1fea2840826d70d823d32c3d009a126080914d99b60d0e2fe7ac035",
-		"m7-candidate-0017": "sha256:fdcbbb6159f13b19234fa48b9050fd586852284385ed016c2122319fb76ff1e2",
-		"m7-candidate-0019": "sha256:667208008f6ee3ab4d0a202b6b0db3de7d462071ebb6b8cb71a3268464407086",
-		"m7-candidate-0020": "sha256:69be20c9dab79c02b9968537484ac1ed147a88bb258320bf40e2d59aea538f15",
-		"m7-candidate-0021": "sha256:0e9b1f8028a162ac92d3164cf5c2d23c860745783464c879f51d557b230c0973",
-		"m7-candidate-0022": "sha256:5276700bf8cd3f4e69eb695dfd8d3ef878f2316097f1285d2bc02577408a2394",
+}
+
+func TestAssembleCampaignBindsVerificationLevelIntoDossierHash(t *testing.T) {
+	registry := mustRegistry(t)
+	pre := assemblyCheckpoint(t, registry, PhasePreRestart, true)
+	post := assemblyCheckpoint(t, registry, PhasePostRestart, true)
+	campaign, err := AssembleCampaign(registry, assemblyManifest(pre.CampaignID), pre, post)
+	if err != nil {
+		t.Fatalf("AssembleCampaign: %v", err)
 	}
-	actualDossiers := make(map[string]string)
-	for _, candidate := range first.Candidates {
-		if candidate.DossierHash != nil {
-			actualDossiers[candidate.CandidateID] = *candidate.DossierHash
-		}
+	candidate := campaignCandidate(t, campaign, "m7-candidate-0018")
+	candidate.VerificationLevel = VerificationByCapture
+	candidate.TerminalState = nil
+	rewritten, err := digestWithoutField(DossierDomain, candidate, "dossier_hash")
+	if err != nil {
+		t.Fatalf("digestWithoutField: %v", err)
 	}
-	if !reflect.DeepEqual(actualDossiers, wantDossiers) {
-		t.Fatalf("dossier hashes = %#v, want %#v", actualDossiers, wantDossiers)
+	if rewritten == *candidate.DossierHash {
+		t.Fatal("rewriting a recorded mismatch as verified keeps the dossier hash")
 	}
 }
 

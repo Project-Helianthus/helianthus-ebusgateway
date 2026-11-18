@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"go/ast"
 	"go/parser"
 	"go/token"
 	"os"
@@ -1088,12 +1089,12 @@ func readPathOrTree(root, relative string) ([]byte, error) {
 	return combined.Bytes(), err
 }
 
-// The source check is the gate Build applies to the declared profile; the
-// default run pins it directly, without the process-private captured inputs.
+// The declared admission is the gate Build applies to the declared profile;
+// the default run pins it directly, without the process-private captured inputs.
 func TestIssue1694SourceCheckAdmitsOnlyTheDeclaredProfile(t *testing.T) {
 	declared := capturedInputsWithSyntheticSources(t)
-	if _, err := validateCapturedSources(declared); err == nil || err.Error() != "captured.status" {
-		t.Fatalf("validateCapturedSources(declared) error = %v; want the profile admitted and captured.status from the synthetic sources", err)
+	if _, err := admitDeclaredSourcesV1(declared); err == nil || err.Error() != "captured.status" {
+		t.Fatalf("admitDeclaredSourcesV1(declared) error = %v; want the profile admitted and captured.status from the synthetic sources", err)
 	}
 	if _, err := Build(declared); err == nil || err.Error() != "captured.status" {
 		t.Fatalf("Build(declared) error = %v; want the profile admitted and captured.status from the synthetic sources", err)
@@ -1102,20 +1103,59 @@ func TestIssue1694SourceCheckAdmitsOnlyTheDeclaredProfile(t *testing.T) {
 	for _, profile := range []string{syntheticProfileV1, "CAPTURED_RUNTIME_ZERO_PROMOTION", "CAPTURED_RUNTIME_PROMOTION", ""} {
 		other := capturedInputsWithSyntheticSources(t)
 		other.Profile = profile
-		if _, err := validateCapturedSources(other); err == nil || err.Error() != "captured.input" {
-			t.Fatalf("validateCapturedSources(profile %q) error = %v; want captured.input", profile, err)
+		if _, err := admitDeclaredSourcesV1(other); err == nil || err.Error() != "captured.input" {
+			t.Fatalf("admitDeclaredSourcesV1(profile %q) error = %v; want captured.input", profile, err)
 		}
 	}
 
 	withDossier := capturedInputsWithSyntheticSources(t)
 	withDossier.Dossier = contractArtifact(t, "docs/platform/fixtures/leaf-promotion-dossier/v1/positive/dossier.json")
+	if _, err := admitDeclaredSourcesV1(withDossier); err == nil || err.Error() != "captured.input" {
+		t.Fatalf("admitDeclaredSourcesV1(declared with dossier) error = %v; want captured.input", err)
+	}
 	if _, err := validateCapturedSources(withDossier); err == nil || err.Error() != "captured.input" {
 		t.Fatalf("validateCapturedSources(declared with dossier) error = %v; want captured.input", err)
 	}
 
 	incomplete := capturedInputsWithSyntheticSources(t)
 	incomplete.M8Report = nil
+	if _, err := admitDeclaredSourcesV1(incomplete); err == nil || err.Error() != "captured.input" {
+		t.Fatalf("admitDeclaredSourcesV1(declared without M8 report) error = %v; want captured.input", err)
+	}
 	if _, err := validateCapturedSources(incomplete); err == nil || err.Error() != "captured.input" {
 		t.Fatalf("validateCapturedSources(declared without M8 report) error = %v; want captured.input", err)
+	}
+}
+
+// The declared profile is admitted by build.go alone: the captured source
+// binding checks select no profile, so the promotion gate cannot move there.
+func TestIssue1694CapturedSourceChecksSelectNoProfile(t *testing.T) {
+	parsed, err := parser.ParseFile(token.NewFileSet(), "source.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, declaration := range parsed.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if !ok || function.Name.Name != "validateCapturedSources" {
+			continue
+		}
+		found = true
+		ast.Inspect(function.Body, func(node ast.Node) bool {
+			switch typed := node.(type) {
+			case *ast.Ident:
+				if strings.HasPrefix(typed.Name, "Profile") {
+					t.Errorf("validateCapturedSources references %s; the declared profile admission belongs to admitDeclaredSourcesV1", typed.Name)
+				}
+			case *ast.SelectorExpr:
+				if typed.Sel.Name == "Profile" {
+					t.Errorf("validateCapturedSources reads the input profile; the declared profile admission belongs to admitDeclaredSourcesV1")
+				}
+			}
+			return true
+		})
+	}
+	if !found {
+		t.Fatal("validateCapturedSources not found in source.go")
 	}
 }

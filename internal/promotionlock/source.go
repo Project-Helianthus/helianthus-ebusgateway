@@ -99,7 +99,7 @@ func validateSyntheticInputs(inputs InputsV1) error {
 }
 
 func validateCapturedSources(inputs InputsV1) (verifiedSourcesV1, error) {
-	if inputs.Profile != ProfileDeclaredFromSpecificationV1 || len(inputs.Dossier) != 0 || !hasCompleteCapturedInputs(inputs) {
+	if len(inputs.Dossier) != 0 || !hasCompleteCapturedInputs(inputs) {
 		return verifiedSourcesV1{}, fail("captured.input")
 	}
 	if err := candidatefacts.Verify(inputs.M7Graph, inputs.M7SourceBundle, inputs.M7SourceReplay); err != nil {

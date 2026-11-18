@@ -18,18 +18,27 @@ import (
 )
 
 // fakeMuxPeer models the mux ENH listener as an external session sees it.
-// It answers INFO in order after the START before it. A queued bid's
-// selecting SYN is delivered at fakeInFlightArm, before the bid is written
-// to the adapter, as the mux delivers a SYN before its grant step; the bid
-// is forwarded fakeForwardLag later and the next received symbol follows
-// that. Its STARTED waits until fakeLateAfter, so a contender can replace or
-// abandon it once it is forwarded. The late STARTED of a replaced bid is
-// absorbed unless deliverStaleResult. Closing an in-flight bid arms the
-// absorb barrier, which the peer clears after fakeAbsorbBudget as the mux
-// does once it absorbs the cancelled bid's result; with skipAbsorb the next
-// bid is granted at once with that result. A SEND is refused while another
-// connection owns the bus unless forwardDuringActive. The first completed
-// command stops mid-response when stopMidResponse is set.
+// It answers INFO in order after the START before it. A bid whose START is
+// followed by INFO is fenced: after the INFO answer the peer delivers the
+// selecting SYN, before the bid is written to the adapter, as the mux
+// delivers a SYN before its grant step. The bid is forwarded fakeForwardLag
+// after the contender has read that SYN, and only then do idle SYNs follow,
+// every fakeIdleTick, until the contender replaces or abandons the bid. A
+// fenced bid's result is held until the contender acts on it, so a
+// contender that waits for its proof always acts on a forwarded bid,
+// however long it takes to read. With synSnapshotBeforeQueue the first
+// fenced bid was queued after the mux had taken the bid snapshot of a SYN
+// and before it delivered that SYN: the INFO answer comes first, that SYN's
+// grant step leaves the bid queued, and the next SYN selects it. A bid
+// without INFO is shown in flight at fakeInFlightArm, forwarded
+// fakeForwardLag later and answered at fakeLateAfter. The late STARTED of a
+// replaced bid is absorbed unless deliverStaleResult. Closing an in-flight
+// bid arms the absorb barrier, which the peer clears after fakeAbsorbBudget
+// as the mux does once it absorbs the cancelled bid's result; with
+// skipAbsorb the next bid is granted at once with that result. A SEND is
+// refused while another connection owns the bus unless forwardDuringActive.
+// The first completed command stops mid-response when stopMidResponse is
+// set.
 type fakeMuxPeer struct {
 	response []byte
 	// deliverStaleResult hands the contender the replaced bid's STARTED.
@@ -65,6 +74,10 @@ type fakeMuxPeer struct {
 	// synBeforeFence delivers a SYN right after a START, before the INFO
 	// answer, as a SYN the mux handled before it queued the bid.
 	synBeforeFence bool
+	// synSnapshotBeforeQueue queues the first fenced bid after the bid
+	// snapshot of a SYN that the peer delivers after the INFO answer; that
+	// SYN's grant step leaves the bid queued and the SYN after it selects it.
+	synSnapshotBeforeQueue bool
 	// infoErrorHost answers INFO with ERROR_HOST, as a mux without a cached
 	// adapter answer does.
 	infoErrorHost bool
@@ -85,6 +98,8 @@ type fakeMuxPeer struct {
 	closedQueued           int
 	absorbArmed            int
 	replacedInFlight       int
+	replacedQueued         int
+	excludedSyns           int
 	replacedInitiator      byte
 	staleDelivered         int
 	replacementGranted     int
@@ -104,6 +119,9 @@ type fakeMuxPeer struct {
 	staleWorkloadSent      bool
 	staleAfterScheduled    bool
 	unabsorbed             byte
+
+	// served is closed once the peer has accounted for a connection's close.
+	served map[net.Conn]chan struct{}
 }
 
 // fakeBid is one connection's outstanding START.
@@ -118,6 +136,10 @@ type fakeBid struct {
 	signalled      bool
 	forwarded      bool
 	prompt         bool
+	// forwardable is false for a bid the peer never forwards.
+	forwardable bool
+	// fenced is set when INFO followed the START while the bid was queued.
+	fenced bool
 }
 
 const (
@@ -140,6 +162,10 @@ const (
 	fakeStaleAfterWorkload = time.Second
 	fakeMuxGrantDelay      = 10 * time.Millisecond
 	fakeMuxIdleSyn         = 300 * time.Millisecond
+
+	// fakeIdleTick is the interval of the idle SYNs that follow a forwarded
+	// fenced bid.
+	fakeIdleTick = 5 * time.Millisecond
 )
 
 // inFlight is true once the bid has been written to the adapter.
@@ -164,6 +190,8 @@ type fakeMuxCounts struct {
 	closedQueued           int
 	absorbArmed            int
 	replacedInFlight       int
+	replacedQueued         int
+	excludedSyns           int
 	staleDelivered         int
 	replacementGranted     int
 	grantsHeldForAbsorb    int
@@ -185,6 +213,7 @@ func (peer *fakeMuxPeer) snapshot() fakeMuxCounts {
 		rejectedIdle:         append([]byte(nil), peer.rejectedIdle...),
 		closedInFlight:       peer.closedInFlight, closedQueued: peer.closedQueued,
 		absorbArmed: peer.absorbArmed, replacedInFlight: peer.replacedInFlight,
+		replacedQueued: peer.replacedQueued, excludedSyns: peer.excludedSyns,
 		staleDelivered: peer.staleDelivered, replacementGranted: peer.replacementGranted,
 		grantsHeldForAbsorb: peer.grantsHeldForAbsorb, midResponseSyn: peer.midResponseSyn,
 		responseBytesBeforeSyn: peer.responseBytesBeforeSyn, responseBytesOwed: peer.responseBytesOwed,
@@ -242,35 +271,71 @@ func (peer *fakeMuxPeer) serve(conn net.Conn) {
 			peer.busOwner = nil
 			owner = false
 		}
+		served := peer.served[conn]
 		peer.mu.Unlock()
 		stateMu.Unlock()
+		close(served)
 	}()
 	peer.mu.Lock()
 	peer.dials++
 	if peer.grantedOnce == nil {
 		peer.grantedOnce = map[net.Conn]bool{}
 	}
+	if peer.served == nil {
+		peer.served = map[net.Conn]chan struct{}{}
+	}
+	peer.served[conn] = make(chan struct{})
 	peer.mu.Unlock()
+	// awaitEarlierClose holds this connection's frames while another
+	// connection's bid is outstanding: in these fixtures that connection has
+	// already been closed by the contender, as the mux removes a closed
+	// session before it serves the next one, so its close is accounted for
+	// first. The bound only keeps a broken fixture from hanging.
+	awaitEarlierClose := func() {
+		peer.mu.Lock()
+		var earlier chan struct{}
+		if bid := peer.inFlight; bid != nil && bid.conn != conn {
+			earlier = peer.served[bid.conn]
+		}
+		peer.mu.Unlock()
+		if earlier == nil {
+			return
+		}
+		select {
+		case <-earlier:
+		case <-time.After(clientStepTimeout):
+		}
+	}
 	// write is called with stateMu held, so frames keep their order; a
 	// writer goroutine drains the queue so the peer never blocks on the
-	// synchronous pipe while the session is writing too.
-	out := make(chan []byte, 4096)
+	// synchronous pipe while the session is writing too. The pipe returns
+	// from a write once the contender has read the frame, and then runs the
+	// frame's read callback.
+	type outFrame struct {
+		data []byte
+		read func()
+	}
+	out := make(chan outFrame, 4096)
 	go func() {
 		for {
 			select {
 			case <-done:
 				return
 			case frame := <-out:
-				if _, err := conn.Write(frame); err != nil {
+				if _, err := conn.Write(frame.data); err != nil {
 					return
+				}
+				if frame.read != nil {
+					frame.read()
 				}
 			}
 		}
 	}()
-	write := func(command transport.ENHCommand, data byte) {
+	writeThen := func(command transport.ENHCommand, data byte, read func()) {
 		frame := transport.EncodeENH(command, data)
-		out <- frame[:]
+		out <- outFrame{data: frame[:], read: read}
 	}
+	write := func(command transport.ENHCommand, data byte) { writeThen(command, data, nil) }
 	// releaseBus clears this connection's ownership. Caller holds stateMu.
 	releaseBus := func() {
 		peer.mu.Lock()
@@ -325,13 +390,68 @@ func (peer *fakeMuxPeer) serve(conn net.Conn) {
 		}
 		peer.mu.Lock()
 		bid := peer.inFlight
-		if bid == nil || bid.generation != gen || bid.conn != conn || bid.forwarded {
+		if bid == nil || bid.generation != gen || bid.conn != conn || bid.forwarded || bid.fenced {
 			peer.mu.Unlock()
 			return
 		}
 		bid.forwarded = true
 		peer.mu.Unlock()
 		write(transport.ENHResReceived, protocol.SymbolSyn)
+	}
+	// idleSyn delivers one idle SYN while the fenced bid of generation gen
+	// is forwarded and the contender has neither replaced nor abandoned it,
+	// and schedules the next.
+	var idleSyn func(gen int)
+	idleSyn = func(gen int) {
+		if !alive.Load() {
+			return
+		}
+		stateMu.Lock()
+		defer stateMu.Unlock()
+		if !alive.Load() {
+			return
+		}
+		peer.mu.Lock()
+		bid := peer.inFlight
+		live := bid != nil && bid.generation == gen && bid.conn == conn && bid.forwarded && !bid.replaced
+		peer.mu.Unlock()
+		if !live {
+			return
+		}
+		write(transport.ENHResReceived, protocol.SymbolSyn)
+		time.AfterFunc(fakeIdleTick, func() { idleSyn(gen) })
+	}
+	// forwardFenced writes the fenced bid to the adapter. Only the symbols
+	// that follow can complete the contender's proof.
+	forwardFenced := func(gen int) {
+		if !alive.Load() {
+			return
+		}
+		stateMu.Lock()
+		peer.mu.Lock()
+		bid := peer.inFlight
+		live := alive.Load() && bid != nil && bid.generation == gen && bid.conn == conn && !bid.replaced
+		if live {
+			bid.forwarded = true
+		}
+		peer.mu.Unlock()
+		stateMu.Unlock()
+		if live {
+			idleSyn(gen)
+		}
+	}
+	// selectFenced runs after the INFO answer of a fenced bid. Caller holds
+	// stateMu. With excluded, a SYN whose bid snapshot was taken before the
+	// bid was queued comes first, and its grant step leaves the bid queued.
+	// The selecting SYN follows; the bid is forwarded fakeForwardLag after
+	// the contender has read it.
+	selectFenced := func(gen int, excluded bool) {
+		if excluded {
+			write(transport.ENHResReceived, protocol.SymbolSyn)
+		}
+		writeThen(transport.ENHResReceived, protocol.SymbolSyn, func() {
+			time.AfterFunc(fakeForwardLag, func() { forwardFenced(gen) })
+		})
 	}
 	// signalInFlight delivers the SYN that selects the bid; the bid is
 	// forwarded only after it, as the mux's grant step follows the delivery.
@@ -346,7 +466,7 @@ func (peer *fakeMuxPeer) serve(conn net.Conn) {
 		}
 		peer.mu.Lock()
 		bid := peer.inFlight
-		if bid == nil || bid.generation != gen || bid.conn != conn || bid.signalled {
+		if bid == nil || bid.generation != gen || bid.conn != conn || bid.signalled || bid.fenced {
 			peer.mu.Unlock()
 			return
 		}
@@ -369,6 +489,11 @@ func (peer *fakeMuxPeer) serve(conn net.Conn) {
 		peer.mu.Lock()
 		bid := peer.inFlight
 		if bid == nil || bid.generation != gen || bid.conn != conn {
+			peer.mu.Unlock()
+			return
+		}
+		if bid.fenced && !bid.prompt && !bid.replaced {
+			// Held until the contender replaces or abandons the bid.
 			peer.mu.Unlock()
 			return
 		}
@@ -413,7 +538,7 @@ func (peer *fakeMuxPeer) serve(conn net.Conn) {
 		if withStaleFailed {
 			started := transport.EncodeENH(transport.ENHResStarted, initiator)
 			failed := transport.EncodeENH(transport.ENHResFailed, bid.staleInitiator)
-			out <- append(started[:], failed[:]...)
+			out <- outFrame{data: append(started[:], failed[:]...)}
 			return
 		}
 		write(transport.ENHResStarted, initiator)
@@ -453,6 +578,7 @@ func (peer *fakeMuxPeer) serve(conn net.Conn) {
 		if err != nil {
 			return
 		}
+		awaitEarlierClose()
 		stateMu.Lock()
 		for _, message := range messages {
 			switch message.Command {
@@ -461,11 +587,27 @@ func (peer *fakeMuxPeer) serve(conn net.Conn) {
 			case transport.ENHReqInfo:
 				if peer.infoErrorHost {
 					write(transport.ENHResErrorHost, 0x00)
-					continue
+				} else {
+					write(transport.ENHResInfo, 0x02)
+					write(transport.ENHResInfo, 0x01)
+					write(transport.ENHResInfo, 0x02)
 				}
-				write(transport.ENHResInfo, 0x02)
-				write(transport.ENHResInfo, 0x01)
-				write(transport.ENHResInfo, 0x02)
+				// The INFO answer follows the queued START: the bid is fenced.
+				peer.mu.Lock()
+				bid := peer.inFlight
+				fence := bid != nil && bid.conn == conn && bid.forwardable && !bid.prompt && !bid.fenced && !bid.replaced
+				excluded := false
+				if fence {
+					bid.fenced = true
+					excluded = peer.synSnapshotBeforeQueue && peer.excludedSyns == 0
+					if excluded {
+						peer.excludedSyns++
+					}
+				}
+				peer.mu.Unlock()
+				if fence {
+					selectFenced(bid.generation, excluded)
+				}
 			case transport.ENHReqStart:
 				initiator := message.Data
 				peer.mu.Lock()
@@ -480,14 +622,22 @@ func (peer *fakeMuxPeer) serve(conn net.Conn) {
 				}
 				now := time.Now()
 				if bid := peer.inFlight; bid != nil && bid.conn == conn {
-					if bid.inFlight() && bid.initiator != initiator {
+					replaced := false
+					if bid.inFlight() && bid.initiator != initiator && !bid.replaced {
 						bid.replaced = true
 						bid.staleInitiator = bid.initiator
 						bid.replacement = initiator
 						peer.replacedInitiator = bid.initiator
 						peer.replacedInFlight++
+						replaced = true
+					} else if !bid.inFlight() && bid.initiator != initiator {
+						peer.replacedQueued++
 					}
+					gen := bid.generation
 					peer.mu.Unlock()
+					if replaced {
+						time.AfterFunc(fakeMuxGrantDelay, func() { resolve(gen) })
+					}
 					continue
 				}
 				if stale := peer.unabsorbed; stale != 0 {
@@ -509,8 +659,8 @@ func (peer *fakeMuxPeer) serve(conn net.Conn) {
 					peer.bidGen++
 					gen := peer.bidGen
 					prompt := (peer.promptResult || peer.promptFailed) && peer.starts == 1
-					peer.inFlight = &fakeBid{initiator: initiator, conn: conn, generation: gen, queuedAt: now, prompt: prompt}
 					forwardBid := !peer.neverForward || peer.starts != 1
+					peer.inFlight = &fakeBid{initiator: initiator, conn: conn, generation: gen, queuedAt: now, prompt: prompt, forwardable: forwardBid}
 					earlySyn := peer.synBeforeFence
 					peer.mu.Unlock()
 					if earlySyn {

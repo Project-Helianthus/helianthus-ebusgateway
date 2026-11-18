@@ -314,12 +314,15 @@ var errPortalOperatorRecordsUnavailable = errors.New("portal configuration: oper
 // Waiting reasons of an operator record. A record whose home asset is
 // published by the provider's own key waits until the asset is declared, the
 // provider is admitted to it and the starting end is published by its owner.
+// An identity link the provider does not publish waits with
+// portalOperatorIdentityLinkPending: the declaration was applied.
 const (
 	portalOperatorPublisherUnavailable = "publisher_unavailable"
 	portalOperatorNotApplied           = "not_applied"
 	portalOperatorHomeNotDeclared      = "home_not_declared"
 	portalOperatorHomeNotAdmitted      = "home_not_admitted"
 	portalOperatorPublicationFailed    = "publication_failed"
+	portalOperatorIdentityLinkPending  = "identity_link_pending"
 )
 
 // portalOperatorOutcome is the result of the last publication attempt of one
@@ -493,10 +496,15 @@ func (o *portalOperatorRecords) setLocked(home semreg.AssetID) {
 	if outcome.status == portalconfig.OperatorRecordRefused {
 		log.Printf("portal configuration: operator records of %s refused: %s", home, outcome.reason)
 	}
-	if len(desired.Records.Resources) == 0 && len(desired.Records.Relations) == 0 && outcome.status != portalconfig.OperatorRecordWaiting {
+	if len(desired.Records.Resources) == 0 && len(desired.Records.Relations) == 0 && len(desired.Records.Links) == 0 && outcome.status != portalconfig.OperatorRecordWaiting {
 		delete(o.desired, home)
 		delete(o.outcomes, home)
 		return
+	}
+	// A links-only set is applied and not published. Forgetting the outcome
+	// would report it as waiting to be applied.
+	if len(desired.Records.Resources) == 0 && len(desired.Records.Relations) == 0 && len(desired.Records.Links) > 0 && outcome.status == portalconfig.OperatorRecordPublished {
+		outcome = portalOperatorOutcome{status: portalconfig.OperatorRecordWaiting, reason: portalOperatorIdentityLinkPending, retry: false}
 	}
 	o.outcomes[home] = outcome
 }

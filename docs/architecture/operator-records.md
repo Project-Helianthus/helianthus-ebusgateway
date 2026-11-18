@@ -16,10 +16,13 @@ preflight also wires the provider through `composeOperatorRecords` in
 `cmd/gateway/operator_record_composition.go` and loads the configured record
 set. An empty section still admits no source, declares no asset and publishes
 nothing, so the published output of an installation without an accepted
-section is unchanged. A configuration-only home in that set is declared in
-the provider's name when its identifier is not one a dynamic driver
-allocates. A home a driver already owns, and a home a dynamic driver
-allocates, stay with that driver.
+section is unchanged. Startup does not declare a home the preflight snapshot
+does not already name. An absent home stays undeclared so the driver that
+discovers it can claim it; the shape of the identifier is not ownership. A
+home a driver already owns stays with that driver. The configured set is
+still composed: it is published when that owner has admitted the provider,
+it stays pending while the home or its starting end is not there yet, and a
+home the owner has not opened to the provider is reported and left unpublished.
 
 ## Who publishes it
 
@@ -44,6 +47,8 @@ batch sequence.
   the home asset, the native resource and the configuration basis class. The
   section records it as `identity_link`. Only the binding's source can publish
   it, so it stays in the driver's own batch. The provider does not publish it.
+  Its status stays waiting with reason `identity_link_pending`: the
+  declaration was applied, and it was not left unapplied.
 
 ## Records and revisions
 
@@ -163,15 +168,15 @@ the configuration basis class. Startup loads the configured record set. An
 empty section still admits nothing.
 
 No family composition names the provider as a contributor or declares a
-configuration-only home yet. Startup declares a configuration-only home for
-the configuration provider when its identifier is not one a dynamic driver
-allocates, and it does not declare a contributor for a home a driver already
-owns. A home a dynamic driver allocates stays undeclared until that driver
-discovers it. The acceptance test makes the owner-side declarations
-itself, as an owner would, so it proves the path from the document to the cut
-once the owner has declared them. A Portal replacement publishes nothing for
-an asset whose owner has not, and it supersedes a startup-pending relation
-the operator removed so that relation is not published when the asset appears.
+configuration-only home yet. Startup does not declare a home the preflight
+snapshot does not already name, and it does not declare a contributor for a
+home a driver already owns. A home a driver will discover stays undeclared
+until that driver claims it. The acceptance test makes the owner-side
+declarations itself, as an owner would, so it proves the path from the
+document to the cut once the owner has declared them. A Portal replacement
+publishes nothing for an asset whose owner has not, and it supersedes a
+startup-pending relation the operator removed so that relation is not
+published when the asset appears.
 
 ## Ownership
 

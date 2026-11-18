@@ -1,29 +1,27 @@
 package main
 
 import (
-	"strings"
+	"errors"
+	"log"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/portalconfig"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
-	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/packs/evse"
-	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/packs/infrastructure"
-	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/packs/pv"
-	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/packs/storage"
-	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/packs/thermal"
 )
 
 // composeOperatorRecords is the startup seam for the operator-configured
 // records of the composed families. The preflight calls it once, after the
 // pairings and before any runtime starts; a refusal is fatal like a
 // declaration collision. It wires the gateway's configuration provider with
-// the configured record set. A configuration-only home is declared in the
-// provider's name when its identifier is not one a dynamic driver allocates.
-// A home a driver already owns, and a home a dynamic driver will discover,
-// are left to that driver. A set that waits for its owner's resources stays
-// pending and is applied after the owner publishes. An empty section admits
-// no source and publishes nothing.
+// the configured record set. It does not declare a home the preflight
+// snapshot does not already name: an absent home may belong to a driver that
+// declares it when the unit is discovered, and the identifier's shape does
+// not decide that. A home a driver already owns is not declared again. Its
+// set is published when that owner has admitted the provider, and it is
+// reported and left unpublished when the owner has not. A set that waits for
+// its home or for its owner's resources stays pending and is applied after
+// the owner publishes. An empty section admits no source and publishes nothing.
 func composeOperatorRecords(hub *semhub.Hub, cfg ebusgateway.Config) error {
 	records, err := configuredOperatorRecords(cfg)
 	if err != nil {
@@ -43,20 +41,43 @@ func composeOperatorRecords(hub *semhub.Hub, cfg ebusgateway.Config) error {
 	}
 	publish := make([]operatorAssetRecords, 0, len(records))
 	for _, set := range records {
-		if driver, declared := owned[set.Asset]; declared && driver != operatorRecordDriver {
+		driver, declared := owned[set.Asset]
+		if !declared || driver == operatorRecordDriver {
+			// Absence is not ownership. Declaring the home here would claim
+			// it for the configuration provider, and a driver that declares
+			// the same home later would collide for good.
+			publish = append(publish, set)
 			continue
 		}
-		// Absence from this snapshot is not ownership. A dynamic driver allocates
-		// its asset only when it discovers the unit, after preflight, and a
-		// declaration here would collide with that later claim.
-		if set.ConfigurationOnly && !operatorRecordDiscoveredHome(set.Asset) {
-			if err := publisher.DeclareHome(set.Asset, operatorRecordPacks()...); err != nil {
-				return err
-			}
+		kept, err := composeDriverOwnedOperatorSet(publisher, set)
+		if err != nil {
+			return err
 		}
-		publish = append(publish, set)
+		if kept {
+			publish = append(publish, set)
+		}
 	}
 	return publisher.Compose(publish)
+}
+
+// composeDriverOwnedOperatorSet publishes one configured set on a home a
+// driver already owns. It does not declare that home. A set that still waits
+// for the owner's resources is kept pending. A home the owner has not opened
+// to the provider is reported and left unpublished: declarations are static,
+// so a later hub event cannot admit the provider.
+func composeDriverOwnedOperatorSet(publisher *operatorRecordPublisher, set operatorAssetRecords) (bool, error) {
+	err := publisher.Set(set.Asset, set.Records, set.Audit)
+	if err == nil {
+		return false, nil
+	}
+	if operatorRecordDeferred(err) {
+		return true, nil
+	}
+	if errors.Is(err, semhub.ErrTransaction) {
+		log.Printf("operator records: configured records of %s were not published because the owner has not admitted the configuration provider: %v", set.Asset, err)
+		return false, nil
+	}
+	return false, err
 }
 
 // configuredOperatorRecords returns the operator record sets the
@@ -72,37 +93,4 @@ func configuredOperatorRecords(cfg ebusgateway.Config) ([]operatorAssetRecords, 
 		return nil, nil
 	}
 	return records, nil
-}
-
-// operatorRecordDiscoveredHome reports an asset identifier allocated by a
-// dynamic driver class. The grammar is a family token, "-asset-" and 32 hex
-// digits. Those assets are absent from the preflight snapshot until the class
-// discovers them.
-func operatorRecordDiscoveredHome(id semreg.AssetID) bool {
-	text := string(id)
-	marker := strings.Index(text, "-asset-")
-	if marker <= 0 || strings.Contains(text[:marker], ":") {
-		return false
-	}
-	for _, c := range text[:marker] {
-		if c < 'a' || c > 'z' {
-			return false
-		}
-	}
-	tail := text[marker+len("-asset-"):]
-	if len(tail) != 32 {
-		return false
-	}
-	for _, c := range tail {
-		if c < '0' || (c > '9' && c < 'a') || c > 'f' {
-			return false
-		}
-	}
-	return true
-}
-
-// operatorRecordPacks is the stable pack list of a configuration-only home.
-// The catalog covers each of them, and declaration equality compares this order.
-func operatorRecordPacks() []semreg.PackValidator {
-	return []semreg.PackValidator{evse.New(), infrastructure.New(), pv.New(), storage.New(), thermal.New()}
 }

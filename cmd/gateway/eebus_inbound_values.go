@@ -68,11 +68,15 @@ func readEEBusInboundValues(
 		return eebusInboundRead{}, err
 	}
 	targets := eebusInboundTargets(registry, eebusInboundResolveEntities(snapshot))
-	source := &leafPromotionLiveSource{eebus: runtime}
+	watch := &eebusInboundMismatchWatch{leafPromotionEEBusRuntime: runtime}
+	source := &leafPromotionLiveSource{eebus: watch}
 	featureCache := make(map[string]eebusraw.FeaturesGetDataV1)
 	functionCache := make(map[string]eebusraw.ReadObservationV1)
 	result := eebusInboundRead{}
 	bind := func(binding eebusraw.RuntimeBindingV1) error {
+		if watch.changed {
+			return errEEBusInboundBindingChanged
+		}
 		if result.Binding == (eebusraw.RuntimeBindingV1{}) {
 			result.Binding = binding
 			return nil
@@ -85,6 +89,9 @@ func readEEBusInboundValues(
 	for _, target := range targets {
 		if err := ctx.Err(); err != nil {
 			return eebusInboundRead{}, err
+		}
+		if watch.changed {
+			return eebusInboundRead{}, errEEBusInboundBindingChanged
 		}
 		profile := *target.candidate.EEBusSource
 		locator, err := leafPromotionLocatorForSource(snapshot, target.slots, profile)
@@ -128,7 +135,46 @@ func readEEBusInboundValues(
 	if err := ctx.Err(); err != nil {
 		return eebusInboundRead{}, err
 	}
+	if watch.changed {
+		return eebusInboundRead{}, errEEBusInboundBindingChanged
+	}
 	return result, nil
+}
+
+// eebusInboundMismatchWatch records whether any read of the cycle answered a
+// runtime-epoch or connection-generation mismatch. The native runtime reports a
+// remote binding change on a later read that way, with no observation, and the
+// shared read helpers reduce every terminal to a generic error, so the reader
+// cannot see the new binding in the observations it compares.
+type eebusInboundMismatchWatch struct {
+	leafPromotionEEBusRuntime
+	changed bool
+}
+
+func (watch *eebusInboundMismatchWatch) FeaturesGet(
+	ctx context.Context, auth eebusraw.ReadAuthorizationV1, request eebusraw.FeaturesGetRequestV1,
+) (eebusraw.FeaturesGetDataV1, *eebusraw.ErrorV1) {
+	data, terminal := watch.leafPromotionEEBusRuntime.FeaturesGet(ctx, auth, request)
+	watch.note(terminal)
+	return data, terminal
+}
+
+func (watch *eebusInboundMismatchWatch) FeaturesDataGet(
+	ctx context.Context, auth eebusraw.ReadAuthorizationV1, request eebusraw.FeatureDataGetRequestV1,
+) (eebusraw.FeatureDataGetDataV1, *eebusraw.ErrorV1) {
+	data, terminal := watch.leafPromotionEEBusRuntime.FeaturesDataGet(ctx, auth, request)
+	watch.note(terminal)
+	for index := range data.Failures {
+		watch.note(&data.Failures[index].Error)
+	}
+	return data, terminal
+}
+
+func (watch *eebusInboundMismatchWatch) note(terminal *eebusraw.ErrorV1) {
+	if terminal != nil && (terminal.Code == eebusraw.ErrorCodeV1RuntimeEpochMismatch ||
+		terminal.Code == eebusraw.ErrorCodeV1ConnectionGenerationMismatch) {
+		watch.changed = true
+	}
 }
 
 func eebusInboundCacheBinding(cache map[string]eebusraw.ReadObservationV1, bind func(eebusraw.RuntimeBindingV1) error) error {

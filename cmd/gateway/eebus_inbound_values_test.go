@@ -43,6 +43,28 @@ type eebusInboundTestRuntime struct {
 	afterBinding eebusraw.RuntimeBindingV1
 	reads        int
 	featureReads int
+	// After mismatchAfter function reads of the cycle every later read and
+	// feature inventory answers the mismatchCode terminal, as the native runtime
+	// does once the remote epoch or connection generation changes.
+	mismatchAfter int
+	mismatchCode  eebusraw.ErrorCodeV1
+	// mismatchAsFailure reports the mismatch only on function reads, as a
+	// per-target failure instead of a terminal.
+	mismatchAsFailure bool
+	dataCalls         int
+}
+
+func (runtime *eebusInboundTestRuntime) mismatchTerminalAfter(reads int, code eebusraw.ErrorCodeV1) {
+	runtime.mu.Lock()
+	runtime.mismatchAfter, runtime.mismatchCode, runtime.dataCalls = reads, code, 0
+	runtime.mu.Unlock()
+}
+
+func (runtime *eebusInboundTestRuntime) mismatchTerminal() *eebusraw.ErrorV1 {
+	if runtime.mismatchAfter == 0 || runtime.dataCalls <= runtime.mismatchAfter {
+		return nil
+	}
+	return eebusraw.NewErrorV1(runtime.mismatchCode, "remote binding changed", true, eebusraw.SourceLayerV1Runtime)
 }
 
 func newEEBusInboundTestRuntime(t *testing.T) *eebusInboundTestRuntime {
@@ -99,6 +121,9 @@ func (runtime *eebusInboundTestRuntime) FeaturesGet(_ context.Context, _ eebusra
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
 	runtime.featureReads++
+	if terminal := runtime.mismatchTerminal(); terminal != nil && !runtime.mismatchAsFailure {
+		return eebusraw.FeaturesGetDataV1{}, terminal
+	}
 	locator := request.Target
 	if len(locator.EntityAddress) != 1 {
 		return eebusraw.FeaturesGetDataV1{}, eebusRuntimeUnavailableError()
@@ -129,6 +154,13 @@ func (runtime *eebusInboundTestRuntime) FeaturesDataGet(_ context.Context, _ eeb
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
 	target := request.Targets[0]
+	runtime.dataCalls++
+	if terminal := runtime.mismatchTerminal(); terminal != nil {
+		if runtime.mismatchAsFailure {
+			return eebusraw.FeatureDataGetDataV1{Failures: []eebusraw.ReadFailureV1{{Target: target, Error: *terminal}}}, nil
+		}
+		return eebusraw.FeatureDataGetDataV1{}, terminal
+	}
 	key := eebusInboundTestKey(target.EntityAddress[0], target.FeatureType, target.Function)
 	raw, ok := runtime.values[key]
 	if !ok || runtime.failValue[key] {
@@ -432,6 +464,52 @@ func TestEEBusInboundBindingChangeDuringCycleEmptiesOverlay(t *testing.T) {
 				t.Fatalf("binding change kept values: %#v", provider.Overlay())
 			}
 		})
+	}
+}
+
+// The native runtime reports a binding change on a later read as a mismatch
+// terminal with no observation, so the reader never sees the new binding. The
+// cycle must still fail and empty the overlay rather than keep the values read
+// before the change and the last-known values of the failed reads.
+func TestEEBusInboundMismatchTerminalDuringCycleEmptiesOverlay(t *testing.T) {
+	for _, test := range []struct {
+		code    eebusraw.ErrorCodeV1
+		failure bool
+	}{
+		{eebusraw.ErrorCodeV1RuntimeEpochMismatch, false},
+		{eebusraw.ErrorCodeV1ConnectionGenerationMismatch, false},
+		{eebusraw.ErrorCodeV1RuntimeEpochMismatch, true},
+		{eebusraw.ErrorCodeV1ConnectionGenerationMismatch, true},
+	} {
+		code := test.code
+		t.Run(string(code)+"/failure="+strconv.FormatBool(test.failure), func(t *testing.T) {
+			runtime := newEEBusInboundTestRuntime(t)
+			runtime.mismatchAsFailure = test.failure
+			provider := newEEBusPromotedSemanticProvider(&eebusRuntimeAdapter{runtime: runtime})
+			provider.Refresh(context.Background())
+			if provider.Overlay().DHW.CurrentTempC == nil {
+				t.Fatal("first cycle filled no values")
+			}
+			runtime.mismatchTerminalAfter(4, code)
+			if _, err := readEEBusInboundValues(context.Background(), runtime, runtime.snapshot); err != errEEBusInboundBindingChanged {
+				t.Fatalf("mismatch terminal error = %v", err)
+			}
+			runtime.mismatchTerminalAfter(4, code)
+			provider.Refresh(context.Background())
+			if !reflect.DeepEqual(provider.Overlay(), graphql.PromotedSemanticOverlay{}) {
+				t.Fatalf("mismatch terminal kept values: %#v", provider.Overlay())
+			}
+		})
+	}
+}
+
+// A read that fails for another reason stays a soft miss of that value.
+func TestEEBusInboundOtherTerminalKeepsCycle(t *testing.T) {
+	runtime := newEEBusInboundTestRuntime(t)
+	runtime.failValueRead(8, "Measurement", "measurementListData")
+	read, err := readEEBusInboundValues(context.Background(), runtime, runtime.snapshot)
+	if err != nil || len(read.Unread) != 1 || read.Unread[0] != "/system/outside_air_temperature_c" {
+		t.Fatalf("read = %v/%v", read.Unread, err)
 	}
 }
 

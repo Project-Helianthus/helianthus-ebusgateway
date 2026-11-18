@@ -3,7 +3,9 @@ package runtimecontrol
 import (
 	"context"
 	"errors"
+	"os"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -289,5 +291,30 @@ func TestOutputHookSafetyQuarantineIsTheManagerFlag(t *testing.T) {
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("factory calls = %d, want 1", calls.Load())
+	}
+}
+
+// TestOutputHookProviderContractStatesException pins the companion provider
+// contract to the admission this package implements, so a reader of that
+// contract does not refuse an output declaration the registry admits.
+func TestOutputHookProviderContractStatesException(t *testing.T) {
+	raw, err := os.ReadFile("../../docs/architecture/runtime-driver-provider-contract-v1.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := strings.Join(strings.Fields(string(raw)), " ")
+	for _, want := range []string{
+		"An empty hook list is accepted on every direction.",
+		"The one admitted hook declaration is the single name `output` at hook version `1` on a `northbound` descriptor",
+		"`output` on a `southbound` or `both` descriptor fails with `ErrHookDirection`",
+		"`output` with no version or another version with `ErrUnsupportedHookVersion`",
+		"a repeated `output` with `ErrDuplicateHook`",
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("provider contract does not state %q", want)
+		}
+	}
+	if strings.Contains(page, "An empty owned-source set is accepted. Every hook declaration fails:") {
+		t.Error("provider contract still says every hook declaration fails")
 	}
 }

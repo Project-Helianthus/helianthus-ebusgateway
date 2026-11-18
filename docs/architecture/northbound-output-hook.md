@@ -25,11 +25,9 @@ hook spelling `output`. For every other hook name and every other descriptor
 direction, that rule stands unchanged.
 
 The gateway's [runtime driver provider contract](runtime-driver-provider-contract-v1.md)
-still says that every hook declaration fails. For the hook spelling `output`
-this page narrows that sentence: a `northbound` descriptor declaring `output`
-at version `1` registers, with the validation described below. Every other
-hook declaration still fails exactly as that contract states. Rewording that
-contract belongs to the slice that owns it.
+states the same exception: a `northbound` descriptor declaring `output` at
+version `1` registers, with the validation described below, and every other
+hook declaration fails as that contract states.
 
 ## Hook admission
 

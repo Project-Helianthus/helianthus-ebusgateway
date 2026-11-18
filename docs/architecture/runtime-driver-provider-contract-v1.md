@@ -538,10 +538,18 @@ mutates no hub ownership; the hub is consulted through a read-only view. A
 `NativeContractRef` field is 1 to 256 bytes of `[A-Za-z0-9._/+-]`, starting
 alphanumeric, with no `..`, no `//` and no IP literal, so URLs, host:port
 pairs and userinfo cannot pass. A source ID follows the SemReg opaque rule.
-An empty owned-source set is accepted. Every hook declaration fails:
-`mcp`, `setup`, `portal`, `semantic` and `evidence` as unimplemented, any
-other name as unknown; `ResolveHook` returns the same refusals for a
-registered driver. Reads return detached copies; `Binding` returns the frozen
+An empty owned-source set is accepted. An empty hook list is accepted on
+every direction. The one admitted hook declaration is the single name
+`output` at hook version `1` on a `northbound` descriptor, as set out in
+[northbound output hook](northbound-output-hook.md). Every other hook
+declaration fails: `mcp`, `setup`, `portal`, `semantic` and `evidence` as
+unimplemented and any other name as unknown, checked first; then `output` on a
+`southbound` or `both` descriptor fails with `ErrHookDirection`, `output` with
+no version or another version with `ErrUnsupportedHookVersion`, and a
+repeated `output` with `ErrDuplicateHook`. `ResolveHook` resolves no hook: it
+returns the unimplemented refusal for a reserved name and the unknown refusal
+for any other name, `output` included, for a registered driver. Reads return
+detached copies; `Binding` returns the frozen
 construction material and stored adapter without invoking it, and unknown or
 noncanonical IDs return `NOT_FOUND`.
 

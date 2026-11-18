@@ -1,0 +1,3 @@
+## Start tesla-observe before the charger gets power
+
+The activation observation page now tells the operator to start `tesla-observe` before the charger gets power, with one repeat for that startup. The command writes nothing until every attempt has finished, so a later repeat is not a signal that a new window is open and is not a time to apply power again. Another startup is another invocation, started before that power-up. The tool sends nothing and does not expect the confirmation. The window-bytes flag default stays 64. A sufficient capture count is not established and must be measured. The gateway binary is unchanged.

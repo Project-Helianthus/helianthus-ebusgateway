@@ -95,6 +95,15 @@ const (
 	HookEvidence HookName = "evidence"
 )
 
+// HookOutput is the northbound output hook. It is the one hook name a
+// descriptor may declare: only alone, only at OutputHookVersion and only on a
+// northbound or both descriptor. Admitting it publishes nothing; start, stop
+// and health stay with the driver manager.
+const HookOutput HookName = "output"
+
+// OutputHookVersion is the only supported version of the output hook.
+const OutputHookVersion = "1"
+
 // HookDeclaration is one optional versioned hook declaration.
 type HookDeclaration struct {
 	Name    HookName

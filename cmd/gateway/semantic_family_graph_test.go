@@ -9,14 +9,13 @@ import (
 	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/graph"
 )
 
-// The table names every composed family once, in bytewise order. Only the
-// logger-attached PV family, whose publisher publishes resources, is on; the
-// SunSpec PV class keeps its own entry off until its publisher migrates. The
-// accessor returns each entry's value and answers off for a family the table
-// does not list.
+// The table names every composed family once, in bytewise order. The
+// logger-attached PV family and the SunSpec PV class publish resources, so
+// their entries are on. The accessor returns each entry's value and answers
+// off for a family the table does not list.
 func TestSemanticFamilyGraphTableSwitchesOnOnlyMigratedFamilies(t *testing.T) {
 	want := []semanticFamily{semanticFamilyEVSE, semanticFamilyPV, semanticFamilyLoggerPV, semanticFamilyStorage, semanticFamilyThermal}
-	on := map[semanticFamily]bool{semanticFamilyLoggerPV: true}
+	on := map[semanticFamily]bool{semanticFamilyLoggerPV: true, semanticFamilyPV: true}
 	if len(semanticFamilyGraphTable) != len(want) {
 		t.Fatalf("table lists %d families, want %d", len(semanticFamilyGraphTable), len(want))
 	}
@@ -89,7 +88,7 @@ func TestSemanticFamilyGraphMatchesEveryComposedDeclaration(t *testing.T) {
 	})
 	t.Run("pv sunspec class", func(t *testing.T) {
 		hub := newTestSemanticHub(t)
-		class, err := modbusadapter.NewSemanticPVClass(hub, false)
+		class, err := modbusadapter.NewSemanticPVClass(hub, semanticFamilyGraph(semanticFamilyPV))
 		if err != nil {
 			t.Fatal(err)
 		}

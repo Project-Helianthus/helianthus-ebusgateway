@@ -36,7 +36,7 @@ type semanticFamilyGraphEntry struct {
 // family stays off until its publishers migrate.
 var semanticFamilyGraphTable = [...]semanticFamilyGraphEntry{
 	{family: semanticFamilyEVSE, graph: false},
-	{family: semanticFamilyPV, graph: false},
+	{family: semanticFamilyPV, graph: true},
 	{family: semanticFamilyLoggerPV, graph: true},
 	{family: semanticFamilyStorage, graph: false},
 	{family: semanticFamilyThermal, graph: false},

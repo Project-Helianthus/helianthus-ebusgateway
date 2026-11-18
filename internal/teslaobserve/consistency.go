@@ -212,7 +212,8 @@ func (observation Observation) terminationFault() string {
 }
 
 // metadataFault checks a replay against the termination of the observation it
-// replayed. The pinned lifecycle only becomes ready on a captured window.
+// replayed. A passive observation has no host echo, so a ready replay beside
+// an observation is inconsistent.
 func (replay LifecycleReplay) metadataFault(termination Termination) string {
 	switch {
 	case replay.Disposition != LifecycleReplayDisposition:
@@ -225,6 +226,8 @@ func (replay LifecycleReplay) metadataFault(termination Termination) string {
 		return "lifecycle replay is ready yet records a refused acquisition"
 	case replay.Ready && termination != TerminationCaptured:
 		return "lifecycle replay is ready for an incomplete window"
+	case replay.Ready:
+		return "lifecycle replay is ready for a passive observation"
 	case replay.State == lifecycleNotConstructed && (replay.Error == "" || replay.AcquireRefused):
 		return "lifecycle replay that was never constructed carries a state it cannot have"
 	case replay.FramesSent < 0:

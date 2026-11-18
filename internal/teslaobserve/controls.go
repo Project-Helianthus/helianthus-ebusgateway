@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"github.com/Project-Helianthus/helianthus-modbusreg/tesla"
 )
 
 // Control rows of the worksheet that an offline control supports.
@@ -191,15 +193,45 @@ func RunControls(ctx context.Context) []ControlResult {
 	return results
 }
 
+// runControl observes the control's synthetic input twice, on two fresh
+// endpoints, because an observation can be used once. The first observation
+// goes through the passive driver, which a run uses for every attempt; it
+// must end not ready for every control, the positive control included. The
+// second goes through the scripted exchange with the same variation; that
+// pass decides readiness, so the unvaried baseline reaches it and each
+// negative control is refused by the property it names.
 func runControl(parent context.Context, instance uint64, control controlCase) ControlResult {
 	result := ControlResult{
 		Name: control.name, Row: control.row,
 		ExpectedTermination: control.termination, ExpectedReady: control.ready,
 	}
+	passive, observation, ok := replayControl(parent, instance, control, func(report observationReport) tesla.HSCActivationDriver { return report })
+	if !ok {
+		return result
+	}
+	scripted, again, ok := replayControl(parent, instance, control, func(report observationReport) tesla.HSCActivationDriver {
+		return scriptedActivation{report}
+	})
+	if !ok {
+		return result
+	}
+	result.Termination, result.CapturedBytes = observation.Termination, observation.Coverage.CapturedBytes
+	result.Ready, result.AcquireRefused = scripted.Ready, scripted.AcquireRefused
+	result.LifecycleState, result.FramesSent = scripted.State, passive.FramesSent+scripted.FramesSent
+	result.Pass = result.Termination == control.termination && again.Termination == control.termination &&
+		!passive.Ready && passive.AcquireRefused && result.Ready == control.ready &&
+		result.FramesSent == 0 && (result.Ready || result.AcquireRefused)
+	return result
+}
+
+// replayControl observes the control's input on a fresh endpoint, applies the
+// control's variation and replays it through the lifecycle with the driver
+// that wrap builds. It returns the observation before mutation.
+func replayControl(parent context.Context, instance uint64, control controlCase, wrap func(observationReport) tesla.HSCActivationDriver) (LifecycleReplay, Observation, bool) {
 	clock := &syntheticClock{base: time.Unix(0, 0)}
 	endpoint, err := NewEndpoint(syntheticLabel, instance, &scriptedSource{clock: clock, bytes: control.script}, clock.now)
 	if err != nil {
-		return result
+		return LifecycleReplay{}, Observation{}, false
 	}
 	defer func() { _ = endpoint.Close() }()
 	observation, err := endpoint.Observe(parent, Request{
@@ -208,15 +240,15 @@ func runControl(parent context.Context, instance uint64, control controlCase) Co
 		SegmentCap: syntheticSegmentCap, SegmentGap: 500 * time.Microsecond,
 	})
 	if err != nil {
-		return result
+		return LifecycleReplay{}, Observation{}, false
 	}
-	result.Termination, result.CapturedBytes = observation.Termination, observation.Coverage.CapturedBytes
+	reported := observation.clone()
 	if control.mutate != nil {
-		control.mutate(&observation)
+		control.mutate(&reported)
 	}
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
-	report := observationReport{endpoint: endpoint, observation: observation}
+	report := observationReport{endpoint: endpoint, observation: reported}
 	if control.before != nil {
 		report.before = func() { control.before(endpoint, cancel) }
 	}
@@ -224,15 +256,11 @@ func runControl(parent context.Context, instance uint64, control controlCase) Co
 	if control.lifecycleNow != nil {
 		lifecycleNow = control.lifecycleNow()
 	}
-	replay := replayLifecycle(ctx, report, observation.Endpoint, lifecycleNow)
+	replay := replayLifecycle(ctx, wrap(report), reported.Endpoint, lifecycleNow)
 	if control.reuse {
-		second := replayLifecycle(ctx, report, observation.Endpoint, nil)
+		second := replayLifecycle(ctx, wrap(report), reported.Endpoint, nil)
 		second.FramesSent += replay.FramesSent
 		replay = second
 	}
-	result.Ready, result.AcquireRefused = replay.Ready, replay.AcquireRefused
-	result.LifecycleState, result.FramesSent = replay.State, replay.FramesSent
-	result.Pass = result.Termination == control.termination && result.Ready == control.ready &&
-		result.FramesSent == 0 && (result.Ready || result.AcquireRefused)
-	return result
+	return replay, observation, true
 }

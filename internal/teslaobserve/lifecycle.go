@@ -50,36 +50,76 @@ func (controlEndpoint) Recover(context.Context) error { return errControlNoTrans
 func (controlEndpoint) Close() error                  { return nil }
 
 // observationReport hands an observation to the lifecycle only when it is a
-// complete receive-side window still current at its owning endpoint.
+// complete receive-side window still current at its owning endpoint. A
+// passive observation has no host echo, so the driver refuses after those
+// checks and the lifecycle stays unavailable.
 type observationReport struct {
 	endpoint    *Endpoint
 	observation Observation
 	// before runs immediately before the currentness check; controls use it
-	// to place a fence, close or cancellation ahead of the commit.
+	// to place a fence, close, cancellation or expiry ahead of the commit.
 	before func()
 }
 
-func (report observationReport) ObserveTeslaGen3HSCActivation(ctx context.Context, request tesla.Gen3HSCActivationRequest) ([]byte, error) {
+// admit makes every check the passive driver makes: label, epoch,
+// termination, receive-only segments and currentness under the endpoint
+// mutex. It consumes the observation.
+func (report observationReport) admit(ctx context.Context, request tesla.HSCActivationRequest) error {
 	if request.Endpoint != report.observation.Endpoint || request.Epoch == 0 {
-		return nil, ErrNotCurrent
+		return ErrNotCurrent
 	}
 	if report.observation.Termination != TerminationCaptured {
-		return nil, errors.New("tesla activation observation is incomplete: " + string(report.observation.Termination))
+		return errors.New("tesla activation observation is incomplete: " + string(report.observation.Termination))
 	}
 	for _, segment := range report.observation.Segments {
 		if segment.Direction != DirectionReceive {
-			return nil, errors.New("tesla activation observation has a non-receive segment")
+			return errors.New("tesla activation observation has a non-receive segment")
 		}
 	}
 	if report.before != nil {
 		report.before()
 	}
-	var window []byte
-	err := report.endpoint.WithCurrent(ctx, report.observation, func() error {
-		window = report.observation.Window()
-		return nil
-	})
-	return window, err
+	return report.endpoint.WithCurrent(ctx, report.observation, func() error { return nil })
+}
+
+func (report observationReport) DriveTeslaHSCActivation(ctx context.Context, request tesla.HSCActivationRequest) (tesla.HSCActivationReport, error) {
+	if err := report.admit(ctx, request); err != nil {
+		return tesla.HSCActivationReport{}, err
+	}
+	return tesla.HSCActivationReport{}, errPassiveNoHostEcho
+}
+
+var errPassiveNoHostEcho = errors.New("passive observation has no host echo")
+
+// scriptedActivation is synthetic input for the offline controls only; an
+// attempt is never replayed through it. After the same admission as the
+// passive driver, the synthetic window is split at the greeting length into
+// the responder greeting and the responder confirmation, and a scripted host
+// echo of the received greeting is placed between them. The echo is input,
+// not a write: the owned endpoint is not used, so the control endpoint's
+// exchange method is not called. The unvaried synthetic baseline reaches
+// readiness here, so a control that stays not ready on this path is rejected
+// by the property it varies.
+type scriptedActivation struct{ observationReport }
+
+func (script scriptedActivation) DriveTeslaHSCActivation(ctx context.Context, request tesla.HSCActivationRequest) (tesla.HSCActivationReport, error) {
+	if request.Owned == nil {
+		return tesla.HSCActivationReport{}, ErrNotCurrent
+	}
+	if err := script.admit(ctx, request); err != nil {
+		return tesla.HSCActivationReport{}, err
+	}
+	window := script.observation.Window()
+	split := min(len(tesla.HSCActivationGreeting()), len(window))
+	greeting := append([]byte(nil), window[:split]...)
+	return tesla.HSCActivationReport{
+		ClockEpoch: script.observation.ClockEpoch,
+		Events: []tesla.HSCActivationEvent{
+			{Kind: tesla.HSCActivationEventGreeting, Bytes: greeting, LastByteOffset: time.Millisecond},
+			{Kind: tesla.HSCActivationEventEcho, Bytes: append([]byte(nil), greeting...), LastByteOffset: 2 * time.Millisecond, Turnaround: time.Millisecond, WriteDuration: time.Millisecond},
+			{Kind: tesla.HSCActivationEventConfirmation, Bytes: append([]byte(nil), window[split:]...), LastByteOffset: 3 * time.Millisecond},
+		},
+	}, nil
 }
 
 // ReplayLifecycle passes observation through the pinned read lifecycle. now
@@ -88,7 +128,7 @@ func ReplayLifecycle(ctx context.Context, endpoint *Endpoint, observation Observ
 	return replayLifecycle(ctx, observationReport{endpoint: endpoint, observation: observation}, observation.Endpoint, now)
 }
 
-func replayLifecycle(ctx context.Context, report tesla.Gen3HSCActivationWitness, label string, now func() time.Time) LifecycleReplay {
+func replayLifecycle(ctx context.Context, report tesla.HSCActivationDriver, label string, now func() time.Time) LifecycleReplay {
 	result := LifecycleReplay{Disposition: LifecycleReplayDisposition}
 	var exchanges atomic.Int64
 	config, err := controlAcquisitionConfig(label, report, now, &exchanges)
@@ -118,7 +158,7 @@ func replayLifecycle(ctx context.Context, report tesla.Gen3HSCActivationWitness,
 // controlAcquisitionConfig declares the offline control configuration that
 // the lifecycle requires before it will observe activation. It is not a
 // qualification decision about any device.
-func controlAcquisitionConfig(label string, report tesla.Gen3HSCActivationWitness, now func() time.Time, exchanges *atomic.Int64) (tesla.Gen3ReadAcquisitionConfig, error) {
+func controlAcquisitionConfig(label string, report tesla.HSCActivationDriver, now func() time.Time, exchanges *atomic.Int64) (tesla.Gen3ReadAcquisitionConfig, error) {
 	timing, err := modbus.NewRTUTiming(modbus.RTUTimingConfig{
 		Baud: 115200, DataBits: 8, Parity: modbus.RTUParityNone, StopBits: 1,
 		MaxResponseLatency: 500 * time.Millisecond, MaxQuiescence: 900 * time.Millisecond,

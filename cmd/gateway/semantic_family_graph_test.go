@@ -10,12 +10,12 @@ import (
 )
 
 // The table names every composed family once, in bytewise order. The
-// logger-attached PV family and the SunSpec PV class publish resources, so
-// their entries are on. The accessor returns each entry's value and answers
+// logger-attached PV family, the SunSpec PV class and the storage family
+// publish resources, so their entries are on. The accessor returns each entry's value and answers
 // off for a family the table does not list.
 func TestSemanticFamilyGraphTableSwitchesOnOnlyMigratedFamilies(t *testing.T) {
 	want := []semanticFamily{semanticFamilyEVSE, semanticFamilyPV, semanticFamilyLoggerPV, semanticFamilyStorage, semanticFamilyThermal}
-	on := map[semanticFamily]bool{semanticFamilyLoggerPV: true, semanticFamilyPV: true}
+	on := map[semanticFamily]bool{semanticFamilyLoggerPV: true, semanticFamilyPV: true, semanticFamilyStorage: true}
 	if len(semanticFamilyGraphTable) != len(want) {
 		t.Fatalf("table lists %d families, want %d", len(semanticFamilyGraphTable), len(want))
 	}
@@ -131,17 +131,18 @@ func setSemanticFamilyGraph(t *testing.T, family semanticFamily, value bool) {
 	t.Fatalf("family %q is not in the table", family)
 }
 
-// A table entry reaches its family's declarations: switching it on makes the
-// storage and EVSE specs ask for enforcement and makes the SunSpec PV class
-// declare enforced assets, and switching the logger-attached PV entry off
-// makes its class declare assets that are not enforced. Each family reads its
-// own entry only.
+// A table entry reaches its family's declarations: switching the storage
+// entry off makes the storage spec stop asking for enforcement, switching the
+// EVSE entry on makes its spec ask for it, switching the SunSpec PV entry on
+// makes its class declare enforced assets, and switching the logger-attached
+// PV entry off makes its class declare assets that are not enforced. Each
+// family reads its own entry only.
 func TestSemanticFamilyGraphEntryReachesDeclarations(t *testing.T) {
-	setSemanticFamilyGraph(t, semanticFamilyStorage, true)
+	setSemanticFamilyGraph(t, semanticFamilyStorage, false)
 	setSemanticFamilyGraph(t, semanticFamilyEVSE, true)
 	setSemanticFamilyGraph(t, semanticFamilyPV, true)
 	setSemanticFamilyGraph(t, semanticFamilyLoggerPV, false)
-	if !growattStorageAssetSpec("asset:synthetic-storage", "source:synthetic-storage").Graph {
+	if growattStorageAssetSpec("asset:synthetic-storage", "source:synthetic-storage").Graph {
 		t.Fatal("storage spec ignores the table")
 	}
 	if !teslaEVSEAssetSpec(teslaRetainedConfig()).Graph {

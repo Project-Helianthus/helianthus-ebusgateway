@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semgraph"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	"github.com/Project-Helianthus/helianthus-modbusreg/growatt"
@@ -36,12 +37,17 @@ const (
 	growattStorageProfile = "growatt.bms.rs485.1xsxxp.v2_02.readonly.v1"
 )
 
+// growattStoragePackKind is the one resource kind the storage gate publishes:
+// every fact it maps has the battery pack as its subject.
+const growattStoragePackKind semreg.DefinitionID = "resource.battery_pack"
+
 type growattStoragePublication struct {
 	mu                  sync.RWMutex
 	assetID             semreg.AssetID
 	sourceID            semreg.SourceID
 	hub                 *semhub.Hub
 	handle              *semhub.Handle
+	resources           *semanticResourceAllocator
 	current             json.RawMessage
 	currentReceivedAt   time.Time
 	currentPublishedAt  time.Time
@@ -73,9 +79,42 @@ func newGrowattStoragePublication(declaration *semhub.Declaration, handle *semhu
 	if declaration == nil || handle == nil || handle.Source() != declaration.Source() {
 		return nil, errors.New("growatt BMS semantic asset/source identity is invalid")
 	}
-	p := &growattStoragePublication{assetID: declaration.Asset(), sourceID: declaration.Source(), hub: declaration.Hub(), handle: handle}
+	resources, err := semanticResourceAllocatorFor(declaration.Hub())
+	if err != nil {
+		return nil, err
+	}
+	p := &growattStoragePublication{assetID: declaration.Asset(), sourceID: declaration.Source(), hub: declaration.Hub(), handle: handle, resources: resources}
 	declaration.SetReprojection(p.onControl)
 	return p, nil
+}
+
+// growattStoragePackSlot is the operator slot of the configured pack. The
+// family lists no identification scheme and the admitted reads carry no pack
+// token, so the gate anchors the pack on an operator label: the label the
+// operator configured for this storage. The slot is a domain-separated digest
+// of that label, so the published anchor carries no configured text and stays
+// within the slot bound whatever the label's length. Only the allocator's
+// identifier ever reaches a fact key.
+func growattStoragePackSlot(label semreg.AssetID) string {
+	return growattStorageHash("helianthus.gateway.storage.pack_slot/v1", string(label))[:32]
+}
+
+// pack resolves the battery-pack resource of the configured label through the
+// process's one resource allocator, homed in the publication's asset. The
+// identifier depends on the label only, so a driver restart, a new source
+// epoch, another source identifier or another unit number keep it.
+func (p *growattStoragePublication) pack() (semreg.Resource, error) {
+	if p.resources == nil {
+		return semreg.Resource{}, errors.New("growatt BMS storage resource allocator unavailable")
+	}
+	slot := growattStoragePackSlot(p.assetID)
+	evidence := growattStorageDigestEvidence("operator.storage.pack_label", slot)
+	anchor := semgraph.Anchor{Class: semreg.AnchorEquipment, Basis: semreg.AnchorOperatorSlot, Source: semgraph.SourceOperatorLabel, Slot: slot, Evidence: []semreg.EvidenceRef{evidence}}
+	id, record, err := p.resources.resolve(growattStoragePackKind, anchor, p.assetID)
+	if err != nil {
+		return semreg.Resource{}, err
+	}
+	return semreg.Resource{ResourceID: id, Kind: growattStoragePackKind, Anchor: record, State: semreg.ResourceCurrent, Origin: semreg.OriginRef{OriginID: semreg.OriginID("origin:semantic-storage-pack:" + growattStorageHash(string(growattStoragePackKind), slot)[:32]), Kind: semreg.OriginOperator, Evidence: []semreg.EvidenceRef{evidence}}, Revision: "1"}, nil
 }
 
 func (p *growattStoragePublication) onControl(semhub.ControlEvent) error {
@@ -95,6 +134,10 @@ func (p *growattStoragePublication) Publish(status growatt.BMSTypedReadOnlyStatu
 	if err := validateGrowattStorageInput(status, evidence, p.assetID, p.sourceID); err != nil {
 		return nil, err
 	}
+	pack, err := p.pack()
+	if err != nil {
+		return nil, err
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	tx, err := p.hub.Begin(p.handle, p.assetID)
@@ -104,7 +147,7 @@ func (p *growattStoragePublication) Publish(status growatt.BMSTypedReadOnlyStatu
 	defer tx.Abort()
 	current, exists := tx.Current()
 	sequence := tx.NextSequence()
-	batch, manifest, requested, dispositions, err := growattStorageBatch(tx.Incarnation(), status, evidence, sequence, current, exists, tx.SourceRetirements())
+	batch, manifest, requested, dispositions, err := growattStorageBatch(tx.Incarnation(), pack, status, evidence, sequence, current, exists, tx.SourceRetirements())
 	if err != nil {
 		return nil, err
 	}
@@ -262,8 +305,15 @@ func growattStorageServiceID(asset semreg.AssetID, binding semreg.NativeBindingI
 	return semreg.ServiceInstanceID("service:semantic-storage:" + growattStorageHash(string(asset), string(binding), "pack")[:32])
 }
 
-func growattStorageBatch(inc semhub.Incarnation, status growatt.BMSTypedReadOnlyStatus, evidence GrowattBMSRS485ObservationEvidence, sequence semreg.Uint64, current semreg.Snapshot, exists bool, retirements []semreg.SourceEpochID) (semreg.PublicationBatch, projection.ProjectionManifest, []projection.RequestedItem, []projection.ProjectionDisposition, error) {
+// growattStorageBatch builds one publication of the configured pack. Every
+// fact key, the identity link and the service name the pack resource; the
+// resource record is carried only while the asset does not hold it current.
+func growattStorageBatch(inc semhub.Incarnation, pack semreg.Resource, status growatt.BMSTypedReadOnlyStatus, evidence GrowattBMSRS485ObservationEvidence, sequence semreg.Uint64, current semreg.Snapshot, exists bool, retirements []semreg.SourceEpochID) (semreg.PublicationBatch, projection.ProjectionManifest, []projection.RequestedItem, []projection.ProjectionDisposition, error) {
 	asset, source := inc.Asset, inc.Source
+	if pack.Kind != growattStoragePackKind || pack.ResourceID.Validate() != nil {
+		return semreg.PublicationBatch{}, projection.ProjectionManifest{}, nil, nil, errors.New("identity_missing_or_invalid")
+	}
+	packID := pack.ResourceID
 	minter, err := semhub.NewLegacyMinter(semhub.LegacyGrowattStorage)
 	if err != nil {
 		return semreg.PublicationBatch{}, projection.ProjectionManifest{}, nil, nil, err
@@ -284,7 +334,7 @@ func growattStorageBatch(inc semhub.Incarnation, status growatt.BMSTypedReadOnly
 	wall := growattWall(evidence.ReceiptWall)
 	mono := semreg.MonotonicPoint{ClockEpochID: semreg.ClockEpochID(evidence.ClockEpoch), Nanoseconds: semreg.Uint64(strconv.FormatInt(evidence.ReceiptMonotonic.Nanoseconds(), 10))}
 	manifest := projection.ProjectionManifest{TargetID: "target:gateway-semantic-storage", TargetVersion: "1.0.0", KernelVersion: semreg.ContractKernelV1, PackVersions: []semreg.PackRef{{ID: growattStoragePackID, Version: growattStoragePackVersion}}, MappingRevision: "1"}
-	requested, dispositions := growattStorageDispositions(status, asset, bindingID, source, epoch, generation, evidenceRef, wall, mono)
+	requested, dispositions := growattStorageDispositions(status, asset, packID, bindingID, source, epoch, generation, evidenceRef, wall, mono)
 	facts := make([]semreg.FactCandidate, 0, len(dispositions))
 	for _, d := range dispositions {
 		facts = append(facts, d.candidate...)
@@ -295,8 +345,8 @@ func growattStorageBatch(inc semhub.Incarnation, status growatt.BMSTypedReadOnly
 	batch := semreg.PublicationBatch{Contract: semreg.ContractKernelV1, BatchID: semreg.BatchID("batch:semantic-storage:" + growattStorageHash(evidence.ObservationID)[:32]), AssetID: asset, SourceID: source, SourceEpochID: epoch, DriverGeneration: generation, Sequence: sequence, ExpectedSemanticRevision: expected, ObservedAt: wall,
 		SourceUpserts:       []semreg.SourceDescriptor{{SourceID: source, SourceEpochID: epoch, ProtocolID: "modbus_rtu", ProfileID: "growatt.bms.rs485.1xsxxp.v2_02.readonly.v1", ProfileVersion: "1", RegistryEvidence: registryRef, StartedAt: wall, State: semreg.SourceCurrent, Revision: "1"}},
 		BindingUpserts:      []semreg.NativeBinding{{BindingID: bindingID, AssetID: asset, SourceID: source, SourceEpochID: epoch, DriverGeneration: generation, NativeResource: nativeRef, State: semreg.BindingCurrent, Revision: "1"}},
-		IdentityLinkUpserts: []semreg.IdentityLink{{AssetID: asset, BindingID: bindingID, State: semreg.LinkQualified, Basis: []semreg.EvidenceRef{evidenceRef}, Revision: "1"}}, FactUpserts: facts,
-		ServiceUpserts:    []semreg.ServiceInstance{{InstanceID: growattStorageServiceID(asset, bindingID), AssetID: asset, Definition: semreg.DefinitionRef{Pack: semreg.PackRef{ID: growattStoragePackID, Version: growattStoragePackVersion}, ID: "storage.service.pack", Version: growattStoragePackVersion}, BindingID: bindingID, SourceEpochID: epoch, DriverGeneration: generation, Qualification: semreg.QualificationQualified, Availability: semreg.AvailabilityAvailable, Revision: "1"}},
+		IdentityLinkUpserts: []semreg.IdentityLink{{AssetID: asset, BindingID: bindingID, State: semreg.LinkQualified, Basis: []semreg.EvidenceRef{evidenceRef}, Revision: "1", Resource: &packID}}, FactUpserts: facts,
+		ServiceUpserts:    []semreg.ServiceInstance{{InstanceID: growattStorageServiceID(asset, bindingID), AssetID: asset, Definition: semreg.DefinitionRef{Pack: semreg.PackRef{ID: growattStoragePackID, Version: growattStoragePackVersion}, ID: "storage.service.pack", Version: growattStoragePackVersion}, BindingID: bindingID, SourceEpochID: epoch, DriverGeneration: generation, Qualification: semreg.QualificationQualified, Availability: semreg.AvailabilityAvailable, Revision: "1", Resource: &packID}},
 		CapabilityUpserts: []semreg.CapabilityInstance{}, SourceRetirements: append([]semreg.SourceEpochID{}, retirements...), FactWithdrawals: []semreg.CandidateID{}, ServiceWithdrawals: []semreg.ServiceInstanceID{}, CapabilityWithdrawals: []semreg.CapabilityInstanceID{}, GenerationFences: []semreg.GenerationFence{}}
 	// Every object carried by a later observation advances with the observation
 	// revision. A repeated fixed revision would let a concurrent caller replace
@@ -333,6 +383,11 @@ func growattStorageBatch(inc semhub.Incarnation, status growatt.BMSTypedReadOnly
 		batch.IdentityLinkUpserts = []semreg.IdentityLink{}
 		batch.ServiceUpserts = []semreg.ServiceInstance{}
 	}
+	resources, err := growattStorageResourceUpserts(current, pack)
+	if err != nil {
+		return semreg.PublicationBatch{}, projection.ProjectionManifest{}, nil, nil, err
+	}
+	batch.ResourceUpserts = resources
 	if status.OperatingState == growatt.BMSStateSoftStarting && exists {
 		for _, envelope := range current.Facts {
 			if envelope.Key.FactID != "storage.status.operating" {
@@ -354,6 +409,28 @@ func growattStorageBatch(inc semhub.Incarnation, status growatt.BMSTypedReadOnly
 	}
 	batch.BatchDigest = digest
 	return batch, manifest, requested, growattStorageProjectionDispositions(dispositions), nil
+}
+
+// growattStorageResourceUpserts returns the pack record the batch must carry:
+// none while the asset holds it current, the record at its next revision with
+// its recorded anchor when the asset holds it otherwise, and the new record
+// when the asset does not hold it. A current record is never rewritten.
+func growattStorageResourceUpserts(current semreg.Snapshot, pack semreg.Resource) ([]semreg.Resource, error) {
+	for _, held := range current.Resources {
+		if held.ResourceID != pack.ResourceID {
+			continue
+		}
+		if held.State == semreg.ResourceCurrent {
+			return nil, nil
+		}
+		revision, err := strconv.ParseUint(string(held.Revision), 10, 64)
+		if err != nil || revision == math.MaxUint64 {
+			return nil, errors.New("growatt BMS storage pack revision is exhausted")
+		}
+		pack.Anchor, pack.Supersedes, pack.Revision = held.Anchor, held.Supersedes, semreg.Uint64(strconv.FormatUint(revision+1, 10))
+		return []semreg.Resource{pack}, nil
+	}
+	return []semreg.Resource{pack}, nil
 }
 
 func growattStorageHasSourceEpoch(snapshot semreg.Snapshot, source semreg.SourceID, epoch semreg.SourceEpochID) bool {
@@ -410,7 +487,7 @@ type growattStorageDisposition struct {
 	candidate []semreg.FactCandidate
 }
 
-func growattStorageDispositions(status growatt.BMSTypedReadOnlyStatus, asset semreg.AssetID, binding semreg.NativeBindingID, source semreg.SourceID, epoch semreg.SourceEpochID, generation semreg.Uint64, ev semreg.EvidenceRef, wall semreg.TimePoint, mono semreg.MonotonicPoint) ([]projection.RequestedItem, []growattStorageDisposition) {
+func growattStorageDispositions(status growatt.BMSTypedReadOnlyStatus, asset semreg.AssetID, pack semreg.ResourceID, binding semreg.NativeBindingID, source semreg.SourceID, epoch semreg.SourceEpochID, generation semreg.Uint64, ev semreg.EvidenceRef, wall semreg.TimePoint, mono semreg.MonotonicPoint) ([]projection.RequestedItem, []growattStorageDisposition) {
 	type field struct {
 		id          semreg.DefinitionID
 		nativeID    semreg.DefinitionID
@@ -432,7 +509,7 @@ func growattStorageDispositions(status growatt.BMSTypedReadOnlyStatus, asset sem
 	out := make([]growattStorageDisposition, 0, 7)
 	for _, f := range fields {
 		requested = append(requested, projection.RequestedItem{Kind: projection.ItemFact, ItemID: f.id})
-		candidate := growattStorageCandidate(asset, binding, source, epoch, generation, ev, wall, mono, f.id, f.value, f.unit)
+		candidate := growattStorageCandidate(asset, pack, binding, source, epoch, generation, ev, wall, mono, f.id, f.value, f.unit)
 		out = append(out, growattStorageDisposition{item: projection.ProjectionDisposition{Kind: projection.ItemFact, ItemID: f.id, Outcome: f.outcome, SourceKeys: []semreg.FactKey{candidate.Key}, Loss: growattStorageLoss(f.loss, f.nativeID, f.description)}, candidate: []semreg.FactCandidate{candidate}})
 	}
 	requested = append(requested, projection.RequestedItem{Kind: projection.ItemFact, ItemID: "storage.status.operating"})
@@ -444,7 +521,7 @@ func growattStorageDispositions(status growatt.BMSTypedReadOnlyStatus, asset sem
 		if status.OperatingState == growatt.BMSStateStandby {
 			token = "standby"
 		}
-		candidate := growattStorageSymbolCandidate(asset, binding, source, epoch, generation, ev, wall, mono, "storage.status.operating", token)
+		candidate := growattStorageSymbolCandidate(asset, pack, binding, source, epoch, generation, ev, wall, mono, "storage.status.operating", token)
 		out = append(out, growattStorageDisposition{item: projection.ProjectionDisposition{Kind: projection.ItemFact, ItemID: "storage.status.operating", Outcome: projection.ProjectionTransformed, SourceKeys: []semreg.FactKey{candidate.Key}, Loss: []projection.LossDetail{{Kind: projection.LossSymbol, SourceItems: []semreg.DefinitionID{"native.growatt.bms.rs485.v202.operating_state"}, Description: "charging and discharging collapse to active"}}}, candidate: []semreg.FactCandidate{candidate}})
 	}
 	return requested, out
@@ -464,19 +541,23 @@ func growattStorageLoss(kind projection.LossKind, nativeID semreg.DefinitionID, 
 	return []projection.LossDetail{{Kind: kind, SourceItems: []semreg.DefinitionID{nativeID}, Description: description}}
 }
 
-func growattStorageCandidate(asset semreg.AssetID, binding semreg.NativeBindingID, source semreg.SourceID, epoch semreg.SourceEpochID, generation semreg.Uint64, ev semreg.EvidenceRef, wall semreg.TimePoint, mono semreg.MonotonicPoint, id semreg.DefinitionID, value float64, unit semreg.DefinitionID) semreg.FactCandidate {
+func growattStorageCandidate(asset semreg.AssetID, pack semreg.ResourceID, binding semreg.NativeBindingID, source semreg.SourceID, epoch semreg.SourceEpochID, generation semreg.Uint64, ev semreg.EvidenceRef, wall semreg.TimePoint, mono semreg.MonotonicPoint, id semreg.DefinitionID, value float64, unit semreg.DefinitionID) semreg.FactCandidate {
 	number := growattDecimal(value)
-	key := growattStorageKey(asset, id)
+	key := growattStorageKey(pack, id)
 	v := semreg.Value{Kind: semreg.ValueQuantity, Quantity: &semreg.Quantity{Number: number, Unit: unit}}
 	return growattStorageFact(asset, binding, source, epoch, generation, ev, wall, mono, id, key, v)
 }
-func growattStorageSymbolCandidate(asset semreg.AssetID, binding semreg.NativeBindingID, source semreg.SourceID, epoch semreg.SourceEpochID, generation semreg.Uint64, ev semreg.EvidenceRef, wall semreg.TimePoint, mono semreg.MonotonicPoint, id semreg.DefinitionID, token string) semreg.FactCandidate {
-	key := growattStorageKey(asset, id)
+func growattStorageSymbolCandidate(asset semreg.AssetID, pack semreg.ResourceID, binding semreg.NativeBindingID, source semreg.SourceID, epoch semreg.SourceEpochID, generation semreg.Uint64, ev semreg.EvidenceRef, wall semreg.TimePoint, mono semreg.MonotonicPoint, id semreg.DefinitionID, token string) semreg.FactCandidate {
+	key := growattStorageKey(pack, id)
 	v := semreg.Value{Kind: semreg.ValueSymbol, Symbol: &semreg.Symbol{Namespace: id, Token: token, Known: true}}
 	return growattStorageFact(asset, binding, source, epoch, generation, ev, wall, mono, id, key, v)
 }
-func growattStorageKey(asset semreg.AssetID, id semreg.DefinitionID) semreg.FactKey {
-	dimension := string(asset)
+
+// growattStorageKey is the key of one pack fact: its pack dimension value is
+// the allocated identifier of the pack resource, never an asset, source or
+// binding identifier.
+func growattStorageKey(pack semreg.ResourceID, id semreg.DefinitionID) semreg.FactKey {
+	dimension := string(pack)
 	return semreg.FactKey{PackID: growattStoragePackID, PackVersion: growattStoragePackVersion, FactID: id, Dimensions: []semreg.Dimension{{ID: "storage.dimension.pack", Value: semreg.Value{Kind: semreg.ValueText, Text: &dimension}}}}
 }
 func growattStorageFact(asset semreg.AssetID, binding semreg.NativeBindingID, source semreg.SourceID, epoch semreg.SourceEpochID, generation semreg.Uint64, ev semreg.EvidenceRef, wall semreg.TimePoint, mono semreg.MonotonicPoint, id semreg.DefinitionID, key semreg.FactKey, value semreg.Value) semreg.FactCandidate {

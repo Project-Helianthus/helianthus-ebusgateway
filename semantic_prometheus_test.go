@@ -266,7 +266,7 @@ func semanticMetricsFixture(domain string, available bool, freshness semreg.Fres
 	dimensionID, dimensionValue, factID := semreg.DefinitionID("pv.dimension.inverter"), "resource:asset:private:inverter", semreg.DefinitionID("pv.ac.aggregate_active_power")
 	unit := semreg.DefinitionID("unit.watt")
 	if domain == "storage" {
-		dimensionID, dimensionValue, factID, unit = "storage.dimension.pack", "storage:asset:private", "storage.pack.voltage", "unit.volt"
+		dimensionID, dimensionValue, factID, unit = "storage.dimension.pack", "resource:asset:private:pack", "storage.pack.voltage", "unit.volt"
 	}
 	if domain == "evse" {
 		dimensionID, dimensionValue, factID, unit = "evse.dimension.evse", "evse:asset:private", "evse.limit.configured_current", "unit.ampere"
@@ -287,6 +287,10 @@ func semanticMetricsFixture(domain string, available bool, freshness semreg.Fres
 		// The PV fixture is graphed: its dimension value is the identifier of
 		// the fact's subject resource.
 		snapshot.Resources = []semreg.Resource{semanticResourceFixture(semreg.ResourceID(dimensionValue), "resource.inverter", "")}
+	}
+	if domain == "storage" {
+		// So is the storage fixture: its pack value names a battery pack.
+		snapshot.Resources = []semreg.Resource{semanticResourceFixture(semreg.ResourceID(dimensionValue), "resource.battery_pack", "")}
 	}
 	evaluation := semreg.EvaluationView{SnapshotID: snapshot.SnapshotID, Facts: []semreg.EvaluatedFact{{CandidateID: candidate.CandidateID, Freshness: freshness, EffectiveAvailability: availability}}, EvaluationDigest: semreg.Digest("sha256:" + strings.Repeat("0", 64))}
 	item := semreg.DefinitionID("storage.pack.voltage")
@@ -377,6 +381,47 @@ func TestSemanticPrometheusPVLabelsFollowResourceKindAndSlot(t *testing.T) {
 			t.Fatalf("a fact about a withdrawn resource was rendered:\n%s", out.String())
 		}
 	})
+}
+
+// TestSemanticPrometheusStorageLabelFollowsResourceKind: the storage pack
+// label is taken from the subject resource's kind, never from the pack value,
+// which is an identifier. A pack value naming a current battery pack renders
+// the label "pack"; one naming no resource, a resource of another kind or a
+// withdrawn pack renders no fact, and so does a pack value in a snapshot
+// without resources. No identifier reaches a label.
+func TestSemanticPrometheusStorageLabelFollowsResourceKind(t *testing.T) {
+	const value = `helianthus_semantic_fact_value{dimension="pack",domain="storage",fact_id="storage.pack.voltage",pack="helianthus.pack.storage",unit="unit.volt"} 42`
+	pack := semanticResourceFixture("resource:asset:private:pack", "resource.battery_pack", "")
+	withdrawn := pack
+	withdrawn.State = semreg.ResourceWithdrawn
+	for _, tc := range []struct {
+		name      string
+		resources []semreg.Resource
+		rendered  bool
+	}{
+		{"battery pack", []semreg.Resource{pack}, true},
+		{"names no resource", []semreg.Resource{semanticResourceFixture("resource:test-other", "resource.battery_pack", "")}, false},
+		{"resource of another kind", []semreg.Resource{semanticResourceFixture("resource:asset:private:pack", "resource.inverter", "")}, false},
+		{"withdrawn pack", []semreg.Resource{withdrawn}, false},
+		{"asset-valued text without resources", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			domain := semanticMetricsFixture("storage", true, semreg.FreshnessFresh, semreg.AvailabilityAvailable, semreg.ValidityGood, 0)
+			domain.Snapshot.Resources = tc.resources
+			var out bytes.Buffer
+			writeSemanticMetrics(newPrometheusWriter(&out), []SemanticMetricsDomain{domain}, time.Unix(101, 0))
+			metrics := out.String()
+			if strings.Contains(metrics, "asset:private") || strings.Contains(metrics, "resource:") {
+				t.Fatalf("an identifier leaked into a label:\n%s", metrics)
+			}
+			if tc.rendered != strings.Contains(metrics, value) {
+				t.Fatalf("rendered=%v, want %v:\n%s", !tc.rendered, tc.rendered, metrics)
+			}
+			if !tc.rendered && (strings.Contains(metrics, "\nhelianthus_semantic_fact_value{") || !strings.Contains(metrics, "helianthus_semantic_render_overflow 1")) {
+				t.Fatalf("an unresolved pack was rendered or not counted:\n%s", metrics)
+			}
+		})
+	}
 }
 
 func addEVSEAllocatedFixture(domain *SemanticMetricsDomain, connector string, candidateID semreg.CandidateID) {

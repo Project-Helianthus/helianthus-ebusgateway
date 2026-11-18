@@ -14,7 +14,8 @@ const (
 	// semanticFamilyLoggerPV is the PV class of inverters read behind a
 	// logger or a dongle: one asset per admitted inverter child.
 	semanticFamilyLoggerPV semanticFamily = "pv.logger"
-	// semanticFamilyStorage is the configured battery storage asset.
+	// semanticFamilyStorage is the configured battery storage asset; its
+	// publisher publishes the battery pack as a resource.
 	semanticFamilyStorage semanticFamily = "storage"
 	// semanticFamilyThermal is the eBUS boiler asset.
 	semanticFamilyThermal semanticFamily = "thermal"
@@ -38,7 +39,7 @@ var semanticFamilyGraphTable = [...]semanticFamilyGraphEntry{
 	{family: semanticFamilyEVSE, graph: false},
 	{family: semanticFamilyPV, graph: true},
 	{family: semanticFamilyLoggerPV, graph: true},
-	{family: semanticFamilyStorage, graph: false},
+	{family: semanticFamilyStorage, graph: true},
 	{family: semanticFamilyThermal, graph: false},
 }
 

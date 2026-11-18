@@ -19,7 +19,7 @@ func TestGrowattStorageDispositionsUseExactNativeLossDefinitionIDs(t *testing.T)
 		CumulativeDischargeAmpHours: 42.25,
 	}
 	_, dispositions := growattStorageDispositions(
-		status, "asset:growatt-bms-a", "binding:test", "growatt-bms-a", "source-epoch-1", "1",
+		status, "asset:growatt-bms-a", "resource:synthetic-pack", "binding:test", "growatt-bms-a", "source-epoch-1", "1",
 		growattStorageEvidence("native.fixture", "fixture"), growattWall(time.Unix(1_800_000_000, 0)),
 		semreg.MonotonicPoint{ClockEpochID: growattBMSRS485ClockEpoch, Nanoseconds: "1"},
 	)

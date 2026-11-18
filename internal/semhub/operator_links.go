@@ -185,10 +185,13 @@ func pendingOperatorLinks(declared []OperatorLink, snapshot semreg.Snapshot, pre
 // links differ from the links pending for its source. A link of the batch is
 // an operator link when its basis holds operator evidence or when it
 // replaces a published operator link that is not withdrawn. A batch that
-// carries no operator link is accepted and leaves the pending links pending;
-// one that carries any must carry exactly the pending set. The pending set is
-// computed from the committed snapshot, which the asset commit lock holds
-// still. h.mu must be held.
+// carries no operator link is accepted and leaves the pending links pending.
+// A batch that carries a qualified operator link must carry exactly the
+// pending set. A batch whose operator links are only withdrawals must carry
+// every pending withdrawal and nothing else; a qualified declaration pending
+// beside those withdrawals stays pending. The pending set is computed from
+// the committed snapshot, which the asset commit lock holds still. h.mu must
+// be held.
 func (h *Hub) checkOperatorLinksLocked(tx *Tx) error {
 	snapshot, _, ok := tx.asset.kernel.Current()
 	published := make(map[semreg.NativeBindingID]bool)
@@ -208,8 +211,35 @@ func (h *Hub) checkOperatorLinksLocked(tx *Tx) error {
 	}
 	sort.Slice(carried, func(i, j int) bool { return carried[i].BindingID < carried[j].BindingID })
 	pending := pendingOperatorLinks(tx.asset.operatorLinks[tx.applied.SourceID], snapshot, ok, tx.asset.id, tx.applied.SourceID, tx.applied.SourceEpochID, tx.applied.DriverGeneration, tx.applied.BindingUpserts)
-	if !reflect.DeepEqual(carried, pending) {
-		return ErrOperatorLink
+	if reflect.DeepEqual(carried, pending) {
+		return nil
 	}
-	return nil
+	if operatorWithdrawalsOnly(carried) && reflect.DeepEqual(carried, operatorWithdrawals(pending)) {
+		return nil
+	}
+	return ErrOperatorLink
+}
+
+// operatorWithdrawalsOnly reports whether every link withdraws a declaration.
+func operatorWithdrawalsOnly(links []semreg.IdentityLink) bool {
+	if len(links) == 0 {
+		return false
+	}
+	for _, link := range links {
+		if link.State != semreg.LinkWithdrawn {
+			return false
+		}
+	}
+	return true
+}
+
+// operatorWithdrawals is the withdrawals in links, in the same order.
+func operatorWithdrawals(links []semreg.IdentityLink) []semreg.IdentityLink {
+	out := make([]semreg.IdentityLink, 0, len(links))
+	for _, link := range links {
+		if link.State == semreg.LinkWithdrawn {
+			out = append(out, link)
+		}
+	}
+	return out
 }

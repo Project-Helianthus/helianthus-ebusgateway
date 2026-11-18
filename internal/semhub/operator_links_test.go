@@ -538,6 +538,165 @@ func TestOperatorLinksStayPendingWhileFencedAndTheSuccessorCarriesThem(t *testin
 	}
 }
 
+// carryOperatorWithdrawals carries every pending withdrawal and leaves every
+// qualified declaration out of the batch.
+func carryOperatorWithdrawals(tx *Tx, batch *semreg.PublicationBatch) []semreg.IdentityLink {
+	pending := tx.OperatorLinks(batch.BindingUpserts)
+	replaced := map[semreg.NativeBindingID]bool{}
+	links := []semreg.IdentityLink{}
+	for _, link := range pending {
+		if link.State != semreg.LinkWithdrawn {
+			continue
+		}
+		replaced[link.BindingID] = true
+		links = append(links, link)
+	}
+	for _, link := range batch.IdentityLinkUpserts {
+		if !replaced[link.BindingID] {
+			links = append(links, link)
+		}
+	}
+	sortLinks(links)
+	batch.IdentityLinkUpserts = links
+	return pending
+}
+
+// A batch may commit every pending withdrawal and leave a qualified
+// declaration pending. The published link that declaration would replace
+// stays as it was.
+func TestOperatorLinksWithdrawalCarryLeavesQualifiedDeclarationPending(t *testing.T) {
+	hub, handle := newOperatorLinkHub(t)
+	publishOp(t, hub, handle, opAsset, 1, []string{"a", "c"}, graphInverterResource(), opInverter2Resource())
+	mustSetOperatorLinks(t, hub, opAsset, opSource, opDeclaration("a", graphInverter, "one"), opDeclaration("c", opInverter2, "two"))
+	published := publishOp(t, hub, handle, opAsset, 2, []string{"a", "c"})
+	if len(published) != 2 {
+		t.Fatalf("published=%+v", published)
+	}
+	var bindingA, bindingC semreg.NativeBindingID
+	for _, link := range published {
+		if link.Resource != nil && *link.Resource == graphInverter {
+			bindingA = link.BindingID
+		}
+		if link.Resource != nil && *link.Resource == opInverter2 {
+			bindingC = link.BindingID
+		}
+	}
+	if bindingA == "" || bindingC == "" || bindingA == bindingC {
+		t.Fatalf("published bindings a=%s c=%s", bindingA, bindingC)
+	}
+	mustSetOperatorLinks(t, hub, opAsset, opSource, opDeclaration("c", graphInverter, "revised"))
+	tx, err := hub.Begin(handle, opAsset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch := opBatch(t, tx, 3, []string{"a", "c"})
+	pending := carryOperatorWithdrawals(tx, &batch)
+	if len(pending) != 2 {
+		t.Fatalf("pending=%+v", pending)
+	}
+	var withdrawal semreg.IdentityLink
+	qualified := 0
+	for _, link := range pending {
+		switch link.State {
+		case semreg.LinkWithdrawn:
+			withdrawal = link
+		case semreg.LinkQualified:
+			qualified++
+			wantOperatorLink(t, link, bindingC, graphInverter, "revised", "3")
+		default:
+			t.Fatalf("pending link=%+v", link)
+		}
+	}
+	if withdrawal.BindingID != bindingA || withdrawal.Revision != "3" || qualified != 1 {
+		t.Fatalf("pending withdrawal=%+v qualified=%d", withdrawal, qualified)
+	}
+	if outcome, err := commitOp(t, tx, batch, 3); err != nil || outcome != Accepted {
+		t.Fatalf("withdrawal beside a qualified declaration=%v/%v", outcome, err)
+	}
+	if link := linkOf(t, hub, opAsset, bindingA); link.State != semreg.LinkWithdrawn || link.Revision != "3" || link.Resource == nil || *link.Resource != graphInverter || !operatorBasis(link.Basis) {
+		t.Fatalf("withdrawn link=%+v", link)
+	}
+	wantOperatorLink(t, linkOf(t, hub, opAsset, bindingC), bindingC, opInverter2, "two", "2")
+	remaining := pendingOf(t, hub, handle, opAsset, "a", "c")
+	if len(remaining) != 1 {
+		t.Fatalf("pending after the withdrawal=%+v", remaining)
+	}
+	wantOperatorLink(t, remaining[0], bindingC, graphInverter, "revised", "3")
+}
+
+// Carrying fewer withdrawals than are pending, or a qualified declaration
+// without the withdrawal pending beside it, is still refused.
+func TestOperatorLinksPartialOperatorCarryIsRefused(t *testing.T) {
+	t.Run("one of two withdrawals", func(t *testing.T) {
+		hub, handle := newOperatorLinkHub(t)
+		publishOp(t, hub, handle, opAsset, 1, []string{"a", "c"}, graphInverterResource(), opInverter2Resource())
+		mustSetOperatorLinks(t, hub, opAsset, opSource, opDeclaration("a", graphInverter, "one"), opDeclaration("c", opInverter2, "two"))
+		publishOp(t, hub, handle, opAsset, 2, []string{"a", "c"})
+		mustSetOperatorLinks(t, hub, opAsset, opSource)
+		before, err := hub.Inspect(opAsset)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cursor := hub.Cursor()
+		tx, err := hub.Begin(handle, opAsset)
+		if err != nil {
+			t.Fatal(err)
+		}
+		batch := opBatch(t, tx, 3, []string{"a", "c"})
+		pending := tx.OperatorLinks(batch.BindingUpserts)
+		if len(pending) != 2 || pending[0].State != semreg.LinkWithdrawn || pending[1].State != semreg.LinkWithdrawn {
+			t.Fatalf("pending withdrawals=%+v", pending)
+		}
+		batch.IdentityLinkUpserts = []semreg.IdentityLink{pending[0]}
+		sealGraphTestBatch(t, &batch)
+		if _, _, err := tx.Apply(batch, testMono(3)); err != nil {
+			tx.Abort()
+			t.Fatalf("the kernel refused the batch, so the hub check is not exercised: %v", err)
+		}
+		if outcome, err := tx.Commit(nil); !errors.Is(err, ErrOperatorLink) || outcome != "" {
+			t.Fatalf("partial withdrawal commit=%v/%v", outcome, err)
+		}
+		requireUnchanged(t, hub, opAsset, before, cursor)
+	})
+	t.Run("qualified link without its withdrawal", func(t *testing.T) {
+		hub, handle := newOperatorLinkHub(t)
+		publishOp(t, hub, handle, opAsset, 1, []string{"a", "c"}, graphInverterResource(), opInverter2Resource())
+		mustSetOperatorLinks(t, hub, opAsset, opSource, opDeclaration("a", graphInverter, "one"), opDeclaration("c", opInverter2, "two"))
+		publishOp(t, hub, handle, opAsset, 2, []string{"a", "c"})
+		mustSetOperatorLinks(t, hub, opAsset, opSource, opDeclaration("c", graphInverter, "revised"))
+		before, err := hub.Inspect(opAsset)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cursor := hub.Cursor()
+		tx, err := hub.Begin(handle, opAsset)
+		if err != nil {
+			t.Fatal(err)
+		}
+		batch := opBatch(t, tx, 3, []string{"a", "c"})
+		pending := tx.OperatorLinks(batch.BindingUpserts)
+		var qualified []semreg.IdentityLink
+		for _, link := range pending {
+			if link.State == semreg.LinkQualified {
+				qualified = append(qualified, link)
+			}
+		}
+		if len(pending) != 2 || len(qualified) != 1 {
+			t.Fatalf("pending=%+v", pending)
+		}
+		batch.IdentityLinkUpserts = qualified
+		sealGraphTestBatch(t, &batch)
+		if _, _, err := tx.Apply(batch, testMono(3)); err != nil {
+			tx.Abort()
+			t.Fatalf("the kernel refused the batch, so the hub check is not exercised: %v", err)
+		}
+		if outcome, err := tx.Commit(nil); !errors.Is(err, ErrOperatorLink) || outcome != "" {
+			t.Fatalf("qualified carry without the withdrawal=%v/%v", outcome, err)
+		}
+		requireUnchanged(t, hub, opAsset, before, cursor)
+	})
+}
+
 // A declaration is refused before it is held when it names an unknown asset,
 // a source that does not publish on the asset, or carries no operator basis.
 func TestOperatorLinksDeclarationRules(t *testing.T) {

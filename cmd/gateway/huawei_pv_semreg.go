@@ -588,14 +588,11 @@ func (p *huaweiPVPublication) publishChild(asset semreg.AssetID, child huawei.Pr
 	}
 	// A batch that observes a binding installs a pending qualified declaration
 	// only when it names that resource. A withdrawal observes no binding, so it
-	// does not install a new qualified declaration: the hub accepts a batch
-	// that carries no operator link and leaves the declaration pending. A
-	// pending withdrawal is the removal of an installed declaration. When every
-	// pending operator link is such a withdrawal, the batch carries that set
-	// and the removal commits with the child's withdrawn records. A set that
-	// also names a qualified declaration is left entirely pending, because
-	// carrying only the withdrawals would differ from the pending set and the
-	// hub would refuse the withdrawal.
+	// does not install a new qualified declaration: that declaration stays
+	// pending. A pending withdrawal is the removal of an installed declaration.
+	// The withdrawal carries every such removal, including when a qualified
+	// declaration is pending beside it, and the removal commits with the
+	// child's withdrawn records.
 	var pending []semreg.IdentityLink
 	if withdraw {
 		pending = huaweiOperatorLinkWithdrawals(tx.OperatorLinks(batch.BindingUpserts))
@@ -1333,22 +1330,24 @@ func huaweiApplicableOperatorLinks(pending []semreg.IdentityLink, observed map[s
 	return pending
 }
 
-// huaweiOperatorLinkWithdrawals is the pending operator set a withdrawal may
-// carry. It returns that set when every link withdraws a declaration, and
-// nothing when the set also names a qualified declaration. Carrying a
-// qualified declaration would install it on a binding this batch does not
-// observe. Carrying only the withdrawals would differ from the pending set,
-// and the hub would refuse the withdrawal.
+// huaweiOperatorLinkWithdrawals is every pending withdrawal of an installed
+// operator declaration. A withdrawal batch carries those links and leaves any
+// qualified declaration in the same set pending. Carrying the qualified
+// declaration would install it on a binding this batch does not observe.
+// Dropping the withdrawals would leave the removed declaration qualified
+// after the child is gone. The hub accepts a carried set that is exactly
+// these withdrawals.
 func huaweiOperatorLinkWithdrawals(pending []semreg.IdentityLink) []semreg.IdentityLink {
-	if len(pending) == 0 {
-		return nil
-	}
+	out := make([]semreg.IdentityLink, 0, len(pending))
 	for _, link := range pending {
-		if link.State != semreg.LinkWithdrawn {
-			return nil
+		if link.State == semreg.LinkWithdrawn {
+			out = append(out, link)
 		}
 	}
-	return pending
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // huaweiWithOperatorLinks replaces the publisher's own link of each binding

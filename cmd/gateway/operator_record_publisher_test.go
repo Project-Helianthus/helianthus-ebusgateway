@@ -908,9 +908,12 @@ func TestOperatorRecordCompositionDoesNotClaimAnAbsentHome(t *testing.T) {
 	}
 }
 
-// An identity link is applied and not published. Its state says so, rather
-// than waiting as if the declaration had not been applied.
-func TestOperatorRecordIdentityLinkStateIsAppliedAndUnpublished(t *testing.T) {
+// oprLinkFixture declares the driver asset without any contributor, admits
+// the driver and publishes its binding of oprEvidence("oprtest.native"). The
+// configuration provider is not declared anywhere, so an identity link
+// cannot be published by it.
+func oprLinkFixture(t *testing.T) *oprFixture {
+	t.Helper()
 	hub, err := semhub.New(semhub.Options{})
 	if err != nil {
 		t.Fatal(err)
@@ -919,7 +922,38 @@ func TestOperatorRecordIdentityLinkStateIsAppliedAndUnpublished(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	native := semreg.EvidenceRef{Owner: "helianthus.gateway.oprtest", Kind: "oprtest.native", Digest: semreg.Digest(oprCompositionDigest("native")), Contract: semreg.ContractKernelV1, Access: semreg.EvidenceAccessAuthorized, Redaction: semreg.RedactionMetadataOnly}
+	if _, err := hub.Declare(semhub.AssetSpec{AssetID: oprDriverAsset, SourceID: oprDriverSource, Driver: oprDriver, Validators: []semreg.PackValidator{pv.New()}, Graph: true}); err != nil {
+		t.Fatal(err)
+	}
+	handle, err := hub.AdmitSource(semhub.Admission{Source: oprDriverSource, Driver: oprDriver})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &oprFixture{hub: hub, publisher: publisher, driver: handle, clock: 100}
+	if err := f.publishDriver(t, nil); err != nil {
+		t.Fatalf("driver publication: %v", err)
+	}
+	return f
+}
+
+// oprPendingLinks returns the operator identity links the driver's next
+// transaction must carry.
+func oprPendingLinks(t *testing.T, f *oprFixture) []semreg.IdentityLink {
+	t.Helper()
+	tx, err := f.hub.Begin(f.driver, oprDriverAsset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Abort()
+	return tx.OperatorLinks(nil)
+}
+
+// An identity link is declared to the hub and not published. Its state says
+// so, rather than waiting as if the declaration had not been applied.
+func TestOperatorRecordIdentityLinkStateIsAppliedAndUnpublished(t *testing.T) {
+	f := oprLinkFixture(t)
+	hub, publisher := f.hub, f.publisher
+	native := oprEvidence("oprtest.native")
 	set := portalconfig.OperatorRecordSet{
 		Format: portalconfig.OperatorRecordsFormat, Revision: "1",
 		Records: []portalconfig.OperatorRecord{{
@@ -940,6 +974,82 @@ func TestOperatorRecordIdentityLinkStateIsAppliedAndUnpublished(t *testing.T) {
 	}
 	if _, ok := hub.Source(operatorRecordSource); ok {
 		t.Fatal("an identity link admitted the configuration source")
+	}
+	if links := oprPendingLinks(t, f); len(links) != 1 {
+		t.Fatalf("pending links=%+v, want the configured link declared for the driver's source", links)
+	}
+}
+
+// A configured identity link is declared to the hub for the source whose
+// binding observes its native resource, so that source's next transaction
+// carries it. A link whose native resource no binding observes waits, and a
+// link the configuration no longer holds is withdrawn from the hub.
+func TestOperatorRecordIdentityLinkIsDeclaredForTheBindingSource(t *testing.T) {
+	f := oprLinkFixture(t)
+	audit := oprAudit("identity-link")
+	link := operatorIdentityLink{Native: oprEvidence("oprtest.native"), Resource: oprInverter, BasisClass: string(semreg.RelationConfiguration)}
+	if err := f.publisher.Set(oprDriverAsset, operatorRecords{Links: []operatorIdentityLink{link}}, audit); err != nil {
+		t.Fatalf("set identity link: %v", err)
+	}
+	links := oprPendingLinks(t, f)
+	if len(links) != 1 || links[0].Resource == nil || *links[0].Resource != oprInverter || links[0].State != semreg.LinkQualified {
+		t.Fatalf("pending links=%+v, want the configured link of the inverter", links)
+	}
+	if len(links[0].Basis) != 1 || links[0].Basis[0] != audit.evidence() || links[0].Basis[0].Owner != semhub.OperatorEvidenceOwner {
+		t.Fatalf("link basis=%+v, want the declaration's audit evidence", links[0].Basis)
+	}
+	if _, ok := f.hub.Source(operatorRecordSource); ok {
+		t.Fatal("declaring an identity link admitted the configuration source")
+	}
+
+	unobserved := operatorIdentityLink{Native: oprEvidence("oprtest.native-unobserved"), Resource: oprInverter, BasisClass: string(semreg.RelationConfiguration)}
+	err := f.publisher.Set(oprDriverAsset, operatorRecords{Links: []operatorIdentityLink{unobserved}}, audit)
+	var refusal *operatorRecordRefusal
+	if !errors.As(err, &refusal) || refusal.Reason != operatorReasonNativeUnobserved || !operatorRecordDeferred(err) {
+		t.Fatalf("set of an unobserved native=%v, want a deferred %s", err, operatorReasonNativeUnobserved)
+	}
+	if outcome := portalOperatorClassify(err); outcome.status != portalconfig.OperatorRecordWaiting || outcome.reason != portalOperatorNativeUnobserved || !outcome.retry {
+		t.Fatalf("outcome=%+v, want a retried wait %s", outcome, portalOperatorNativeUnobserved)
+	}
+	if links := oprPendingLinks(t, f); len(links) != 1 {
+		t.Fatalf("pending links after a deferred set=%+v, want the declared link kept", links)
+	}
+
+	if err := f.publisher.Set(oprDriverAsset, operatorRecords{}, audit); err != nil {
+		t.Fatalf("withdraw identity link: %v", err)
+	}
+	if links := oprPendingLinks(t, f); len(links) != 0 {
+		t.Fatalf("pending links after the withdrawal=%+v, want none", links)
+	}
+}
+
+// An identity link that shares its home with a published relation still
+// waits: the relation's publication does not publish the link.
+func TestOperatorRecordIdentityLinkInAMixedHomeStaysPending(t *testing.T) {
+	f := newOprFixture(t)
+	native := oprEvidence("oprtest.native")
+	set := portalconfig.OperatorRecordSet{
+		Format: portalconfig.OperatorRecordsFormat, Revision: "1",
+		Records: []portalconfig.OperatorRecord{
+			opr27Relation(oprDriverAsset, "pv.relation.inverter_array", oprInverter, oprArray),
+			{Form: portalconfig.OperatorFormIdentityLink, Home: string(oprDriverAsset), ResourceID: string(oprInverter), BasisClass: string(semreg.RelationConfiguration), Native: &native},
+		},
+	}
+	operators := &portalOperatorRecords{publisher: f.publisher, desired: map[semreg.AssetID]operatorAssetRecords{}, outcomes: map[semreg.AssetID]portalOperatorOutcome{}}
+	operators.apply(set)
+	if _, ok := oprRelationIn(f.snapshot(t, oprDriverAsset), oprInverterArray(oprArray)); !ok {
+		t.Fatal("the configured relation was not published")
+	}
+	runtime := &gatewayPortalConfigRuntime{operators: operators}
+	states := runtime.operatorRecordStates(set)
+	if len(states) != 2 || states[0].Status != portalconfig.OperatorRecordPublished {
+		t.Fatalf("states=%+v, want the relation published", states)
+	}
+	if states[1].Status != portalconfig.OperatorRecordWaiting || states[1].Reason != portalOperatorIdentityLinkPending {
+		t.Fatalf("identity link state=%+v, want waiting %s", states[1], portalOperatorIdentityLinkPending)
+	}
+	if links := oprPendingLinks(t, f); len(links) != 1 {
+		t.Fatalf("pending links=%+v, want the configured link declared", links)
 	}
 }
 

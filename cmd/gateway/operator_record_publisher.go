@@ -42,6 +42,11 @@ const (
 	// operatorReasonDuplicate refuses a record set that names one record key
 	// twice.
 	operatorReasonDuplicate semreg.DefinitionID = "operator.record.duplicate"
+	// operatorReasonNativeUnobserved defers an identity link whose native
+	// resource no binding of the asset observes yet: the hub keeps a link
+	// pending for the binding's source, and that source is not known before
+	// the binding is published.
+	operatorReasonNativeUnobserved semreg.DefinitionID = "operator.record.native_unobserved"
 )
 
 // operatorRecordRefusal is a refused operator record set. Nothing of the set
@@ -89,9 +94,10 @@ type operatorRelation struct {
 	To         semreg.ResourceID
 }
 
-// operatorIdentityLink is one configured identity link. The provider keeps it
-// with the asset's records and does not publish it: only the binding's source
-// can publish an identity link.
+// operatorIdentityLink is one configured identity link. The provider does not
+// publish it: only the binding's source can publish an identity link. The
+// provider declares it to the hub as pending for the source whose binding
+// observes Native, and that source's next transaction carries it.
 type operatorIdentityLink struct {
 	Native     semreg.EvidenceRef
 	Resource   semreg.ResourceID
@@ -108,7 +114,9 @@ type operatorRecords struct {
 // operatorAssetRecords is the configured record set of one asset.
 // ConfigurationOnly is set when the home holds a resource that only
 // configuration knows. A relation or an identity link does not make its home
-// configuration-only.
+// configuration-only. Startup does not declare such a home: the section does
+// not say whether a driver owns the identifier, and a declaration would claim
+// it for good.
 type operatorAssetRecords struct {
 	Asset             semreg.AssetID
 	Records           operatorRecords
@@ -163,6 +171,9 @@ type operatorRecordPublisher struct {
 	desired map[semreg.AssetID]*operatorAssetState
 	pending map[semreg.AssetID]operatorAssetRecords
 	failed  map[semreg.AssetID]error
+	// links holds the identity links declared to the hub, by asset and by
+	// the source whose binding observes their native resource.
+	links map[semreg.AssetID]map[semreg.SourceID][]semhub.OperatorLink
 }
 
 // operatorPublishers keeps the one provider of each hub. Startup composition
@@ -271,7 +282,7 @@ func (p *operatorRecordPublisher) Compose(sets []operatorAssetRecords) error {
 func operatorRecordDeferred(err error) bool {
 	var refusal *operatorRecordRefusal
 	if errors.As(err, &refusal) {
-		return refusal.Reason == operatorReasonStartingEndUnresolved
+		return refusal.Reason == operatorReasonStartingEndUnresolved || refusal.Reason == operatorReasonNativeUnobserved
 	}
 	return errors.Is(err, semhub.ErrUnknownAsset)
 }
@@ -451,8 +462,91 @@ func (p *operatorRecordPublisher) Set(id semreg.AssetID, records operatorRecords
 	return err
 }
 
-// setLocked is Set without the publisher lock. p.mu must be held.
+// setLocked is Set without the publisher lock: it publishes the resources and
+// relations, then declares the identity links to the hub. p.mu must be held.
 func (p *operatorRecordPublisher) setLocked(id semreg.AssetID, records operatorRecords, audit operatorAudit) error {
+	if err := p.publishLocked(id, records, audit); err != nil {
+		return err
+	}
+	return p.declareLinksLocked(id, records.Links, audit)
+}
+
+// declareLinksLocked declares the configured identity links of one asset to
+// the hub, for the source whose binding observes each native resource, and
+// withdraws the declarations no longer configured. Nothing is published: the
+// binding's source carries the links in its next transaction. A link whose
+// native resource no binding of the asset observes yet is deferred with
+// operatorReasonNativeUnobserved and nothing of the set is declared. p.mu
+// must be held.
+func (p *operatorRecordPublisher) declareLinksLocked(id semreg.AssetID, links []operatorIdentityLink, audit operatorAudit) error {
+	held := p.links[id]
+	if len(links) == 0 && len(held) == 0 {
+		return nil
+	}
+	if len(links) > 0 && audit.evidence().Validate() != nil {
+		return &operatorRecordRefusal{Asset: id, Reason: operatorReasonAuditMissing}
+	}
+	view, err := p.hub.Inspect(id)
+	if err != nil {
+		return err
+	}
+	next := make(map[semreg.SourceID][]semhub.OperatorLink)
+	seen := make(map[semreg.EvidenceRef]bool, len(links))
+	for _, link := range links {
+		if seen[link.Native] {
+			return &operatorRecordRefusal{Asset: id, Resource: link.Resource, Reason: operatorReasonDuplicate}
+		}
+		seen[link.Native] = true
+		sources := map[semreg.SourceID]bool{}
+		for _, binding := range view.Snapshot.Bindings {
+			if binding.NativeResource == link.Native && binding.SourceID != operatorRecordSource {
+				sources[binding.SourceID] = true
+			}
+		}
+		if len(sources) == 0 {
+			return &operatorRecordRefusal{Asset: id, Resource: link.Resource, Reason: operatorReasonNativeUnobserved}
+		}
+		for src := range sources {
+			next[src] = append(next[src], semhub.OperatorLink{Native: link.Native, Resource: link.Resource, Basis: []semreg.EvidenceRef{audit.evidence()}})
+		}
+	}
+	changed := make([]semreg.SourceID, 0, len(next)+len(held))
+	for src := range held {
+		if _, kept := next[src]; !kept {
+			changed = append(changed, src)
+		}
+	}
+	for src, declared := range next {
+		if !reflect.DeepEqual(held[src], declared) {
+			changed = append(changed, src)
+		}
+	}
+	sort.Slice(changed, func(i, j int) bool { return changed[i] < changed[j] })
+	for _, src := range changed {
+		if err := p.hub.SetOperatorLinks(id, src, next[src]); err != nil {
+			return err
+		}
+		if p.links == nil {
+			p.links = make(map[semreg.AssetID]map[semreg.SourceID][]semhub.OperatorLink)
+		}
+		if p.links[id] == nil {
+			p.links[id] = make(map[semreg.SourceID][]semhub.OperatorLink)
+		}
+		if len(next[src]) == 0 {
+			delete(p.links[id], src)
+		} else {
+			p.links[id][src] = next[src]
+		}
+	}
+	if len(p.links[id]) == 0 {
+		delete(p.links, id)
+	}
+	return nil
+}
+
+// publishLocked publishes the resources and relations of one asset. p.mu
+// must be held.
+func (p *operatorRecordPublisher) publishLocked(id semreg.AssetID, records operatorRecords, audit operatorAudit) error {
 	state := p.desired[id]
 	if state == nil && len(records.Resources) == 0 && len(records.Relations) == 0 {
 		return nil

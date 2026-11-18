@@ -18,8 +18,9 @@ set. An empty section still admits no source, declares no asset and publishes
 nothing, so the published output of an installation without an accepted
 section is unchanged. Startup does not declare a home the preflight snapshot
 does not already name. An absent home stays undeclared so the driver that
-discovers it can claim it; the shape of the identifier is not ownership. A
-home a driver already owns stays with that driver. The configured set is
+discovers it can claim it; the shape of the identifier is not ownership.
+Declaring a configuration-only home at startup is deferred (see "The
+remaining limit"). A home a driver already owns stays with that driver. The configured set is
 still composed: it is published when that owner has admitted the provider,
 it stays pending while the home or its starting end is not there yet, and a
 home the owner has not opened to the provider is reported and left unpublished.
@@ -47,8 +48,14 @@ batch sequence.
   the home asset, the native resource and the configuration basis class. The
   section records it as `identity_link`. Only the binding's source can publish
   it, so it stays in the driver's own batch. The provider does not publish it.
-  Its status stays waiting with reason `identity_link_pending`: the
-  declaration was applied, and it was not left unapplied.
+  It declares the link to the hub (`Hub.SetOperatorLinks`) for the source
+  whose binding observes the native resource, with the declaration's audit
+  evidence as its basis, and withdraws that declaration when the section no
+  longer holds the link. While no binding of the home observes the native
+  resource, the link waits with reason `native_unobserved` and is retried
+  after later publications. Once declared, its status stays waiting with
+  reason `identity_link_pending`, also when its home holds records that were
+  published: the declaration was applied, and it was not left unapplied.
 
 ## Records and revisions
 
@@ -79,6 +86,7 @@ as they were. The refusal names the asset, the resource and one reason:
 | `operator.record.starting_end_unresolved` | a relation's starting end is neither a current resource of the asset nor a resource of the same set |
 | `operator.record.audit_missing` | the set carries no valid declaration digest |
 | `operator.record.duplicate` | the set names one record key twice |
+| `operator.record.native_unobserved` | an identity link names a native resource that no binding of the asset observes yet; the set waits and is retried |
 
 The kernel's own checks still apply to the batch. They cover catalog
 membership, the basis classes a definition admits, end kinds and revision
@@ -164,14 +172,19 @@ No family publisher carries the pending links yet. Until a family adopts
 `Tx.OperatorLinks`, an operator identity declaration is never published.
 
 The section records an identity link: the home asset, the native resource and
-the configuration basis class. Startup loads the configured record set. An
-empty section still admits nothing.
+the configuration basis class. Startup loads the configured record set, and
+the provider declares each configured link to the hub for the binding's
+source. An empty section still admits nothing.
 
-No family composition names the provider as a contributor or declares a
-configuration-only home yet. Startup does not declare a home the preflight
-snapshot does not already name, and it does not declare a contributor for a
-home a driver already owns. A home a driver will discover stays undeclared
-until that driver claims it. The acceptance test makes the owner-side
+No family composition names the provider as a contributor yet. The
+declaration of a configuration-only home at startup is deferred: the
+section's forms do not say whether a driver owns a home identifier, and a
+declaration would claim that identifier for good, so a driver that discovers
+the home later could not declare it. A configured record whose home no driver
+declares therefore stays pending and is not published. Startup does not
+declare a home the preflight snapshot does not already name, and it does not
+declare a contributor for a home a driver already owns. A home a driver will
+discover stays undeclared until that driver claims it. The acceptance test makes the owner-side
 declarations itself, as an owner would, so it proves the path from the
 document to the cut once the owner has declared them. A Portal replacement
 publishes nothing for an asset whose owner has not, and it supersedes a

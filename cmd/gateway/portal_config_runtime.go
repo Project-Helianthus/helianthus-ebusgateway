@@ -315,7 +315,9 @@ var errPortalOperatorRecordsUnavailable = errors.New("portal configuration: oper
 // published by the provider's own key waits until the asset is declared, the
 // provider is admitted to it and the starting end is published by its owner.
 // An identity link the provider does not publish waits with
-// portalOperatorIdentityLinkPending: the declaration was applied.
+// portalOperatorIdentityLinkPending once it is declared to the hub for the
+// binding's source, and with portalOperatorNativeUnobserved while no binding
+// of its home observes its native resource.
 const (
 	portalOperatorPublisherUnavailable = "publisher_unavailable"
 	portalOperatorNotApplied           = "not_applied"
@@ -323,6 +325,7 @@ const (
 	portalOperatorHomeNotAdmitted      = "home_not_admitted"
 	portalOperatorPublicationFailed    = "publication_failed"
 	portalOperatorIdentityLinkPending  = "identity_link_pending"
+	portalOperatorNativeUnobserved     = "native_unobserved"
 )
 
 // portalOperatorOutcome is the result of the last publication attempt of one
@@ -501,8 +504,8 @@ func (o *portalOperatorRecords) setLocked(home semreg.AssetID) {
 		delete(o.outcomes, home)
 		return
 	}
-	// A links-only set is applied and not published. Forgetting the outcome
-	// would report it as waiting to be applied.
+	// A links-only set is declared to the hub and not published. Forgetting
+	// the outcome would report it as waiting to be applied.
 	if len(desired.Records.Resources) == 0 && len(desired.Records.Relations) == 0 && len(desired.Records.Links) > 0 && outcome.status == portalconfig.OperatorRecordPublished {
 		outcome = portalOperatorOutcome{status: portalconfig.OperatorRecordWaiting, reason: portalOperatorIdentityLinkPending, retry: false}
 	}
@@ -527,6 +530,9 @@ func portalOperatorClassify(err error) portalOperatorOutcome {
 		if refusal.Reason == operatorReasonStartingEndUnresolved {
 			return waiting("starting_end_unresolved", true)
 		}
+		if refusal.Reason == operatorReasonNativeUnobserved {
+			return waiting(portalOperatorNativeUnobserved, true)
+		}
 		return portalOperatorOutcome{status: portalconfig.OperatorRecordRefused, reason: string(refusal.Reason)}
 	}
 	switch {
@@ -546,7 +552,10 @@ func portalOperatorClassify(err error) portalOperatorOutcome {
 
 // operatorRecordStates reports each record of a section by the outcomes of
 // its home assets: refused before waiting before published. Before the
-// runtime is bound every record waits for the publisher.
+// runtime is bound every record waits for the publisher. An identity link
+// whose home set was applied waits with portalOperatorIdentityLinkPending,
+// also when its home holds records that were published: the provider never
+// publishes the link itself.
 func (r *gatewayPortalConfigRuntime) operatorRecordStates(set portalconfig.OperatorRecordSet) []portalconfig.OperatorRecordState {
 	r.mu.Lock()
 	operators := r.operators
@@ -578,6 +587,9 @@ func (r *gatewayPortalConfigRuntime) operatorRecordStates(set portalconfig.Opera
 			if worst != nil {
 				state.Status, state.Reason = worst.status, worst.reason
 			}
+			if record.Form == portalconfig.OperatorFormIdentityLink && state.Status == portalconfig.OperatorRecordPublished {
+				state.Status, state.Reason = portalconfig.OperatorRecordWaiting, portalOperatorIdentityLinkPending
+			}
 		}
 		states = append(states, state)
 	}
@@ -588,8 +600,8 @@ func (r *gatewayPortalConfigRuntime) operatorRecordStates(set portalconfig.Opera
 // bytewise asset order: an anchor and each view of a pairing become an
 // operator-slot resource of the catalog class of their kind, a relation a
 // configured relation instance, and an identity link a link the provider
-// does not publish. An anchor or a pairing view marks its home
-// configuration-only. Each home carries the audit digest of the records
+// declares to the hub and does not publish. An anchor or a pairing view
+// marks its home configuration-only. Each home carries the audit digest of the records
 // declared for it.
 func portalOperatorAssetRecords(set portalconfig.OperatorRecordSet) []operatorAssetRecords {
 	byHome := map[semreg.AssetID]*operatorAssetRecords{}

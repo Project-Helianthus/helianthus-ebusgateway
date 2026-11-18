@@ -268,6 +268,7 @@ func TestForeignSourceHuaweiCapacityWithdrawsOnlyOwnGenerations(t *testing.T) {
 // growattStorageBatch.
 type foreignSourceGrowattInput struct {
 	inc         semhub.Incarnation
+	pack        semreg.Resource
 	status      growatt.BMSTypedReadOnlyStatus
 	evidence    GrowattBMSRS485ObservationEvidence
 	sequence    semreg.Uint64
@@ -298,6 +299,10 @@ func foreignSourceGrowattSoftStart(t *testing.T) foreignSourceGrowattInput {
 	if !ok {
 		t.Fatal("missing native evidence")
 	}
+	pack, err := runtime.storage.pack()
+	if err != nil {
+		t.Fatal(err)
+	}
 	tx, err := runtime.storage.hub.Begin(runtime.storage.handle, runtime.storage.assetID)
 	if err != nil {
 		t.Fatal(err)
@@ -307,12 +312,12 @@ func foreignSourceGrowattSoftStart(t *testing.T) foreignSourceGrowattInput {
 	if !exists {
 		t.Fatal("the active publication was not committed")
 	}
-	return foreignSourceGrowattInput{inc: tx.Incarnation(), status: native.Status, evidence: evidence, sequence: tx.NextSequence(), current: current, exists: exists, retirements: tx.SourceRetirements()}
+	return foreignSourceGrowattInput{inc: tx.Incarnation(), pack: pack, status: native.Status, evidence: evidence, sequence: tx.NextSequence(), current: current, exists: exists, retirements: tx.SourceRetirements()}
 }
 
 func (in foreignSourceGrowattInput) batch(t *testing.T, current semreg.Snapshot) semreg.PublicationBatch {
 	t.Helper()
-	batch, _, _, _, err := growattStorageBatch(in.inc, in.status, in.evidence, in.sequence, current, in.exists, in.retirements)
+	batch, _, _, _, err := growattStorageBatch(in.inc, in.pack, in.status, in.evidence, in.sequence, current, in.exists, in.retirements)
 	if err != nil {
 		t.Fatal(err)
 	}

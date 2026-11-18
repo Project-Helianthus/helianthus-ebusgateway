@@ -4,7 +4,7 @@ set -euo pipefail
 # This gate consumes only public, immutable inputs. It does not depend on a
 # sibling checkout, hardware, a serial endpoint, or credentials.
 docs_repo="https://github.com/Project-Helianthus/helianthus-docs-semantic.git"
-docs_commit="f830ace6c2b9dd1af0e87ce808fa545662578418"
+docs_commit="8ff08f94c42abdff20f529e901e19e10e0c8fbb6"
 semreg_commit="6624e6a810d70917f356b5f93c41e8dc314d814a"
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/helianthus-growatt-storage.XXXXXX")"
 trap 'rm -rf "$tmp_dir"' EXIT

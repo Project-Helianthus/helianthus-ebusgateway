@@ -287,9 +287,10 @@ func TestSemanticHubPreflightCallsEachCompositionSeamOnce(t *testing.T) {
 }
 
 // The empty seams compose nothing: the preflight declares the same sources as
-// before, every declared asset is not graph-enforced and the hub reports the
-// pinned catalog digest.
-func TestSemanticHubPreflightComposesNothingAndEnforcesNoAsset(t *testing.T) {
+// before, every declared asset has the enforcement its family's graph table
+// entry names (the storage asset is enforced, the EVSE asset is not) and the
+// hub reports the pinned catalog digest.
+func TestSemanticHubPreflightComposesNothingAndEnforcesTheTableFamilies(t *testing.T) {
 	for name, cfg := range map[string]ebusgateway.Config{
 		"disabled": {},
 		"enabled":  {ModbusTCPConfig: ebusgateway.ModbusTCPConfig{GrowattBMSRS485: growattProductionConfig(), TeslaGen3HSC: teslaRetainedConfig()}},
@@ -312,9 +313,11 @@ func TestSemanticHubPreflightComposesNothingAndEnforcesNoAsset(t *testing.T) {
 			if state.CatalogDigest != graph.PinnedDigest || len(state.Assets) != len(hub.Sources()) {
 				t.Fatalf("graph state=%+v sources=%+v", state, hub.Sources())
 			}
+			families := map[string]semanticFamily{growattStorageDriver: semanticFamilyStorage, teslaEVSEDriver: semanticFamilyEVSE}
 			for _, asset := range state.Assets {
-				if asset.Enforcement != semhub.GraphNotEnforced {
-					t.Fatalf("asset %q is %q", asset.Asset, asset.Enforcement)
+				family, ok := families[asset.Driver]
+				if !ok || asset.Enforcement != semanticFamilyEnforcement(family) {
+					t.Fatalf("asset %q of driver %q is %q", asset.Asset, asset.Driver, asset.Enforcement)
 				}
 			}
 		})

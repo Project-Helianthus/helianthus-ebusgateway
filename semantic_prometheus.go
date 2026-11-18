@@ -148,19 +148,23 @@ func semanticResourceIndex(snapshot semreg.Snapshot) map[semreg.ResourceID]semre
 	return out
 }
 
-// semanticPVDimensionText is the text the PV metrics compare and label. In a
-// snapshot with resources the dimension value is the identifier of the fact's
-// subject, and the text is derived from that resource's kind and, for a
-// phase, its anchor slot; the identifier itself is never exported. A value
-// that names no current resource has no text. A snapshot without resources
-// is not yet in the graph: its publisher's role text is read as before, and
-// only the role before the first colon of an inverter or system value is
-// kept.
-func semanticPVDimensionText(dimension semreg.Dimension, resources map[semreg.ResourceID]semreg.Resource) (string, bool) {
+// semanticResourceDimensionText is the text the PV and storage metrics compare
+// and label. In a snapshot with resources the dimension value is the
+// identifier of the fact's subject, and the text is derived from that
+// resource's kind and, for a phase, its anchor slot; the identifier itself is
+// never exported. A value that names no current resource has no text. A PV
+// snapshot without resources is not yet in the graph: its publisher's role
+// text is read as before, and only the role before the first colon of an
+// inverter or system value is kept. A storage pack value has text only as a
+// battery-pack resource, so a pack value that names no resource is never read.
+func semanticResourceDimensionText(dimension semreg.Dimension, resources map[semreg.ResourceID]semreg.Resource) (string, bool) {
 	if dimension.Value.Kind != semreg.ValueText || dimension.Value.Text == nil || *dimension.Value.Text == "" {
 		return "", false
 	}
 	if resources == nil {
+		if dimension.ID == "storage.dimension.pack" {
+			return "", false
+		}
 		value := *dimension.Value.Text
 		for _, role := range []string{"inverter", "system"} {
 			if value == role || strings.HasPrefix(value, role+":") {
@@ -178,6 +182,8 @@ func semanticPVDimensionText(dimension semreg.Dimension, resources map[semreg.Re
 		return "inverter", true
 	case "resource.pv_system":
 		return "system", true
+	case "resource.battery_pack":
+		return "pack", true
 	case "resource.phase":
 		if resource.Anchor.Slot != nil && *resource.Anchor.Slot != "" {
 			return "phase:" + *resource.Anchor.Slot, true
@@ -344,12 +350,15 @@ func semanticDimensions(domain, item string, key semreg.FactKey, resources map[s
 		}
 	}
 	if dimension.ID == "storage.dimension.pack" {
-		return "pack", "", true
-	} // never export its asset-valued dimension.
+		// The label comes from the subject's resource kind; the pack value is
+		// an identifier and is never exported.
+		value, ok := semanticResourceDimensionText(dimension, resources)
+		return "pack", "", ok && value == "pack"
+	}
 	if dimension.ID != "pv.dimension.phase" && dimension.ID != "pv.dimension.inverter" && dimension.ID != "pv.dimension.system" {
 		return "", "", false
 	}
-	value, ok := semanticPVDimensionText(dimension, resources)
+	value, ok := semanticResourceDimensionText(dimension, resources)
 	if !ok {
 		return "", "", false
 	}
@@ -467,7 +476,7 @@ func (s semanticFactSchema) matches(key semreg.FactKey, value *semreg.Value, res
 		return false
 	}
 	if s.dimensionValue != "" {
-		if text, ok := semanticPVDimensionText(dimension, resources); !ok || text != s.dimensionValue {
+		if text, ok := semanticResourceDimensionText(dimension, resources); !ok || text != s.dimensionValue {
 			return false
 		}
 	}
@@ -485,7 +494,7 @@ func semanticFactSchemaFor(domain, item string) (semanticFactSchema, bool) {
 		return semanticFactSchema{domain: "pv", item: item, pack: pvPack, version: pvVersion, fact: fact, dimensionID: dimension, dimensionValue: value, unit: unit}
 	}
 	storage := func(item, unit string) semanticFactSchema {
-		return semanticFactSchema{domain: "storage", item: item, pack: storagePack, version: storageVersion, fact: item, dimensionID: "storage.dimension.pack", unit: unit}
+		return semanticFactSchema{domain: "storage", item: item, pack: storagePack, version: storageVersion, fact: item, dimensionID: "storage.dimension.pack", dimensionValue: "pack", unit: unit}
 	}
 	if domain == "pv" {
 		switch item {
@@ -526,7 +535,7 @@ func semanticFactSchemaFor(domain, item string) (semanticFactSchema, bool) {
 		case "storage.temperature.pack":
 			return storage(item, "unit.celsius"), true
 		case "storage.status.operating":
-			return semanticFactSchema{domain: "storage", item: item, pack: storagePack, version: storageVersion, fact: item, dimensionID: "storage.dimension.pack", symbols: map[string]bool{"active": true, "standby": true}}, true
+			return semanticFactSchema{domain: "storage", item: item, pack: storagePack, version: storageVersion, fact: item, dimensionID: "storage.dimension.pack", dimensionValue: "pack", symbols: map[string]bool{"active": true, "standby": true}}, true
 		}
 	}
 	if domain == "evse" {

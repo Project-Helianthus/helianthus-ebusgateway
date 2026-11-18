@@ -797,6 +797,61 @@ class PassiveHarnessDriverAdmissionTests(unittest.TestCase):
         self.assertIsNotNone(smoke)
         self.assertIn("ebus_driver_admitted", smoke.group(1))
 
+    def _gateway_start_command(self, case_dir: pathlib.Path, record: pathlib.Path) -> str:
+        program = "\n".join(
+            [
+                "set -euo pipefail",
+                'canonical_case_id="P01"',
+                'remote_case_dir="$1"',
+                'remote_bin="/opt/matrix/bin"',
+                'gateway_http_port="18101"',
+                'record="$2"',
+                "unset MATRIX_INSTANCE_GUID MATRIX_INSTANCE_GUID_SOURCE MATRIX_GATEWAY_LOG_PATH",
+                # The stub records every remote command, runs the file-state ones
+                # locally and never starts a process or touches a listener.
+                'remote_exec() { printf "%s\\n--\\n" "$1" >> "${record}"; case "$1" in nohup*|pids=*|for\\ i*) return 0 ;; esac; bash -c "$1"; }',
+                "enforce_gw15_proof_flag_state() { :; }",
+                "gateway_connection() { printf 'enh;tcp;adapter.invalid:9999\\n'; }",
+                "build_observe_first_cli_flags() { printf '\\n'; }",
+                "build_startup_probe_cli_flags() { printf '\\n'; }",
+                "ebus_driver_admitted() { :; }",
+                self._function_source("valid_instance_guid"),
+                self._function_source("accepted_instance_source"),
+                self._function_source("persist_instance_identity"),
+                self._function_source("resolve_instance_identity"),
+                self._function_source("restart_gateway_with_passive_mode"),
+                "restart_gateway_with_passive_mode",
+            ]
+        )
+        result = subprocess.run(
+            ["bash", "-c", program, "harness", str(case_dir), str(record)],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        commands = [c for c in record.read_text(encoding="utf-8").split("\n--\n") if c.startswith("nohup")]
+        self.assertEqual(len(commands), 1, msg=record.read_text(encoding="utf-8"))
+        return commands[0]
+
+    def test_gateway_start_keeps_runtime_state_inside_the_case(self) -> None:
+        # A generated instance identifier must never reach the add-on's live
+        # runtime state: every case start names a case-local runtime-state file.
+        with tempfile.TemporaryDirectory() as tmp:
+            starts = []
+            for case in ("T101", "T102"):
+                case_dir = pathlib.Path(tmp) / "runs" / case
+                record = pathlib.Path(tmp) / f"{case}.commands"
+                command = self._gateway_start_command(case_dir, record)
+                guid = (case_dir / "state" / "instance-guid").read_text(encoding="utf-8").strip()
+                self.assertEqual((case_dir / "state" / "instance-guid-source").read_text(encoding="utf-8").strip(), "generated")
+                self.assertIn(f"--instance-guid '{guid}'", command)
+                expected = f"--runtime-state-path '{case_dir}/state/runtime_state.json'"
+                self.assertIn(expected, command)
+                self.assertNotIn("/data/", command)
+                starts.append(expected)
+            self.assertNotEqual(starts[0], starts[1])
+
 
 if __name__ == "__main__":
     unittest.main()

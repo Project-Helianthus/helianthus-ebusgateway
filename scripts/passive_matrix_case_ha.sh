@@ -441,6 +441,7 @@ restart_gateway_with_passive_mode() {
     --source-addr auto \
     --instance-guid '${instance_guid}' \
     --instance-guid-source '${instance_source}' \
+    --runtime-state-path '${remote_case_dir}/state/runtime_state.json' \
     --read-timeout 400ms --write-timeout 400ms --dial-timeout 3s \
     --scan-timeout 90s --scan-request-timeout 2s --scan-interval 0s \
     --semantic-discovery-interval 5m --semantic-config-interval 5m --semantic-state-interval 1m --semantic-request-timeout 2s \

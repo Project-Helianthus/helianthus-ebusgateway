@@ -15,7 +15,9 @@ import (
 const OperatorEvidenceOwner semreg.DefinitionID = "helianthus.gateway.configuration"
 
 // ErrOperatorLink refuses, at Commit, a batch whose operator identity links
-// differ from the links pending for its asset and source.
+// differ from the links pending for its asset and source. A carried set that
+// is exactly the pending withdrawals is accepted: those withdrawals commit,
+// and a qualified declaration that is still pending stays unpublished.
 var ErrOperatorLink = errors.New("semhub: operator identity links differ from the pending declarations")
 
 // OperatorLink is one operator identity declaration: the binding of the

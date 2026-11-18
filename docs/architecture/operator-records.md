@@ -146,14 +146,20 @@ driver's source, and `Tx.OperatorLinks` hands it to the driver's next
 transaction. Declaring it publishes nothing. A driver batch that does not
 carry the pending links leaves them pending. The declaration appears only
 after the driver's next batch that carries them, so it waits while the driver
-is fenced or stopped. The acceptance test covers this limit too.
+is fenced or stopped. The acceptance test covers this limit too. A batch
+whose operator links are only the withdrawals pending for that source
+commits those withdrawals and leaves a qualified declaration that is still
+pending unpublished. Any other carried set that differs from the pending
+set is refused, and nothing from that batch is published.
 
-No family publisher carries the pending links yet, and the operator-record
-section has no identity-link form. Until a family adopts `Tx.OperatorLinks`,
-an operator identity declaration is never published.
+The operator-record section has no identity-link form. A declaration is not
+loaded from configuration. The logger-attached PV family carries the pending
+links of its source: a batch that observes a binding carries a qualified
+declaration when it names that resource, and a withdrawal of a child carries
+the pending withdrawals and leaves a qualified declaration pending. Until a
+batch carries a declaration, that declaration is not published.
 
-The same holds for the declarations the records need on the owner's side. No
-family composition names the provider as a contributor or declares a
+No family composition names the provider as a contributor or declares a
 configuration-only home yet, and the startup composition has no configured
 record set. The acceptance test makes those declarations itself, as an owner
 would, so it proves the path from the document to the cut once the owner has

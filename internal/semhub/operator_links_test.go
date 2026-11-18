@@ -4,9 +4,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"os"
 	"reflect"
 	"sort"
 	"strconv"
+	"strings"
 	"testing"
 
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
@@ -559,6 +561,41 @@ func carryOperatorWithdrawals(tx *Tx, batch *semreg.PublicationBatch) []semreg.I
 	sortLinks(links)
 	batch.IdentityLinkUpserts = links
 	return pending
+}
+
+// The operator-records page and the PV identity inventory are the public docs
+// gate for this commit rule. A withdrawal-only carry commits, and any other
+// difference from the pending set is still refused.
+func TestOperatorLinksArchitecturePageRecordsWithdrawalCarry(t *testing.T) {
+	records, err := os.ReadFile("../../docs/architecture/operator-records.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	inventory, err := os.ReadFile("../../docs/architecture/pv-identity-consumer-inventory.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pages := map[string]string{
+		"operator records":      strings.Join(strings.Fields(string(records)), " "),
+		"PV identity inventory": strings.Join(strings.Fields(string(inventory)), " "),
+	}
+	required := map[string][]string{
+		"operator records": {
+			"A batch whose operator links are only the withdrawals pending for that source commits those withdrawals and leaves a qualified declaration that is still pending unpublished.",
+			"Any other carried set that differs from the pending set is refused, and nothing from that batch is published.",
+			"The logger-attached PV family carries the pending links of its source",
+		},
+		"PV identity inventory": {
+			"A withdrawal of a child carries the pending withdrawals of installed declarations and leaves a qualified declaration for a binding it does not observe pending, so the withdrawn records commit and that declaration stays pending.",
+		},
+	}
+	for page, sentences := range required {
+		for _, sentence := range sentences {
+			if !strings.Contains(pages[page], sentence) {
+				t.Fatalf("%s page does not record %q", page, sentence)
+			}
+		}
+	}
 }
 
 // A batch may commit every pending withdrawal and leave a qualified

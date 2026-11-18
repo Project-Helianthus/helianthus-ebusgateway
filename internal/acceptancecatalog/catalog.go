@@ -172,9 +172,12 @@ func ValidateReport(c Catalog, r Report, expected Identity) (bool, error) {
 	if !identityValid(expected) || r.Identity != expected || r.CatalogVersion != c.Version {
 		return false, fmt.Errorf("report identity/version mismatch")
 	}
-	gates, ok := c.Forms[r.Form]
-	if !ok || (r.Source != "live" && r.Source != "synthetic") {
+	if r.Source != "live" && r.Source != "synthetic" {
 		return false, fmt.Errorf("unknown form/source")
+	}
+	gates, ok := c.Forms[r.Form]
+	if !ok || r.Form != c.ActiveForm {
+		return false, fmt.Errorf("report form %s is not the active form %s", r.Form, c.ActiveForm)
 	}
 	required := map[string]bool{}
 	for _, gate := range gates {

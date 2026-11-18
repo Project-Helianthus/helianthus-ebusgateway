@@ -1,8 +1,8 @@
 {
-  "version": "3",
+  "version": "4",
   "result_schema": "hardware-acceptance-result-v1.schema.json",
-  "result_schema_signature": "RgYQDcMKCdHEXPy1Jt3RX0M/u59nWeTWp6khYu3zNGQ=",
-  "active_form": "full88",
+  "result_schema_signature": "RxK5wI6HXt5Y1pyB+/jcj3VPQSagQYPfB1N7Vj++z/M=",
+  "active_form": "adaptermux-v2",
   "handoff_rows": [
     {
       "id": "T01–T04",
@@ -690,9 +690,6 @@
     "adaptermux-v2": [
       "P01",
       "P02",
-      "P03",
-      "P04",
-      "P05",
       "P06",
       "ESERA / FOLLOWUP-01",
       "LEGACY-PERSIST P1",
@@ -1086,7 +1083,10 @@
     "EBUSD-ES01"
   ],
   "retired_v2": [
-    "AD11"
+    "AD11",
+    "P03",
+    "P04",
+    "P05"
   ],
   "full88_expected_failures": [
     {
@@ -1184,10 +1184,6 @@
         "ENS-PX02",
         "ENS-PX03",
         "ENS-PX04",
-        "ENS-PX05",
-        "ENS-PX06",
-        "ENS-PX07",
-        "ENS-PX08",
         "ENS-PX12",
         "ENS-CX01",
         "ENH-AD01",
@@ -1202,10 +1198,6 @@
         "ENH-PX02",
         "ENH-PX03",
         "ENH-PX04",
-        "ENH-PX05",
-        "ENH-PX06",
-        "ENH-PX07",
-        "ENH-PX08",
         "ENH-PX12",
         "ENH-CX01",
         "ENS-DS01",
@@ -1389,13 +1381,29 @@
         "ENH-AD08",
         "ENH-AD12"
       ]
+    },
+    {
+      "id": "PL-04",
+      "outcome": "planned",
+      "reason": "fifo_order_superseded_by_address_priority",
+      "cases": [
+        "ENS-PX05",
+        "ENS-PX06",
+        "ENS-PX07",
+        "ENS-PX08",
+        "ENH-PX05",
+        "ENH-PX06",
+        "ENH-PX07",
+        "ENH-PX08"
+      ]
     }
   ],
   "category_precedence": [
     "BI-02",
     "PL-01",
     "PL-02",
-    "PL-03"
+    "PL-03",
+    "PL-04"
   ],
   "transition": [
     {

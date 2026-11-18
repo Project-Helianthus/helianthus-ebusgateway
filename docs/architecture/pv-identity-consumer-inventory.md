@@ -167,11 +167,15 @@ gate states none, so the publisher publishes none and refuses one. Re-admission
 makes the same identifiers current again. A replaced inverter withdrawn this
 way is retired.
 
-**Operator declarations and epochs (Proven, gateway tests).** Child and logger
-batches carry the hub's pending operator identity declarations for their
-bindings; a declared link is left to the hub's pending set and a successor
-epoch carries it again. Retiring an epoch removes every gate-rule instance in
-the same snapshot and keeps the operator-origin resources current.
+**Operator declarations and epochs (Proven, gateway tests).** A child or
+logger batch that observes a binding carries a pending qualified operator
+identity declaration when the declaration names that resource. A withdrawal
+of a child carries the pending withdrawals of installed declarations and
+leaves a qualified declaration for a binding it does not observe pending, so
+the withdrawn records commit and that declaration stays pending. A successor
+epoch carries a declaration that is still pending. Retiring an epoch removes
+every gate-rule instance in the same snapshot and keeps the operator-origin
+resources current.
 
 **Consumers.** A semantic snapshot read of a logger child also shows its
 withdrawn records while the child is withheld. The logger asset is a new asset

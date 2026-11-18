@@ -27,6 +27,9 @@ var (
 	ErrHubSourceCollision       = errors.New("runtimecontrol: source already owned in the hub")
 	ErrUnknownHook              = errors.New("runtimecontrol: unknown hook")
 	ErrHookUnimplemented        = errors.New("runtimecontrol: hook not implemented")
+	ErrUnsupportedHookVersion   = errors.New("runtimecontrol: unsupported hook version")
+	ErrHookDirection            = errors.New("runtimecontrol: hook not accepted for the descriptor direction")
+	ErrDuplicateHook            = errors.New("runtimecontrol: duplicate hook declaration")
 	ErrNotFound                 = errors.New("runtimecontrol: driver not found")
 )
 
@@ -229,10 +232,8 @@ func validateDescriptor(descriptor Descriptor) (DriverEntry, error) {
 		sources = append(sources, source)
 	}
 	sort.Slice(sources, func(i, j int) bool { return sources[i] < sources[j] })
-	for _, hook := range descriptor.Hooks {
-		if err := hookError(hook.Name); err != nil {
-			return DriverEntry{}, err
-		}
+	if err := admitHooks(descriptor.Direction, descriptor.Hooks); err != nil {
+		return DriverEntry{}, err
 	}
 	entry := DriverEntry{
 		Format:         descriptor.Format,
@@ -241,6 +242,7 @@ func validateDescriptor(descriptor Descriptor) (DriverEntry, error) {
 		Disposition:    descriptor.Disposition,
 		NativeContract: descriptor.NativeContract,
 		Sources:        sources,
+		Hooks:          descriptor.Hooks,
 	}
 	return entry.clone(), nil
 }
@@ -265,8 +267,44 @@ func safeNativeContractRef(ref NativeContractRef) bool {
 	return true
 }
 
-// hookError classifies a hook name. This host implements no hook, so every
-// declaration fails: reserved names as unimplemented, all others as unknown.
+// admitHooks validates a descriptor's hook list. An empty list is valid. The
+// only accepted non-empty list is a single output declaration at
+// OutputHookVersion on a northbound descriptor. Every other name fails
+// through hookError first, whatever its position or the direction; then
+// output on any direction other than northbound, both included; then an
+// unsupported output version; then a repeated output declaration.
+func admitHooks(direction Direction, hooks []HookDeclaration) error {
+	outputs := 0
+	for _, hook := range hooks {
+		if hook.Name == HookOutput {
+			outputs++
+			continue
+		}
+		if err := hookError(hook.Name); err != nil {
+			return err
+		}
+	}
+	if outputs == 0 {
+		return nil
+	}
+	if direction != DirectionNorthbound {
+		return fmt.Errorf("%w: %s on %s", ErrHookDirection, HookOutput, direction)
+	}
+	for _, hook := range hooks {
+		if hook.Version != OutputHookVersion {
+			return fmt.Errorf("%w: %s", ErrUnsupportedHookVersion, HookOutput)
+		}
+	}
+	if outputs > 1 {
+		return fmt.Errorf("%w: %s", ErrDuplicateHook, HookOutput)
+	}
+	return nil
+}
+
+// hookError classifies a hook name that registration does not admit:
+// reserved names fail as unimplemented, all others as unknown. ResolveHook
+// still classifies every name through it, output included, because this host
+// resolves no hook.
 func hookError(name HookName) error {
 	switch name {
 	case HookMCP, HookSetup, HookPortal, HookSemantic, HookEvidence:

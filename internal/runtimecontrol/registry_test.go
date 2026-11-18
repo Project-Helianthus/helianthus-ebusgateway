@@ -209,6 +209,44 @@ func TestRegisterRejectsBeforeEffects(t *testing.T) {
 		{"unknown hook", single(func(d *Descriptor) { d.Hooks = []HookDeclaration{{Name: "telemetry", Version: "v1"}} }), ErrUnknownHook},
 		{"empty hook name", single(func(d *Descriptor) { d.Hooks = []HookDeclaration{{Name: "", Version: "v1"}} }), ErrUnknownHook},
 		{"reserved hook unknown version", single(func(d *Descriptor) { d.Hooks = []HookDeclaration{{Name: HookMCP, Version: "v999"}} }), ErrHookUnimplemented},
+		{"output hook on southbound", single(func(d *Descriptor) {
+			d.Direction = DirectionSouthbound
+			d.Hooks = []HookDeclaration{{Name: HookOutput, Version: OutputHookVersion}}
+		}), ErrHookDirection},
+		{"output hook on southbound with unsupported version", single(func(d *Descriptor) {
+			d.Direction = DirectionSouthbound
+			d.Hooks = []HookDeclaration{{Name: HookOutput, Version: "2"}}
+		}), ErrHookDirection},
+		{"output hook on both", single(func(d *Descriptor) {
+			d.Direction = DirectionBoth
+			d.Hooks = []HookDeclaration{{Name: HookOutput, Version: OutputHookVersion}}
+		}), ErrHookDirection},
+		{"output hook without version", single(func(d *Descriptor) { d.Hooks = []HookDeclaration{{Name: HookOutput}} }), ErrUnsupportedHookVersion},
+		{"output hook prefixed version", single(func(d *Descriptor) { d.Hooks = []HookDeclaration{{Name: HookOutput, Version: "v1"}} }), ErrUnsupportedHookVersion},
+		{"output hook other version", single(func(d *Descriptor) { d.Hooks = []HookDeclaration{{Name: HookOutput, Version: "2"}} }), ErrUnsupportedHookVersion},
+		{"output hook padded version", single(func(d *Descriptor) { d.Hooks = []HookDeclaration{{Name: HookOutput, Version: " 1"}} }), ErrUnsupportedHookVersion},
+		{"output hook declared twice", single(func(d *Descriptor) {
+			d.Hooks = []HookDeclaration{{Name: HookOutput, Version: OutputHookVersion}, {Name: HookOutput, Version: OutputHookVersion}}
+		}), ErrDuplicateHook},
+		{"output hook twice with one unsupported version", single(func(d *Descriptor) {
+			d.Hooks = []HookDeclaration{{Name: HookOutput, Version: OutputHookVersion}, {Name: HookOutput, Version: "2"}}
+		}), ErrUnsupportedHookVersion},
+		{"output hook with reserved hook", single(func(d *Descriptor) {
+			d.Hooks = []HookDeclaration{{Name: HookOutput, Version: OutputHookVersion}, {Name: HookPortal, Version: OutputHookVersion}}
+		}), ErrHookUnimplemented},
+		{"reserved hook before output hook", single(func(d *Descriptor) {
+			d.Hooks = []HookDeclaration{{Name: HookSemantic, Version: OutputHookVersion}, {Name: HookOutput, Version: OutputHookVersion}}
+		}), ErrHookUnimplemented},
+		{"output hook with unknown hook", single(func(d *Descriptor) {
+			d.Hooks = []HookDeclaration{{Name: HookOutput, Version: OutputHookVersion}, {Name: "telemetry", Version: OutputHookVersion}}
+		}), ErrUnknownHook},
+		{"unknown hook on southbound before output direction", single(func(d *Descriptor) {
+			d.Direction = DirectionSouthbound
+			d.Hooks = []HookDeclaration{{Name: HookOutput, Version: OutputHookVersion}, {Name: "telemetry", Version: OutputHookVersion}}
+		}), ErrUnknownHook},
+		{"uppercase output hook", single(func(d *Descriptor) { d.Hooks = []HookDeclaration{{Name: "OUTPUT", Version: OutputHookVersion}} }), ErrUnknownHook},
+		{"suffixed output hook", single(func(d *Descriptor) { d.Hooks = []HookDeclaration{{Name: "output.v1", Version: OutputHookVersion}} }), ErrUnknownHook},
+		{"padded output hook", single(func(d *Descriptor) { d.Hooks = []HookDeclaration{{Name: "output ", Version: OutputHookVersion}} }), ErrUnknownHook},
 	}
 	for _, name := range []HookName{HookMCP, HookSetup, HookPortal, HookSemantic, HookEvidence} {
 		name := name

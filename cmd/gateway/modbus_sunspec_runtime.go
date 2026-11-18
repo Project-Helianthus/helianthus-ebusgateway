@@ -53,7 +53,10 @@ type sunSpecLiveSmokeQualification struct {
 	// FlavorEvaluations carries the registry's per-flavor reasons so a refusal
 	// is diagnosable from the decision line.
 	FlavorEvaluations []modbusadapter.SunSpecFlavorEvaluation
-	Err               error
+	// SemanticWithhold is the producer reason semantic publication was
+	// withheld. Empty means this qualification did not withhold.
+	SemanticWithhold string
+	Err              error
 }
 
 type sunSpecLiveSmokeResult struct {
@@ -71,6 +74,9 @@ type sunSpecLiveSmokeResult struct {
 	// versions only: no sample, capability or flavor ID, serial or endpoint.
 	CapabilityReason string
 	FlavorReasons    string
+	// SemanticWithhold is that withholding reason in decision-line token
+	// form. Empty means this cycle did not withhold semantic publication.
+	SemanticWithhold string
 }
 
 type sunSpecLiveSmokeDriver interface {
@@ -142,6 +148,7 @@ func (modbusSunSpecLiveSmokeQualifier) Qualify(_ context.Context, _ sunSpecLiveS
 		CapabilityReason:  poll.Qualification.CapabilityReason,
 		FlavorReason:      poll.Qualification.FlavorReason,
 		FlavorEvaluations: poll.Qualification.FlavorEvaluations,
+		SemanticWithhold:  poll.Qualification.SemanticWithhold,
 	}
 }
 
@@ -209,16 +216,18 @@ func deadlineOrNow(ctx context.Context) time.Time {
 }
 
 // logSunSpecLiveSmokeDecision writes the one decision line of a live-smoke
-// cycle. The leading fields and their order are fixed; capability= and flavors=
-// follow them. A decision without a qualification prints "-" for both.
+// cycle. The leading fields and their order are fixed; capability=, flavors=
+// and withhold= follow them. A decision without a qualification prints "-"
+// for each of those fields.
 func logSunSpecLiveSmokeDecision(logf func(string, ...any), result sunSpecLiveSmokeResult) {
 	if logf == nil {
 		return
 	}
 	logf(
-		"modbus sunspec live smoke decision=%s outcome=%s category=%s attempts=%d recovered=%t capability=%s flavors=%s",
+		"modbus sunspec live smoke decision=%s outcome=%s category=%s attempts=%d recovered=%t capability=%s flavors=%s withhold=%s",
 		result.Decision, result.Outcome, result.Category, result.Attempts, result.Recovered,
 		sunSpecLiveSmokeField(result.CapabilityReason), sunSpecLiveSmokeField(result.FlavorReasons),
+		sunSpecLiveSmokeField(result.SemanticWithhold),
 	)
 }
 
@@ -263,6 +272,7 @@ func formatSunSpecLiveSmokeFlavorReasons(evaluations []modbusadapter.SunSpecFlav
 func mapSunSpecLiveSmokeQualification(qualification sunSpecLiveSmokeQualification, base sunSpecLiveSmokeResult) sunSpecLiveSmokeResult {
 	base.Sample, base.Capability, base.Flavor = "", "", ""
 	base.CapabilityReason, base.FlavorReasons = "", ""
+	base.SemanticWithhold = sunSpecLiveSmokeToken(qualification.SemanticWithhold)
 	if qualification.Err != nil {
 		base.Decision, base.Outcome, base.Category = sunSpecLiveSmokeDecisionStop, "error", "qualification_error"
 		return base

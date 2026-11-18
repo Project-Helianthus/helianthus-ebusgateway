@@ -314,12 +314,18 @@ var errPortalOperatorRecordsUnavailable = errors.New("portal configuration: oper
 // Waiting reasons of an operator record. A record whose home asset is
 // published by the provider's own key waits until the asset is declared, the
 // provider is admitted to it and the starting end is published by its owner.
+// An identity link the provider does not publish waits with
+// portalOperatorIdentityLinkPending once it is declared to the hub for the
+// binding's source, and with portalOperatorNativeUnobserved while no binding
+// of its home observes its native resource.
 const (
 	portalOperatorPublisherUnavailable = "publisher_unavailable"
 	portalOperatorNotApplied           = "not_applied"
 	portalOperatorHomeNotDeclared      = "home_not_declared"
 	portalOperatorHomeNotAdmitted      = "home_not_admitted"
 	portalOperatorPublicationFailed    = "publication_failed"
+	portalOperatorIdentityLinkPending  = "identity_link_pending"
+	portalOperatorNativeUnobserved     = "native_unobserved"
 )
 
 // portalOperatorOutcome is the result of the last publication attempt of one
@@ -389,7 +395,7 @@ func (r *gatewayPortalConfigRuntime) bindOperatorRecords(hub *semhub.Hub) {
 		r.mu.Unlock()
 		return
 	}
-	publisher, err := newOperatorRecordPublisher(hub, operatorRecordOptions{})
+	publisher, err := operatorPublisherFor(hub)
 	if err != nil {
 		r.mu.Unlock()
 		log.Printf("portal configuration: operator records not published: %v", err)
@@ -454,6 +460,10 @@ func (o *portalOperatorRecords) apply(set portalconfig.OperatorRecordSet) {
 		return
 	}
 	o.applied = revision
+	// The startup watcher shares this publisher. Drop or replace its pending
+	// sets before publishing, so a relation this section no longer holds cannot
+	// be published when the driver asset appears later.
+	o.publisher.supersedePending(sets)
 	next := make(map[semreg.AssetID]operatorAssetRecords, len(sets))
 	for _, assetSet := range sets {
 		next[assetSet.Asset] = assetSet
@@ -489,10 +499,15 @@ func (o *portalOperatorRecords) setLocked(home semreg.AssetID) {
 	if outcome.status == portalconfig.OperatorRecordRefused {
 		log.Printf("portal configuration: operator records of %s refused: %s", home, outcome.reason)
 	}
-	if len(desired.Records.Resources) == 0 && len(desired.Records.Relations) == 0 && outcome.status != portalconfig.OperatorRecordWaiting {
+	if len(desired.Records.Resources) == 0 && len(desired.Records.Relations) == 0 && len(desired.Records.Links) == 0 && outcome.status != portalconfig.OperatorRecordWaiting {
 		delete(o.desired, home)
 		delete(o.outcomes, home)
 		return
+	}
+	// A links-only set is declared to the hub and not published. Forgetting
+	// the outcome would report it as waiting to be applied.
+	if len(desired.Records.Resources) == 0 && len(desired.Records.Relations) == 0 && len(desired.Records.Links) > 0 && outcome.status == portalconfig.OperatorRecordPublished {
+		outcome = portalOperatorOutcome{status: portalconfig.OperatorRecordWaiting, reason: portalOperatorIdentityLinkPending, retry: false}
 	}
 	o.outcomes[home] = outcome
 }
@@ -515,6 +530,9 @@ func portalOperatorClassify(err error) portalOperatorOutcome {
 		if refusal.Reason == operatorReasonStartingEndUnresolved {
 			return waiting("starting_end_unresolved", true)
 		}
+		if refusal.Reason == operatorReasonNativeUnobserved {
+			return waiting(portalOperatorNativeUnobserved, true)
+		}
 		return portalOperatorOutcome{status: portalconfig.OperatorRecordRefused, reason: string(refusal.Reason)}
 	}
 	switch {
@@ -534,7 +552,10 @@ func portalOperatorClassify(err error) portalOperatorOutcome {
 
 // operatorRecordStates reports each record of a section by the outcomes of
 // its home assets: refused before waiting before published. Before the
-// runtime is bound every record waits for the publisher.
+// runtime is bound every record waits for the publisher. An identity link
+// whose home set was applied waits with portalOperatorIdentityLinkPending,
+// also when its home holds records that were published: the provider never
+// publishes the link itself.
 func (r *gatewayPortalConfigRuntime) operatorRecordStates(set portalconfig.OperatorRecordSet) []portalconfig.OperatorRecordState {
 	r.mu.Lock()
 	operators := r.operators
@@ -566,6 +587,9 @@ func (r *gatewayPortalConfigRuntime) operatorRecordStates(set portalconfig.Opera
 			if worst != nil {
 				state.Status, state.Reason = worst.status, worst.reason
 			}
+			if record.Form == portalconfig.OperatorFormIdentityLink && state.Status == portalconfig.OperatorRecordPublished {
+				state.Status, state.Reason = portalconfig.OperatorRecordWaiting, portalOperatorIdentityLinkPending
+			}
 		}
 		states = append(states, state)
 	}
@@ -575,8 +599,10 @@ func (r *gatewayPortalConfigRuntime) operatorRecordStates(set portalconfig.Opera
 // portalOperatorAssetRecords groups the section's records by home asset, in
 // bytewise asset order: an anchor and each view of a pairing become an
 // operator-slot resource of the catalog class of their kind, a relation a
-// configured relation instance. Each home carries the audit digest of the
-// records declared for it.
+// configured relation instance, and an identity link a link the provider
+// declares to the hub and does not publish. An anchor or a pairing view
+// marks its home configuration-only. Each home carries the audit digest of the records
+// declared for it.
 func portalOperatorAssetRecords(set portalconfig.OperatorRecordSet) []operatorAssetRecords {
 	byHome := map[semreg.AssetID]*operatorAssetRecords{}
 	declared := map[semreg.AssetID][]portalconfig.OperatorRecord{}
@@ -596,6 +622,7 @@ func portalOperatorAssetRecords(set portalconfig.OperatorRecordSet) []operatorAs
 		switch record.Form {
 		case portalconfig.OperatorFormAnchor:
 			target := home(record.Home, record)
+			target.ConfigurationOnly = true
 			target.Records.Resources = append(target.Records.Resources, resource(record.ResourceID, record))
 		case portalconfig.OperatorFormRelation:
 			if record.Definition == nil {
@@ -606,8 +633,15 @@ func portalOperatorAssetRecords(set portalconfig.OperatorRecordSet) []operatorAs
 		case portalconfig.OperatorFormPairing:
 			for _, view := range record.Views {
 				target := home(view.Home, record)
+				target.ConfigurationOnly = true
 				target.Records.Resources = append(target.Records.Resources, resource(view.ResourceID, record))
 			}
+		case portalconfig.OperatorFormIdentityLink:
+			if record.Native == nil {
+				continue
+			}
+			target := home(record.Home, record)
+			target.Records.Links = append(target.Records.Links, operatorIdentityLink{Native: *record.Native, Resource: semreg.ResourceID(record.ResourceID), BasisClass: record.BasisClass})
 		}
 	}
 	out := make([]operatorAssetRecords, 0, len(byHome))

@@ -32,7 +32,7 @@ const OperatorRecordsFile = "portal-config-operator-records.json"
 // MaxOperatorRecords bounds the records of one section.
 const MaxOperatorRecords = 128
 
-// The three forms of an operator declaration.
+// The forms of an operator declaration.
 const (
 	// OperatorFormAnchor declares a resource that only configuration knows,
 	// anchored by an operator slot in its home asset.
@@ -43,6 +43,10 @@ const (
 	// OperatorFormPairing declares two views of one unit, homed in two
 	// assets, by giving both one operator-slot anchor key.
 	OperatorFormPairing = "pairing"
+	// OperatorFormIdentityLink declares an identity link of one home asset:
+	// the native resource the binding observes, the resource it names and the
+	// configuration basis class. The provider does not publish it.
+	OperatorFormIdentityLink = "identity_link"
 )
 
 // Statuses of one operator record.
@@ -65,7 +69,8 @@ type OperatorRecordSet struct {
 // carries:
 //   - anchor: home, resource_id, kind, slot and an optional parent;
 //   - relation: home, definition, from, to and basis_class;
-//   - pairing: kind, slot, an optional parent and exactly two views.
+//   - pairing: kind, slot, an optional parent and exactly two views;
+//   - identity_link: home, native, resource_id and basis_class.
 type OperatorRecord struct {
 	Form       string                `json:"form"`
 	Home       string                `json:"home,omitempty"`
@@ -78,6 +83,7 @@ type OperatorRecord struct {
 	To         string                `json:"to,omitempty"`
 	BasisClass string                `json:"basis_class,omitempty"`
 	Views      []OperatorView        `json:"views,omitempty"`
+	Native     *semreg.EvidenceRef   `json:"native,omitempty"`
 }
 
 // OperatorView is one view of a pairing: a resource and its home asset.
@@ -147,9 +153,10 @@ func SafeOperatorRecordError(err error) *Error {
 // operatorShapes lists the exact members of each form; optional members are
 // marked false.
 var operatorShapes = map[string]map[string]bool{
-	OperatorFormAnchor:   {"form": true, "home": true, "resource_id": true, "kind": true, "slot": true, "parent": false},
-	OperatorFormRelation: {"form": true, "home": true, "definition": true, "from": true, "to": true, "basis_class": true},
-	OperatorFormPairing:  {"form": true, "kind": true, "slot": true, "views": true, "parent": false},
+	OperatorFormAnchor:       {"form": true, "home": true, "resource_id": true, "kind": true, "slot": true, "parent": false},
+	OperatorFormRelation:     {"form": true, "home": true, "definition": true, "from": true, "to": true, "basis_class": true},
+	OperatorFormPairing:      {"form": true, "kind": true, "slot": true, "views": true, "parent": false},
+	OperatorFormIdentityLink: {"form": true, "home": true, "native": true, "resource_id": true, "basis_class": true},
 }
 
 // DecodeOperatorRecords accepts only the bounded, closed section shape,
@@ -207,6 +214,17 @@ func DecodeOperatorRecords(data []byte) (OperatorRecordSet, error) {
 				object, ok := view.(map[string]any)
 				if !ok || !hasExactly(object, map[string]bool{"home": true, "resource_id": true}) {
 					return OperatorRecordSet{}, operatorFailure("invalid_record", fmt.Sprintf("%s.views[%d]", field, j))
+				}
+			}
+		}
+		if native, present := record["native"]; present {
+			ref, ok := native.(map[string]any)
+			if !ok || !hasExactly(ref, map[string]bool{"owner": true, "kind": true, "digest": true, "contract": true, "access": true, "redaction": true}) {
+				return OperatorRecordSet{}, operatorFailure("invalid_record", field+".native")
+			}
+			for _, key := range []string{"owner", "kind", "digest", "contract", "access", "redaction"} {
+				if _, stringValue := ref[key].(string); !stringValue {
+					return OperatorRecordSet{}, operatorFailure("invalid_record", field+".native")
 				}
 			}
 		}
@@ -429,6 +447,21 @@ func ValidateOperatorRecords(set OperatorRecordSet) error {
 				return operatorFailure("far_end_invalid", field+".to")
 			}
 			definitions[i] = definition
+		case OperatorFormIdentityLink:
+			if semreg.AssetID(record.Home).Validate() != nil {
+				return operatorFailure("invalid_record", field+".home")
+			}
+			if record.Native == nil || record.Native.Validate() != nil {
+				return operatorFailure("invalid_record", field+".native")
+			}
+			if semreg.ResourceID(record.ResourceID).Validate() != nil {
+				return operatorFailure("invalid_record", field+".resource_id")
+			}
+			// The pending link admits an operator declaration only on the
+			// configuration basis.
+			if record.BasisClass != string(semreg.RelationConfiguration) {
+				return operatorFailure("basis_class_not_admitted", field+".basis_class")
+			}
 		default:
 			return operatorFailure("invalid_record", field+".form")
 		}
@@ -486,7 +519,26 @@ func ValidateOperatorRecords(set OperatorRecordSet) error {
 			return operatorFailure("far_end_invalid", field+".to")
 		}
 	}
+	links := map[string]bool{}
+	for i, record := range set.Records {
+		if record.Form != OperatorFormIdentityLink || record.Native == nil {
+			continue
+		}
+		field := fmt.Sprintf("records[%d]", i)
+		key := operatorIdentityKey(record.Home, *record.Native)
+		if links[key] {
+			return operatorFailure("duplicate_key", field+".native")
+		}
+		links[key] = true
+	}
 	return nil
+}
+
+// operatorIdentityKey is the identity-link key: the home asset and every
+// member of the native resource. The resource identifier and the basis class
+// are not part of it.
+func operatorIdentityKey(home string, native semreg.EvidenceRef) string {
+	return home + "\x00" + string(native.Owner) + "\x00" + string(native.Kind) + "\x00" + string(native.Digest) + "\x00" + string(native.Contract) + "\x00" + string(native.Access) + "\x00" + string(native.Redaction)
 }
 
 // validateOperatorAnchor checks the kind, parent and slot of an operator-slot
@@ -608,7 +660,22 @@ func (s *Store) readOperatorRecordsLocked() (OperatorRecordSet, error) {
 	if s.lock == nil {
 		return emptyOperatorRecords(), operatorFailure("persistence_failed", "operator_records")
 	}
-	f, err := os.OpenFile(filepath.Join(s.root, OperatorRecordsFile), os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	return loadOperatorRecordsFile(s.root)
+}
+
+// LoadOperatorRecords reads the operator-record section of a configuration
+// root without opening the store. A missing root or a missing section is the
+// empty section. A section that does not decode or validate, or a file that
+// cannot be read, fails closed.
+func LoadOperatorRecords(root string) (OperatorRecordSet, error) {
+	if root == "" {
+		return emptyOperatorRecords(), nil
+	}
+	return loadOperatorRecordsFile(root)
+}
+
+func loadOperatorRecordsFile(root string) (OperatorRecordSet, error) {
+	f, err := os.OpenFile(filepath.Join(root, OperatorRecordsFile), os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if os.IsNotExist(err) {
 		return emptyOperatorRecords(), nil
 	}

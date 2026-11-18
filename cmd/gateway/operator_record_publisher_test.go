@@ -1,9 +1,15 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"log"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -11,6 +17,7 @@ import (
 	"time"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/portalconfig"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/packs/pv"
@@ -510,8 +517,8 @@ func TestOperatorRecordPublisherComposesAnEmptyRecordSet(t *testing.T) {
 	if err := composeOperatorRecords(hub, ebusgateway.Config{}); err != nil {
 		t.Fatal(err)
 	}
-	if records := configuredOperatorRecords(ebusgateway.Config{}); len(records) != 0 {
-		t.Fatalf("configured operator records=%+v, want none", records)
+	if records, err := configuredOperatorRecords(ebusgateway.Config{}); err != nil || len(records) != 0 {
+		t.Fatalf("configured operator records=%+v %v, want none", records, err)
 	}
 	if _, ok := hub.Source(operatorRecordSource); ok {
 		t.Fatal("an empty record set admitted the configuration source")
@@ -629,6 +636,263 @@ func TestOperatorRecordPublisherReportsEveryDeferredRefusalOfOneRetry(t *testing
 	}
 }
 
+func oprWriteSection(t *testing.T, root string, body string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(root, "portal-config-operator-records.json"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func oprCompositionDigest(label string) string {
+	sum := sha256.Sum256([]byte("opr-composition-identity\x00" + label))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// A configuration that holds one operator record yields that record. An empty
+// section yields an empty set.
+func TestOperatorRecordCompositionLoadsAConfiguredRecord(t *testing.T) {
+	root := t.TempDir()
+	records, err := configuredOperatorRecords(ebusgateway.Config{PortalConfigRoot: root})
+	if err != nil || len(records) != 0 {
+		t.Fatalf("missing section=%+v %v, want none", records, err)
+	}
+	oprWriteSection(t, root, `{"format":"helianthus.portal-config.operator-records/v1","revision":"0","records":[]}`)
+	records, err = configuredOperatorRecords(ebusgateway.Config{PortalConfigRoot: root})
+	if err != nil || len(records) != 0 {
+		t.Fatalf("empty section=%+v %v, want none", records, err)
+	}
+	oprWriteSection(t, root, `{"format":"helianthus.portal-config.operator-records/v1","revision":"1","records":[{"form":"anchor","home":"asset:opr-configuration","resource_id":"resource:opr:array-1","kind":"resource.pv_array","slot":"array-south"}]}`)
+	records, err = configuredOperatorRecords(ebusgateway.Config{PortalConfigRoot: root})
+	if err != nil || len(records) != 1 || records[0].Asset != oprHomeAsset || len(records[0].Records.Resources) != 1 || !records[0].ConfigurationOnly || len(records[0].Records.Links) != 0 {
+		t.Fatalf("configured operator records=%+v %v, want the one configured anchor", records, err)
+	}
+}
+
+// An identity link is returned with the configured set and is not a
+// configuration-only home. Composition does not declare that home and does
+// not admit the provider, because the provider does not publish the link.
+func TestOperatorRecordCompositionLoadsAnIdentityLink(t *testing.T) {
+	root := t.TempDir()
+	body, err := json.Marshal(map[string]any{
+		"format":   "helianthus.portal-config.operator-records/v1",
+		"revision": "1",
+		"records": []any{map[string]any{
+			"form": "identity_link",
+			"home": string(oprDriverAsset),
+			"native": map[string]any{
+				"owner":     "helianthus.gateway.oprtest",
+				"kind":      "oprtest.native",
+				"digest":    oprCompositionDigest("native"),
+				"contract":  string(semreg.ContractKernelV1),
+				"access":    string(semreg.EvidenceAccessAuthorized),
+				"redaction": string(semreg.RedactionMetadataOnly),
+			},
+			"resource_id": string(oprInverter),
+			"basis_class": string(semreg.RelationConfiguration),
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oprWriteSection(t, root, string(body))
+	records, err := configuredOperatorRecords(ebusgateway.Config{PortalConfigRoot: root})
+	if err != nil || len(records) != 1 || records[0].ConfigurationOnly || len(records[0].Records.Links) != 1 || len(records[0].Records.Resources) != 0 {
+		t.Fatalf("configured identity link=%+v %v", records, err)
+	}
+	link := records[0].Records.Links[0]
+	if records[0].Asset != oprDriverAsset || link.Resource != oprInverter || link.BasisClass != string(semreg.RelationConfiguration) || link.Native.Owner != "helianthus.gateway.oprtest" || string(link.Native.Digest) != oprCompositionDigest("native") {
+		t.Fatalf("identity link=%+v, want the configured native resource", link)
+	}
+	hub, err := semhub.New(semhub.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := composeOperatorRecords(hub, ebusgateway.Config{PortalConfigRoot: root}); err != nil {
+		t.Fatal(err)
+	}
+	state, err := hub.GraphState()
+	if err != nil || len(state.Assets) != 0 {
+		t.Fatalf("an identity link declared %+v (%v)", state.Assets, err)
+	}
+	if _, ok := hub.Source(operatorRecordSource); ok {
+		t.Fatal("an identity link admitted the configuration source")
+	}
+}
+
+// A malformed, unsupported or unreadable section still fails closed for the
+// loader, and startup treats it as unavailable: composition publishes nothing,
+// admits no source and does not abort semantic preflight.
+func TestOperatorRecordCompositionTreatsAnUnavailableSectionAsNonfatal(t *testing.T) {
+	cases := []struct {
+		name  string
+		code  string
+		write func(t *testing.T, root string)
+	}{
+		{name: "malformed", code: "invalid_record", write: func(t *testing.T, root string) {
+			oprWriteSection(t, root, `{`)
+		}},
+		{name: "unsupported", code: "unsupported_format", write: func(t *testing.T, root string) {
+			oprWriteSection(t, root, `{"format":"helianthus.portal-config.operator-records/v0","revision":"0","records":[]}`)
+		}},
+		{name: "unreadable", code: "persistence_failed", write: func(t *testing.T, root string) {
+			if err := os.Mkdir(filepath.Join(root, portalconfig.OperatorRecordsFile), 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			tc.write(t, root)
+			records, err := configuredOperatorRecords(ebusgateway.Config{PortalConfigRoot: root})
+			if err == nil || len(records) != 0 || portalconfig.SafeOperatorRecordError(err).Code != tc.code {
+				t.Fatalf("configured=%+v err=%v, want code %s and no records", records, err, tc.code)
+			}
+			hub, hubErr := semhub.New(semhub.Options{})
+			if hubErr != nil {
+				t.Fatal(hubErr)
+			}
+			before, err := hub.GraphState()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var logged bytes.Buffer
+			log.SetOutput(&logged)
+			t.Cleanup(func() { log.SetOutput(os.Stderr) })
+			if err := composeOperatorRecords(hub, ebusgateway.Config{PortalConfigRoot: root}); err != nil {
+				t.Fatalf("composition aborted on an unavailable section: %v", err)
+			}
+			after, err := hub.GraphState()
+			if err != nil || !reflect.DeepEqual(after, before) {
+				t.Fatalf("an unavailable section changed the declared assets: %+v %v", after, err)
+			}
+			if _, ok := hub.Source(operatorRecordSource); ok {
+				t.Fatal("an unavailable section admitted the configuration source")
+			}
+			if !strings.Contains(logged.String(), tc.code) || !strings.Contains(logged.String(), "nothing published") {
+				t.Fatalf("log=%q, want code %s and nothing published", logged.String(), tc.code)
+			}
+		})
+	}
+	root := t.TempDir()
+	oprWriteSection(t, root, `{`)
+	hub, err := preflightSemanticHub(ebusgateway.Config{PortalConfigRoot: root})
+	if err != nil || hub == nil || len(hub.Sources()) != 0 {
+		t.Fatalf("semantic preflight aborted on an unavailable operator section: hub=%v sources=%v err=%v", hub, hubSources(hub), err)
+	}
+}
+
+func hubSources(hub *semhub.Hub) []semhub.SourceInfo {
+	if hub == nil {
+		return nil
+	}
+	return hub.Sources()
+}
+
+// A home a driver already owns stays that driver's asset. When the owner has
+// not admitted the provider, the configured set is reported and left
+// unpublished. Configuration-only homes, including pairing views, are
+// declared for the provider and published.
+func TestOperatorRecordCompositionReportsADriverOwnedSetItCannotPublish(t *testing.T) {
+	root := t.TempDir()
+	oprWriteSection(t, root, `{"format":"helianthus.portal-config.operator-records/v1","revision":"1","records":[{"form":"anchor","home":"asset:opr-configuration","resource_id":"resource:opr:array-1","kind":"resource.pv_array","slot":"array-south"},{"form":"anchor","home":"asset:opr-inverter","resource_id":"resource:opr:array-2","kind":"resource.pv_array","slot":"array-north"},{"form":"pairing","kind":"resource.pv_system","slot":"system-main","views":[{"home":"asset:opr-pair-a","resource_id":"resource:opr:system-a"},{"home":"asset:opr-pair-b","resource_id":"resource:opr:system-b"}]}]}`)
+	hub, err := semhub.New(semhub.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hub.Declare(semhub.AssetSpec{AssetID: oprDriverAsset, SourceID: oprDriverSource, Driver: oprDriver, Validators: []semreg.PackValidator{pv.New()}, Graph: true}); err != nil {
+		t.Fatal(err)
+	}
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	if err := composeOperatorRecords(hub, ebusgateway.Config{PortalConfigRoot: root}); err != nil {
+		t.Fatal(err)
+	}
+	state, err := hub.GraphState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := map[semreg.AssetID]string{}
+	for _, asset := range state.Assets {
+		found[asset.Asset] = asset.Driver
+	}
+	if found[oprDriverAsset] != oprDriver {
+		t.Fatalf("driver home driver=%q, want %s", found[oprDriverAsset], oprDriver)
+	}
+	published := map[semreg.AssetID]semreg.ResourceID{
+		oprHomeAsset:       "resource:opr:array-1",
+		"asset:opr-pair-a": "resource:opr:system-a",
+		"asset:opr-pair-b": "resource:opr:system-b",
+	}
+	for id, resourceID := range published {
+		if found[id] != operatorRecordDriver {
+			t.Fatalf("configuration home %s driver=%q, want %s", id, found[id], operatorRecordDriver)
+		}
+		view, err := hub.Inspect(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resource, ok := oprResourceIn(view.Snapshot, resourceID)
+		if !ok || resource.State != semreg.ResourceCurrent {
+			t.Fatalf("%s resource=%+v present=%v, want the configuration-owned record published", id, resource, ok)
+		}
+	}
+	if !strings.Contains(logged.String(), string(oprDriverAsset)) || !strings.Contains(logged.String(), "not published") {
+		t.Fatalf("log=%q, want the driver-owned set reported as not published", logged.String())
+	}
+	view, err := hub.Inspect(oprDriverAsset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := oprResourceIn(view.Snapshot, oprArraySecond); ok {
+		t.Fatal("a set the owner has not admitted was published")
+	}
+	publisher, err := operatorPublisherFor(hub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending := map[semreg.AssetID]bool{}
+	for _, id := range publisher.Pending() {
+		pending[id] = true
+	}
+	for id := range published {
+		if pending[id] {
+			t.Fatalf("pending=%v, want configuration home %s published", publisher.Pending(), id)
+		}
+	}
+	if pending[oprDriverAsset] {
+		t.Fatal("a reported skip stayed pending")
+	}
+}
+
+// A configured set on a home whose owner has admitted the provider is
+// published at startup. The home stays the driver's.
+func TestOperatorRecordCompositionPublishesADriverOwnedSet(t *testing.T) {
+	f := newOprFixture(t)
+	root := t.TempDir()
+	body, err := json.Marshal(oprRelationSection("1", oprArray))
+	if err != nil {
+		t.Fatal(err)
+	}
+	oprWriteSection(t, root, string(body))
+	if err := composeOperatorRecords(f.hub, ebusgateway.Config{PortalConfigRoot: root}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := oprRelationIn(f.snapshot(t, oprDriverAsset), oprInverterArray(oprArray)); !ok {
+		t.Fatal("a configured relation on a driver-owned home was not published")
+	}
+	state, err := f.hub.GraphState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, asset := range state.Assets {
+		if asset.Asset == oprDriverAsset && asset.Driver != oprDriver {
+			t.Fatalf("driver home driver=%q, want %s", asset.Driver, oprDriver)
+		}
+	}
+}
+
 // Any other refusal stays fatal at composition.
 func TestOperatorRecordPublisherComposeStopsOnAnotherRefusal(t *testing.T) {
 	f := newOprFixture(t)
@@ -636,5 +900,559 @@ func TestOperatorRecordPublisherComposeStopsOnAnotherRefusal(t *testing.T) {
 	var refusal *operatorRecordRefusal
 	if !errors.As(err, &refusal) || refusal.Reason != operatorReasonAuditMissing || len(f.publisher.Pending()) != 0 {
 		t.Fatalf("compose=%v pending=%v, want a fatal %s", err, f.publisher.Pending(), operatorReasonAuditMissing)
+	}
+}
+
+// Ownership does not follow the identifier's shape. A configuration-only home
+// is declared for the provider whether or not its identifier looks like one a
+// driver allocates, and a driver cannot claim it afterwards. A home the record
+// set does not mark configuration-only stays undeclared, and the driver that
+// discovers it can claim it. A home a driver has already declared stays that
+// driver's, including one whose identifier looks discovered.
+func TestOperatorRecordCompositionDistinguishesHomeOwnership(t *testing.T) {
+	const (
+		discovered    semreg.AssetID = "pv-asset-5c57adba3ad8a529617c1f8627ae32f1"
+		paired        semreg.AssetID = "pv-asset-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		lookalike     semreg.AssetID = "asset:pv-asset-5c57adba3ad8a529617c1f8627ae32f1"
+		boiler        semreg.AssetID = "asset:synthetic-boiler"
+		kept          semreg.AssetID = "pv-asset-cccccccccccccccccccccccccccccccc"
+		relationHex   semreg.AssetID = "pv-asset-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+		relationNamed semreg.AssetID = "asset:synthetic-circuit"
+	)
+	root := t.TempDir()
+	oprWriteSection(t, root, `{"format":"helianthus.portal-config.operator-records/v1","revision":"1","records":[{"form":"anchor","home":"pv-asset-5c57adba3ad8a529617c1f8627ae32f1","resource_id":"resource:opr:array-discovered","kind":"resource.pv_array","slot":"array-discovered"},{"form":"anchor","home":"asset:opr-configuration","resource_id":"resource:opr:array-1","kind":"resource.pv_array","slot":"array-south"},{"form":"anchor","home":"asset:pv-asset-5c57adba3ad8a529617c1f8627ae32f1","resource_id":"resource:opr:array-lookalike","kind":"resource.pv_array","slot":"array-lookalike"},{"form":"anchor","home":"asset:synthetic-boiler","resource_id":"resource:opr:boiler","kind":"resource.pv_array","slot":"boiler-flow"},{"form":"anchor","home":"pv-asset-cccccccccccccccccccccccccccccccc","resource_id":"resource:opr:array-kept","kind":"resource.pv_array","slot":"array-kept"},{"form":"pairing","kind":"resource.pv_system","slot":"system-main","views":[{"home":"pv-asset-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","resource_id":"resource:opr:system-discovered"},{"home":"asset:opr-pair-b","resource_id":"resource:opr:system-b"}]},{"form":"relation","home":"pv-asset-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","definition":{"pack":{"id":"helianthus.pack.pv","version":"1.0.0"},"id":"pv.relation.inverter_array","version":"1.0.0"},"from":"resource:opr:inverter-hex","to":"resource:opr:array-hex","basis_class":"configuration"},{"form":"relation","home":"asset:synthetic-circuit","definition":{"pack":{"id":"helianthus.pack.pv","version":"1.0.0"},"id":"pv.relation.inverter_array","version":"1.0.0"},"from":"resource:opr:inverter-circuit","to":"resource:opr:array-circuit","basis_class":"configuration"}]}`)
+	hub, err := semhub.New(semhub.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hub.Declare(semhub.AssetSpec{AssetID: kept, SourceID: "source:opr-kept", Driver: oprDriver, Validators: []semreg.PackValidator{pv.New()}, Graph: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := composeOperatorRecords(hub, ebusgateway.Config{PortalConfigRoot: root}); err != nil {
+		t.Fatal(err)
+	}
+	found := map[semreg.AssetID]string{}
+	state, err := hub.GraphState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, asset := range state.Assets {
+		found[asset.Asset] = asset.Driver
+	}
+	for _, id := range []semreg.AssetID{discovered, paired, lookalike, boiler, oprHomeAsset, "asset:opr-pair-b"} {
+		if found[id] != operatorRecordDriver {
+			t.Fatalf("configuration home %s driver=%q, want %s", id, found[id], operatorRecordDriver)
+		}
+		view, err := hub.Inspect(id)
+		if err != nil || !view.Present || len(view.Snapshot.Resources) == 0 {
+			t.Fatalf("configuration home %s was declared and not published: present=%v err=%v", id, view.Present, err)
+		}
+	}
+	if found[kept] != oprDriver {
+		t.Fatalf("driver home %s driver=%q, want %s", kept, found[kept], oprDriver)
+	}
+	if _, claimed := found[relationHex]; claimed {
+		t.Fatalf("startup claimed relation home %s for %s", relationHex, found[relationHex])
+	}
+	if _, claimed := found[relationNamed]; claimed {
+		t.Fatalf("startup claimed relation home %s for %s", relationNamed, found[relationNamed])
+	}
+	class, err := hub.DeclareClass(semhub.ClassSpec{
+		Name: "opr_discovered", Driver: "driver-opr-discovered", Graph: true,
+		Validators: func() []semreg.PackValidator { return []semreg.PackValidator{pv.New()} },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, id := range []semreg.AssetID{relationHex, relationNamed} {
+		source := semreg.SourceID("source:opr-relation-" + strconv.Itoa(i))
+		if _, err := class.Declare(id, source); err != nil {
+			t.Fatalf("dynamic driver could not claim undeclared home %s: %v", id, err)
+		}
+	}
+	var collision *semhub.CollisionError
+	if _, err := class.Declare(discovered, "source:opr-stolen"); !errors.As(err, &collision) {
+		t.Fatalf("driver claim of a configuration-owned home=%v, want a collision", err)
+	}
+	state, err = hub.GraphState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, asset := range state.Assets {
+		found[asset.Asset] = asset.Driver
+	}
+	if found[relationHex] != "driver-opr-discovered" || found[relationNamed] != "driver-opr-discovered" {
+		t.Fatalf("undeclared homes=%v", found)
+	}
+	if found[discovered] != operatorRecordDriver || found[kept] != oprDriver {
+		t.Fatalf("owned homes=%v", found)
+	}
+}
+
+// The configuration-only mark selects the homes startup declares. A relation
+// home is not declared, and a driver-owned home is not taken, even when that
+// home also holds an anchor.
+func TestOperatorRecordCompositionDeclaresOnlyAConfigurationOwnedHome(t *testing.T) {
+	root := t.TempDir()
+	oprWriteSection(t, root, `{"format":"helianthus.portal-config.operator-records/v1","revision":"1","records":[{"form":"anchor","home":"asset:opr-configuration","resource_id":"resource:opr:array-1","kind":"resource.pv_array","slot":"array-south"},{"form":"anchor","home":"asset:opr-inverter","resource_id":"resource:opr:array-2","kind":"resource.pv_array","slot":"array-north"},{"form":"relation","home":"asset:opr-relation-only","definition":{"pack":{"id":"helianthus.pack.pv","version":"1.0.0"},"id":"pv.relation.inverter_array","version":"1.0.0"},"from":"resource:opr:inverter-r","to":"resource:opr:array-r","basis_class":"configuration"}]}`)
+	records, err := configuredOperatorRecords(ebusgateway.Config{PortalConfigRoot: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	marked := map[semreg.AssetID]bool{}
+	for _, set := range records {
+		marked[set.Asset] = set.ConfigurationOnly
+	}
+	if !marked[oprHomeAsset] || marked["asset:opr-relation-only"] || !marked[oprDriverAsset] {
+		t.Fatalf("configuration-only marks=%v", marked)
+	}
+	hub, err := semhub.New(semhub.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hub.Declare(semhub.AssetSpec{AssetID: oprDriverAsset, SourceID: oprDriverSource, Driver: oprDriver, Validators: []semreg.PackValidator{pv.New()}, Graph: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := composeOperatorRecords(hub, ebusgateway.Config{PortalConfigRoot: root}); err != nil {
+		t.Fatal(err)
+	}
+	state, err := hub.GraphState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := map[semreg.AssetID]string{}
+	for _, asset := range state.Assets {
+		found[asset.Asset] = asset.Driver
+	}
+	if found[oprHomeAsset] != operatorRecordDriver {
+		t.Fatalf("configuration home driver=%q, want %s", found[oprHomeAsset], operatorRecordDriver)
+	}
+	view, err := hub.Inspect(oprHomeAsset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resource, ok := oprResourceIn(view.Snapshot, oprArray)
+	if !ok || resource.State != semreg.ResourceCurrent {
+		t.Fatalf("configuration resource=%+v present=%v, want it published", resource, ok)
+	}
+	if found[oprDriverAsset] != oprDriver {
+		t.Fatalf("driver home driver=%q, want %s", found[oprDriverAsset], oprDriver)
+	}
+	if _, claimed := found["asset:opr-relation-only"]; claimed {
+		t.Fatalf("startup declared the relation home for %s", found["asset:opr-relation-only"])
+	}
+	publisher, err := operatorPublisherFor(hub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending := map[semreg.AssetID]bool{}
+	for _, id := range publisher.Pending() {
+		pending[id] = true
+	}
+	if !pending["asset:opr-relation-only"] {
+		t.Fatalf("pending=%v, want the relation home kept", publisher.Pending())
+	}
+	if pending[oprHomeAsset] {
+		t.Fatal("the configuration-owned home stayed pending")
+	}
+}
+
+// oprLinkFixture declares the driver asset without any contributor, admits
+// the driver and publishes its binding of oprEvidence("oprtest.native"). The
+// configuration provider is not declared anywhere, so an identity link
+// cannot be published by it.
+func oprLinkFixture(t *testing.T) *oprFixture {
+	t.Helper()
+	hub, err := semhub.New(semhub.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	publisher, err := operatorPublisherFor(hub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hub.Declare(semhub.AssetSpec{AssetID: oprDriverAsset, SourceID: oprDriverSource, Driver: oprDriver, Validators: []semreg.PackValidator{pv.New()}, Graph: true}); err != nil {
+		t.Fatal(err)
+	}
+	handle, err := hub.AdmitSource(semhub.Admission{Source: oprDriverSource, Driver: oprDriver})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &oprFixture{hub: hub, publisher: publisher, driver: handle, clock: 100}
+	if err := f.publishDriver(t, nil); err != nil {
+		t.Fatalf("driver publication: %v", err)
+	}
+	return f
+}
+
+// oprPendingLinks returns the operator identity links the driver's next
+// transaction must carry.
+func oprPendingLinks(t *testing.T, f *oprFixture) []semreg.IdentityLink {
+	t.Helper()
+	tx, err := f.hub.Begin(f.driver, oprDriverAsset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Abort()
+	return tx.OperatorLinks(nil)
+}
+
+// An identity link is declared to the hub and not published. Its state says
+// so, rather than waiting as if the declaration had not been applied.
+func TestOperatorRecordIdentityLinkStateIsAppliedAndUnpublished(t *testing.T) {
+	f := oprLinkFixture(t)
+	hub, publisher := f.hub, f.publisher
+	native := oprEvidence("oprtest.native")
+	set := portalconfig.OperatorRecordSet{
+		Format: portalconfig.OperatorRecordsFormat, Revision: "1",
+		Records: []portalconfig.OperatorRecord{{
+			Form: portalconfig.OperatorFormIdentityLink, Home: string(oprDriverAsset), ResourceID: string(oprInverter), BasisClass: string(semreg.RelationConfiguration), Native: &native,
+		}},
+	}
+	operators := &portalOperatorRecords{publisher: publisher, desired: map[semreg.AssetID]operatorAssetRecords{}, outcomes: map[semreg.AssetID]portalOperatorOutcome{}}
+	operators.apply(set)
+	runtime := &gatewayPortalConfigRuntime{operators: operators}
+	states := runtime.operatorRecordStates(set)
+	if len(states) != 1 || states[0].Status != portalconfig.OperatorRecordWaiting || states[0].Reason != portalOperatorIdentityLinkPending {
+		t.Fatalf("identity link state=%+v, want waiting %s", states, portalOperatorIdentityLinkPending)
+	}
+	operators.retry()
+	states = runtime.operatorRecordStates(set)
+	if len(states) != 1 || states[0].Reason != portalOperatorIdentityLinkPending {
+		t.Fatalf("identity link state after retry=%+v", states)
+	}
+	if _, ok := hub.Source(operatorRecordSource); ok {
+		t.Fatal("an identity link admitted the configuration source")
+	}
+	if links := oprPendingLinks(t, f); len(links) != 1 {
+		t.Fatalf("pending links=%+v, want the configured link declared for the driver's source", links)
+	}
+}
+
+// A configured identity link is declared to the hub for the source whose
+// binding observes its native resource, so that source's next transaction
+// carries it. A link whose native resource no binding observes waits, and a
+// link the configuration no longer holds is withdrawn from the hub.
+func TestOperatorRecordIdentityLinkIsDeclaredForTheBindingSource(t *testing.T) {
+	f := oprLinkFixture(t)
+	audit := oprAudit("identity-link")
+	link := operatorIdentityLink{Native: oprEvidence("oprtest.native"), Resource: oprInverter, BasisClass: string(semreg.RelationConfiguration)}
+	if err := f.publisher.Set(oprDriverAsset, operatorRecords{Links: []operatorIdentityLink{link}}, audit); err != nil {
+		t.Fatalf("set identity link: %v", err)
+	}
+	links := oprPendingLinks(t, f)
+	if len(links) != 1 || links[0].Resource == nil || *links[0].Resource != oprInverter || links[0].State != semreg.LinkQualified {
+		t.Fatalf("pending links=%+v, want the configured link of the inverter", links)
+	}
+	if len(links[0].Basis) != 1 || links[0].Basis[0] != audit.evidence() || links[0].Basis[0].Owner != semhub.OperatorEvidenceOwner {
+		t.Fatalf("link basis=%+v, want the declaration's audit evidence", links[0].Basis)
+	}
+	if _, ok := f.hub.Source(operatorRecordSource); ok {
+		t.Fatal("declaring an identity link admitted the configuration source")
+	}
+
+	unobserved := operatorIdentityLink{Native: oprEvidence("oprtest.native-unobserved"), Resource: oprInverter, BasisClass: string(semreg.RelationConfiguration)}
+	err := f.publisher.Set(oprDriverAsset, operatorRecords{Links: []operatorIdentityLink{unobserved}}, audit)
+	var refusal *operatorRecordRefusal
+	if !errors.As(err, &refusal) || refusal.Reason != operatorReasonNativeUnobserved || !operatorRecordDeferred(err) {
+		t.Fatalf("set of an unobserved native=%v, want a deferred %s", err, operatorReasonNativeUnobserved)
+	}
+	if outcome := portalOperatorClassify(err); outcome.status != portalconfig.OperatorRecordWaiting || outcome.reason != portalOperatorNativeUnobserved || !outcome.retry {
+		t.Fatalf("outcome=%+v, want a retried wait %s", outcome, portalOperatorNativeUnobserved)
+	}
+	if links := oprPendingLinks(t, f); len(links) != 1 {
+		t.Fatalf("pending links after a deferred set=%+v, want the declared link kept", links)
+	}
+
+	if err := f.publisher.Set(oprDriverAsset, operatorRecords{}, audit); err != nil {
+		t.Fatalf("withdraw identity link: %v", err)
+	}
+	if links := oprPendingLinks(t, f); len(links) != 0 {
+		t.Fatalf("pending links after the withdrawal=%+v, want none", links)
+	}
+}
+
+// An identity link that shares its home with a published relation still
+// waits: the relation's publication does not publish the link.
+func TestOperatorRecordIdentityLinkInAMixedHomeStaysPending(t *testing.T) {
+	f := newOprFixture(t)
+	native := oprEvidence("oprtest.native")
+	set := portalconfig.OperatorRecordSet{
+		Format: portalconfig.OperatorRecordsFormat, Revision: "1",
+		Records: []portalconfig.OperatorRecord{
+			opr27Relation(oprDriverAsset, "pv.relation.inverter_array", oprInverter, oprArray),
+			{Form: portalconfig.OperatorFormIdentityLink, Home: string(oprDriverAsset), ResourceID: string(oprInverter), BasisClass: string(semreg.RelationConfiguration), Native: &native},
+		},
+	}
+	operators := &portalOperatorRecords{publisher: f.publisher, desired: map[semreg.AssetID]operatorAssetRecords{}, outcomes: map[semreg.AssetID]portalOperatorOutcome{}}
+	operators.apply(set)
+	if _, ok := oprRelationIn(f.snapshot(t, oprDriverAsset), oprInverterArray(oprArray)); !ok {
+		t.Fatal("the configured relation was not published")
+	}
+	runtime := &gatewayPortalConfigRuntime{operators: operators}
+	states := runtime.operatorRecordStates(set)
+	if len(states) != 2 || states[0].Status != portalconfig.OperatorRecordPublished {
+		t.Fatalf("states=%+v, want the relation published", states)
+	}
+	if states[1].Status != portalconfig.OperatorRecordWaiting || states[1].Reason != portalOperatorIdentityLinkPending {
+		t.Fatalf("identity link state=%+v, want waiting %s", states[1], portalOperatorIdentityLinkPending)
+	}
+	if links := oprPendingLinks(t, f); len(links) != 1 {
+		t.Fatalf("pending links=%+v, want the configured link declared", links)
+	}
+}
+
+// A home that combines a resource or a relation with an identity link whose
+// native binding is not yet observed refuses the whole set before anything is
+// submitted. The new records do not reach the graph, and a replacement does
+// not withdraw records that were already published. The home waits.
+func TestOperatorRecordUnobservedLinkRefusesTheWholeSetBeforePublish(t *testing.T) {
+	f := newOprFixture(t)
+	audit := oprAudit("mixed-unobserved")
+	relation := oprInverterArray(oprArray)
+	unobserved := operatorIdentityLink{Native: oprEvidence("oprtest.native-unobserved"), Resource: oprInverter, BasisClass: string(semreg.RelationConfiguration)}
+	err := f.publisher.Set(oprDriverAsset, operatorRecords{Relations: []operatorRelation{relation}, Links: []operatorIdentityLink{unobserved}}, audit)
+	var refusal *operatorRecordRefusal
+	if !errors.As(err, &refusal) || refusal.Reason != operatorReasonNativeUnobserved || !operatorRecordDeferred(err) {
+		t.Fatalf("mixed set=%v, want a deferred %s", err, operatorReasonNativeUnobserved)
+	}
+	if _, ok := oprRelationIn(f.snapshot(t, oprDriverAsset), relation); ok {
+		t.Fatal("an unobserved identity link published the relation of the same set")
+	}
+	if desired := f.publisher.Desired(oprDriverAsset); len(desired.Relations) != 0 || len(desired.Resources) != 0 {
+		t.Fatalf("desired=%+v, want the refused set left unset", desired)
+	}
+	if links := oprPendingLinks(t, f); len(links) != 0 {
+		t.Fatalf("pending links=%+v, want none declared", links)
+	}
+
+	if err := f.publisher.Set(oprDriverAsset, operatorRecords{Relations: []operatorRelation{relation}}, audit); err != nil {
+		t.Fatalf("publish the prior relation: %v", err)
+	}
+	replacement := oprInverterArray(oprArraySecond)
+	err = f.publisher.Set(oprDriverAsset, operatorRecords{Relations: []operatorRelation{replacement}, Links: []operatorIdentityLink{unobserved}}, audit)
+	if !errors.As(err, &refusal) || refusal.Reason != operatorReasonNativeUnobserved {
+		t.Fatalf("replacement=%v, want a deferred %s", err, operatorReasonNativeUnobserved)
+	}
+	snapshot := f.snapshot(t, oprDriverAsset)
+	if _, ok := oprRelationIn(snapshot, relation); !ok {
+		t.Fatal("the unobserved link withdrew the prior relation")
+	}
+	if _, ok := oprRelationIn(snapshot, replacement); ok {
+		t.Fatal("the unobserved link published the replacement relation")
+	}
+	if desired := f.publisher.Desired(oprDriverAsset); len(desired.Relations) != 1 || desired.Relations[0].Record.To != oprArray {
+		t.Fatalf("desired=%+v, want the prior relation kept", desired.Relations)
+	}
+	if links := oprPendingLinks(t, f); len(links) != 0 {
+		t.Fatalf("pending links after the refused replacement=%+v, want none", links)
+	}
+
+	resource := oprArrayResource(oprArray, "array-1")
+	if err := f.publisher.Set(oprHomeAsset, operatorRecords{Resources: []operatorResource{resource}}, audit); err != nil {
+		t.Fatalf("publish the prior resource: %v", err)
+	}
+	err = f.publisher.Set(oprHomeAsset, operatorRecords{Links: []operatorIdentityLink{unobserved}}, audit)
+	if !errors.As(err, &refusal) || refusal.Reason != operatorReasonNativeUnobserved {
+		t.Fatalf("resource withdrawal=%v, want a deferred %s", err, operatorReasonNativeUnobserved)
+	}
+	held, ok := oprResourceIn(f.snapshot(t, oprHomeAsset), oprArray)
+	if !ok || held.State != semreg.ResourceCurrent {
+		t.Fatalf("resource=%+v present=%v, want the prior resource still current", held, ok)
+	}
+	if desired := f.publisher.Desired(oprHomeAsset); len(desired.Resources) != 1 || desired.Resources[0].Record.ID != oprArray {
+		t.Fatalf("desired resources=%+v, want the prior resource kept", desired.Resources)
+	}
+}
+
+// The portal reports every record of a mixed home as waiting when its
+// identity link is unobserved, and it does not publish the home's relation
+// while that wait stands.
+func TestOperatorRecordMixedHomeWaitsWithoutPublishingAnUnobservedLink(t *testing.T) {
+	f := newOprFixture(t)
+	native := oprEvidence("oprtest.native-unobserved")
+	set := portalconfig.OperatorRecordSet{
+		Format: portalconfig.OperatorRecordsFormat, Revision: "1",
+		Records: []portalconfig.OperatorRecord{
+			opr27Relation(oprDriverAsset, "pv.relation.inverter_array", oprInverter, oprArray),
+			{Form: portalconfig.OperatorFormIdentityLink, Home: string(oprDriverAsset), ResourceID: string(oprInverter), BasisClass: string(semreg.RelationConfiguration), Native: &native},
+		},
+	}
+	operators := &portalOperatorRecords{publisher: f.publisher, desired: map[semreg.AssetID]operatorAssetRecords{}, outcomes: map[semreg.AssetID]portalOperatorOutcome{}}
+	operators.apply(set)
+	if _, ok := oprRelationIn(f.snapshot(t, oprDriverAsset), oprInverterArray(oprArray)); ok {
+		t.Fatal("a waiting home published its relation")
+	}
+	runtime := &gatewayPortalConfigRuntime{operators: operators}
+	states := runtime.operatorRecordStates(set)
+	if len(states) != 2 {
+		t.Fatalf("states=%+v, want both records of the home", states)
+	}
+	for _, state := range states {
+		if state.Status != portalconfig.OperatorRecordWaiting || state.Reason != portalOperatorNativeUnobserved {
+			t.Fatalf("state=%+v, want waiting %s", state, portalOperatorNativeUnobserved)
+		}
+	}
+}
+
+func oprRelationSection(revision string, to semreg.ResourceID) portalconfig.OperatorRecordSet {
+	return portalconfig.OperatorRecordSet{
+		Format:   portalconfig.OperatorRecordsFormat,
+		Revision: revision,
+		Records:  []portalconfig.OperatorRecord{opr27Relation(oprDriverAsset, "pv.relation.inverter_array", oprInverter, to)},
+	}
+}
+
+func oprComposeConfiguredRelation(t *testing.T, to semreg.ResourceID) (*semhub.Hub, *operatorRecordPublisher) {
+	t.Helper()
+	hub, err := semhub.New(semhub.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	body, err := json.Marshal(oprRelationSection("1", to))
+	if err != nil {
+		t.Fatal(err)
+	}
+	oprWriteSection(t, root, string(body))
+	if err := composeOperatorRecords(hub, ebusgateway.Config{PortalConfigRoot: root}); err != nil {
+		t.Fatal(err)
+	}
+	publisher, err := operatorPublisherFor(hub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending := publisher.Pending(); len(pending) != 1 || pending[0] != oprDriverAsset {
+		t.Fatalf("pending=%v, want the undeclared home", pending)
+	}
+	return hub, publisher
+}
+
+func oprDeclareDriverHome(t *testing.T, hub *semhub.Hub, publisher *operatorRecordPublisher) *oprFixture {
+	t.Helper()
+	if _, err := hub.Declare(semhub.AssetSpec{
+		AssetID: oprDriverAsset, SourceID: oprDriverSource, Driver: oprDriver, Validators: []semreg.PackValidator{pv.New()}, Graph: true,
+		Contributors: []semhub.ContributorSpec{publisher.Contributor(pv.New())},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	handle, err := hub.AdmitSource(semhub.Admission{Source: oprDriverSource, Driver: oprDriver})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &oprFixture{hub: hub, publisher: publisher, driver: handle, clock: 100}
+	if err := f.publishDriver(t, nil); err != nil {
+		t.Fatalf("driver publication: %v", err)
+	}
+	return f
+}
+
+// Set replaces a startup-pending record of the same asset and drops one whose
+// replacement is empty. It does not create a pending entry for an asset that
+// was not already pending.
+func TestOperatorRecordPublisherSetSupersedesAPendingRecord(t *testing.T) {
+	hub, err := semhub.New(semhub.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	publisher, err := newOperatorRecordPublisher(hub, operatorRecordOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	audit := oprAudit("pending-replacement")
+	old := oprInverterArray(oprArray)
+	replacement := oprInverterArray(oprArraySecond)
+	publisher.mu.Lock()
+	publisher.pending = map[semreg.AssetID]operatorAssetRecords{
+		oprDriverAsset: {Asset: oprDriverAsset, Records: operatorRecords{Relations: []operatorRelation{old}}, Audit: audit},
+	}
+	publisher.mu.Unlock()
+	if err := publisher.Set(oprDriverAsset, operatorRecords{Relations: []operatorRelation{replacement}}, audit); !errors.Is(err, semhub.ErrUnknownAsset) {
+		t.Fatalf("set=%v, want the home still unknown", err)
+	}
+	publisher.mu.Lock()
+	got := publisher.pending[oprDriverAsset]
+	publisher.mu.Unlock()
+	if len(got.Records.Relations) != 1 || got.Records.Relations[0].To != oprArraySecond {
+		t.Fatalf("pending=%+v, want the replacement relation", got.Records.Relations)
+	}
+	if err := publisher.Set(oprHomeAsset, operatorRecords{Relations: []operatorRelation{replacement}}, audit); !errors.Is(err, semhub.ErrUnknownAsset) {
+		t.Fatalf("set of a home that was not pending=%v", err)
+	}
+	publisher.mu.Lock()
+	_, resurrected := publisher.pending[oprHomeAsset]
+	publisher.mu.Unlock()
+	if resurrected {
+		t.Fatal("Set created a pending entry for a home that was not pending")
+	}
+	if err := publisher.Set(oprDriverAsset, operatorRecords{}, audit); err != nil {
+		t.Fatalf("empty set=%v", err)
+	}
+	if pending := publisher.Pending(); len(pending) != 0 {
+		t.Fatalf("pending=%v, want the empty set to drop it", pending)
+	}
+}
+
+// A Portal section that does not hold the startup relation supersedes the
+// startup pending set, including a home the Portal runtime never published.
+// The startup watcher does not publish that relation when the driver asset
+// appears later.
+func TestOperatorRecordPortalReplacementDropsAStartupPendingRelation(t *testing.T) {
+	hub, publisher := oprComposeConfiguredRelation(t, oprArray)
+	runtime := opr27Runtime(t)
+	if runtime.callbacks(ebusgateway.Config{}, &gatewayRuntimeControl{hub: hub}).OperatorRecords == nil {
+		t.Fatal("the runtime serves no operator-record section")
+	}
+	if pending := publisher.Pending(); len(pending) != 0 {
+		t.Fatalf("pending=%v after the Portal section omitted the relation", pending)
+	}
+	f := oprDeclareDriverHome(t, hub, publisher)
+	if err := publisher.Retry(); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if _, ok := oprRelationIn(f.snapshot(t, oprDriverAsset), oprInverterArray(oprArray)); ok {
+		t.Fatal("a relation the Portal section omitted was published when its home appeared")
+	}
+	if pending := publisher.Pending(); len(pending) != 0 {
+		t.Fatalf("pending=%v after the home appeared", pending)
+	}
+}
+
+// A Portal replacement of a relation that is still waiting replaces the
+// startup pending set. The relation published when the home appears is the
+// replacement, not the one startup loaded.
+func TestOperatorRecordPortalReplacementSupersedesAStartupPendingRelation(t *testing.T) {
+	hub, publisher := oprComposeConfiguredRelation(t, oprArray)
+	runtime := opr27Runtime(t)
+	seeded, err := runtime.operatorRecordCallbacks().Replace(context.Background(), oprRelationSection("0", oprArray))
+	if err != nil {
+		t.Fatal(err)
+	}
+	callbacks := runtime.callbacks(ebusgateway.Config{}, &gatewayRuntimeControl{hub: hub}).OperatorRecords
+	if callbacks == nil {
+		t.Fatal("the runtime serves no operator-record section")
+	}
+	replaced, err := callbacks.Replace(context.Background(), oprRelationSection(seeded.Revision, oprArraySecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replaced.Revision == seeded.Revision {
+		t.Fatal("the replacement did not advance the section")
+	}
+	publisher.mu.Lock()
+	got := publisher.pending[oprDriverAsset]
+	publisher.mu.Unlock()
+	if len(got.Records.Relations) != 1 || got.Records.Relations[0].To != oprArraySecond {
+		t.Fatalf("pending=%+v, want the replacement relation", got.Records.Relations)
+	}
+	f := oprDeclareDriverHome(t, hub, publisher)
+	if err := publisher.Retry(); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if _, ok := oprRelationIn(f.snapshot(t, oprDriverAsset), oprInverterArray(oprArraySecond)); !ok {
+		t.Fatal("the replacement relation was not published after its home appeared")
+	}
+	if _, ok := oprRelationIn(f.snapshot(t, oprDriverAsset), oprInverterArray(oprArray)); ok {
+		t.Fatal("the startup relation was published after the operator replaced it")
 	}
 }

@@ -13,10 +13,20 @@ the operator-record section of the Portal configuration (see
 [Portal configuration](portal-config-sharing.md), section "Operator-record
 section"), which the Portal configuration runtime feeds to the provider. The
 preflight also wires the provider through `composeOperatorRecords` in
-`cmd/gateway/operator_record_composition.go`, but the host configuration
-declares no operator record. With nothing configured, the provider admits no
-source, declares no asset and publishes nothing, so the published output of
-an installation without an accepted section is unchanged.
+`cmd/gateway/operator_record_composition.go` and loads the configured record
+set. An empty section still admits no source, declares no asset and publishes
+nothing, so the published output of an installation without an accepted
+section is unchanged. A section that does not load is unavailable: startup
+logs the closed code and publishes nothing, and semantic preflight continues
+so the shell still starts. Startup declares a configuration-only home for the
+configuration provider. It does not declare a home a driver already owns, and
+it does not declare a home the record set does not mark configuration-only,
+so the driver that discovers that home can claim it. The shape of the
+identifier is not ownership. A home a driver already owns stays with that
+driver. The configured set is still composed: it is published when that owner
+has admitted the provider, it stays pending while the home or its starting
+end is not there yet, and a home the owner has not opened to the provider is
+reported and left unpublished.
 
 ## Who publishes it
 
@@ -38,8 +48,17 @@ batch sequence.
   asset is graph-enforced. It holds no binding and no fact, and its resources
   are anchored by an `operator_slot`.
 - **An operator identity declaration in the form of an identity link** names
-  the driver's binding. Only the binding's source can publish it, so it stays
-  in the driver's own batch. The provider does not publish it.
+  the home asset, the native resource and the configuration basis class. The
+  section records it as `identity_link`. Only the binding's source can publish
+  it, so it stays in the driver's own batch. The provider does not publish it.
+  It declares the link to the hub (`Hub.SetOperatorLinks`) for the source
+  whose binding observes the native resource, with the declaration's audit
+  evidence as its basis, and withdraws that declaration when the section no
+  longer holds the link. While no binding of the home observes the native
+  resource, the link waits with reason `native_unobserved` and is retried
+  after later publications. Once declared, its status stays waiting with
+  reason `identity_link_pending`, also when its home holds records that were
+  published: the declaration was applied, and it was not left unapplied.
 
 ## Records and revisions
 
@@ -70,6 +89,7 @@ as they were. The refusal names the asset, the resource and one reason:
 | `operator.record.starting_end_unresolved` | a relation's starting end is neither a current resource of the asset nor a resource of the same set |
 | `operator.record.audit_missing` | the set carries no valid declaration digest |
 | `operator.record.duplicate` | the set names one record key twice |
+| `operator.record.native_unobserved` | an identity link names a native resource that no binding of the asset observes yet; the set waits and is retried |
 
 The kernel's own checks still apply to the batch. They cover catalog
 membership, the basis classes a definition admits, end kinds and revision
@@ -80,7 +100,10 @@ failing. The provider touches nothing for it and applies it again after each
 later publication of the hub, until the owner's resource exists. A pending set
 that a later attempt refuses for another reason is dropped and not published;
 every such refusal of one attempt is logged on its own, so none is lost when
-one publication resolves several sets.
+one publication resolves several sets. A Portal replacement supersedes the
+sets still pending from startup. A relation the operator removed is not
+published when its home asset appears later, and a relation the operator
+replaced is the one that is published.
 
 ## Lifecycle against fences
 
@@ -152,19 +175,32 @@ commits those withdrawals and leaves a qualified declaration that is still
 pending unpublished. Any other carried set that differs from the pending
 set is refused, and nothing from that batch is published.
 
-The operator-record section has no identity-link form. A declaration is not
-loaded from configuration. The logger-attached PV family carries the pending
-links of its source: a batch that observes a binding carries a qualified
-declaration when it names that resource, and a withdrawal of a child carries
-the pending withdrawals and leaves a qualified declaration pending. Until a
-batch carries a declaration, that declaration is not published.
+The logger-attached PV family carries the pending links of its source: a
+batch that observes a binding carries a qualified declaration when it names
+that resource, and a withdrawal of a child carries the pending withdrawals and
+leaves a qualified declaration pending. Until a batch carries a declaration,
+that declaration is not published.
 
-No family composition names the provider as a contributor or declares a
-configuration-only home yet, and the startup composition has no configured
-record set. The acceptance test makes those declarations itself, as an owner
-would, so it proves the path from the document to the cut once the owner has
-declared them. A Portal replacement publishes nothing for an asset whose
-owner has not.
+The section records an identity link: the home asset, the native resource and
+the configuration basis class. Startup loads the configured record set, and
+the provider declares each configured link to the hub for the binding's
+source. An empty section still admits nothing.
+
+No family composition names the provider as a contributor of a shared asset
+yet. Startup does declare a configuration-only home, whose single source is
+the provider. Ownership is explicit and does not follow the identifier's
+shape. A home is configuration-owned when its record set holds a resource
+that only configuration knows and no driver has declared that home; startup
+declares it and publishes the anchor or pairing. A home a driver has already
+declared stays with that driver, and startup does not declare a contributor
+for it. A home the record set does not mark configuration-only stays
+undeclared, so the driver that discovers it can claim it, and a record on
+that home stays pending. The acceptance test makes the owner-side contributor
+declarations itself, as an owner would, so it proves the path from the
+document to the cut once the owner has declared them. A Portal replacement
+publishes nothing for an asset whose owner has not admitted the provider, and
+it supersedes a startup-pending relation the operator removed so that
+relation is not published when the asset appears.
 
 ## Ownership
 

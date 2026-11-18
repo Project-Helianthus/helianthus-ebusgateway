@@ -427,7 +427,7 @@ keeps its exact bytes. The section has its own expected revision, independent
 of the record's. A failed directory flush after the rename blocks the whole
 store, record included, until restart.
 
-The section lists at most 128 records, in the operator's order, in three
+The section lists at most 128 records, in the operator's order, in four
 forms:
 
 - `anchor`: a resource that only configuration knows (`home`, `resource_id`,
@@ -436,7 +436,12 @@ forms:
   `to`, `basis_class`) whose starting end is homed in `home`;
 - `pairing`: two views of one unit (`kind`, `slot`, optional `parent`, exactly
   two `views` of `home` and `resource_id`), which become two operator-slot
-  resources with one anchor key in two different home assets.
+  resources with one anchor key in two different home assets;
+- `identity_link`: an identity link of one home (`home`, `native`,
+  `resource_id`, `basis_class`). `native` is the native resource a binding
+  observes (`owner`, `kind`, `digest`, `contract`, `access`, `redaction`).
+  The provider does not publish this form. It declares the link for the
+  source whose binding observes `native`, and that source publishes it.
 
 Synthetic section (a design example):
 
@@ -446,7 +451,8 @@ Synthetic section (a design example):
   "revision": "1",
   "records": [
     {"form": "anchor", "home": "asset:configuration-1", "resource_id": "resource:array-1", "kind": "resource.pv_array", "slot": "array-south"},
-    {"form": "relation", "home": "asset:inverter-1", "definition": {"pack": {"id": "helianthus.pack.pv", "version": "1.0.0"}, "id": "pv.relation.inverter_array", "version": "1.0.0"}, "from": "resource:inverter-1", "to": "resource:array-1", "basis_class": "configuration"}
+    {"form": "relation", "home": "asset:inverter-1", "definition": {"pack": {"id": "helianthus.pack.pv", "version": "1.0.0"}, "id": "pv.relation.inverter_array", "version": "1.0.0"}, "from": "resource:inverter-1", "to": "resource:array-1", "basis_class": "configuration"},
+    {"form": "identity_link", "home": "asset:inverter-1", "native": {"owner": "helianthus.gateway.configuration", "kind": "configuration.native_resource", "digest": "sha256:f61759952f8b3f219fe1c4990e0b0e049cbed1f378ef5acc8da09e2f6ef004a4", "contract": "helianthus.semantic.kernel/v1", "access": "authorized", "redaction": "metadata_only"}, "resource_id": "resource:inverter-1", "basis_class": "configuration"}
   ]
 }
 ```
@@ -464,7 +470,8 @@ member resource kind), `anchor_invalid` (a component without a parent, or an
 episode kind), `pairing_invalid` (two views in one home), `duplicate_key` (one
 resource identifier declared twice; one anchor key of home, kind, parent and
 slot declared twice; one relation key of definition, starting end and far end
-declared twice), `bounds_exceeded`, or the record's structural codes.
+declared twice; one identity-link key of home and native resource declared
+twice), `bounds_exceeded`, or the record's structural codes.
 
 The API serves the section under the existing configuration route:
 `GET ?section=operator_records` reads it with the status of every record,
@@ -483,21 +490,33 @@ a record is withdrawn. Each record shows one status:
 
 - `published`: its home sets were accepted;
 - `waiting`: a home asset is not declared (`home_not_declared`), not open to
-  the provider (`home_not_admitted`), or a starting end is not yet published
-  by its owner (`starting_end_unresolved`). The runtime retries after every
-  later hub event of another source, except for a home declared without the
-  provider: declarations are static, so that home is applied again only by
-  the next accepted replacement, and the provider is never admitted and
-  withdrawn in a loop. Before the hub is bound every record waits with
-  `publisher_unavailable`;
+  the provider (`home_not_admitted`), a starting end is not yet published
+  by its owner (`starting_end_unresolved`), or an identity link names a
+  native resource no binding of the home observes yet (`native_unobserved`).
+  The runtime retries after every later hub event of another source, except
+  for a home declared without the provider: declarations are static, so that
+  home is applied again only by the next accepted replacement, and the
+  provider is never admitted and withdrawn in a loop. Before the hub is
+  bound every record waits with `publisher_unavailable`. An identity link
+  that has been declared stays waiting with `identity_link_pending`, also
+  when the other records of its home were published. A set that waits
+  leaves the home's published records as they were: a replacement that is
+  still waiting does not withdraw them;
 - `refused`: with the kernel's stable error, such as `identity_drift`, or the
   provider's refusal reason. A refused set leaves what was published as it
   was.
 
 The runtime declares no home asset itself: the asset's owner names the
-provider as a contributor, and a configuration-only home is declared by the
-provider's declaration path. The startup preflight still composes no
-operator record of its own.
+provider as a contributor. Startup loads the configured record set through
+the same provider, including an identity link, and publishes a home when its
+owner has admitted the provider. An empty section still admits no source and
+publishes nothing. A section that is malformed, of an unsupported format or
+unreadable is unavailable: startup logs the closed code, publishes nothing
+and does not abort semantic preflight, so the shell stays available. Startup
+declares a configuration-only home for the configuration provider and publishes
+its anchor or pairing. A home a driver already owns is not declared again. A
+home the record set does not mark configuration-only stays undeclared, so a
+driver that discovers it can claim it. The identifier's shape is not ownership.
 
 ## Subsequent implementation acceptance
 

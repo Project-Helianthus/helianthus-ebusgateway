@@ -586,19 +586,17 @@ func (p *huaweiPVPublication) publishChild(asset semreg.AssetID, child huawei.Pr
 			}
 		}
 	}
-	// The hub's pending operator identity declarations travel in this batch:
-	// each replaces the publisher's own link of the binding it names. A
-	// declaration that names a resource this binding does not observe, such
-	// as an inverter retired by identity replacement, is not installed. The
-	// hub accepts a batch that carries no operator link and leaves that
-	// declaration pending, so the publisher's own link stays the one that
-	// observes the resource the facts name.
-	observed := map[semreg.NativeBindingID]semreg.ResourceID{}
+	// A pending operator identity declaration is installed only by a batch that
+	// observes the binding. A withdrawal observes none, so it carries no
+	// pending operator link: the hub accepts a batch that carries none and
+	// leaves the declaration pending, and the publisher's own withdrawal of
+	// the binding stands. Carrying the pending set would replace that
+	// withdrawal with a link for a binding this batch does not observe.
+	var pending []semreg.IdentityLink
 	if !withdraw {
-		observed[binding] = graph.inverter
-		observed[systemBinding] = graph.system
+		pending = huaweiApplicableOperatorLinks(tx.OperatorLinks(batch.BindingUpserts), map[semreg.NativeBindingID]semreg.ResourceID{binding: graph.inverter, systemBinding: graph.system})
 	}
-	batch.IdentityLinkUpserts = huaweiWithOperatorLinks(batch.IdentityLinkUpserts, huaweiApplicableOperatorLinks(tx.OperatorLinks(batch.BindingUpserts), observed))
+	batch.IdentityLinkUpserts = huaweiWithOperatorLinks(batch.IdentityLinkUpserts, pending)
 	keep := map[semreg.CandidateID]bool{}
 	for _, fact := range batch.FactUpserts {
 		keep[fact.CandidateID] = true
@@ -1311,7 +1309,10 @@ func huaweiDeclaredLink(link semreg.IdentityLink) bool {
 // retired inverter, is not installed, and neither is the rest of the pending
 // set: the hub requires a batch that carries any operator link to carry
 // exactly the pending set, and it accepts a batch that carries none. Links
-// for bindings this batch does not observe, and withdrawals, stay in the set.
+// for bindings this batch does not observe, and withdrawals, stay in the set
+// so a batch that observes part of the set can still carry all of it. An
+// empty observed map therefore returns every pending link. A withdrawal
+// observes no binding and must not install that set.
 func huaweiApplicableOperatorLinks(pending []semreg.IdentityLink, observed map[semreg.NativeBindingID]semreg.ResourceID) []semreg.IdentityLink {
 	for _, link := range pending {
 		want, ok := observed[link.BindingID]

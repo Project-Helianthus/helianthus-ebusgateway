@@ -181,8 +181,9 @@ declaration of a configuration-only home at startup is deferred: the
 section's forms do not say whether a driver owns a home identifier, and a
 declaration would claim that identifier for good, so a driver that discovers
 the home later could not declare it. A configured record whose home no driver
-declares therefore stays pending and is not published. Startup does not
-declare a home the preflight snapshot does not already name, and it does not
+declares therefore stays pending and is not published. Startup reports in the
+log each home holding a resource that only configuration knows when no
+declaration names it yet. Startup does not declare a home the preflight snapshot does not already name, and it does not
 declare a contributor for a home a driver already owns. A home a driver will
 discover stays undeclared until that driver claims it. The acceptance test makes the owner-side
 declarations itself, as an owner would, so it proves the path from the

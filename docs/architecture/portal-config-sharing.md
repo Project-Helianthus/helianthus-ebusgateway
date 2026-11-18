@@ -514,7 +514,8 @@ publishes nothing. A home the preflight snapshot does not already name stays
 undeclared, so a driver that discovers it can claim it. A home a driver
 already owns is not declared again. Declaring a configuration-only home at
 startup is deferred, because the section does not say whether a driver owns
-the identifier, so that home stays pending until an owner declares it.
+the identifier, so that home stays pending until an owner declares it, and
+startup reports it in the log.
 
 ## Subsequent implementation acceptance
 

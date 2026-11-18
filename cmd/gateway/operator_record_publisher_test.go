@@ -908,6 +908,61 @@ func TestOperatorRecordCompositionDoesNotClaimAnAbsentHome(t *testing.T) {
 	}
 }
 
+// Startup reports a configuration-only home that no declaration names, and
+// only that home: a relation home and a driver-owned home are not reported.
+// The configuration-only mark is what selects the report.
+func TestOperatorRecordCompositionReportsAnUndeclaredConfigurationOnlyHome(t *testing.T) {
+	root := t.TempDir()
+	oprWriteSection(t, root, `{"format":"helianthus.portal-config.operator-records/v1","revision":"1","records":[{"form":"anchor","home":"asset:opr-configuration","resource_id":"resource:opr:array-1","kind":"resource.pv_array","slot":"array-south"},{"form":"anchor","home":"asset:opr-inverter","resource_id":"resource:opr:array-2","kind":"resource.pv_array","slot":"array-north"},{"form":"relation","home":"asset:opr-relation-only","definition":{"pack":{"id":"helianthus.pack.pv","version":"1.0.0"},"id":"pv.relation.inverter_array","version":"1.0.0"},"from":"resource:opr:inverter-r","to":"resource:opr:array-r","basis_class":"configuration"}]}`)
+	records, err := configuredOperatorRecords(ebusgateway.Config{PortalConfigRoot: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	marked := map[semreg.AssetID]bool{}
+	for _, set := range records {
+		marked[set.Asset] = set.ConfigurationOnly
+	}
+	if !marked[oprHomeAsset] || marked["asset:opr-relation-only"] {
+		t.Fatalf("configuration-only marks=%v", marked)
+	}
+	hub, err := semhub.New(semhub.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hub.Declare(semhub.AssetSpec{AssetID: oprDriverAsset, SourceID: oprDriverSource, Driver: oprDriver, Validators: []semreg.PackValidator{pv.New()}, Graph: true}); err != nil {
+		t.Fatal(err)
+	}
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	if err := composeOperatorRecords(hub, ebusgateway.Config{PortalConfigRoot: root}); err != nil {
+		t.Fatal(err)
+	}
+	report := func(home semreg.AssetID) bool {
+		for _, line := range strings.Split(logged.String(), "\n") {
+			if strings.Contains(line, string(home)+" wait until an owner declares that home") {
+				return true
+			}
+		}
+		return false
+	}
+	if !report(oprHomeAsset) {
+		t.Fatalf("log=%q, want the undeclared configuration-only home reported", logged.String())
+	}
+	if report("asset:opr-relation-only") || report(oprDriverAsset) {
+		t.Fatalf("log=%q, want no report for a relation home or a driver-owned home", logged.String())
+	}
+	state, err := hub.GraphState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, asset := range state.Assets {
+		if asset.Asset == oprHomeAsset {
+			t.Fatalf("startup declared %s for %s", oprHomeAsset, asset.Driver)
+		}
+	}
+}
+
 // oprLinkFixture declares the driver asset without any contributor, admits
 // the driver and publishes its binding of oprEvidence("oprtest.native"). The
 // configuration provider is not declared anywhere, so an identity link

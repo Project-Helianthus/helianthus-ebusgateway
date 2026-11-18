@@ -46,6 +46,9 @@ func composeOperatorRecords(hub *semhub.Hub, cfg ebusgateway.Config) error {
 			// Absence is not ownership. Declaring the home here would claim
 			// it for the configuration provider, and a driver that declares
 			// the same home later would collide for good.
+			if !declared && set.ConfigurationOnly {
+				reportUndeclaredConfigurationOnlyHome(set.Asset)
+			}
 			publish = append(publish, set)
 			continue
 		}
@@ -58,6 +61,13 @@ func composeOperatorRecords(hub *semhub.Hub, cfg ebusgateway.Config) error {
 		}
 	}
 	return publisher.Compose(publish)
+}
+
+// reportUndeclaredConfigurationOnlyHome reports a home that holds a resource
+// only configuration knows and that no declaration names yet. Startup does
+// not declare it, so its records stay pending until an owner declares it.
+func reportUndeclaredConfigurationOnlyHome(home semreg.AssetID) {
+	log.Printf("operator records: configured records of %s wait until an owner declares that home; startup does not declare a configuration-only home", home)
 }
 
 // composeDriverOwnedOperatorSet publishes one configured set on a home a

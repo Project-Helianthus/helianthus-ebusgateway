@@ -9,20 +9,21 @@ import (
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/promotioncapture"
-	"github.com/Project-Helianthus/helianthus-eebusreg/eebusraw"
 )
 
 // eebusPromotedSemanticProvider keeps the overlay of eeBUS heating values that
 // GraphQL and Portal compose under the eBUS values. Each refresh reads the
 // values through the inbound reader. In the managed start path the shell
-// provider serves the overlay of the worker of the running generation.
+// provider serves the overlay of the worker of the running generation. The
+// overlay names no native runtime type: the remote binding of the last cycle is
+// kept in the inbound reader's own result.
 type eebusPromotedSemanticProvider struct {
 	adapter   *eebusRuntimeAdapter
 	refreshMu sync.Mutex
 	mu        sync.RWMutex
 	overlay   graphql.PromotedSemanticOverlay
 	values    map[string]promotioncapture.TypedValue
-	binding   eebusraw.RuntimeBindingV1
+	last      eebusInboundRead
 	startOnce sync.Once
 	cancel    context.CancelFunc
 	done      chan struct{}
@@ -139,14 +140,14 @@ func (p *eebusPromotedSemanticProvider) Refresh(ctx context.Context) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if err != nil {
-		p.overlay, p.values, p.binding = graphql.PromotedSemanticOverlay{}, nil, eebusraw.RuntimeBindingV1{}
+		p.overlay, p.values, p.last = graphql.PromotedSemanticOverlay{}, nil, eebusInboundRead{}
 		return
 	}
 	values := make(map[string]promotioncapture.TypedValue, len(read.Values))
 	for _, value := range read.Values {
 		values[value.SemanticPath] = value.Value
 	}
-	if read.Binding == p.binding {
+	if read.Binding == p.last.Binding {
 		for _, path := range read.Unread {
 			if last, ok := p.values[path]; ok {
 				values[path] = last
@@ -157,7 +158,7 @@ func (p *eebusPromotedSemanticProvider) Refresh(ctx context.Context) {
 	for path, value := range values {
 		applyPromotedValue(&overlay, path, value)
 	}
-	p.overlay, p.values, p.binding = overlay, values, read.Binding
+	p.overlay, p.values, p.last = overlay, values, eebusInboundRead{Binding: read.Binding}
 }
 
 func eebusPromotedSlotGeneration(runtime any) (uint64, bool) {

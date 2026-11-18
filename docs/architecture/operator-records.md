@@ -16,14 +16,17 @@ preflight also wires the provider through `composeOperatorRecords` in
 `cmd/gateway/operator_record_composition.go` and loads the configured record
 set. An empty section still admits no source, declares no asset and publishes
 nothing, so the published output of an installation without an accepted
-section is unchanged. Startup does not declare a home the preflight snapshot
-does not already name. An absent home stays undeclared so the driver that
-discovers it can claim it; the shape of the identifier is not ownership.
-Declaring a configuration-only home at startup is deferred (see "The
-remaining limit"). A home a driver already owns stays with that driver. The configured set is
-still composed: it is published when that owner has admitted the provider,
-it stays pending while the home or its starting end is not there yet, and a
-home the owner has not opened to the provider is reported and left unpublished.
+section is unchanged. A section that does not load is unavailable: startup
+logs the closed code and publishes nothing, and semantic preflight continues
+so the shell still starts. Startup declares a configuration-only home for the
+configuration provider. It does not declare a home a driver already owns, and
+it does not declare a home the record set does not mark configuration-only,
+so the driver that discovers that home can claim it. The shape of the
+identifier is not ownership. A home a driver already owns stays with that
+driver. The configured set is still composed: it is published when that owner
+has admitted the provider, it stays pending while the home or its starting
+end is not there yet, and a home the owner has not opened to the provider is
+reported and left unpublished.
 
 ## Who publishes it
 
@@ -176,21 +179,21 @@ the configuration basis class. Startup loads the configured record set, and
 the provider declares each configured link to the hub for the binding's
 source. An empty section still admits nothing.
 
-No family composition names the provider as a contributor yet. The
-declaration of a configuration-only home at startup is deferred: the
-section's forms do not say whether a driver owns a home identifier, and a
-declaration would claim that identifier for good, so a driver that discovers
-the home later could not declare it. A configured record whose home no driver
-declares therefore stays pending and is not published. Startup reports in the
-log each home holding a resource that only configuration knows when no
-declaration names it yet. Startup does not declare a home the preflight snapshot does not already name, and it does not
-declare a contributor for a home a driver already owns. A home a driver will
-discover stays undeclared until that driver claims it. The acceptance test makes the owner-side
+No family composition names the provider as a contributor of a shared asset
+yet. Startup does declare a configuration-only home, whose single source is
+the provider. Ownership is explicit and does not follow the identifier's
+shape. A home is configuration-owned when its record set holds a resource
+that only configuration knows and no driver has declared that home; startup
+declares it and publishes the anchor or pairing. A home a driver has already
+declared stays with that driver, and startup does not declare a contributor
+for it. A home the record set does not mark configuration-only stays
+undeclared, so the driver that discovers it can claim it, and a record on
+that home stays pending. The acceptance test makes the owner-side contributor
 declarations itself, as an owner would, so it proves the path from the
 document to the cut once the owner has declared them. A Portal replacement
-publishes nothing for an asset whose owner has not, and it supersedes a
-startup-pending relation the operator removed so that relation is not
-published when the asset appears.
+publishes nothing for an asset whose owner has not admitted the provider, and
+it supersedes a startup-pending relation the operator removed so that
+relation is not published when the asset appears.
 
 ## Ownership
 

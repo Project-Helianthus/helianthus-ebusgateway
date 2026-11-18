@@ -719,37 +719,80 @@ func TestOperatorRecordCompositionLoadsAnIdentityLink(t *testing.T) {
 	}
 }
 
-// A section that does not decode fails closed and admits nothing.
-func TestOperatorRecordCompositionRejectsASectionThatDoesNotDecode(t *testing.T) {
+// A malformed, unsupported or unreadable section still fails closed for the
+// loader, and startup treats it as unavailable: composition publishes nothing,
+// admits no source and does not abort semantic preflight.
+func TestOperatorRecordCompositionTreatsAnUnavailableSectionAsNonfatal(t *testing.T) {
+	cases := []struct {
+		name  string
+		code  string
+		write func(t *testing.T, root string)
+	}{
+		{name: "malformed", code: "invalid_record", write: func(t *testing.T, root string) {
+			oprWriteSection(t, root, `{`)
+		}},
+		{name: "unsupported", code: "unsupported_format", write: func(t *testing.T, root string) {
+			oprWriteSection(t, root, `{"format":"helianthus.portal-config.operator-records/v0","revision":"0","records":[]}`)
+		}},
+		{name: "unreadable", code: "persistence_failed", write: func(t *testing.T, root string) {
+			if err := os.Mkdir(filepath.Join(root, portalconfig.OperatorRecordsFile), 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			tc.write(t, root)
+			records, err := configuredOperatorRecords(ebusgateway.Config{PortalConfigRoot: root})
+			if err == nil || len(records) != 0 || portalconfig.SafeOperatorRecordError(err).Code != tc.code {
+				t.Fatalf("configured=%+v err=%v, want code %s and no records", records, err, tc.code)
+			}
+			hub, hubErr := semhub.New(semhub.Options{})
+			if hubErr != nil {
+				t.Fatal(hubErr)
+			}
+			before, err := hub.GraphState()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var logged bytes.Buffer
+			log.SetOutput(&logged)
+			t.Cleanup(func() { log.SetOutput(os.Stderr) })
+			if err := composeOperatorRecords(hub, ebusgateway.Config{PortalConfigRoot: root}); err != nil {
+				t.Fatalf("composition aborted on an unavailable section: %v", err)
+			}
+			after, err := hub.GraphState()
+			if err != nil || !reflect.DeepEqual(after, before) {
+				t.Fatalf("an unavailable section changed the declared assets: %+v %v", after, err)
+			}
+			if _, ok := hub.Source(operatorRecordSource); ok {
+				t.Fatal("an unavailable section admitted the configuration source")
+			}
+			if !strings.Contains(logged.String(), tc.code) || !strings.Contains(logged.String(), "nothing published") {
+				t.Fatalf("log=%q, want code %s and nothing published", logged.String(), tc.code)
+			}
+		})
+	}
 	root := t.TempDir()
 	oprWriteSection(t, root, `{`)
-	records, err := configuredOperatorRecords(ebusgateway.Config{PortalConfigRoot: root})
-	if err == nil || len(records) != 0 {
-		t.Fatalf("configured=%+v err=%v, want a refusal and no records", records, err)
+	hub, err := preflightSemanticHub(ebusgateway.Config{PortalConfigRoot: root})
+	if err != nil || hub == nil || len(hub.Sources()) != 0 {
+		t.Fatalf("semantic preflight aborted on an unavailable operator section: hub=%v sources=%v err=%v", hub, hubSources(hub), err)
 	}
-	hub, hubErr := semhub.New(semhub.Options{})
-	if hubErr != nil {
-		t.Fatal(hubErr)
+}
+
+func hubSources(hub *semhub.Hub) []semhub.SourceInfo {
+	if hub == nil {
+		return nil
 	}
-	before, err := hub.GraphState()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := composeOperatorRecords(hub, ebusgateway.Config{PortalConfigRoot: root}); err == nil {
-		t.Fatal("composition accepted a section that does not decode")
-	}
-	after, err := hub.GraphState()
-	if err != nil || !reflect.DeepEqual(after, before) {
-		t.Fatalf("a refused section changed the declared assets: %+v %v", after, err)
-	}
-	if _, ok := hub.Source(operatorRecordSource); ok {
-		t.Fatal("a refused section admitted the configuration source")
-	}
+	return hub.Sources()
 }
 
 // A home a driver already owns stays that driver's asset. When the owner has
 // not admitted the provider, the configured set is reported and left
-// unpublished. Absent homes, including pairing views, are not claimed.
+// unpublished. Configuration-only homes, including pairing views, are
+// declared for the provider and published.
 func TestOperatorRecordCompositionReportsADriverOwnedSetItCannotPublish(t *testing.T) {
 	root := t.TempDir()
 	oprWriteSection(t, root, `{"format":"helianthus.portal-config.operator-records/v1","revision":"1","records":[{"form":"anchor","home":"asset:opr-configuration","resource_id":"resource:opr:array-1","kind":"resource.pv_array","slot":"array-south"},{"form":"anchor","home":"asset:opr-inverter","resource_id":"resource:opr:array-2","kind":"resource.pv_array","slot":"array-north"},{"form":"pairing","kind":"resource.pv_system","slot":"system-main","views":[{"home":"asset:opr-pair-a","resource_id":"resource:opr:system-a"},{"home":"asset:opr-pair-b","resource_id":"resource:opr:system-b"}]}]}`)
@@ -777,9 +820,22 @@ func TestOperatorRecordCompositionReportsADriverOwnedSetItCannotPublish(t *testi
 	if found[oprDriverAsset] != oprDriver {
 		t.Fatalf("driver home driver=%q, want %s", found[oprDriverAsset], oprDriver)
 	}
-	for _, id := range []semreg.AssetID{oprHomeAsset, "asset:opr-pair-a", "asset:opr-pair-b"} {
-		if _, claimed := found[id]; claimed {
-			t.Fatalf("startup claimed absent home %s for %s", id, found[id])
+	published := map[semreg.AssetID]semreg.ResourceID{
+		oprHomeAsset:       "resource:opr:array-1",
+		"asset:opr-pair-a": "resource:opr:system-a",
+		"asset:opr-pair-b": "resource:opr:system-b",
+	}
+	for id, resourceID := range published {
+		if found[id] != operatorRecordDriver {
+			t.Fatalf("configuration home %s driver=%q, want %s", id, found[id], operatorRecordDriver)
+		}
+		view, err := hub.Inspect(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resource, ok := oprResourceIn(view.Snapshot, resourceID)
+		if !ok || resource.State != semreg.ResourceCurrent {
+			t.Fatalf("%s resource=%+v present=%v, want the configuration-owned record published", id, resource, ok)
 		}
 	}
 	if !strings.Contains(logged.String(), string(oprDriverAsset)) || !strings.Contains(logged.String(), "not published") {
@@ -800,9 +856,9 @@ func TestOperatorRecordCompositionReportsADriverOwnedSetItCannotPublish(t *testi
 	for _, id := range publisher.Pending() {
 		pending[id] = true
 	}
-	for _, id := range []semreg.AssetID{oprHomeAsset, "asset:opr-pair-a", "asset:opr-pair-b"} {
-		if !pending[id] {
-			t.Fatalf("pending=%v, want the absent home %s kept", publisher.Pending(), id)
+	for id := range published {
+		if pending[id] {
+			t.Fatalf("pending=%v, want configuration home %s published", publisher.Pending(), id)
 		}
 	}
 	if pending[oprDriverAsset] {
@@ -847,31 +903,59 @@ func TestOperatorRecordPublisherComposeStopsOnAnotherRefusal(t *testing.T) {
 	}
 }
 
-// An absent home is not claimed, whatever its identifier looks like. A later
-// declaration by the driver that owns it succeeds, including a home whose
-// identifier is not the discovered-asset grammar.
-func TestOperatorRecordCompositionDoesNotClaimAnAbsentHome(t *testing.T) {
+// Ownership does not follow the identifier's shape. A configuration-only home
+// is declared for the provider whether or not its identifier looks like one a
+// driver allocates, and a driver cannot claim it afterwards. A home the record
+// set does not mark configuration-only stays undeclared, and the driver that
+// discovers it can claim it. A home a driver has already declared stays that
+// driver's, including one whose identifier looks discovered.
+func TestOperatorRecordCompositionDistinguishesHomeOwnership(t *testing.T) {
 	const (
-		discovered semreg.AssetID = "pv-asset-5c57adba3ad8a529617c1f8627ae32f1"
-		paired     semreg.AssetID = "pv-asset-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-		lookalike  semreg.AssetID = "asset:pv-asset-5c57adba3ad8a529617c1f8627ae32f1"
-		boiler     semreg.AssetID = "asset:synthetic-boiler"
+		discovered    semreg.AssetID = "pv-asset-5c57adba3ad8a529617c1f8627ae32f1"
+		paired        semreg.AssetID = "pv-asset-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		lookalike     semreg.AssetID = "asset:pv-asset-5c57adba3ad8a529617c1f8627ae32f1"
+		boiler        semreg.AssetID = "asset:synthetic-boiler"
+		kept          semreg.AssetID = "pv-asset-cccccccccccccccccccccccccccccccc"
+		relationHex   semreg.AssetID = "pv-asset-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+		relationNamed semreg.AssetID = "asset:synthetic-circuit"
 	)
 	root := t.TempDir()
-	oprWriteSection(t, root, `{"format":"helianthus.portal-config.operator-records/v1","revision":"1","records":[{"form":"anchor","home":"pv-asset-5c57adba3ad8a529617c1f8627ae32f1","resource_id":"resource:opr:array-discovered","kind":"resource.pv_array","slot":"array-discovered"},{"form":"anchor","home":"asset:opr-configuration","resource_id":"resource:opr:array-1","kind":"resource.pv_array","slot":"array-south"},{"form":"anchor","home":"asset:pv-asset-5c57adba3ad8a529617c1f8627ae32f1","resource_id":"resource:opr:array-lookalike","kind":"resource.pv_array","slot":"array-lookalike"},{"form":"anchor","home":"asset:synthetic-boiler","resource_id":"resource:opr:boiler","kind":"resource.pv_array","slot":"boiler-flow"},{"form":"pairing","kind":"resource.pv_system","slot":"system-main","views":[{"home":"pv-asset-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","resource_id":"resource:opr:system-discovered"},{"home":"asset:opr-pair-b","resource_id":"resource:opr:system-b"}]}]}`)
+	oprWriteSection(t, root, `{"format":"helianthus.portal-config.operator-records/v1","revision":"1","records":[{"form":"anchor","home":"pv-asset-5c57adba3ad8a529617c1f8627ae32f1","resource_id":"resource:opr:array-discovered","kind":"resource.pv_array","slot":"array-discovered"},{"form":"anchor","home":"asset:opr-configuration","resource_id":"resource:opr:array-1","kind":"resource.pv_array","slot":"array-south"},{"form":"anchor","home":"asset:pv-asset-5c57adba3ad8a529617c1f8627ae32f1","resource_id":"resource:opr:array-lookalike","kind":"resource.pv_array","slot":"array-lookalike"},{"form":"anchor","home":"asset:synthetic-boiler","resource_id":"resource:opr:boiler","kind":"resource.pv_array","slot":"boiler-flow"},{"form":"anchor","home":"pv-asset-cccccccccccccccccccccccccccccccc","resource_id":"resource:opr:array-kept","kind":"resource.pv_array","slot":"array-kept"},{"form":"pairing","kind":"resource.pv_system","slot":"system-main","views":[{"home":"pv-asset-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","resource_id":"resource:opr:system-discovered"},{"home":"asset:opr-pair-b","resource_id":"resource:opr:system-b"}]},{"form":"relation","home":"pv-asset-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","definition":{"pack":{"id":"helianthus.pack.pv","version":"1.0.0"},"id":"pv.relation.inverter_array","version":"1.0.0"},"from":"resource:opr:inverter-hex","to":"resource:opr:array-hex","basis_class":"configuration"},{"form":"relation","home":"asset:synthetic-circuit","definition":{"pack":{"id":"helianthus.pack.pv","version":"1.0.0"},"id":"pv.relation.inverter_array","version":"1.0.0"},"from":"resource:opr:inverter-circuit","to":"resource:opr:array-circuit","basis_class":"configuration"}]}`)
 	hub, err := semhub.New(semhub.Options{})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hub.Declare(semhub.AssetSpec{AssetID: kept, SourceID: "source:opr-kept", Driver: oprDriver, Validators: []semreg.PackValidator{pv.New()}, Graph: true}); err != nil {
 		t.Fatal(err)
 	}
 	if err := composeOperatorRecords(hub, ebusgateway.Config{PortalConfigRoot: root}); err != nil {
 		t.Fatal(err)
 	}
+	found := map[semreg.AssetID]string{}
 	state, err := hub.GraphState()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(state.Assets) != 0 {
-		t.Fatalf("startup claimed absent homes: %+v", state.Assets)
+	for _, asset := range state.Assets {
+		found[asset.Asset] = asset.Driver
+	}
+	for _, id := range []semreg.AssetID{discovered, paired, lookalike, boiler, oprHomeAsset, "asset:opr-pair-b"} {
+		if found[id] != operatorRecordDriver {
+			t.Fatalf("configuration home %s driver=%q, want %s", id, found[id], operatorRecordDriver)
+		}
+		view, err := hub.Inspect(id)
+		if err != nil || !view.Present || len(view.Snapshot.Resources) == 0 {
+			t.Fatalf("configuration home %s was declared and not published: present=%v err=%v", id, view.Present, err)
+		}
+	}
+	if found[kept] != oprDriver {
+		t.Fatalf("driver home %s driver=%q, want %s", kept, found[kept], oprDriver)
+	}
+	if _, claimed := found[relationHex]; claimed {
+		t.Fatalf("startup claimed relation home %s for %s", relationHex, found[relationHex])
+	}
+	if _, claimed := found[relationNamed]; claimed {
+		t.Fatalf("startup claimed relation home %s for %s", relationNamed, found[relationNamed])
 	}
 	class, err := hub.DeclareClass(semhub.ClassSpec{
 		Name: "opr_discovered", Driver: "driver-opr-discovered", Graph: true,
@@ -880,16 +964,16 @@ func TestOperatorRecordCompositionDoesNotClaimAnAbsentHome(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i, id := range []semreg.AssetID{discovered, paired, lookalike} {
-		source := semreg.SourceID("source:opr-discovered-" + strconv.Itoa(i))
+	for i, id := range []semreg.AssetID{relationHex, relationNamed} {
+		source := semreg.SourceID("source:opr-relation-" + strconv.Itoa(i))
 		if _, err := class.Declare(id, source); err != nil {
-			t.Fatalf("dynamic driver could not claim %s: %v", id, err)
+			t.Fatalf("dynamic driver could not claim undeclared home %s: %v", id, err)
 		}
 	}
-	if _, err := hub.Declare(semhub.AssetSpec{AssetID: boiler, SourceID: "source:synthetic-boiler", Driver: string(primaryEBusDriverID), Validators: []semreg.PackValidator{pv.New()}, Graph: true}); err != nil {
-		t.Fatalf("a lazily declaring driver could not claim its home: %v", err)
+	var collision *semhub.CollisionError
+	if _, err := class.Declare(discovered, "source:opr-stolen"); !errors.As(err, &collision) {
+		t.Fatalf("driver claim of a configuration-owned home=%v, want a collision", err)
 	}
-	found := map[semreg.AssetID]string{}
 	state, err = hub.GraphState()
 	if err != nil {
 		t.Fatal(err)
@@ -897,21 +981,18 @@ func TestOperatorRecordCompositionDoesNotClaimAnAbsentHome(t *testing.T) {
 	for _, asset := range state.Assets {
 		found[asset.Asset] = asset.Driver
 	}
-	if found[discovered] != "driver-opr-discovered" || found[paired] != "driver-opr-discovered" || found[lookalike] != "driver-opr-discovered" {
-		t.Fatalf("discovered homes=%v", found)
+	if found[relationHex] != "driver-opr-discovered" || found[relationNamed] != "driver-opr-discovered" {
+		t.Fatalf("undeclared homes=%v", found)
 	}
-	if found[boiler] != string(primaryEBusDriverID) {
-		t.Fatalf("boiler home driver=%q, want %s", found[boiler], primaryEBusDriverID)
-	}
-	if _, claimed := found[oprHomeAsset]; claimed {
-		t.Fatalf("startup claimed %s for %s", oprHomeAsset, found[oprHomeAsset])
+	if found[discovered] != operatorRecordDriver || found[kept] != oprDriver {
+		t.Fatalf("owned homes=%v", found)
 	}
 }
 
-// Startup reports a configuration-only home that no declaration names, and
-// only that home: a relation home and a driver-owned home are not reported.
-// The configuration-only mark is what selects the report.
-func TestOperatorRecordCompositionReportsAnUndeclaredConfigurationOnlyHome(t *testing.T) {
+// The configuration-only mark selects the homes startup declares. A relation
+// home is not declared, and a driver-owned home is not taken, even when that
+// home also holds an anchor.
+func TestOperatorRecordCompositionDeclaresOnlyAConfigurationOwnedHome(t *testing.T) {
 	root := t.TempDir()
 	oprWriteSection(t, root, `{"format":"helianthus.portal-config.operator-records/v1","revision":"1","records":[{"form":"anchor","home":"asset:opr-configuration","resource_id":"resource:opr:array-1","kind":"resource.pv_array","slot":"array-south"},{"form":"anchor","home":"asset:opr-inverter","resource_id":"resource:opr:array-2","kind":"resource.pv_array","slot":"array-north"},{"form":"relation","home":"asset:opr-relation-only","definition":{"pack":{"id":"helianthus.pack.pv","version":"1.0.0"},"id":"pv.relation.inverter_array","version":"1.0.0"},"from":"resource:opr:inverter-r","to":"resource:opr:array-r","basis_class":"configuration"}]}`)
 	records, err := configuredOperatorRecords(ebusgateway.Config{PortalConfigRoot: root})
@@ -922,7 +1003,7 @@ func TestOperatorRecordCompositionReportsAnUndeclaredConfigurationOnlyHome(t *te
 	for _, set := range records {
 		marked[set.Asset] = set.ConfigurationOnly
 	}
-	if !marked[oprHomeAsset] || marked["asset:opr-relation-only"] {
+	if !marked[oprHomeAsset] || marked["asset:opr-relation-only"] || !marked[oprDriverAsset] {
 		t.Fatalf("configuration-only marks=%v", marked)
 	}
 	hub, err := semhub.New(semhub.Options{})
@@ -932,34 +1013,47 @@ func TestOperatorRecordCompositionReportsAnUndeclaredConfigurationOnlyHome(t *te
 	if _, err := hub.Declare(semhub.AssetSpec{AssetID: oprDriverAsset, SourceID: oprDriverSource, Driver: oprDriver, Validators: []semreg.PackValidator{pv.New()}, Graph: true}); err != nil {
 		t.Fatal(err)
 	}
-	var logged bytes.Buffer
-	log.SetOutput(&logged)
-	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 	if err := composeOperatorRecords(hub, ebusgateway.Config{PortalConfigRoot: root}); err != nil {
 		t.Fatal(err)
-	}
-	report := func(home semreg.AssetID) bool {
-		for _, line := range strings.Split(logged.String(), "\n") {
-			if strings.Contains(line, string(home)+" wait until an owner declares that home") {
-				return true
-			}
-		}
-		return false
-	}
-	if !report(oprHomeAsset) {
-		t.Fatalf("log=%q, want the undeclared configuration-only home reported", logged.String())
-	}
-	if report("asset:opr-relation-only") || report(oprDriverAsset) {
-		t.Fatalf("log=%q, want no report for a relation home or a driver-owned home", logged.String())
 	}
 	state, err := hub.GraphState()
 	if err != nil {
 		t.Fatal(err)
 	}
+	found := map[semreg.AssetID]string{}
 	for _, asset := range state.Assets {
-		if asset.Asset == oprHomeAsset {
-			t.Fatalf("startup declared %s for %s", oprHomeAsset, asset.Driver)
-		}
+		found[asset.Asset] = asset.Driver
+	}
+	if found[oprHomeAsset] != operatorRecordDriver {
+		t.Fatalf("configuration home driver=%q, want %s", found[oprHomeAsset], operatorRecordDriver)
+	}
+	view, err := hub.Inspect(oprHomeAsset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resource, ok := oprResourceIn(view.Snapshot, oprArray)
+	if !ok || resource.State != semreg.ResourceCurrent {
+		t.Fatalf("configuration resource=%+v present=%v, want it published", resource, ok)
+	}
+	if found[oprDriverAsset] != oprDriver {
+		t.Fatalf("driver home driver=%q, want %s", found[oprDriverAsset], oprDriver)
+	}
+	if _, claimed := found["asset:opr-relation-only"]; claimed {
+		t.Fatalf("startup declared the relation home for %s", found["asset:opr-relation-only"])
+	}
+	publisher, err := operatorPublisherFor(hub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending := map[semreg.AssetID]bool{}
+	for _, id := range publisher.Pending() {
+		pending[id] = true
+	}
+	if !pending["asset:opr-relation-only"] {
+		t.Fatalf("pending=%v, want the relation home kept", publisher.Pending())
+	}
+	if pending[oprHomeAsset] {
+		t.Fatal("the configuration-owned home stayed pending")
 	}
 }
 

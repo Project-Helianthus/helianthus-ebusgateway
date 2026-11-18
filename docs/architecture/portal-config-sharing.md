@@ -510,12 +510,13 @@ The runtime declares no home asset itself: the asset's owner names the
 provider as a contributor. Startup loads the configured record set through
 the same provider, including an identity link, and publishes a home when its
 owner has admitted the provider. An empty section still admits no source and
-publishes nothing. A home the preflight snapshot does not already name stays
-undeclared, so a driver that discovers it can claim it. A home a driver
-already owns is not declared again. Declaring a configuration-only home at
-startup is deferred, because the section does not say whether a driver owns
-the identifier, so that home stays pending until an owner declares it, and
-startup reports it in the log.
+publishes nothing. A section that is malformed, of an unsupported format or
+unreadable is unavailable: startup logs the closed code, publishes nothing
+and does not abort semantic preflight, so the shell stays available. Startup
+declares a configuration-only home for the configuration provider and publishes
+its anchor or pairing. A home a driver already owns is not declared again. A
+home the record set does not mark configuration-only stays undeclared, so a
+driver that discovers it can claim it. The identifier's shape is not ownership.
 
 ## Subsequent implementation acceptance
 

@@ -114,10 +114,9 @@ type operatorRecords struct {
 // operatorAssetRecords is the configured record set of one asset.
 // ConfigurationOnly is set when the home holds a resource that only
 // configuration knows. A relation or an identity link does not make its home
-// configuration-only. Startup does not declare such a home: the section does
-// not say whether a driver owns the identifier, and a declaration would claim
-// it for good. Startup reports such a home that no declaration names yet, so
-// the operator sees why its records stay pending.
+// configuration-only. Startup declares a configuration-only home that no
+// driver has declared, and leaves every other absent home undeclared. The
+// identifier's shape is not ownership.
 type operatorAssetRecords struct {
 	Asset             semreg.AssetID
 	Records           operatorRecords

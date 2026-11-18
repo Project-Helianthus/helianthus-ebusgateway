@@ -52,6 +52,14 @@ func clone[T any](v T) T {
 	_ = json.Unmarshal(b, &out)
 	return out
 }
+
+// formAsActive returns a catalog whose active form is form. Validation of a
+// retained form uses this copy; the published catalog accepts only its active form.
+func formAsActive(c Catalog, form string) Catalog {
+	out := clone(c)
+	out.ActiveForm = form
+	return out
+}
 func equal(t *testing.T, got, want any) {
 	t.Helper()
 	if !reflect.DeepEqual(got, want) {
@@ -88,10 +96,10 @@ func handoffRows(text string) []Row {
 }
 func TestPublishedArtifacts(t *testing.T) {
 	c := loadCatalog(t)
-	if c.Version != "3" || c.ActiveForm != "full88" || len(c.HandoffRows) != 65 || len(c.Forms["full88"]) != 64 || len(c.V2Cells) != 173 || len(c.Forms["adaptermux-v2"]) != 220 {
+	if c.Version != "4" || c.ActiveForm != "adaptermux-v2" || len(c.HandoffRows) != 65 || len(c.Forms["full88"]) != 64 || len(c.V2Cells) != 173 || len(c.Forms["adaptermux-v2"]) != 217 {
 		t.Fatal("unexpected publication inventory")
 	}
-	equal(t, c.RetiredV2, []string{"AD11"})
+	equal(t, c.RetiredV2, []string{"AD11", "P03", "P04", "P05"})
 	schema, err := ReadSchema(strings.NewReader(string(repoFile(t, "docs/testing/"+c.ResultSchema))), c)
 	if err != nil {
 		t.Fatal(err)
@@ -141,16 +149,7 @@ func TestCatalogVersionThreeReportKey(t *testing.T) {
 	// of scripts/rename_acceptance_catalog.py needs no exemption.
 	earlierKey := "catalog" + "ue_version"
 	c := loadCatalog(t)
-	if c.Version != "3" {
-		t.Fatalf("catalog version %q, want 3", c.Version)
-	}
 	page := string(repoFile(t, "docs/testing/hardware-acceptance-catalog.md"))
-	rows := regexp.MustCompile(`(?m)^\| ([0-9]+) \| [A-Za-z0-9+/=]+ \|$`).FindAllStringSubmatch(page, -1)
-	var versions []string
-	for _, row := range rows {
-		versions = append(versions, row[1])
-	}
-	equal(t, versions, []string{"1", "2", "3"})
 	// The rows of versions 1 and 2 as published before version 3.
 	for _, row := range []string{
 		"| 1 | dgQZfJpvcTWqfdroLGAAKl8T+/Th28VeKtZKOyPC/70= |",
@@ -159,9 +158,6 @@ func TestCatalogVersionThreeReportKey(t *testing.T) {
 		if !regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(row) + `$`).MatchString(page) {
 			t.Fatalf("earlier ledger entry changed: %s", row)
 		}
-	}
-	if repoLedger(t)["3"] != Signature(c) {
-		t.Fatal("version 3 ledger entry differs from the canonical catalog signature")
 	}
 
 	schema, err := ReadSchema(strings.NewReader(string(repoFile(t, "docs/testing/"+c.ResultSchema))), c)
@@ -188,7 +184,7 @@ func TestCatalogVersionThreeReportKey(t *testing.T) {
 		t.Fatal("schema catalog_version constant differs from the catalog version")
 	}
 
-	base := syntheticReport(c, "full88")
+	base := syntheticReport(c, c.ActiveForm)
 	b, err := json.Marshal(base)
 	if err != nil {
 		t.Fatal(err)
@@ -232,7 +228,7 @@ func TestCatalogVersionThreeReportKey(t *testing.T) {
 		earlier := clone(parsed)
 		earlier.CatalogVersion = "2"
 		if _, err := ValidateReport(c, earlier, base.Identity); err == nil {
-			t.Fatal("version 2 report admitted by the version 3 reader")
+			t.Fatal("version 2 report admitted by the current reader")
 		}
 	})
 }
@@ -250,7 +246,17 @@ func TestHandoffInventory(t *testing.T) {
 		}
 	}
 	equal(t, c.Forms["full88"], full)
-	equal(t, c.Forms["adaptermux-v2"], append(v2, c.V2Cells...))
+	var retained []string
+	for _, id := range v2 {
+		if contains(c.RetiredV2, id) {
+			continue
+		}
+		retained = append(retained, id)
+	}
+	equal(t, c.Forms["adaptermux-v2"], append(retained, c.V2Cells...))
+	if len(c.Forms["adaptermux-v2"]) != 217 {
+		t.Fatalf("adaptermux-v2 gates = %d, want 217", len(c.Forms["adaptermux-v2"]))
+	}
 }
 func TestMatrixInventory(t *testing.T) {
 	c := loadCatalog(t)
@@ -311,8 +317,8 @@ func TestMatrixInventory(t *testing.T) {
 		}
 	}
 	// Independent category membership and reason controls from the policy contract.
-	reasons := map[string]string{"XF-01": "southbound plain tcp under dual-client load reports no signal (carried from proxy dual-client)", "BI-01": "adapter_no_signal", "BI-02": "uart_direct_hardware_absent", "PL-01": "mux_southbound_plain_not_implemented", "PL-02": "mux_local_responder_not_implemented", "PL-03": "mux_raw_symbol_forwarding_not_implemented"}
-	equal(t, c.CategoryPrecedence, []string{"BI-02", "PL-01", "PL-02", "PL-03"})
+	reasons := map[string]string{"XF-01": "southbound plain tcp under dual-client load reports no signal (carried from proxy dual-client)", "BI-01": "adapter_no_signal", "BI-02": "uart_direct_hardware_absent", "PL-01": "mux_southbound_plain_not_implemented", "PL-02": "mux_local_responder_not_implemented", "PL-03": "mux_raw_symbol_forwarding_not_implemented", "PL-04": "fifo_order_superseded_by_address_priority"}
+	equal(t, c.CategoryPrecedence, []string{"BI-02", "PL-01", "PL-02", "PL-03", "PL-04"})
 	if len(c.Categories) != len(reasons) {
 		t.Fatal("category count")
 	}
@@ -328,12 +334,13 @@ func TestMatrixInventory(t *testing.T) {
 			plain := (s == "UDP" || s == "TCP") && i != "DS01"
 			responder := i == "PX09" || i == "PX10" || i == "PX11"
 			raw := (s == "ENS" || s == "ENH") && (i == "AD05" || i == "AD08" || i == "AD12")
+			fifo := (s == "ENS" || s == "ENH") && (i == "PX05" || i == "PX06" || i == "PX07" || i == "PX08")
 			match := false
 			switch cat.ID {
 			case "XF-01":
 				match = id == "TCP-CX01"
 			case "BI-01":
-				match = !uart && !plain && !responder && !raw
+				match = !uart && !plain && !responder && !raw && !fifo
 			case "BI-02":
 				match = uart
 			case "PL-01":
@@ -342,6 +349,8 @@ func TestMatrixInventory(t *testing.T) {
 				match = responder
 			case "PL-03":
 				match = raw
+			case "PL-04":
+				match = fifo
 			}
 			if match {
 				want = append(want, id)
@@ -367,7 +376,7 @@ func TestCatalogMutations(t *testing.T) {
 		},
 		"retired-required":        func(c *Catalog) { c.Forms["adaptermux-v2"] = append(c.Forms["adaptermux-v2"], "AD11") },
 		"unknown-version":         func(c *Catalog) { c.Version = "O22-unknown" },
-		"unreviewed-version-bump": func(c *Catalog) { c.Version = "4" },
+		"unreviewed-version-bump": func(c *Catalog) { c.Version = "5" },
 		"vocabulary":              func(c *Catalog) { c.ResultVocabulary = append(c.ResultVocabulary, "O22-unknown") },
 	}
 	for name, mutate := range mutations {
@@ -431,6 +440,7 @@ func syntheticReport(c Catalog, form string) Report {
 }
 func TestReadReportOmissions(t *testing.T) {
 	c := loadCatalog(t)
+	full := formAsActive(c, "full88")
 	// Fabricated live claims exercise completion without supplying hardware evidence.
 	base := syntheticReport(c, "full88")
 	base.Source = "live"
@@ -445,7 +455,7 @@ func TestReadReportOmissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if complete, err := ValidateReport(c, parsed, base.Identity); err != nil || !complete {
+	if complete, err := ValidateReport(full, parsed, base.Identity); err != nil || !complete {
 		t.Fatalf("explicit empty omissions control: %v %v", complete, err)
 	}
 	var wire map[string]any
@@ -479,8 +489,9 @@ func TestReadReportOmissions(t *testing.T) {
 
 func TestReportIdentityMutations(t *testing.T) {
 	c := loadCatalog(t)
+	full := formAsActive(c, "full88")
 	base := syntheticReport(c, "full88")
-	if done, err := ValidateReport(c, base, base.Identity); err != nil || done {
+	if done, err := ValidateReport(full, base, base.Identity); err != nil || done {
 		t.Fatalf("synthetic control: %v %v", done, err)
 	}
 	b, _ := json.Marshal(base)
@@ -512,7 +523,7 @@ func TestReportIdentityMutations(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			r := clone(base)
 			mutate(&r)
-			if _, err := ValidateReport(c, r, base.Identity); err == nil {
+			if _, err := ValidateReport(full, r, base.Identity); err == nil {
 				t.Fatal("identity mutation admitted")
 			}
 		})
@@ -521,7 +532,7 @@ func TestReportIdentityMutations(t *testing.T) {
 		t.Run("missing-"+field, func(t *testing.T) {
 			r := clone(base)
 			reflect.ValueOf(&r.Records[0]).Elem().FieldByName(field).SetString("")
-			if _, err := ValidateReport(c, r, base.Identity); err == nil {
+			if _, err := ValidateReport(full, r, base.Identity); err == nil {
 				t.Fatal("missing evidence admitted")
 			}
 		})
@@ -562,6 +573,7 @@ func TestOutcomesAndCategories(t *testing.T) {
 			}
 		})
 	}
+	full := formAsActive(c, "full88")
 	for _, outcome := range []string{"fail", "timeout", "not-run", "omitted-checks", "xpass"} {
 		t.Run(outcome, func(t *testing.T) {
 			report := syntheticReport(c, "full88")
@@ -570,7 +582,7 @@ func TestOutcomesAndCategories(t *testing.T) {
 				report.Records[i].Source = "live"
 			}
 			report.Records[0].Outcome = outcome
-			if complete, err := ValidateReport(c, report, report.Identity); err != nil || complete {
+			if complete, err := ValidateReport(full, report, report.Identity); err != nil || complete {
 				t.Fatalf("non-pass disposition: %v %v", complete, err)
 			}
 		})
@@ -581,7 +593,7 @@ func TestOutcomesAndCategories(t *testing.T) {
 	for i := range live.Records {
 		live.Records[i].Source = "live"
 	}
-	if complete, err := ValidateReport(c, live, live.Identity); err != nil || !complete {
+	if complete, err := ValidateReport(full, live, live.Identity); err != nil || !complete {
 		t.Fatalf("live-claim consistency control: %v %v", complete, err)
 	}
 }
@@ -646,6 +658,7 @@ func TestFull88ExpectedFailures(t *testing.T) {
 	if len(got) != 40 {
 		t.Fatal("full88 expected failure inventory changed")
 	}
+	full := formAsActive(c, "full88")
 	for _, source := range []string{"synthetic", "live"} {
 		t.Run(source, func(t *testing.T) {
 			r := syntheticReport(c, "full88")
@@ -664,13 +677,13 @@ func TestFull88ExpectedFailures(t *testing.T) {
 					}
 				}
 			}
-			if complete, err := ValidateReport(c, r, r.Identity); err != nil || complete {
+			if complete, err := ValidateReport(full, r, r.Identity); err != nil || complete {
 				t.Fatalf("full88 expected failures: %v %v", complete, err)
 			}
 			for _, field := range []string{"Category", "Reason"} {
 				changed := clone(r)
 				reflect.ValueOf(&changed.Records[first]).Elem().FieldByName(field).SetString("O22-other")
-				if _, err := ValidateReport(c, changed, r.Identity); err == nil {
+				if _, err := ValidateReport(full, changed, r.Identity); err == nil {
 					t.Fatalf("incorrect %s admitted", field)
 				}
 			}
@@ -683,10 +696,96 @@ func TestFull88ExpectedFailures(t *testing.T) {
 						changed.Records[i].Reason = r.Records[first].Reason
 					}
 				}
-				if _, err := ValidateReport(c, changed, r.Identity); err == nil {
+				if _, err := ValidateReport(full, changed, r.Identity); err == nil {
 					t.Fatalf("undeclared xfail %s admitted", id)
 				}
 			}
 		})
+	}
+}
+
+// TestCatalogVersionFour pins the active form, the retired cases, PL-04, the
+// narrowed executable category, the ledger through version 4, and refusal of
+// any report whose form is not the active form.
+func TestCatalogVersionFour(t *testing.T) {
+	c := loadCatalog(t)
+	if c.Version != "4" {
+		t.Fatalf("catalog version %q, want 4", c.Version)
+	}
+	if c.ActiveForm != "adaptermux-v2" {
+		t.Fatalf("active form %q", c.ActiveForm)
+	}
+	equal(t, c.RetiredV2, []string{"AD11", "P03", "P04", "P05"})
+	for _, id := range []string{"AD11", "P03", "P04", "P05"} {
+		if contains(c.Forms[c.ActiveForm], id) {
+			t.Fatalf("%s remains in the active form", id)
+		}
+	}
+	if len(c.Forms["adaptermux-v2"]) != 217 {
+		t.Fatalf("adaptermux-v2 gates = %d, want 217", len(c.Forms["adaptermux-v2"]))
+	}
+	equal(t, c.CategoryPrecedence, []string{"BI-02", "PL-01", "PL-02", "PL-03", "PL-04"})
+	fifo := []string{"ENS-PX05", "ENS-PX06", "ENS-PX07", "ENS-PX08", "ENH-PX05", "ENH-PX06", "ENH-PX07", "ENH-PX08"}
+	var pl04, bi01 []string
+	for _, cat := range c.Categories {
+		switch cat.ID {
+		case "PL-04":
+			if cat.Outcome != "planned" || cat.Reason != "fifo_order_superseded_by_address_priority" {
+				t.Fatalf("PL-04 contract %q %q", cat.Outcome, cat.Reason)
+			}
+			pl04 = cat.Cases
+		case "BI-01":
+			bi01 = cat.Cases
+		}
+	}
+	equal(t, pl04, fifo)
+	for _, id := range fifo {
+		if contains(bi01, id) {
+			t.Fatalf("BI-01 still contains %s", id)
+		}
+	}
+	page := string(repoFile(t, "docs/testing/hardware-acceptance-catalog.md"))
+	rows := regexp.MustCompile(`(?m)^\| ([0-9]+) \| [A-Za-z0-9+/=]+ \|$`).FindAllStringSubmatch(page, -1)
+	var versions []string
+	for _, row := range rows {
+		versions = append(versions, row[1])
+	}
+	equal(t, versions, []string{"1", "2", "3", "4"})
+	for _, row := range []string{
+		"| 1 | dgQZfJpvcTWqfdroLGAAKl8T+/Th28VeKtZKOyPC/70= |",
+		"| 2 | wRyjMhSFWd3AJtm3OPlrL1TgZavYzPatH+u9D1eBIcU= |",
+		"| 3 | sZqH2XdQaX+rFACbTkYv6onReT1u32uPWzAE4qm33sw= |",
+	} {
+		if !regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(row) + `$`).MatchString(page) {
+			t.Fatalf("earlier ledger entry changed: %s", row)
+		}
+	}
+	if repoLedger(t)["4"] != Signature(c) {
+		t.Fatal("version 4 ledger entry differs from the canonical catalog signature")
+	}
+
+	// Report.Form and Catalog.ActiveForm are the key. Each assignment below is
+	// the production comparison r.Form != c.ActiveForm.
+	active := syntheticReport(c, c.ActiveForm)
+	if _, err := ValidateReport(c, active, active.Identity); err != nil {
+		t.Fatalf("active form refused: %v", err)
+	}
+	shifted := clone(c)
+	shifted.ActiveForm = "full88"
+	if _, err := ValidateReport(shifted, active, active.Identity); err == nil || !strings.Contains(err.Error(), shifted.ActiveForm) {
+		t.Fatalf("Catalog.ActiveForm mutation not refused: %v", err)
+	}
+	retired := syntheticReport(c, "full88")
+	if _, err := ValidateReport(c, retired, retired.Identity); err == nil || !strings.Contains(err.Error(), c.ActiveForm) {
+		t.Fatalf("full88 report not refused with the active form: %v", err)
+	}
+	unknown := clone(active)
+	unknown.Form = "O22-other-form"
+	if _, err := ValidateReport(c, unknown, unknown.Identity); err == nil || !strings.Contains(err.Error(), c.ActiveForm) {
+		t.Fatalf("Report.Form mutation not refused with the active form: %v", err)
+	}
+	accepted := formAsActive(c, "full88")
+	if _, err := ValidateReport(accepted, retired, retired.Identity); err != nil {
+		t.Fatalf("ActiveForm field ignored: %v", err)
 	}
 }

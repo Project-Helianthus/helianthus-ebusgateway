@@ -5,7 +5,7 @@ This publication supplies offline inventory and result validation. It changes no
 active gate and reports no candidate, physical result, release closure or authority
 to access equipment. Nothing is stable before Helianthus 1.0.
 
-The v1-format artifacts (catalog version 3) are [catalog v1](hardware-acceptance-catalog-v1.json)
+The v1-format artifacts (catalog version 4) are [catalog v1](hardware-acceptance-catalog-v1.json)
 and [result schema v1](hardware-acceptance-result-v1.schema.json). The
 [standard-library reader](../../internal/acceptancecatalog/catalog.go) accepts
 only a version/signature pair in a separately trusted ledger. Consumers must
@@ -25,18 +25,16 @@ catalog defines no protocol interpretation or semantic admission.
 
 The [v2 matrix](../../matrix/M7-adaptermux-conformance-matrix.md),
 [cell map](../../matrix/M7-adaptermux-conformance-cell-map.md) and
-[proposed policy](transport-gate-policy-v2.md) define the planned second form.
+[policy](transport-gate-policy-v2.md) define the `adaptermux-v2` form.
 It has 173 cells: seven transports × 24 invariants, plus five compatibility
-cells. AD11 is retired only in that form. The catalog includes every old
+cells. AD11, P03, P04 and P05 are retired in that form. The catalog includes every old
 T01–T88 transition mapping, its disposition, reason code, keeper cells and
 expected-failure disposition; AD10 additionally uses T13–T16 as proxy baselines
 and ENH-AD10 uses EBUSD-ES01. UART and PX cells have no T predecessor.
-The v2 acceptance form replaces the five range and twelve AD summary gates
-with 173 cells, retaining the other 47 handoff gates (220 gates in total).
-Both forms belong to the consolidated transition session; publishing the v2
-form does not activate it. Current full88 and AD01–AD12 remain active until the
-operator session and separate switch change. Passive P01–P06 remain unchanged;
-proxy-dependent passive decisions remain with their owners.
+The `adaptermux-v2` form replaces the five range and twelve AD summary gates
+with 173 cells, retaining the other handoff gates except P03, P04 and P05
+(217 gates in total). That form is the active form. The `full88` form stays
+in the catalog as published history. The reader refuses a report of another form.
 
 Full88 expected failures are classified separately in `full88_expected_failures`.
 Its four FULL88-XF categories enumerate the runner's 40 default cases and exact
@@ -46,11 +44,12 @@ These records are structurally valid but leave acceptance incomplete. Planned
 and infrastructure-blocked categories remain restricted to the v2 form.
 
 Category membership and exact reasons are machine readable. BI-02 precedes
-PL-01, then PL-02, then PL-03. The projected v2 inventory has 41 executable,
-60 planned and 72 UART infrastructure-blocked cells. BI-01 applies only to
-executable cells. XF-01 names TCP-CX01, but PL-01 currently takes precedence;
+PL-01, then PL-02, then PL-03, then PL-04. The `adaptermux-v2` inventory has
+33 executable, 68 planned and 72 UART infrastructure-blocked cells. BI-01
+applies only to executable cells and does not contain the FIFO-order cells,
+which are PL-04. XF-01 names TCP-CX01, but PL-01 currently takes precedence;
 UDP-CX01 has no expected-failure allowance. Planned is valid only in PL-01,
-PL-02 or PL-03, never as generic missing evidence. Allowed non-pass categories
+PL-02, PL-03 or PL-04, never as generic missing evidence. Allowed non-pass categories
 are not passing physical acceptance. Fail, timeout, not-run, omitted-checks and
 xpass remain visible and prevent completion.
 
@@ -100,11 +99,12 @@ revision identifiers. Whitespace in either input is immaterial.
 | 1 | dgQZfJpvcTWqfdroLGAAKl8T+/Th28VeKtZKOyPC/70= |
 | 2 | wRyjMhSFWd3AJtm3OPlrL1TgZavYzPatH+u9D1eBIcU= |
 | 3 | sZqH2XdQaX+rFACbTkYv6onReT1u32uPWzAE4qm33sw= |
+| 4 | S3ZahDqEAE4cwK0rgttPcn+tlpk2nn2ZkeCGQISl7vc= |
 
 Version 3 renames the report key `catalogue_version` to the catalog spelling
-`catalog_version` and changes nothing else. A report written for an earlier
-version is read with a build of that version; the current reader refuses it by
-its version and by its key.
+`catalog_version` and changes nothing else; the reader refuses the earlier key.
+Version 4 makes `adaptermux-v2` the active form, retires P03 to P05 in that form, adds PL-04 and narrows BI-01, and the reader refuses a report of another form.
+A report of an earlier version is read with a build of that version.
 
 Any added, removed or renamed gate/case, changed transition, category, result
 vocabulary or schema requires a new catalog version and a new ledger entry;

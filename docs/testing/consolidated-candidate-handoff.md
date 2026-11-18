@@ -8,17 +8,19 @@ One consolidated operator session is planned; preparing this document needed no 
 
 ## Order and candidate identity
 
-Follow **INT-17 → INT-19 → INT-20 → INT-21**, downstream of INT-16. INT-12 and
+Follow **INT-17 → INT-20 → INT-19 → INT-21**, downstream of INT-16. INT-12 and
 INT-13 sit upstream of INT-16 and are therefore gated through INT-17:
 
 1. **INT-17**: complete offline acceptance and hardware-test preparation against
    the frozen INT-16 BOM; establish `HARDWARE_TEST_READY` using integrated
    composition, fixture/replay, consumer, degraded/restart/reconnect/cleanup,
    exact-BOM CI/review and operator-procedure evidence.
-2. **INT-19**: Daybreak Blue independently reviews that final candidate.
-3. **INT-20**: run the single consolidated, separately authorized operator session
-   below against that same candidate, including retained live obligations.
-4. **INT-21**: publish only the BOM covered by final review and required results.
+2. **INT-20**: run the single consolidated, separately authorized operator
+   hardware session below against that same candidate, including retained live
+   obligations, before the independent review.
+3. **INT-19**: independently review that candidate and the hardware-session results.
+4. **INT-21**: publish only the BOM covered by the hardware session and that
+   independent review.
 
 All four packages are pending in the release plan. They are release-plan
 IDs, not issue numbers. The plan defines no intervening package.
@@ -37,8 +39,8 @@ and public-safe evidence references.
 ## Preconditions and pending prerequisites
 
 - [ ] Confirm the frozen INT-16 candidate, complete M44 association and all
-  owning acceptance records, full required gates and fresh independent review.
-  Candidate readiness remains unverified here.
+  owning acceptance records and full required gates. The independent review
+  follows the hardware session. Candidate readiness remains unverified here.
 - [ ] Resolve each pending prerequisite below with its owner before its affected
   session segment; missing procedures, contracts or equipment leave results
   Not run / Unknown and prevent complete candidate acceptance.
@@ -71,15 +73,16 @@ not prevent finishing this handoff; they remain visible for operator readiness.
 
 ## One operator session
 
-1. **Entry review:** confirm INT-17 then INT-19 completion and unchanged candidate
+1. **Entry review:** confirm INT-17 completion and an unchanged candidate
    association; select family-specific procedures and private evidence retention.
-2. **Passive baseline:** assess P01–P06 and the ESERA boundary without borrowing
+   The hardware session (INT-20) precedes the independent review (INT-19).
+2. **Passive baseline:** assess P01, P02 and P06 and the ESERA boundary without borrowing
    authority from active cases. K05 observes only an independently authorized
    passive stream; injected negative controls remain synthetic offline replay.
-3. **Transport and adapter-direct:** execute the owning approved T01–T88 and AD
-   procedures, including applicable proxy adjuncts. Account for every case and
-   expected-failure reason; infrastructure-blocked, unexpected fail or xpass
-   cannot become a passing acceptance. K06 owns each AD assertion and artifact gap.
+3. **Transport:** execute the `adaptermux-v2` cells in the order of the
+   [hardware session run sheet](hardware-session-run-sheet.md). Record one report
+   form, `adaptermux-v2`. Account for every cell and expected-failure reason;
+   infrastructure-blocked, unexpected fail or xpass cannot become a passing acceptance.
 4. **Retained product behavior:** use [retained acceptance][legacy] for the exact
    LEGACY P/N criteria and mux disposition; record each named row below. Reuse
    shared transport observations only with traceable scope, never by implication.
@@ -91,14 +94,15 @@ not prevent finishing this handoff; they remain visible for operator readiness.
 6. **Exit review:** verify cleanup and restored intended state; reconcile every
    result to the same association, record omissions and stop reasons, and return
    unresolved work to #1099 and owning contracts. INT-21 remains pending until
-   every required result and final review covers the unchanged BOM.
+   every required result and the independent review cover the unchanged BOM.
 
 This session adds no executable device commands. The [add-on smoke runbook][smoke]
 is context, not installation authority. The [transport gate](../../scripts/transport_gate.sh)
 and [passive gate](../../scripts/passive_smoke_gate.sh) remain authoritative for
 classification; this document changes neither gate nor expected-failure inventory.
-P01–P06 are not deferred. T01–T88 remain unrun pending authorized physical validation.
-PX01–PX12 are additional obligations when proxy wire semantics are in scope.
+The session assesses P01, P02 and P06 and records one report form, `adaptermux-v2`,
+for the cells in the [hardware session run sheet](hardware-session-run-sheet.md).
+The retired form's rows stay not run.
 No gate override is requested; an override never authorizes live writes and never
 bypasses a triggered offline Modbus RTU gate.
 
@@ -114,11 +118,11 @@ last-known-good fields with original lineage and freshness; never promote old
 observations or fabricated defaults. Native qualification, invalidation and trust
 rules continue to apply independently of the public evidence grade.
 
-**Any code, configuration, dependency or package fix during INT-19 or INT-20
+**Any code, configuration, dependency or package fix during INT-20 or INT-19
 invalidates earlier candidate evidence and restarts the chain for the changed BOM.**
 Create the new M44 association, return to INT-17 offline acceptance/preparation,
-obtain fresh INT-19 Daybreak review, then perform affected INT-20 hardware and
-conformance revalidation before INT-21. Owners must document the impact-based
+perform the affected INT-20 hardware session, then obtain a fresh INT-19
+independent review before INT-21. Owners must document the impact-based
 case selection; unchanged evidence may remain historical but is not silently
 carried forward as changed-candidate acceptance. A later RTU pin change triggers
 the offline RTU composition and pinned endpoint gate plus this revalidation rule.
@@ -154,43 +158,40 @@ observation, evidence link, omissions/stop reason and independent review. Keep t
 row Not run / Unknown / Unassessed / Unassessed until its record is complete and
 independently reviewed; failed or unverified results remain unaccepted.
 
-The T01–T88 and PX01–PX12 range rows below are summaries only. Before assigning
-any aggregate disposition, attach and link a public-safe per-case report covering
-every ID in that range, including unexecuted and blocked cases. Record all fields
-required above and each case's result, evidence grade, qualification and admission
-individually. Keep the summary Not run / Unknown / Unassessed / Unassessed until
-that report is complete and independently reviewed. Mixed outcomes must remain
-visible in the summary; any blocked, unexecuted, unexpected fail or xpass case
-prevents passing acceptance for the range.
+The T01–T04, T05–T08, T09–T24, T25–T88, PX01–PX12 and AD01–AD12 rows below are
+the published history of the retired form. They are not run. Their result column
+stays Not run.
 
 | Case / family | Governing reference and scope | Result | Evidence grade | Qualification | Admission |
 |---|---|---|---|---|---|
-| T01–T04 | [Smoke matrix][matrix]: direct adapter, four transport cases | Not run | Unknown | Unassessed | Unassessed |
-| T05–T08 | [Smoke matrix][matrix]: via ebusd-tcp, four cases; retain documented expected-fail inventory | Not run | Unknown | Unassessed | Unassessed |
-| T09–T24 | [Smoke matrix][matrix]: proxy single-client, sixteen cases | Not run | Unknown | Unassessed | Unassessed |
-| T25–T88 | [Smoke matrix][matrix]: proxy dual-client, sixty-four cases | Not run | Unknown | Unassessed | Unassessed |
-| PX01–PX12 | [Proxy adjunct][px]: additional proof when proxy wire semantics are in scope | Not run | Unknown | Unassessed | Unassessed |
-| AD01 | [K06 AD01][k06]; use that ID's assertion and evidence requirements | Not run | Unknown | Unassessed | Unassessed |
-| AD02 | [K06 AD02][k06]; use that ID's assertion and evidence requirements | Not run | Unknown | Unassessed | Unassessed |
-| AD03 | [K06 AD03][k06]; use that ID's assertion and evidence requirements | Not run | Unknown | Unassessed | Unassessed |
-| AD04 | [K06 AD04][k06]; use that ID's assertion and evidence requirements | Not run | Unknown | Unassessed | Unassessed |
-| AD05 | [K06 AD05][k06]; use that ID's assertion and evidence requirements | Not run | Unknown | Unassessed | Unassessed |
-| AD06 | [K06 AD06][k06]; use that ID's assertion and evidence requirements | Not run | Unknown | Unassessed | Unassessed |
-| AD07 | [K06 AD07][k06]; use that ID's assertion and evidence requirements | Not run | Unknown | Unassessed | Unassessed |
-| AD08 | [K06 AD08][k06]; use that ID's assertion and evidence requirements | Not run | Unknown | Unassessed | Unassessed |
-| AD09 | [K06 AD09][k06]; use that ID's assertion and evidence requirements | Not run | Unknown | Unassessed | Unassessed |
-| AD10 | [K06 AD10][k06]; use that ID's assertion and evidence requirements | Not run | Unknown | Unassessed | Unassessed |
-| AD11 | [K06 AD11][k06]; use that ID's assertion and evidence requirements | Not run | Unknown | Unassessed | Unassessed |
-| AD12 | [K06 AD12][k06]; use that ID's assertion and evidence requirements | Not run | Unknown | Unassessed | Unassessed |
+| T01–T04 | Published history of the retired form; this row is not run | Not run | Unknown | Unassessed | Unassessed |
+| T05–T08 | Published history of the retired form; this row is not run | Not run | Unknown | Unassessed | Unassessed |
+| T09–T24 | Published history of the retired form; this row is not run | Not run | Unknown | Unassessed | Unassessed |
+| T25–T88 | Published history of the retired form; this row is not run | Not run | Unknown | Unassessed | Unassessed |
+| PX01–PX12 | Published history of the retired form; this row is not run | Not run | Unknown | Unassessed | Unassessed |
+| AD01 | Published history of the retired form; this row is not run | Not run | Unknown | Unassessed | Unassessed |
+| AD02 | Published history of the retired form; this row is not run | Not run | Unknown | Unassessed | Unassessed |
+| AD03 | Published history of the retired form; this row is not run | Not run | Unknown | Unassessed | Unassessed |
+| AD04 | Published history of the retired form; this row is not run | Not run | Unknown | Unassessed | Unassessed |
+| AD05 | Published history of the retired form; this row is not run | Not run | Unknown | Unassessed | Unassessed |
+| AD06 | Published history of the retired form; this row is not run | Not run | Unknown | Unassessed | Unassessed |
+| AD07 | Published history of the retired form; this row is not run | Not run | Unknown | Unassessed | Unassessed |
+| AD08 | Published history of the retired form; this row is not run | Not run | Unknown | Unassessed | Unassessed |
+| AD09 | Published history of the retired form; this row is not run | Not run | Unknown | Unassessed | Unassessed |
+| AD10 | Published history of the retired form; this row is not run | Not run | Unknown | Unassessed | Unassessed |
+| AD11 | Published history of the retired form; this row is not run | Not run | Unknown | Unassessed | Unassessed |
+| AD12 | Published history of the retired form; this row is not run | Not run | Unknown | Unassessed | Unassessed |
 | P01 | [Passive gate](../../scripts/passive_smoke_gate.sh): unsupported_or_misconfigured rejection, not passive receipt proof | Not run | Unknown | Unassessed | Unassessed |
 | P02 | [Passive gate](../../scripts/passive_smoke_gate.sh): unsupported_or_misconfigured rejection, not passive receipt proof | Not run | Unknown | Unassessed | Unassessed |
-| P03 | [Passive gate](../../scripts/passive_smoke_gate.sh): required passive proof within the owning topology scope | Not run | Unknown | Unassessed | Unassessed |
-| P04 | [Passive gate](../../scripts/passive_smoke_gate.sh): required passive proof within the owning topology scope | Not run | Unknown | Unassessed | Unassessed |
-| P05 | [Passive gate](../../scripts/passive_smoke_gate.sh): required passive proof within the owning topology scope | Not run | Unknown | Unassessed | Unassessed |
+| P03 | Carried in part by `ENS-AD02` and `ENS-AD03`; the required discovery check is not carried by a cell | Not run | Unknown | Unassessed | Unassessed |
+| P04 | Carried in part by `ENS-CX01`; the passive path and the required discovery check are not carried by a cell | Not run | Unknown | Unassessed | Unassessed |
+| P05 | Carried in part by `ENH-CX01`; the passive path and the required discovery check are not carried by a cell | Not run | Unknown | Unassessed | Unassessed |
 | P06 | [Passive gate](../../scripts/passive_smoke_gate.sh): unsupported_or_misconfigured rejection, not passive receipt proof | Not run | Unknown | Unassessed | Unassessed |
 | ESERA / FOLLOWUP-01 | [K05][k05]: boundary, four independent decisions and negative controls; capture remains pending | Not run | Unknown | Unassessed | Unassessed |
 
-The P03 [bounded observe-first proof][p03] is specific to its proxy-backed ENS
+P03, P04 and P05 stay in this template and are not a session procedure. The
+cells named on those rows carry part of them. The former P03
+[bounded observe-first proof][p03] was specific to its proxy-backed ENS
 family; it does not supply ESERA proof or universal passive capability.
 
 Retain the following LEGACY IDs without reproducing installation-specific criteria.

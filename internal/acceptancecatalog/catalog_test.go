@@ -789,3 +789,45 @@ func TestCatalogVersionFour(t *testing.T) {
 		t.Fatalf("ActiveForm field ignored: %v", err)
 	}
 }
+
+// TestHandoffSessionLeavesRetiredRunSheetStepsUnrun pins the operator session
+// to one report form. The run sheet may name the adaptermux-v2 cells, and the
+// same paragraph must leave that sheet's retired-form steps unrun.
+func TestHandoffSessionLeavesRetiredRunSheetStepsUnrun(t *testing.T) {
+	source := string(repoFile(t, "docs/testing/consolidated-candidate-handoff.md"))
+	const heading = "## One operator session\n"
+	start := strings.Index(source, heading)
+	if start < 0 {
+		t.Fatal("missing operator session")
+	}
+	section := source[start+len(heading):]
+	if end := strings.Index(section, "\n## "); end >= 0 {
+		section = section[:end]
+	}
+	if !strings.Contains(section, "P01, P02 and P06") || !strings.Contains(section, "one report form, `adaptermux-v2`") {
+		t.Fatal("session does not name the passive cases and the one report form")
+	}
+	required := []string{
+		"hardware-session-run-sheet.md",
+		"`T13`",
+		"`T14`",
+		"`full88`",
+		"A-13",
+		"B-07",
+		"stay unrun",
+	}
+	for _, paragraph := range strings.Split(section, "\n\n") {
+		flat := strings.Join(strings.Fields(paragraph), " ")
+		matched := true
+		for _, needle := range required {
+			if !strings.Contains(flat, needle) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return
+		}
+	}
+	t.Fatal("session does not leave the run sheet's retired-form steps unrun")
+}

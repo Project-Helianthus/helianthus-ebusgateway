@@ -79,10 +79,13 @@ not prevent finishing this handoff; they remain visible for operator readiness.
 2. **Passive baseline:** assess P01, P02 and P06 and the ESERA boundary without borrowing
    authority from active cases. K05 observes only an independently authorized
    passive stream; injected negative controls remain synthetic offline replay.
-3. **Transport:** execute the `adaptermux-v2` cells in the order of the
+3. **Transport:** execute the `adaptermux-v2` cells named by the
    [hardware session run sheet](hardware-session-run-sheet.md). Record one report
-   form, `adaptermux-v2`. Account for every cell and expected-failure reason;
-   infrastructure-blocked, unexpected fail or xpass cannot become a passing acceptance.
+   form, `adaptermux-v2`. That sheet's `T13` case, `T14` case, last `full88`
+   step, proxy-side baseline of those cases, and rows A-13 and B-07 stay unrun;
+   do not assemble that retired form. Account for every cell and expected-failure
+   reason; infrastructure-blocked, unexpected fail or xpass cannot become a
+   passing acceptance.
 4. **Retained product behavior:** use [retained acceptance][legacy] for the exact
    LEGACY P/N criteria and mux disposition; record each named row below. Reuse
    shared transport observations only with traceable scope, never by implication.
@@ -101,8 +104,10 @@ is context, not installation authority. The [transport gate](../../scripts/trans
 and [passive gate](../../scripts/passive_smoke_gate.sh) remain authoritative for
 classification; this document changes neither gate nor expected-failure inventory.
 The session assesses P01, P02 and P06 and records one report form, `adaptermux-v2`,
-for the cells in the [hardware session run sheet](hardware-session-run-sheet.md).
-The retired form's rows stay not run.
+for the `adaptermux-v2` cells named by the
+[hardware session run sheet](hardware-session-run-sheet.md).
+That sheet's `T13` case, `T14` case, last `full88` step, proxy-side baseline of
+those cases, and rows A-13 and B-07 stay unrun. The retired form's rows stay not run.
 No gate override is requested; an override never authorizes live writes and never
 bypasses a triggered offline Modbus RTU gate.
 

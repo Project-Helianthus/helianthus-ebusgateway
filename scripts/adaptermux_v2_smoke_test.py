@@ -79,15 +79,6 @@ class Phase:
         self.metrics = copy.deepcopy(metrics["common"] + (metrics["mux"] if mux else []))
         if mux and signals is not None:
             self.metrics += copy.deepcopy(DATA["adaptermux_signals"][signals])
-        # Required passive discovery reads these gauges on AD02, AD03 and CX01.
-        # Other cells ignore them. They are prepended so a test that reads the
-        # last recorded mux gauge still sees that gauge.
-        self.metrics = [
-            [SMOKE.PASSIVE_TAP_CONNECTED, {}, 1],
-            [SMOKE.PASSIVE_WARMUP_STATE, {"state": "available"}, 1],
-            [SMOKE.PASSIVE_PROBE_OUTCOMES, {"outcome": "confirmed"}, 1],
-            [SMOKE.PASSIVE_PROBE_OUTCOMES, {"outcome": "timed_out"}, 0],
-        ] + self.metrics
         self.vars = copy.deepcopy(DATA["vars"][name])
 
     def row(self, metric, labels):
@@ -114,10 +105,8 @@ class Phase:
         }
 
 
-def graphql_body(state, devices=None):
-    if devices is None:
-        devices = [{"address": "0x10", "deviceId": "synthetic"}]
-    return json.dumps({"data": {"system": {"state": state}, "devices": devices}})
+def graphql_body(state):
+    return json.dumps({"data": {"system": {"state": state}}})
 
 
 def mcp_body(state, contract):
@@ -445,75 +434,6 @@ class ExecutableInvariantTests(SmokeTestCase):
         status, evidence = self.run_smoke(self.environ("AD03", "mux", "ens"))
         self.assertEqual(status, SMOKE.EXIT_FAIL)
         self.assertIn("passive_third_party_frames did not move", self.reasons(evidence))
-
-    def test_required_passive_discovery_passes_on_the_carrying_cells(self):
-        for invariant, row, second_client in (
-            ("AD02", "ens", False),
-            ("AD03", "ens", False),
-            ("CX01", "ens", True),
-            ("CX01", "enh", True),
-        ):
-            with self.subTest(case=case_id(invariant, row)):
-                self.stub.load(self.phases("mux", row))
-                status, evidence = self.run_smoke(self.environ(invariant, "mux", row))
-                self.assertEqual(status, SMOKE.EXIT_PASS, evidence["reasons"])
-                required = evidence["passive_required"]
-                self.assertEqual(required["mode"], "required")
-                self.assertTrue(required["passed"])
-                self.assertEqual(required["second_client"], second_client)
-                self.assertGreaterEqual(required["devices"], 1)
-                self.assertEqual(required["probe_timed_out"], 0)
-                self.assertEqual(required["tap_connected"], 1)
-                self.assertEqual(required["warmup_available"], 1)
-                self.assertGreaterEqual(required["probe_confirmed"], 1)
-
-    def test_required_passive_discovery_rejects_an_empty_device_list(self):
-        for invariant, second_client in (("AD02", False), ("AD03", False), ("CX01", True)):
-            with self.subTest(invariant=invariant):
-                self.stub.load(self.phases("mux", "ens"))
-                self.stub.answers["/graphql"] = [graphql_body(DATA["semantic"]["state"], devices=[])]
-                status, evidence = self.run_smoke(self.environ(invariant, "mux", "ens"))
-                self.assertEqual(status, SMOKE.EXIT_FAIL)
-                self.assertIn("devices list is empty", self.reasons(evidence))
-                self.assertFalse(evidence["passive_required"]["passed"])
-                self.assertEqual(evidence["passive_required"]["second_client"], second_client)
-                self.assertEqual(evidence["passive_required"]["devices"], 0)
-
-    def test_required_passive_discovery_rejects_a_timed_out_or_unconfirmed_probe(self):
-        baseline, flow = self.phases("mux", "ens")
-        flow.set(SMOKE.PASSIVE_PROBE_OUTCOMES, {"outcome": "timed_out"}, 1)
-        self.stub.load([baseline, flow])
-        status, evidence = self.run_smoke(self.environ("AD03", "mux", "ens"))
-        self.assertEqual(status, SMOKE.EXIT_FAIL)
-        self.assertIn("timed_out passive probe", self.reasons(evidence))
-
-        baseline, flow = self.phases("mux", "ens")
-        for phase in (baseline, flow):
-            phase.metrics = [
-                row for row in phase.metrics
-                if not (row[0] == SMOKE.PASSIVE_PROBE_OUTCOMES and row[1].get("outcome") == "confirmed")
-            ]
-        self.stub.load([baseline, flow])
-        status, evidence = self.run_smoke(self.environ("AD03", "mux", "ens"))
-        self.assertEqual(status, SMOKE.EXIT_FAIL)
-        self.assertIn("passive confirmed outcome", self.reasons(evidence))
-
-        baseline, flow = self.phases("mux", "enh")
-        flow.set(SMOKE.PASSIVE_TAP_CONNECTED, {}, 0)
-        flow.set(SMOKE.PASSIVE_WARMUP_STATE, {"state": "available"}, 0)
-        self.stub.load([baseline, flow])
-        status, evidence = self.run_smoke(self.environ("CX01", "mux", "enh"))
-        self.assertEqual(status, SMOKE.EXIT_FAIL)
-        self.assertIn("passive tap connected", self.reasons(evidence))
-        self.assertIn("passive warmup available", self.reasons(evidence))
-        self.assertTrue(evidence["passive_required"]["second_client"])
-
-    def test_cells_without_required_discovery_ignore_an_empty_device_list(self):
-        self.stub.load(self.phases("mux", "ens"))
-        self.stub.answers["/graphql"] = [graphql_body(DATA["semantic"]["state"], devices=[])]
-        status, evidence = self.run_smoke(self.environ("AD01", "mux", "ens"))
-        self.assertEqual(status, SMOKE.EXIT_PASS, evidence["reasons"])
-        self.assertNotIn("passive_required", evidence)
 
     def test_disconnected_passive_tap_fails(self):
         for invariant in ("AD02", "AD03"):

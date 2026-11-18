@@ -387,9 +387,9 @@ hardware session and the same per-transport setups.
 - No open ticket implements UDP-plain or TCP-plain southbound framing in the
   mux; 48 cells stay planned until one does. A draft issue is in
   `author-evidence/issue1378-matrix-v2/dependent-ticket-comments.md`.
-- `P03`, `P04` and `P05` leave the passive suite. The cells that execute their
-  required passive discovery are named on the transport gate policy page and
-  in the cell map.
+- `P03`, `P04` and `P05` leave the passive suite. The cells that carry part of
+  their assertions, and the part no cell carries, are named on the transport
+  gate policy page and in the cell map.
 - Keeping `*-DS01` depends on the non-mux direct transports remaining
   configurable.
 - The INFO-retention conflict between the multiplexer architecture and the

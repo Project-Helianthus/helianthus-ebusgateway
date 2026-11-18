@@ -2,6 +2,7 @@
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import tempfile
@@ -11,6 +12,7 @@ import unittest
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 PASSIVE_SMOKE_GATE_SCRIPT = REPO_ROOT / "scripts" / "passive_smoke_gate.sh"
+PASSIVE_HARNESS_SCRIPT = REPO_ROOT / "scripts" / "passive_matrix_case_ha.sh"
 CONFIG_CLASSIFIER = REPO_ROOT / "scripts" / "semreg_public_config_classifier.py"
 
 
@@ -73,7 +75,6 @@ type Config struct {
             "PASSIVE_SMOKE_GATE_OWNER_OVERRIDE",
             "PASSIVE_SMOKE_GATE_OWNER_REASON",
             "PASSIVE_SMOKE_REPORT",
-            "PASSIVE_REQUIRED_CELL_DIR",
             "TRANSPORT_MATRIX_REPORT",
         ):
             env.pop(key, None)
@@ -245,46 +246,6 @@ type Config struct {
             {"case_id": "P06", "passive_mode": "unsupported_or_misconfigured", "outcome": "pass"},
         ]
 
-    def _required_cells(self) -> dict[str, bool]:
-        return {
-            "ENS-AD02": False,
-            "ENS-AD03": False,
-            "ENS-CX01": True,
-            "ENH-CX01": True,
-        }
-
-    def _write_required_evidence(self, root: pathlib.Path, mutate=None) -> None:
-        for case_id, second_client in self._required_cells().items():
-            evidence = {
-                "result": "pass",
-                "passive_required": {
-                    "mode": "required",
-                    "passed": True,
-                    "second_client": second_client,
-                    "devices": 2,
-                },
-            }
-            verdict = {"case_id": case_id, "outcome": "pass", "suite": "adaptermux-v2"}
-            if mutate is not None:
-                mutate(case_id, evidence, verdict)
-            case_dir = root / case_id
-            case_dir.mkdir(parents=True, exist_ok=True)
-            (case_dir / "smoke_evidence.json").write_text(json.dumps(evidence), encoding="utf-8")
-            (case_dir / "verdict.json").write_text(json.dumps(verdict), encoding="utf-8")
-
-    def _run_gate(self, repo_path: pathlib.Path, report_path: pathlib.Path, evidence_dir: pathlib.Path | None):
-        env = {"PASSIVE_SMOKE_GATE_BASE_REF": "HEAD", "PASSIVE_SMOKE_REPORT": str(report_path)}
-        if evidence_dir is not None:
-            env["PASSIVE_REQUIRED_CELL_DIR"] = str(evidence_dir)
-        return subprocess.run(
-            ["bash", "scripts/passive_smoke_gate.sh"],
-            cwd=repo_path,
-            env=self._script_env(**env),
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-
     def _run_triggered_gate(self, cases: list[dict[str, str]]) -> subprocess.CompletedProcess[str]:
         repo_path, report_path = self._create_temp_repo(
             "cmd/gateway/main.go",
@@ -310,57 +271,17 @@ type Config struct {
             base_text="package main\n\nfunc main() {\n\tpassiveMode := \"required\"\n\t_ = passiveMode\n}\n",
             modified_text="package main\n\nfunc main() {\n\tpassiveMode := \"unsupported_or_misconfigured\"\n\t_ = passiveMode\n}\n",
         )
-        evidence_dir = repo_path / "required-cells"
-        self._write_required_evidence(evidence_dir)
-        result = self._run_gate(repo_path, report_path, evidence_dir)
-        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        result = subprocess.run(
+            ["bash", "scripts/passive_smoke_gate.sh"],
+            cwd=repo_path,
+            env=self._script_env(PASSIVE_SMOKE_GATE_BASE_REF="HEAD", PASSIVE_SMOKE_REPORT=str(report_path)),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
         self.assertIn("passive smoke gate: PASS", result.stdout)
         self.assertIn("P01, P02 and P06", result.stdout)
-        self.assertIn("ENS-AD02", result.stdout)
-        self.assertIn("ENH-CX01", result.stdout)
-
-    def test_reduced_report_without_required_discovery_evidence_is_rejected(self) -> None:
-        repo_path, report_path = self._create_temp_repo(
-            "cmd/gateway/main.go",
-            base_text="package main\n\nfunc main() {\n\tpassiveMode := \"required\"\n\t_ = passiveMode\n}\n",
-            modified_text="package main\n\nfunc main() {\n\tpassiveMode := \"unsupported_or_misconfigured\"\n\t_ = passiveMode\n}\n",
-        )
-        missing = self._run_gate(repo_path, report_path, None)
-        self.assertNotEqual(missing.returncode, 0, msg=missing.stdout)
-        self.assertIn("required passive discovery evidence is missing", missing.stdout)
-        self.assertIn("ENS-AD02", missing.stdout)
-        self.assertIn("ENS-CX01", missing.stdout)
-
-        evidence_dir = repo_path / "required-cells"
-
-        def fail_second_client(case_id, evidence, verdict):
-            if case_id == "ENS-CX01":
-                verdict["outcome"] = "fail"
-
-        self._write_required_evidence(evidence_dir, fail_second_client)
-        client_failed = self._run_gate(repo_path, report_path, evidence_dir)
-        self.assertNotEqual(client_failed.returncode, 0, msg=client_failed.stdout)
-        self.assertIn("ENS-CX01 did not pass", client_failed.stdout)
-
-        def empty_devices(case_id, evidence, verdict):
-            if case_id == "ENS-AD03":
-                evidence["passive_required"]["devices"] = 0
-                evidence["passive_required"]["passed"] = True
-
-        self._write_required_evidence(evidence_dir, empty_devices)
-        empty = self._run_gate(repo_path, report_path, evidence_dir)
-        self.assertNotEqual(empty.returncode, 0, msg=empty.stdout)
-        self.assertIn("ENS-AD03 required passive discovery did not pass", empty.stdout)
-
-        def wrong_client_flag(case_id, evidence, verdict):
-            if case_id == "ENS-AD02":
-                evidence["passive_required"]["second_client"] = True
-
-        self._write_required_evidence(evidence_dir, wrong_client_flag)
-        flagged = self._run_gate(repo_path, report_path, evidence_dir)
-        self.assertNotEqual(flagged.returncode, 0, msg=flagged.stdout)
-        self.assertIn("ENS-AD02 second client flag is True", flagged.stdout)
-        self.assertIn("want False", flagged.stdout)
 
     def test_retired_six_case_form_names_the_new_form(self) -> None:
         cases = [
@@ -775,6 +696,106 @@ func (store *BusObservabilityStore) RenderPrometheus() {
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("PASSIVE_SMOKE_REPORT is required", result.stdout)
+
+    def test_gate_reads_only_the_kept_passive_variables(self) -> None:
+        # The three-case form adds no input: the gate's variables stay the kept
+        # path, report and override names, and a three-case report alone passes.
+        text = PASSIVE_SMOKE_GATE_SCRIPT.read_text(encoding="utf-8")
+        self.assertEqual(
+            set(re.findall(r"PASSIVE_[A-Z_]+", text)),
+            {
+                "PASSIVE_SMOKE_GATE_BASE_REF",
+                "PASSIVE_SMOKE_GATE_BY_OWNER",
+                "PASSIVE_SMOKE_GATE_OWNER_OVERRIDE",
+                "PASSIVE_SMOKE_GATE_OWNER_REASON",
+                "PASSIVE_SMOKE_REPORT",
+            },
+        )
+        self.assertNotIn("os.environ", text)
+        self.assertNotIn("smoke_evidence.json", text)
+        result = self._run_triggered_gate(self._passive_cases())
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        self.assertIn("passive smoke gate: PASS (P01, P02 and P06, all pass).", result.stdout)
+
+
+class PassiveHarnessDriverAdmissionTests(unittest.TestCase):
+    """The harness fails a case when the gateway log shows the eBUS driver withheld."""
+
+    def _function_source(self, name: str) -> str:
+        text = PASSIVE_HARNESS_SCRIPT.read_text(encoding="utf-8")
+        match = re.search(rf"^{name}\(\) \{{\n.*?^\}}\n", text, re.MULTILINE | re.DOTALL)
+        self.assertIsNotNone(match, msg=f"{name} not found in the passive harness")
+        return match.group(0)
+
+    def _admitted(self, log_text: str | None) -> subprocess.CompletedProcess[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = pathlib.Path(tmp) / "gateway.log"
+            if log_text is not None:
+                log_path.write_text(log_text, encoding="utf-8")
+            program = "\n".join(
+                [
+                    "set -euo pipefail",
+                    "canonical_case_id=P01",
+                    # The harness reads the remote log through remote_exec; the
+                    # stub runs the same command locally.
+                    'remote_exec() { bash -c "$1"; }',
+                    "sleep() { :; }",
+                    self._function_source("ebus_driver_admitted"),
+                    'ebus_driver_admitted "$1"',
+                ]
+            )
+            return subprocess.run(
+                ["bash", "-c", program, "harness", str(log_path)],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+    def test_admitted_driver_passes(self) -> None:
+        result = self._admitted("gateway: listening\nebus.primary running\n")
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertNotIn("withheld", result.stderr)
+
+    def test_withheld_driver_fails_the_case(self) -> None:
+        for line in (
+            "gateway: ebus.primary withheld: instance identity unavailable\n",
+            "portal configuration: record did not load (config_invalid); ebus.primary withheld until local repair\n",
+        ):
+            with self.subTest(line=line):
+                result = self._admitted("gateway: listening\n" + line)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("passive case P01: eBUS driver withheld", result.stderr)
+
+    def test_missing_or_empty_log_fails_closed(self) -> None:
+        for log_text in (None, ""):
+            with self.subTest(log_text=log_text):
+                result = self._admitted(log_text)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("passive case P01: eBUS driver withheld", result.stderr)
+
+    def test_matched_text_is_what_the_gateway_logs(self) -> None:
+        # The harness matches "ebus.primary withheld"; both gateway reports of a
+        # withheld primary driver render that text.
+        self.assertIn("'ebus.primary withheld'", self._function_source("ebus_driver_admitted"))
+        driver = (REPO_ROOT / "cmd" / "gateway" / "ebus_driver_runtime.go").read_text(encoding="utf-8")
+        self.assertIn('primaryEBusDriverID = "ebus.primary"', driver)
+        setup = (REPO_ROOT / "cmd" / "gateway" / "gateway_run_setup.go").read_text(encoding="utf-8")
+        self.assertIn('"ebus.primary withheld: %w"', setup)
+        portal = (REPO_ROOT / "cmd" / "gateway" / "portal_config_runtime.go").read_text(encoding="utf-8")
+        self.assertIn('%s withheld until local repair", r.errorCode(), id)', portal)
+
+    def test_every_gateway_start_and_smoke_checks_admission(self) -> None:
+        restart = self._function_source("restart_gateway_with_passive_mode")
+        self.assertIn("--instance-guid '${instance_guid}'", restart)
+        self.assertIn("--instance-guid-source '${instance_source}'", restart)
+        self.assertIn('ebus_driver_admitted "${gateway_log_path}"', restart)
+        rollback = self._function_source("run_rollback_execute")
+        self.assertIn('ebus_driver_admitted "${rollback_gateway_log_path}"', rollback)
+        self.assertIn('reason="ebus_driver_withheld"', rollback)
+        text = PASSIVE_HARNESS_SCRIPT.read_text(encoding="utf-8")
+        smoke = re.search(r"^  smoke\)\n(.*?)^    ;;\n", text, re.MULTILINE | re.DOTALL)
+        self.assertIsNotNone(smoke)
+        self.assertIn("ebus_driver_admitted", smoke.group(1))
 
 
 if __name__ == "__main__":

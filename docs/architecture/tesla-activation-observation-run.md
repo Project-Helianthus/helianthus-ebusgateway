@@ -296,12 +296,19 @@ Required run order:
    place.
 3. Start `tesla-observe` before the charger gets power, with one repeat for
    that startup, using the same `<serial-device>` and with no other program
-   opening it in between. Give the charger power after that invocation has
-   started, for that one window. The tool sends nothing and does not expect
-   the confirmation. The command writes nothing until the run finishes, so
-   a later repeat does not show that a new window is open. Do not power the
-   charger again for a later repeat. Start a separate invocation before the
-   next power-up.
+   opening it in between. The start of the invocation is not a signal to
+   give the charger power, because the outputs are checked first and the
+   flush that follows the open discards every byte received before it.
+4. Confirm on the observation host that the running `tesla-observe` process
+   itself holds `<serial-device>` open, then wait at least one more second.
+   If the invocation has already exited, read its output and do not give the
+   charger power for it.
+5. Give the charger power for that one window, well before the window
+   deadline, which is counted from the open. The tool sends nothing and does
+   not expect the confirmation. The command writes nothing until the run
+   finishes, so a later repeat does not show that a new window is open. Do
+   not power the charger again for a later repeat. Start a separate
+   invocation before the next power-up.
 
 ## Building for ARM Linux boards
 

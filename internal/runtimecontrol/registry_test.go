@@ -217,6 +217,10 @@ func TestRegisterRejectsBeforeEffects(t *testing.T) {
 			d.Direction = DirectionSouthbound
 			d.Hooks = []HookDeclaration{{Name: HookOutput, Version: "2"}}
 		}), ErrHookDirection},
+		{"output hook on both", single(func(d *Descriptor) {
+			d.Direction = DirectionBoth
+			d.Hooks = []HookDeclaration{{Name: HookOutput, Version: OutputHookVersion}}
+		}), ErrHookDirection},
 		{"output hook without version", single(func(d *Descriptor) { d.Hooks = []HookDeclaration{{Name: HookOutput}} }), ErrUnsupportedHookVersion},
 		{"output hook prefixed version", single(func(d *Descriptor) { d.Hooks = []HookDeclaration{{Name: HookOutput, Version: "v1"}} }), ErrUnsupportedHookVersion},
 		{"output hook other version", single(func(d *Descriptor) { d.Hooks = []HookDeclaration{{Name: HookOutput, Version: "2"}} }), ErrUnsupportedHookVersion},

@@ -34,12 +34,11 @@ The `output` declaration carries hook version `1`, the only supported
 version. An `output` declaration with no version or with any other version
 fails as an unsupported version.
 
-The hook spelling `output` is accepted only on a northbound descriptor. On this
-host a northbound descriptor is one whose direction is `northbound` or `both`,
-because `both` declares the northbound role together with the southbound one.
-The southbound eeBUS driver registers with an empty hook list, and that
-registration stays valid. Declaring `output` on a `southbound` descriptor is
-refused.
+The hook spelling `output` is accepted only on a descriptor whose direction is
+`northbound`. Every other descriptor direction keeps the lifecycle rule, so
+declaring `output` on a `southbound` or a `both` descriptor is refused. The
+southbound eeBUS driver registers with an empty hook list, and that
+registration stays valid.
 
 The host refuses every hook name other than `output`. The reserved names
 `mcp`, `setup`, `portal`, `semantic` and `evidence` fail as unimplemented.
@@ -69,10 +68,10 @@ any adapter runs or any registry state changes:
 | Declared hook list | Result |
 | --- | --- |
 | Empty | Registers on `southbound`, `northbound` and `both` |
-| One `output` at version `1` on `northbound` or `both` | Registers; the frozen entry lists the declaration |
+| One `output` at version `1` on `northbound` | Registers; the frozen entry lists the declaration |
 | Any reserved name, alone or beside `output` | `ErrHookUnimplemented` |
 | Any other name, alone or beside `output` | `ErrUnknownHook` |
-| `output` on `southbound` | `ErrHookDirection` |
+| `output` on `southbound` or `both` | `ErrHookDirection` |
 | `output` with no version or another version | `ErrUnsupportedHookVersion` |
 | `output` declared more than once | `ErrDuplicateHook` |
 
@@ -93,9 +92,9 @@ the gateway.
 
 `internal/runtimecontrol/output_hook_test.go` and the refusal table in
 `internal/runtimecontrol/registry_test.go` use synthetic descriptors and
-synthetic runtimes only. They cover registration on `northbound` and `both`,
-an empty hook list on every direction, every refusal in the table above with
-the registry unchanged and no adapter call, the detached frozen entry, start
-and stop through the driver manager, and health as observed state, reason and
-the safety-quarantine flag read from the manager snapshot, including a
-disabled descriptor and a safety quarantine.
+synthetic runtimes only. They cover registration on `northbound`, the
+refusal on `southbound` and `both`, an empty hook list on every direction,
+every refusal in the table above with the registry unchanged and no adapter
+call, the detached frozen entry, start and stop through the driver manager,
+and health as observed state, reason and the safety-quarantine flag read from
+the manager snapshot, including a disabled descriptor and a safety quarantine.

@@ -45,20 +45,34 @@ func TestOutputHookSpellingAndVersion(t *testing.T) {
 	}
 }
 
-func TestOutputHookRegistersOnBothDescriptor(t *testing.T) {
+func TestOutputHookRefusedOnBothDescriptor(t *testing.T) {
 	var calls atomic.Int64
 	registry := NewRegistry(nil)
+	installed := fixture(&calls, "fake.output-installed", DirectionNorthbound, "installed-src")
+	installed.Hooks = outputHooks()
+	if err := registry.Register(installed); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	before := registry.List()
 	both := fixture(&calls, "fake.output-both", DirectionBoth, "output-both-src")
 	both.Hooks = outputHooks()
-	if err := registry.Register(both); err != nil {
-		t.Fatalf("Register both output descriptor: %v", err)
+	err := registry.Register(both)
+	var refused *RegistrationError
+	if !errors.Is(err, ErrHookDirection) || !errors.As(err, &refused) || refused.Index != 0 || refused.DriverID != "fake.output-both" {
+		t.Fatalf("Register both output descriptor = %v, want ErrHookDirection at descriptor 0", err)
 	}
-	got, err := registry.Get("fake.output-both")
-	if err != nil || got.Driver.Direction != DirectionBoth || !reflect.DeepEqual(got.Driver.Hooks, outputHooks()) {
-		t.Fatalf("Get = %+v, %v", got, err)
+	if after := registry.List(); !reflect.DeepEqual(before, after) {
+		t.Fatalf("registry changed after refusal:\nbefore %+v\nafter  %+v", before, after)
+	}
+	if _, err := registry.Get("fake.output-both"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("both output descriptor installed after refusal: %v", err)
 	}
 	if calls.Load() != 0 {
 		t.Fatalf("factory calls = %d, want 0", calls.Load())
+	}
+	emptyBoth := fixture(&calls, "fake.output-both", DirectionBoth, "output-both-src")
+	if err := registry.Register(emptyBoth); err != nil {
+		t.Fatalf("Register both descriptor with an empty hook list: %v", err)
 	}
 }
 
@@ -251,7 +265,7 @@ func TestOutputHookSafetyQuarantineIsTheManagerFlag(t *testing.T) {
 	var calls atomic.Int64
 	runtime := &quarantiningRuntime{}
 	registry := NewRegistry(nil)
-	descriptor := fixture(&calls, "fake.output-quarantine", DirectionBoth, "output-quarantine-src")
+	descriptor := fixture(&calls, "fake.output-quarantine", DirectionNorthbound, "output-quarantine-src")
 	descriptor.Hooks = outputHooks()
 	descriptor.Adapter = NewAdapter(func(context.Context, Construction) (*quarantiningRuntime, error) {
 		calls.Add(1)

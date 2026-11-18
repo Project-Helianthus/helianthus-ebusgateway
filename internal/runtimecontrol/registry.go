@@ -269,10 +269,10 @@ func safeNativeContractRef(ref NativeContractRef) bool {
 
 // admitHooks validates a descriptor's hook list. An empty list is valid. The
 // only accepted non-empty list is a single output declaration at
-// OutputHookVersion on a northbound or both descriptor. Every other name
-// fails through hookError first, whatever its position or the direction;
-// then output on any other direction, then an unsupported output version,
-// then a repeated output declaration.
+// OutputHookVersion on a northbound descriptor. Every other name fails
+// through hookError first, whatever its position or the direction; then
+// output on any direction other than northbound, both included; then an
+// unsupported output version; then a repeated output declaration.
 func admitHooks(direction Direction, hooks []HookDeclaration) error {
 	outputs := 0
 	for _, hook := range hooks {
@@ -287,7 +287,7 @@ func admitHooks(direction Direction, hooks []HookDeclaration) error {
 	if outputs == 0 {
 		return nil
 	}
-	if direction != DirectionNorthbound && direction != DirectionBoth {
+	if direction != DirectionNorthbound {
 		return fmt.Errorf("%w: %s on %s", ErrHookDirection, HookOutput, direction)
 	}
 	for _, hook := range hooks {

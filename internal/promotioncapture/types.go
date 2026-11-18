@@ -434,8 +434,9 @@ type VerificationLevel string
 const (
 	// VerificationByCapture: both windows matched (or stayed natively valid).
 	VerificationByCapture VerificationLevel = "VERIFIED_BY_CAPTURE"
-	// VerificationCaptureMismatch: a window compared the values and they
-	// differed (MISMATCH or NATIVE_DRIFT); recorded as a finding.
+	// VerificationCaptureMismatch: a window compared admissible values and
+	// they differed (MISMATCH, CONFLICT or NATIVE_DRIFT); recorded as a
+	// finding.
 	VerificationCaptureMismatch VerificationLevel = "CAPTURE_MISMATCH"
 	// VerificationNotRun: no comparison completed on admissible samples, or
 	// the candidate is retired and is never compared.

@@ -348,7 +348,7 @@ func recordedVerification(eligibility ProtocolEligibility, pre, post Outcome) (V
 			return "", nil, fmt.Errorf("%w: invalid eligible terminal outcome %s", ErrInvalidEvidence, outcome)
 		}
 		finding := outcome
-		if outcome == OutcomeMismatch {
+		if outcome == OutcomeMismatch || outcome == OutcomeConflict {
 			return VerificationCaptureMismatch, &finding, nil
 		}
 		return VerificationNotRun, &finding, nil

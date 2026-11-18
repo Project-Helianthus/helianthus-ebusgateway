@@ -327,3 +327,37 @@ func campaignCandidate(t *testing.T, campaign Campaign, candidateID string) Camp
 func assemblyDigest(value string) string {
 	return "sha256:" + strings.Repeat(value, 64)
 }
+
+func TestRecordedVerificationLevelFollowsCompletedComparison(t *testing.T) {
+	cases := []struct {
+		name      string
+		pre, post Outcome
+		level     VerificationLevel
+		finding   Outcome
+	}{
+		{"both windows match", OutcomeMatch, OutcomeMatch, VerificationByCapture, ""},
+		{"mismatch after restart", OutcomeMatch, OutcomeMismatch, VerificationCaptureMismatch, OutcomeMismatch},
+		{"conflict before restart", OutcomeConflict, OutcomeMatch, VerificationCaptureMismatch, OutcomeConflict},
+		{"conflict after restart", OutcomeMatch, OutcomeConflict, VerificationCaptureMismatch, OutcomeConflict},
+		{"stale sample", OutcomeStale, OutcomeMatch, VerificationNotRun, OutcomeStale},
+		{"missing sample", OutcomeMatch, OutcomeMissing, VerificationNotRun, OutcomeMissing},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			level, finding, err := recordedVerification(ProtocolCrossProtocol, tc.pre, tc.post)
+			if err != nil {
+				t.Fatalf("recordedVerification: %v", err)
+			}
+			if level != tc.level {
+				t.Fatalf("level = %s, want %s", level, tc.level)
+			}
+			if tc.finding == "" {
+				if finding != nil {
+					t.Fatalf("finding = %s, want none", *finding)
+				}
+			} else if finding == nil || *finding != tc.finding {
+				t.Fatalf("finding = %v, want %s", finding, tc.finding)
+			}
+		})
+	}
+}

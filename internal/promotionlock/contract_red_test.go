@@ -1089,12 +1089,12 @@ func readPathOrTree(root, relative string) ([]byte, error) {
 	return combined.Bytes(), err
 }
 
-// The declared admission is the gate Build applies to the declared profile;
+// The captured source check is the gate Build applies to the declared profile;
 // the default run pins it directly, without the process-private captured inputs.
 func TestIssue1694SourceCheckAdmitsOnlyTheDeclaredProfile(t *testing.T) {
 	declared := capturedInputsWithSyntheticSources(t)
-	if _, err := admitDeclaredSourcesV1(declared); err == nil || err.Error() != "captured.status" {
-		t.Fatalf("admitDeclaredSourcesV1(declared) error = %v; want the profile admitted and captured.status from the synthetic sources", err)
+	if _, err := validateCapturedSources(declared); err == nil || err.Error() != "captured.status" {
+		t.Fatalf("validateCapturedSources(declared) error = %v; want the profile admitted and captured.status from the synthetic sources", err)
 	}
 	if _, err := Build(declared); err == nil || err.Error() != "captured.status" {
 		t.Fatalf("Build(declared) error = %v; want the profile admitted and captured.status from the synthetic sources", err)
@@ -1103,38 +1103,33 @@ func TestIssue1694SourceCheckAdmitsOnlyTheDeclaredProfile(t *testing.T) {
 	for _, profile := range []string{syntheticProfileV1, "CAPTURED_RUNTIME_ZERO_PROMOTION", "CAPTURED_RUNTIME_PROMOTION", ""} {
 		other := capturedInputsWithSyntheticSources(t)
 		other.Profile = profile
-		if _, err := admitDeclaredSourcesV1(other); err == nil || err.Error() != "captured.input" {
-			t.Fatalf("admitDeclaredSourcesV1(profile %q) error = %v; want captured.input", profile, err)
+		if _, err := validateCapturedSources(other); err == nil || err.Error() != "captured.input" {
+			t.Fatalf("validateCapturedSources(profile %q) error = %v; want captured.input", profile, err)
 		}
 	}
 
 	withDossier := capturedInputsWithSyntheticSources(t)
 	withDossier.Dossier = contractArtifact(t, "docs/platform/fixtures/leaf-promotion-dossier/v1/positive/dossier.json")
-	if _, err := admitDeclaredSourcesV1(withDossier); err == nil || err.Error() != "captured.input" {
-		t.Fatalf("admitDeclaredSourcesV1(declared with dossier) error = %v; want captured.input", err)
-	}
 	if _, err := validateCapturedSources(withDossier); err == nil || err.Error() != "captured.input" {
 		t.Fatalf("validateCapturedSources(declared with dossier) error = %v; want captured.input", err)
 	}
 
 	incomplete := capturedInputsWithSyntheticSources(t)
 	incomplete.M8Report = nil
-	if _, err := admitDeclaredSourcesV1(incomplete); err == nil || err.Error() != "captured.input" {
-		t.Fatalf("admitDeclaredSourcesV1(declared without M8 report) error = %v; want captured.input", err)
-	}
 	if _, err := validateCapturedSources(incomplete); err == nil || err.Error() != "captured.input" {
 		t.Fatalf("validateCapturedSources(declared without M8 report) error = %v; want captured.input", err)
 	}
 }
 
-// The declared profile is admitted by build.go alone: the captured source
-// binding checks select no profile, so the promotion gate cannot move there.
-func TestIssue1694CapturedSourceChecksSelectNoProfile(t *testing.T) {
+// The captured source check admits exactly one profile itself: it compares the
+// input profile with the declared profile and names no other profile, so the
+// function that performs the source binding checks stays fail-closed on its own.
+func TestIssue1694CapturedSourceChecksAdmitOnlyTheDeclaredProfile(t *testing.T) {
 	parsed, err := parser.ParseFile(token.NewFileSet(), "source.go", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var found bool
+	var found, compared bool
 	for _, declaration := range parsed.Decls {
 		function, ok := declaration.(*ast.FuncDecl)
 		if !ok || function.Name.Name != "validateCapturedSources" {
@@ -1143,13 +1138,16 @@ func TestIssue1694CapturedSourceChecksSelectNoProfile(t *testing.T) {
 		found = true
 		ast.Inspect(function.Body, func(node ast.Node) bool {
 			switch typed := node.(type) {
-			case *ast.Ident:
-				if strings.HasPrefix(typed.Name, "Profile") {
-					t.Errorf("validateCapturedSources references %s; the declared profile admission belongs to admitDeclaredSourcesV1", typed.Name)
+			case *ast.BinaryExpr:
+				selector, isSelector := typed.X.(*ast.SelectorExpr)
+				constant, isIdent := typed.Y.(*ast.Ident)
+				if typed.Op == token.NEQ && isSelector && selector.Sel.Name == "Profile" &&
+					isIdent && constant.Name == "ProfileDeclaredFromSpecificationV1" {
+					compared = true
 				}
-			case *ast.SelectorExpr:
-				if typed.Sel.Name == "Profile" {
-					t.Errorf("validateCapturedSources reads the input profile; the declared profile admission belongs to admitDeclaredSourcesV1")
+			case *ast.Ident:
+				if typed.Name != "Profile" && strings.HasPrefix(typed.Name, "Profile") && typed.Name != "ProfileDeclaredFromSpecificationV1" {
+					t.Errorf("validateCapturedSources references %s; only the declared profile reaches the captured source checks", typed.Name)
 				}
 			}
 			return true
@@ -1157,5 +1155,8 @@ func TestIssue1694CapturedSourceChecksSelectNoProfile(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("validateCapturedSources not found in source.go")
+	}
+	if !compared {
+		t.Fatal("validateCapturedSources does not refuse a profile other than ProfileDeclaredFromSpecificationV1")
 	}
 }

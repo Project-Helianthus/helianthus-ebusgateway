@@ -26,7 +26,7 @@ func Build(inputs InputsV1) ([]byte, error) {
 		}
 		return mustContractArtifactV1("docs/platform/fixtures/leaf-promotion-dossier/v1/positive/result.json"), nil
 	case ProfileDeclaredFromSpecificationV1:
-		sources, err := admitDeclaredSourcesV1(inputs)
+		sources, err := validateCapturedSources(inputs)
 		if err != nil {
 			return nil, err
 		}
@@ -38,15 +38,6 @@ func Build(inputs InputsV1) ([]byte, error) {
 	default:
 		return nil, fail("captured.input")
 	}
-}
-
-// admitDeclaredSourcesV1 is the profile admission of the declared lock: only
-// the declared profile reaches the source binding checks.
-func admitDeclaredSourcesV1(inputs InputsV1) (verifiedSourcesV1, error) {
-	if inputs.Profile != ProfileDeclaredFromSpecificationV1 {
-		return verifiedSourcesV1{}, fail("captured.input")
-	}
-	return validateCapturedSources(inputs)
 }
 
 func buildManifest(sources verifiedSourcesV1) (ResultV1, error) {

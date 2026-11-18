@@ -188,6 +188,10 @@ type session struct {
 	heldReq    *startRequest
 	heldEpoch  uint64
 	parkedInfo []sessionFrame
+
+	// writeMu serializes one frame write. Removal flushes a held answer
+	// only when the writer is not already inside a write.
+	writeMu sync.Mutex
 }
 
 // rawTCPDiagnosticThreshold is the number of consecutive SEND-rejections
@@ -302,8 +306,13 @@ func (m *Mux) AddSession(conn net.Conn) uint64 {
 	// constructor invoked here and in Mux.New.
 	m.ensureSessionPacer(id)
 	// Installed before the session goroutines run, so a bid that fails
-	// before its grant can drop the hold.
-	m.arb.setExternalBidDropped(dropBoundInfoHold)
+	// before its grant can release or discard the hold.
+	m.arb.setInfoHoldHooks(
+		func(req *startRequest) { m.bindSessionInfoHold(req.sessionID, req) },
+		m.releaseHandedInfoHold,
+		releaseBoundInfoHold,
+		dropBoundInfoHold,
+	)
 
 	// Populate the lock-free RemoteAddr side index so diagnostic logs
 	// taken from stateMu-holding code paths (onSYNLocked, etc.) can
@@ -362,9 +371,9 @@ func (m *Mux) RemoveSession(id uint64) {
 	m.sessionPacers.Delete(id)
 
 	if ok {
-		// The session leaves the map before cancelStart, and an in-flight
-		// bid is no longer queued, so clear the hold on this pointer.
-		sess.dropInfoHold(nil)
+		// The session leaves the map before cancelStart. Deliver the held
+		// answer first, while the writer can still push it to the client.
+		sess.flushInfoHoldOnRemoval()
 		m.releaseSessionGrant(sess)
 		m.arb.cancelStart(id)
 		m.cancelPendingStart(id)
@@ -642,7 +651,7 @@ func (s *session) handleStart(initiator byte) {
 		s.mux.logger.Printf("adaptermux: session %d START 0xAA (SYN cancel)", s.id)
 		s.sawHandshake.Store(true) // F-7: SYN-cancel is still a START
 		s.mux.arb.cancelStart(s.id)
-		s.dropInfoHold(nil)
+		s.releaseAnyInfoHold()
 		s.mux.releaseSessionGrant(s)
 		s.mux.cancelPendingStart(s.id)
 		return
@@ -764,21 +773,33 @@ func (s *session) infoAnswer(id byte) []sessionFrame {
 }
 
 // parkInfo holds frames while this session has a queued bid that the
-// including grant step has not yet returned from RequestStart.
+// including grant step has not yet returned from RequestStart. The parked
+// queue uses the same frame budget as the session send buffer. Overflow
+// rejects the session instead of growing without that bound.
 func (s *session) parkInfo(frames []sessionFrame) bool {
 	s.infoHold.Lock()
-	defer s.infoHold.Unlock()
 	if s.heldReq == nil {
+		s.infoHold.Unlock()
 		return false
 	}
+	if len(s.parkedInfo)+len(frames) > defaultSessionSendBuffer {
+		s.heldReq = nil
+		s.parkedInfo = nil
+		s.heldEpoch = 0
+		s.infoHold.Unlock()
+		go s.mux.RemoveSession(s.id) // goroutine: parked-answer overflow
+		return true
+	}
 	s.parkedInfo = append(s.parkedInfo, frames...)
+	s.infoHold.Unlock()
 	return true
 }
 
 // bindInfoHold remembers the session's current queued bid. A replacement
 // keeps answers already parked so they are released for the new bid.
 // A bid that already left the queue does not keep the hold: failure can
-// run as soon as the bid is visible and before this bind.
+// run as soon as the bid is visible and before this bind, and that answer
+// is delivered rather than dropped.
 func (s *session) bindInfoHold(req *startRequest) {
 	if req == nil {
 		return
@@ -789,30 +810,53 @@ func (s *session) bindInfoHold(req *startRequest) {
 	s.heldEpoch = s.mux.arb.lifecycleEpoch.Load()
 	s.infoHold.Unlock()
 	if s.mux.arb.externalBid(s.id) != req {
-		s.dropInfoHold(req)
+		s.releaseInfoHold(req)
 	}
 }
 
-// releaseInfoHold delivers the parked answer when req is the bid the
-// grant step handed to RequestStart. A lifecycle fence after the bind
-// discards the answer so a late RequestStart cannot deliver it.
-func (s *session) releaseInfoHold(req *startRequest) {
+// releaseAnyInfoHold delivers whatever answer this session is holding.
+func (s *session) releaseAnyInfoHold() {
 	s.infoHold.Lock()
-	if s.heldReq != req || s.heldEpoch != s.mux.arb.lifecycleEpoch.Load() {
-		if s.heldReq == req {
+	req := s.heldReq
+	s.infoHold.Unlock()
+	if req != nil {
+		s.releaseInfoHold(req)
+	}
+}
+
+// releaseInfoHold delivers the parked answer when req is the bid the hold
+// is for. The bid stays held until every parked frame has been queued, so
+// an INFO that arrives during delivery parks behind those frames instead of
+// passing them. A lifecycle fence after the bind discards the answer so a
+// late RequestStart cannot deliver it.
+func (s *session) releaseInfoHold(req *startRequest) {
+	if req == nil {
+		return
+	}
+	for {
+		s.infoHold.Lock()
+		if s.heldReq != req {
+			s.infoHold.Unlock()
+			return
+		}
+		if s.heldEpoch != s.mux.arb.lifecycleEpoch.Load() {
 			s.heldReq = nil
 			s.parkedInfo = nil
 			s.heldEpoch = 0
+			s.infoHold.Unlock()
+			return
+		}
+		frames := s.parkedInfo
+		s.parkedInfo = nil
+		if len(frames) == 0 {
+			s.heldReq = nil
+			s.heldEpoch = 0
+			s.infoHold.Unlock()
+			return
 		}
 		s.infoHold.Unlock()
-		return
+		s.deliverInfoFrames(frames)
 	}
-	frames := s.parkedInfo
-	s.parkedInfo = nil
-	s.heldReq = nil
-	s.heldEpoch = 0
-	s.infoHold.Unlock()
-	s.deliverInfoFrames(frames)
 }
 
 // dropInfoHold discards a parked answer. A nil req clears whatever is held;
@@ -828,6 +872,17 @@ func (s *session) dropInfoHold(req *startRequest) {
 	s.heldEpoch = 0
 }
 
+// releaseBoundInfoHold delivers the answer held for req. The session pointer
+// is taken from the bid, so this still runs after the session leaves the map.
+func releaseBoundInfoHold(req *startRequest) {
+	if req == nil {
+		return
+	}
+	if sess := req.infoSession.Load(); sess != nil {
+		sess.releaseInfoHold(req)
+	}
+}
+
 // dropBoundInfoHold discards the answer held for req. The session pointer
 // is taken from the bid, so this still runs after the session leaves the map.
 func dropBoundInfoHold(req *startRequest) {
@@ -836,6 +891,47 @@ func dropBoundInfoHold(req *startRequest) {
 	}
 	if sess := req.infoSession.Load(); sess != nil {
 		sess.dropInfoHold(req)
+	}
+}
+
+// flushInfoHoldOnRemoval delivers the held answer before the session's
+// writer is stopped. A direct write is used when the writer is idle, so
+// the bytes reach the client before the connection closes.
+func (s *session) flushInfoHoldOnRemoval() {
+	s.infoHold.Lock()
+	req := s.heldReq
+	epochOK := req != nil && s.heldEpoch == s.mux.arb.lifecycleEpoch.Load()
+	frames := s.parkedInfo
+	if req != nil {
+		s.heldReq = nil
+		s.parkedInfo = nil
+		s.heldEpoch = 0
+	}
+	s.infoHold.Unlock()
+	if req == nil || !epochOK || len(frames) == 0 {
+		return
+	}
+	if len(s.sendCh) == 0 && s.writeMu.TryLock() {
+		for _, frame := range frames {
+			_ = s.writeFrame(frame)
+		}
+		s.writeMu.Unlock()
+		return
+	}
+	s.deliverInfoFrames(frames)
+}
+
+// releaseHandedInfoHold delivers the answer of the bid the grant step handed
+// to the transport, and the answers of the external bids that lost.
+func (m *Mux) releaseHandedInfoHold() {
+	req, losers := m.arb.takeHandedGrant()
+	if req != nil {
+		releaseBoundInfoHold(req)
+	}
+	for _, loser := range losers {
+		if loser != req {
+			releaseBoundInfoHold(loser)
+		}
 	}
 }
 
@@ -879,18 +975,6 @@ func (m *Mux) sessionByID(sessionID uint64) *session {
 func (m *Mux) bindSessionInfoHold(sessionID uint64, req *startRequest) {
 	if sess := m.sessionByID(sessionID); sess != nil {
 		sess.bindInfoHold(req)
-	}
-}
-
-func (m *Mux) releaseSessionInfoHold(sessionID uint64, req *startRequest) {
-	if sess := m.sessionByID(sessionID); sess != nil {
-		sess.releaseInfoHold(req)
-	}
-}
-
-func (m *Mux) dropSessionInfoHold(sessionID uint64, req *startRequest) {
-	if sess := m.sessionByID(sessionID); sess != nil {
-		sess.dropInfoHold(req)
 	}
 }
 
@@ -1020,7 +1104,9 @@ func (s *session) writeLoop() {
 		frame := pending[0]
 		copy(pending, pending[1:])
 		pending = pending[:len(pending)-1]
+		s.writeMu.Lock()
 		err := s.writeFrame(frame)
+		s.writeMu.Unlock()
 		if err == nil && frame.kind == sessionFrameStarted && frame.grantGen != 0 && s.mux != nil {
 			s.grantDelivered.Store(true)
 			// Issue #1003: the grant became visible to the client

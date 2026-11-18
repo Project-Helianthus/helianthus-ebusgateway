@@ -2,6 +2,8 @@ package adaptermux
 
 import (
 	"errors"
+	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 )
@@ -51,10 +53,36 @@ type arbitrator struct {
 	// owner's START request.
 	currentInitiator byte
 
-	// onExternalBidDropped is called, without mu, after an external bid
-	// leaves pendingExternal without a grant. Nil when no session is
-	// attached. The callback must not call back into the arbitrator.
+	// onExternalBidQueued is called, without mu, after requestStart has
+	// queued an external bid and released mu. The session start wrapper
+	// holds the mux state lock across that call, so the callback binds
+	// the INFO answer before a grant can take the same lock. Nil when
+	// no session is attached. The callback must not call back into the
+	// arbitrator.
+	onExternalBidQueued func(*startRequest)
+
+	// onExternalBidReleased delivers the INFO answer held for a bid that
+	// left the queue because the client cancelled it. Nil when no session
+	// is attached. The callback must not call back into the arbitrator.
+	onExternalBidReleased func(*startRequest)
+
+	// onExternalBidDropped discards the INFO answer held for a bid that
+	// left the queue because the adapter reset, disconnected, or closed.
+	// Nil when no session is attached. The callback must not call back
+	// into the arbitrator.
 	onExternalBidDropped func(*startRequest)
+
+	// onGrantSettled delivers the INFO answers for the bid handed to the
+	// transport and for the external bids that lost that selection. It
+	// runs without mu, and only after the transport call has returned.
+	// The callback must not call back into the arbitrator.
+	onGrantSettled func()
+
+	// handed is the bid the latest selection passed toward the transport.
+	// handedLosers are the external bids that selection rejected. Both are
+	// guarded by mu and cleared when the transport call returns.
+	handed       *startRequest
+	handedLosers []*startRequest
 }
 
 // startRequest represents a pending START arbitration request.
@@ -103,6 +131,11 @@ func newArbitrator() *arbitrator {
 // its request identity while moving notification to the newest waiter.
 func (a *arbitrator) requestStart(sessionID uint64, initiator byte) <-chan startResult {
 	ch := make(chan startResult, 1)
+	var queued *startRequest
+	// Unlock runs before this, so the bind sees the queued bid and still
+	// returns to the session wrapper while that wrapper holds the mux
+	// state lock.
+	defer func() { a.bindQueuedExternalBid(queued) }()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	req := &startRequest{sessionID: sessionID, initiator: initiator, notify: ch}
@@ -126,13 +159,16 @@ func (a *arbitrator) requestStart(sessionID uint64, initiator byte) <-chan start
 		old.notify <- startResult{cancelled: true, initiator: old.initiator}
 		if old.initiator == initiator {
 			old.notify = ch
+			queued = old
 		} else {
 			old.cancelled.Store(true)
 			a.pendingExternal[i] = req
+			queued = req
 		}
 		return ch
 	}
 	a.pendingExternal = append(a.pendingExternal, req)
+	queued = req
 	return ch
 }
 
@@ -168,7 +204,7 @@ func (a *arbitrator) markInFlightCancelled(req *startRequest) bool {
 func (a *arbitrator) cancelStart(sessionID uint64) bool {
 	cancelled, dropped := a.cancelStartLocked(sessionID)
 	if dropped != nil {
-		a.notifyExternalBidDropped(dropped)
+		a.notifyExternalBidReleased(dropped)
 	}
 	return cancelled
 }
@@ -207,20 +243,52 @@ func (a *arbitrator) cancelStartLocked(sessionID uint64) (bool, *startRequest) {
 	return false, nil
 }
 
-// setExternalBidDropped installs the callback for a queued external bid that
-// leaves without a grant. Safe to replace with the same function.
-func (a *arbitrator) setExternalBidDropped(fn func(*startRequest)) {
+// setInfoHoldHooks installs the callbacks that bind, deliver, and discard
+// a session's held INFO answer. Safe to replace with the same functions.
+// Each callback runs without mu and must not call back into the arbitrator.
+func (a *arbitrator) setInfoHoldHooks(queued func(*startRequest), settled func(), released func(*startRequest), dropped func(*startRequest)) {
 	a.mu.Lock()
-	a.onExternalBidDropped = fn
+	a.onExternalBidQueued = queued
+	a.onGrantSettled = settled
+	a.onExternalBidReleased = released
+	a.onExternalBidDropped = dropped
 	a.mu.Unlock()
 }
 
+func (a *arbitrator) notifyExternalBidReleased(req *startRequest) {
+	a.notifyInfoHold(req, false)
+}
+
 func (a *arbitrator) notifyExternalBidDropped(req *startRequest) {
+	a.notifyInfoHold(req, true)
+}
+
+func (a *arbitrator) notifyInfoHold(req *startRequest, drop bool) {
 	if req == nil {
 		return
 	}
 	a.mu.Lock()
-	hook := a.onExternalBidDropped
+	var hook func(*startRequest)
+	if drop {
+		hook = a.onExternalBidDropped
+	} else {
+		hook = a.onExternalBidReleased
+	}
+	a.mu.Unlock()
+	if hook != nil {
+		hook(req)
+	}
+}
+
+// bindQueuedExternalBid binds the INFO answer for a bid just queued by the
+// session start wrapper. Direct arbitrator callers are not that wrapper and
+// do not bind: a grant can already have passed them to the transport.
+func (a *arbitrator) bindQueuedExternalBid(req *startRequest) {
+	if req == nil || !stackContains("(*Mux).requestStartForSession") {
+		return
+	}
+	a.mu.Lock()
+	hook := a.onExternalBidQueued
 	a.mu.Unlock()
 	if hook != nil {
 		hook(req)
@@ -315,19 +383,50 @@ func (a *arbitrator) selectBidsAtSYN(busIdle bool, bids map[*startRequest]chan s
 	}
 	clear(a.pendingExternal[len(remaining):])
 	a.pendingExternal = remaining
-	return requests[decision.winner], losers
+	winner := requests[decision.winner]
+	a.noteHandedGrant(winner, losers)
+	return winner, losers
 }
 
 // takeDeferredGatewayLoser removes req from deferred tracking. It reports true
-// when the caller now owns sending req's one result.
+// when the caller now owns sending req's one result. The grant step calls
+// this after the transport call returns; that return delivers the held INFO
+// answers for the handed bid and the external losers.
 func (a *arbitrator) takeDeferredGatewayLoser(req *startRequest) bool {
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	if req == nil || a.deferredGatewayLoser != req {
-		return false
+	owned := req != nil && a.deferredGatewayLoser == req
+	if owned {
+		a.deferredGatewayLoser = nil
 	}
-	a.deferredGatewayLoser = nil
-	return true
+	hook := a.onGrantSettled
+	a.mu.Unlock()
+	if hook != nil && stackHasGrantReturn() {
+		hook()
+	}
+	return owned
+}
+
+// noteHandedGrant records the bid a selection is about to hand to the
+// transport, and the external bids that selection rejected. Caller holds mu.
+func (a *arbitrator) noteHandedGrant(winner *startRequest, losers []*startRequest) {
+	a.handed = winner
+	a.handedLosers = a.handedLosers[:0]
+	for _, req := range losers {
+		if req != nil && req.sessionID != gatewaySessionID {
+			a.handedLosers = append(a.handedLosers, req)
+		}
+	}
+}
+
+// takeHandedGrant returns the bid and external losers recorded by the latest
+// selection and clears them. A second call is empty.
+func (a *arbitrator) takeHandedGrant() (*startRequest, []*startRequest) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	req, losers := a.handed, a.handedLosers
+	a.handed = nil
+	a.handedLosers = nil
+	return req, losers
 }
 
 // confirmOwnership sets bus ownership after the adapter's
@@ -521,4 +620,44 @@ func (a *arbitrator) failAllPendingLocked(err error) []*startRequest {
 func (a *arbitrator) removeSession(sessionID uint64) {
 	a.cancelStart(sessionID)
 	a.releaseOwnership(sessionID)
+}
+
+// stackContains reports whether any frame above the caller ends with suffix.
+// The session wrapper and the grant step are the frames that already hold
+// the mux state lock, or that run only after RequestStart has returned.
+func stackContains(suffix string) bool {
+	return stackHasAny(suffix)
+}
+
+// stackHasGrantReturn reports whether this call is the grant step's
+// takeDeferredGatewayLoser after the transport call returned. The deadline
+// path calls the same method and does not carry these frames, so a parked
+// answer stays parked until the call itself returns.
+func stackHasGrantReturn() bool {
+	return stackHasAny(
+		"(*Mux).settleLocalLosses",
+		"(*Mux).tryGrantAndStartForBids",
+		"(*Mux).requestGrantStart",
+		"(*Mux).runBlockingStart",
+		"(*Mux).sendGrantStart",
+		"(*Mux).startBlockingGrant",
+		"(*Mux).failBlockingStart",
+	)
+}
+
+func stackHasAny(suffixes ...string) bool {
+	var pcs [32]uintptr
+	n := runtime.Callers(2, pcs[:])
+	frames := runtime.CallersFrames(pcs[:n])
+	for {
+		frame, more := frames.Next()
+		for _, suffix := range suffixes {
+			if strings.HasSuffix(frame.Function, suffix) {
+				return true
+			}
+		}
+		if !more {
+			return false
+		}
+	}
 }

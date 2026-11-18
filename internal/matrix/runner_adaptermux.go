@@ -928,12 +928,37 @@ type infoFence struct {
 	requested int
 	// tail counts the data frames still owed by the answer in progress.
 	tail int
+	// skip counts full answers to ignore. A bid that was answered before
+	// its INFO completed still receives that answer; it must not satisfy
+	// the next bid's fence.
+	skip int
+	// abandoning is set when the open answer's length byte was already
+	// consumed and the rest of that answer should be ignored.
+	abandoning bool
 }
 
 func (fence *infoFence) sent() { fence.requested++ }
 
-// done is true once every requested answer has completed.
-func (fence *infoFence) done() bool { return fence.requested == 0 && fence.tail == 0 }
+// done is true once every requested answer has completed and no abandoned
+// answer is still on the way.
+func (fence *infoFence) done() bool {
+	return fence.requested == 0 && fence.tail == 0 && fence.skip == 0 && !fence.abandoning
+}
+
+// abandon marks the outstanding answer, if any, so its bytes do not complete
+// a later bid's fence. A bid answered before that answer arrived still has
+// the answer coming.
+func (fence *infoFence) abandon() {
+	if fence.tail > 0 {
+		fence.abandoning = true
+		fence.requested = 0
+		return
+	}
+	if fence.requested > 0 {
+		fence.skip++
+		fence.requested = 0
+	}
+}
 
 // consume takes one INFO frame of an answer and reports whether it was one.
 func (fence *infoFence) consume(message transport.ENHMessage) bool {
@@ -945,15 +970,37 @@ func (fence *infoFence) consume(message transport.ENHMessage) bool {
 	} else {
 		fence.tail = int(message.Data)
 	}
-	if fence.tail == 0 && fence.requested > 0 {
-		fence.requested--
+	if fence.tail == 0 {
+		fence.completeAnswer()
 	}
 	return true
 }
 
+// completeAnswer closes the answer whose last frame just arrived.
+func (fence *infoFence) completeAnswer() {
+	if fence.abandoning {
+		fence.abandoning = false
+		return
+	}
+	if fence.skip > 0 {
+		fence.skip--
+		return
+	}
+	if fence.requested > 0 {
+		fence.requested--
+	}
+}
+
 // consumeErrorHost takes an ERROR_HOST that answers an INFO request.
 func (fence *infoFence) consumeErrorHost() bool {
-	if fence.requested == 0 || fence.tail != 0 {
+	if fence.tail != 0 {
+		return false
+	}
+	if fence.skip > 0 {
+		fence.skip--
+		return true
+	}
+	if fence.requested == 0 {
 		return false
 	}
 	fence.requested--
@@ -1069,12 +1116,9 @@ func bidUntilInFlight(session *enhContenderSession, initiator byte) error {
 			return nil
 		}
 		// The attempt ended on STARTED or FAILED before the fence
-		// completed, so the withheld answer must not stay open across
-		// the INFO request of the next bid.
-		if !fence.done() {
-			fence.requested = 0
-			fence.tail = 0
-		}
+		// completed. The answer is still delivered; skip it so it cannot
+		// complete the next bid's fence.
+		fence.abandon()
 		if forwarded.message.Command == transport.ENHResStarted {
 			if err := session.send(transport.ENHReqStart, protocol.SymbolSyn); err != nil {
 				return err

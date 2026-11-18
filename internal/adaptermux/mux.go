@@ -2134,12 +2134,6 @@ func (m *Mux) requestStartForSession(sessionID uint64, initiator byte) <-chan st
 	// is also gated on stateMu, so it cannot interleave between
 	// step 1 and step 2.
 	ch := m.arb.requestStart(sessionID, initiator)
-	if sessionID != gatewaySessionID {
-		// Bind while stateMu is still held. The grant step also needs
-		// stateMu, so it cannot hand this request to RequestStart before
-		// the session knows which bid its INFO answer is waiting on.
-		m.bindSessionInfoHold(sessionID, m.arb.externalBid(sessionID))
-	}
 	if sessionID == gatewaySessionID {
 		// Bound admission only. Once selected at SYN, the physical START has
 		// its own deadline and must remain deliverable even after this timer.

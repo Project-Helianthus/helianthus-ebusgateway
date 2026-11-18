@@ -18,7 +18,7 @@ import (
 )
 
 // Decision lines are pinned whole: the leading fields keep their order and the
-// capability and flavor reasons follow them.
+// capability, flavor and withhold reasons follow them.
 const sunSpecLiveSmokeLinePrefix = "modbus sunspec live smoke "
 
 // newSunSpecLiveSmokeEndpointDriver wires the production live-smoke driver
@@ -148,7 +148,7 @@ func TestSunSpecLiveSmokeDecisionThroughRealQualificationPath(t *testing.T) {
 			}
 			wantLine := sunSpecLiveSmokeLinePrefix + "decision=" + string(test.wantDecision) +
 				" outcome=" + test.wantOutcome + " category=" + test.wantCategory +
-				" attempts=1 recovered=false " + test.wantReasons
+				" attempts=1 recovered=false " + test.wantReasons + " withhold=-"
 			if len(lines) != 1 || lines[0] != wantLine {
 				t.Fatalf("decision lines = %q; want exactly %q", lines, wantLine)
 			}
@@ -179,7 +179,7 @@ func TestSunSpecLiveSmokeDecisionLineCarriesReasonsForEveryQualificationOutcome(
 			qualification: sunSpecLiveSmokeQualification{
 				Outcome: modbusadapter.SunSpecQualificationNoGo, CapabilityReason: sunspec.CapabilityReasonSourceAbsent,
 			},
-			wantTail: "decision=NO_GO outcome=not_qualified category=registry_no_match attempts=1 recovered=false capability=SOURCE_ABSENT flavors=-",
+			wantTail: "decision=NO_GO outcome=not_qualified category=registry_no_match attempts=1 recovered=false capability=SOURCE_ABSENT flavors=- withhold=-",
 		},
 		{
 			name: "NO_GO with the reasons of an older registry",
@@ -187,14 +187,14 @@ func TestSunSpecLiveSmokeDecisionLineCarriesReasonsForEveryQualificationOutcome(
 				Outcome: modbusadapter.SunSpecQualificationNoGo, CapabilityReason: sunspec.CapabilityReasonAdmitted,
 				FlavorEvaluations: adaptedReasons,
 			},
-			wantTail: "decision=NO_GO outcome=not_qualified category=registry_no_match attempts=1 recovered=false capability=ADMITTED flavors=1.0.0:FIRMWARE_MISMATCH,1.1.0:FIRMWARE_MISMATCH",
+			wantTail: "decision=NO_GO outcome=not_qualified category=registry_no_match attempts=1 recovered=false capability=ADMITTED flavors=1.0.0:FIRMWARE_MISMATCH,1.1.0:FIRMWARE_MISMATCH withhold=-",
 		},
 		{
 			name: "STOP from the registry keeps its reasons",
 			qualification: sunSpecLiveSmokeQualification{
 				Outcome: modbusadapter.SunSpecQualificationStop, CapabilityReason: sunspec.CapabilityReasonInvalidChain,
 			},
-			wantTail: "decision=STOP outcome=incoherent category=registry_stop attempts=1 recovered=false capability=INVALID_CHAIN flavors=-",
+			wantTail: "decision=STOP outcome=incoherent category=registry_stop attempts=1 recovered=false capability=INVALID_CHAIN flavors=- withhold=-",
 		},
 		{
 			name: "STOP for an unsupported matched flavor keeps its reasons",
@@ -207,12 +207,12 @@ func TestSunSpecLiveSmokeDecisionLineCarriesReasonsForEveryQualificationOutcome(
 					{FlavorID: "sunspec.flavor.fronius.unselected@1.0.0", Reason: fronius.SunSpecFroniusFlavorReasonMatched},
 				},
 			},
-			wantTail: "decision=STOP outcome=incoherent category=invalid_qualification attempts=1 recovered=false capability=ADMITTED flavors=1.0.0:MATCHED",
+			wantTail: "decision=STOP outcome=incoherent category=invalid_qualification attempts=1 recovered=false capability=ADMITTED flavors=1.0.0:MATCHED withhold=-",
 		},
 		{
 			name:          "qualifier error has no registry reasons",
 			qualification: sunSpecLiveSmokeQualification{Err: errors.New("qualifier failure")},
-			wantTail:      "decision=STOP outcome=error category=qualification_error attempts=1 recovered=false capability=- flavors=-",
+			wantTail:      "decision=STOP outcome=error category=qualification_error attempts=1 recovered=false capability=- flavors=- withhold=-",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -231,7 +231,7 @@ func TestSunSpecLiveSmokeDecisionLineCarriesReasonsForEveryQualificationOutcome(
 
 func TestSunSpecLiveSmokeDecisionLineWithoutQualificationPrintsPlaceholders(t *testing.T) {
 	const want = sunSpecLiveSmokeLinePrefix +
-		"decision=STOP outcome=error category=poll_error attempts=1 recovered=false capability=- flavors=-"
+		"decision=STOP outcome=error category=poll_error attempts=1 recovered=false capability=- flavors=- withhold=-"
 	driver := &sunSpecLiveSmokeFakeDriver{polls: []sunSpecLiveSmokePollResult{{Err: errors.New("dial tcp 192.0.2.1:502: refused")}}}
 	var lines []string
 	runSunSpecLiveSmoke(context.Background(), time.Second, driver, &sunSpecLiveSmokeFakeQualifier{}, func(format string, args ...any) {
@@ -248,7 +248,7 @@ func TestSunSpecLiveSmokeDecisionLineWithoutQualificationPrintsPlaceholders(t *t
 		t.Fatal("worker over a nil adapter must not start")
 	}
 	const wantConfig = sunSpecLiveSmokeLinePrefix +
-		"decision=STOP outcome=error category=configuration_error attempts=0 recovered=false capability=- flavors=-"
+		"decision=STOP outcome=error category=configuration_error attempts=0 recovered=false capability=- flavors=- withhold=-"
 	if len(configLines) != 1 || configLines[0] != wantConfig {
 		t.Fatalf("configuration lines = %q; want exactly %q", configLines, wantConfig)
 	}
@@ -269,11 +269,69 @@ func TestSunSpecLiveSmokeReasonTokensStaySingleWords(t *testing.T) {
 	if strings.ContainsAny(line, "\r\n\t") {
 		t.Fatalf("decision line is not a single record: %q", line)
 	}
-	if got, want := len(strings.Fields(line)), len(strings.Fields(sunSpecLiveSmokeLinePrefix))+7; got != want {
+	if got, want := len(strings.Fields(line)), len(strings.Fields(sunSpecLiveSmokeLinePrefix))+8; got != want {
 		t.Fatalf("decision line has %d words; want %d: %q", got, want, line)
 	}
-	const wantTail = " capability=ADMITTED_extra_1_next_2 flavors=1.2.0_extra_1:FIRMWARE_MISMATCH__,-:-"
+	const wantTail = " capability=ADMITTED_extra_1_next_2 flavors=1.2.0_extra_1:FIRMWARE_MISMATCH__,-:- withhold=-"
 	if !strings.HasSuffix(line, wantTail) {
 		t.Fatalf("decision line = %q; want suffix %q", line, wantTail)
+	}
+}
+
+func TestSunSpecLiveSmokeDecisionCarriesMultiDeviceWithhold(t *testing.T) {
+	const reason = "MULTI_DEVICE_UNATTRIBUTED"
+	for _, test := range []struct {
+		name         string
+		outcome      modbusadapter.SunSpecQualificationOutcome
+		reason       sunspec.CapabilityReason
+		wantDecision sunSpecLiveSmokeDecision
+		wantOutcome  string
+		wantCategory string
+		wantToken    string
+	}{
+		{
+			name:         "admitted multi-device chain stays a registry stop and records the withhold",
+			outcome:      modbusadapter.SunSpecQualificationStop,
+			reason:       sunspec.CapabilityReasonAdmitted,
+			wantDecision: sunSpecLiveSmokeDecisionStop,
+			wantOutcome:  "incoherent",
+			wantCategory: "registry_stop",
+			wantToken:    "ADMITTED",
+		},
+		{
+			name:         "refused multi-device chain keeps the refusal and records the withhold",
+			outcome:      modbusadapter.SunSpecQualificationNoGo,
+			reason:       sunspec.CapabilityReasonSourceAbsent,
+			wantDecision: sunSpecLiveSmokeDecisionNoGo,
+			wantOutcome:  "not_qualified",
+			wantCategory: "registry_no_match",
+			wantToken:    "SOURCE_ABSENT",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			driver := &sunSpecLiveSmokeFakeDriver{polls: []sunSpecLiveSmokePollResult{{
+				Qualification: modbusadapter.SunSpecQualificationResult{
+					Outcome:          test.outcome,
+					CapabilityReason: test.reason,
+					SemanticWithhold: reason,
+				},
+			}}}
+			var lines []string
+			result := runSunSpecLiveSmoke(context.Background(), time.Second, driver, modbusSunSpecLiveSmokeQualifier{}, func(format string, args ...any) {
+				lines = append(lines, fmt.Sprintf(format, args...))
+			})
+			if result.Decision != test.wantDecision || result.Outcome != test.wantOutcome ||
+				result.Category != test.wantCategory || result.SemanticWithhold != reason {
+				t.Fatalf("result = %#v; want decision=%s outcome=%s category=%s withhold=%s",
+					result, test.wantDecision, test.wantOutcome, test.wantCategory, reason)
+			}
+			want := sunSpecLiveSmokeLinePrefix + "decision=" + string(test.wantDecision) +
+				" outcome=" + test.wantOutcome + " category=" + test.wantCategory +
+				" attempts=1 recovered=false capability=" + test.wantToken +
+				" flavors=- withhold=" + reason
+			if len(lines) != 1 || lines[0] != want {
+				t.Fatalf("decision lines = %q; want exactly %q", lines, want)
+			}
+		})
 	}
 }

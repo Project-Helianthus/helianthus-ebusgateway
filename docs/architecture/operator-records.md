@@ -17,7 +17,9 @@ preflight also wires the provider through `composeOperatorRecords` in
 set. An empty section still admits no source, declares no asset and publishes
 nothing, so the published output of an installation without an accepted
 section is unchanged. A configuration-only home in that set is declared in
-the provider's name. A home a driver already owns is left to that driver.
+the provider's name when its identifier is not one a dynamic driver
+allocates. A home a driver already owns, and a home a dynamic driver
+allocates, stay with that driver.
 
 ## Who publishes it
 
@@ -82,7 +84,10 @@ failing. The provider touches nothing for it and applies it again after each
 later publication of the hub, until the owner's resource exists. A pending set
 that a later attempt refuses for another reason is dropped and not published;
 every such refusal of one attempt is logged on its own, so none is lost when
-one publication resolves several sets.
+one publication resolves several sets. A Portal replacement supersedes the
+sets still pending from startup. A relation the operator removed is not
+published when its home asset appears later, and a relation the operator
+replaced is the one that is published.
 
 ## Lifecycle against fences
 
@@ -159,11 +164,14 @@ empty section still admits nothing.
 
 No family composition names the provider as a contributor or declares a
 configuration-only home yet. Startup declares a configuration-only home for
-the configuration provider, and it does not declare a contributor for a home
-a driver already owns. The acceptance test makes the owner-side declarations
+the configuration provider when its identifier is not one a dynamic driver
+allocates, and it does not declare a contributor for a home a driver already
+owns. A home a dynamic driver allocates stays undeclared until that driver
+discovers it. The acceptance test makes the owner-side declarations
 itself, as an owner would, so it proves the path from the document to the cut
 once the owner has declared them. A Portal replacement publishes nothing for
-an asset whose owner has not.
+an asset whose owner has not, and it supersedes a startup-pending relation
+the operator removed so that relation is not published when the asset appears.
 
 ## Ownership
 

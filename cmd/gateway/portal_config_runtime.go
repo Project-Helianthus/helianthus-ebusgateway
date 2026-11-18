@@ -454,6 +454,10 @@ func (o *portalOperatorRecords) apply(set portalconfig.OperatorRecordSet) {
 		return
 	}
 	o.applied = revision
+	// The startup watcher shares this publisher. Drop or replace its pending
+	// sets before publishing, so a relation this section no longer holds cannot
+	// be published when the driver asset appears later.
+	o.publisher.supersedePending(sets)
 	next := make(map[semreg.AssetID]operatorAssetRecords, len(sets))
 	for _, assetSet := range sets {
 		next[assetSet.Asset] = assetSet

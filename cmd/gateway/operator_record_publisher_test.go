@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/portalconfig"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/packs/pv"
@@ -785,5 +787,228 @@ func TestOperatorRecordPublisherComposeStopsOnAnotherRefusal(t *testing.T) {
 	var refusal *operatorRecordRefusal
 	if !errors.As(err, &refusal) || refusal.Reason != operatorReasonAuditMissing || len(f.publisher.Pending()) != 0 {
 		t.Fatalf("compose=%v pending=%v, want a fatal %s", err, f.publisher.Pending(), operatorReasonAuditMissing)
+	}
+}
+
+// A configuration-only home whose identifier a dynamic driver allocates is
+// not declared at startup, so the driver's later declaration claims it. A
+// home whose identifier is not of that form, including one that only looks
+// like it, is still declared for the configuration provider.
+func TestOperatorRecordCompositionLeavesADiscoveredHomeForItsDriver(t *testing.T) {
+	const (
+		discovered semreg.AssetID = "pv-asset-5c57adba3ad8a529617c1f8627ae32f1"
+		paired     semreg.AssetID = "pv-asset-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		lookalike  semreg.AssetID = "asset:pv-asset-5c57adba3ad8a529617c1f8627ae32f1"
+	)
+	root := t.TempDir()
+	oprWriteSection(t, root, `{"format":"helianthus.portal-config.operator-records/v1","revision":"1","records":[{"form":"anchor","home":"pv-asset-5c57adba3ad8a529617c1f8627ae32f1","resource_id":"resource:opr:array-discovered","kind":"resource.pv_array","slot":"array-discovered"},{"form":"anchor","home":"asset:opr-configuration","resource_id":"resource:opr:array-1","kind":"resource.pv_array","slot":"array-south"},{"form":"anchor","home":"asset:pv-asset-5c57adba3ad8a529617c1f8627ae32f1","resource_id":"resource:opr:array-lookalike","kind":"resource.pv_array","slot":"array-lookalike"},{"form":"pairing","kind":"resource.pv_system","slot":"system-main","views":[{"home":"pv-asset-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","resource_id":"resource:opr:system-discovered"},{"home":"asset:opr-pair-b","resource_id":"resource:opr:system-b"}]}]}`)
+	hub, err := semhub.New(semhub.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := composeOperatorRecords(hub, ebusgateway.Config{PortalConfigRoot: root}); err != nil {
+		t.Fatal(err)
+	}
+	found := map[semreg.AssetID]string{}
+	state, err := hub.GraphState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, asset := range state.Assets {
+		found[asset.Asset] = asset.Driver
+	}
+	if _, claimed := found[discovered]; claimed {
+		t.Fatalf("startup claimed a discovered home for %s", found[discovered])
+	}
+	if _, claimed := found[paired]; claimed {
+		t.Fatalf("startup claimed a discovered pairing home for %s", found[paired])
+	}
+	if found[oprHomeAsset] != operatorRecordDriver || found[lookalike] != operatorRecordDriver || found[semreg.AssetID("asset:opr-pair-b")] != operatorRecordDriver {
+		t.Fatalf("configuration homes=%v, want them declared for %s", found, operatorRecordDriver)
+	}
+	class, err := hub.DeclareClass(semhub.ClassSpec{
+		Name: "opr_discovered", Driver: "driver-opr-discovered", Graph: true,
+		Validators: func() []semreg.PackValidator { return []semreg.PackValidator{pv.New()} },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, id := range []semreg.AssetID{discovered, paired} {
+		source := semreg.SourceID("source:opr-discovered-" + strconv.Itoa(i))
+		if _, err := class.Declare(id, source); err != nil {
+			t.Fatalf("dynamic driver could not claim its home: %v", err)
+		}
+	}
+	state, err = hub.GraphState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, asset := range state.Assets {
+		found[asset.Asset] = asset.Driver
+	}
+	if found[discovered] != "driver-opr-discovered" || found[paired] != "driver-opr-discovered" {
+		t.Fatalf("discovered homes ended owned by %q and %q", found[discovered], found[paired])
+	}
+}
+
+func oprRelationSection(revision string, to semreg.ResourceID) portalconfig.OperatorRecordSet {
+	return portalconfig.OperatorRecordSet{
+		Format:   portalconfig.OperatorRecordsFormat,
+		Revision: revision,
+		Records:  []portalconfig.OperatorRecord{opr27Relation(oprDriverAsset, "pv.relation.inverter_array", oprInverter, to)},
+	}
+}
+
+func oprComposeConfiguredRelation(t *testing.T, to semreg.ResourceID) (*semhub.Hub, *operatorRecordPublisher) {
+	t.Helper()
+	hub, err := semhub.New(semhub.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	body, err := json.Marshal(oprRelationSection("1", to))
+	if err != nil {
+		t.Fatal(err)
+	}
+	oprWriteSection(t, root, string(body))
+	if err := composeOperatorRecords(hub, ebusgateway.Config{PortalConfigRoot: root}); err != nil {
+		t.Fatal(err)
+	}
+	publisher, err := operatorPublisherFor(hub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending := publisher.Pending(); len(pending) != 1 || pending[0] != oprDriverAsset {
+		t.Fatalf("pending=%v, want the undeclared home", pending)
+	}
+	return hub, publisher
+}
+
+func oprDeclareDriverHome(t *testing.T, hub *semhub.Hub, publisher *operatorRecordPublisher) *oprFixture {
+	t.Helper()
+	if _, err := hub.Declare(semhub.AssetSpec{
+		AssetID: oprDriverAsset, SourceID: oprDriverSource, Driver: oprDriver, Validators: []semreg.PackValidator{pv.New()}, Graph: true,
+		Contributors: []semhub.ContributorSpec{publisher.Contributor(pv.New())},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	handle, err := hub.AdmitSource(semhub.Admission{Source: oprDriverSource, Driver: oprDriver})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &oprFixture{hub: hub, publisher: publisher, driver: handle, clock: 100}
+	if err := f.publishDriver(t, nil); err != nil {
+		t.Fatalf("driver publication: %v", err)
+	}
+	return f
+}
+
+// Set replaces a startup-pending record of the same asset and drops one whose
+// replacement is empty. It does not create a pending entry for an asset that
+// was not already pending.
+func TestOperatorRecordPublisherSetSupersedesAPendingRecord(t *testing.T) {
+	hub, err := semhub.New(semhub.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	publisher, err := newOperatorRecordPublisher(hub, operatorRecordOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	audit := oprAudit("pending-replacement")
+	old := oprInverterArray(oprArray)
+	replacement := oprInverterArray(oprArraySecond)
+	publisher.mu.Lock()
+	publisher.pending = map[semreg.AssetID]operatorAssetRecords{
+		oprDriverAsset: {Asset: oprDriverAsset, Records: operatorRecords{Relations: []operatorRelation{old}}, Audit: audit},
+	}
+	publisher.mu.Unlock()
+	if err := publisher.Set(oprDriverAsset, operatorRecords{Relations: []operatorRelation{replacement}}, audit); !errors.Is(err, semhub.ErrUnknownAsset) {
+		t.Fatalf("set=%v, want the home still unknown", err)
+	}
+	publisher.mu.Lock()
+	got := publisher.pending[oprDriverAsset]
+	publisher.mu.Unlock()
+	if len(got.Records.Relations) != 1 || got.Records.Relations[0].To != oprArraySecond {
+		t.Fatalf("pending=%+v, want the replacement relation", got.Records.Relations)
+	}
+	if err := publisher.Set(oprHomeAsset, operatorRecords{Relations: []operatorRelation{replacement}}, audit); !errors.Is(err, semhub.ErrUnknownAsset) {
+		t.Fatalf("set of a home that was not pending=%v", err)
+	}
+	publisher.mu.Lock()
+	_, resurrected := publisher.pending[oprHomeAsset]
+	publisher.mu.Unlock()
+	if resurrected {
+		t.Fatal("Set created a pending entry for a home that was not pending")
+	}
+	if err := publisher.Set(oprDriverAsset, operatorRecords{}, audit); err != nil {
+		t.Fatalf("empty set=%v", err)
+	}
+	if pending := publisher.Pending(); len(pending) != 0 {
+		t.Fatalf("pending=%v, want the empty set to drop it", pending)
+	}
+}
+
+// A Portal section that does not hold the startup relation supersedes the
+// startup pending set, including a home the Portal runtime never published.
+// The startup watcher does not publish that relation when the driver asset
+// appears later.
+func TestOperatorRecordPortalReplacementDropsAStartupPendingRelation(t *testing.T) {
+	hub, publisher := oprComposeConfiguredRelation(t, oprArray)
+	runtime := opr27Runtime(t)
+	if runtime.callbacks(ebusgateway.Config{}, &gatewayRuntimeControl{hub: hub}).OperatorRecords == nil {
+		t.Fatal("the runtime serves no operator-record section")
+	}
+	if pending := publisher.Pending(); len(pending) != 0 {
+		t.Fatalf("pending=%v after the Portal section omitted the relation", pending)
+	}
+	f := oprDeclareDriverHome(t, hub, publisher)
+	if err := publisher.Retry(); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if _, ok := oprRelationIn(f.snapshot(t, oprDriverAsset), oprInverterArray(oprArray)); ok {
+		t.Fatal("a relation the Portal section omitted was published when its home appeared")
+	}
+	if pending := publisher.Pending(); len(pending) != 0 {
+		t.Fatalf("pending=%v after the home appeared", pending)
+	}
+}
+
+// A Portal replacement of a relation that is still waiting replaces the
+// startup pending set. The relation published when the home appears is the
+// replacement, not the one startup loaded.
+func TestOperatorRecordPortalReplacementSupersedesAStartupPendingRelation(t *testing.T) {
+	hub, publisher := oprComposeConfiguredRelation(t, oprArray)
+	runtime := opr27Runtime(t)
+	seeded, err := runtime.operatorRecordCallbacks().Replace(context.Background(), oprRelationSection("0", oprArray))
+	if err != nil {
+		t.Fatal(err)
+	}
+	callbacks := runtime.callbacks(ebusgateway.Config{}, &gatewayRuntimeControl{hub: hub}).OperatorRecords
+	if callbacks == nil {
+		t.Fatal("the runtime serves no operator-record section")
+	}
+	replaced, err := callbacks.Replace(context.Background(), oprRelationSection(seeded.Revision, oprArraySecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replaced.Revision == seeded.Revision {
+		t.Fatal("the replacement did not advance the section")
+	}
+	publisher.mu.Lock()
+	got := publisher.pending[oprDriverAsset]
+	publisher.mu.Unlock()
+	if len(got.Records.Relations) != 1 || got.Records.Relations[0].To != oprArraySecond {
+		t.Fatalf("pending=%+v, want the replacement relation", got.Records.Relations)
+	}
+	f := oprDeclareDriverHome(t, hub, publisher)
+	if err := publisher.Retry(); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if _, ok := oprRelationIn(f.snapshot(t, oprDriverAsset), oprInverterArray(oprArraySecond)); !ok {
+		t.Fatal("the replacement relation was not published after its home appeared")
+	}
+	if _, ok := oprRelationIn(f.snapshot(t, oprDriverAsset), oprInverterArray(oprArray)); ok {
+		t.Fatal("the startup relation was published after the operator replaced it")
 	}
 }

@@ -310,24 +310,26 @@ func (p *operatorRecordPublisher) Retry() error {
 	for _, id := range p.Pending() {
 		p.mu.Lock()
 		set, ok := p.pending[id]
-		p.mu.Unlock()
 		if !ok {
+			p.mu.Unlock()
 			continue
 		}
-		err := p.Set(set.Asset, set.Records, set.Audit)
-		if err != nil && operatorRecordDeferred(err) {
-			continue
-		}
-		p.mu.Lock()
-		delete(p.pending, id)
-		if err != nil {
-			if p.failed == nil {
-				p.failed = make(map[semreg.AssetID]error)
+		// Hold the publisher lock across the attempt so a Portal replacement
+		// cannot clear this set and then lose a publication of it.
+		err := p.setLocked(set.Asset, set.Records, set.Audit)
+		if err == nil || !operatorRecordDeferred(err) {
+			if current, still := p.pending[id]; !still || reflect.DeepEqual(current, set) {
+				delete(p.pending, id)
 			}
-			p.failed[id] = err
+			if err != nil {
+				if p.failed == nil {
+					p.failed = make(map[semreg.AssetID]error)
+				}
+				p.failed[id] = err
+			}
 		}
 		p.mu.Unlock()
-		if err != nil {
+		if err != nil && !operatorRecordDeferred(err) {
 			refused = append(refused, err)
 		}
 	}
@@ -387,15 +389,70 @@ func (p *operatorRecordPublisher) Desired(id semreg.AssetID) operatorDesired {
 	return out
 }
 
+// supersedePending replaces the startup-pending sets with the records a
+// Portal replacement still wants. A home the replacement omits is dropped,
+// so the startup watcher cannot publish a relation the operator deleted.
+// Homes that were not pending are not added; the Portal runtime retries those.
+func (p *operatorRecordPublisher) supersedePending(sets []operatorAssetRecords) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.pending) == 0 {
+		return
+	}
+	keep := make(map[semreg.AssetID]operatorAssetRecords, len(sets))
+	for _, set := range sets {
+		if len(set.Records.Resources) == 0 && len(set.Records.Relations) == 0 && len(set.Records.Links) == 0 {
+			continue
+		}
+		keep[set.Asset] = set
+	}
+	next := make(map[semreg.AssetID]operatorAssetRecords)
+	for id := range p.pending {
+		if set, ok := keep[id]; ok {
+			next[id] = set
+		}
+	}
+	p.pending = next
+}
+
+// finishPendingLocked records the effect of Set on the startup-pending entry
+// of one asset. A refusal a later publication can resolve keeps the records
+// just set, so a replacement is what the watcher retries. Any other result
+// drops the entry: the set was published, withdrawn or refused for good.
+// p.mu must be held.
+func (p *operatorRecordPublisher) finishPendingLocked(id semreg.AssetID, records operatorRecords, audit operatorAudit, err error) {
+	if err != nil && operatorRecordDeferred(err) {
+		// A deferred Set is a deliberate attempt (composition or a Portal
+		// replacement). The startup watcher reads this entry and must not
+		// keep a set the replacement has moved on from. A missing entry stays
+		// missing: composition installs it after Set returns, and a
+		// replacement that dropped the home must not be undone.
+		if _, had := p.pending[id]; !had {
+			return
+		}
+		p.pending[id] = operatorAssetRecords{Asset: id, Records: records, Audit: audit}
+		return
+	}
+	delete(p.pending, id)
+}
+
 // Set replaces the desired operator records of one asset and publishes the
 // difference to the asset's current snapshot as one batch of the provider's
 // own source, epoch and generation: new and changed records are upserted
 // with their next revision, records no longer desired are withdrawn. A set
 // whose records do not resolve is refused with an operatorRecordRefusal
 // before anything is submitted, and the desired records stay as they were.
+// The call also supersedes any startup-pending set of the same asset.
 func (p *operatorRecordPublisher) Set(id semreg.AssetID, records operatorRecords, audit operatorAudit) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	err := p.setLocked(id, records, audit)
+	p.finishPendingLocked(id, records, audit, err)
+	return err
+}
+
+// setLocked is Set without the publisher lock. p.mu must be held.
+func (p *operatorRecordPublisher) setLocked(id semreg.AssetID, records operatorRecords, audit operatorAudit) error {
 	state := p.desired[id]
 	if state == nil && len(records.Resources) == 0 && len(records.Relations) == 0 {
 		return nil

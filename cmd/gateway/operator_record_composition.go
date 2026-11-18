@@ -1,6 +1,8 @@
 package main
 
 import (
+	"strings"
+
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/portalconfig"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
@@ -17,9 +19,11 @@ import (
 // pairings and before any runtime starts; a refusal is fatal like a
 // declaration collision. It wires the gateway's configuration provider with
 // the configured record set. A configuration-only home is declared in the
-// provider's name. A home a driver already owns is left to that driver. A
-// set that waits for its owner's resources stays pending and is applied after
-// the owner publishes. An empty section admits no source and publishes nothing.
+// provider's name when its identifier is not one a dynamic driver allocates.
+// A home a driver already owns, and a home a dynamic driver will discover,
+// are left to that driver. A set that waits for its owner's resources stays
+// pending and is applied after the owner publishes. An empty section admits
+// no source and publishes nothing.
 func composeOperatorRecords(hub *semhub.Hub, cfg ebusgateway.Config) error {
 	records, err := configuredOperatorRecords(cfg)
 	if err != nil {
@@ -42,7 +46,10 @@ func composeOperatorRecords(hub *semhub.Hub, cfg ebusgateway.Config) error {
 		if driver, declared := owned[set.Asset]; declared && driver != operatorRecordDriver {
 			continue
 		}
-		if set.ConfigurationOnly {
+		// Absence from this snapshot is not ownership. A dynamic driver allocates
+		// its asset only when it discovers the unit, after preflight, and a
+		// declaration here would collide with that later claim.
+		if set.ConfigurationOnly && !operatorRecordDiscoveredHome(set.Asset) {
 			if err := publisher.DeclareHome(set.Asset, operatorRecordPacks()...); err != nil {
 				return err
 			}
@@ -65,6 +72,33 @@ func configuredOperatorRecords(cfg ebusgateway.Config) ([]operatorAssetRecords, 
 		return nil, nil
 	}
 	return records, nil
+}
+
+// operatorRecordDiscoveredHome reports an asset identifier allocated by a
+// dynamic driver class. The grammar is a family token, "-asset-" and 32 hex
+// digits. Those assets are absent from the preflight snapshot until the class
+// discovers them.
+func operatorRecordDiscoveredHome(id semreg.AssetID) bool {
+	text := string(id)
+	marker := strings.Index(text, "-asset-")
+	if marker <= 0 || strings.Contains(text[:marker], ":") {
+		return false
+	}
+	for _, c := range text[:marker] {
+		if c < 'a' || c > 'z' {
+			return false
+		}
+	}
+	tail := text[marker+len("-asset-"):]
+	if len(tail) != 32 {
+		return false
+	}
+	for _, c := range tail {
+		if c < '0' || (c > '9' && c < 'a') || c > 'f' {
+			return false
+		}
+	}
+	return true
 }
 
 // operatorRecordPacks is the stable pack list of a configuration-only home.

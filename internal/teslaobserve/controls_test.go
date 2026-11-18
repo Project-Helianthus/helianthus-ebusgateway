@@ -71,6 +71,24 @@ func TestTeslaObserveControlRowNeedsThePositiveControl(t *testing.T) {
 	}
 }
 
+func TestTeslaObservePassiveBaselineIsUnreadyAndScriptedExchangeIsReady(t *testing.T) {
+	harness := newHookHarness(t, segmentsAt(syntheticFragments, syntheticOffsets, 5))
+	observation := harness.observe(t)
+	if observation.Termination != TerminationCaptured || string(observation.Window()) != "TESLA\x00PASS\x00" {
+		t.Fatalf("baseline observation = %s window %q", observation.Termination, observation.Window())
+	}
+	passive := ReplayLifecycle(context.Background(), harness.endpoint, observation, nil)
+	if passive.Ready || !passive.AcquireRefused || passive.FramesSent != 0 ||
+		passive.State != string(tesla.Gen3ReadLifecycleUnavailable) {
+		t.Fatalf("passive baseline replay = %+v", passive)
+	}
+	scripted := replayLifecycle(context.Background(), scriptedActivation{}, observation.Endpoint, nil)
+	if !scripted.Ready || scripted.FramesSent != 0 || scripted.AcquireRefused ||
+		scripted.State != string(tesla.Gen3ReadLifecycleReady) {
+		t.Fatalf("scripted exchange replay = %+v", scripted)
+	}
+}
+
 func TestTeslaObserveLifecycleReplayOfNonMatchingWindowRefusesAcquisition(t *testing.T) {
 	harness := newHookHarness(t, segmentsAt([]string{"\x01\x02\x03"}, []int{1}, 2))
 	request := harness.request()

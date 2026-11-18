@@ -223,6 +223,9 @@ func TestTeslaObserveRunRefusesInconsistentPriorMetadataBeforeOpening(t *testing
 		{"replay ready for a partial window", attemptDeadline, func(a *Attempt) {
 			a.Lifecycle.Ready, a.Lifecycle.State, a.Lifecycle.AcquireRefused = true, "ready", false
 		}, "ready for an incomplete window"},
+		{"replay ready for a captured passive window", attemptCaptured, func(a *Attempt) {
+			a.Lifecycle.Ready, a.Lifecycle.State, a.Lifecycle.AcquireRefused, a.Lifecycle.Error = true, "ready", false, ""
+		}, "ready for a passive observation"},
 		{"replay not constructed without an error", attemptCaptured, func(a *Attempt) {
 			a.Lifecycle.State, a.Lifecycle.Ready, a.Lifecycle.AcquireRefused, a.Lifecycle.Error = lifecycleNotConstructed, false, false, ""
 		}, "never constructed"},
@@ -273,9 +276,8 @@ func TestTeslaObservePriorRefusalNamesTheAttemptAndOmitsTheValue(t *testing.T) {
 
 // Metadata the observer can emit stays accepted: a late or canceled window,
 // a read that ends on the deadline or fails, and a recorded lifecycle error.
-// The captured attempt of the fixture replayed to readiness, so a variant that
-// makes its window incomplete also makes its replay not ready, as a real run
-// would have recorded.
+// A passive window is not ready. A variant that changes the termination keeps
+// that replay not ready, as a real run would have recorded.
 func TestTeslaObservePriorKeepsAcceptingEmittableVariants(t *testing.T) {
 	incomplete := func(a *Attempt) {
 		a.Lifecycle.Ready, a.Lifecycle.State, a.Lifecycle.AcquireRefused = false, "unavailable", true

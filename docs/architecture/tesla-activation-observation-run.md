@@ -15,6 +15,7 @@ Read those public native contracts first.
 | Claim | Grade | Separate disposition |
 | --- | --- | --- |
 | The run transmits nothing: its byte source has no transmit, flush, reset or discovery method | Proven for this software, by construction and focused tests | Not a statement about device behavior |
+| A passive observation window cannot make the lifecycle ready | Proven for this software, by construction and focused tests | Not a statement about device behavior |
 | Offline controls reject missing, partial, reordered, wrong-direction, late, canceled, expired, prior-generation, closed and reused observations | Proven as offline software policy against the pinned lifecycle | Establishes nothing about firmware |
 | Reported `TESLA` / `PASS` activation exchange | Hypothesis | The run neither assumes nor prefills it |
 | Token origin, timing, framing and reset repetition at a second site | Unknown | Settled only by owner-reviewed evidence |
@@ -61,23 +62,31 @@ instance and follows the hook contract:
 ## Offline lifecycle replay and controls
 
 Each attempt's observation is passed once through the pinned registry
-`tesla.Gen3ReadAcquisition` lifecycle. That lifecycle is configured with the
-five observation operations (`common.system_info`, `wc.get_vitals`,
-`wc.get_lifetime_stats`, `wc.get_system_info`, `wc.get_load_sharing_state`)
-and with a control endpoint that has no transport. The replay records the
-lifecycle state and confirms that acquisition is refused when the lifecycle
-is not ready. It never calls an acquisition on a ready lifecycle. The replay
-result is stored beside the attempt, not in the ordered evidence rows, and is labeled an
-offline comparison that is not activation evidence.
+`tesla.Gen3ReadAcquisition` lifecycle. The driver for that pass is the
+passive observation. It keeps the label, instance, generation, termination,
+receive-only segment and currentness checks, then reports that a passive
+observation has no host echo. The lifecycle therefore ends unavailable and
+acquisition is refused. A passive window can never make the lifecycle ready.
+The lifecycle is configured with the five observation operations
+(`common.system_info`, `wc.get_vitals`, `wc.get_lifetime_stats`,
+`wc.get_system_info`, `wc.get_load_sharing_state`) and with a control
+endpoint that has no transport. The replay records the lifecycle state and
+confirms that acquisition is refused when the lifecycle is not ready. It
+never calls an acquisition on a ready lifecycle. The replay result is stored
+beside the attempt, not in the ordered evidence rows, and is labeled an
+offline comparison that is not activation evidence. The run transmits nothing.
 
-Every run also executes thirteen synthetic offline controls taken from the
-hook contract's synthetic examples. A positive control (the fragmented
-baseline) shows that the offline configuration can reach readiness, so the
-negative controls discriminate on the varied input. The negative controls
+Every run also executes thirteen synthetic offline controls. The positive
+control is a scripted exchange: the responder greeting, the host echo of that
+greeting, and the confirmation are synthetic input through the same lifecycle
+and the same control endpoint. That exchange can reach offline readiness and
+sends no frames. Every observation-derived control, including the former
+fragmented baseline, expects the lifecycle not ready. The negative controls
 are: missing, partial, reordered, wrong direction, leading unrelated byte,
 segment exhaustion, late return, cancellation before commit, prior
 generation, close before commit, expired activation window and a reused
-observation. Every control must end with no readiness and zero frames sent.
+observation. Each keeps its own termination expectation. Every control ends
+with zero frames sent.
 
 ## Worksheet rows
 

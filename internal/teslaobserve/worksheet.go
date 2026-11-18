@@ -262,7 +262,7 @@ func controlRow(controls []ControlResult, row string) Row {
 		grade = GradeProven
 	}
 	return Row{
-		Result: fmt.Sprintf("%d of %d passed: %s; positive synthetic control reached offline readiness: %t",
+		Result: fmt.Sprintf("%d of %d passed: %s; scripted exchange reached offline readiness: %t",
 			passed, total, strings.Join(parts, "; "), positive),
 		Grade: grade, Basis: offlineControlsBasis,
 	}

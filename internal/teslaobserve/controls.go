@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"github.com/Project-Helianthus/helianthus-modbusreg/tesla"
 )
 
 // Control rows of the worksheet that an offline control supports.
@@ -131,6 +133,9 @@ type controlCase struct {
 	lifecycleNow func() func() time.Time
 	// reuse reports the same observation twice and records the second pass.
 	reuse bool
+	// scripted drives the positive control from synthetic exchange input.
+	// Observation-derived controls leave it unset and stay not ready.
+	scripted bool
 }
 
 func controlCases() []controlCase {
@@ -142,7 +147,7 @@ func controlCases() []controlCase {
 		offsets[index] = index + 1
 	}
 	return []controlCase{
-		{name: "synthetic_fragmented_baseline", row: ControlRowPositive, script: baseline(), termination: TerminationCaptured, ready: true},
+		{name: "synthetic_fragmented_baseline", row: ControlRowPositive, script: baseline(), termination: TerminationCaptured, ready: true, scripted: true},
 		{name: "missing_sequence", row: ControlRowToken, termination: TerminationDeadline},
 		{name: "partial_sequence", row: ControlRowToken, script: segmentsAt([]string{"TESLA\x00"}, []int{1}, 0), termination: TerminationDeadline},
 		{name: "reordered_segments", row: ControlRowToken, script: segmentsAt([]string{"PA", "SS\x00", "TE", "SLA\x00"}, syntheticOffsets, 5), termination: TerminationCaptured},
@@ -220,11 +225,15 @@ func runControl(parent context.Context, instance uint64, control controlCase) Co
 	if control.before != nil {
 		report.before = func() { control.before(endpoint, cancel) }
 	}
+	var driver tesla.HSCActivationDriver = report
+	if control.scripted {
+		driver = scriptedActivation{}
+	}
 	var lifecycleNow func() time.Time
 	if control.lifecycleNow != nil {
 		lifecycleNow = control.lifecycleNow()
 	}
-	replay := replayLifecycle(ctx, report, observation.Endpoint, lifecycleNow)
+	replay := replayLifecycle(ctx, driver, observation.Endpoint, lifecycleNow)
 	if control.reuse {
 		second := replayLifecycle(ctx, report, observation.Endpoint, nil)
 		second.FramesSent += replay.FramesSent

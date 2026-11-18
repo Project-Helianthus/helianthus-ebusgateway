@@ -1310,7 +1310,9 @@ func (tx *Tx) Apply(batch semreg.PublicationBatch, monotonic semreg.MonotonicPoi
 //
 // A batch whose operator identity links differ from the links pending for its
 // source is refused with ErrOperatorLink before anything is journalled or
-// swapped (see Tx.OperatorLinks).
+// swapped, unless the carried links are exactly the pending withdrawals. A
+// qualified declaration left beside those withdrawals stays pending
+// (see Tx.OperatorLinks).
 func (tx *Tx) Commit(onCommit func(Committed)) (outcome Outcome, err error) {
 	if tx == nil || tx.done {
 		return "", ErrTransaction
@@ -1390,8 +1392,10 @@ func (tx *Tx) Commit(onCommit func(Committed)) (outcome Outcome, err error) {
 		h.unlock()
 		return Replayed, nil
 	}
-	// A driver batch publishes operator identity links only as declared: the
-	// operator links it carries must equal the pending set of its source.
+	// A driver batch publishes operator identity links only as declared.
+	// The links it carries must equal the pending set, or equal only the
+	// withdrawals in that set. A qualified declaration left out of a
+	// withdrawal-only batch stays pending.
 	if err := h.checkOperatorLinksLocked(tx); err != nil {
 		h.unlock()
 		return "", err

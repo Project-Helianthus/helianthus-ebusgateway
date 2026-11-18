@@ -155,6 +155,18 @@ func h11Assets(label string, cycle huawei.ProviderCycle) []string {
 	return out
 }
 
+// h11WithLogger is the instance-status asset list: the child assets plus the
+// logger asset when a child was published.
+func h11WithLogger(label string, assets []string) []string {
+	out := append([]string{}, assets...)
+	if len(out) == 0 {
+		return out
+	}
+	out = append(out, string(huaweiLoggerAssetID(label)))
+	sort.Strings(out)
+	return out
+}
+
 // h11AssertNoStorageOrMeter proves that nothing outside the PV pack exists:
 // no storage or infrastructure asset, fact or retained observation. An absent
 // value is unknown and is never published as zero.
@@ -506,7 +518,7 @@ func TestH11ComposedHuaweiPathOffline(t *testing.T) {
 	m03Eventually(t, "every running instance published its first cycle", func() bool {
 		for label, assets := range want {
 			got, err := status(label)
-			if err != nil || got.Disposition == string(huawei.ProviderCycleIncomplete) || !reflect.DeepEqual(got.PublishedAssetIDs, append([]string{}, assets...)) {
+			if err != nil || got.Disposition == string(huawei.ProviderCycleIncomplete) || !reflect.DeepEqual(got.PublishedAssetIDs, h11WithLogger(label, assets)) {
 				return false
 			}
 		}
@@ -551,12 +563,18 @@ func TestH11ComposedHuaweiPathOffline(t *testing.T) {
 			}
 		}
 	}
-	// Publication: only the identified instances' PV assets exist.
-	var published []string
-	for _, assets := range want {
+	// Publication: only the identified instances' PV assets exist, each
+	// instance with a published child adding its logger's asset.
+	var published, children []string
+	for label, assets := range want {
+		children = append(children, assets...)
 		published = append(published, assets...)
+		if len(assets) != 0 {
+			published = append(published, string(huaweiLoggerAssetID(label)))
+		}
 	}
 	sort.Strings(published)
+	sort.Strings(children)
 	var inHub []string
 	for _, id := range hub.AssetIDs() {
 		if hub.Readable(id) {
@@ -577,7 +595,8 @@ func TestH11ComposedHuaweiPathOffline(t *testing.T) {
 	}
 	snapshots.now = func() time.Time { return evaluated }
 	gql, mcpHandler := m11Handlers(t, snapshots)
-	for _, asset := range published {
+	// The logger assets hold no fact, so parity is read on the child assets.
+	for _, asset := range children {
 		selection := m11Selection(reflect.TypeOf(semanticview.View{}))
 		query := fmt.Sprintf("{a:semantic_snapshot(asset_ids:[%q])%s b:semantic_snapshot(asset_ids:[%q])%s}", asset, selection, asset, selection)
 		response := mcpRPC(t, mcpHandler, fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"semantic_v1_snapshot_get","arguments":{"asset_ids":[%q]}}}`, asset))
@@ -661,7 +680,7 @@ func TestH11ComposedHuaweiPathOffline(t *testing.T) {
 	}
 	m03Eventually(t, "alpha successor publication", func() bool {
 		got, err := status("alpha")
-		return err == nil && reflect.DeepEqual(got.PublishedAssetIDs, want["alpha"])
+		return err == nil && reflect.DeepEqual(got.PublishedAssetIDs, h11WithLogger("alpha", want["alpha"]))
 	})
 	view, err = hub.Inspect(semreg.AssetID(want["alpha"][0]))
 	if err != nil || len(view.Snapshot.Facts) == 0 || *view.Snapshot.Facts[0].Candidates[0].SourceEpochID == firstEpoch {

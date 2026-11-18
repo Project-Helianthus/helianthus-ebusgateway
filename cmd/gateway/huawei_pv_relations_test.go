@@ -1,0 +1,1533 @@
+package main
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
+	"github.com/Project-Helianthus/helianthus-modbusreg/huawei"
+	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
+	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/graph"
+)
+
+// huaweiRelationsFixture publishes the first cycle of a fixture under label
+// on hub and returns the publication, the cycle and the lowest published unit.
+func huaweiRelationsFixture(t *testing.T, hub *semhub.Hub, name, label string) (*huaweiPVPublication, huawei.ProviderCycle, byte) {
+	t.Helper()
+	fixture := h10Load(t, name)
+	provider, _, _, clock := h10Native(t, fixture)
+	cycle := h10Refresh(t, provider, clock)
+	cycle.Source = label
+	publication, err := newHuaweiPVPublication(hub, "relations-"+label, "source:relations-"+label, label, nil, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := publication.Publish(cycle); err != nil {
+		t.Fatal(err)
+	}
+	var unit byte
+	for candidate := range publication.published {
+		if unit == 0 || candidate < unit {
+			unit = candidate
+		}
+	}
+	if unit == 0 {
+		t.Fatal("fixture admits no child")
+	}
+	return publication, cycle, unit
+}
+
+// huaweiRelationsNext is the cycle after cycle with the same children, edited
+// by edit.
+func huaweiRelationsNext(cycle huawei.ProviderCycle, edit func(*huawei.ProviderChildObservation)) huawei.ProviderCycle {
+	next := cycle
+	next.Cycle++
+	next.CompletedAt = cycle.CompletedAt.Add(time.Second)
+	next.Children = append([]huawei.ProviderChildObservation(nil), cycle.Children...)
+	if edit != nil {
+		for index := range next.Children {
+			edit(&next.Children[index])
+		}
+	}
+	return next
+}
+
+// huaweiRelationsBinding returns the binding that origin names in snapshot.
+func huaweiRelationsBinding(t *testing.T, snapshot semreg.Snapshot, origin semreg.OriginRef) semreg.NativeBinding {
+	t.Helper()
+	if origin.BindingID == nil {
+		t.Fatal("relation origin names no binding")
+	}
+	for _, binding := range snapshot.Bindings {
+		if binding.BindingID == *origin.BindingID {
+			return binding
+		}
+	}
+	t.Fatalf("relation origin binding %s not in the asset", *origin.BindingID)
+	return semreg.NativeBinding{}
+}
+
+// huaweiRelationsLinked returns the resource the binding's identity link names.
+func huaweiRelationsLinked(snapshot semreg.Snapshot, binding semreg.NativeBindingID) (semreg.IdentityLink, bool) {
+	for _, link := range snapshot.IdentityLinks {
+		if link.BindingID == binding {
+			return link, true
+		}
+	}
+	return semreg.IdentityLink{}, false
+}
+
+// huaweiRelationsCheckGate checks each relation instance of a child asset
+// against the gate rows: the definition, its basis class, the kinds of both
+// ends, a gate basis reference, and an origin binding of the publishing
+// source that observes the starting end.
+func huaweiRelationsCheckGate(t *testing.T, g huaweiGraphView, source semreg.SourceID) {
+	t.Helper()
+	if len(g.snapshot.RelationAbsences) != 0 {
+		t.Fatalf("the gate states no absence statement, the asset holds %d", len(g.snapshot.RelationAbsences))
+	}
+	want := map[semreg.DefinitionID][2]semreg.DefinitionID{
+		"pv.relation.system_inverter": {"resource.pv_system", "resource.inverter"},
+		"pv.relation.inverter_input":  {"resource.inverter", "resource.dc_input"},
+	}
+	inputs := 0
+	for _, relation := range g.snapshot.Relations {
+		ends, ok := want[relation.Definition.ID]
+		if !ok || relation.Definition.Pack.ID != huaweiPVPack {
+			t.Fatalf("relation %s is not a gate row of the child asset", relation.Definition.ID)
+		}
+		if relation.BasisClass != semreg.RelationGateRule || relation.State != semreg.LinkQualified || relation.Origin.Kind != semreg.OriginNativeObservation {
+			t.Fatalf("relation %s basis %s state %s origin %s", relation.Definition.ID, relation.BasisClass, relation.State, relation.Origin.Kind)
+		}
+		if g.resources[relation.From].Kind != ends[0] || g.resources[relation.To].Kind != ends[1] {
+			t.Fatalf("relation %s ends %s -> %s", relation.Definition.ID, g.resources[relation.From].Kind, g.resources[relation.To].Kind)
+		}
+		gated := false
+		for _, ref := range relation.Basis {
+			gated = gated || ref.Owner == huaweiPVPack && ref.Kind == "gate.huawei.pv.relation"
+		}
+		if !gated {
+			t.Fatalf("relation %s carries no gate basis", relation.Definition.ID)
+		}
+		binding := huaweiRelationsBinding(t, g.snapshot, relation.Origin)
+		if binding.SourceID != source || binding.State != semreg.BindingCurrent {
+			t.Fatalf("relation %s origin binding %+v", relation.Definition.ID, binding)
+		}
+		link, ok := huaweiRelationsLinked(g.snapshot, binding.BindingID)
+		if !ok || link.Resource == nil || *link.Resource != relation.From {
+			t.Fatalf("relation %s origin binding does not observe its starting end", relation.Definition.ID)
+		}
+		if relation.Definition.ID == "pv.relation.inverter_input" {
+			inputs++
+		}
+	}
+	if inputs != len(g.byKind["resource.dc_input"]) {
+		t.Fatalf("%d inverter-input relations for %d published inputs", inputs, len(g.byKind["resource.dc_input"]))
+	}
+}
+
+// huaweiRelationsLogger checks the logger asset: one current generic
+// equipment resource on the operator slot of the configured instance, with an
+// operator origin, observed by a current binding of the publishing source.
+func huaweiRelationsLogger(t *testing.T, hub *semhub.Hub, label string, source semreg.SourceID) huaweiGraphView {
+	t.Helper()
+	asset := huaweiLoggerAssetID(label)
+	g := huaweiGraphOf(t, hub, asset)
+	logger := g.one(t, "resource.equipment")
+	if logger.Anchor.Class != semreg.AnchorEquipment || logger.Anchor.Basis != semreg.AnchorOperatorSlot || logger.Origin.Kind != semreg.OriginOperator || logger.Anchor.Parent != nil || logger.Anchor.Slot == nil || *logger.Anchor.Slot != label {
+		t.Fatalf("logger anchor %+v origin %s", logger.Anchor, logger.Origin.Kind)
+	}
+	if len(g.snapshot.Resources) != 1 || len(g.snapshot.Facts) != 0 || len(g.snapshot.RelationAbsences) != 0 {
+		t.Fatalf("logger asset holds %d resources, %d facts, %d absence statements", len(g.snapshot.Resources), len(g.snapshot.Facts), len(g.snapshot.RelationAbsences))
+	}
+	observed := false
+	for _, binding := range g.snapshot.Bindings {
+		if binding.SourceID != source || binding.State != semreg.BindingCurrent {
+			continue
+		}
+		if link, ok := huaweiRelationsLinked(g.snapshot, binding.BindingID); ok && link.State == semreg.LinkQualified && link.Resource != nil && *link.Resource == logger.ResourceID {
+			observed = true
+		}
+	}
+	if !observed {
+		t.Fatal("no current binding of the source observes the logger")
+	}
+	return g
+}
+
+// TestHuaweiPVRelationsLoggerAssetIdentity: the logger asset is keyed by the
+// configured instance label alone, under its own domain, so it never equals
+// a child's asset. The label is the only field of the key and is varied.
+func TestHuaweiPVRelationsLoggerAssetIdentity(t *testing.T) {
+	seen := map[semreg.AssetID]string{}
+	for _, label := range []string{"alpha", "beta"} {
+		sum := sha256.Sum256([]byte("helianthus.modbus.gateway_path.v1\x00" + label + "\x00"))
+		want := semreg.AssetID("pv-asset-" + hex.EncodeToString(sum[:])[:32])
+		got := huaweiLoggerAssetID(label)
+		if got != want {
+			t.Fatalf("logger asset of %s: got %s want %s", label, got, want)
+		}
+		if other, ok := seen[got]; ok {
+			t.Fatalf("labels %s and %s share a logger asset", other, label)
+		}
+		seen[got] = label
+		for unit := 0; unit <= 255; unit++ {
+			if huaweiAssetID(label, "pv", byte(unit)) == got {
+				t.Fatalf("logger asset of %s equals the asset of unit %d", label, unit)
+			}
+		}
+	}
+}
+
+// TestHuaweiPVRelationsPublishGateInstances: every published child carries
+// the gate's system-to-inverter and inverter-to-input instances with the
+// gate-rule basis and its evidence; the logger is generic equipment in its
+// own asset; and every instance is coherent in a hub cut that includes every
+// declared asset. The relays instances follow the gate once the kernel can
+// name the core definition; until then the logger asset holds none.
+func TestHuaweiPVRelationsPublishGateInstances(t *testing.T) {
+	for _, name := range []string{"sdongle", "smartlogger"} {
+		t.Run(name, func(t *testing.T) {
+			hub := newTestSemanticHub(t)
+			publication, _, _ := huaweiRelationsFixture(t, hub, name, "alpha")
+			source := publication.handle.Source()
+			inverters := map[semreg.ResourceID]bool{}
+			for _, asset := range publication.published {
+				g := huaweiGraphOf(t, hub, asset)
+				g.check(t, asset, source)
+				huaweiRelationsCheckGate(t, g, source)
+				inverters[g.one(t, "resource.inverter").ResourceID] = true
+			}
+			logger := huaweiRelationsLogger(t, hub, "alpha", source)
+			loggerID := logger.one(t, "resource.equipment").ResourceID
+			for _, asset := range publication.published {
+				if _, held := huaweiGraphOf(t, hub, asset).resources[loggerID]; held {
+					t.Fatal("the logger resource is held by a child asset")
+				}
+			}
+			ref, relays := huaweiRelaysRef()
+			if !relays {
+				if len(logger.snapshot.Relations) != 0 {
+					t.Fatal("relays instances published although the kernel cannot name the definition")
+				}
+				if publication.relaysWithheld() != huaweiRelaysUnresolved {
+					t.Fatalf("relays withholding reason %q", publication.relaysWithheld())
+				}
+			} else {
+				if len(logger.snapshot.Relations) != len(inverters) {
+					t.Fatalf("%d relays instances for %d inverters", len(logger.snapshot.Relations), len(inverters))
+				}
+				for _, relation := range logger.snapshot.Relations {
+					if relation.Definition != ref || relation.From != loggerID || !inverters[relation.To] || relation.BasisClass != semreg.RelationNativeObservation || relation.State != semreg.LinkQualified {
+						t.Fatalf("relays instance %+v", relation)
+					}
+				}
+			}
+
+			cut, err := hub.CaptureCut(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(cut.NotIncluded) != 0 || cut.Cut.Completeness() != graph.CutComplete {
+				t.Fatalf("cut not complete: %+v", cut.NotIncluded)
+			}
+			members := map[semreg.AssetID]bool{}
+			for _, member := range cut.Cut.Members() {
+				members[member.AssetID] = true
+			}
+			if !members[huaweiLoggerAssetID("alpha")] {
+				t.Fatal("the logger asset is not a cut member")
+			}
+			for _, finding := range cut.Cut.Findings() {
+				t.Fatalf("cut finding %s", finding.Kind)
+			}
+			total := 0
+			for _, asset := range publication.published {
+				total += len(huaweiGraphOf(t, hub, asset).snapshot.Relations)
+			}
+			total += len(logger.snapshot.Relations)
+			if len(cut.Cut.Relations()) != total || total == 0 {
+				t.Fatalf("cut holds %d relations, the assets %d", len(cut.Cut.Relations()), total)
+			}
+			for _, relation := range cut.Cut.Relations() {
+				if relation.Coherence != graph.CoherenceCoherent || relation.State != semreg.LinkQualified {
+					t.Fatalf("relation %s %s -> %s is %s/%s in the cut", relation.Definition.ID, relation.From, relation.To, relation.State, relation.Coherence)
+				}
+			}
+		})
+	}
+}
+
+// TestHuaweiPVRelationsWithheldChildLeavesStructuralRecord: a child the native
+// owner withholds keeps its resources as withdrawn records under their
+// identifiers, so its structure is stated rather than silent. The gate states
+// no absence statement, so none is published and the publisher refuses one.
+// Re-admission makes the same identifiers current again.
+func TestHuaweiPVRelationsWithheldChildLeavesStructuralRecord(t *testing.T) {
+	hub := newTestSemanticHub(t)
+	publication, cycle, unit := huaweiRelationsFixture(t, hub, "smartlogger", "alpha")
+	asset := huaweiAssetID("alpha", "pv", unit)
+	before := huaweiGraphOf(t, hub, asset)
+	identity := before.check(t, asset, publication.handle.Source())
+
+	withheld := huaweiRelationsNext(cycle, func(child *huawei.ProviderChildObservation) {
+		if child.UnitID == unit {
+			child.Evidence = huawei.ProviderEvidenceWithheld
+			child.Reason = huawei.ProviderReasonChildTimeout
+		}
+	})
+	if err := publication.Publish(withheld); err != nil {
+		t.Fatal(err)
+	}
+	g := huaweiGraphOf(t, hub, asset)
+	if len(g.snapshot.Relations) != 0 || len(g.snapshot.Facts) != 0 {
+		t.Fatalf("withheld child keeps %d relations and %d facts", len(g.snapshot.Relations), len(g.snapshot.Facts))
+	}
+	if len(g.snapshot.RelationAbsences) != 0 {
+		t.Fatal("an absence statement the gate does not state was published")
+	}
+	ids := []semreg.ResourceID{identity.system, identity.inverter}
+	for _, input := range identity.inputs {
+		ids = append(ids, input)
+	}
+	for _, id := range ids {
+		resource, ok := g.resources[id]
+		if !ok || resource.State != semreg.ResourceWithdrawn {
+			t.Fatalf("withheld child's resource %s is %q, want a withdrawn record", id, resource.State)
+		}
+	}
+	if len(g.snapshot.Resources) != len(before.snapshot.Resources) {
+		t.Fatalf("withheld child holds %d resource records, before %d", len(g.snapshot.Resources), len(before.snapshot.Resources))
+	}
+	if _, ok := publication.inverters[unit]; ok {
+		t.Fatal("the withheld child's inverter is still a relay endpoint")
+	}
+	for _, side := range []semreg.AbsenceSide{semreg.AbsenceFrom, semreg.AbsenceTo} {
+		for _, definition := range []semreg.DefinitionRef{huaweiRelationSystemInverter, huaweiRelationInverterInput} {
+			absence := semreg.RelationAbsence{Definition: definition, Resource: identity.inverter, Side: side, State: semreg.LinkQualified, BasisClass: semreg.RelationGateRule}
+			if err := huaweiCheckAbsence(absence); !errors.Is(err, errHuaweiAbsenceNotStated) {
+				t.Fatalf("absence %s/%s admitted: %v", definition.ID, side, err)
+			}
+		}
+	}
+
+	readmitted := huaweiRelationsNext(withheld, func(child *huawei.ProviderChildObservation) {
+		for _, original := range cycle.Children {
+			if original.UnitID == child.UnitID {
+				*child = original
+			}
+		}
+	})
+	if err := publication.Publish(readmitted); err != nil {
+		t.Fatal(err)
+	}
+	after := huaweiGraphOf(t, hub, asset)
+	again := after.check(t, asset, publication.handle.Source())
+	if again.system != identity.system || again.inverter != identity.inverter {
+		t.Fatal("re-admission changed the child's identifiers")
+	}
+	huaweiRelationsCheckGate(t, after, publication.handle.Source())
+	if publication.inverters[unit] != identity.inverter {
+		t.Fatal("the re-admitted inverter is not a relay endpoint")
+	}
+}
+
+// TestHuaweiPVRelationsFenceRemovesNativeBasisKeepsConfigured: retiring the
+// epoch removes every gate-rule and native-observation instance in the same
+// snapshot, while the operator-origin resources stay current and the hub's
+// operator identity declaration stays pending; the successor's batch carries
+// it through the transaction accessor.
+func TestHuaweiPVRelationsFenceRemovesNativeBasisKeepsConfigured(t *testing.T) {
+	hub := newTestSemanticHub(t)
+	publication, cycle, unit := huaweiRelationsFixture(t, hub, "smartlogger", "alpha")
+	source := publication.handle.Source()
+	asset := huaweiAssetID("alpha", "pv", unit)
+	g := huaweiGraphOf(t, hub, asset)
+	identity := g.check(t, asset, source)
+	var native semreg.EvidenceRef
+	for _, link := range g.snapshot.IdentityLinks {
+		if link.Resource != nil && *link.Resource == identity.inverter && link.State == semreg.LinkQualified {
+			for _, binding := range g.snapshot.Bindings {
+				if binding.BindingID == link.BindingID {
+					native = binding.NativeResource
+				}
+			}
+		}
+	}
+	if native.Digest == "" {
+		t.Fatal("no binding observes the inverter")
+	}
+	declaration := semreg.EvidenceRef{Owner: semhub.OperatorEvidenceOwner, Kind: "operator.declaration", Digest: semreg.Digest("sha256:" + huaweiHash("operator declaration", string(identity.inverter))), Contract: semreg.ContractKernelV1, Access: semreg.EvidenceAccessAuthorized, Redaction: semreg.RedactionMetadataOnly}
+	if err := hub.SetOperatorLinks(asset, source, []semhub.OperatorLink{{Native: native, Resource: identity.inverter, Basis: []semreg.EvidenceRef{declaration}}}); err != nil {
+		t.Fatal(err)
+	}
+	declared := func(snapshot semreg.Snapshot) int {
+		count := 0
+		for _, link := range snapshot.IdentityLinks {
+			current := false
+			for _, binding := range snapshot.Bindings {
+				current = current || binding.BindingID == link.BindingID && binding.State == semreg.BindingCurrent
+			}
+			for _, ref := range link.Basis {
+				if current && ref == declaration && link.State == semreg.LinkQualified && link.Resource != nil && *link.Resource == identity.inverter {
+					count++
+				}
+			}
+		}
+		return count
+	}
+	next := huaweiRelationsNext(cycle, nil)
+	if err := publication.Publish(next); err != nil {
+		t.Fatal(err)
+	}
+	g = huaweiGraphOf(t, hub, asset)
+	if declared(g.snapshot) != 1 {
+		t.Fatal("the pending operator identity link was not carried by the publisher's batch")
+	}
+	huaweiRelationsCheckGate(t, g, source)
+
+	if err := publication.Fence(); err != nil {
+		t.Fatal(err)
+	}
+	g = huaweiGraphOf(t, hub, asset)
+	if len(g.snapshot.Relations) != 0 {
+		t.Fatalf("the retired epoch left %d native-basis relations", len(g.snapshot.Relations))
+	}
+	for _, id := range []semreg.ResourceID{identity.system, identity.inverter} {
+		if g.resources[id].State != semreg.ResourceCurrent {
+			t.Fatalf("operator-origin resource %s is %s after the fence", id, g.resources[id].State)
+		}
+	}
+	logger := huaweiGraphOf(t, hub, huaweiLoggerAssetID("alpha"))
+	if logger.one(t, "resource.equipment").State != semreg.ResourceCurrent || len(logger.snapshot.Relations) != 0 {
+		t.Fatal("the fence changed the configured logger or left a native relays instance")
+	}
+
+	successor, err := newHuaweiPVPublication(hub, "relations-alpha", string(source), "alpha", publication.handle, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := successor.Publish(huaweiRelationsNext(next, nil)); err != nil {
+		t.Fatal(err)
+	}
+	g = huaweiGraphOf(t, hub, asset)
+	if declared(g.snapshot) != 1 {
+		t.Fatal("the successor did not carry the operator identity declaration")
+	}
+	huaweiRelationsCheckGate(t, g, source)
+	for _, relation := range g.snapshot.Relations {
+		if binding := huaweiRelationsBinding(t, g.snapshot, relation.Origin); binding.SourceEpochID != successor.handle.Epoch() {
+			t.Fatal("a relation of the retired epoch survived")
+		}
+	}
+	huaweiRelationsLogger(t, hub, "alpha", source)
+}
+
+// huaweiRelationsEnds is every resource the asset holds current, by kind.
+func huaweiRelationsEnds(g huaweiGraphView) map[semreg.ResourceID]semreg.DefinitionID {
+	out := map[semreg.ResourceID]semreg.DefinitionID{}
+	for id, resource := range g.resources {
+		if resource.State == semreg.ResourceCurrent {
+			out[id] = resource.Kind
+		}
+	}
+	return out
+}
+
+// TestHuaweiPVRelationsRefuseFalseJoinAndDanglingEndpoint: a relation the gate
+// does not state is refused whatever the catalog admits: a join by label or
+// index with a configuration basis, a definition with the wrong end kinds, or
+// a relays instance on a basis the gate does not name (false join). A far end
+// the publication has not published, another instance's resource or an
+// unallocated identifier is refused (dangling endpoint). One unit reached
+// through two labels stays two unjoined inverters in the cut.
+func TestHuaweiPVRelationsRefuseFalseJoinAndDanglingEndpoint(t *testing.T) {
+	hub := newTestSemanticHub(t)
+	alpha, _, unit := huaweiRelationsFixture(t, hub, "smartlogger", "alpha")
+	beta, _, betaUnit := huaweiRelationsFixture(t, hub, "smartlogger", "beta")
+	if unit != betaUnit {
+		t.Fatal("the two labels do not reach the same unit")
+	}
+	a := huaweiGraphOf(t, hub, huaweiAssetID("alpha", "pv", unit))
+	b := huaweiGraphOf(t, hub, huaweiAssetID("beta", "pv", unit))
+	ai, bi := a.check(t, huaweiAssetID("alpha", "pv", unit), alpha.handle.Source()), b.check(t, huaweiAssetID("beta", "pv", unit), beta.handle.Source())
+	if ai.inverter == bi.inverter || ai.system == bi.system {
+		t.Fatal("one unit reached through two labels was joined into one resource")
+	}
+	var accepted semreg.RelationInstance
+	for _, relation := range a.snapshot.Relations {
+		if relation.Definition == huaweiRelationSystemInverter {
+			accepted = relation
+		}
+	}
+	ends := huaweiRelationsEnds(a)
+	observers := huaweiObservers(a.snapshot, &semreg.PublicationBatch{}, alpha.handle.Source())
+	if err := huaweiCheckRelation(accepted, ends, observers); err != nil {
+		t.Fatalf("the published gate instance is refused: %v", err)
+	}
+	if accepted.Origin.BindingID == nil || observers[*accepted.Origin.BindingID] != ai.system {
+		t.Fatalf("the published system instance is not originated by the binding that observes the system: %+v", accepted.Origin)
+	}
+	// The other existing native bindings of the asset: the one whose qualified
+	// link observes the inverter (the To end), and one of another source.
+	var inverterBinding semreg.NativeBindingID
+	for id, resource := range observers {
+		if resource == ai.inverter {
+			inverterBinding = id
+		}
+	}
+	if inverterBinding == "" {
+		t.Fatal("no current binding of the asset observes the inverter")
+	}
+	var betaSystemBinding semreg.NativeBindingID
+	for id, resource := range huaweiObservers(b.snapshot, &semreg.PublicationBatch{}, beta.handle.Source()) {
+		if resource == bi.system {
+			betaSystemBinding = id
+		}
+	}
+	if betaSystemBinding == "" {
+		t.Fatal("no current binding of the other label observes its system")
+	}
+	originBy := func(id semreg.NativeBindingID) func(*semreg.RelationInstance) {
+		return func(r *semreg.RelationInstance) { r.Origin.BindingID = &id }
+	}
+	var anyInput semreg.ResourceID
+	for _, input := range ai.inputs {
+		anyInput = input
+	}
+	loggerID := huaweiGraphOf(t, hub, huaweiLoggerAssetID("alpha")).one(t, "resource.equipment").ResourceID
+	withEnds := func(extra map[semreg.ResourceID]semreg.DefinitionID) map[semreg.ResourceID]semreg.DefinitionID {
+		out := map[semreg.ResourceID]semreg.DefinitionID{}
+		for id, kind := range ends {
+			out[id] = kind
+		}
+		for id, kind := range extra {
+			out[id] = kind
+		}
+		return out
+	}
+	relaysRef := semreg.DefinitionRef{Pack: huaweiRelationSystemInverter.Pack, ID: huaweiRelaysID, Version: "1.0.0"}
+	operator := semreg.OriginRef{OriginID: "origin:relations-test:operator", Kind: semreg.OriginOperator, Evidence: accepted.Basis}
+	edit := func(change func(*semreg.RelationInstance)) semreg.RelationInstance {
+		relation := accepted
+		relation.Basis = append([]semreg.EvidenceRef(nil), accepted.Basis...)
+		change(&relation)
+		return relation
+	}
+	falseJoins := map[string]struct {
+		relation semreg.RelationInstance
+		ends     map[semreg.ResourceID]semreg.DefinitionID
+	}{
+		// basis: a configuration basis derived from the label.
+		"system by label": {edit(func(r *semreg.RelationInstance) {
+			r.BasisClass, r.Origin = semreg.RelationConfiguration, operator
+		}), ends},
+		// basis class only: a native-observation class the gate does not give
+		// this definition, origin and basis list unchanged.
+		"system on another basis class": {edit(func(r *semreg.RelationInstance) { r.BasisClass = semreg.RelationNativeObservation }), ends},
+		// basis kept, origin: an operator origin under a gate-rule basis.
+		"system by operator origin": {edit(func(r *semreg.RelationInstance) { r.Origin = operator }), ends},
+		// definition: the input relation between the system and the inverter.
+		"input by index": {edit(func(r *semreg.RelationInstance) { r.Definition = huaweiRelationInverterInput }), ends},
+		// from: an input as the grouping system.
+		"system from input": {edit(func(r *semreg.RelationInstance) { r.From = anyInput }), ends},
+		// to: the system groups an input.
+		"system to input": {edit(func(r *semreg.RelationInstance) { r.To = anyInput }), ends},
+		// definition outside the gate: a pack relation the gate leaves unknown.
+		"inverter to phase": {edit(func(r *semreg.RelationInstance) {
+			r.Definition = semreg.DefinitionRef{Pack: huaweiRelationSystemInverter.Pack, ID: "pv.relation.inverter_phase", Version: "1.0.0"}
+		}), ends},
+		// relays on a configuration basis: the catalog admits it, the gate does not.
+		"relays by configuration": {edit(func(r *semreg.RelationInstance) {
+			r.Definition, r.From, r.To, r.BasisClass, r.Origin = relaysRef, loggerID, ai.inverter, semreg.RelationConfiguration, operator
+		}), withEnds(map[semreg.ResourceID]semreg.DefinitionID{loggerID: huaweiKindEquipment})},
+		// relays in reverse: the inverter relays the logger.
+		"relays reversed": {edit(func(r *semreg.RelationInstance) {
+			r.Definition, r.From, r.To, r.BasisClass = relaysRef, ai.inverter, loggerID, semreg.RelationNativeObservation
+		}), withEnds(map[semreg.ResourceID]semreg.DefinitionID{loggerID: huaweiKindEquipment})},
+		// basis: an empty basis list.
+		"system without basis": {edit(func(r *semreg.RelationInstance) { r.Basis = nil }), ends},
+		// basis: a native string index, with the gate definition, end kinds,
+		// basis class and native origin left as published.
+		"system basis from a string index": {edit(func(r *semreg.RelationInstance) {
+			r.Basis = []semreg.EvidenceRef{huaweiEvidence("native.huawei.string_index", "1")}
+		}), ends},
+		// basis: a configured label, with the same gate row otherwise.
+		"system basis from a label": {edit(func(r *semreg.RelationInstance) {
+			r.Basis = []semreg.EvidenceRef{huaweiEvidence("operator.huawei.instance", "alpha")}
+		}), ends},
+		// basis: the gate owner and kind with another rule scope.
+		"system basis of another rule": {edit(func(r *semreg.RelationInstance) {
+			r.Basis = []semreg.EvidenceRef{huaweiEvidence("gate.huawei.pv.relation", struct {
+				Definition semreg.DefinitionID
+				Rule       string
+			}{huaweiRelationSystemInverter.ID, "index_without_the_gate_rule"})}
+		}), ends},
+		// origin: the asset's existing inverter binding, which observes the To
+		// end, with definition, basis and end kinds left as published.
+		"system originated by the inverter binding": {edit(originBy(inverterBinding)), ends},
+		// origin: an existing binding of the other label, which observes a
+		// resource this relation does not name.
+		"system originated by another label's binding": {edit(originBy(betaSystemBinding)), ends},
+		// origin: a binding the asset does not hold.
+		"system originated by an unheld binding": {edit(originBy("binding:relations-test-unheld")), ends},
+	}
+	for name, test := range falseJoins {
+		if err := huaweiCheckRelation(test.relation, test.ends, observers); !errors.Is(err, errHuaweiFalseJoin) {
+			t.Fatalf("%s: got %v, want a false join", name, err)
+		}
+	}
+	dangling := map[string]semreg.RelationInstance{
+		// to: the other label's inverter, which this publication never published.
+		"inverter of another label": edit(func(r *semreg.RelationInstance) { r.To = bi.inverter }),
+		// from: the other label's system.
+		"system of another label": edit(func(r *semreg.RelationInstance) { r.From = bi.system }),
+		// to: an identifier the allocator never allocated.
+		"unallocated inverter": edit(func(r *semreg.RelationInstance) { r.To = "resource:unallocated-inverter" }),
+		// relays to an inverter that is not published.
+		"relays to an unpublished inverter": edit(func(r *semreg.RelationInstance) {
+			r.Definition, r.From, r.To, r.BasisClass = relaysRef, loggerID, "resource:unallocated-inverter", semreg.RelationNativeObservation
+		}),
+	}
+	for name, relation := range dangling {
+		if err := huaweiCheckRelation(relation, withEnds(map[semreg.ResourceID]semreg.DefinitionID{loggerID: huaweiKindEquipment}), observers); !errors.Is(err, errHuaweiDanglingEndpoint) {
+			t.Fatalf("%s: got %v, want a dangling endpoint", name, err)
+		}
+	}
+	// The relays builder names only inverters whose child batch committed.
+	alpha.mu.Lock()
+	alpha.inverters[200] = "resource:unallocated-inverter"
+	relays := alpha.relays(relaysRef, loggerID, "binding:relations-test")
+	delete(alpha.inverters, 200)
+	var unpublished []semreg.RelationInstance
+	for _, relation := range relays {
+		if relation.To == "resource:unallocated-inverter" {
+			unpublished = append(unpublished, relation)
+		}
+	}
+	_, refused := alpha.checkLoggerRelations(unpublished, loggerID, map[semreg.NativeBindingID]semreg.ResourceID{"binding:relations-test": loggerID})
+	committed := alpha.relays(relaysRef, loggerID, "binding:relations-test")
+	alpha.mu.Unlock()
+	if len(relays) != len(committed)+1 || !errors.Is(refused, errHuaweiDanglingEndpoint) {
+		t.Fatalf("relays to an unpublished inverter: got %v", refused)
+	}
+	for _, relation := range committed {
+		if relation.From != loggerID || relation.BasisClass != semreg.RelationNativeObservation || relation.Origin.Kind != semreg.OriginNativeObservation || relation.Origin.BindingID == nil || *relation.Origin.BindingID != "binding:relations-test" {
+			t.Fatalf("relays instance %+v", relation)
+		}
+	}
+
+	cut, err := hub.CaptureCut(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, finding := range cut.Cut.Findings() {
+		t.Fatalf("two labels produced the cut finding %s", finding.Kind)
+	}
+	alphaOwn, betaOwn := huaweiRelationsEnds(a), huaweiRelationsEnds(b)
+	for _, relation := range cut.Cut.Relations() {
+		_, fromAlpha := alphaOwn[relation.From]
+		_, toAlpha := alphaOwn[relation.To]
+		_, fromBeta := betaOwn[relation.From]
+		_, toBeta := betaOwn[relation.To]
+		if fromAlpha && toBeta || fromBeta && toAlpha {
+			t.Fatalf("relation %s joins the two labels", relation.Definition.ID)
+		}
+	}
+}
+
+// huaweiRelationsObservedLink is the qualified identity link of a current
+// binding that an observed fact about inverter, or about one of its current
+// inputs, uses. Those facts share the inverter-path binding.
+func huaweiRelationsObservedLink(t *testing.T, g huaweiGraphView, inverter semreg.ResourceID) semreg.IdentityLink {
+	t.Helper()
+	subjects := map[semreg.ResourceID]bool{inverter: true}
+	for _, resource := range g.resources {
+		if resource.State == semreg.ResourceCurrent && resource.Kind == huaweiKindInput && resource.Anchor.Parent != nil && *resource.Anchor.Parent == inverter {
+			subjects[resource.ResourceID] = true
+		}
+	}
+	current := map[semreg.NativeBindingID]bool{}
+	for _, binding := range g.snapshot.Bindings {
+		if binding.State == semreg.BindingCurrent {
+			current[binding.BindingID] = true
+		}
+	}
+	var bindingID semreg.NativeBindingID
+	found := false
+	for _, envelope := range g.snapshot.Facts {
+		if len(envelope.Key.Dimensions) != 1 || envelope.Key.Dimensions[0].Value.Text == nil || !subjects[semreg.ResourceID(*envelope.Key.Dimensions[0].Value.Text)] {
+			continue
+		}
+		for _, candidate := range envelope.Candidates {
+			if candidate.Quality.Assertion != semreg.AssertionObserved || candidate.BindingID == nil || !current[*candidate.BindingID] {
+				continue
+			}
+			bindingID = *candidate.BindingID
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no observed fact on the binding of %s", inverter)
+	}
+	link, ok := huaweiRelationsLinked(g.snapshot, bindingID)
+	if !ok || link.State != semreg.LinkQualified || link.Resource == nil {
+		t.Fatalf("binding %s does not qualify a resource", bindingID)
+	}
+	return link
+}
+
+// TestHuaweiPVRelationsReplacementLeavesRetiredDeclarationPending: a qualified
+// operator declaration that still names the retired inverter is not installed
+// on the replacement binding. The replacement batch commits facts about the
+// new inverter, and the qualified link of that fact binding observes the new
+// inverter. A later declaration of the new inverter is installed.
+func TestHuaweiPVRelationsReplacementLeavesRetiredDeclarationPending(t *testing.T) {
+	hub := newTestSemanticHub(t)
+	publication, cycle, unit := huaweiRelationsFixture(t, hub, "smartlogger", "alpha")
+	source := publication.handle.Source()
+	asset := huaweiAssetID("alpha", "pv", unit)
+	before := huaweiGraphOf(t, hub, asset).check(t, asset, source)
+	var native semreg.EvidenceRef
+	for _, link := range huaweiGraphOf(t, hub, asset).snapshot.IdentityLinks {
+		if link.Resource != nil && *link.Resource == before.inverter && link.State == semreg.LinkQualified {
+			for _, binding := range huaweiGraphOf(t, hub, asset).snapshot.Bindings {
+				if binding.BindingID == link.BindingID {
+					native = binding.NativeResource
+				}
+			}
+		}
+	}
+	if native.Digest == "" {
+		t.Fatal("no binding observes the inverter")
+	}
+	declaration := semreg.EvidenceRef{Owner: semhub.OperatorEvidenceOwner, Kind: "operator.declaration", Digest: semreg.Digest("sha256:" + huaweiHash("operator declaration", string(before.inverter))), Contract: semreg.ContractKernelV1, Access: semreg.EvidenceAccessAuthorized, Redaction: semreg.RedactionMetadataOnly}
+	if err := hub.SetOperatorLinks(asset, source, []semhub.OperatorLink{{Native: native, Resource: before.inverter, Basis: []semreg.EvidenceRef{declaration}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := publication.Publish(huaweiRelationsNext(cycle, nil)); err != nil {
+		t.Fatal(err)
+	}
+	qualified := huaweiGraphOf(t, hub, asset)
+	if link := huaweiRelationsObservedLink(t, qualified, before.inverter); !huaweiDeclaredLink(link) || link.Resource == nil || *link.Resource != before.inverter {
+		t.Fatal("the declaration was not installed on the current inverter")
+	}
+
+	withheld := huaweiRelationsNext(cycle, func(child *huawei.ProviderChildObservation) {
+		if child.UnitID == unit {
+			child.Evidence = huawei.ProviderEvidenceWithheld
+			child.Reason = huawei.ProviderReasonIdentityMismatch
+		}
+	})
+	withheld.Cycle = cycle.Cycle + 2
+	withheld.CompletedAt = cycle.CompletedAt.Add(2 * time.Second)
+	if err := publication.Publish(withheld); err != nil {
+		t.Fatal(err)
+	}
+	readmitted := huaweiRelationsNext(cycle, func(child *huawei.ProviderChildObservation) {
+		for _, original := range cycle.Children {
+			if original.UnitID == child.UnitID {
+				*child = original
+			}
+		}
+	})
+	readmitted.Cycle = withheld.Cycle + 1
+	readmitted.CompletedAt = withheld.CompletedAt.Add(time.Second)
+	if err := publication.Publish(readmitted); err != nil {
+		t.Fatal(err)
+	}
+	graph := huaweiGraphOf(t, hub, asset)
+	after := graph.check(t, asset, source)
+	if after.inverter == before.inverter {
+		t.Fatal("replacement kept the inverter identifier")
+	}
+	if old := graph.resources[before.inverter]; old.State == semreg.ResourceCurrent {
+		t.Fatal("the replaced inverter is still current")
+	}
+	link := huaweiRelationsObservedLink(t, graph, after.inverter)
+	if link.Resource == nil || *link.Resource != after.inverter {
+		t.Fatal("the replacement binding does not observe the new inverter")
+	}
+	if huaweiDeclaredLink(link) || (link.Resource != nil && *link.Resource == before.inverter) {
+		t.Fatal("a declaration naming the retired inverter was installed on the replacement binding")
+	}
+	later := huaweiRelationsNext(readmitted, nil)
+	if err := publication.Publish(later); err != nil {
+		t.Fatal(err)
+	}
+	again := huaweiGraphOf(t, hub, asset)
+	if link := huaweiRelationsObservedLink(t, again, after.inverter); huaweiDeclaredLink(link) || link.Resource == nil || *link.Resource != after.inverter {
+		t.Fatal("a later cycle installed the retired declaration or dropped the new inverter")
+	}
+
+	if err := hub.SetOperatorLinks(asset, source, []semhub.OperatorLink{{Native: native, Resource: after.inverter, Basis: []semreg.EvidenceRef{declaration}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := publication.Publish(huaweiRelationsNext(later, nil)); err != nil {
+		t.Fatal(err)
+	}
+	declared := huaweiGraphOf(t, hub, asset)
+	if link := huaweiRelationsObservedLink(t, declared, after.inverter); !huaweiDeclaredLink(link) || link.Resource == nil || *link.Resource != after.inverter {
+		t.Fatal("a declaration of the new inverter was not installed on its binding")
+	}
+	declared.check(t, asset, source)
+}
+
+// TestHuaweiPVRelationsLoggerRejectsDeclarationOfAnotherResource: a pending
+// operator declaration for the logger's binding that names another resource
+// is not installed, so the binding keeps observing the logger. A later
+// declaration that names the logger is installed.
+func TestHuaweiPVRelationsLoggerRejectsDeclarationOfAnotherResource(t *testing.T) {
+	hub := newTestSemanticHub(t)
+	publication, cycle, unit := huaweiRelationsFixture(t, hub, "smartlogger", "alpha")
+	source := publication.handle.Source()
+	loggerAsset := huaweiLoggerAssetID("alpha")
+	g := huaweiRelationsLogger(t, hub, "alpha", source)
+	logger := g.one(t, "resource.equipment").ResourceID
+	var native semreg.EvidenceRef
+	for _, link := range g.snapshot.IdentityLinks {
+		if link.Resource != nil && *link.Resource == logger && link.State == semreg.LinkQualified {
+			for _, binding := range g.snapshot.Bindings {
+				if binding.BindingID == link.BindingID {
+					native = binding.NativeResource
+				}
+			}
+		}
+	}
+	if native.Digest == "" {
+		t.Fatal("no binding observes the logger")
+	}
+	stale := huaweiGraphOf(t, hub, huaweiAssetID("alpha", "pv", unit)).check(t, huaweiAssetID("alpha", "pv", unit), source).inverter
+	declaration := semreg.EvidenceRef{Owner: semhub.OperatorEvidenceOwner, Kind: "operator.declaration", Digest: semreg.Digest("sha256:" + huaweiHash("operator declaration", string(stale))), Contract: semreg.ContractKernelV1, Access: semreg.EvidenceAccessAuthorized, Redaction: semreg.RedactionMetadataOnly}
+	if err := hub.SetOperatorLinks(loggerAsset, source, []semhub.OperatorLink{{Native: native, Resource: stale, Basis: []semreg.EvidenceRef{declaration}}}); err != nil {
+		t.Fatal(err)
+	}
+	next := huaweiRelationsNext(cycle, nil)
+	if err := publication.Publish(next); err != nil {
+		t.Fatal(err)
+	}
+	after := huaweiRelationsLogger(t, hub, "alpha", source)
+	for _, link := range after.snapshot.IdentityLinks {
+		if huaweiDeclaredLink(link) || (link.Resource != nil && *link.Resource != logger) {
+			t.Fatalf("logger binding link %+v does not observe the logger", link)
+		}
+	}
+
+	if err := hub.SetOperatorLinks(loggerAsset, source, []semhub.OperatorLink{{Native: native, Resource: logger, Basis: []semreg.EvidenceRef{declaration}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := publication.Publish(huaweiRelationsNext(next, nil)); err != nil {
+		t.Fatal(err)
+	}
+	declared := false
+	for _, link := range huaweiRelationsLogger(t, hub, "alpha", source).snapshot.IdentityLinks {
+		declared = declared || huaweiDeclaredLink(link) && link.Resource != nil && *link.Resource == logger
+	}
+	if !declared {
+		t.Fatal("a declaration naming the logger was not installed on its binding")
+	}
+}
+
+// TestHuaweiPVRelationsNamesPublishedLoggerAsset: the logger asset is named
+// once the publication has published it, and an unpublished label is not.
+func TestHuaweiPVRelationsNamesPublishedLoggerAsset(t *testing.T) {
+	hub := newTestSemanticHub(t)
+	publication, _, _ := huaweiRelationsFixture(t, hub, "smartlogger", "alpha")
+	logger, ok := huaweiPublishedLoggerAsset(publication)
+	if !ok || logger != huaweiLoggerAssetID("alpha") {
+		t.Fatalf("published logger = %s, %v", logger, ok)
+	}
+	fresh := newTestSemanticHub(t)
+	bare := &huaweiPVPublication{hub: fresh, label: "alpha", published: map[byte]semreg.AssetID{1: huaweiAssetID("alpha", "pv", 1)}}
+	if id, ok := huaweiPublishedLoggerAsset(bare); ok {
+		t.Fatalf("unpublished logger asset %s reported", id)
+	}
+}
+
+// TestHuaweiPVRelationsLoggerStatusFollowsPublicationEpoch: fencing leaves the
+// logger's operator-origin equipment current. A successor has not published
+// that asset until its own source epoch has a current source descriptor or
+// binding there, so instance status omits the logger before that batch.
+func TestHuaweiPVRelationsLoggerStatusFollowsPublicationEpoch(t *testing.T) {
+	hub := newTestSemanticHub(t)
+	publication, cycle, _ := huaweiRelationsFixture(t, hub, "smartlogger", "alpha")
+	loggerAsset := huaweiLoggerAssetID("alpha")
+	if logger, ok := huaweiPublishedLoggerAsset(publication); !ok || logger != loggerAsset {
+		t.Fatalf("published logger = %s, %v", logger, ok)
+	}
+	if err := publication.Fence(); err != nil {
+		t.Fatal(err)
+	}
+	if huaweiGraphOf(t, hub, loggerAsset).one(t, "resource.equipment").State != semreg.ResourceCurrent {
+		t.Fatal("the fence withdrew the operator-origin logger")
+	}
+	successor, err := newHuaweiPVPublication(hub, "relations-alpha", string(publication.handle.Source()), "alpha", publication.handle, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if successor.handle.Epoch() == publication.handle.Epoch() {
+		t.Fatal("the successor reused the fenced epoch")
+	}
+	if id, ok := huaweiPublishedLoggerAsset(successor); ok {
+		t.Fatalf("instance status lists logger %s before the successor's logger batch", id)
+	}
+	if err := successor.Publish(huaweiRelationsNext(cycle, nil)); err != nil {
+		t.Fatal(err)
+	}
+	if logger, ok := huaweiPublishedLoggerAsset(successor); !ok || logger != loggerAsset {
+		t.Fatalf("successor logger after its batch = %s, %v", logger, ok)
+	}
+}
+
+// huaweiRelationsPendingLinks is the operator set a batch that upserts no
+// binding would be handed. The caller does not apply that batch.
+func huaweiRelationsPendingLinks(t *testing.T, hub *semhub.Hub, publication *huaweiPVPublication, asset semreg.AssetID) []semreg.IdentityLink {
+	t.Helper()
+	tx, err := hub.Begin(publication.handle, asset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending := tx.OperatorLinks(nil)
+	tx.Abort()
+	return pending
+}
+
+// huaweiRelationsDeclare replaces the source's operator declarations with one
+// link from native to resource.
+func huaweiRelationsDeclare(t *testing.T, hub *semhub.Hub, asset semreg.AssetID, source semreg.SourceID, native semreg.EvidenceRef, resource semreg.ResourceID, declaration semreg.EvidenceRef) {
+	t.Helper()
+	if err := hub.SetOperatorLinks(asset, source, []semhub.OperatorLink{{Native: native, Resource: resource, Basis: []semreg.EvidenceRef{declaration}}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// huaweiRelationsBindingNative is the native evidence of a child binding: the
+// asset, the source, the profile and the path.
+func huaweiRelationsBindingNative(asset semreg.AssetID, source semreg.SourceID, profile, path string) semreg.EvidenceRef {
+	return huaweiEvidence("native.huawei.binding", struct {
+		Asset   semreg.AssetID
+		Source  semreg.SourceID
+		Profile string
+		Path    string
+	}{asset, source, profile, path})
+}
+
+// huaweiRelationsRestore returns the cycle after base with every child copied
+// back from the admitted cycle.
+func huaweiRelationsRestore(base, admitted huawei.ProviderCycle) huawei.ProviderCycle {
+	return huaweiRelationsNext(base, func(child *huawei.ProviderChildObservation) {
+		for _, original := range admitted.Children {
+			if original.UnitID == child.UnitID {
+				*child = original
+			}
+		}
+	})
+}
+
+// huaweiRelationsPendingFor reports whether pending names resource on binding.
+func huaweiRelationsPendingFor(pending []semreg.IdentityLink, binding semreg.NativeBindingID, resource semreg.ResourceID) bool {
+	for _, link := range pending {
+		if link.BindingID == binding && link.State == semreg.LinkQualified && link.Resource != nil && *link.Resource == resource && huaweiDeclaredLink(link) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestHuaweiPVRelationsWithdrawalLeavesRetiredDeclarationPending: after a
+// replacement leaves a declaration that still names the retired inverter
+// pending, withholding the child commits the withdrawn records and does not
+// commit that declaration. The replacement binding's link keeps naming the
+// replacement inverter.
+//
+// The replacement binding's native evidence is the digest of four fields.
+// Each variation catches a digest that ignores that field, which would leave
+// the varied declaration pending for the replacement binding:
+//
+//	field    variation          production mutation caught
+//	asset    another asset      the digest ignores the asset
+//	source   another source     the digest ignores the source
+//	profile  another profile    the digest ignores the profile
+//	path     the system path    the digest ignores the path
+func TestHuaweiPVRelationsWithdrawalLeavesRetiredDeclarationPending(t *testing.T) {
+	hub := newTestSemanticHub(t)
+	publication, cycle, unit := huaweiRelationsFixture(t, hub, "smartlogger", "alpha")
+	source := publication.handle.Source()
+	asset := huaweiAssetID("alpha", "pv", unit)
+	before := huaweiGraphOf(t, hub, asset).check(t, asset, source)
+	var profile string
+	for _, child := range cycle.Children {
+		if child.UnitID == unit {
+			profile = child.ProfileID
+		}
+	}
+	if profile == "" {
+		t.Fatal("the published unit has no profile")
+	}
+	native := huaweiRelationsBindingNative(asset, source, profile, huaweiInverterPath)
+	var observed semreg.EvidenceRef
+	for _, link := range huaweiGraphOf(t, hub, asset).snapshot.IdentityLinks {
+		if link.Resource != nil && *link.Resource == before.inverter && link.State == semreg.LinkQualified {
+			for _, binding := range huaweiGraphOf(t, hub, asset).snapshot.Bindings {
+				if binding.BindingID == link.BindingID {
+					observed = binding.NativeResource
+				}
+			}
+		}
+	}
+	if observed != native {
+		t.Fatal("the inverter binding's native evidence is not the digest of asset, source, profile and path")
+	}
+	declaration := semreg.EvidenceRef{Owner: semhub.OperatorEvidenceOwner, Kind: "operator.declaration", Digest: semreg.Digest("sha256:" + huaweiHash("operator declaration", string(before.inverter))), Contract: semreg.ContractKernelV1, Access: semreg.EvidenceAccessAuthorized, Redaction: semreg.RedactionMetadataOnly}
+	huaweiRelationsDeclare(t, hub, asset, source, native, before.inverter, declaration)
+	installed := huaweiRelationsNext(cycle, nil)
+	if err := publication.Publish(installed); err != nil {
+		t.Fatal(err)
+	}
+	if link := huaweiRelationsObservedLink(t, huaweiGraphOf(t, hub, asset), before.inverter); !huaweiDeclaredLink(link) || link.Resource == nil || *link.Resource != before.inverter {
+		t.Fatal("the declaration was not installed on the current inverter")
+	}
+	mismatched := huaweiRelationsNext(installed, func(child *huawei.ProviderChildObservation) {
+		if child.UnitID == unit {
+			child.Evidence = huawei.ProviderEvidenceWithheld
+			child.Reason = huawei.ProviderReasonIdentityMismatch
+		}
+	})
+	if err := publication.Publish(mismatched); err != nil {
+		t.Fatal(err)
+	}
+	readmitted := huaweiRelationsRestore(mismatched, cycle)
+	if err := publication.Publish(readmitted); err != nil {
+		t.Fatal(err)
+	}
+	graph := huaweiGraphOf(t, hub, asset)
+	after := graph.check(t, asset, source)
+	if after.inverter == before.inverter {
+		t.Fatal("replacement kept the inverter identifier")
+	}
+	replacement := huaweiRelationsObservedLink(t, graph, after.inverter)
+	if replacement.Resource == nil || *replacement.Resource != after.inverter || huaweiDeclaredLink(replacement) {
+		t.Fatal("the replacement binding does not observe the new inverter")
+	}
+	var retiredBinding semreg.NativeBindingID
+	for _, link := range graph.snapshot.IdentityLinks {
+		if link.BindingID != replacement.BindingID && huaweiDeclaredLink(link) && link.State == semreg.LinkQualified && link.Resource != nil && *link.Resource == before.inverter {
+			retiredBinding = link.BindingID
+		}
+	}
+	if retiredBinding == "" {
+		t.Fatal("the retired inverter's binding lost its operator link")
+	}
+	var systemBinding semreg.NativeBindingID
+	for _, link := range graph.snapshot.IdentityLinks {
+		if link.State == semreg.LinkQualified && link.Resource != nil && *link.Resource == after.system {
+			systemBinding = link.BindingID
+		}
+	}
+	if systemBinding == "" || systemBinding == replacement.BindingID {
+		t.Fatal("no binding observes the PV system")
+	}
+	// The system path is a real binding of this asset, so that variation is
+	// pending for the system binding and must not be pending for the
+	// replacement binding.
+	for _, variation := range []struct {
+		field  string
+		native semreg.EvidenceRef
+	}{
+		{"asset", huaweiRelationsBindingNative("asset:other", source, profile, huaweiInverterPath)},
+		{"source", huaweiRelationsBindingNative(asset, "source:other", profile, huaweiInverterPath)},
+		{"profile", huaweiRelationsBindingNative(asset, source, profile+"-other", huaweiInverterPath)},
+		{"path", huaweiRelationsBindingNative(asset, source, profile, huaweiSystemPath)},
+	} {
+		huaweiRelationsDeclare(t, hub, asset, source, variation.native, before.inverter, declaration)
+		if huaweiRelationsPendingFor(huaweiRelationsPendingLinks(t, hub, publication, asset), replacement.BindingID, before.inverter) {
+			t.Fatalf("native %s differs but the declaration is pending for the replacement binding", variation.field)
+		}
+	}
+	huaweiRelationsDeclare(t, hub, asset, source, native, before.inverter, declaration)
+	if !huaweiRelationsPendingFor(huaweiRelationsPendingLinks(t, hub, publication, asset), replacement.BindingID, before.inverter) {
+		t.Fatal("the declaration naming the retired inverter is not pending for the replacement binding")
+	}
+	withheld := huaweiRelationsNext(readmitted, func(child *huawei.ProviderChildObservation) {
+		if child.UnitID == unit {
+			child.Evidence = huawei.ProviderEvidenceWithheld
+			child.Reason = huawei.ProviderReasonChildTimeout
+		}
+	})
+	if err := publication.Publish(withheld); err != nil {
+		t.Fatal(err)
+	}
+	if _, still := publication.published[unit]; still {
+		t.Fatal("the withheld child stayed published")
+	}
+	g := huaweiGraphOf(t, hub, asset)
+	if len(g.snapshot.Facts) != 0 || len(g.snapshot.Relations) != 0 {
+		t.Fatalf("withheld child keeps %d facts and %d relations", len(g.snapshot.Facts), len(g.snapshot.Relations))
+	}
+	for _, id := range []semreg.ResourceID{after.system, after.inverter} {
+		if g.resources[id].State != semreg.ResourceWithdrawn {
+			t.Fatalf("withheld resource %s is %s", id, g.resources[id].State)
+		}
+	}
+	for _, input := range after.inputs {
+		if g.resources[input].State != semreg.ResourceWithdrawn {
+			t.Fatalf("withheld input %s is %s", input, g.resources[input].State)
+		}
+	}
+	if g.resources[before.inverter].State == semreg.ResourceCurrent {
+		t.Fatal("the retired inverter became current")
+	}
+	link, ok := huaweiRelationsLinked(g.snapshot, replacement.BindingID)
+	if !ok || link.Resource == nil || *link.Resource != after.inverter || link.State != semreg.LinkWithdrawn || huaweiDeclaredLink(link) {
+		t.Fatalf("replacement binding link = %+v, want a withdrawn link naming the replacement inverter", link)
+	}
+	system, ok := huaweiRelationsLinked(g.snapshot, systemBinding)
+	if !ok || system.Resource == nil || *system.Resource != after.system || system.State != semreg.LinkWithdrawn || huaweiDeclaredLink(system) {
+		t.Fatalf("system binding link = %+v", system)
+	}
+	retired, ok := huaweiRelationsLinked(g.snapshot, retiredBinding)
+	if !ok || !huaweiDeclaredLink(retired) || retired.State != semreg.LinkQualified || retired.Resource == nil || *retired.Resource != before.inverter {
+		t.Fatalf("retired binding link = %+v", retired)
+	}
+	restored := huaweiRelationsRestore(withheld, cycle)
+	if err := publication.Publish(restored); err != nil {
+		t.Fatal(err)
+	}
+	again := huaweiGraphOf(t, hub, asset)
+	observedLink := huaweiRelationsObservedLink(t, again, after.inverter)
+	if observedLink.Resource == nil || *observedLink.Resource != after.inverter || huaweiDeclaredLink(observedLink) {
+		t.Fatal("readmission installed the retired declaration or dropped the replacement inverter")
+	}
+	if !huaweiRelationsPendingFor(huaweiRelationsPendingLinks(t, hub, publication, asset), observedLink.BindingID, before.inverter) {
+		t.Fatal("the retired declaration did not stay pending for the successor binding")
+	}
+}
+
+// TestHuaweiPVRelationsWithdrawalCommitsUnheldDeclaration: a pending
+// declaration that names a resource the asset does not hold is not carried
+// by the withdrawal. The withdrawn records commit and the child does not
+// stay published.
+//
+//	field     variation                               production mutation caught
+//	resource  a resource the asset does not hold     the withdrawal carries that pending link and the batch is refused
+func TestHuaweiPVRelationsWithdrawalCommitsUnheldDeclaration(t *testing.T) {
+	hub := newTestSemanticHub(t)
+	publication, cycle, unit := huaweiRelationsFixture(t, hub, "smartlogger", "alpha")
+	source := publication.handle.Source()
+	asset := huaweiAssetID("alpha", "pv", unit)
+	identity := huaweiGraphOf(t, hub, asset).check(t, asset, source)
+	var profile string
+	for _, child := range cycle.Children {
+		if child.UnitID == unit {
+			profile = child.ProfileID
+		}
+	}
+	if profile == "" {
+		t.Fatal("the published unit has no profile")
+	}
+	native := huaweiRelationsBindingNative(asset, source, profile, huaweiInverterPath)
+	inverter := huaweiRelationsObservedLink(t, huaweiGraphOf(t, hub, asset), identity.inverter)
+	var held semreg.EvidenceRef
+	for _, binding := range huaweiGraphOf(t, hub, asset).snapshot.Bindings {
+		if binding.BindingID == inverter.BindingID {
+			held = binding.NativeResource
+		}
+	}
+	if held != native {
+		t.Fatal("the inverter binding's native evidence is not the digest of asset, source, profile and path")
+	}
+	missing := semreg.ResourceID("resource:not-held-by-the-asset")
+	if _, ok := huaweiGraphOf(t, hub, asset).resources[missing]; ok {
+		t.Fatal("the asset holds the resource the declaration names")
+	}
+	declaration := semreg.EvidenceRef{Owner: semhub.OperatorEvidenceOwner, Kind: "operator.declaration", Digest: semreg.Digest("sha256:" + huaweiHash("operator declaration", string(missing))), Contract: semreg.ContractKernelV1, Access: semreg.EvidenceAccessAuthorized, Redaction: semreg.RedactionMetadataOnly}
+	huaweiRelationsDeclare(t, hub, asset, source, native, missing, declaration)
+	if !huaweiRelationsPendingFor(huaweiRelationsPendingLinks(t, hub, publication, asset), inverter.BindingID, missing) {
+		t.Fatal("the declaration naming a resource the asset does not hold is not pending")
+	}
+	withheld := huaweiRelationsNext(cycle, func(child *huawei.ProviderChildObservation) {
+		if child.UnitID == unit {
+			child.Evidence = huawei.ProviderEvidenceWithheld
+			child.Reason = huawei.ProviderReasonChildTimeout
+		}
+	})
+	if err := publication.Publish(withheld); err != nil {
+		t.Fatal(err)
+	}
+	if _, still := publication.published[unit]; still {
+		t.Fatal("the withheld child stayed published")
+	}
+	g := huaweiGraphOf(t, hub, asset)
+	if len(g.snapshot.Facts) != 0 || len(g.snapshot.Relations) != 0 {
+		t.Fatalf("withheld child keeps %d facts and %d relations", len(g.snapshot.Facts), len(g.snapshot.Relations))
+	}
+	for _, id := range []semreg.ResourceID{identity.system, identity.inverter} {
+		if g.resources[id].State != semreg.ResourceWithdrawn {
+			t.Fatalf("withheld resource %s is %s", id, g.resources[id].State)
+		}
+	}
+	link, ok := huaweiRelationsLinked(g.snapshot, inverter.BindingID)
+	if !ok || link.Resource == nil || *link.Resource != identity.inverter || link.State != semreg.LinkWithdrawn || huaweiDeclaredLink(link) {
+		t.Fatalf("inverter binding link = %+v, want a withdrawn link naming the inverter", link)
+	}
+	for _, published := range g.snapshot.IdentityLinks {
+		if published.Resource != nil && *published.Resource == missing {
+			t.Fatalf("a link names the resource the asset does not hold: %+v", published)
+		}
+	}
+	restored := huaweiRelationsRestore(withheld, cycle)
+	if err := publication.Publish(restored); err != nil {
+		t.Fatal(err)
+	}
+	again := huaweiGraphOf(t, hub, asset)
+	observed := huaweiRelationsObservedLink(t, again, identity.inverter)
+	if observed.Resource == nil || *observed.Resource != identity.inverter || huaweiDeclaredLink(observed) {
+		t.Fatal("readmission installed the unheld declaration or dropped the inverter")
+	}
+	if !huaweiRelationsPendingFor(huaweiRelationsPendingLinks(t, hub, publication, asset), observed.BindingID, missing) {
+		t.Fatal("the unheld declaration did not stay pending for the successor binding")
+	}
+}
+
+// TestHuaweiPVRelationsWithdrawalCommitsRemovedDeclaration: an installed
+// operator declaration removed before the child is withheld or disappears is
+// pending as a withdrawal of that link. The withdrawal batch carries the
+// removal, so the link becomes withdrawn and nothing stays pending. The
+// child's withdrawn records still commit. A new qualified declaration is not
+// what this pending set holds.
+//
+//	trigger    variation                          production mutation caught
+//	withheld   the child is withheld              the withdrawal never reads a pending operator withdrawal
+//	disappears the child is absent from a         the same branch is skipped when the child is omitted
+//	           completed listing
+func TestHuaweiPVRelationsWithdrawalCommitsRemovedDeclaration(t *testing.T) {
+	for _, mode := range []struct {
+		name     string
+		withdraw func(huawei.ProviderCycle, byte) huawei.ProviderCycle
+	}{
+		{"withheld", func(cycle huawei.ProviderCycle, unit byte) huawei.ProviderCycle {
+			return huaweiRelationsNext(cycle, func(child *huawei.ProviderChildObservation) {
+				if child.UnitID == unit {
+					child.Evidence = huawei.ProviderEvidenceWithheld
+					child.Reason = huawei.ProviderReasonChildTimeout
+				}
+			})
+		}},
+		{"disappears", func(cycle huawei.ProviderCycle, unit byte) huawei.ProviderCycle {
+			next := huaweiRelationsNext(cycle, nil)
+			kept := make([]huawei.ProviderChildObservation, 0, len(next.Children))
+			for _, child := range next.Children {
+				if child.UnitID != unit {
+					kept = append(kept, child)
+				}
+			}
+			next.Children = kept
+			next.Outcome = huawei.ProviderCycleComplete
+			return next
+		}},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			huaweiRelationsWithdrawalCommitsRemovedDeclaration(t, mode.withdraw)
+		})
+	}
+}
+
+// huaweiRelationsWithdrawalCommitsRemovedDeclaration installs one operator
+// declaration, removes it, and withdraws the child by withdraw.
+func huaweiRelationsWithdrawalCommitsRemovedDeclaration(t *testing.T, withdraw func(huawei.ProviderCycle, byte) huawei.ProviderCycle) {
+	t.Helper()
+	hub := newTestSemanticHub(t)
+	publication, cycle, unit := huaweiRelationsFixture(t, hub, "smartlogger", "alpha")
+	source := publication.handle.Source()
+	asset := huaweiAssetID("alpha", "pv", unit)
+	identity := huaweiGraphOf(t, hub, asset).check(t, asset, source)
+	var profile string
+	for _, child := range cycle.Children {
+		if child.UnitID == unit {
+			profile = child.ProfileID
+		}
+	}
+	if profile == "" {
+		t.Fatal("the published unit has no profile")
+	}
+	native := huaweiRelationsBindingNative(asset, source, profile, huaweiInverterPath)
+	installed := huaweiRelationsObservedLink(t, huaweiGraphOf(t, hub, asset), identity.inverter)
+	var held semreg.EvidenceRef
+	for _, binding := range huaweiGraphOf(t, hub, asset).snapshot.Bindings {
+		if binding.BindingID == installed.BindingID {
+			held = binding.NativeResource
+		}
+	}
+	if held != native {
+		t.Fatal("the inverter binding's native evidence is not the digest of asset, source, profile and path")
+	}
+	declaration := semreg.EvidenceRef{Owner: semhub.OperatorEvidenceOwner, Kind: "operator.declaration", Digest: semreg.Digest("sha256:" + huaweiHash("operator declaration", string(identity.inverter))), Contract: semreg.ContractKernelV1, Access: semreg.EvidenceAccessAuthorized, Redaction: semreg.RedactionMetadataOnly}
+	huaweiRelationsDeclare(t, hub, asset, source, native, identity.inverter, declaration)
+	committed := huaweiRelationsNext(cycle, nil)
+	if err := publication.Publish(committed); err != nil {
+		t.Fatal(err)
+	}
+	link := huaweiRelationsObservedLink(t, huaweiGraphOf(t, hub, asset), identity.inverter)
+	if !huaweiDeclaredLink(link) || link.BindingID != installed.BindingID || link.Resource == nil || *link.Resource != identity.inverter {
+		t.Fatal("the declaration was not installed on the current inverter")
+	}
+	var systemBinding semreg.NativeBindingID
+	for _, old := range huaweiGraphOf(t, hub, asset).snapshot.IdentityLinks {
+		if old.State == semreg.LinkQualified && old.Resource != nil && *old.Resource == identity.system {
+			systemBinding = old.BindingID
+		}
+	}
+	if systemBinding == "" || systemBinding == link.BindingID {
+		t.Fatal("no binding observes the PV system")
+	}
+	if err := hub.SetOperatorLinks(asset, source, nil); err != nil {
+		t.Fatal(err)
+	}
+	pending := huaweiRelationsPendingLinks(t, hub, publication, asset)
+	if len(pending) != 1 || pending[0].BindingID != link.BindingID || pending[0].State != semreg.LinkWithdrawn || pending[0].Revision != huaweiNext(link.Revision) || pending[0].Resource == nil || *pending[0].Resource != identity.inverter {
+		t.Fatalf("pending removal = %+v", pending)
+	}
+	if err := publication.Publish(withdraw(committed, unit)); err != nil {
+		t.Fatal(err)
+	}
+	if _, still := publication.published[unit]; still {
+		t.Fatal("the withdrawn child stayed published")
+	}
+	g := huaweiGraphOf(t, hub, asset)
+	if len(g.snapshot.Facts) != 0 || len(g.snapshot.Relations) != 0 {
+		t.Fatalf("withdrawn child keeps %d facts and %d relations", len(g.snapshot.Facts), len(g.snapshot.Relations))
+	}
+	for _, id := range []semreg.ResourceID{identity.system, identity.inverter} {
+		if g.resources[id].State != semreg.ResourceWithdrawn {
+			t.Fatalf("withdrawn resource %s is %s", id, g.resources[id].State)
+		}
+	}
+	for _, input := range identity.inputs {
+		if g.resources[input].State != semreg.ResourceWithdrawn {
+			t.Fatalf("withdrawn input %s is %s", input, g.resources[input].State)
+		}
+	}
+	removed, ok := huaweiRelationsLinked(g.snapshot, link.BindingID)
+	if !ok || removed.State != semreg.LinkWithdrawn || removed.Revision != huaweiNext(link.Revision) || removed.Resource == nil || *removed.Resource != identity.inverter || huaweiDeclaredLink(removed) {
+		t.Fatalf("removed declaration = %+v, want a withdrawn link naming the inverter", removed)
+	}
+	operatorBasis := false
+	for _, ref := range removed.Basis {
+		if ref.Owner == semhub.OperatorEvidenceOwner {
+			operatorBasis = true
+		}
+	}
+	if !operatorBasis {
+		t.Fatal("the withdrawn link lost the operator declaration basis")
+	}
+	system, ok := huaweiRelationsLinked(g.snapshot, systemBinding)
+	if !ok || system.State != semreg.LinkWithdrawn || huaweiDeclaredLink(system) {
+		t.Fatalf("system binding link = %+v", system)
+	}
+	if again := huaweiRelationsPendingLinks(t, hub, publication, asset); len(again) != 0 {
+		t.Fatalf("the removal stayed pending: %+v", again)
+	}
+}
+
+// TestHuaweiPVRelationsWithdrawalCommitsRemovalBesideDeferredDeclaration:
+// an installed operator declaration is removed while a qualified declaration
+// that names a resource the asset does not hold is pending for the other
+// binding. Withholding or omitting the child commits the removal and the
+// child's withdrawn records, and leaves that qualified declaration pending.
+// It is not installed.
+//
+//	trigger    variation                          production mutation caught
+//	withheld   the child is withheld              the pending withdrawal is dropped because a qualified declaration is also pending
+//	disappears the child is absent from a         the same branch is skipped when the child is omitted
+//	           completed listing
+func TestHuaweiPVRelationsWithdrawalCommitsRemovalBesideDeferredDeclaration(t *testing.T) {
+	for _, mode := range []struct {
+		name     string
+		withdraw func(huawei.ProviderCycle, byte) huawei.ProviderCycle
+	}{
+		{"withheld", func(cycle huawei.ProviderCycle, unit byte) huawei.ProviderCycle {
+			return huaweiRelationsNext(cycle, func(child *huawei.ProviderChildObservation) {
+				if child.UnitID == unit {
+					child.Evidence = huawei.ProviderEvidenceWithheld
+					child.Reason = huawei.ProviderReasonChildTimeout
+				}
+			})
+		}},
+		{"disappears", func(cycle huawei.ProviderCycle, unit byte) huawei.ProviderCycle {
+			next := huaweiRelationsNext(cycle, nil)
+			kept := make([]huawei.ProviderChildObservation, 0, len(next.Children))
+			for _, child := range next.Children {
+				if child.UnitID != unit {
+					kept = append(kept, child)
+				}
+			}
+			next.Children = kept
+			next.Outcome = huawei.ProviderCycleComplete
+			return next
+		}},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			huaweiRelationsWithdrawalCommitsRemovalBesideDeferredDeclaration(t, mode.withdraw)
+		})
+	}
+}
+
+// huaweiRelationsWithdrawalCommitsRemovalBesideDeferredDeclaration installs
+// one operator declaration, replaces the set with a declaration the asset
+// cannot hold, and withdraws the child by withdraw.
+func huaweiRelationsWithdrawalCommitsRemovalBesideDeferredDeclaration(t *testing.T, withdraw func(huawei.ProviderCycle, byte) huawei.ProviderCycle) {
+	t.Helper()
+	hub := newTestSemanticHub(t)
+	publication, cycle, unit := huaweiRelationsFixture(t, hub, "smartlogger", "alpha")
+	source := publication.handle.Source()
+	asset := huaweiAssetID("alpha", "pv", unit)
+	identity := huaweiGraphOf(t, hub, asset).check(t, asset, source)
+	var profile string
+	for _, child := range cycle.Children {
+		if child.UnitID == unit {
+			profile = child.ProfileID
+		}
+	}
+	if profile == "" {
+		t.Fatal("the published unit has no profile")
+	}
+	native := huaweiRelationsBindingNative(asset, source, profile, huaweiInverterPath)
+	installed := huaweiRelationsObservedLink(t, huaweiGraphOf(t, hub, asset), identity.inverter)
+	var held semreg.EvidenceRef
+	for _, binding := range huaweiGraphOf(t, hub, asset).snapshot.Bindings {
+		if binding.BindingID == installed.BindingID {
+			held = binding.NativeResource
+		}
+	}
+	if held != native {
+		t.Fatal("the inverter binding's native evidence is not the digest of asset, source, profile and path")
+	}
+	declaration := semreg.EvidenceRef{Owner: semhub.OperatorEvidenceOwner, Kind: "operator.declaration", Digest: semreg.Digest("sha256:" + huaweiHash("operator declaration", string(identity.inverter))), Contract: semreg.ContractKernelV1, Access: semreg.EvidenceAccessAuthorized, Redaction: semreg.RedactionMetadataOnly}
+	huaweiRelationsDeclare(t, hub, asset, source, native, identity.inverter, declaration)
+	committed := huaweiRelationsNext(cycle, nil)
+	if err := publication.Publish(committed); err != nil {
+		t.Fatal(err)
+	}
+	link := huaweiRelationsObservedLink(t, huaweiGraphOf(t, hub, asset), identity.inverter)
+	if !huaweiDeclaredLink(link) || link.BindingID != installed.BindingID || link.Resource == nil || *link.Resource != identity.inverter {
+		t.Fatal("the declaration was not installed on the current inverter")
+	}
+	var systemBinding semreg.NativeBindingID
+	for _, old := range huaweiGraphOf(t, hub, asset).snapshot.IdentityLinks {
+		if old.State == semreg.LinkQualified && old.Resource != nil && *old.Resource == identity.system && !huaweiDeclaredLink(old) {
+			systemBinding = old.BindingID
+		}
+	}
+	if systemBinding == "" || systemBinding == link.BindingID {
+		t.Fatal("no binding observes the PV system")
+	}
+	var systemNative semreg.EvidenceRef
+	for _, binding := range huaweiGraphOf(t, hub, asset).snapshot.Bindings {
+		if binding.BindingID == systemBinding {
+			systemNative = binding.NativeResource
+		}
+	}
+	if systemNative != huaweiRelationsBindingNative(asset, source, profile, huaweiSystemPath) {
+		t.Fatal("the system binding's native evidence is not the digest of asset, source, profile and path")
+	}
+	missing := semreg.ResourceID("resource:not-held-by-the-asset")
+	if _, ok := huaweiGraphOf(t, hub, asset).resources[missing]; ok {
+		t.Fatal("the asset holds the resource the deferred declaration names")
+	}
+	deferred := semreg.EvidenceRef{Owner: semhub.OperatorEvidenceOwner, Kind: "operator.declaration", Digest: semreg.Digest("sha256:" + huaweiHash("operator declaration", string(missing))), Contract: semreg.ContractKernelV1, Access: semreg.EvidenceAccessAuthorized, Redaction: semreg.RedactionMetadataOnly}
+	if err := hub.SetOperatorLinks(asset, source, []semhub.OperatorLink{{Native: systemNative, Resource: missing, Basis: []semreg.EvidenceRef{deferred}}}); err != nil {
+		t.Fatal(err)
+	}
+	pending := huaweiRelationsPendingLinks(t, hub, publication, asset)
+	var removal semreg.IdentityLink
+	sawWithdrawal, sawQualified := false, false
+	for _, item := range pending {
+		if item.BindingID == link.BindingID && item.State == semreg.LinkWithdrawn && item.Revision == huaweiNext(link.Revision) && item.Resource != nil && *item.Resource == identity.inverter {
+			removal = item
+			sawWithdrawal = true
+		}
+		if item.BindingID == systemBinding && item.State == semreg.LinkQualified && item.Resource != nil && *item.Resource == missing && huaweiDeclaredLink(item) {
+			sawQualified = true
+		}
+	}
+	if len(pending) != 2 || !sawWithdrawal || !sawQualified {
+		t.Fatalf("pending beside the removal = %+v", pending)
+	}
+	if err := publication.Publish(withdraw(committed, unit)); err != nil {
+		t.Fatal(err)
+	}
+	if _, still := publication.published[unit]; still {
+		t.Fatal("the withdrawn child stayed published")
+	}
+	g := huaweiGraphOf(t, hub, asset)
+	if len(g.snapshot.Facts) != 0 || len(g.snapshot.Relations) != 0 {
+		t.Fatalf("withdrawn child keeps %d facts and %d relations", len(g.snapshot.Facts), len(g.snapshot.Relations))
+	}
+	for _, id := range []semreg.ResourceID{identity.system, identity.inverter} {
+		if g.resources[id].State != semreg.ResourceWithdrawn {
+			t.Fatalf("withdrawn resource %s is %s", id, g.resources[id].State)
+		}
+	}
+	for _, input := range identity.inputs {
+		if g.resources[input].State != semreg.ResourceWithdrawn {
+			t.Fatalf("withdrawn input %s is %s", input, g.resources[input].State)
+		}
+	}
+	removed, ok := huaweiRelationsLinked(g.snapshot, link.BindingID)
+	if !ok || removed.State != removal.State || removed.Revision != removal.Revision || removed.Resource == nil || *removed.Resource != identity.inverter || huaweiDeclaredLink(removed) {
+		t.Fatalf("removed declaration = %+v, want the pending withdrawal", removed)
+	}
+	operatorBasis := false
+	for _, ref := range removed.Basis {
+		if ref.Owner == semhub.OperatorEvidenceOwner {
+			operatorBasis = true
+		}
+	}
+	if !operatorBasis {
+		t.Fatal("the withdrawn link lost the operator declaration basis")
+	}
+	system, ok := huaweiRelationsLinked(g.snapshot, systemBinding)
+	if !ok || system.State != semreg.LinkWithdrawn || huaweiDeclaredLink(system) {
+		t.Fatalf("system binding link = %+v, want the publisher withdrawal", system)
+	}
+	for _, ref := range system.Basis {
+		if ref.Owner == semhub.OperatorEvidenceOwner {
+			t.Fatal("the deferred declaration was installed on the system binding")
+		}
+	}
+	for _, published := range g.snapshot.IdentityLinks {
+		if published.Resource != nil && *published.Resource == missing {
+			t.Fatalf("a link names the resource the asset does not hold: %+v", published)
+		}
+	}
+	// A binding whose link is withdrawn takes no operator link again. The
+	// deferred declaration stays with the hub and is pending for the
+	// successor binding, which the readmission below publishes.
+	if again := huaweiRelationsPendingLinks(t, hub, publication, asset); len(again) != 0 {
+		t.Fatalf("a link stayed pending on the withdrawn bindings: %+v", again)
+	}
+	restored := huaweiRelationsNext(withdraw(committed, unit), nil)
+	restored.Children = append([]huawei.ProviderChildObservation(nil), cycle.Children...)
+	restored.Outcome = cycle.Outcome
+	if err := publication.Publish(restored); err != nil {
+		t.Fatal(err)
+	}
+	readmitted := huaweiGraphOf(t, hub, asset)
+	observed := huaweiRelationsObservedLink(t, readmitted, identity.inverter)
+	if observed.Resource == nil || *observed.Resource != identity.inverter || huaweiDeclaredLink(observed) {
+		t.Fatal("readmission installed a declaration on the inverter or dropped it")
+	}
+	for _, published := range readmitted.snapshot.IdentityLinks {
+		if published.Resource != nil && *published.Resource == missing {
+			t.Fatalf("readmission installed the deferred declaration: %+v", published)
+		}
+	}
+	heldBack := huaweiRelationsPendingLinks(t, hub, publication, asset)
+	if len(heldBack) != 1 || heldBack[0].State != semreg.LinkQualified || heldBack[0].Resource == nil || *heldBack[0].Resource != missing || !huaweiDeclaredLink(heldBack[0]) {
+		t.Fatalf("deferred declaration after readmission = %+v", heldBack)
+	}
+}

@@ -2,6 +2,7 @@
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import tempfile
@@ -11,6 +12,7 @@ import unittest
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 PASSIVE_SMOKE_GATE_SCRIPT = REPO_ROOT / "scripts" / "passive_smoke_gate.sh"
+PASSIVE_HARNESS_SCRIPT = REPO_ROOT / "scripts" / "passive_matrix_case_ha.sh"
 CONFIG_CLASSIFIER = REPO_ROOT / "scripts" / "semreg_public_config_classifier.py"
 
 
@@ -232,22 +234,36 @@ type Config struct {
 
         report_path = repo_path / "passive.json"
         report_path.write_text(
-            json.dumps(
-                {
-                    "suite": "passive",
-                    "cases": [
-                        {"case_id": "P01", "passive_mode": "unsupported_or_misconfigured", "outcome": "pass"},
-                        {"case_id": "P02", "passive_mode": "unsupported_or_misconfigured", "outcome": "pass"},
-                        {"case_id": "P03", "passive_mode": "required", "outcome": "pass"},
-                        {"case_id": "P04", "passive_mode": "required", "outcome": "pass"},
-                        {"case_id": "P05", "passive_mode": "required", "outcome": "pass"},
-                        {"case_id": "P06", "passive_mode": "unsupported_or_misconfigured", "outcome": "pass"},
-                    ],
-                }
-            ),
+            json.dumps({"suite": "passive", "cases": self._passive_cases()}),
             encoding="utf-8",
         )
         return repo_path, report_path
+
+    def _passive_cases(self) -> list[dict[str, str]]:
+        return [
+            {"case_id": "P01", "passive_mode": "unsupported_or_misconfigured", "outcome": "pass"},
+            {"case_id": "P02", "passive_mode": "unsupported_or_misconfigured", "outcome": "pass"},
+            {"case_id": "P06", "passive_mode": "unsupported_or_misconfigured", "outcome": "pass"},
+        ]
+
+    def _run_triggered_gate(self, cases: list[dict[str, str]]) -> subprocess.CompletedProcess[str]:
+        repo_path, report_path = self._create_temp_repo(
+            "cmd/gateway/main.go",
+            base_text="package main\n\nfunc main() {\n\tpassiveMode := \"required\"\n\t_ = passiveMode\n}\n",
+            modified_text="package main\n\nfunc main() {\n\tpassiveMode := \"unsupported_or_misconfigured\"\n\t_ = passiveMode\n}\n",
+        )
+        report_path.write_text(
+            json.dumps({"suite": "passive", "cases": cases}),
+            encoding="utf-8",
+        )
+        return subprocess.run(
+            ["bash", "scripts/passive_smoke_gate.sh"],
+            cwd=repo_path,
+            env=self._script_env(PASSIVE_SMOKE_GATE_BASE_REF="HEAD", PASSIVE_SMOKE_REPORT=str(report_path)),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
 
     def test_passive_smoke_gate_triggers_for_real_main_diff(self) -> None:
         repo_path, report_path = self._create_temp_repo(
@@ -265,6 +281,52 @@ type Config struct {
         )
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         self.assertIn("passive smoke gate: PASS", result.stdout)
+        self.assertIn("P01, P02 and P06", result.stdout)
+
+    def test_retired_six_case_form_names_the_new_form(self) -> None:
+        cases = [
+            {"case_id": "P01", "passive_mode": "unsupported_or_misconfigured", "outcome": "pass"},
+            {"case_id": "P02", "passive_mode": "unsupported_or_misconfigured", "outcome": "pass"},
+            {"case_id": "P03", "passive_mode": "required", "outcome": "pass"},
+            {"case_id": "P04", "passive_mode": "required", "outcome": "pass"},
+            {"case_id": "P05", "passive_mode": "required", "outcome": "pass"},
+            {"case_id": "P06", "passive_mode": "unsupported_or_misconfigured", "outcome": "pass"},
+        ]
+        result = self._run_triggered_gate(cases)
+        self.assertNotEqual(result.returncode, 0, msg=result.stdout)
+        self.assertIn("retired six-case form", result.stdout)
+        self.assertIn("P01, P02 and P06", result.stdout)
+
+    def test_each_remaining_case_field_is_required(self) -> None:
+        # case_id: dropping one required id must name that id.
+        # passive_mode: a different mode on that id must name the id and the mode.
+        # outcome: a non-pass outcome on that id must name the id and the outcome.
+        for case_id, passive_mode in (
+            ("P01", "unsupported_or_misconfigured"),
+            ("P02", "unsupported_or_misconfigured"),
+            ("P06", "unsupported_or_misconfigured"),
+        ):
+            missing = [dict(case) for case in self._passive_cases() if case["case_id"] != case_id]
+            missing_result = self._run_triggered_gate(missing)
+            self.assertNotEqual(missing_result.returncode, 0, msg=missing_result.stdout)
+            self.assertIn(f"missing required cases: {case_id}", missing_result.stdout)
+
+            mutated_mode = "required" if passive_mode != "required" else "unsupported_or_misconfigured"
+            wrong_mode = [dict(case) for case in self._passive_cases()]
+            for case in wrong_mode:
+                if case["case_id"] == case_id:
+                    case["passive_mode"] = mutated_mode
+            mode_result = self._run_triggered_gate(wrong_mode)
+            self.assertNotEqual(mode_result.returncode, 0, msg=mode_result.stdout)
+            self.assertIn(f"{case_id} passive_mode='{mutated_mode}'", mode_result.stdout)
+
+            failing = [dict(case) for case in self._passive_cases()]
+            for case in failing:
+                if case["case_id"] == case_id:
+                    case["outcome"] = "fail"
+            fail_result = self._run_triggered_gate(failing)
+            self.assertNotEqual(fail_result.returncode, 0, msg=fail_result.stdout)
+            self.assertIn(f"{case_id} outcome='fail'", fail_result.stdout)
 
     def test_passive_smoke_gate_fails_without_report(self) -> None:
         repo_path, _ = self._create_temp_repo(
@@ -634,6 +696,161 @@ func (store *BusObservabilityStore) RenderPrometheus() {
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("PASSIVE_SMOKE_REPORT is required", result.stdout)
+
+    def test_gate_reads_only_the_kept_passive_variables(self) -> None:
+        # The three-case form adds no input: the gate's variables stay the kept
+        # path, report and override names, and a three-case report alone passes.
+        text = PASSIVE_SMOKE_GATE_SCRIPT.read_text(encoding="utf-8")
+        self.assertEqual(
+            set(re.findall(r"PASSIVE_[A-Z_]+", text)),
+            {
+                "PASSIVE_SMOKE_GATE_BASE_REF",
+                "PASSIVE_SMOKE_GATE_BY_OWNER",
+                "PASSIVE_SMOKE_GATE_OWNER_OVERRIDE",
+                "PASSIVE_SMOKE_GATE_OWNER_REASON",
+                "PASSIVE_SMOKE_REPORT",
+            },
+        )
+        self.assertNotIn("os.environ", text)
+        self.assertNotIn("smoke_evidence.json", text)
+        result = self._run_triggered_gate(self._passive_cases())
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        self.assertIn("passive smoke gate: PASS (P01, P02 and P06, all pass).", result.stdout)
+
+
+class PassiveHarnessDriverAdmissionTests(unittest.TestCase):
+    """The harness fails a case when the gateway log shows the eBUS driver withheld."""
+
+    def _function_source(self, name: str) -> str:
+        text = PASSIVE_HARNESS_SCRIPT.read_text(encoding="utf-8")
+        match = re.search(rf"^{name}\(\) \{{\n.*?^\}}\n", text, re.MULTILINE | re.DOTALL)
+        self.assertIsNotNone(match, msg=f"{name} not found in the passive harness")
+        return match.group(0)
+
+    def _admitted(self, log_text: str | None) -> subprocess.CompletedProcess[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = pathlib.Path(tmp) / "gateway.log"
+            if log_text is not None:
+                log_path.write_text(log_text, encoding="utf-8")
+            program = "\n".join(
+                [
+                    "set -euo pipefail",
+                    "canonical_case_id=P01",
+                    # The harness reads the remote log through remote_exec; the
+                    # stub runs the same command locally.
+                    'remote_exec() { bash -c "$1"; }',
+                    "sleep() { :; }",
+                    self._function_source("ebus_driver_admitted"),
+                    'ebus_driver_admitted "$1"',
+                ]
+            )
+            return subprocess.run(
+                ["bash", "-c", program, "harness", str(log_path)],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+    def test_admitted_driver_passes(self) -> None:
+        result = self._admitted("gateway: listening\nebus.primary running\n")
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertNotIn("withheld", result.stderr)
+
+    def test_withheld_driver_fails_the_case(self) -> None:
+        for line in (
+            "gateway: ebus.primary withheld: instance identity unavailable\n",
+            "portal configuration: record did not load (config_invalid); ebus.primary withheld until local repair\n",
+        ):
+            with self.subTest(line=line):
+                result = self._admitted("gateway: listening\n" + line)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("passive case P01: eBUS driver withheld", result.stderr)
+
+    def test_missing_or_empty_log_fails_closed(self) -> None:
+        for log_text in (None, ""):
+            with self.subTest(log_text=log_text):
+                result = self._admitted(log_text)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("passive case P01: eBUS driver withheld", result.stderr)
+
+    def test_matched_text_is_what_the_gateway_logs(self) -> None:
+        # The harness matches "ebus.primary withheld"; both gateway reports of a
+        # withheld primary driver render that text.
+        self.assertIn("'ebus.primary withheld'", self._function_source("ebus_driver_admitted"))
+        driver = (REPO_ROOT / "cmd" / "gateway" / "ebus_driver_runtime.go").read_text(encoding="utf-8")
+        self.assertIn('primaryEBusDriverID = "ebus.primary"', driver)
+        setup = (REPO_ROOT / "cmd" / "gateway" / "gateway_run_setup.go").read_text(encoding="utf-8")
+        self.assertIn('"ebus.primary withheld: %w"', setup)
+        portal = (REPO_ROOT / "cmd" / "gateway" / "portal_config_runtime.go").read_text(encoding="utf-8")
+        self.assertIn('%s withheld until local repair", r.errorCode(), id)', portal)
+
+    def test_every_gateway_start_and_smoke_checks_admission(self) -> None:
+        restart = self._function_source("restart_gateway_with_passive_mode")
+        self.assertIn("--instance-guid '${instance_guid}'", restart)
+        self.assertIn("--instance-guid-source '${instance_source}'", restart)
+        self.assertIn('ebus_driver_admitted "${gateway_log_path}"', restart)
+        rollback = self._function_source("run_rollback_execute")
+        self.assertIn('ebus_driver_admitted "${rollback_gateway_log_path}"', rollback)
+        self.assertIn('reason="ebus_driver_withheld"', rollback)
+        text = PASSIVE_HARNESS_SCRIPT.read_text(encoding="utf-8")
+        smoke = re.search(r"^  smoke\)\n(.*?)^    ;;\n", text, re.MULTILINE | re.DOTALL)
+        self.assertIsNotNone(smoke)
+        self.assertIn("ebus_driver_admitted", smoke.group(1))
+
+    def _gateway_start_command(self, case_dir: pathlib.Path, record: pathlib.Path) -> str:
+        program = "\n".join(
+            [
+                "set -euo pipefail",
+                'canonical_case_id="P01"',
+                'remote_case_dir="$1"',
+                'remote_bin="/opt/matrix/bin"',
+                'gateway_http_port="18101"',
+                'record="$2"',
+                "unset MATRIX_INSTANCE_GUID MATRIX_INSTANCE_GUID_SOURCE MATRIX_GATEWAY_LOG_PATH",
+                # The stub records every remote command, runs the file-state ones
+                # locally and never starts a process or touches a listener.
+                'remote_exec() { printf "%s\\n--\\n" "$1" >> "${record}"; case "$1" in nohup*|pids=*|for\\ i*) return 0 ;; esac; bash -c "$1"; }',
+                "enforce_gw15_proof_flag_state() { :; }",
+                "gateway_connection() { printf 'enh;tcp;adapter.invalid:9999\\n'; }",
+                "build_observe_first_cli_flags() { printf '\\n'; }",
+                "build_startup_probe_cli_flags() { printf '\\n'; }",
+                "ebus_driver_admitted() { :; }",
+                self._function_source("valid_instance_guid"),
+                self._function_source("accepted_instance_source"),
+                self._function_source("persist_instance_identity"),
+                self._function_source("resolve_instance_identity"),
+                self._function_source("restart_gateway_with_passive_mode"),
+                "restart_gateway_with_passive_mode",
+            ]
+        )
+        result = subprocess.run(
+            ["bash", "-c", program, "harness", str(case_dir), str(record)],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        commands = [c for c in record.read_text(encoding="utf-8").split("\n--\n") if c.startswith("nohup")]
+        self.assertEqual(len(commands), 1, msg=record.read_text(encoding="utf-8"))
+        return commands[0]
+
+    def test_gateway_start_keeps_runtime_state_inside_the_case(self) -> None:
+        # A generated instance identifier must never reach the add-on's live
+        # runtime state: every case start names a case-local runtime-state file.
+        with tempfile.TemporaryDirectory() as tmp:
+            starts = []
+            for case in ("T101", "T102"):
+                case_dir = pathlib.Path(tmp) / "runs" / case
+                record = pathlib.Path(tmp) / f"{case}.commands"
+                command = self._gateway_start_command(case_dir, record)
+                guid = (case_dir / "state" / "instance-guid").read_text(encoding="utf-8").strip()
+                self.assertEqual((case_dir / "state" / "instance-guid-source").read_text(encoding="utf-8").strip(), "generated")
+                self.assertIn(f"--instance-guid '{guid}'", command)
+                expected = f"--runtime-state-path '{case_dir}/state/runtime_state.json'"
+                self.assertIn(expected, command)
+                self.assertNotIn("/data/", command)
+                starts.append(expected)
+            self.assertNotEqual(starts[0], starts[1])
 
 
 if __name__ == "__main__":

@@ -1,0 +1,3 @@
+## Publish one SunSpec inverter as resources
+
+A single-device SunSpec inverter now publishes inverter, phase and PV-system resources with allocated identifiers. Inverter and phase facts name those resources. Lifetime energy names the allocated PV-system resource, which is the subject the pack declares for that fact. A chain with more than one device publishes no semantic fact and records the withholding reason on the live-smoke decision. A chain the registry refuses keeps that refusal. A chain the registry would admit stores no semantic observation. The acquired native chain is left unchanged. The SunSpec PV family graph entry is on. Fact values, units and quality are unchanged.

@@ -128,7 +128,64 @@ process only.
 | Portal instance contribution | Unchanged: it carries native instance diagnostics and asset identifiers only; the published assets render through the generic semantic surfaces. | Proven |
 | Matter feed conversion and binding endpoints | The inspected feed conversion names no logger-family source; whether a downstream binding reads these assets is not traced. | Unknown |
 
-**Not yet published.** The logger or dongle itself as generic equipment and its
-relay of each child, explicit absence for a withheld child, and the SunSpec PV
-family's resources follow in later changes; the SunSpec PV class keeps its own
-graph table entry off until then.
+### Logger, relation check and withheld children
+
+**Relation check (Proven, gateway tests).** Before a batch is offered, every
+relation instance of the family is checked against the three relation rows of
+the family's PV gate: `relation.relays` with basis class `native_observation`,
+`pv.relation.system_inverter` with `gate_rule` and `pv.relation.inverter_input`
+with `gate_rule`. An instance whose definition, basis class or end kinds the
+gate does not state, or whose basis is an index, a label or an operator origin,
+is refused as a false join. An instance with an end the publication has not
+published is refused as a dangling endpoint. A refused instance refuses its
+whole batch. The basis reference of each instance names the gate row and the
+scope of its rule. One unit reached through two configured labels stays two
+inverters with no relation between them.
+
+**Logger (Proven, gateway tests).** The logger or dongle of each configured
+instance is published as `resource.equipment` on the operator slot of the
+instance label. It sits in its own asset, declared by the family's class and
+keyed by the instance label alone, with one binding of the gateway path and a
+qualified identity link that names it. Nothing is published for the logger
+before a child batch has committed. The instance status lists the logger asset
+among the published asset identifiers once it is published. A logger asset
+holds no fact.
+
+**Relays withheld (Proven, gateway tests).** The `relation.relays` instance from
+the logger to each published inverter is built and checked against the gate,
+then withheld: the pinned SemReg lets a relation record name a definition only
+through a pack reference, so the core `relays` definition cannot be named in a
+record yet. The instances are published once the kernel resolves that
+definition.
+
+**Withheld children (Proven, gateway tests).** When the native owner withholds
+a child, or a complete listing no longer names it, the child's system, inverter
+and input records stay in its asset as `withdrawn` under the same identifiers,
+and its gate-rule relation instances are withdrawn. A withdrawn record says the
+resource is known and not observed now. It is not an absence statement: the
+gate states none, so the publisher publishes none and refuses one. Re-admission
+makes the same identifiers current again. A replaced inverter withdrawn this
+way is retired.
+
+**Operator declarations and epochs (Proven, gateway tests).** A child or
+logger batch that observes a binding carries a pending qualified operator
+identity declaration when the declaration names that resource. A withdrawal
+of a child carries the pending withdrawals of installed declarations and
+leaves a qualified declaration for a binding it does not observe pending, so
+the withdrawn records commit and that declaration stays pending. A successor
+epoch carries a declaration that is still pending. Retiring an epoch removes
+every gate-rule instance in the same snapshot and keeps the operator-origin
+resources current.
+
+**Consumers.** A semantic snapshot read of a logger child also shows its
+withdrawn records while the child is withheld. The logger asset is a new asset
+for every consumer that enumerates published assets; it carries a resource,
+a binding and an identity link, and no fact. Prometheus, MCP and Portal
+characterization goldens are unchanged.
+
+**Not yet published.** The logger's `relation.relays` instances wait for the
+SemReg change that names a core relation definition in a record. An absence
+statement for a withheld child waits for a gate decision, because the PV gate
+states that a withheld child is not absent. The SunSpec PV family's resources
+follow in a later change, and the SunSpec PV class keeps its own graph table
+entry off until then.

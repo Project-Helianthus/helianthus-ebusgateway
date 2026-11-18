@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semgraph"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semselect"
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
@@ -93,6 +94,16 @@ type pvPublicationDraft struct {
 	manifest            projection.ProjectionManifest
 	requested           []projection.RequestedItem
 	dispositions        []projection.ProjectionDisposition
+	// graphResources, systemBinding and systemLink are set only for a
+	// graph-enforced publication. They stay empty for an ungraphed class, so
+	// that class keeps its existing dimension text.
+	graphResources []semreg.Resource
+	systemBinding  *semreg.NativeBinding
+	systemLink     *semreg.IdentityLink
+	// operatorSlot distinguishes one unit. It is a digest of the native
+	// common identity, so a second unit does not reuse the first unit's
+	// resources and the asset identifier is not the slot.
+	operatorSlot string
 }
 
 func (d pvPublicationDraft) detached() (pvPublicationDraft, error) {
@@ -124,6 +135,23 @@ func (d pvPublicationDraft) detached() (pvPublicationDraft, error) {
 	}
 	if clone.dispositions, err = cloneJSON(d.dispositions); err != nil {
 		return pvPublicationDraft{}, err
+	}
+	if clone.graphResources, err = cloneJSON(d.graphResources); err != nil {
+		return pvPublicationDraft{}, err
+	}
+	if d.systemBinding != nil {
+		binding, bindingErr := cloneJSON(*d.systemBinding)
+		if bindingErr != nil {
+			return pvPublicationDraft{}, bindingErr
+		}
+		clone.systemBinding = &binding
+	}
+	if d.systemLink != nil {
+		link, linkErr := cloneJSON(*d.systemLink)
+		if linkErr != nil {
+			return pvPublicationDraft{}, linkErr
+		}
+		clone.systemLink = &link
 	}
 	return clone, nil
 }
@@ -252,7 +280,7 @@ func buildPVPublicationDraft(observation fronius.SunSpecQualificationObservation
 	nativeEvidence := pvEvidence("sunspec.native_resource", semreg.Digest("sha256:"+pvCoreHash("pv-native-resource", nativeResource)))
 	identityEvidence := pvEvidence("sunspec.common_identity", semreg.Digest("sha256:"+pvCoreHash("pv-common-identity", identity)))
 	draft := pvPublicationDraft{
-		assetID: assetID, lifecycle: lifecycle, observationEvidence: observationEvidence,
+		assetID: assetID, operatorSlot: pvOperatorSlot(identity), lifecycle: lifecycle, observationEvidence: observationEvidence,
 		source:       semreg.SourceDescriptor{SourceID: sourceID, SourceEpochID: lifecycle.sourceEpochID, ProtocolID: "sunspec_modbus", ProfileID: "sunspec.inverter.three_phase.monitoring", ProfileVersion: "1.0.0", RegistryEvidence: registryEvidence, StartedAt: lifecycle.sourceStartedAt, State: semreg.SourceCurrent, Revision: "1"},
 		binding:      semreg.NativeBinding{BindingID: bindingID, AssetID: assetID, SourceID: sourceID, SourceEpochID: lifecycle.sourceEpochID, DriverGeneration: lifecycle.driverGeneration, NativeResource: nativeEvidence, State: semreg.BindingCurrent, Revision: "1"},
 		identityLink: semreg.IdentityLink{AssetID: assetID, BindingID: bindingID, State: semreg.LinkQualified, Basis: []semreg.EvidenceRef{identityEvidence}, Revision: "1"},
@@ -452,6 +480,11 @@ func pvPublicationServices(draft pvPublicationDraft) ([]semreg.ServiceInstance, 
 // pvSemanticDriver is the PV driver label on the semantic publication hub.
 const pvSemanticDriver = "pv_sunspec"
 
+// pvClassGraphs records the graph flag of each declared PV class. The class
+// value itself does not expose it, and the publication core is built from the
+// class alone.
+var pvClassGraphs sync.Map
+
 // NewSemanticPVClass declares the lazily declared PV asset class on hub.
 // Every discovered SunSpec asset is declared through it, per asset. graph asks
 // for graph-enforced kernels; the gateway passes its family table value.
@@ -459,7 +492,18 @@ func NewSemanticPVClass(hub *semhub.Hub, graph bool) (*semhub.Class, error) {
 	if hub == nil {
 		return nil, errors.New("SemReg PV publication hub is unavailable")
 	}
-	return hub.DeclareClass(semhub.ClassSpec{Name: pvSemanticDriver, Driver: pvSemanticDriver, Validators: func() []semreg.PackValidator { return []semreg.PackValidator{pvpack.New()} }, Graph: graph})
+	class, err := hub.DeclareClass(semhub.ClassSpec{Name: pvSemanticDriver, Driver: pvSemanticDriver, Validators: func() []semreg.PackValidator { return []semreg.PackValidator{pvpack.New()} }, Graph: graph})
+	if err != nil {
+		return nil, err
+	}
+	pvClassGraphs.Store(class, graph)
+	return class, nil
+}
+
+func pvClassGraph(class *semhub.Class) bool {
+	value, ok := pvClassGraphs.Load(class)
+	graph, _ := value.(bool)
+	return ok && graph
 }
 
 type pvPublicationCore struct {
@@ -494,6 +538,9 @@ type pvPublicationCore struct {
 	// covers holds transition covers whose initial submission failed after
 	// their publication was accepted; each ingest retries them first.
 	covers []semhub.ControlID
+	// allocator names the resources of graph-enforced publications. An
+	// ungraphed class never resolves one.
+	allocator *semgraph.Allocator
 }
 
 // pvLifecycle is the lifecycle plan of one publication: the handle to
@@ -894,6 +941,11 @@ func (c *pvPublicationCore) ingestWithOrderAndValidation(draft pvPublicationDraf
 		declaration.SetReprojection(c.onControl)
 		asset = &pvPublicationAsset{declaration: declaration}
 	}
+	if pvClassGraph(c.class) {
+		if err := c.bindPVGraph(&detached); err != nil {
+			return pvPublicationReceipt{}, err
+		}
+	}
 	var tx *semhub.Tx
 	switch {
 	case plan.epoch != "":
@@ -1293,6 +1345,14 @@ func pvPublicationBatch(draft pvPublicationDraft, current semreg.Snapshot, exist
 		link.Revision = "1"
 		batch.BindingUpserts = append(batch.BindingUpserts, binding)
 		batch.IdentityLinkUpserts = append(batch.IdentityLinkUpserts, link)
+		if draft.systemBinding != nil && draft.systemLink != nil {
+			systemBinding := *draft.systemBinding
+			systemBinding.Revision = "1"
+			systemLink := *draft.systemLink
+			systemLink.Revision = "1"
+			batch.BindingUpserts = append(batch.BindingUpserts, systemBinding)
+			batch.IdentityLinkUpserts = append(batch.IdentityLinkUpserts, systemLink)
+		}
 		for _, service := range draft.services {
 			service.Revision = nextPVServiceRevision(current, service.InstanceID)
 			batch.ServiceUpserts = append(batch.ServiceUpserts, service)
@@ -1309,6 +1369,15 @@ func pvPublicationBatch(draft pvPublicationDraft, current semreg.Snapshot, exist
 		fact.Revision = nextPVCandidateRevision(current, fact.CandidateID)
 		batch.FactUpserts = append(batch.FactUpserts, fact)
 	}
+	resources, err := pvGraphResourceUpserts(current, draft.graphResources)
+	if err != nil {
+		return semreg.PublicationBatch{}, err
+	}
+	batch.ResourceUpserts = resources
+	sort.Slice(batch.BindingUpserts, func(i, j int) bool { return batch.BindingUpserts[i].BindingID < batch.BindingUpserts[j].BindingID })
+	sort.Slice(batch.IdentityLinkUpserts, func(i, j int) bool {
+		return batch.IdentityLinkUpserts[i].BindingID < batch.IdentityLinkUpserts[j].BindingID
+	})
 	sort.Slice(batch.SourceRetirements, func(i, j int) bool { return batch.SourceRetirements[i] < batch.SourceRetirements[j] })
 	sort.Slice(batch.FactUpserts, func(i, j int) bool { return batch.FactUpserts[i].CandidateID < batch.FactUpserts[j].CandidateID })
 	sort.Slice(batch.ServiceUpserts, func(i, j int) bool { return batch.ServiceUpserts[i].InstanceID < batch.ServiceUpserts[j].InstanceID })
@@ -1368,6 +1437,189 @@ func pvDimensionValue(mapping pvMappingSpec, asset semreg.AssetID) string {
 	}
 	id := strings.TrimPrefix(string(asset), "pv-asset-")
 	return mapping.dimensionRole + ":" + id
+}
+
+// pvOperatorSlot is the operator slot of one unit: a digest of its native
+// common identity. The asset identifier is a different digest and is not
+// used here.
+func pvOperatorSlot(identity []byte) string {
+	return pvCoreHash("pv-operator-slot", identity)[:32]
+}
+
+// bindPVGraph allocates the inverter, its three phase positions and the
+// PV system, and rewrites dimension text to those identifiers. Lifetime
+// energy keeps pv.dimension.system: that dimension's pack subject is the
+// PV-system resource. The candidate identifier is already the hash of the
+// asset, the primary binding and the native field, so it does not move.
+func (c *pvPublicationCore) bindPVGraph(draft *pvPublicationDraft) error {
+	if draft.operatorSlot == "" {
+		return errors.New("PV operator slot is absent")
+	}
+	inverter, err := c.pvGraphOperator(draft, "resource.inverter", semreg.AnchorEquipment, draft.operatorSlot)
+	if err != nil {
+		return err
+	}
+	system, err := c.pvGraphOperator(draft, "resource.pv_system", semreg.AnchorFunction, draft.operatorSlot)
+	if err != nil {
+		return err
+	}
+	phases := make(map[string]semreg.Resource, 3)
+	records := []semreg.Resource{inverter, system}
+	for _, slot := range []string{"L1", "L2", "L3"} {
+		phase, err := c.pvGraphPhase(draft, inverter.ResourceID, slot)
+		if err != nil {
+			return err
+		}
+		phases[slot] = phase
+		records = append(records, phase)
+	}
+	sort.Slice(records, func(i, j int) bool { return records[i].ResourceID < records[j].ResourceID })
+	draft.graphResources = records
+	draft.identityLink.Resource = pvResourcePtr(inverter.ResourceID)
+	systemBinding := draft.binding
+	systemHash := pvCoreHash("pv-binding-system", []byte(string(draft.assetID)+"\x00"+string(draft.source.SourceID)+"\x00"+string(draft.lifecycle.sourceEpochID)+"\x00"+string(draft.lifecycle.driverGeneration)))
+	systemBinding.BindingID = semreg.NativeBindingID("binding:semantic-pv:" + systemHash[:32])
+	systemLink := draft.identityLink
+	systemLink.BindingID = systemBinding.BindingID
+	systemLink.Resource = pvResourcePtr(system.ResourceID)
+	draft.systemBinding = &systemBinding
+	draft.systemLink = &systemLink
+	for index := range draft.facts {
+		fact := &draft.facts[index]
+		if len(fact.Key.Dimensions) != 1 || fact.Key.Dimensions[0].Value.Text == nil {
+			return errors.New("PV fact dimension is incomplete")
+		}
+		text := *fact.Key.Dimensions[0].Value.Text
+		var next string
+		switch {
+		case strings.HasPrefix(text, "phase:L1"):
+			next = string(phases["L1"].ResourceID)
+		case strings.HasPrefix(text, "phase:L2"):
+			next = string(phases["L2"].ResourceID)
+		case strings.HasPrefix(text, "phase:L3"):
+			next = string(phases["L3"].ResourceID)
+		case strings.HasPrefix(text, "inverter:"):
+			next = string(inverter.ResourceID)
+		case strings.HasPrefix(text, "system:"):
+			next = string(system.ResourceID)
+			fact.BindingID = &draft.systemBinding.BindingID
+			fact.Origin.BindingID = &draft.systemBinding.BindingID
+		default:
+			return errors.New("PV fact dimension has no resource")
+		}
+		fact.Key.Dimensions[0].Value.Text = pvTextPtr(next)
+		for disposition := range draft.dispositions {
+			for source := range draft.dispositions[disposition].SourceKeys {
+				key := &draft.dispositions[disposition].SourceKeys[source]
+				if key.FactID != fact.Key.FactID || len(key.Dimensions) != 1 || key.Dimensions[0].Value.Text == nil || *key.Dimensions[0].Value.Text != text {
+					continue
+				}
+				*key = fact.Key
+			}
+		}
+	}
+	for index := range draft.services {
+		var id semreg.ResourceID
+		switch draft.services[index].Definition.ID {
+		case "pv.service.system":
+			id = system.ResourceID
+		case "pv.service.inverter":
+			id = inverter.ResourceID
+		case "pv.service.phase":
+			id = phases["L1"].ResourceID
+		default:
+			return fmt.Errorf("PV service %s has no resource", draft.services[index].Definition.ID)
+		}
+		draft.services[index].Resource = pvResourcePtr(id)
+	}
+	return nil
+}
+
+func (c *pvPublicationCore) pvGraphOperator(draft *pvPublicationDraft, kind semreg.DefinitionID, class semreg.AnchorClass, slot string) (semreg.Resource, error) {
+	evidence := pvGraphEvidence("sunspec.operator.slot", slot)
+	id, anchor, err := c.allocatePV(kind, semgraph.Anchor{Class: class, Basis: semreg.AnchorOperatorSlot, Source: semgraph.SourceOperatorLabel, Slot: slot, Evidence: []semreg.EvidenceRef{evidence}}, draft.assetID)
+	if err != nil {
+		return semreg.Resource{}, err
+	}
+	return semreg.Resource{
+		ResourceID: id, Kind: kind, Anchor: anchor, State: semreg.ResourceCurrent, Revision: "1",
+		Origin: semreg.OriginRef{OriginID: semreg.OriginID("origin:semantic-pv:" + pvCoreHash("pv-operator-origin", []byte(string(kind)+"\x00"+slot))[:32]), Kind: semreg.OriginOperator, Evidence: []semreg.EvidenceRef{evidence}},
+	}, nil
+}
+
+func (c *pvPublicationCore) pvGraphPhase(draft *pvPublicationDraft, parent semreg.ResourceID, slot string) (semreg.Resource, error) {
+	evidence := pvGraphEvidence("sunspec.phase.position", slot)
+	id, anchor, err := c.allocatePV("resource.phase", semgraph.Anchor{Class: semreg.AnchorComponent, Basis: semreg.AnchorNativeSlot, Source: semgraph.SourceNativePosition, Parent: parent, Slot: slot, Evidence: []semreg.EvidenceRef{evidence}}, draft.assetID)
+	if err != nil {
+		return semreg.Resource{}, err
+	}
+	source, epoch, binding := draft.source.SourceID, draft.lifecycle.sourceEpochID, draft.binding.BindingID
+	return semreg.Resource{
+		ResourceID: id, Kind: "resource.phase", Anchor: anchor, State: semreg.ResourceCurrent, Revision: "1",
+		Origin: semreg.OriginRef{OriginID: semreg.OriginID("origin:semantic-pv:" + pvCoreHash("pv-phase-origin", []byte(slot))[:32]), Kind: semreg.OriginNativeObservation, SourceID: &source, SourceEpochID: &epoch, BindingID: &binding, Evidence: []semreg.EvidenceRef{evidence}},
+	}, nil
+}
+
+func (c *pvPublicationCore) allocatePV(kind semreg.DefinitionID, anchor semgraph.Anchor, asset semreg.AssetID) (semreg.ResourceID, semreg.ResourceAnchor, error) {
+	if c.allocator == nil {
+		store, err := semgraph.OpenStore("")
+		if err != nil {
+			return "", semreg.ResourceAnchor{}, err
+		}
+		allocator, err := semgraph.NewAllocator(store)
+		if err != nil {
+			return "", semreg.ResourceAnchor{}, err
+		}
+		c.allocator = allocator
+	}
+	id, record, err := c.allocator.Resolve(kind, anchor)
+	if err != nil {
+		return "", semreg.ResourceAnchor{}, err
+	}
+	if _, err := c.allocator.Home(id, asset); err != nil {
+		return "", semreg.ResourceAnchor{}, err
+	}
+	return id, record, nil
+}
+
+func pvGraphEvidence(kind, slot string) semreg.EvidenceRef {
+	return pvEvidence(semreg.DefinitionID(kind), semreg.Digest("sha256:"+pvCoreHash(kind, []byte(slot))))
+}
+
+func pvResourcePtr(id semreg.ResourceID) *semreg.ResourceID { return &id }
+
+func pvTextPtr(value string) *string { return &value }
+
+// pvGraphResourceUpserts returns resources the asset does not already hold
+// current. A current record is not rewritten.
+func pvGraphResourceUpserts(current semreg.Snapshot, records []semreg.Resource) ([]semreg.Resource, error) {
+	if len(records) == 0 {
+		return nil, nil
+	}
+	held := make(map[semreg.ResourceID]semreg.Resource, len(current.Resources))
+	for _, resource := range current.Resources {
+		held[resource.ResourceID] = resource
+	}
+	out := make([]semreg.Resource, 0, len(records))
+	for _, record := range records {
+		old, ok := held[record.ResourceID]
+		if ok && old.State == semreg.ResourceCurrent {
+			continue
+		}
+		if ok {
+			next := incrementPVUint(old.Revision)
+			if next == "" {
+				return nil, errors.New("PV resource revision is exhausted")
+			}
+			record.Anchor, record.Supersedes, record.Revision = old.Anchor, old.Supersedes, next
+		}
+		out = append(out, record)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ResourceID < out[j].ResourceID })
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
 }
 
 func pvPublicationPolicy(id semreg.PolicyID) (semreg.FreshnessPolicy, error) {

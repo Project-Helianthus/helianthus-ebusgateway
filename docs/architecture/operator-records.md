@@ -169,10 +169,17 @@ driver's source, and `Tx.OperatorLinks` hands it to the driver's next
 transaction. Declaring it publishes nothing. A driver batch that does not
 carry the pending links leaves them pending. The declaration appears only
 after the driver's next batch that carries them, so it waits while the driver
-is fenced or stopped. The acceptance test covers this limit too.
+is fenced or stopped. The acceptance test covers this limit too. A batch
+whose operator links are only the withdrawals pending for that source
+commits those withdrawals and leaves a qualified declaration that is still
+pending unpublished. Any other carried set that differs from the pending
+set is refused, and nothing from that batch is published.
 
-No family publisher carries the pending links yet. Until a family adopts
-`Tx.OperatorLinks`, an operator identity declaration is never published.
+The logger-attached PV family carries the pending links of its source: a
+batch that observes a binding carries a qualified declaration when it names
+that resource, and a withdrawal of a child carries the pending withdrawals and
+leaves a qualified declaration pending. Until a batch carries a declaration,
+that declaration is not published.
 
 The section records an identity link: the home asset, the native resource and
 the configuration basis class. Startup loads the configured record set, and

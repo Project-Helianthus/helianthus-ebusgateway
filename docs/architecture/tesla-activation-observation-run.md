@@ -97,20 +97,68 @@ The subcommand is selected from argv before any gateway configuration. It
 opens the port at 115200 baud, 8 data bits, no parity and 1 stop bit (Linux
 only; other platforms record an open failure) and transmits nothing.
 
+The operator starts `tesla-observe` before the charger gets power. The
+working hypothesis, graded Hypothesis in the status table, is that the
+activation exchange happens once after the charger gets power, and only if
+the host answers the greeting. This tool sends nothing, so it does not
+expect the confirmation. Starting the tool before the charger gets power
+keeps that hypothesized exchange inside the window. Whether the exchange
+occurs, when it occurs and whether a reset repeats it stay Unknown pending
+owner review. A window that captures no exchange is retained as evidence
+for that review and is not dismissed as a missed exchange. Starting the tool
+does not power the charger and does not answer the greeting. Each attempt
+closes its source when the window ends. A later repeat opens a new source
+after any pause and does not observe the exchange from the earlier power-up.
+The command writes nothing until every attempt has finished, so it does not
+report when a source has opened or when its window is active. A preceding
+attempt may also end before its deadline, once it reaches the byte or
+segment limit, so the configured window and pause are not a schedule for
+the next power-up. Starting the invocation does not open the window. Before
+it opens the port, the command resolves and locks its outputs and reads and
+checks any existing evidence file. It then opens the port, applies the
+receive-only settings and flushes both queues, which discards every byte
+received before that flush. None of these steps is reported, so the start of
+the invocation is not a signal to give the charger power. Use one repeat for
+a startup. Before giving the charger power, confirm on the observation host
+that the running `tesla-observe` process itself holds the serial device open,
+for example by listing the processes that have that device open. The
+settings and the flush follow the open directly, without a wait, so wait at
+least one more second after that confirmation. Then give the charger power,
+well before the window deadline, which is counted from the open. If the
+invocation has already exited, it holds no open window for this power-up:
+read its output and do not give the charger power for it. Do not power the
+charger again for a
+later repeat of the same invocation. Record another startup by starting
+another invocation before that power-up. The `-window-bytes` flag default
+remains 64. A sufficient capture count is not established and must be
+measured.
+
 ```sh
 helianthus-gateway tesla-observe \
   -serial-path /dev/ttyUSB0 \
-  -case initial -repeats 3 -pause 30s \
+  -case initial -repeats 1 \
   -window 30s -window-bytes 64 -segment-cap 64 -segment-gap 2ms \
-  -prior-state fresh_session -prior-state-basis "unit powered up just before the run" \
+  -prior-state unavailable -prior-state-basis "observation started before the charger received power" \
   -other-initiators unknown -action-time-authorization recorded \
   -out /var/lib/helianthus-observe/evidence.json \
   -worksheet-out /var/lib/helianthus-observe/worksheet.md
 ```
 
-- `-case` is `initial`, `recovery` or `idle`. The operator performs any
-  power-up or reset separately, under its own action-time authorization; the
-  run never does.
+- `-case` is `initial`, `recovery` or `idle`. The operator starts
+  `tesla-observe` before the charger gets power, and performs any power-up
+  or reset separately, under its own action-time authorization; the run
+  never does. The tool sends nothing and does not expect the confirmation.
+  The worked example uses one repeat, so its prior-state basis matches that
+  single startup. Each repeat is a new window on a freshly opened source.
+  Under the working hypothesis, the exchange from one power-up is visible
+  only in the window that was already open. A later repeat is not another initial session of that
+  power-up, and nothing is printed when that later window opens. Do not
+  coordinate a fresh power-up with a repeated window. Record another
+  initial session by starting another invocation before a fresh power-up;
+  `-append` continues the labels and stores that invocation's prior-state
+  basis only on the attempts it adds. One invocation records its
+  prior-state basis on every attempt, so that basis has to be true for
+  every attempt the invocation records.
 - `-append` adds attempts to an existing evidence file. Labels continue
   (`a01`, `a02`, ...). The rows are rebuilt and the offline controls are
   rerun. Without `-append` an existing file is never overwritten. Evidence and
@@ -157,9 +205,11 @@ helianthus-gateway tesla-observe \
   when opening or closing it failed; other platforms fail to open. See
   [Receive-only boundary on Linux](#receive-only-boundary-on-linux) for when to
   run it.
-- `-window-bytes 11` limits a window to the comparator length. The default
-  of 64 keeps leading and trailing bytes. Unread bytes outside a window are
-  not evidence of absence.
+- `-window-bytes` defaults to 64, and the example passes that default. A
+  sufficient capture count is not established and must be measured.
+  `-window-bytes 11` limits a window to the comparator length. The default
+  of 64 keeps leading and trailing bytes around that comparator length.
+  Unread bytes outside a window are not evidence of absence.
 - The serial path is used only to open the port. It never appears in the
   evidence, and file errors are redacted before they are recorded. Operator
   text is limited to 200 printable ASCII characters and must not contain
@@ -244,8 +294,21 @@ Required run order:
    `helianthus-gateway tesla-observe -prepare -serial-path <serial-device>`.
 2. Connect the RS-485 pair to the bus, with the hardware boundary above in
    place.
-3. Observe, using the same `<serial-device>` and with no other program opening
-   it in between.
+3. Start `tesla-observe` before the charger gets power, with one repeat for
+   that startup, using the same `<serial-device>` and with no other program
+   opening it in between. The start of the invocation is not a signal to
+   give the charger power, because the outputs are checked first and the
+   flush that follows the open discards every byte received before it.
+4. Confirm on the observation host that the running `tesla-observe` process
+   itself holds `<serial-device>` open, then wait at least one more second.
+   If the invocation has already exited, read its output and do not give the
+   charger power for it.
+5. Give the charger power for that one window, well before the window
+   deadline, which is counted from the open. The tool sends nothing and does
+   not expect the confirmation. The command writes nothing until the run
+   finishes, so a later repeat does not show that a new window is open. Do
+   not power the charger again for a later repeat. Start a separate
+   invocation before the next power-up.
 
 ## Building for ARM Linux boards
 

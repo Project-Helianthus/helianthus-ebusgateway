@@ -100,14 +100,23 @@ func TestRunnerDryRunWritesPassiveSuiteArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run error = %v", err)
 	}
-	if len(verdicts) != 6 {
-		t.Fatalf("len(verdicts) = %d; want 6", len(verdicts))
+	wantIDs := []string{"P01", "P02", "P06"}
+	if len(verdicts) != len(wantIDs) {
+		t.Fatalf("len(verdicts) = %d; want %d", len(verdicts), len(wantIDs))
 	}
-	if verdicts[0].CaseID != "P01" || verdicts[len(verdicts)-1].CaseID != "P06" {
-		t.Fatalf("passive verdict ids = first %q last %q; want P01/P06", verdicts[0].CaseID, verdicts[len(verdicts)-1].CaseID)
+	for index, id := range wantIDs {
+		if verdicts[index].CaseID != id {
+			t.Fatalf("verdicts[%d].CaseID = %q; want %q", index, verdicts[index].CaseID, id)
+		}
+		if verdicts[index].PassiveMode != "unsupported_or_misconfigured" {
+			t.Fatalf("%s passive mode = %q; want unsupported_or_misconfigured", id, verdicts[index].PassiveMode)
+		}
 	}
-	if verdicts[len(verdicts)-1].PassiveMode != "unsupported_or_misconfigured" {
-		t.Fatalf("P06 passive mode = %q; want unsupported_or_misconfigured", verdicts[len(verdicts)-1].PassiveMode)
+	if verdicts[0].Kind != TopologyDirectAdapter || verdicts[1].Kind != TopologyDirectAdapter || verdicts[2].Kind != TopologyViaEbusdTCP {
+		t.Fatalf("passive kinds = %q %q %q", verdicts[0].Kind, verdicts[1].Kind, verdicts[2].Kind)
+	}
+	if _, err := os.Stat(filepath.Join(tempDir, "results", "P03")); !os.IsNotExist(err) {
+		t.Fatalf("P03 artifacts err = %v; want not exist", err)
 	}
 
 	checkPath := filepath.Join(tempDir, "results", "P01", "configs", "helianthus.json")

@@ -59,6 +59,10 @@ type SunSpecQualificationResult struct {
 	ObservationCount  int
 	SampleID          string
 	Chain             sunspec.ChainSnapshot
+	// SemanticWithhold is the reason semantic publication was withheld.
+	// Empty means this result did not withhold a publication. The
+	// qualification posture and the chain result stay unchanged.
+	SemanticWithhold string
 }
 
 // SunSpecProducer owns bounded acquisition and delegates all model, capability,
@@ -223,6 +227,14 @@ func (producer *SunSpecProducer) classify(identity SunSpecPollIdentity, snapshot
 	result := SunSpecQualificationResult{
 		CapabilityID: capability.ProfileID(), CapabilityReason: capability.Reason(),
 	}
+	// More than one Common occurrence is a multi-device chain. No semantic
+	// fact, service, capability or resource of any segment is published,
+	// and no qualification observation is stored. The acquired snapshot is
+	// not mutated. A chain the registry refuses keeps that refusal. A chain
+	// the registry would admit is stopped before an observation is stored.
+	if sunSpecCommonCount(snapshot) > 1 {
+		result.SemanticWithhold = "MULTI_DEVICE_UNATTRIBUTED"
+	}
 	if !capability.Admitted() {
 		if capability.Reason() == sunspec.CapabilityReasonInvalidChain {
 			result.Outcome = SunSpecQualificationStop
@@ -238,6 +250,10 @@ func (producer *SunSpecProducer) classify(identity SunSpecPollIdentity, snapshot
 		flavor, ok := selection.Decision()
 		if !ok || selection.Reason() != fronius.SunSpecFroniusFlavorSelectionReasonMatched ||
 			!flavor.Matched() || flavor.Reason() != fronius.SunSpecFroniusFlavorReasonMatched {
+			result.Outcome = SunSpecQualificationStop
+			return result
+		}
+		if result.SemanticWithhold != "" {
 			result.Outcome = SunSpecQualificationStop
 			return result
 		}
@@ -272,6 +288,16 @@ func (producer *SunSpecProducer) classify(identity SunSpecPollIdentity, snapshot
 		result.Outcome = SunSpecQualificationStop
 	}
 	return result
+}
+
+func sunSpecCommonCount(snapshot sunspec.ChainSnapshot) int {
+	count := 0
+	for _, occurrence := range snapshot.Occurrences() {
+		if occurrence.ModelID() == 1 {
+			count++
+		}
+	}
+	return count
 }
 
 func sunSpecFlavorEvaluations(evaluations []fronius.SunSpecFroniusFlavorDecision) []SunSpecFlavorEvaluation {
